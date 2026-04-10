@@ -8,7 +8,10 @@
 //! - [`call_report`] — Comprehensive single-call diagnosis report
 //! - [`fail2ban`] — Fail2ban-compatible log format
 //! - [`event_exec`] — External command hooks for events
+//! - [`api`] — REST API daemon mode (feature-gated: `api`)
 
+#[cfg(feature = "api")]
+pub mod api;
 pub mod call_report;
 pub mod cli_print;
 pub mod dialog_report;
@@ -16,6 +19,7 @@ pub mod event_exec;
 pub mod fail2ban;
 pub mod hexdump;
 pub mod json;
+pub mod prometheus;
 
 pub use call_report::{ReportFormat, generate_call_report};
 pub use cli_print::{ColorMode, OutputOptions, print_sip_message};

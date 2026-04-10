@@ -6,10 +6,10 @@
 //! filtering → output.
 
 use std::path::PathBuf;
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "api"))]
 use std::sync::Arc;
 
-#[cfg(feature = "tui")]
+#[cfg(any(feature = "tui", feature = "api"))]
 use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
@@ -293,6 +293,10 @@ fn run_tui_mode(
         })
         .expect("failed to spawn processing thread");
 
+    // Start API server if --api is specified
+    #[cfg(feature = "api")]
+    let _api_thread = start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store));
+
     // Run TUI on the main thread
     if let Err(e) = sipnab::tui::run_tui(Arc::clone(&dialog_store), Arc::clone(&stream_store)) {
         log::error!("TUI error: {e}");
@@ -410,6 +414,23 @@ fn run_batch_mode(
     let mut stream_store = StreamStore::new(cli.max_streams as usize);
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
+    // Start API server if --api is specified (feature-gated)
+    // In batch mode, we share stores via Arc<RwLock> when the API is active.
+    #[cfg(feature = "api")]
+    let (shared_ds, shared_ss, _api_thread) = {
+        if cli.api.is_some() {
+            let ds = Arc::new(RwLock::new(DialogStore::new(
+                cli.limit as usize,
+                cli.rotate,
+            )));
+            let ss = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
+            let thread = start_api_server(&cli, Arc::clone(&ds), Arc::clone(&ss));
+            (Some(ds), Some(ss), thread)
+        } else {
+            (None, None, None)
+        }
+    };
+
     let mut last_sweep = std::time::Instant::now();
     let sweep_interval = std::time::Duration::from_secs(5);
 
@@ -429,6 +450,10 @@ fn run_batch_mode(
         if last_sweep.elapsed() >= sweep_interval {
             processor.sweep();
             stream_store.mark_orphaned(std::time::Duration::from_secs(30));
+            #[cfg(feature = "api")]
+            if let Some(ref ss) = shared_ss {
+                ss.write().mark_orphaned(std::time::Duration::from_secs(30));
+            }
             last_sweep = std::time::Instant::now();
         }
 
@@ -485,6 +510,12 @@ fn run_batch_mode(
                 &mut prev_timestamp,
                 no_rtp,
             );
+
+            // Mirror updates to shared stores for API access
+            #[cfg(feature = "api")]
+            if let (Some(ds), Some(ss)) = (&shared_ds, &shared_ss) {
+                mirror_to_shared_stores(pp, ds, ss, no_rtp);
+            }
         }
 
         // Check --count limit
@@ -871,5 +902,113 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         bpf_filter,
         count,
         duration,
+    }
+}
+
+// ── API server ─────────────────────────────────────────────────────
+
+/// Start the REST API server in a background thread with its own tokio runtime.
+///
+/// Returns the thread handle, or `None` if `--api` was not specified.
+#[cfg(feature = "api")]
+fn start_api_server(
+    cli: &Cli,
+    dialog_store: Arc<RwLock<DialogStore>>,
+    stream_store: Arc<RwLock<StreamStore>>,
+) -> Option<std::thread::JoinHandle<()>> {
+    use sipnab::output::api::{self, ApiState, RateLimiter};
+
+    let addr_str = cli.api.as_ref()?;
+    let bind_addr = match api::parse_bind_addr(addr_str) {
+        Ok(a) => a,
+        Err(e) => {
+            log::error!("Invalid --api address: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    let state = ApiState {
+        dialog_store,
+        stream_store,
+        api_key: cli.api_key.clone(),
+        rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100))),
+    };
+
+    let handle = std::thread::Builder::new()
+        .name("api-server".to_string())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime for API server");
+
+            if let Err(e) = rt.block_on(api::run_server(bind_addr, state)) {
+                log::error!("API server error: {e}");
+            }
+        })
+        .expect("failed to spawn API server thread");
+
+    Some(handle)
+}
+
+/// Mirror a parsed packet into the shared stores used by the API server.
+///
+/// This is used in batch mode when the API is enabled: the main processing
+/// loop uses local stores for performance, and we duplicate updates to the
+/// shared stores so the API can read them.
+#[cfg(feature = "api")]
+fn mirror_to_shared_stores(
+    pp: &ParsedPacket,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    no_rtp: bool,
+) {
+    let transport_str = match pp.transport {
+        TransportProto::Udp => "UDP",
+        TransportProto::Tcp => "TCP",
+        TransportProto::Sctp => "SCTP",
+    };
+
+    // Mirror SIP messages
+    if sip::is_sip_message(&pp.payload) {
+        if let Ok(sip_msg) = sip::parse_sip(
+            &pp.payload,
+            pp.timestamp,
+            pp.src_addr,
+            pp.dst_addr,
+            pp.src_port,
+            pp.dst_port,
+            transport_str,
+        ) {
+            let mut ds = dialog_store.write();
+            ds.process_message(sip_msg.clone());
+
+            // Link SDP media endpoints to RTP streams
+            if let Some(sdp) = sip_msg.sdp()
+                && let Some(call_id) = sip_msg.call_id()
+            {
+                let mut ss = stream_store.write();
+                for media in &sdp.media {
+                    let addr_str = sip::sdp::effective_address(media, &sdp);
+                    if let Some(addr) = addr_str
+                        && let Ok(ip) = addr.parse::<std::net::IpAddr>()
+                    {
+                        ss.link_to_dialog(ip, media.port, call_id);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // Mirror RTP
+    if no_rtp || pp.transport != TransportProto::Udp {
+        return;
+    }
+
+    if rtp::is_rtp_packet(&pp.payload)
+        && let Ok(rtp_hdr) = parse_rtp_header(&pp.payload)
+    {
+        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
     }
 }
