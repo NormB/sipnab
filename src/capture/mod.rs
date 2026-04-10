@@ -107,6 +107,11 @@ pub struct CaptureHandle {
 /// [`CaptureHandle`] immediately. The capture runs until shutdown is
 /// signaled, limits are reached, or (for files) EOF is hit.
 ///
+/// If `ready_tx` is provided, the capture thread will send `Ok(())` on it
+/// after successfully opening the capture device/file/socket, or `Err(msg)`
+/// if opening fails. This allows the caller to wait until the capture
+/// resource is acquired before dropping privileges.
+///
 /// # Errors
 ///
 /// Returns an error if the source configuration is invalid (e.g., HEP
@@ -116,6 +121,7 @@ pub fn start_capture(
     source: CaptureSource,
     config: CaptureConfig,
     tx: Sender<Packet>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<CaptureHandle> {
     let source_clone = source.clone();
 
@@ -124,14 +130,14 @@ pub fn start_capture(
             let device = device.clone();
             thread::Builder::new()
                 .name(format!("capture-{device}"))
-                .spawn(move || live::capture_live(&device, &config, tx))
+                .spawn(move || live::capture_live(&device, &config, tx, ready_tx))
                 .context("Failed to spawn live capture thread")?
         }
         CaptureSource::File { path } => {
             let path = path.clone();
             thread::Builder::new()
                 .name("capture-file".to_string())
-                .spawn(move || file::capture_file(&path, &config, tx))
+                .spawn(move || file::capture_file(&path, &config, tx, ready_tx))
                 .context("Failed to spawn file reader thread")?
         }
         #[cfg(feature = "hep")]
@@ -145,7 +151,7 @@ pub fn start_capture(
             let rate = *rate_limit;
             thread::Builder::new()
                 .name("capture-hep".to_string())
-                .spawn(move || hep::capture_hep(&addr, &config, tx, &allow, rate))
+                .spawn(move || hep::capture_hep(&addr, &config, tx, &allow, rate, ready_tx))
                 .context("Failed to spawn HEP capture thread")?
         }
         #[cfg(not(feature = "hep"))]
@@ -170,10 +176,15 @@ pub fn start_capture(
 /// Splits the comma-separated device string, spawns a capture thread for
 /// each device, and all threads send to the same channel. Returns a
 /// [`CaptureHandle`] whose thread joins all sub-threads.
+///
+/// If `ready_tx` is provided, it signals `Ok(())` once **all** per-device
+/// capture threads have successfully opened their devices, or `Err(msg)` if
+/// any device fails to open.
 pub fn start_multi_capture(
     devices: &str,
     config: CaptureConfig,
     tx: Sender<Packet>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<CaptureHandle> {
     let device_list: Vec<String> = devices.split(',').map(|s| s.trim().to_string()).collect();
 
@@ -189,6 +200,7 @@ pub fn start_multi_capture(
             },
             config,
             tx,
+            ready_tx,
         );
     }
 
@@ -206,19 +218,55 @@ pub fn start_multi_capture(
         .name("capture-multi".to_string())
         .spawn(move || {
             let mut handles = Vec::new();
+            let mut per_device_ready_rxs = Vec::new();
 
             for dev in &device_list {
                 let dev_name = dev.clone();
                 let config = config.clone();
                 let tx = tx.clone();
 
+                // Each sub-thread gets its own ready signal so we can
+                // aggregate them before signaling the caller.
+                let (dev_ready_tx, dev_ready_rx) =
+                    crossbeam_channel::bounded::<Result<(), String>>(1);
+                per_device_ready_rxs.push((dev.clone(), dev_ready_rx));
+
                 let dev_ctx = dev.clone(); // for error context
                 let h = thread::Builder::new()
                     .name(format!("capture-{dev_name}"))
-                    .spawn(move || live::capture_live(&dev_name, &config, tx))
+                    .spawn(move || {
+                        live::capture_live(&dev_name, &config, tx, Some(dev_ready_tx))
+                    })
                     .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))?;
 
                 handles.push(h);
+            }
+
+            // Wait for all sub-threads to report ready (or failure).
+            if let Some(ready) = ready_tx {
+                let mut first_err: Option<String> = None;
+                for (dev_name, dev_rx) in &per_device_ready_rxs {
+                    match dev_rx.recv() {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            if first_err.is_none() {
+                                first_err =
+                                    Some(format!("Device '{dev_name}' failed to open: {e}"));
+                            }
+                        }
+                        Err(_) => {
+                            if first_err.is_none() {
+                                first_err = Some(format!(
+                                    "Device '{dev_name}' capture thread exited before signaling ready"
+                                ));
+                            }
+                        }
+                    }
+                }
+                let _ = ready.send(match first_err {
+                    Some(e) => Err(e),
+                    None => Ok(()),
+                });
             }
 
             // Drop our copy of tx so the channel closes when all capture
@@ -431,5 +479,43 @@ mod tests {
         };
         assert!(format!("{live:?}").contains("eth0"));
         assert!(format!("{file:?}").contains("test.pcap"));
+    }
+
+    #[test]
+    fn ready_signal_sent_on_file_capture() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("udp_5060.pcap");
+        if !fixture.exists() {
+            eprintln!("Skipping: fixture not found at {}", fixture.display());
+            return;
+        }
+
+        let (pkt_tx, pkt_rx) = crossbeam_channel::unbounded();
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+        let config = CaptureConfig::default();
+
+        let handle = start_capture(
+            CaptureSource::File { path: fixture },
+            config,
+            pkt_tx,
+            Some(ready_tx),
+        )
+        .expect("start_capture should succeed");
+
+        // The ready signal must arrive before we'd drop privileges.
+        let ready_result = ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("ready signal should arrive");
+        assert!(
+            ready_result.is_ok(),
+            "ready signal should be Ok, got: {ready_result:?}"
+        );
+
+        // Capture should also produce packets.
+        handle.thread.join().expect("capture thread panicked").ok();
+        let packets: Vec<_> = pkt_rx.try_iter().collect();
+        assert!(!packets.is_empty(), "Expected packets from fixture file");
     }
 }

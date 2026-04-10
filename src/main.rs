@@ -210,7 +210,11 @@ fn main() {
     // 14. Create the packet channel
     let (tx, rx) = crossbeam_channel::bounded(10_000);
 
-    // 15. Start the capture thread (multi-device aware)
+    // 15. Start the capture thread (multi-device aware).
+    //     Use a rendezvous channel so the capture thread can signal that the
+    //     device/file/socket is open before we drop privileges.
+    let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+
     let handle = if cli.multi_device {
         let device_str = match &source {
             CaptureSource::Live { device } => device.clone(),
@@ -219,7 +223,8 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        match capture::start_multi_capture(&device_str, capture_config.clone(), tx) {
+        match capture::start_multi_capture(&device_str, capture_config.clone(), tx, Some(ready_tx))
+        {
             Ok(h) => h,
             Err(e) => {
                 log::error!("Failed to start multi-device capture: {e}");
@@ -227,7 +232,7 @@ fn main() {
             }
         }
     } else {
-        match capture::start_capture(source, capture_config.clone(), tx) {
+        match capture::start_capture(source, capture_config.clone(), tx, Some(ready_tx)) {
             Ok(h) => h,
             Err(e) => {
                 log::error!("Failed to start capture: {e}");
@@ -235,6 +240,22 @@ fn main() {
             }
         }
     };
+
+    // 15a. Wait for the capture thread to confirm the device/file/socket is open.
+    //      This must happen BEFORE privilege drop so we don't lose CAP_NET_RAW.
+    match ready_rx.recv() {
+        Ok(Ok(())) => {
+            log::debug!("Capture source opened successfully");
+        }
+        Ok(Err(e)) => {
+            log::error!("Capture source failed to open: {e}");
+            std::process::exit(1);
+        }
+        Err(_) => {
+            log::error!("Capture thread exited before signaling ready");
+            std::process::exit(1);
+        }
+    }
 
     // 16. Drop privileges now that capture devices are open (D15)
     if let Err(e) = privilege::drop_privileges(cli.user.as_deref(), cli.no_priv_drop) {
