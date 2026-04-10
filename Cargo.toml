@@ -8,6 +8,7 @@ description = "SIP & RTP capture, analysis, and security"
 license = "GPL-3.0-only"
 repository = "https://github.com/NormB/sipnab"
 homepage = "https://sipnab.com"
+default-run = "sipnab"
 keywords = ["sip", "voip", "rtp", "pcap", "sngrep"]
 categories = ["command-line-utilities", "network-programming"]
 
@@ -80,3 +81,7 @@ strip = true
 [[bin]]
 name = "sipnab"
 path = "src/main.rs"
+
+[[bin]]
+name = "gen_fixture"
+path = "tools_gen_fixture.rs"
