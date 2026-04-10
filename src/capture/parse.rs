@@ -136,7 +136,25 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
             SlicedPacket::from_ethernet(data).context("Failed to parse Ethernet packet")?
         }
         DLT_LINUX_SLL => {
-            SlicedPacket::from_linux_sll(data).context("Failed to parse Linux SLL packet")?
+            // Linux SLL (cooked capture v1) has a 16-byte header:
+            //   2 bytes: packet type
+            //   2 bytes: ARPHRD type
+            //   2 bytes: link-layer address length
+            //   8 bytes: link-layer address
+            //   2 bytes: protocol type (e.g., 0x0800 = IPv4)
+            // Try etherparse first; fall back to manual parsing if it fails
+            // (some kernel versions produce SLL variants etherparse doesn't handle).
+            match SlicedPacket::from_linux_sll(data) {
+                Ok(sliced) => sliced,
+                Err(_) => {
+                    if data.len() < 16 {
+                        anyhow::bail!("Linux SLL packet too short ({} bytes)", data.len());
+                    }
+                    // Manual fallback: skip 16-byte SLL header, parse as IP
+                    SlicedPacket::from_ip(&data[16..])
+                        .context("Failed to parse IP from Linux SLL packet (manual fallback)")?
+                }
+            }
         }
         DLT_RAW => SlicedPacket::from_ip(data).context("Failed to parse raw IP packet")?,
         DLT_LINUX_SLL2 => {
