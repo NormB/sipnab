@@ -1,0 +1,25 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 416
+expression: output
+---
+┌ Statistics ──────────────────────────────────────────────┐
+│sipnab Statistics                                         │
+│                                                          │
+│Dialogs:        3                                         │
+│Active Calls:   1                                         │
+│RTP Streams:    0                                         │
+│Orphaned:       0                                         │
+│                                                          │
+│Press Esc to return.                                      │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+ sipnab | Statistics | Dialogs: 3 (active: 1) | Streams: 0 |

@@ -1,0 +1,45 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 275
+expression: output
+---
+┌ Call List (Tab: Streams | Enter: Flow | F1: Help) ───────────────────────────────────────────────────────────────────┐
+│   #    Method     From             To               Source           Destination      State        Msgs  Durati PDD  │
+│>  1    INVITE     1001             1002             10.0.0.1         10.0.0.2         Completed    4     1m2s   1000m│
+│   2    INVITE     1003             1004             10.0.0.1         10.0.0.2         FAILED       2     1.0s        │
+│   3    INVITE     1005             1006             10.0.0.1         10.0.0.2         InCall       2     2.0s        │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ sipnab | Call List | Dialogs: 3 (active: 1) | Streams: 0 | F1:Help q:Quit
