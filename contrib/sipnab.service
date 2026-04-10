@@ -1,0 +1,31 @@
+[Unit]
+Description=sipnab SIP/RTP capture and analysis daemon
+Documentation=https://sipnab.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/sipnab -N -d %i --api :8080 --metrics :9100 --json --syslog
+User=root
+Group=root
+# sipnab drops privileges internally after opening capture device
+# Use --user sipnab to specify the unprivileged user
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+
+# Resource limits
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
