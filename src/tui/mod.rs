@@ -536,57 +536,57 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
         }
     } else {
         match view {
-        View::CallList => {
-            if width < 80 {
-                vec![
-                    ("Esc", "Quit"),
-                    ("Enter", "Show"),
-                    ("F2", "Save"),
-                    ("F7", "Filter"),
-                ]
-            } else if width < 100 {
-                vec![
-                    ("Esc", "Quit"),
-                    ("Enter", "Show"),
-                    ("F2", "Save"),
-                    ("F3", "Search"),
-                    ("F6", "Raw"),
-                    ("F7", "Filter"),
-                    ("F9", "Addrs"),
-                ]
-            } else {
-                vec![
-                    ("Esc", "Quit"),
-                    ("Enter", "Show"),
-                    ("F2", "Save"),
-                    ("F3", "Search"),
-                    ("F4", "Extended"),
-                    ("F5", "Clear"),
-                    ("F6", "Raw"),
-                    ("F7", "Filter"),
-                    ("F9", "Addrs"),
-                    ("F10", "Columns"),
-                ]
+            View::CallList => {
+                if width < 80 {
+                    vec![
+                        ("Esc", "Quit"),
+                        ("Enter", "Show"),
+                        ("F2", "Save"),
+                        ("F7", "Filter"),
+                    ]
+                } else if width < 100 {
+                    vec![
+                        ("Esc", "Quit"),
+                        ("Enter", "Show"),
+                        ("F2", "Save"),
+                        ("F3", "Search"),
+                        ("F6", "Raw"),
+                        ("F7", "Filter"),
+                        ("F9", "Addrs"),
+                    ]
+                } else {
+                    vec![
+                        ("Esc", "Quit"),
+                        ("Enter", "Show"),
+                        ("F2", "Save"),
+                        ("F3", "Search"),
+                        ("F4", "Extended"),
+                        ("F5", "Clear"),
+                        ("F6", "Raw"),
+                        ("F7", "Filter"),
+                        ("F9", "Addrs"),
+                        ("F10", "Columns"),
+                    ]
+                }
             }
-        }
-        View::CallFlow(_) => {
-            if width < 80 {
-                vec![("Esc", "Back"), ("Enter", "Raw"), ("F7", "Filter")]
-            } else {
-                vec![
-                    ("Esc", "Back"),
-                    ("Enter", "Raw"),
-                    ("F2", "Save"),
-                    ("F5", "Compare"),
-                    ("F7", "Filter"),
-                    ("F9", "ClearFilter"),
-                ]
+            View::CallFlow(_) => {
+                if width < 80 {
+                    vec![("Esc", "Back"), ("Enter", "Raw"), ("F7", "Filter")]
+                } else {
+                    vec![
+                        ("Esc", "Back"),
+                        ("Enter", "Raw"),
+                        ("F2", "Save"),
+                        ("F5", "Compare"),
+                        ("F7", "Filter"),
+                        ("F9", "ClearFilter"),
+                    ]
+                }
             }
+            View::RawMessage { .. } => vec![("Esc", "Back"), ("F2", "Save")],
+            View::StreamList => vec![("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
+            _ => vec![("Esc", "Back")],
         }
-        View::RawMessage { .. } => vec![("Esc", "Back"), ("F2", "Save")],
-        View::StreamList => vec![("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
-        _ => vec![("Esc", "Back")],
-    }
     };
 
     let mut spans: Vec<Span> = Vec::new();
@@ -658,10 +658,7 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             dialog_info,
             Style::default().fg(Color::DarkGray),
         )),
-        Line::from(Span::styled(
-            msg_info,
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(Span::styled(msg_info, Style::default().fg(Color::DarkGray))),
         Line::from(""),
         Line::from(""),
         Line::from(vec![
@@ -709,7 +706,9 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, input: &str) {
     let expr_display = if input.is_empty() {
         Span::styled(
             "method == 'INVITE'",
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::ITALIC),
         )
     } else {
         Span::styled(
@@ -754,9 +753,7 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, input: &str) {
             Span::raw(" Cancel  "),
             Span::styled(
                 "[F9]",
-                Style::default()
-                    .fg(Color::Red)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Clear"),
         ]),
