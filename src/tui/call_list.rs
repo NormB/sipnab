@@ -302,11 +302,7 @@ pub fn render_call_list(
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(
-            Style::default()
-                .fg(Color::White)
-                .bg(Color::Blue),
-        )
+        .row_highlight_style(Style::default().fg(Color::White).bg(Color::Blue))
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
@@ -423,5 +419,4 @@ mod tests {
         assert_eq!(format_state(&DialogState::Failed), "FAILED");
         assert_eq!(format_state(&DialogState::Completed), "Completed");
     }
-
 }
