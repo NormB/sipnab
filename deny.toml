@@ -3,11 +3,7 @@
 
 [advisories]
 # Advisories with no explicit ignore are denied by default.
-# Yanked crate versions or unmaintained crates can be ignored on a case-by-case basis.
-ignore = [
-    # paste is unmaintained (transitive dep via ratatui); no action available yet
-    { id = "RUSTSEC-2024-0436", reason = "transitive dep from ratatui, awaiting upstream migration to pastey" },
-]
+ignore = []
 
 [licenses]
 allow = [
