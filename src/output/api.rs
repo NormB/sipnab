@@ -41,7 +41,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::output;
+use crate::output::prometheus::{self, PrometheusMetrics};
 use crate::rtp::diagnosis::diagnose_media;
+use crate::rtp::quality;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
@@ -247,12 +249,24 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     if let Some(token) = auth_str.strip_prefix("Bearer ")
-        && token == expected_key
+        && constant_time_eq(token.as_bytes(), expected_key.as_bytes())
     {
         return Ok(());
     }
 
     Err(StatusCode::UNAUTHORIZED)
+}
+
+/// Constant-time byte comparison to prevent timing side-channel attacks on API keys.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
@@ -291,10 +305,12 @@ async fn list_dialogs(
     let limit = params.limit.unwrap_or(50).min(1000);
 
     let state_filter = params.state.as_deref();
-    let from_regex = params
-        .from
-        .as_deref()
-        .and_then(|pat| regex::Regex::new(pat).ok());
+    let from_regex = params.from.as_deref().and_then(|pat| {
+        regex::RegexBuilder::new(pat)
+            .size_limit(1_000_000)
+            .build()
+            .ok()
+    });
 
     let ds = state.dialog_store.read();
     let dialogs: Vec<Value> = ds
@@ -520,38 +536,61 @@ async fn get_stats(
 
 /// `GET /metrics` — Prometheus-compatible metrics endpoint.
 ///
-/// Returns basic counters and gauges in Prometheus text format.
-/// This is a stub that can be extended when a full metrics registry is added.
+/// Populates a `PrometheusMetrics` from the shared stores and formats
+/// via `prometheus::format_metrics` for full metric coverage.
 async fn get_metrics(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
     guard(&state, &headers)?;
 
+    let mut metrics = PrometheusMetrics::default();
+
+    // Populate from dialog store
     let ds = state.dialog_store.read();
-    let total_dialogs = ds.len();
-    let active_calls = ds.active_count();
+    for d in ds.iter() {
+        let state_str = format!("{:?}", d.state).to_lowercase();
+        *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
+
+        // PDD histogram
+        if let Some(pdd_ms) = d.timing.pdd_ms() {
+            metrics.pdd_histogram.push(pdd_ms as f64 / 1000.0);
+        }
+
+        // Count messages by method
+        *metrics.messages_total.entry(d.method.clone()).or_insert(0) += 1;
+    }
     drop(ds);
 
+    // Populate from stream store
     let ss = state.stream_store.read();
-    let total_streams = ss.len();
-    let orphaned_streams = ss.orphaned_count();
+    let mut established = 0u64;
+    let mut orphaned = 0u64;
+    for s in ss.iter() {
+        if s.orphaned {
+            orphaned += 1;
+        } else {
+            established += 1;
+        }
+        metrics.mos_histogram.push(approximate_mos(s));
+        metrics.jitter_histogram.push(s.jitter);
+        let total = s.packet_count + s.lost_packets;
+        if total > 0 {
+            metrics
+                .loss_histogram
+                .push((s.lost_packets as f64 / total as f64) * 100.0);
+        }
+    }
+    metrics.rtp_streams_active = established;
+    metrics
+        .rtp_streams_total
+        .insert("established".to_string(), established);
+    metrics
+        .rtp_streams_total
+        .insert("orphaned".to_string(), orphaned);
     drop(ss);
 
-    let body = format!(
-        "# HELP sipnab_dialogs_total Total number of tracked SIP dialogs.\n\
-         # TYPE sipnab_dialogs_total gauge\n\
-         sipnab_dialogs_total {total_dialogs}\n\
-         # HELP sipnab_dialogs_active Number of active SIP dialogs.\n\
-         # TYPE sipnab_dialogs_active gauge\n\
-         sipnab_dialogs_active {active_calls}\n\
-         # HELP sipnab_streams_total Total number of tracked RTP streams.\n\
-         # TYPE sipnab_streams_total gauge\n\
-         sipnab_streams_total {total_streams}\n\
-         # HELP sipnab_streams_orphaned Number of orphaned RTP streams.\n\
-         # TYPE sipnab_streams_orphaned gauge\n\
-         sipnab_streams_orphaned {orphaned_streams}\n"
-    );
+    let body = prometheus::format_metrics(&metrics);
 
     Ok((
         StatusCode::OK,
@@ -611,10 +650,9 @@ fn stream_summary(s: &crate::rtp::stream::RtpStream) -> Value {
     })
 }
 
-/// Approximate MOS score from jitter and loss using the E-model R-factor.
+/// Approximate MOS score from jitter and loss using the canonical E-model.
 ///
-/// Uses the same algorithm as `sip::dsl::approximate_mos` for consistency.
-/// MOS ranges from 1.0 (worst) to 4.41 (best).
+/// Delegates to `rtp::quality::estimate_mos` for a single MOS implementation.
 fn approximate_mos(stream: &crate::rtp::stream::RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
@@ -623,16 +661,7 @@ fn approximate_mos(stream: &crate::rtp::stream::RtpStream) -> f64 {
         0.0
     };
 
-    let jitter_penalty = stream.jitter.min(100.0);
-    let loss_penalty = 2.5 * loss_pct;
-
-    let r = (93.2 - jitter_penalty - loss_penalty).clamp(0.0, 100.0);
-
-    if r < 1.0 {
-        1.0
-    } else {
-        1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6
-    }
+    quality::estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref())
 }
 
 /// Compute the p-th percentile of a sorted slice.

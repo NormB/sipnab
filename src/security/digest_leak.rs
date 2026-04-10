@@ -112,14 +112,20 @@ impl DigestLeakDetector {
                 });
             }
 
-            // Check for nonce reuse
-            if let Some(nonce) = extract_param(header_value, "nonce")
-                && !self.seen_nonces.insert(nonce.to_string())
-            {
-                alerts.push(DigestAlert {
-                    vulnerability: DigestVulnerability::NonceReuse,
-                    detail: format!("nonce '{nonce}' reused across challenges (replay risk)"),
-                });
+            // Check for nonce reuse (cap at 10,000 entries to bound memory)
+            if let Some(nonce) = extract_param(header_value, "nonce") {
+                if !self.seen_nonces.insert(nonce.to_string()) {
+                    alerts.push(DigestAlert {
+                        vulnerability: DigestVulnerability::NonceReuse,
+                        detail: format!("nonce '{nonce}' reused across challenges (replay risk)"),
+                    });
+                } else if self.seen_nonces.len() > 10_000 {
+                    // Drop an arbitrary entry to stay bounded
+                    let first = self.seen_nonces.iter().next().cloned();
+                    if let Some(key) = first {
+                        self.seen_nonces.remove(&key);
+                    }
+                }
             }
         }
     }

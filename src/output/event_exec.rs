@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use log::warn;
 
+use crate::rtp::quality;
 use crate::rtp::stream::RtpStream;
 use crate::sip::dialog::SipDialog;
 
@@ -125,8 +126,8 @@ impl EventExecEngine {
             None => return,
         };
 
-        // Estimate MOS from jitter and loss (simplified E-model)
-        let mos = estimate_mos(stream.jitter, loss_pct(stream));
+        // Estimate MOS from jitter and loss via the canonical E-model
+        let mos = quality::estimate_mos(stream.jitter, loss_pct(stream), stream.codec.as_deref());
         if mos >= self.quality_threshold {
             return;
         }
@@ -209,25 +210,6 @@ fn loss_pct(stream: &RtpStream) -> f64 {
     } else {
         0.0
     }
-}
-
-/// Simplified MOS estimation from jitter and loss.
-///
-/// Uses a simplified E-model approximation:
-/// - R-factor starts at 93.2 (G.711 baseline)
-/// - Subtract jitter impact (Id = jitter_ms * 0.1)
-/// - Subtract loss impact (Ie = loss_pct * 2.5)
-/// - Convert to MOS: 1 + 0.035*R + R*(R-60)*(100-R)*7e-6
-fn estimate_mos(jitter_ms: f64, loss_pct: f64) -> f64 {
-    let r = 93.2 - (jitter_ms * 0.1) - (loss_pct * 2.5);
-    let r = r.clamp(0.0, 100.0);
-
-    if r < 1.0 {
-        return 1.0;
-    }
-
-    let mos = 1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6;
-    mos.clamp(1.0, 5.0)
 }
 
 /// Simple shell escaping: replace single quotes with escaped form.
@@ -361,8 +343,8 @@ mod tests {
 
     #[test]
     fn mos_estimation_good_quality() {
-        // Good conditions: low jitter, no loss
-        let mos = estimate_mos(5.0, 0.0);
+        // Good conditions: low jitter, no loss — uses canonical estimate_mos
+        let mos = quality::estimate_mos(5.0, 0.0, Some("PCMU"));
         assert!(
             mos > 4.0,
             "good conditions should give MOS > 4.0: got {mos}"
@@ -371,8 +353,8 @@ mod tests {
 
     #[test]
     fn mos_estimation_bad_quality() {
-        // Bad conditions: high jitter, significant loss
-        let mos = estimate_mos(150.0, 15.0);
+        // Bad conditions: high jitter, significant loss — uses canonical estimate_mos
+        let mos = quality::estimate_mos(150.0, 15.0, None);
         assert!(mos < 3.0, "bad conditions should give MOS < 3.0: got {mos}");
     }
 

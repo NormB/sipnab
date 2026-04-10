@@ -18,6 +18,9 @@ use sipnab::cli::Cli;
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
 use sipnab::rtp::{self, parser::parse_rtp_header, rtcp::parse_rtcp, stream_store::StreamStore};
+use sipnab::security::{
+    AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector, ScannerDetector,
+};
 use sipnab::signals;
 use sipnab::sip::{self, dialog_store::DialogStore, dsl::FilterExpr, matcher::SipMatcher};
 
@@ -221,7 +224,8 @@ fn run_tui_mode(
     let processing_thread = std::thread::Builder::new()
         .name("tui-processor".to_string())
         .spawn(move || {
-            let mut processor = capture::PacketProcessor::new();
+            let mut processor =
+                capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
             let mut writer: Option<PcapWriter> = None;
             let mut last_sweep = std::time::Instant::now();
@@ -408,11 +412,56 @@ fn run_batch_mode(
     let mut writer: Option<PcapWriter> = None;
 
     // 17. Initialize processing state
-    let mut processor = capture::PacketProcessor::new();
+    let mut processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
     let mut dialog_store = DialogStore::new(cli.limit as usize, cli.rotate);
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let mut stream_store = StreamStore::new(cli.max_streams as usize);
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+
+    // 17a. Initialize security detectors
+    let mut scanner_detector = if cli.kill_scanner || config.security.kill_scanner.unwrap_or(false)
+    {
+        let custom = cli
+            .kill_ua
+            .as_deref()
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default();
+        Some(ScannerDetector::new(&custom))
+    } else {
+        None
+    };
+
+    let mut fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
+        Some(FraudDetector::new(None))
+    } else {
+        None
+    };
+
+    let mut digest_detector = if cli.digest_leak {
+        Some(DigestLeakDetector::new())
+    } else {
+        None
+    };
+
+    let mut reg_flood_detector = if cli.reg_flood {
+        Some(RegFloodDetector::new(0))
+    } else {
+        None
+    };
+
+    // 17b. Initialize alert engine from --alert rules and --alert-exec
+    let alert_rules: Vec<AlertRule> = cli
+        .alert
+        .iter()
+        .filter_map(|s| match AlertRule::parse(s) {
+            Ok(r) => Some(r),
+            Err(e) => {
+                log::warn!("Skipping invalid alert rule '{}': {}", s, e);
+                None
+            }
+        })
+        .collect();
+    let mut alert_engine = AlertEngine::new(alert_rules, cli.alert_exec.clone());
 
     // Start API server if --api is specified (feature-gated)
     // In batch mode, we share stores via Arc<RwLock> when the API is active.
@@ -450,6 +499,16 @@ fn run_batch_mode(
         if last_sweep.elapsed() >= sweep_interval {
             processor.sweep();
             stream_store.mark_orphaned(std::time::Duration::from_secs(30));
+            let security_max_age = std::time::Duration::from_secs(120);
+            if let Some(det) = scanner_detector.as_mut() {
+                det.sweep(security_max_age);
+            }
+            if let Some(det) = fraud_detector.as_mut() {
+                det.sweep(security_max_age);
+            }
+            if let Some(det) = reg_flood_detector.as_mut() {
+                det.sweep(security_max_age);
+            }
             #[cfg(feature = "api")]
             if let Some(ref ss) = shared_ss {
                 ss.write().mark_orphaned(std::time::Duration::from_secs(30));
@@ -505,6 +564,11 @@ fn run_batch_mode(
                 &mut stream_store,
                 &mut rtp_heuristic,
                 &mut event_exec,
+                &mut scanner_detector,
+                &mut fraud_detector,
+                &mut digest_detector,
+                &mut reg_flood_detector,
+                &mut alert_engine,
                 &mut sip_count,
                 &mut rtp_count,
                 &mut prev_timestamp,
@@ -568,6 +632,11 @@ fn process_parsed_packet(
     stream_store: &mut StreamStore,
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     event_exec: &mut EventExecEngine,
+    scanner_detector: &mut Option<ScannerDetector>,
+    fraud_detector: &mut Option<FraudDetector>,
+    digest_detector: &mut Option<DigestLeakDetector>,
+    reg_flood_detector: &mut Option<RegFloodDetector>,
+    alert_engine: &mut AlertEngine,
     sip_count: &mut u64,
     rtp_count: &mut u64,
     prev_timestamp: &mut Option<chrono::DateTime<chrono::Utc>>,
@@ -667,8 +736,110 @@ fn process_parsed_packet(
                     true
                 };
 
+                // Security detection: scanner
+                if let Some(det) = scanner_detector
+                    && let Some(alert) = det.check(&sip_msg)
+                {
+                    alert_engine.fire(
+                        "scanner",
+                        alert.src_ip,
+                        &format!(
+                            "method={} ua={} detection={}",
+                            alert.method, alert.ua, alert.detection_method
+                        ),
+                    );
+                    if cli.fail2ban {
+                        let event = output::format_scanner_event(
+                            &alert.src_ip.to_string(),
+                            &alert.ua,
+                            &alert.method,
+                        );
+                        println!("{event}");
+                    }
+                }
+
+                // Security detection: fraud
+                if let Some(det) = fraud_detector
+                    && let Some(call_id) = sip_msg.call_id()
+                    && let Some(dialog) = dialog_store.get(call_id)
+                    && let Some(alert) = det.check(&sip_msg, dialog)
+                {
+                    alert_engine.fire(
+                        "fraud",
+                        alert.src_ip,
+                        &format!("{:?}: {}", alert.alert_type, alert.detail),
+                    );
+                }
+
+                // Security detection: digest leak
+                if let Some(det) = digest_detector {
+                    let alerts = det.check(&sip_msg);
+                    for alert in &alerts {
+                        alert_engine.fire(
+                            "digest",
+                            sip_msg.src_addr,
+                            &format!("{:?}: {}", alert.vulnerability, alert.detail),
+                        );
+                    }
+                }
+
+                // Security detection: registration flood
+                if let Some(det) = reg_flood_detector
+                    && let Some(alert) = det.check(&sip_msg)
+                {
+                    alert_engine.fire(
+                        "reg_flood",
+                        alert.src_ip,
+                        &format!(
+                            "count={} threshold={}",
+                            alert.register_count, alert.threshold
+                        ),
+                    );
+                    if cli.fail2ban {
+                        let event = output::format_reg_flood_event(
+                            &alert.src_ip.to_string(),
+                            alert.register_count,
+                        );
+                        println!("{event}");
+                    }
+                }
+
+                // STIR/SHAKEN extraction (I1)
+                if cli.stir_shaken
+                    && let Some(result) = sip_msg.stir_shaken()
+                {
+                    match result {
+                        Ok(info) => {
+                            log::info!(
+                                "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
+                                info.attestation,
+                                info.orig_tn.as_deref().unwrap_or("-"),
+                                info.dest_tn.as_deref().unwrap_or("-"),
+                                info.verified,
+                            );
+                        }
+                        Err(e) => {
+                            log::debug!("STIR/SHAKEN parse error: {e}");
+                        }
+                    }
+                }
+
+                // I5: --calls-only: skip non-INVITE dialogs from output
+                let calls_only_pass = if cli.calls_only {
+                    if let Some(call_id) = sip_msg.call_id()
+                        && let Some(dialog) = dialog_store.get(call_id)
+                    {
+                        dialog.method == "INVITE"
+                    } else {
+                        // No dialog tracked — only show if it's an INVITE request
+                        sip_msg.method.as_deref() == Some("INVITE")
+                    }
+                } else {
+                    true
+                };
+
                 // Output if both matcher and filter pass
-                if matcher_pass && filter_pass && cli.no_tui {
+                if matcher_pass && filter_pass && calls_only_pass && cli.no_tui {
                     dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
                 }
 
@@ -701,6 +872,26 @@ fn process_parsed_packet(
     {
         stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
         *rtp_count += 1;
+
+        // DTMF extraction (I2): if --telephone-event is set and we
+        // have the RTP payload after the header, attempt DTMF decode.
+        // Uses a default telephone-event PT of 101 (common convention).
+        if cli.telephone_event && rtp_hdr.payload_offset < pp.payload.len() {
+            let rtp_payload = &pp.payload[rtp_hdr.payload_offset..];
+            if let Some(dtmf) = rtp::dtmf::extract_dtmf(
+                rtp_payload,
+                rtp_hdr.payload_type,
+                101, // Default telephone-event PT
+                pp.timestamp,
+            ) {
+                log::info!(
+                    "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
+                    dtmf.digit,
+                    dtmf.duration_ms,
+                    rtp_hdr.ssrc
+                );
+            }
+        }
 
         // Fire quality events on each RTP packet (rate-limited internally)
         let key = sipnab::rtp::stream::StreamKey {

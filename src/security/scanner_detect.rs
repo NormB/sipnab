@@ -163,6 +163,13 @@ impl ScannerDetector {
 
         None
     }
+
+    /// Remove behavioral tracking entries older than `max_age`.
+    pub fn sweep(&mut self, max_age: std::time::Duration) {
+        let now = std::time::Instant::now();
+        self.behavioral
+            .retain(|_, state| now.duration_since(state.last_seen) < max_age);
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
