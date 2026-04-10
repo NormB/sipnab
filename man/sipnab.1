@@ -1,0 +1,146 @@
+.\" sipnab.1 -- man page for sipnab
+.\" Copyright 2024-2026 Norm Brandinger
+.\" License: GPL-3.0-only
+.TH SIPNAB 1 "2026-04-09" "sipnab 0.1.0" "User Commands"
+.SH NAME
+sipnab \- SIP & RTP capture, analysis, and security tool
+.SH SYNOPSIS
+.B sipnab
+.RB [ \-d
+.IR iface ]
+.RB [ \-I
+.IR file ]
+.RB [ \-N ]
+.RB [ \-\-from
+.IR pattern ]
+.RB [ \-\-to
+.IR pattern ]
+.RB [ \-\-problems ]
+.RB [ \-\-json ]
+.RI [ "bpf filter" ]
+.SH DESCRIPTION
+.B sipnab
+captures and analyzes SIP signaling and RTP media traffic. It unifies the
+capabilities of
+.BR sngrep (1)
+and
+.BR sipgrep (1)
+into a single binary with added security analysis, RTP quality monitoring,
+and machine-readable output.
+.PP
+Three operating modes are available:
+.TP
+.B TUI mode
+(default) Interactive terminal interface with call list, message flow,
+and RTP statistics panels. Requires a terminal.
+.TP
+.B CLI mode
+.RB ( \-N )
+Non-interactive text output suitable for scripting and piping.
+Supports grep-style matching flags
+.RB ( \-i ,
+.BR \-v ,
+.BR \-w ).
+.TP
+.B JSON mode
+.RB ( "\-N \-\-json" )
+One JSON object per SIP message, suitable for ingestion by log
+aggregators and analysis pipelines.
+.SH OPTIONS
+Only the most common flags are listed here. Run
+.B sipnab \-\-help
+for the complete set.
+.TP
+.BI \-d " iface"
+Capture on network interface
+.IR iface .
+.TP
+.BI \-I " file"
+Read packets from a pcap file instead of live capture.
+.TP
+.BI \-O " file"
+Write captured packets to a pcap file.
+.TP
+.B \-N, \-\-no\-tui
+Non-interactive mode. Required for output flags like
+.BR \-\-json ,
+.BR \-\-report ,
+and
+.BR \-\-fail2ban .
+.TP
+.BI \-\-from " pattern"
+Filter by SIP From header (regex).
+.TP
+.BI \-\-to " pattern"
+Filter by SIP To header (regex).
+.TP
+.B \-\-problems
+Show calls with detected problems (retransmits, timeouts, error responses).
+.TP
+.B \-\-json
+Output as JSON, one object per line.
+.TP
+.BI \-\-call\-report " call-id"
+Generate a detailed diagnostic report for a specific Call-ID.
+.TP
+.B \-\-kill\-scanner
+Detect and report SIP scanning activity.
+.TP
+.BI \-l " N"
+Maximum number of dialogs to track (default: 100000).
+.TP
+.BI \-\-quality\-threshold " mos"
+MOS quality threshold for RTP alerts (default: 3.0).
+.TP
+.BI \-f " file"
+Path to configuration file.
+.TP
+.B \-F, \-\-no\-config
+Skip loading any configuration file.
+.TP
+.B \-D, \-\-dump\-config
+Print the effective configuration and exit.
+.SH ENVIRONMENT
+.TP
+.B SIPNAB_LOG
+Log level filter. Accepts
+.BR error ,
+.BR warn ,
+.BR info ,
+.BR debug ,
+.BR trace .
+Uses the
+.BR env_logger (3)
+syntax, e.g.,
+.BR SIPNAB_LOG=debug .
+.TP
+.B SIPNAB_CONFIG
+Path to configuration file. Overridden by
+.BR \-f .
+.SH FILES
+.TP
+.I ~/.config/sipnab/sipnab.toml
+Per-user configuration file.
+.TP
+.I ~/.sipnabrc
+Alternate per-user configuration file.
+.TP
+.I /etc/sipnab/sipnab.toml
+System-wide configuration file.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Runtime error (capture failure, invalid arguments).
+.TP
+.B 2
+Invalid command-line usage.
+.SH LICENSE
+GPL-3.0-only. Copyright 2024-2026 Norm Brandinger.
+.SH SEE ALSO
+.BR sngrep (1),
+.BR tshark (1),
+.BR tcpdump (1),
+.BR pcap (3)
