@@ -17,3 +17,6 @@ pub mod sip;
 
 #[cfg(feature = "tui")]
 pub mod tui;
+
+#[cfg(test)]
+pub mod test_utils;

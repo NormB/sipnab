@@ -707,18 +707,7 @@ mod tests {
         }
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn populate_dialogs(state: &ApiState) {
         let mut ds = state.dialog_store.write();

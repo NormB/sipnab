@@ -282,18 +282,7 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn make_dialog() -> SipDialog {
         let raw = build_sip(

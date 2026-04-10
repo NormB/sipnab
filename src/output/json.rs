@@ -103,6 +103,8 @@ struct StreamJson {
     first_seen: String,
     last_seen: String,
     quality_intervals: Vec<QualityIntervalJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    burst_gap: Option<crate::rtp::quality::BurstGapAnalysis>,
 }
 
 /// JSON representation of a quality interval.
@@ -131,6 +133,8 @@ struct DialogJson {
     method: String,
     msg_count: usize,
     duration_sec: f64,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
     timing: TimingJson,
     sdp_timeline: Vec<SdpExchangeJson>,
     diagnosis: DiagnosisJson,
@@ -243,6 +247,7 @@ pub fn dialog_to_json(
         method: dialog.method.clone(),
         msg_count: dialog.messages.len(),
         duration_sec,
+        tags: dialog.tags.clone(),
         timing,
         sdp_timeline,
         diagnosis: diag,
@@ -299,6 +304,7 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
         first_seen: stream.first_seen.to_rfc3339(),
         last_seen: stream.last_seen.to_rfc3339(),
         quality_intervals: intervals,
+        burst_gap: stream.burst_gap_analysis(),
     }
 }
 
@@ -321,18 +327,7 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn make_invite() -> SipMessage {
         let raw = build_sip(

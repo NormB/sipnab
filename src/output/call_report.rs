@@ -93,6 +93,9 @@ fn generate_text_report(
         other => format!("{other:?}"),
     };
     let _ = writeln!(out, "Result:     {result_str}");
+    if !dialog.tags.is_empty() {
+        let _ = writeln!(out, "Tags:       {}", dialog.tags.join(", "));
+    }
 
     // Timing section
     let _ = writeln!(out);
@@ -144,6 +147,19 @@ fn generate_text_report(
                 "  RTP {from_to} {codec} SSRC=0x{:08x} pkts={} jitter={:.0}ms loss={loss_pct:.1}%",
                 stream.key.ssrc, stream.packet_count, stream.jitter,
             );
+            // Burst/gap analysis for loss pattern characterization
+            if let Some(bg) = stream.burst_gap_analysis() {
+                if bg.is_bursty {
+                    let _ = writeln!(
+                        out,
+                        "    Loss pattern: BURSTY ({} bursts, avg duration {:.0}ms) \
+                         — perceptually worse than random loss",
+                        bg.burst_count, bg.burst_duration_ms,
+                    );
+                } else {
+                    let _ = writeln!(out, "    Loss pattern: random (not bursty)");
+                }
+            }
         }
     }
 
@@ -197,6 +213,9 @@ fn generate_markdown_report(
     );
     let _ = writeln!(out, "| To | {} |", dialog.to_user.as_deref().unwrap_or("-"));
     let _ = writeln!(out, "| State | {:?} |", dialog.state);
+    if !dialog.tags.is_empty() {
+        let _ = writeln!(out, "| Tags | {} |", dialog.tags.join(", "));
+    }
     let _ = writeln!(out);
 
     // Timing
@@ -356,18 +375,7 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn make_dialog_with_messages() -> SipDialog {
         let t0 = base_ts();
