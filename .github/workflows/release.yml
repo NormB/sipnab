@@ -25,10 +25,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
-          - target: aarch64-unknown-linux-musl
+            cross: false
+          - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
           - target: x86_64-apple-darwin
@@ -72,7 +72,12 @@ jobs:
         run: |
           mkdir -p dist
           cp target/${{ matrix.target }}/release/sipnab dist/sipnab-${{ matrix.target }}
-          cd dist && sha256sum sipnab-${{ matrix.target }} > sipnab-${{ matrix.target }}.sha256
+          cd dist
+          if command -v sha256sum &> /dev/null; then
+            sha256sum sipnab-${{ matrix.target }} > sipnab-${{ matrix.target }}.sha256
+          else
+            shasum -a 256 sipnab-${{ matrix.target }} > sipnab-${{ matrix.target }}.sha256
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
