@@ -40,12 +40,26 @@ impl PcapWriter {
     ///
     /// The file is created immediately with the specified link-layer type.
     /// Rotation parameters are optional; pass `None` to disable automatic rotation.
+    ///
+    /// Warns if the path contains `..` components, which may indicate path
+    /// traversal. The file is still opened (user may have legitimate reasons).
     pub fn new(
         path: &Path,
         link_type: i32,
         max_file_bytes: Option<u64>,
         max_file_duration: Option<std::time::Duration>,
     ) -> Result<Self> {
+        // M5: Warn on path traversal components
+        if path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            log::warn!(
+                "Output path '{}' contains '..' components — verify this is intentional",
+                path.display()
+            );
+        }
+
         let linktype = pcap::Linktype(link_type);
         let savefile = create_savefile(path, linktype)?;
 

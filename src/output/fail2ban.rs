@@ -5,6 +5,14 @@
 
 use chrono::Local;
 
+/// Sanitize a value for safe inclusion in log lines.
+///
+/// Replaces `\r` and `\n` with spaces to prevent CRLF log injection attacks
+/// where attacker-controlled SIP header values could forge log entries.
+fn sanitize_log_value(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
+}
+
 /// Format a SIP scanner detection event for fail2ban log parsing.
 ///
 /// Output format:
@@ -13,10 +21,13 @@ use chrono::Local;
 /// ```
 ///
 /// The PID is obtained from the current process for log correlation.
+/// Attacker-controlled values (UA, method) are sanitized to prevent CRLF injection.
 pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
-    format!("{now} sipnab[{pid}]: scanner_detected src={src_ip} ua={ua} method={method}")
+    let safe_ua = sanitize_log_value(ua);
+    let safe_method = sanitize_log_value(method);
+    format!("{now} sipnab[{pid}]: scanner_detected src={src_ip} ua={safe_ua} method={safe_method}")
 }
 
 /// Format a registration flood detection event for fail2ban log parsing.

@@ -163,10 +163,10 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
     // IP-in-IP (protocol 4) or GRE (protocol 47) — strip and re-parse
     if ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
         // IP-in-IP encapsulation: inner packet is IPv4
-        return parse_inner_ip(packet.timestamp, ip_payload.payload);
+        return parse_inner_ip(packet.timestamp, ip_payload.payload, 0);
     }
     if ip_number == IpNumber::GRE && !ip_payload.fragmented {
-        return parse_gre(packet.timestamp, ip_payload.payload);
+        return parse_gre(packet.timestamp, ip_payload.payload, 0);
     }
 
     // Normal (non-encapsulated) packet — extract fields
@@ -175,8 +175,18 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
 
 // ── Encapsulation helpers ─────────────────────────────────────────────
 
+/// Maximum encapsulation recursion depth to prevent stack exhaustion.
+const MAX_ENCAP_DEPTH: u8 = 5;
+
 /// Parse an inner IP packet (from IP-in-IP or after GRE stripping).
-fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8]) -> Result<ParsedPacket> {
+///
+/// The `depth` parameter tracks recursion depth to prevent stack exhaustion
+/// from maliciously crafted packets with deeply nested encapsulation.
+fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8], depth: u8) -> Result<ParsedPacket> {
+    if depth > MAX_ENCAP_DEPTH {
+        anyhow::bail!("IP-in-IP encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
+    }
+
     let sliced = SlicedPacket::from_ip(ip_data).context("Failed to parse inner IP packet")?;
 
     let net = sliced
@@ -190,10 +200,10 @@ fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8]) -> Result<ParsedPack
         .context("No IP payload in inner packet")?;
 
     if ip_payload.ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
-        return parse_inner_ip(timestamp, ip_payload.payload);
+        return parse_inner_ip(timestamp, ip_payload.payload, depth + 1);
     }
     if ip_payload.ip_number == IpNumber::GRE && !ip_payload.fragmented {
-        return parse_gre(timestamp, ip_payload.payload);
+        return parse_gre(timestamp, ip_payload.payload, depth + 1);
     }
 
     extract_parsed_packet(timestamp, net, &sliced.transport)
@@ -203,7 +213,10 @@ fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8]) -> Result<ParsedPack
 ///
 /// Strips the GRE header (variable length based on flags) and re-parses
 /// the inner IP packet.
-fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8]) -> Result<ParsedPacket> {
+fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8], depth: u8) -> Result<ParsedPacket> {
+    if depth > MAX_ENCAP_DEPTH {
+        anyhow::bail!("GRE encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
+    }
     if gre_data.len() < GRE_HEADER_MIN {
         anyhow::bail!(
             "GRE header too short ({} bytes, need at least {GRE_HEADER_MIN})",
@@ -236,7 +249,7 @@ fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8]) -> Result<ParsedPacket> 
     let inner = &gre_data[offset..];
 
     match protocol {
-        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => parse_inner_ip(timestamp, inner),
+        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => parse_inner_ip(timestamp, inner, depth),
         _ => anyhow::bail!("Unsupported GRE inner protocol: 0x{protocol:04X}"),
     }
 }

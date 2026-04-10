@@ -84,6 +84,17 @@ struct TlsSession {
     client_addr: Option<IpAddr>,
 }
 
+impl Drop for TlsSession {
+    fn drop(&mut self) {
+        // Zeroize key material on drop to prevent key leakage via memory.
+        use zeroize::Zeroize;
+        self.client_write_key.zeroize();
+        self.server_write_key.zeroize();
+        self.client_write_iv.zeroize();
+        self.server_write_iv.zeroize();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TLS 1.3 HKDF-Expand-Label
 // ---------------------------------------------------------------------------

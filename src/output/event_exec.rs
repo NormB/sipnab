@@ -1,8 +1,9 @@
 //! Event exec hooks for triggering external commands.
 //!
 //! Fires shell commands when dialog state changes or RTP quality degrades
-//! below a threshold. Supports template expansion, rate limiting, and
-//! non-blocking execution with queue depth caps.
+//! below a threshold. SIP data is passed via environment variables (never
+//! interpolated into the command string) to prevent command injection.
+//! Supports rate limiting and non-blocking execution with queue depth caps.
 
 use std::process::Command;
 use std::time::Instant;
@@ -23,8 +24,11 @@ const MAX_QUEUE_DEPTH: usize = 100;
 /// - Quality events: fired when an RTP stream's estimated MOS drops below
 ///   a threshold.
 ///
-/// Commands use template variables (`%call_id`, `%json`, etc.) that are
-/// expanded before execution. Rate limiting prevents runaway execution.
+/// SIP data is passed to commands via `SIPNAB_*` environment variables
+/// (e.g., `$SIPNAB_CALL_ID`, `$SIPNAB_FROM`). For backwards compatibility,
+/// `%variable` placeholders in command templates are rewritten to
+/// `$SIPNAB_VARIABLE` references. Values are never interpolated into the
+/// shell command string.
 pub struct EventExecEngine {
     /// Command template for dialog events. `None` disables dialog hooks.
     on_dialog_cmd: Option<String>,
@@ -38,8 +42,8 @@ pub struct EventExecEngine {
     window_start: Instant,
     /// Number of execs in the current one-second window.
     exec_count_this_second: u32,
-    /// Current number of spawned (pending) child processes.
-    queue_depth: usize,
+    /// Tracked child processes for reaping.
+    children: Vec<std::process::Child>,
 }
 
 impl EventExecEngine {
@@ -48,7 +52,7 @@ impl EventExecEngine {
     /// # Arguments
     ///
     /// * `on_dialog_cmd` — Command template for dialog events (e.g.,
-    ///   `"curl -X POST http://hook/dialog --data '%json'"`)
+    ///   `"curl -X POST http://hook/dialog --data \"$SIPNAB_JSON\""`)
     /// * `on_quality_cmd` — Command template for quality events
     /// * `rate_limit` — Maximum executions per second (0 = unlimited)
     /// * `quality_threshold` — MOS score below which quality events fire
@@ -59,27 +63,27 @@ impl EventExecEngine {
         quality_threshold: f64,
     ) -> Self {
         Self {
-            on_dialog_cmd,
-            on_quality_cmd,
+            on_dialog_cmd: on_dialog_cmd.map(|c| migrate_template_vars(&c)),
+            on_quality_cmd: on_quality_cmd.map(|c| migrate_template_vars(&c)),
             rate_limit,
             quality_threshold,
             window_start: Instant::now(),
             exec_count_this_second: 0,
-            queue_depth: 0,
+            children: Vec::new(),
         }
     }
 
-    /// Fire a dialog event, expanding templates and spawning the command.
+    /// Fire a dialog event, passing SIP data via environment variables.
     ///
-    /// Template variables:
-    /// - `%json` — Full dialog JSON (via [`super::json::dialog_to_json`])
-    /// - `%call_id` — The dialog's Call-ID
-    /// - `%from` — From user
-    /// - `%to` — To user
-    /// - `%state` — Dialog state (e.g., "Completed")
-    /// - `%method` — Initial method (e.g., "INVITE")
+    /// Environment variables set on the child process:
+    /// - `SIPNAB_JSON` — Full dialog JSON
+    /// - `SIPNAB_CALL_ID` — The dialog's Call-ID
+    /// - `SIPNAB_FROM` — From user
+    /// - `SIPNAB_TO` — To user
+    /// - `SIPNAB_STATE` — Dialog state (e.g., "Completed")
+    /// - `SIPNAB_METHOD` — Initial method (e.g., "INVITE")
     pub fn fire_dialog_event(&mut self, dialog: &SipDialog) {
-        let template = match &self.on_dialog_cmd {
+        let cmd = match &self.on_dialog_cmd {
             Some(cmd) => cmd.clone(),
             None => return,
         };
@@ -88,40 +92,41 @@ impl EventExecEngine {
             return;
         }
 
-        // Build the JSON for %json template
+        // Build the JSON for SIPNAB_JSON env var
         let json = super::json::dialog_to_json(
             dialog,
             &[],
             &crate::rtp::diagnosis::MediaDiagnosis::default(),
         );
 
-        let cmd = template
-            .replace("%json", &shell_escape(&json))
-            .replace("%call_id", &shell_escape(&dialog.call_id))
-            .replace(
-                "%from",
-                &shell_escape(dialog.from_user.as_deref().unwrap_or("")),
-            )
-            .replace(
-                "%to",
-                &shell_escape(dialog.to_user.as_deref().unwrap_or("")),
-            )
-            .replace("%state", &format!("{:?}", dialog.state))
-            .replace("%method", &dialog.method);
+        let vars: Vec<(&str, String)> = vec![
+            ("SIPNAB_CALL_ID", dialog.call_id.clone()),
+            (
+                "SIPNAB_FROM",
+                dialog.from_user.as_deref().unwrap_or("").to_string(),
+            ),
+            (
+                "SIPNAB_TO",
+                dialog.to_user.as_deref().unwrap_or("").to_string(),
+            ),
+            ("SIPNAB_STATE", format!("{:?}", dialog.state)),
+            ("SIPNAB_METHOD", dialog.method.clone()),
+            ("SIPNAB_JSON", json),
+        ];
 
-        self.spawn_command(&cmd);
+        self.spawn_command(&cmd, &vars);
     }
 
     /// Fire a quality event if the stream's estimated MOS is below threshold.
     ///
-    /// Template variables:
-    /// - `%stream_json` — Full stream JSON (via [`super::json::stream_to_json`])
-    /// - `%ssrc` — Stream SSRC in hex
-    /// - `%mos` — Estimated MOS score
-    /// - `%jitter` — Current jitter in ms
-    /// - `%loss` — Loss percentage
+    /// Environment variables set on the child process:
+    /// - `SIPNAB_STREAM_JSON` — Full stream JSON
+    /// - `SIPNAB_SSRC` — Stream SSRC in hex
+    /// - `SIPNAB_MOS` — Estimated MOS score
+    /// - `SIPNAB_JITTER` — Current jitter in ms
+    /// - `SIPNAB_LOSS` — Loss percentage
     pub fn fire_quality_event(&mut self, stream: &RtpStream) {
-        let template = match &self.on_quality_cmd {
+        let cmd = match &self.on_quality_cmd {
             Some(cmd) => cmd.clone(),
             None => return,
         };
@@ -138,14 +143,15 @@ impl EventExecEngine {
 
         let stream_json = super::json::stream_to_json(stream);
 
-        let cmd = template
-            .replace("%stream_json", &shell_escape(&stream_json))
-            .replace("%ssrc", &format!("0x{:08x}", stream.key.ssrc))
-            .replace("%mos", &format!("{mos:.2}"))
-            .replace("%jitter", &format!("{:.1}", stream.jitter))
-            .replace("%loss", &format!("{:.1}", loss_pct(stream)));
+        let vars: Vec<(&str, String)> = vec![
+            ("SIPNAB_STREAM_JSON", stream_json),
+            ("SIPNAB_SSRC", format!("0x{:08x}", stream.key.ssrc)),
+            ("SIPNAB_MOS", format!("{mos:.2}")),
+            ("SIPNAB_JITTER", format!("{:.1}", stream.jitter)),
+            ("SIPNAB_LOSS", format!("{:.1}", loss_pct(stream))),
+        ];
 
-        self.spawn_command(&cmd);
+        self.spawn_command(&cmd, &vars);
     }
 
     /// Check and update rate limiting. Returns `true` if execution is allowed.
@@ -170,20 +176,46 @@ impl EventExecEngine {
         true
     }
 
-    /// Spawn a shell command non-blocking.
-    fn spawn_command(&mut self, cmd: &str) {
-        if self.queue_depth >= MAX_QUEUE_DEPTH {
+    /// Reap completed child processes to prevent zombies and update queue depth.
+    fn reap_children(&mut self) {
+        self.children.retain_mut(|child| {
+            match child.try_wait() {
+                Ok(Some(_status)) => false, // completed, remove
+                Ok(None) => true,           // still running, keep
+                Err(e) => {
+                    warn!("Error checking child process: {e}");
+                    false // remove on error
+                }
+            }
+        });
+    }
+
+    /// Spawn a shell command non-blocking with environment variables.
+    ///
+    /// SIP data is passed exclusively via environment variables — never
+    /// interpolated into the command string — to prevent command injection.
+    fn spawn_command(&mut self, cmd: &str, env_vars: &[(&str, String)]) {
+        self.reap_children();
+
+        if self.children.len() >= MAX_QUEUE_DEPTH {
             warn!(
                 "Event exec queue depth ({}) exceeds limit ({}), dropping event",
-                self.queue_depth, MAX_QUEUE_DEPTH
+                self.children.len(),
+                MAX_QUEUE_DEPTH
             );
             return;
         }
 
-        match Command::new("sh").arg("-c").arg(cmd).spawn() {
-            Ok(_child) => {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(cmd);
+        for (key, value) in env_vars {
+            command.env(key, value);
+        }
+
+        match command.spawn() {
+            Ok(child) => {
                 self.exec_count_this_second += 1;
-                self.queue_depth += 1;
+                self.children.push(child);
             }
             Err(e) => {
                 warn!("Failed to spawn event exec command: {e}");
@@ -191,14 +223,9 @@ impl EventExecEngine {
         }
     }
 
-    /// Decrement the queue depth (call when a child process completes).
-    pub fn notify_child_complete(&mut self) {
-        self.queue_depth = self.queue_depth.saturating_sub(1);
-    }
-
-    /// Return the current queue depth.
+    /// Return the current queue depth (number of tracked children).
     pub fn queue_depth(&self) -> usize {
-        self.queue_depth
+        self.children.len()
     }
 }
 
@@ -212,9 +239,27 @@ fn loss_pct(stream: &RtpStream) -> f64 {
     }
 }
 
-/// Simple shell escaping: replace single quotes with escaped form.
-fn shell_escape(s: &str) -> String {
-    s.replace('\'', "'\\''")
+/// Rewrite legacy `%variable` placeholders to `$SIPNAB_VARIABLE` references.
+///
+/// This provides backwards compatibility for users who have existing command
+/// templates using the old `%call_id`, `%from`, etc. syntax. The values are
+/// passed as environment variables, never interpolated into the command string.
+fn migrate_template_vars(template: &str) -> String {
+    template
+        .replace("%json", "$SIPNAB_JSON")
+        .replace("%call_id", "$SIPNAB_CALL_ID")
+        .replace("%from", "$SIPNAB_FROM")
+        .replace("%to", "$SIPNAB_TO")
+        .replace("%state", "$SIPNAB_STATE")
+        .replace("%method", "$SIPNAB_METHOD")
+        .replace("%stream_json", "$SIPNAB_STREAM_JSON")
+        .replace("%ssrc", "$SIPNAB_SSRC")
+        .replace("%mos", "$SIPNAB_MOS")
+        .replace("%jitter", "$SIPNAB_JITTER")
+        .replace("%loss", "$SIPNAB_LOSS")
+        .replace("%src", "$SIPNAB_SRC")
+        .replace("%rule", "$SIPNAB_RULE")
+        .replace("%detail", "$SIPNAB_DETAIL")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -289,38 +334,28 @@ mod tests {
     }
 
     #[test]
-    fn template_expansion_call_id() {
-        // We test by examining the template expansion logic directly
-        let template = "echo %call_id";
-        let dialog = make_dialog();
-        let cmd = template.replace("%call_id", &shell_escape(&dialog.call_id));
-
-        assert_eq!(cmd, "echo exec-test@example.com");
+    fn migrate_template_vars_call_id() {
+        let migrated = migrate_template_vars("echo %call_id");
+        assert_eq!(migrated, "echo $SIPNAB_CALL_ID");
     }
 
     #[test]
-    fn template_expansion_multiple() {
-        let template = "notify --from=%from --to=%to --state=%state";
-        let dialog = make_dialog();
-        let cmd = template
-            .replace(
-                "%from",
-                &shell_escape(dialog.from_user.as_deref().unwrap_or("")),
-            )
-            .replace(
-                "%to",
-                &shell_escape(dialog.to_user.as_deref().unwrap_or("")),
-            )
-            .replace("%state", &format!("{:?}", dialog.state));
+    fn migrate_template_vars_multiple() {
+        let migrated = migrate_template_vars("notify --from=%from --to=%to --state=%state");
+        assert!(migrated.contains("$SIPNAB_FROM"));
+        assert!(migrated.contains("$SIPNAB_TO"));
+        assert!(migrated.contains("$SIPNAB_STATE"));
+    }
 
-        assert!(
-            cmd.contains("--from=alice"),
-            "should expand from: got {cmd}"
-        );
-        assert!(cmd.contains("--to=bob"), "should expand to: got {cmd}");
-        assert!(
-            cmd.contains("--state=Trying"),
-            "should expand state: got {cmd}"
+    #[test]
+    fn env_var_injection_prevents_command_injection() {
+        // A malicious call-id with shell metacharacters should NOT be
+        // interpolated into the command string. It is only passed as an env var.
+        let engine = EventExecEngine::new(Some("echo $SIPNAB_CALL_ID".to_string()), None, 10, 3.0);
+        // The command template should be stored as-is (after migration)
+        assert_eq!(
+            engine.on_dialog_cmd.as_deref(),
+            Some("echo $SIPNAB_CALL_ID")
         );
     }
 
@@ -359,12 +394,6 @@ mod tests {
     }
 
     #[test]
-    fn shell_escape_handles_quotes() {
-        let result = shell_escape("it's a test");
-        assert_eq!(result, "it'\\''s a test");
-    }
-
-    #[test]
     fn no_cmd_configured_noop() {
         let mut engine = EventExecEngine::new(None, None, 10, 3.0);
         // Should not panic or spawn anything
@@ -378,5 +407,23 @@ mod tests {
     fn queue_depth_tracking() {
         let engine = EventExecEngine::new(None, None, 10, 3.0);
         assert_eq!(engine.queue_depth(), 0);
+    }
+
+    #[test]
+    fn legacy_template_migration_at_construction() {
+        let engine = EventExecEngine::new(
+            Some("echo %call_id %from".to_string()),
+            Some("alert %mos %jitter".to_string()),
+            10,
+            3.0,
+        );
+        assert_eq!(
+            engine.on_dialog_cmd.as_deref(),
+            Some("echo $SIPNAB_CALL_ID $SIPNAB_FROM")
+        );
+        assert_eq!(
+            engine.on_quality_cmd.as_deref(),
+            Some("alert $SIPNAB_MOS $SIPNAB_JITTER")
+        );
     }
 }

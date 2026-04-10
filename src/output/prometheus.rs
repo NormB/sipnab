@@ -212,9 +212,27 @@ fn format_labeled_counter(
 
     for key in keys {
         let val = values[key];
-        let _ = writeln!(out, "{name}{{{label}=\"{key}\"}} {val}");
+        let escaped_key = escape_label_value(key);
+        let _ = writeln!(out, "{name}{{{label}=\"{escaped_key}\"}} {val}");
     }
     out.push('\n');
+}
+
+/// Escape a label value for Prometheus exposition format.
+///
+/// Replaces `\` with `\\`, `"` with `\"`, and `\n` with `\\n` as required
+/// by the Prometheus exposition format specification.
+fn escape_label_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// Format a histogram with cumulative buckets, `_count`, and `_sum`.
