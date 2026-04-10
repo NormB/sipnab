@@ -28,7 +28,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
@@ -66,10 +66,17 @@ pub enum View {
     },
     /// Keybinding help overlay.
     Help,
-    /// Filter input dialog.
-    FilterDialog,
     /// Statistics summary view.
     Statistics,
+}
+
+/// Modal popup dialogs that overlay the current view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Popup {
+    /// Save capture popup with editable file path.
+    SaveDialog,
+    /// Filter expression input popup.
+    FilterDialog,
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -82,6 +89,8 @@ pub struct App {
     stream_store: Arc<RwLock<StreamStore>>,
     /// Currently active view.
     current_view: View,
+    /// Active modal popup overlay (rendered on top of the current view).
+    active_popup: Option<Popup>,
     /// State for the call list table.
     call_list: CallListState,
     /// State for the stream list table.
@@ -90,7 +99,7 @@ pub struct App {
     should_quit: bool,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
-    /// Filter input buffer (for FilterDialog view).
+    /// Filter input buffer (for filter popup).
     filter_input: String,
     /// Active filter expression (applied to the call list).
     active_filter: Option<FilterExpr>,
@@ -117,6 +126,16 @@ pub struct App {
     /// Call flow line cache: `(call_id, msg_count) -> formatted lines`.
     /// Invalidated when the dialog's message count changes.
     call_flow_cache: HashMap<String, (usize, Vec<Line<'static>>)>,
+    /// Save dialog file path input.
+    save_path: String,
+    /// Cursor position within the save path string.
+    save_cursor: usize,
+    /// Cached message/dialog counts for the save dialog display.
+    save_dialog_count: usize,
+    /// Cached selected dialog count for the save dialog display.
+    save_selected_count: usize,
+    /// Cached total message count for the save dialog display.
+    save_message_count: usize,
 }
 
 impl App {
@@ -129,6 +148,7 @@ impl App {
             dialog_store,
             stream_store,
             current_view: View::CallList,
+            active_popup: None,
             call_list: CallListState::new(),
             stream_list: StreamListState::new(),
             should_quit: false,
@@ -146,6 +166,11 @@ impl App {
             cached_dialog_count: 0,
             cached_displayed_count: 0,
             call_flow_cache: HashMap::new(),
+            save_path: String::new(),
+            save_cursor: 0,
+            save_dialog_count: 0,
+            save_selected_count: 0,
+            save_message_count: 0,
         }
     }
 
@@ -369,16 +394,25 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         View::Help => {
             help::render_help(frame, main_area);
         }
-        View::FilterDialog => {
-            render_filter_dialog(frame, main_area, &app.filter_input);
-        }
         View::Statistics => {
             render_statistics(frame, main_area, app);
         }
     }
 
     // F-key bar (sngrep-style, context-sensitive) at bottom
-    render_fkey_bar(frame, fkey_area, &app.current_view);
+    render_fkey_bar(frame, fkey_area, &app.current_view, &app.active_popup);
+
+    // Render popup overlay on top of everything (if active)
+    if let Some(popup) = &app.active_popup.clone() {
+        match popup {
+            Popup::SaveDialog => {
+                render_save_popup(frame, area, app);
+            }
+            Popup::FilterDialog => {
+                render_filter_popup(frame, area, &app.filter_input);
+            }
+        }
+    }
 }
 
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
@@ -483,7 +517,7 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 /// Key names in bold white, labels in default. Full-width dark background.
 /// The bar is context-sensitive based on the current view. On narrow
 /// terminals, lower-priority items are dropped to avoid truncation.
-fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
+fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &Option<Popup>) {
     let key_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
@@ -492,7 +526,16 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
     let width = area.width;
 
     // Full item sets per view; items near the end are lower priority.
-    let items: Vec<(&str, &str)> = match view {
+    // Popup-specific bars take precedence.
+    let items: Vec<(&str, &str)> = if let Some(p) = popup {
+        match p {
+            Popup::SaveDialog => vec![("Enter", "Save"), ("Esc", "Cancel")],
+            Popup::FilterDialog => {
+                vec![("Enter", "Apply"), ("Esc", "Cancel"), ("F9", "Clear")]
+            }
+        }
+    } else {
+        match view {
         View::CallList => {
             if width < 80 {
                 vec![
@@ -543,6 +586,7 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
         View::RawMessage { .. } => vec![("Esc", "Back"), ("F2", "Save")],
         View::StreamList => vec![("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
         _ => vec![("Esc", "Back")],
+    }
     };
 
     let mut spans: Vec<Span> = Vec::new();
@@ -564,23 +608,163 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
     frame.render_widget(bar, area);
 }
 
-/// Render the filter dialog input view.
-fn render_filter_dialog(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, input: &str) {
+// ── Popup rendering ────────────────────────────────────────────────
+
+/// Compute a centered popup rectangle within the given area.
+fn centered_popup(area: Rect, width: u16, height: u16) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    Rect::new(x, y, w, h)
+}
+
+/// Render the save dialog as a centered popup overlay.
+fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let popup_area = centered_popup(area, 60, 12);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Filter Expression (F7) ");
+        .title(" Save Capture ")
+        .style(Style::default().bg(Color::Black));
 
-    let text = if input.is_empty() {
-        "Enter filter expression (e.g., method == 'INVITE', state == 'Failed')\n\nPress Enter to apply, Esc to cancel"
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Build popup content lines
+    let path_label = format!("  Save to: {}", app.save_path);
+    let dialog_info = format!(
+        "  Dialogs: {} ({} selected)",
+        app.save_dialog_count, app.save_selected_count
+    );
+    let msg_info = format!("  Messages: {}", app.save_message_count);
+
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Save to: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                app.save_path.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            dialog_info,
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            msg_info,
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  [Enter]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Save  "),
+            Span::styled(
+                "[Esc]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel"),
+        ]),
+    ];
+
+    // Ensure we don't exceed the inner area height
+    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
+    frame.render_widget(para, inner);
+
+    // Drop the unused binding (kept for clarity of what info is available)
+    let _ = path_label;
+}
+
+/// Render the filter dialog as a centered popup overlay.
+fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, input: &str) {
+    let popup_area = centered_popup(area, 60, 12);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Filter ")
+        .style(Style::default().bg(Color::Black));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let expr_display = if input.is_empty() {
+        Span::styled(
+            "method == 'INVITE'",
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC),
+        )
     } else {
-        input
+        Span::styled(
+            input.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
     };
 
-    let paragraph = Paragraph::new(text)
-        .block(block)
-        .style(Style::default().fg(Color::White));
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Expression: ", Style::default().fg(Color::Cyan)),
+            expr_display,
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Examples: method == 'INVITE', state == 'Failed'",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(Span::styled(
+            "            from =~ '1001', to =~ 'bob'",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  [Enter]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Apply  "),
+            Span::styled(
+                "[Esc]",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Cancel  "),
+            Span::styled(
+                "[F9]",
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Clear"),
+        ]),
+    ];
 
-    frame.render_widget(paragraph, area);
+    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
+    frame.render_widget(para, inner);
 }
 
 /// Render the statistics summary view with real data from stores.
@@ -672,6 +856,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Popup input takes priority over everything else
+    if app.active_popup.is_some() {
+        handle_popup_key(app, key);
+        return;
+    }
+
     // Search mode input
     if app.search_active {
         handle_search_input(app, key);
@@ -684,7 +874,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         View::CallFlow(_) => handle_call_flow_key(app, key),
         View::RawMessage { .. } => handle_raw_message_key(app, key),
         View::Help => handle_help_key(app, key),
-        View::FilterDialog => handle_filter_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
     }
 }
@@ -741,11 +930,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::F(1) => app.current_view = View::Help,
         KeyCode::F(2) => {
-            // Save: if a dialog is selected, save just that dialog;
-            // otherwise save all dialogs.
-            let selected_call_id = get_selected_call_id(app);
-            let msg = save_to_pcap(app, selected_call_id.as_deref());
-            app.status_error = Some(msg);
+            open_save_popup(app);
         }
         KeyCode::F(3) => {
             // F3 Search — same as '/' search
@@ -770,7 +955,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 app.status_error = None;
             } else {
                 app.filter_input.clear();
-                app.current_view = View::FilterDialog;
+                app.active_popup = Some(Popup::FilterDialog);
             }
         }
         KeyCode::F(8) => {
@@ -815,7 +1000,7 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
                 app.status_error = None;
             } else {
                 app.filter_input.clear();
-                app.current_view = View::FilterDialog;
+                app.active_popup = Some(Popup::FilterDialog);
             }
         }
         KeyCode::Esc => app.current_view = View::CallList,
@@ -863,11 +1048,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::F(1) => app.current_view = View::Help,
         KeyCode::F(2) => {
-            if let View::CallFlow(ref call_id) = app.current_view {
-                let cid = call_id.clone();
-                let msg = save_to_pcap(app, Some(&cid));
-                app.status_error = Some(msg);
-            }
+            open_save_popup(app);
         }
         KeyCode::F(5) => {
             app.status_error = Some("Compare not yet implemented".to_string());
@@ -879,7 +1060,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 app.status_error = None;
             } else {
                 app.filter_input.clear();
-                app.current_view = View::FilterDialog;
+                app.active_popup = Some(Popup::FilterDialog);
             }
         }
         KeyCode::F(9) => {
@@ -920,11 +1101,7 @@ fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::F(1) => app.current_view = View::Help,
         KeyCode::F(2) => {
-            if let View::RawMessage { ref call_id, .. } = app.current_view {
-                let cid = call_id.clone();
-                let msg = save_to_pcap(app, Some(&cid));
-                app.status_error = Some(msg);
-            }
+            open_save_popup(app);
         }
         _ => {}
     }
@@ -940,12 +1117,83 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle keys in the filter dialog.
-fn handle_filter_key(app: &mut App, key: KeyEvent) {
+/// Open the save popup, pre-populating path and counts.
+fn open_save_popup(app: &mut App) {
+    // Generate default path with timestamp
+    let now = chrono::Local::now();
+    let default_path = format!("/tmp/sipnab_{}.pcap", now.format("%Y%m%d_%H%M%S"));
+    app.save_path = default_path;
+    app.save_cursor = app.save_path.len();
+
+    // Cache counts for display
+    let store = app.dialog_store.read();
+    app.save_dialog_count = store.len();
+    app.save_selected_count = app.call_list.selected_rows_count();
+    app.save_message_count = store.iter().map(|d| d.messages.len()).sum();
+    drop(store);
+
+    app.active_popup = Some(Popup::SaveDialog);
+}
+
+/// Handle keys for any active popup dialog.
+fn handle_popup_key(app: &mut App, key: KeyEvent) {
+    let popup = match &app.active_popup {
+        Some(p) => p.clone(),
+        None => return,
+    };
+
+    match popup {
+        Popup::SaveDialog => handle_save_popup_key(app, key),
+        Popup::FilterDialog => handle_filter_popup_key(app, key),
+    }
+}
+
+/// Handle keys in the save dialog popup.
+fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_popup = None;
+        }
+        KeyCode::Enter => {
+            let path = app.save_path.clone();
+            let msg = save_to_pcap_path(app, &path);
+            app.status_error = Some(msg);
+            app.active_popup = None;
+        }
+        KeyCode::Backspace => {
+            if app.save_cursor > 0 {
+                app.save_cursor -= 1;
+                app.save_path.remove(app.save_cursor);
+            }
+        }
+        KeyCode::Left => {
+            app.save_cursor = app.save_cursor.saturating_sub(1);
+        }
+        KeyCode::Right => {
+            if app.save_cursor < app.save_path.len() {
+                app.save_cursor += 1;
+            }
+        }
+        KeyCode::Home => {
+            app.save_cursor = 0;
+        }
+        KeyCode::End => {
+            app.save_cursor = app.save_path.len();
+        }
+        KeyCode::Char(c) => {
+            app.save_path.insert(app.save_cursor, c);
+            app.save_cursor += 1;
+        }
+        _ => {}
+    }
+}
+
+/// Handle keys in the filter dialog popup.
+fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
             // Cancel without applying
-            app.current_view = View::CallList;
+            app.active_popup = None;
         }
         KeyCode::Enter => {
             let input = app.filter_input.trim().to_string();
@@ -966,7 +1214,15 @@ fn handle_filter_key(app: &mut App, key: KeyEvent) {
                     }
                 }
             }
-            app.current_view = View::CallList;
+            app.active_popup = None;
+        }
+        KeyCode::F(9) => {
+            // F9 clears filter and closes popup
+            app.active_filter = None;
+            app.active_filter_text.clear();
+            app.filter_input.clear();
+            app.status_error = None;
+            app.active_popup = None;
         }
         KeyCode::Backspace => {
             app.filter_input.pop();
@@ -1021,23 +1277,6 @@ fn filtered_dialog_count(app: &App) -> usize {
 
 // ── Save functionality ─────────────────────────────────────────────
 
-/// Choose a non-colliding output path. If `sipnab_save.pcap` exists, try
-/// `sipnab_save_1.pcap`, `sipnab_save_2.pcap`, etc.
-fn choose_save_path() -> PathBuf {
-    let base = PathBuf::from("sipnab_save.pcap");
-    if !base.exists() {
-        return base;
-    }
-    for i in 1..1000 {
-        let candidate = PathBuf::from(format!("sipnab_save_{i}.pcap"));
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-    // Fallback — overwrite
-    base
-}
-
 /// Build a synthetic Ethernet + IPv4 + UDP packet from a SIP message's raw bytes.
 ///
 /// The link-layer type is DLT_EN10MB (1). IP addresses and ports come from
@@ -1084,21 +1323,14 @@ fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packe
     crate::capture::Packet::new(msg.timestamp, pkt, len, len, None, 1) // DLT_EN10MB
 }
 
-/// Save dialogs to a pcap file. If `call_id` is `Some`, save only that dialog;
-/// otherwise save all dialogs.
-fn save_to_pcap(app: &App, call_id: Option<&str>) -> String {
-    let path = choose_save_path();
+/// Save all dialogs to the specified pcap file path.
+fn save_to_pcap_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
 
-    // Collect messages
-    let messages: Vec<&crate::sip::SipMessage> = if let Some(cid) = call_id {
-        store
-            .get(cid)
-            .map(|d| d.messages.iter().collect())
-            .unwrap_or_default()
-    } else {
-        store.iter().flat_map(|d| d.messages.iter()).collect()
-    };
+    // Collect all messages across all dialogs
+    let messages: Vec<&crate::sip::SipMessage> =
+        store.iter().flat_map(|d| d.messages.iter()).collect();
 
     if messages.is_empty() {
         return "No messages to save".to_string();
@@ -1163,6 +1395,11 @@ impl App {
         &self.current_view
     }
 
+    /// Return the active popup, if any.
+    pub fn active_popup(&self) -> Option<&Popup> {
+        self.active_popup.as_ref()
+    }
+
     /// Return whether the quit flag is set.
     pub fn should_quit(&self) -> bool {
         self.should_quit
@@ -1171,6 +1408,12 @@ impl App {
     /// Count dialogs visible after applying the active filter.
     pub fn visible_dialog_count(&self) -> usize {
         filtered_dialog_count(self)
+    }
+
+    /// Override the save dialog path (for deterministic snapshot tests).
+    pub fn set_save_path(&mut self, path: &str) {
+        self.save_path = path.to_string();
+        self.save_cursor = path.len();
     }
 
     /// Render the full application frame into the given frame (for snapshot tests).
