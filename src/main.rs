@@ -19,9 +19,11 @@ use sipnab::cli::Cli;
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
 use sipnab::privilege;
+use sipnab::process_isolation::{self, KillRequest, ScannerKillHandle};
 use sipnab::rtp::{self, parser::parse_rtp_header, rtcp::parse_rtcp, stream_store::StreamStore};
 use sipnab::security::{
-    AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector, ScannerDetector,
+    self as sec, AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector,
+    ScannerDetector,
 };
 use sipnab::signals;
 use sipnab::sip::{self, dialog_store::DialogStore, dsl::FilterExpr, matcher::SipMatcher};
@@ -451,8 +453,8 @@ fn run_batch_mode(
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
     // 17a. Initialize security detectors
-    let mut scanner_detector = if cli.kill_scanner || config.security.kill_scanner.unwrap_or(false)
-    {
+    let kill_scanner_active = cli.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+    let mut scanner_detector = if kill_scanner_active {
         let custom = cli
             .kill_ua
             .as_deref()
@@ -462,6 +464,14 @@ fn run_batch_mode(
     } else {
         None
     };
+
+    // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
+    let mut scanner_kill_handle: Option<ScannerKillHandle> = if kill_scanner_active {
+        Some(process_isolation::spawn_scanner_kill_worker(None))
+    } else {
+        None
+    };
+    let kill_response_code = cli.kill_response;
 
     let mut fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
         Some(FraudDetector::new(None))
@@ -635,6 +645,8 @@ fn run_batch_mode(
                 &mut digest_detector,
                 &mut reg_flood_detector,
                 &mut alert_engine,
+                &scanner_kill_handle,
+                kill_response_code,
                 &mut sip_count,
                 &mut rtp_count,
                 &mut prev_timestamp,
@@ -664,7 +676,12 @@ fn run_batch_mode(
         }
     }
 
-    // 19. Wait for the capture thread to finish
+    // 19. Shut down scanner-kill worker (D16)
+    if let Some(ref mut kill_handle) = scanner_kill_handle {
+        kill_handle.shutdown();
+    }
+
+    // 20. Wait for the capture thread to finish
     //     Drop rx first so the capture thread sees a disconnected channel
     drop(rx);
     match handle.thread.join() {
@@ -673,10 +690,10 @@ fn run_batch_mode(
         Err(_) => log::error!("Capture thread panicked"),
     }
 
-    // 20. Post-capture output
+    // 21. Post-capture output
     generate_reports(&cli, &dialog_store, &stream_store);
 
-    // 21. Summary
+    // 22. Summary
     if !cli.quiet {
         log::info!(
             "sipnab: {total_count} packets captured, {sip_count} SIP messages, {rtp_count} RTP streams",
@@ -707,6 +724,8 @@ fn process_parsed_packet(
     digest_detector: &mut Option<DigestLeakDetector>,
     reg_flood_detector: &mut Option<RegFloodDetector>,
     alert_engine: &mut AlertEngine,
+    scanner_kill_handle: &Option<ScannerKillHandle>,
+    kill_response_code: u16,
     sip_count: &mut u64,
     rtp_count: &mut u64,
     prev_timestamp: &mut Option<chrono::DateTime<chrono::Utc>>,
@@ -832,6 +851,18 @@ fn process_parsed_packet(
                             &alert.method,
                         );
                         println!("{event}");
+                    }
+
+                    // D16: Send kill response via isolated worker thread
+                    if let Some(handle) = &scanner_kill_handle
+                        && let Some(response_bytes) =
+                            sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
+                    {
+                        let _ = handle.send_kill(KillRequest::SendResponse {
+                            dst_addr: sip_msg.src_addr,
+                            dst_port: sip_msg.src_port,
+                            response_bytes,
+                        });
                     }
                 }
 
