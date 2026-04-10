@@ -269,6 +269,48 @@ fn main() {
         std::process::exit(2);
     }
 
+    // 16d2. Validate TLS flags require tls feature
+    #[cfg(not(feature = "tls"))]
+    {
+        if cli.tls_key.is_some() {
+            log::error!("--tls-key requires the 'tls' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.keylog.is_some() {
+            log::error!("--keylog requires the 'tls' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.keylog_watch {
+            log::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.srtp_keys.is_some() {
+            log::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
+            std::process::exit(2);
+        }
+    }
+
+    // 16d3. Validate API flags require api feature
+    #[cfg(not(feature = "api"))]
+    {
+        if cli.api.is_some() {
+            log::error!("--api requires the 'api' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.api_key.is_some() {
+            log::error!("--api-key requires the 'api' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.api_tls_cert.is_some() {
+            log::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
+            std::process::exit(2);
+        }
+        if cli.api_tls_key.is_some() {
+            log::error!("--api-tls-key requires the 'api' feature (not compiled in)");
+            std::process::exit(2);
+        }
+    }
+
     // 16e. Validate --pcap-export-mode
     match cli.pcap_export_mode.as_str() {
         "decrypted" | "encrypted+dsb" | "raw" => {}
