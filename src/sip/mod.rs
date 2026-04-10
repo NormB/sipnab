@@ -5,6 +5,7 @@
 //! from the capture engine's [`ParsedPacket`](crate::capture::ParsedPacket)
 //! payloads.
 
+pub mod matcher;
 pub mod message;
 pub mod parser;
 pub mod response_codes;
