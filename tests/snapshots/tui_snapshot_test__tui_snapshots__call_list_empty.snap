@@ -2,27 +2,27 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
-┌ Call List (Tab: Streams | Enter: Flow | F1: Help) ───────────────────────────┐
-│                             No SIP dialogs found.                            │
-│                                                                              │
-│            If reading a pcap file, it may not contain SIP traffic.           │
-│                        Press 'q' to quit, F1 for help.                       │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
- sipnab | Call List | Dialogs: 0 (active: 0) | Streams: 0 | F1:Help q:Quit
+ sipnab — SIP Messages Flow Viewer
+                              No SIP dialogs found.
+
+             If reading a pcap file, it may not contain SIP traffic.
+                         Press 'q' to quit, F1 for help.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Current Mode: Online (any)    Dialogs: 0    Match Expression:     BPF Filter:
+F1 Help F2 Save F3 Search F4 Extended F5 Compare F6 RTP F7 Filter F8 Settings F9

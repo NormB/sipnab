@@ -1,17 +1,15 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 320
 expression: output
 ---
-┌ Call Flow: call-1@test (Esc: Back | Enter: Raw) ─────────────────────────────────────────────────┐
-│     10.0.0.1:5060                                 10.0.0.2:5060                                  │
-│           |                                             |                                        │
-│           |          -- INVITE ------------->         |            +0.000s                       │
-│           |          <-------- 180 Ringing --         |            +1.000s  PDD: 1000ms          │
-│           |          <------------- 200 OK --         |            +2.000s                       │
-│           |          -- BYE ---------------->         |            +62.000s                      │
-│           |                                             |                                        │
-│                                                                                                  │
+┌ Call Flow: call-1@test ──────────────────────────────────────────────────────────────────────────┐
+│             10.0.0.1:5060                                 10.0.0.2:5060                          │
+│                   |                                             |                                │
+│12:00:00           |          -- INVITE ------------->         |                                  │
+│12:00:01           |          <-------- 180 Ringing --         |            PDD: 1000ms           │
+│12:00:02           |          <------------- 200 OK --         |                                  │
+│12:01:02           |          -- BYE ---------------->         |                                  │
+│                   |                                             |                                │
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
@@ -32,4 +30,5 @@ expression: output
 │                                                                                                  │
 │                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
- sipnab | Call Flow | Dialogs: 3 (active: 1) | Streams: 0 | F1:Help q:Quit
+ Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
+F1 Help F2 Save F5 Compare F7 Filter F9 ClearFiltr

@@ -24,7 +24,7 @@ use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use parking_lot::RwLock;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -105,6 +105,10 @@ pub struct App {
     search_query: String,
     /// Whether search input mode is active.
     search_active: bool,
+    /// Capture mode label: "Online (device)" or "Offline (filename)".
+    capture_mode: String,
+    /// BPF filter string if set via CLI.
+    bpf_filter: String,
 }
 
 impl App {
@@ -129,7 +133,19 @@ impl App {
             raw_msg_scroll: 0,
             search_query: String::new(),
             search_active: false,
+            capture_mode: "Online (any)".to_string(),
+            bpf_filter: String::new(),
         }
+    }
+
+    /// Set the capture mode label displayed in the status bar.
+    pub fn set_capture_mode(&mut self, mode: String) {
+        self.capture_mode = mode;
+    }
+
+    /// Set the BPF filter string displayed in the status bar.
+    pub fn set_bpf_filter(&mut self, filter: String) {
+        self.bpf_filter = filter;
     }
 
     /// Mark data as freshly updated (resets adaptive refresh timer).
@@ -223,9 +239,13 @@ pub fn run_tui(
 fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
 
-    // Layout: main area + status bar
-    let [main_area, status_area] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    // Layout: main area + status bar + F-key bar
+    let [main_area, status_area, fkey_area] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
 
     // Render the current view
     match &app.current_view.clone() {
@@ -273,39 +293,29 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    // Status bar
+    // Status bar (sngrep-style)
     render_status_bar(frame, status_area, app);
+
+    // F-key bar (sngrep-style, context-sensitive)
+    render_fkey_bar(frame, fkey_area, &app.current_view);
 }
 
-/// Render the bottom status bar.
-fn render_status_bar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+/// Render the sngrep-style status bar above the F-key bar.
+///
+/// Format: `Current Mode: Online (any)    Dialogs: 10    Match Expression:     BPF Filter:`
+fn render_status_bar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let dialog_count = app.dialog_store.read().len();
-    let stream_count = app.stream_store.read().len();
-    let active_count = app.dialog_store.read().active_count();
-
-    let view_name = match &app.current_view {
-        View::CallList => "Call List",
-        View::StreamList => "Stream List",
-        View::CallFlow(_) => "Call Flow",
-        View::RawMessage { .. } => "Raw Message",
-        View::Help => "Help",
-        View::FilterDialog => "Filter",
-        View::Statistics => "Statistics",
-    };
 
     let status_text = if app.search_active {
         format!("/{}", app.search_query)
     } else if let Some(ref err) = app.status_error {
-        format!(" {err}")
-    } else if !app.active_filter_text.is_empty() {
-        format!(
-            " sipnab | {} | Filter: {} | Dialogs: {} (active: {}) | Streams: {} | F7:Clear",
-            view_name, app.active_filter_text, dialog_count, active_count, stream_count,
-        )
+        err.clone()
     } else {
+        let match_expr = &app.active_filter_text;
+        let bpf = &app.bpf_filter;
         format!(
-            " sipnab | {} | Dialogs: {} (active: {}) | Streams: {} | F1:Help q:Quit",
-            view_name, dialog_count, active_count, stream_count,
+            " Current Mode: {}    Dialogs: {}    Match Expression: {}    BPF Filter: {}",
+            app.capture_mode, dialog_count, match_expr, bpf,
         )
     };
 
@@ -319,6 +329,57 @@ fn render_status_bar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
     .style(Style::default().bg(Color::DarkGray));
 
     frame.render_widget(status, area);
+}
+
+/// Render the sngrep-style F-key bar at the bottom of the screen.
+///
+/// Each F-key label is a pair: the key name (white on blue) and the action
+/// label (black on cyan), matching sngrep's distinctive appearance.
+/// The bar is context-sensitive based on the current view.
+fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
+    let key_style = Style::default().fg(Color::White).bg(Color::Blue);
+    let label_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+
+    let items: &[(&str, &str)] = match view {
+        View::CallList => &[
+            ("F1", " Help "),
+            ("F2", " Save "),
+            ("F3", " Search "),
+            ("F4", " Extended "),
+            ("F5", " Compare "),
+            ("F6", " RTP "),
+            ("F7", " Filter "),
+            ("F8", " Settings "),
+            ("F9", " ClearFiltr"),
+            ("F10", " Columns "),
+        ],
+        View::CallFlow(_) => &[
+            ("F1", " Help "),
+            ("F2", " Save "),
+            ("F5", " Compare "),
+            ("F7", " Filter "),
+            ("F9", " ClearFiltr"),
+        ],
+        View::RawMessage { .. } => &[("F1", " Help "), ("F2", " Save ")],
+        View::StreamList => &[("F1", " Help "), ("F7", " Filter ")],
+        _ => &[("F1", " Help ")],
+    };
+
+    let mut spans: Vec<Span> = Vec::new();
+    for (key, label) in items {
+        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled((*label).to_string(), label_style));
+    }
+
+    // Pad remaining space with the label background
+    let used_width: usize = items.iter().map(|(k, l)| k.len() + l.len()).sum();
+    let remaining = (area.width as usize).saturating_sub(used_width);
+    if remaining > 0 {
+        spans.push(Span::styled(" ".repeat(remaining), label_style));
+    }
+
+    let bar = Paragraph::new(Line::from(spans));
+    frame.render_widget(bar, area);
 }
 
 /// Render the filter dialog input view.
@@ -504,6 +565,21 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             let msg = save_to_pcap(app, selected_call_id.as_deref());
             app.status_error = Some(msg);
         }
+        KeyCode::F(3) => {
+            // F3 Search — same as '/' search
+            app.search_active = true;
+            app.search_query.clear();
+        }
+        KeyCode::F(4) => {
+            app.status_error = Some("Extended view not yet implemented".to_string());
+        }
+        KeyCode::F(5) => {
+            app.status_error = Some("Compare not yet implemented".to_string());
+        }
+        KeyCode::F(6) => {
+            // F6 RTP — switch to stream list (same as Tab)
+            app.current_view = View::StreamList;
+        }
         KeyCode::F(7) => {
             if app.active_filter.is_some() {
                 // F7 again clears the active filter
@@ -514,6 +590,18 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 app.filter_input.clear();
                 app.current_view = View::FilterDialog;
             }
+        }
+        KeyCode::F(8) => {
+            app.status_error = Some("Settings not yet implemented".to_string());
+        }
+        KeyCode::F(9) => {
+            // F9 Clear Filter
+            app.active_filter = None;
+            app.active_filter_text.clear();
+            app.status_error = None;
+        }
+        KeyCode::F(10) => {
+            app.status_error = Some("Column selection not yet implemented".to_string());
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
         _ => {}
@@ -538,6 +626,16 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
             app.search_query.clear();
         }
         KeyCode::F(1) => app.current_view = View::Help,
+        KeyCode::F(7) => {
+            if app.active_filter.is_some() {
+                app.active_filter = None;
+                app.active_filter_text.clear();
+                app.status_error = None;
+            } else {
+                app.filter_input.clear();
+                app.current_view = View::FilterDialog;
+            }
+        }
         KeyCode::Esc => app.current_view = View::CallList,
         _ => {}
     }
@@ -582,6 +680,31 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             app.current_view = View::CallList;
         }
         KeyCode::F(1) => app.current_view = View::Help,
+        KeyCode::F(2) => {
+            if let View::CallFlow(ref call_id) = app.current_view {
+                let cid = call_id.clone();
+                let msg = save_to_pcap(app, Some(&cid));
+                app.status_error = Some(msg);
+            }
+        }
+        KeyCode::F(5) => {
+            app.status_error = Some("Compare not yet implemented".to_string());
+        }
+        KeyCode::F(7) => {
+            if app.active_filter.is_some() {
+                app.active_filter = None;
+                app.active_filter_text.clear();
+                app.status_error = None;
+            } else {
+                app.filter_input.clear();
+                app.current_view = View::FilterDialog;
+            }
+        }
+        KeyCode::F(9) => {
+            app.active_filter = None;
+            app.active_filter_text.clear();
+            app.status_error = None;
+        }
         _ => {}
     }
 }
@@ -614,6 +737,13 @@ fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::F(1) => app.current_view = View::Help,
+        KeyCode::F(2) => {
+            if let View::RawMessage { ref call_id, .. } = app.current_view {
+                let cid = call_id.clone();
+                let msg = save_to_pcap(app, Some(&cid));
+                app.status_error = Some(msg);
+            }
+        }
         _ => {}
     }
 }

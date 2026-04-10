@@ -29,7 +29,7 @@ pub fn render_call_flow(
     scroll_offset: usize,
 ) {
     let block = Block::default().borders(Borders::ALL).title(format!(
-        " Call Flow: {} (Esc: Back | Enter: Raw) ",
+        " Call Flow: {} ",
         truncate(call_id, 40)
     ));
 
@@ -105,7 +105,7 @@ pub fn render_call_flow(
 /// A vector of styled [`Line`]s suitable for a [`Paragraph`] widget.
 pub fn format_ladder(
     messages: &[SipMessage],
-    first_ts: chrono::DateTime<chrono::Utc>,
+    _first_ts: chrono::DateTime<chrono::Utc>,
     pdd_ms: Option<i64>,
 ) -> Vec<Line<'static>> {
     if messages.is_empty() {
@@ -118,12 +118,13 @@ pub fn format_ladder(
 
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Header with endpoint labels
+    // Header with endpoint labels (with timestamp column space)
     let left_label = format!("{:^20}", truncate(&left_addr, 20));
     let right_label = format!("{:^20}", truncate(&right_addr, 20));
     lines.push(Line::from(vec![
+        Span::raw("          "), // timestamp column placeholder
         Span::styled(
-            format!("  {left_label}"),
+            left_label,
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -139,7 +140,7 @@ pub fn format_ladder(
 
     // Vertical bars header
     lines.push(Line::from(format!(
-        "  {:^20}{:^width$}{:^20}",
+        "          {:^20}{:^width$}{:^20}",
         "|",
         "",
         "|",
@@ -150,8 +151,8 @@ pub fn format_ladder(
     let mut pdd_annotated = false;
 
     for msg in messages {
-        let delta = msg.timestamp.signed_duration_since(first_ts);
-        let delta_str = format!("+{:.3}s", delta.num_milliseconds() as f64 / 1000.0);
+        // Absolute timestamp (HH:MM:SS) — sngrep style
+        let ts_str = msg.timestamp.format("%H:%M:%S").to_string();
 
         let label = format_message_label(msg);
         let msg_style = message_style(msg);
@@ -178,20 +179,20 @@ pub fn format_ladder(
         }
 
         lines.push(Line::from(vec![
-            Span::raw(format!("  {:^20}", "|")),
-            Span::styled(arrow_line, msg_style),
-            Span::raw(format!("{:^20}", "|")),
             Span::styled(
-                format!("  {delta_str}"),
+                format!("{ts_str}  "),
                 Style::default().fg(Color::DarkGray),
             ),
+            Span::raw(format!("{:^20}", "|")),
+            Span::styled(arrow_line, msg_style),
+            Span::raw(format!("{:^20}", "|")),
             Span::styled(pdd_note, Style::default().fg(Color::Magenta)),
         ]));
     }
 
     // Closing bars
     lines.push(Line::from(format!(
-        "  {:^20}{:^width$}{:^20}",
+        "          {:^20}{:^width$}{:^20}",
         "|",
         "",
         "|",
@@ -235,18 +236,37 @@ fn format_arrow_left(label: &str, width: usize) -> String {
     )
 }
 
-/// Build a label string for a message (e.g., "INVITE" or "200 OK").
+/// Build a label string for a message (e.g., "INVITE (SDP)" or "200 OK").
+///
+/// Appends "(SDP)" when the message body contains SDP, matching sngrep style.
 fn format_message_label(msg: &SipMessage) -> String {
+    let has_sdp = msg
+        .content_type()
+        .is_some_and(|ct| ct.contains("application/sdp"))
+        || (!msg.body.is_empty()
+            && std::str::from_utf8(&msg.body)
+                .ok()
+                .is_some_and(|b| b.starts_with("v=")));
+
+    let sdp_suffix = if has_sdp { " (SDP)" } else { "" };
+
     if msg.is_request {
-        msg.method.as_deref().unwrap_or("?").to_string()
+        format!(
+            "{}{}",
+            msg.method.as_deref().unwrap_or("?"),
+            sdp_suffix
+        )
     } else {
         let code = msg.status_code.unwrap_or(0);
         let reason = msg.reason.as_deref().unwrap_or("");
-        format!("{} {}", code, reason)
+        format!("{} {}{}", code, reason, sdp_suffix)
     }
 }
 
-/// Choose a style based on message type.
+/// Choose a style based on message type (sngrep colors).
+///
+/// Requests: green for INVITE, red for BYE, yellow for CANCEL, white for others.
+/// Responses: cyan for provisional/success, red for errors.
 fn message_style(msg: &SipMessage) -> Style {
     if msg.is_request {
         let method = msg.method.as_deref().unwrap_or("");
@@ -260,8 +280,8 @@ fn message_style(msg: &SipMessage) -> Style {
     } else {
         let code = msg.status_code.unwrap_or(0);
         match code {
-            200..=299 => Style::default().fg(Color::Green),
             100..=199 => Style::default().fg(Color::Cyan),
+            200..=299 => Style::default().fg(Color::Cyan),
             400..=699 => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             _ => Style::default(),
         }

@@ -1,29 +1,28 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 260
 expression: output
 ---
-┌ Call List (Tab: Streams | Enter: Flow | F1: Help) ───────────────────────────┐
-│   #    Method   From     To       Source  Destinat State    Msgs  Durat PDD  │
-│>  1    INVITE   1001     1002     10.0.0. 10.0.0.2 Complete 4     1m2s  1000m│
-│   2    INVITE   1003     1004     10.0.0. 10.0.0.2 FAILED   2     1.0s       │
-│   3    INVITE   1005     1006     10.0.0. 10.0.0.2 InCall   2     2.0s       │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
- sipnab | Call List | Dialogs: 3 (active: 1) | Streams: 0 | F1:Help q:Quit
+ sipnab — SIP Messages Flow Viewer
+   #    Method   From     To        Source   Destinat State    Msgs  Date  PDD
+>  1    INVITE   1001     1002      10.0.0.1 10.0.0.2 Complete 4     12:00 1000m
+   2    INVITE   1003     1004      10.0.0.1 10.0.0.2 FAILED   2     12:00
+   3    INVITE   1005     1006      10.0.0.1 10.0.0.2 InCall   2     12:00
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
+F1 Help F2 Save F3 Search F4 Extended F5 Compare F6 RTP F7 Filter F8 Settings F9

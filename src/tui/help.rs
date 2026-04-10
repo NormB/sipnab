@@ -23,10 +23,19 @@ Navigation:
   q               Quit sipnab
   Ctrl-C          Force quit
 
-Views:
-  F1              Toggle this help screen
+Function Keys:
+  F1              Help (this screen)
   F2              Save selected dialog (or all) to pcap
-  F7              Open filter dialog
+  F3              Search (same as /)
+  F4              Extended call flow (toggle Via headers)
+  F5              Compare two messages side-by-side
+  F6              Switch to RTP Stream List
+  F7              Open filter dialog / clear filter
+  F8              Settings
+  F9              Clear active filter
+  F10             Column selection
+
+Views:
   s               Statistics view
   /               Search within current view
 

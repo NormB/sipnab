@@ -6,10 +6,10 @@
 //! show diagnosis warning indicators.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
@@ -153,6 +153,9 @@ impl Default for CallListState {
 // ── Rendering ───────────────────────────────────────────────────────
 
 /// Render the call list table into the given area.
+///
+/// Uses sngrep-style: borderless, white-on-blue header, blue highlight for
+/// selected row, full-width layout. Title line at top: "sipnab -- SIP Messages Flow Viewer".
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
@@ -160,6 +163,25 @@ pub fn render_call_list(
     store: &DialogStore,
     filter: Option<&FilterExpr>,
 ) {
+    // Layout: title line + table area
+    let [title_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+
+    // Title line (sngrep-style)
+    let title = Paragraph::new(Line::from(Span::styled(
+        " sipnab \u{2014} SIP Messages Flow Viewer",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(title, title_area);
+
+    // sngrep header style: white on blue, bold
+    let header_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Blue)
+        .add_modifier(Modifier::BOLD);
+
     let header = Row::new(vec![
         Cell::from(" # "),
         Cell::from("Method"),
@@ -169,14 +191,10 @@ pub fn render_call_list(
         Cell::from("Destination"),
         Cell::from("State"),
         Cell::from("Msgs"),
-        Cell::from("Duration"),
+        Cell::from("Date"),
         Cell::from("PDD"),
     ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )
+    .style(header_style)
     .bottom_margin(0);
 
     let dialogs: Vec<_> = if let Some(filter) = filter {
@@ -190,15 +208,14 @@ pub fn render_call_list(
 
     // Show a centered help message when there are no dialogs
     if dialogs.is_empty() {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Call List (Tab: Streams | Enter: Flow | F1: Help) ");
-        let text = "No SIP dialogs found.\n\nIf reading a pcap file, it may not contain SIP traffic.\nPress 'q' to quit, F1 for help.";
-        let paragraph = Paragraph::new(text)
-            .block(block)
+        frame.render_widget(
+            Paragraph::new(
+                "No SIP dialogs found.\n\nIf reading a pcap file, it may not contain SIP traffic.\nPress 'q' to quit, F1 for help.",
+            )
             .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(paragraph, area);
+            .style(Style::default().fg(Color::DarkGray)),
+            table_area,
+        );
         return;
     }
 
@@ -217,16 +234,25 @@ pub fn render_call_list(
                 " "
             };
 
-            let duration = format_duration(dialog.created_at, dialog.updated_at);
+            // Date column: HH:MM:SS of first message
+            let date_str = dialog.created_at.format("%H:%M:%S").to_string();
+
             let pdd = dialog
                 .timing
                 .pdd_ms()
                 .map(|ms| format!("{}ms", ms))
                 .unwrap_or_default();
 
+            // Method cell: green for INVITE (sngrep style)
+            let method_style = if dialog.method == "INVITE" {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            };
+
             let row = Row::new(vec![
                 Cell::from(Span::raw(format!("{}{}", diag_icon, idx + 1))),
-                Cell::from(Span::raw(dialog.method.as_str())),
+                Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                 Cell::from(Span::raw(dialog.from_user.as_deref().unwrap_or("-"))),
                 Cell::from(Span::raw(dialog.to_user.as_deref().unwrap_or("-"))),
                 Cell::from(Span::raw(dialog.src_addr.to_string())),
@@ -236,7 +262,7 @@ pub fn render_call_list(
                     state_style(&dialog.state),
                 )),
                 Cell::from(Span::raw(dialog.messages.len().to_string())),
-                Cell::from(Span::raw(duration)),
+                Cell::from(Span::raw(date_str)),
                 Cell::from(Span::raw(pdd)),
             ]);
 
@@ -268,26 +294,22 @@ pub fn render_call_list(
         Constraint::Length(16), // Destination
         Constraint::Length(12), // State
         Constraint::Length(5),  // Msgs
-        Constraint::Length(10), // Duration
+        Constraint::Length(10), // Date
         Constraint::Length(8),  // PDD
     ];
 
+    // sngrep-style: no borders, blue highlight for selected row
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Call List (Tab: Streams | Enter: Flow | F1: Help) "),
-        )
         .column_spacing(1)
         .row_highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+                .fg(Color::White)
+                .bg(Color::Blue),
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(table, area, &mut state.table_state);
+    frame.render_stateful_widget(table, table_area, &mut state.table_state);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -318,30 +340,6 @@ fn state_style(state: &DialogState) -> Style {
         DialogState::Completed | DialogState::Registered => Style::default().fg(Color::Cyan),
         _ => Style::default(),
     }
-}
-
-/// Format the duration between two timestamps as a human-readable string.
-fn format_duration(
-    start: chrono::DateTime<chrono::Utc>,
-    end: chrono::DateTime<chrono::Utc>,
-) -> String {
-    let diff = end.signed_duration_since(start);
-    let total_secs = diff.num_seconds();
-    if total_secs < 0 {
-        return "0s".to_string();
-    }
-    if total_secs < 60 {
-        let ms = diff.num_milliseconds() % 1000;
-        return format!("{}.{}s", total_secs, ms / 100);
-    }
-    let mins = total_secs / 60;
-    let secs = total_secs % 60;
-    if mins < 60 {
-        return format!("{}m{}s", mins, secs);
-    }
-    let hours = mins / 60;
-    let remaining_mins = mins % 60;
-    format!("{}h{}m", hours, remaining_mins)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -426,24 +424,4 @@ mod tests {
         assert_eq!(format_state(&DialogState::Completed), "Completed");
     }
 
-    #[test]
-    fn format_duration_sub_minute() {
-        let start = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0).unwrap();
-        let end = start + chrono::TimeDelta::milliseconds(5500);
-        assert_eq!(format_duration(start, end), "5.5s");
-    }
-
-    #[test]
-    fn format_duration_minutes() {
-        let start = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0).unwrap();
-        let end = start + chrono::TimeDelta::seconds(125);
-        assert_eq!(format_duration(start, end), "2m5s");
-    }
-
-    #[test]
-    fn format_duration_hours() {
-        let start = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 1, 1, 0, 0, 0).unwrap();
-        let end = start + chrono::TimeDelta::seconds(3700);
-        assert_eq!(format_duration(start, end), "1h1m");
-    }
 }
