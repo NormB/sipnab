@@ -29,6 +29,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
+use crate::sip::dsl::FilterExpr;
 
 use call_list::CallListState;
 use stream_list::StreamListState;
@@ -88,6 +89,12 @@ pub struct App {
     last_data_update: Instant,
     /// Filter input buffer (for FilterDialog view).
     filter_input: String,
+    /// Active filter expression (applied to the call list).
+    active_filter: Option<FilterExpr>,
+    /// Human-readable text of the active filter (for the status bar).
+    active_filter_text: String,
+    /// Transient status bar error message (cleared on next view change).
+    status_error: Option<String>,
     /// Scroll offset for call flow view.
     call_flow_scroll: usize,
     /// Scroll offset for raw message view.
@@ -113,6 +120,9 @@ impl App {
             should_quit: false,
             last_data_update: Instant::now(),
             filter_input: String::new(),
+            active_filter: None,
+            active_filter_text: String::new(),
+            status_error: None,
             call_flow_scroll: 0,
             raw_msg_scroll: 0,
             search_query: String::new(),
@@ -219,7 +229,13 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     match &app.current_view.clone() {
         View::CallList => {
             let store = app.dialog_store.read();
-            call_list::render_call_list(frame, main_area, &mut app.call_list, &store);
+            call_list::render_call_list(
+                frame,
+                main_area,
+                &mut app.call_list,
+                &store,
+                app.active_filter.as_ref(),
+            );
         }
         View::StreamList => {
             let store = app.stream_store.read();
@@ -277,6 +293,13 @@ fn render_status_bar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
 
     let status_text = if app.search_active {
         format!("/{}", app.search_query)
+    } else if let Some(ref err) = app.status_error {
+        format!(" {err}")
+    } else if !app.active_filter_text.is_empty() {
+        format!(
+            " sipnab | {} | Filter: {} | Dialogs: {} (active: {}) | Streams: {} | F7:Clear",
+            view_name, app.active_filter_text, dialog_count, active_count, stream_count,
+        )
     } else {
         format!(
             " sipnab | {} | Dialogs: {} (active: {}) | Streams: {} | F1:Help q:Quit",
@@ -390,7 +413,7 @@ fn handle_search_input(app: &mut App, key: KeyEvent) {
 
 /// Handle keys in the call list view.
 fn handle_call_list_key(app: &mut App, key: KeyEvent) {
-    let dialog_count = app.dialog_store.read().len();
+    let dialog_count = filtered_dialog_count(app);
 
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
@@ -420,8 +443,15 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(1) => app.current_view = View::Help,
         KeyCode::F(2) => { /* placeholder: save dialog */ }
         KeyCode::F(7) => {
-            app.filter_input.clear();
-            app.current_view = View::FilterDialog;
+            if app.active_filter.is_some() {
+                // F7 again clears the active filter
+                app.active_filter = None;
+                app.active_filter_text.clear();
+                app.status_error = None;
+            } else {
+                app.filter_input.clear();
+                app.current_view = View::FilterDialog;
+            }
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
         _ => {}
@@ -540,10 +570,28 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
 fn handle_filter_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
+            // Cancel without applying
             app.current_view = View::CallList;
         }
         KeyCode::Enter => {
-            // TODO: apply filter expression
+            let input = app.filter_input.trim().to_string();
+            if input.is_empty() {
+                // Empty input clears any active filter
+                app.active_filter = None;
+                app.active_filter_text.clear();
+                app.status_error = None;
+            } else {
+                match FilterExpr::parse(&input) {
+                    Ok(expr) => {
+                        app.active_filter = Some(expr);
+                        app.active_filter_text = input;
+                        app.status_error = None;
+                    }
+                    Err(e) => {
+                        app.status_error = Some(format!("Filter error: {e}"));
+                    }
+                }
+            }
             app.current_view = View::CallList;
         }
         KeyCode::Backspace => {
@@ -568,12 +616,33 @@ fn handle_statistics_key(app: &mut App, key: KeyEvent) {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Get the Call-ID of the currently selected dialog in the call list.
+/// Get the Call-ID of the currently selected dialog in the call list,
+/// respecting the active filter.
 fn get_selected_call_id(app: &App) -> Option<String> {
     let store = app.dialog_store.read();
-    let dialogs: Vec<_> = store.iter().collect();
+    let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
+        store
+            .iter()
+            .filter(|d| filter.matches_dialog(d, &[]))
+            .collect()
+    } else {
+        store.iter().collect()
+    };
     let idx = app.call_list.selected();
     dialogs.get(idx).map(|d| d.call_id.clone())
+}
+
+/// Count dialogs visible after applying the active filter.
+fn filtered_dialog_count(app: &App) -> usize {
+    let store = app.dialog_store.read();
+    if let Some(ref filter) = app.active_filter {
+        store
+            .iter()
+            .filter(|d| filter.matches_dialog(d, &[]))
+            .count()
+    } else {
+        store.len()
+    }
 }
 
 #[cfg(test)]

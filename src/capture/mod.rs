@@ -11,6 +11,9 @@ pub mod live;
 pub mod packet;
 pub mod parse;
 pub mod reassembly;
+#[cfg(feature = "tls")]
+pub mod tls;
+pub mod websocket;
 pub mod writer;
 
 use std::path::PathBuf;

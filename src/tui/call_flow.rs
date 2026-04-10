@@ -53,7 +53,31 @@ pub fn render_call_flow(
     }
 
     let first_ts = dialog.messages[0].timestamp;
-    let lines = format_ladder(&dialog.messages, first_ts, dialog.timing.pdd_ms());
+    let mut lines = format_ladder(&dialog.messages, first_ts, dialog.timing.pdd_ms());
+
+    // Show correlated dialogs (multi-leg)
+    let correlated = store.find_correlated(call_id);
+    if !correlated.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            " Correlated Legs:",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )));
+        for leg in &correlated {
+            let label = format!(
+                "   {} Call-ID: {} ({})",
+                "\u{2194}", // ↔
+                truncate(&leg.call_id, 40),
+                leg.method,
+            );
+            lines.push(Line::from(Span::styled(
+                label,
+                Style::default().fg(Color::Magenta),
+            )));
+        }
+    }
 
     let para = Paragraph::new(lines)
         .block(block)

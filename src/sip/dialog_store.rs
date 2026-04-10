@@ -152,6 +152,44 @@ impl DialogStore {
             .count()
     }
 
+    /// Find dialogs correlated to the given Call-ID via X-Call-ID headers.
+    ///
+    /// A B-leg dialog is correlated if its Call-ID matches an X-Call-ID header
+    /// value in the given dialog, or if any of its messages carry an X-Call-ID
+    /// header whose value matches the given Call-ID.
+    pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
+        let dialog = match self.get(call_id) {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        // Collect X-Call-ID values from the given dialog
+        let x_call_ids: Vec<&str> = dialog
+            .messages
+            .iter()
+            .filter_map(|m| m.header("X-Call-ID"))
+            .collect();
+
+        self.dialogs
+            .iter()
+            .filter(|d| {
+                if d.call_id == call_id {
+                    return false;
+                }
+
+                // Check if this dialog's Call-ID matches an X-Call-ID from the source dialog
+                if x_call_ids.iter().any(|&xid| xid == d.call_id) {
+                    return true;
+                }
+
+                // Check if this dialog has an X-Call-ID pointing back to the source
+                d.messages
+                    .iter()
+                    .any(|m| m.header("X-Call-ID").is_some_and(|v| v == call_id))
+            })
+            .collect()
+    }
+
     /// Evict the oldest dialog (first in the vector) to make room.
     fn evict_oldest(&mut self) {
         if self.dialogs.is_empty() {

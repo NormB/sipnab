@@ -13,6 +13,7 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
+use crate::sip::dsl::FilterExpr;
 
 // ── Sort column ─────────────────────────────────────────────────────
 
@@ -157,6 +158,7 @@ pub fn render_call_list(
     area: Rect,
     state: &mut CallListState,
     store: &DialogStore,
+    filter: Option<&FilterExpr>,
 ) {
     let header = Row::new(vec![
         Cell::from(" # "),
@@ -177,15 +179,29 @@ pub fn render_call_list(
     )
     .bottom_margin(0);
 
-    let dialogs: Vec<_> = store.iter().collect();
+    let dialogs: Vec<_> = if let Some(filter) = filter {
+        store
+            .iter()
+            .filter(|d| filter.matches_dialog(d, &[]))
+            .collect()
+    } else {
+        store.iter().collect()
+    };
 
     let rows: Vec<Row> = dialogs
         .iter()
         .enumerate()
         .map(|(idx, dialog)| {
-            // Diagnosis indicator
+            // Diagnosis and correlation indicators
             let has_retransmits = dialog.timing.total_retransmits() > 0;
-            let diag_icon = if has_retransmits { "!" } else { " " };
+            let has_correlated = !store.find_correlated(&dialog.call_id).is_empty();
+            let diag_icon = if has_correlated {
+                "\u{2194}" // ↔ for correlated legs
+            } else if has_retransmits {
+                "!"
+            } else {
+                " "
+            };
 
             let duration = format_duration(dialog.created_at, dialog.updated_at);
             let pdd = dialog
