@@ -17,6 +17,7 @@ use sipnab::capture::{self, CaptureConfig, CaptureSource, ParsedPacket, PcapWrit
 use sipnab::cli::Cli;
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
+use sipnab::privilege;
 use sipnab::rtp::{self, parser::parse_rtp_header, rtcp::parse_rtcp, stream_store::StreamStore};
 use sipnab::security::{
     AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector, ScannerDetector,
@@ -157,7 +158,23 @@ fn main() {
         }
     };
 
-    // 16. Branch: TUI mode vs non-interactive mode
+    // 16. Drop privileges now that capture devices are open (D15)
+    if let Err(e) = privilege::drop_privileges(cli.user.as_deref(), cli.no_priv_drop) {
+        log::error!("Failed to drop privileges: {e}");
+        std::process::exit(1);
+    }
+
+    // 17. Disable core dumps if any decryption keys are loaded (D19)
+    let has_decrypt_keys = cli.tls_key.is_some() || cli.keylog.is_some() || cli.srtp_keys.is_some();
+    if has_decrypt_keys
+        && !cli.allow_coredump
+        && let Err(e) = privilege::disable_core_dumps()
+    {
+        log::error!("Failed to disable core dumps: {e}");
+        std::process::exit(1);
+    }
+
+    // 18. Branch: TUI mode vs non-interactive mode
     #[cfg(feature = "tui")]
     let use_tui = !cli.no_tui;
     #[cfg(not(feature = "tui"))]

@@ -5,6 +5,8 @@
 //! a capture thread and returns a [`CaptureHandle`] for lifecycle management.
 
 pub mod file;
+#[cfg(feature = "hep")]
+pub mod hep;
 pub mod live;
 pub mod packet;
 pub mod parse;
@@ -120,8 +122,19 @@ pub fn start_capture(
                 .context("Failed to spawn file reader thread")?
         }
         CaptureSource::Hep { bind_addr } => {
-            let _addr = bind_addr.clone();
-            anyhow::bail!("HEP capture is not yet implemented");
+            #[cfg(feature = "hep")]
+            {
+                let addr = bind_addr.clone();
+                thread::Builder::new()
+                    .name("capture-hep".to_string())
+                    .spawn(move || hep::capture_hep(&addr, &config, tx))
+                    .context("Failed to spawn HEP capture thread")?
+            }
+            #[cfg(not(feature = "hep"))]
+            {
+                let _ = bind_addr;
+                anyhow::bail!("HEP support requires the 'hep' feature: cargo build --features hep");
+            }
         }
     };
 
