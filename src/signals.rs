@@ -17,6 +17,14 @@ pub fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::SeqCst)
 }
 
+/// Programmatically request a shutdown (e.g., when the TUI exits).
+///
+/// Sets the same flag as the SIGINT/SIGTERM handler so all threads
+/// that check [`shutdown_requested`] will see it.
+pub fn request_shutdown() {
+    SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
+}
+
 /// Returns `true` if a rotation signal (SIGUSR1) has been received,
 /// and atomically resets the flag to `false`.
 pub fn rotation_requested() -> bool {

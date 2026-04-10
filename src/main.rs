@@ -6,6 +6,11 @@
 //! filtering → output.
 
 use std::path::PathBuf;
+#[cfg(feature = "tui")]
+use std::sync::Arc;
+
+#[cfg(feature = "tui")]
+use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::{self, CaptureConfig, CaptureSource, ParsedPacket, PcapWriter};
@@ -130,7 +135,7 @@ fn main() {
     };
 
     // 13. Build the event exec engine
-    let mut event_exec = EventExecEngine::new(
+    let event_exec = EventExecEngine::new(
         cli.on_dialog_exec.clone(),
         cli.on_quality_exec.clone(),
         cli.exec_rate_limit,
@@ -149,13 +154,259 @@ fn main() {
         }
     };
 
+    // 16. Branch: TUI mode vs non-interactive mode
+    #[cfg(feature = "tui")]
+    let use_tui = !cli.no_tui;
+    #[cfg(not(feature = "tui"))]
+    let use_tui = false;
+
+    if use_tui {
+        #[cfg(feature = "tui")]
+        run_tui_mode(
+            cli,
+            loaded.config,
+            capture_config,
+            handle,
+            rx,
+            split_bytes,
+            split_duration,
+        );
+    } else {
+        run_batch_mode(
+            cli,
+            &loaded.config,
+            capture_config,
+            handle,
+            rx,
+            matcher,
+            filter_expr,
+            output_opts,
+            event_exec,
+            split_bytes,
+            split_duration,
+        );
+    }
+}
+
+// ── TUI mode ────────────────────────────────────────────────────────
+
+/// Run sipnab in interactive TUI mode.
+///
+/// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
+/// the TUI event loop on the main thread.
+#[cfg(feature = "tui")]
+fn run_tui_mode(
+    cli: Cli,
+    config: Config,
+    capture_config: CaptureConfig,
+    handle: capture::CaptureHandle,
+    rx: crossbeam_channel::Receiver<capture::Packet>,
+    split_bytes: Option<u64>,
+    split_duration: Option<std::time::Duration>,
+) {
+    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+
+    let dialog_store = Arc::new(RwLock::new(DialogStore::new(
+        cli.limit as usize,
+        cli.rotate,
+    )));
+    let stream_store = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
+
+    // Clone references for the processing thread
+    let ds = Arc::clone(&dialog_store);
+    let ss = Arc::clone(&stream_store);
+    let cli_clone = cli.clone();
+
+    // Spawn packet processing thread
+    let processing_thread = std::thread::Builder::new()
+        .name("tui-processor".to_string())
+        .spawn(move || {
+            let mut processor = capture::PacketProcessor::new();
+            let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+            let mut writer: Option<PcapWriter> = None;
+            let mut last_sweep = std::time::Instant::now();
+            let sweep_interval = std::time::Duration::from_secs(5);
+            let start = std::time::Instant::now();
+            let mut total_count: u64 = 0;
+
+            loop {
+                if signals::shutdown_requested() {
+                    break;
+                }
+
+                if last_sweep.elapsed() >= sweep_interval {
+                    processor.sweep();
+                    ss.write().mark_orphaned(std::time::Duration::from_secs(30));
+                    last_sweep = std::time::Instant::now();
+                }
+
+                let packet = match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+                    Ok(pkt) => pkt,
+                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                };
+
+                // Lazily initialize writer
+                if writer.is_none()
+                    && let Some(ref output_path) = cli_clone.output
+                {
+                    match PcapWriter::new(
+                        &PathBuf::from(output_path),
+                        packet.link_type,
+                        split_bytes,
+                        split_duration,
+                    ) {
+                        Ok(w) => writer = Some(w),
+                        Err(e) => {
+                            log::error!("Failed to open output file: {e}");
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(ref mut w) = writer
+                    && let Err(e) = w.write(&packet)
+                {
+                    log::error!("Failed to write packet: {e}");
+                    break;
+                }
+
+                total_count += 1;
+
+                let parsed_packets = processor.process(&packet);
+                for pp in &parsed_packets {
+                    tui_process_packet(pp, &ds, &ss, &mut rtp_heuristic, &cli_clone, no_rtp);
+                }
+
+                if let Some(max_count) = capture_config.count
+                    && total_count >= max_count
+                {
+                    break;
+                }
+
+                if let Some(duration) = capture_config.duration
+                    && start.elapsed() >= duration
+                {
+                    break;
+                }
+            }
+        })
+        .expect("failed to spawn processing thread");
+
+    // Run TUI on the main thread
+    if let Err(e) = sipnab::tui::run_tui(Arc::clone(&dialog_store), Arc::clone(&stream_store)) {
+        log::error!("TUI error: {e}");
+    }
+
+    // Signal shutdown and wait for threads
+    // The TUI has exited; signal shutdown so processing thread stops
+    signals::request_shutdown();
+
+    if let Err(e) = processing_thread.join() {
+        log::error!("Processing thread panicked: {:?}", e);
+    }
+
+    drop(handle);
+}
+
+/// Process a parsed packet in TUI mode (updates shared stores).
+#[cfg(feature = "tui")]
+fn tui_process_packet(
+    pp: &ParsedPacket,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
+    cli: &Cli,
+    no_rtp: bool,
+) {
+    let transport_str = match pp.transport {
+        TransportProto::Udp => "UDP",
+        TransportProto::Tcp => "TCP",
+        TransportProto::Sctp => "SCTP",
+    };
+
+    // Try SIP detection first
+    if sip::is_sip_message(&pp.payload) {
+        if let Ok(sip_msg) = sip::parse_sip(
+            &pp.payload,
+            pp.timestamp,
+            pp.src_addr,
+            pp.dst_addr,
+            pp.src_port,
+            pp.dst_port,
+            transport_str,
+        ) && !cli.no_dialog
+        {
+            let mut ds = dialog_store.write();
+            ds.process_message(sip_msg.clone());
+
+            // Link SDP media endpoints to RTP streams
+            if let Some(sdp) = sip_msg.sdp()
+                && let Some(call_id) = sip_msg.call_id()
+            {
+                let mut ss = stream_store.write();
+                for media in &sdp.media {
+                    let addr_str = sip::sdp::effective_address(media, &sdp);
+                    if let Some(addr) = addr_str
+                        && let Ok(ip) = addr.parse::<std::net::IpAddr>()
+                    {
+                        ss.link_to_dialog(ip, media.port, call_id);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    // RTP/RTCP detection
+    if no_rtp || pp.transport != TransportProto::Udp {
+        return;
+    }
+
+    if is_rtcp_packet(&pp.payload, pp.dst_port) {
+        let rtcp_packets = rtp::rtcp::parse_rtcp(&pp.payload);
+        if !rtcp_packets.is_empty() {
+            stream_store.write().process_rtcp(&rtcp_packets);
+        }
+        return;
+    }
+
+    if rtp::is_rtp_packet(&pp.payload)
+        && let Ok(rtp_hdr) = rtp::parser::parse_rtp_header(&pp.payload)
+    {
+        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
+        return;
+    }
+
+    if let Some(rtp_hdr) = rtp_heuristic.check(pp) {
+        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
+    }
+}
+
+// ── Batch (non-interactive) mode ────────────────────────────────────
+
+/// Run sipnab in non-interactive batch mode (original behavior).
+#[allow(clippy::too_many_arguments)]
+fn run_batch_mode(
+    cli: Cli,
+    config: &Config,
+    capture_config: CaptureConfig,
+    handle: capture::CaptureHandle,
+    rx: crossbeam_channel::Receiver<capture::Packet>,
+    matcher: SipMatcher,
+    filter_expr: Option<FilterExpr>,
+    output_opts: OutputOptions,
+    mut event_exec: EventExecEngine,
+    split_bytes: Option<u64>,
+    split_duration: Option<std::time::Duration>,
+) {
     // 16. Open output writer if -O is specified
     let mut writer: Option<PcapWriter> = None;
 
     // 17. Initialize processing state
     let mut processor = capture::PacketProcessor::new();
     let mut dialog_store = DialogStore::new(cli.limit as usize, cli.rotate);
-    let no_rtp = cli.no_rtp || loaded.config.capture.no_rtp.unwrap_or(false);
+    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let mut stream_store = StreamStore::new(cli.max_streams as usize);
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
