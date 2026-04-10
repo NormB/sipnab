@@ -70,6 +70,7 @@ impl RegFloodDetector {
     /// Tracks REGISTER request rates per source IP and 401/407 response
     /// rates per destination IP (the source being probed). Returns an
     /// alert when the threshold is exceeded.
+    #[must_use]
     pub fn check(&mut self, msg: &SipMessage) -> Option<RegFloodAlert> {
         let now = Instant::now();
 
@@ -169,18 +170,7 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 100))
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn make_register(src: IpAddr, call_id: &str) -> SipMessage {
         let raw = build_sip(

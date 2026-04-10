@@ -23,10 +23,10 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
     // ── Dialog summary table ────────────────────────────────────────
     let _ = writeln!(
         out,
-        "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8}",
-        "Call-ID", "From", "To", "State", "Duration", "Msgs", "PDD"
+        "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8} {:<16}",
+        "Call-ID", "From", "To", "State", "Duration", "Msgs", "PDD", "Tags"
     );
-    let _ = writeln!(out, "{}", "-".repeat(98));
+    let _ = writeln!(out, "{}", "-".repeat(114));
 
     for dialog in dialogs {
         let call_id = truncate_str(&dialog.call_id, 30);
@@ -40,11 +40,16 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
             .pdd_ms()
             .map(|ms| format!("{:.1}s", ms as f64 / 1000.0))
             .unwrap_or_else(|| "-".to_string());
+        let tags = if dialog.tags.is_empty() {
+            "-".to_string()
+        } else {
+            dialog.tags.join(", ")
+        };
 
         let _ = writeln!(
             out,
-            "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8}",
-            call_id, from, to, state, duration, msg_count, pdd
+            "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8} {:<16}",
+            call_id, from, to, state, duration, msg_count, pdd, tags
         );
     }
 
@@ -187,18 +192,7 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
-    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg.extend_from_slice(body);
-        msg
-    }
+    use crate::test_utils::build_sip_message as build_sip;
 
     fn make_completed_dialog() -> SipDialog {
         let t0 = base_ts();

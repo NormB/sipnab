@@ -127,16 +127,10 @@ mod tests {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    use crate::test_utils::build_sip_message;
+
     fn build_sip_bytes(first_line: &str, headers: &[&str]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg
+        build_sip_message(first_line, headers, b"")
     }
 
     fn make_invite() -> SipMessage {

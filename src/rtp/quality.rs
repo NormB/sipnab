@@ -15,7 +15,7 @@
 /// A "burst" is defined as 3 or more consecutive lost packets. A "gap"
 /// is the period of received packets between bursts. Bursty loss patterns
 /// are perceptually worse than uniformly distributed loss at the same rate.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct BurstGapAnalysis {
     /// Number of loss bursts detected.
     pub burst_count: u32,

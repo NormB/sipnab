@@ -82,6 +82,9 @@ pub struct RtpStream {
     pub heuristic: bool,
     /// Periodic quality snapshots for trend analysis.
     pub quality_intervals: Vec<QualityInterval>,
+    /// Sequence numbers of lost packets (capped at 1000 most recent entries).
+    /// Used for burst/gap analysis.
+    pub lost_sequences: Vec<u16>,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Wall-clock arrival time of the previous packet (for jitter calc).
@@ -116,6 +119,7 @@ impl RtpStream {
             orphaned: false,
             heuristic: false,
             quality_intervals: Vec::new(),
+            lost_sequences: Vec::new(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
             interval_start: timestamp,
@@ -143,6 +147,13 @@ impl RtpStream {
             if gap < 32768 {
                 self.lost_packets += gap;
                 self.interval_lost += gap;
+                // Record lost sequence numbers for burst/gap analysis (capped at 1000)
+                for offset in 0..gap.min(1000) {
+                    if self.lost_sequences.len() >= 1000 {
+                        self.lost_sequences.remove(0);
+                    }
+                    self.lost_sequences.push(expected.wrapping_add(offset as u16));
+                }
             }
         }
         self.last_seq = header.sequence;
@@ -195,6 +206,45 @@ impl RtpStream {
         self.interval_start = timestamp;
         self.interval_packets = 0;
         self.interval_lost = 0;
+    }
+
+    /// Compute burst/gap analysis from recorded lost sequences.
+    ///
+    /// Reconstructs a received/lost sequence from the first seen sequence
+    /// number through `last_seq` using the `lost_sequences` log, then
+    /// delegates to [`super::quality::analyze_burst_gap`].
+    ///
+    /// Returns `None` if there are no lost packets to analyze.
+    pub fn burst_gap_analysis(&self) -> Option<super::quality::BurstGapAnalysis> {
+        if self.lost_sequences.is_empty() {
+            return None;
+        }
+
+        // Default ptime for common audio codecs (ms).
+        let ptime_ms = 20.0;
+
+        // Build a received/lost bitmap over the range covered by lost_sequences.
+        // Use the min/max of lost_sequences to bound the window, then fill
+        // received=true for all sequence numbers in between, marking lost ones.
+        let lost_set: std::collections::HashSet<u16> =
+            self.lost_sequences.iter().copied().collect();
+
+        // Determine the window: from first_seq to last_seq we observed.
+        // For simplicity use the total received + lost count as the window size,
+        // capped at a reasonable maximum to avoid huge allocations.
+        let window_size = (self.packet_count + self.lost_packets).min(10_000) as usize;
+        if window_size == 0 {
+            return None;
+        }
+
+        // Walk backwards from last_seq for `window_size` packets.
+        let mut received = Vec::with_capacity(window_size);
+        for i in 0..window_size {
+            let seq = self.last_seq.wrapping_sub(window_size as u16).wrapping_add(i as u16 + 1);
+            received.push(!lost_set.contains(&seq));
+        }
+
+        Some(super::quality::analyze_burst_gap(&received, ptime_ms))
     }
 }
 
