@@ -377,7 +377,10 @@ fn api_ignores_x_forwarded_for_header() {
 
     // A different IP should still be allowed
     let other_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
-    assert!(limiter.check(other_ip), "different IP should be independent");
+    assert!(
+        limiter.check(other_ip),
+        "different IP should be independent"
+    );
 }
 
 // =====================================================================
@@ -405,8 +408,8 @@ fn scanner_detector_caps_behavioral_entries() {
             ],
             b"",
         );
-        let msg = sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP")
-            .expect("parse");
+        let msg =
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
         detector.check(&msg);
     }
 
@@ -434,10 +437,9 @@ fn fraud_detector_caps_call_pattern_entries() {
             ],
             b"",
         );
-        let msg = sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP")
-            .expect("parse");
-        let dialog =
-            sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
+        let msg =
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
+        let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
         detector.check(&msg, &dialog);
     }
     // No panic or OOM -- the cap held.
@@ -463,8 +465,8 @@ fn reg_flood_detector_caps_source_entries() {
             ],
             b"",
         );
-        let msg = sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP")
-            .expect("parse");
+        let msg =
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
         detector.check(&msg);
     }
     // No panic or OOM -- the cap held.
@@ -770,9 +772,7 @@ fn prometheus_escapes_quotes_in_labels() {
 #[test]
 fn prometheus_escapes_backslash_in_labels() {
     let mut metrics = PrometheusMetrics::default();
-    metrics
-        .dialogs_total
-        .insert("back\\slash".to_string(), 7);
+    metrics.dialogs_total.insert("back\\slash".to_string(), 7);
     let output = format_metrics(&metrics);
 
     assert!(
@@ -785,9 +785,7 @@ fn prometheus_escapes_backslash_in_labels() {
 #[test]
 fn prometheus_escapes_newline_in_labels() {
     let mut metrics = PrometheusMetrics::default();
-    metrics
-        .dialogs_total
-        .insert("line\none".to_string(), 3);
+    metrics.dialogs_total.insert("line\none".to_string(), 3);
     let output = format_metrics(&metrics);
 
     // Newlines should be escaped as \n (literal backslash-n)
@@ -805,11 +803,8 @@ fn prometheus_escapes_newline_in_labels() {
 /// to prevent log injection.
 #[test]
 fn fail2ban_sanitizes_newlines_in_ua() {
-    let event = fail2ban::format_scanner_event(
-        "10.0.0.5",
-        "scanner\nfake_log_line src=1.2.3.4",
-        "OPTIONS",
-    );
+    let event =
+        fail2ban::format_scanner_event("10.0.0.5", "scanner\nfake_log_line src=1.2.3.4", "OPTIONS");
     assert!(
         !event.contains('\n'),
         "newlines must be sanitized in fail2ban output: {event}"
@@ -823,11 +818,7 @@ fn fail2ban_sanitizes_newlines_in_ua() {
 /// M3: Fail2ban output must sanitize carriage returns in User-Agent.
 #[test]
 fn fail2ban_sanitizes_carriage_return_in_ua() {
-    let event = fail2ban::format_scanner_event(
-        "10.0.0.5",
-        "scanner\rfake",
-        "OPTIONS",
-    );
+    let event = fail2ban::format_scanner_event("10.0.0.5", "scanner\rfake", "OPTIONS");
     assert!(
         !event.contains('\r'),
         "carriage returns must be sanitized: {event}"
@@ -863,11 +854,11 @@ fn alert_detail_sanitizes_newlines() {
 fn constant_time_eq_different_lengths_still_compares() {
     // We test the auth check behavior indirectly: a short key vs a long
     // key must both be rejected, and neither should cause a panic.
+    use parking_lot::{Mutex, RwLock};
     use sipnab::output::api::{ApiState, RateLimiter};
     use sipnab::rtp::stream_store::StreamStore;
     use sipnab::sip::dialog_store::DialogStore;
     use std::sync::Arc;
-    use parking_lot::{Mutex, RwLock};
 
     let state = ApiState {
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
@@ -878,10 +869,7 @@ fn constant_time_eq_different_lengths_still_compares() {
 
     // Build a request with wrong-length key
     let mut headers = axum::http::HeaderMap::new();
-    headers.insert(
-        "authorization",
-        "Bearer short".parse().unwrap(),
-    );
+    headers.insert("authorization", "Bearer short".parse().unwrap());
 
     // The check_auth is private, but we can test via the router.
     // For unit testing, verify the constant-time comparison logic:
@@ -897,12 +885,12 @@ fn constant_time_eq_matching_strings() {
     // Integration test: verify that a correct bearer token is accepted
     // by sending a request to the health endpoint (which doesn't require
     // auth) and then to a protected endpoint.
+    use axum::http::{Request, StatusCode};
+    use parking_lot::{Mutex, RwLock};
     use sipnab::output::api::{ApiState, RateLimiter, build_router};
     use sipnab::rtp::stream_store::StreamStore;
     use sipnab::sip::dialog_store::DialogStore;
     use std::sync::Arc;
-    use parking_lot::{Mutex, RwLock};
-    use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     let state = ApiState {
@@ -923,7 +911,11 @@ fn constant_time_eq_matching_strings() {
             .body(axum::body::Body::empty())
             .unwrap();
         let resp = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK, "correct key should be accepted");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "correct key should be accepted"
+        );
     });
 }
 
@@ -932,12 +924,12 @@ fn constant_time_eq_matching_strings() {
 #[cfg(feature = "api")]
 #[test]
 fn constant_time_eq_different_strings_same_length() {
+    use axum::http::{Request, StatusCode};
+    use parking_lot::{Mutex, RwLock};
     use sipnab::output::api::{ApiState, RateLimiter, build_router};
     use sipnab::rtp::stream_store::StreamStore;
     use sipnab::sip::dialog_store::DialogStore;
     use std::sync::Arc;
-    use parking_lot::{Mutex, RwLock};
-    use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     let state = ApiState {
@@ -1026,7 +1018,10 @@ fn scanner_kill_per_destination_rate_limit() {
     }
 
     assert_eq!(sent, 3, "per-dest limit is 3/min: sent={sent}");
-    assert_eq!(limited, 2, "remaining 2 should be rate-limited: limited={limited}");
+    assert_eq!(
+        limited, 2,
+        "remaining 2 should be rate-limited: limited={limited}"
+    );
 
     handle.shutdown();
 }
@@ -1056,7 +1051,10 @@ fn api_rate_limiter_cleans_old_entries() {
     // is present and doesn't panic or corrupt state.
     // Verify the limiter still works correctly:
     let test_ip = IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10));
-    assert!(limiter.check(test_ip), "limiter should still accept new IPs after cleanup");
+    assert!(
+        limiter.check(test_ip),
+        "limiter should still accept new IPs after cleanup"
+    );
 }
 
 // =====================================================================
