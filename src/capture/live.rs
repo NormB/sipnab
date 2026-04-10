@@ -26,11 +26,14 @@ pub fn capture_live(
     tx: Sender<Packet>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    // The "any" pseudo-device on Linux does not support promiscuous mode.
+    let use_promisc = device != "any";
+
     let mut cap = match pcap::Capture::from_device(device)
         .with_context(|| format!("Failed to open device '{device}'"))
         .and_then(|inactive| {
             inactive
-                .promisc(true)
+                .promisc(use_promisc)
                 .snaplen(config.snaplen as i32)
                 .buffer_size((config.buffer_mb * 1_000_000) as i32)
                 .timeout(100) // Return from next_packet every 100ms even without traffic
