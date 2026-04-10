@@ -152,7 +152,8 @@ impl RtpStream {
                     if self.lost_sequences.len() >= 1000 {
                         self.lost_sequences.remove(0);
                     }
-                    self.lost_sequences.push(expected.wrapping_add(offset as u16));
+                    self.lost_sequences
+                        .push(expected.wrapping_add(offset as u16));
                 }
             }
         }
@@ -240,7 +241,10 @@ impl RtpStream {
         // Walk backwards from last_seq for `window_size` packets.
         let mut received = Vec::with_capacity(window_size);
         for i in 0..window_size {
-            let seq = self.last_seq.wrapping_sub(window_size as u16).wrapping_add(i as u16 + 1);
+            let seq = self
+                .last_seq
+                .wrapping_sub(window_size as u16)
+                .wrapping_add(i as u16 + 1);
             received.push(!lost_set.contains(&seq));
         }
 
