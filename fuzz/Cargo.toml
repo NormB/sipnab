@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-sipnab = { path = ".." }
+sipnab = { path = "..", features = ["hep"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [[bin]]
@@ -27,3 +27,7 @@ path = "fuzz_targets/rtp_parser.rs"
 [[bin]]
 name = "fuzz_filter_dsl"
 path = "fuzz_targets/filter_dsl.rs"
+
+[[bin]]
+name = "fuzz_hep_parser"
+path = "fuzz_targets/hep_parser.rs"
