@@ -117,12 +117,34 @@ fn main() {
         })
     };
 
-    let Some(source) = source else {
-        log::info!(
-            "sipnab v{} — no capture source specified (use -d, -I, or -L)",
-            env!("CARGO_PKG_VERSION")
-        );
-        return;
+    let source = match source {
+        Some(s) => s,
+        None => {
+            // Auto-detect default network interface (matches sngrep behavior)
+            match capture::device::find_default_device() {
+                Ok(device) => {
+                    log::info!("Auto-detected capture device: {}", device);
+                    CaptureSource::Live { device }
+                }
+                Err(e) => {
+                    let devices = capture::device::list_devices();
+                    if devices.is_empty() {
+                        log::error!(
+                            "No capture device found. Use -d <device> or -I <file>\n  \
+                             Try: sudo sipnab"
+                        );
+                    } else {
+                        log::error!(
+                            "{}\n  Available devices: {}\n  Try: sipnab -d {}",
+                            e,
+                            devices.join(", "),
+                            devices[0]
+                        );
+                    }
+                    std::process::exit(1);
+                }
+            }
+        }
     };
 
     // 8. Build CaptureConfig from CLI + config file
@@ -248,7 +270,25 @@ fn main() {
             log::debug!("Capture source opened successfully");
         }
         Ok(Err(e)) => {
-            log::error!("Capture source failed to open: {e}");
+            let is_permission = e.contains("ermission")
+                || e.contains("EPERM")
+                || e.contains("Operation not permitted")
+                || e.contains("socket:");
+            if is_permission {
+                let dev_name = match &handle.source {
+                    CaptureSource::Live { device } => device.as_str(),
+                    _ => "capture source",
+                };
+                log::error!(
+                    "Permission denied on '{}'. Run with sudo or set capabilities:\n  \
+                     sudo sipnab\n  \
+                     # or (Linux only):\n  \
+                     sudo setcap cap_net_raw+ep $(which sipnab)",
+                    dev_name
+                );
+            } else {
+                log::error!("Capture source failed to open: {e}");
+            }
             std::process::exit(1);
         }
         Err(_) => {

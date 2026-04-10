@@ -6,6 +6,7 @@
 
 #[cfg(feature = "tls")]
 pub mod decrypt;
+pub mod device;
 pub mod file;
 #[cfg(feature = "hep")]
 pub mod hep;
