@@ -14,6 +14,7 @@ pub mod parser;
 pub mod response_codes;
 pub mod sdp;
 pub mod sdp_timeline;
+pub mod stir_shaken;
 pub mod timing;
 
 pub use message::{SipHeader, SipMessage};

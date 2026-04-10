@@ -16,8 +16,10 @@
 //! - [`diagnosis`] — Media path issue detection (one-way audio, NAT, no media)
 
 pub mod diagnosis;
+pub mod dtmf;
 pub mod heuristic;
 pub mod parser;
+pub mod quality;
 pub mod rtcp;
 pub mod stream;
 pub mod stream_store;

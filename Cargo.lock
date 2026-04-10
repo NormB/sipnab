@@ -2136,6 +2136,7 @@ dependencies = [
  "crossterm 0.28.1",
  "env_logger",
  "etherparse",
+ "http-body-util",
  "libc",
  "log",
  "nom",
@@ -2154,6 +2155,7 @@ dependencies = [
  "tokio",
  "toml",
  "tonic",
+ "tower 0.5.3",
  "unicode-width",
  "zeroize",
 ]
