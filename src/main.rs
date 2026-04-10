@@ -52,6 +52,9 @@ fn main() {
         std::process::exit(2);
     }
 
+    // 4a. Warn about unimplemented flags that were set
+    cli.warn_unimplemented_flags();
+
     // 5. Load configuration
     let loaded = match Config::load(cli.config.as_deref(), cli.no_config) {
         Ok(loaded) => {
@@ -699,11 +702,55 @@ fn run_batch_mode(
     // 21. Post-capture output
     generate_reports(&cli, &dialog_store, &stream_store);
 
+    // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
+    if cli.wireshark {
+        let call_ids: Vec<&str> = dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+        if call_ids.is_empty() {
+            eprintln!("No SIP dialogs to generate Wireshark filter for.");
+        } else {
+            let filter_parts: Vec<String> = call_ids
+                .iter()
+                .map(|id| format!("sip.Call-ID == \"{}\"", id))
+                .collect();
+            println!("{}", filter_parts.join(" || "));
+        }
+    }
+
+    // 21b. --tshark-filter: print full tshark command for matched dialogs
+    if cli.tshark_filter.is_some() || (cli.wireshark && cli.input.is_some()) {
+        if let Some(ref _tshark_expr) = cli.tshark_filter {
+            // User provided a custom tshark filter expression
+            let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
+            println!("tshark -r {} -Y '{}' -V", input_file, _tshark_expr);
+        } else if cli.input.is_some() {
+            // Generate tshark command from tracked dialogs (only when --wireshark + -I)
+            let call_ids: Vec<&str> = dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+            if !call_ids.is_empty() {
+                let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
+                let filter_parts: Vec<String> = call_ids
+                    .iter()
+                    .map(|id| format!("sip.Call-ID == \"{}\"", id))
+                    .collect();
+                println!(
+                    "tshark -r {} -Y '{}' -V",
+                    input_file,
+                    filter_parts.join(" || ")
+                );
+            }
+        }
+    }
+
     // 22. Summary
     if !cli.quiet {
         log::info!(
             "sipnab: {total_count} packets captured, {sip_count} SIP messages, {rtp_count} RTP streams",
         );
+
+        // Helpful guidance when no SIP traffic was found
+        if sip_count == 0 {
+            eprintln!("No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).");
+            eprintln!("Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.");
+        }
     }
 }
 
@@ -791,6 +838,15 @@ fn process_parsed_packet(
                         .map(|d| format!("{:?}", d.state));
 
                     dialog_store.process_message(sip_msg.clone());
+
+                    // Apply --tag to the dialog
+                    if let Some(ref tag_label) = cli.tag
+                        && let Some(call_id) = sip_msg.call_id()
+                        && let Some(dialog) = dialog_store.get_mut(call_id)
+                        && !dialog.tags.contains(tag_label)
+                    {
+                        dialog.tags.push(tag_label.clone());
+                    }
 
                     // Check if state changed, fire event
                     if let Some(call_id) = sip_msg.call_id()
