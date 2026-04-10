@@ -67,6 +67,10 @@ grpc = ["dep:tonic", "dep:prost"]
 api = ["dep:axum", "dep:tokio"]
 full = ["tui", "tls", "hep", "grpc", "api"]
 
+[lib]
+name = "sipnab"
+path = "src/lib.rs"
+
 [profile.release]
 lto = true
 codegen-units = 1
