@@ -206,11 +206,7 @@ pub fn render_call_list(
         let empty_table = Table::new(Vec::<Row>::new(), widths)
             .header(header)
             .column_spacing(1);
-        frame.render_stateful_widget(
-            empty_table,
-            table_area,
-            &mut state.table_state,
-        );
+        frame.render_stateful_widget(empty_table, table_area, &mut state.table_state);
 
         // Render help message below the header row
         if table_area.height > 1 {
