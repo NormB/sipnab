@@ -732,6 +732,9 @@ Testing is not a phase — every phase includes its own tests. This section defi
 | **Performance tests** | Throughput benchmarks against targets, regression detection | Phase 1 and 2 exit, then CI | `criterion` benchmarks, fail on >10% regression |
 | **Comparison tests** | Same pcap through sipnab vs sngrep/sipgrep, diff outputs | Phase 2 onward | Custom test harness, sngrep installed in CI |
 | **Security tests** | Malformed input corpus, oversized messages, hash flooding, ReDoS patterns, scanner-kill amplification | Phase 2 onward | Dedicated `tests/security/` directory |
+| **TUI snapshot tests** | Render views to TestBackend buffer, snapshot with `insta`, detect layout/color regressions | Phase 3 onward | `ratatui::backend::TestBackend` + `insta` crate |
+| **TUI state machine tests** | Key events → App state transitions, navigation, filter application, selection | Phase 3 onward | Unit tests on `App` struct, no terminal needed |
+| **TUI end-to-end tests** | Spawn binary in PTY, send keystrokes, verify terminal output | Phase 3 onward | `expectrl` crate, ~2s/test |
 
 ### Pcap Test Corpus (≥ 50 pcaps, built incrementally)
 
@@ -1699,6 +1702,9 @@ RTP is parsed and tracked from Phase 2 onward — it is not deferred to a later 
 - [ ] Terminal resize (SIGWINCH) redraws correctly at any size ≥ 80×24
 - [ ] Unicode display names and international caller IDs render correctly
 - [ ] Idle CPU < 0.5% with TUI open and no traffic (60s sample)
+- [ ] **TUI snapshot tests pass** for all views at 80×24 and 120×40 (insta snapshots committed)
+- [ ] **TUI state machine tests pass** for all key events and view transitions
+- [ ] **TUI end-to-end PTY tests pass** for launch, navigation, and quit
 
 ### 3.1 — UI Framework
 
@@ -1924,6 +1930,46 @@ Top-level RTP stream view, peer of Call List, accessible via Tab key.
 - [ ] `docs/tui-views.md` — guide for all additional views: help, diff, filter dialog, save dialog, settings, column select, statistics, dashboard
 - [ ] `docs/tui-dashboard.md` — dashboard user guide: what each gauge/chart shows, how to interpret, real-time monitoring workflow
 - [ ] Update `man/sipnab.1` with TUI section
+
+### 3.6 — TUI Automated Testing
+
+Automated testing for the interactive TUI using three complementary approaches.
+
+- [ ] **Snapshot tests (ratatui TestBackend + insta):**
+  - Render each view (call list, stream list, call flow, raw message, help, statistics) to `TestBackend` buffer
+  - Snapshot buffer content via `insta::assert_snapshot!()`
+  - Verify column alignment, color coding, diagnosis indicators
+  - Test at multiple terminal sizes (80×24, 120×40, 200×60)
+  - Snapshots committed to git; `cargo insta review` for visual diff on changes
+- [ ] **State machine tests (App struct, no terminal):**
+  - Tab switches between CallList and StreamList
+  - Enter on dialog opens CallFlow, Esc returns to CallList
+  - F1 opens Help, Esc returns
+  - F7 opens filter dialog; typing + Enter applies DSL filter; invalid filter shows error
+  - Up/Down changes selection index
+  - Space toggles multi-select
+  - 'q' sets should_quit
+  - Filter applied → visible_dialog_count reflects filtering
+  - Sort by column → order changes correctly
+- [ ] **End-to-end PTY tests (expectrl):**
+  - Launch `sipnab -I tests/fixtures/sip_call.pcap` → TUI renders, "Call-ID" visible
+  - Tab → "SSRC" visible (stream list header)
+  - Enter → ladder diagram with "INVITE" arrow
+  - 'q' → clean exit (process terminates)
+  - F1 → help text with "Keyboard Shortcuts" visible
+
+**Gate — 3.6 is done when:**
+- [ ] ≥ 10 snapshot tests covering all major views, committed via `insta`
+- [ ] ≥ 10 state machine tests covering all key events and view transitions
+- [ ] ≥ 5 end-to-end PTY tests covering launch, navigation, and quit
+- [ ] All snapshot tests pass on 80×24 and 120×40 terminal sizes
+- [ ] State machine tests verify filter DSL application narrows visible dialogs
+- [ ] PTY tests run in CI (added to `.github/workflows/ci.yml`)
+- [ ] No test depends on specific terminal emulator features
+
+**Docs — 3.6 deliverables:**
+- [ ] `docs/internals/tui-testing.md` — how TUI tests work: snapshot approach, state machine tests, PTY tests, how to update snapshots, how to add new tests
+- [ ] `tests/snapshots/README.md` — snapshot inventory and regeneration instructions
 
 ---
 
