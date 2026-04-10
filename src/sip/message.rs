@@ -165,6 +165,21 @@ impl SipMessage {
     pub fn to_tag(&self) -> Option<&str> {
         extract_tag(self.to_header()?)
     }
+
+    /// Extract the display name from the `From` header.
+    ///
+    /// For `From: "Alice" <sip:1001@example.com>;tag=abc` returns `Some("Alice")`.
+    /// For `From: <sip:1001@example.com>;tag=abc` returns `None`.
+    pub fn from_display(&self) -> Option<String> {
+        extract_display_name(self.from_header()?)
+    }
+
+    /// Extract the display name from the `To` header.
+    ///
+    /// For `To: "Bob" <sip:1002@example.com>` returns `Some("Bob")`.
+    pub fn to_display(&self) -> Option<String> {
+        extract_display_name(self.to_header()?)
+    }
 }
 
 /// Extract the user part from a SIP URI inside a header value.
@@ -188,6 +203,34 @@ fn extract_uri_user(header_value: &str) -> Option<String> {
         return None;
     }
     Some(user.to_string())
+}
+
+/// Extract the display name from a SIP From/To header value.
+///
+/// Handles both quoted forms (`"Alice" <sip:...>`) and bare token forms
+/// (`Alice <sip:...>`). Returns `None` if no display name is present.
+fn extract_display_name(header_value: &str) -> Option<String> {
+    let trimmed = header_value.trim();
+
+    // Quoted display name: "Name" <sip:...>
+    if let Some(after_quote) = trimmed.strip_prefix('"') {
+        let end_quote = after_quote.find('"')?;
+        let name = &after_quote[..end_quote];
+        if name.is_empty() {
+            return None;
+        }
+        return Some(name.to_string());
+    }
+
+    // Bare token display name: Name <sip:...>
+    if let Some(angle_pos) = trimmed.find('<') {
+        let before_angle = trimmed[..angle_pos].trim();
+        if !before_angle.is_empty() {
+            return Some(before_angle.to_string());
+        }
+    }
+
+    None
 }
 
 /// Extract the `tag=` parameter from a From/To header value.

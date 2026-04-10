@@ -1,0 +1,504 @@
+//! Dialog store for tracking concurrent SIP conversations.
+//!
+//! [`DialogStore`] is the central data structure that receives parsed SIP
+//! messages and routes them to the appropriate [`SipDialog`]. It handles
+//! dialog creation, state machine updates, timing, SDP tracking,
+//! retransmission detection, and capacity-based eviction.
+
+use std::collections::HashMap;
+
+use super::SipMessage;
+use super::dialog::{DialogState, SipDialog, update_state};
+use super::sdp_timeline::track_sdp;
+use super::timing::update_timing;
+
+/// In-memory store of active and completed SIP dialogs.
+///
+/// Dialogs are indexed by Call-ID for O(1) lookup. When the store reaches
+/// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
+/// to make room for new ones.
+pub struct DialogStore {
+    /// All tracked dialogs, in insertion order.
+    dialogs: Vec<SipDialog>,
+    /// Call-ID to index mapping for fast lookup.
+    index: HashMap<String, usize>,
+    /// Maximum number of dialogs to retain.
+    max_dialogs: usize,
+    /// Whether to evict the oldest dialog when at capacity.
+    rotate: bool,
+}
+
+impl DialogStore {
+    /// Create a new dialog store with the given capacity limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_dialogs` — Maximum number of dialogs to track simultaneously.
+    /// * `rotate` — If `true`, evict the oldest dialog when at capacity.
+    ///   If `false`, new messages for unknown Call-IDs are silently dropped
+    ///   when at capacity.
+    pub fn new(max_dialogs: usize, rotate: bool) -> Self {
+        Self {
+            dialogs: Vec::with_capacity(max_dialogs.min(1024)),
+            index: HashMap::with_capacity(max_dialogs.min(1024)),
+            max_dialogs,
+            rotate,
+        }
+    }
+
+    /// Process an incoming SIP message.
+    ///
+    /// This is the main entry point. It:
+    /// 1. Extracts the Call-ID from the message
+    /// 2. Looks up an existing dialog or creates a new one
+    /// 3. Detects retransmissions (same CSeq + method already seen)
+    /// 4. Updates the dialog state machine
+    /// 5. Updates transaction timing
+    /// 6. Tracks SDP if present
+    /// 7. Evicts the oldest dialog if at capacity and `rotate` is enabled
+    ///
+    /// Messages without a Call-ID header are silently dropped.
+    pub fn process_message(&mut self, msg: SipMessage) {
+        let call_id = match msg.call_id() {
+            Some(id) => id.to_string(),
+            None => return,
+        };
+
+        if let Some(&idx) = self.index.get(&call_id) {
+            // Existing dialog
+            let dialog = &mut self.dialogs[idx];
+
+            // Retransmission detection: same CSeq number + method already seen
+            if is_retransmission(dialog, &msg) {
+                let cseq_key = cseq_key(&msg);
+                if let Some(key) = cseq_key {
+                    *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
+                }
+                dialog.updated_at = msg.timestamp;
+                return;
+            }
+
+            // Update state machine
+            update_state(dialog, &msg);
+
+            // Update timing
+            update_timing(&mut dialog.timing, &msg, &dialog.method.clone());
+
+            // Track SDP
+            track_sdp(&mut dialog.sdp_timeline, &msg);
+
+            // Record the message
+            dialog.messages.push(msg.clone());
+            dialog.updated_at = msg.timestamp;
+        } else {
+            // New dialog — check capacity
+            if self.dialogs.len() >= self.max_dialogs {
+                if self.rotate {
+                    self.evict_oldest();
+                } else {
+                    return;
+                }
+            }
+
+            // Create the new dialog
+            if let Some(mut dialog) = SipDialog::new(&msg) {
+                // Update timing for the initial message
+                update_timing(&mut dialog.timing, &msg, &dialog.method.clone());
+
+                // Track SDP for the initial message
+                track_sdp(&mut dialog.sdp_timeline, &msg);
+
+                let idx = self.dialogs.len();
+                self.index.insert(call_id, idx);
+                self.dialogs.push(dialog);
+            }
+        }
+    }
+
+    /// Look up a dialog by Call-ID.
+    pub fn get(&self, call_id: &str) -> Option<&SipDialog> {
+        self.index.get(call_id).map(|&idx| &self.dialogs[idx])
+    }
+
+    /// Iterate over all tracked dialogs.
+    pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {
+        self.dialogs.iter()
+    }
+
+    /// Return the total number of tracked dialogs.
+    pub fn len(&self) -> usize {
+        self.dialogs.len()
+    }
+
+    /// Return `true` if the store contains no dialogs.
+    pub fn is_empty(&self) -> bool {
+        self.dialogs.is_empty()
+    }
+
+    /// Count dialogs in an active state (Trying, Ringing, InCall, Pending, Active).
+    pub fn active_count(&self) -> usize {
+        self.dialogs
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.state,
+                    DialogState::Trying
+                        | DialogState::Ringing
+                        | DialogState::InCall
+                        | DialogState::Pending
+                        | DialogState::Active
+                )
+            })
+            .count()
+    }
+
+    /// Evict the oldest dialog (first in the vector) to make room.
+    fn evict_oldest(&mut self) {
+        if self.dialogs.is_empty() {
+            return;
+        }
+
+        // Remove the first dialog
+        let evicted = self.dialogs.remove(0);
+        self.index.remove(&evicted.call_id);
+
+        // Rebuild the index since all indices shifted by -1
+        self.index.clear();
+        for (idx, dialog) in self.dialogs.iter().enumerate() {
+            self.index.insert(dialog.call_id.clone(), idx);
+        }
+    }
+}
+
+/// Detect whether `msg` is a retransmission of an already-seen message
+/// in the dialog.
+///
+/// A message is considered a retransmission if another message with the
+/// same CSeq number, CSeq method, and request/response type already
+/// exists in the dialog's message list. For responses, the status code
+/// must also match.
+fn is_retransmission(dialog: &SipDialog, msg: &SipMessage) -> bool {
+    let (new_seq, new_method) = match msg.cseq() {
+        Some(cseq) => cseq,
+        None => return false,
+    };
+
+    dialog.messages.iter().any(|existing| {
+        if existing.is_request != msg.is_request {
+            return false;
+        }
+        // For responses, also match by status code
+        if !msg.is_request && existing.status_code != msg.status_code {
+            return false;
+        }
+        if let Some((seq, method)) = existing.cseq() {
+            seq == new_seq && method == new_method
+        } else {
+            false
+        }
+    })
+}
+
+/// Build a CSeq key string (`"<num> <method>"`) from a SIP message for
+/// retransmission counting.
+fn cseq_key(msg: &SipMessage) -> Option<String> {
+    let (num, method) = msg.cseq()?;
+    Some(format!("{num} {method}"))
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, Utc};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn localhost() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+    }
+
+    fn base_ts() -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg.extend_from_slice(body);
+        msg
+    }
+
+    fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+            .expect("should parse INVITE")
+    }
+
+    fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+            .expect("should parse 200 OK")
+    }
+
+    fn make_bye_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "BYE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 2 BYE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse BYE")
+    }
+
+    #[test]
+    fn invite_and_200_creates_incall_dialog() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+
+        store.process_message(make_invite_msg("call-1@test", t0));
+        store.process_message(make_200_ok("call-1@test", t1));
+
+        assert_eq!(store.len(), 1);
+        let dialog = store.get("call-1@test").expect("dialog should exist");
+        assert_eq!(dialog.state, DialogState::InCall);
+        assert_eq!(dialog.messages.len(), 2);
+    }
+
+    #[test]
+    fn max_dialogs_with_rotate_evicts_oldest() {
+        let mut store = DialogStore::new(2, true);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("call-1@test", t0));
+        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1)));
+
+        assert_eq!(store.len(), 2);
+
+        // Third dialog should evict "call-1@test"
+        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2)));
+
+        assert_eq!(store.len(), 2);
+        assert!(store.get("call-1@test").is_none());
+        assert!(store.get("call-2@test").is_some());
+        assert!(store.get("call-3@test").is_some());
+    }
+
+    #[test]
+    fn max_dialogs_without_rotate_drops_new() {
+        let mut store = DialogStore::new(2, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("call-1@test", t0));
+        store.process_message(make_invite_msg("call-2@test", t0 + TimeDelta::seconds(1)));
+
+        // Third dialog should be dropped silently
+        store.process_message(make_invite_msg("call-3@test", t0 + TimeDelta::seconds(2)));
+
+        assert_eq!(store.len(), 2);
+        assert!(store.get("call-3@test").is_none());
+    }
+
+    #[test]
+    fn retransmission_dedup() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::milliseconds(500);
+        let t2 = t0 + TimeDelta::milliseconds(1000);
+
+        // Send INVITE three times (same CSeq)
+        store.process_message(make_invite_msg("retrans@test", t0));
+        store.process_message(make_invite_msg("retrans@test", t1));
+        store.process_message(make_invite_msg("retrans@test", t2));
+
+        let dialog = store.get("retrans@test").expect("dialog should exist");
+        // Only the first INVITE should be in the messages list
+        assert_eq!(dialog.messages.len(), 1);
+        // Retransmit count should be 2 (second and third are retransmissions)
+        assert_eq!(dialog.timing.total_retransmits(), 2);
+    }
+
+    #[test]
+    fn multiple_dialogs_independent() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("call-a@test", t0));
+        store.process_message(make_invite_msg("call-b@test", t0));
+        store.process_message(make_invite_msg("call-c@test", t0));
+
+        assert_eq!(store.len(), 3);
+        assert!(store.get("call-a@test").is_some());
+        assert!(store.get("call-b@test").is_some());
+        assert!(store.get("call-c@test").is_some());
+    }
+
+    #[test]
+    fn full_call_lifecycle() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("lifecycle@test", t0));
+        store.process_message(make_200_ok("lifecycle@test", t0 + TimeDelta::seconds(2)));
+        store.process_message(make_bye_msg("lifecycle@test", t0 + TimeDelta::seconds(60)));
+
+        let dialog = store.get("lifecycle@test").expect("dialog should exist");
+        assert_eq!(dialog.state, DialogState::Completed);
+        assert_eq!(dialog.messages.len(), 3);
+    }
+
+    #[test]
+    fn active_count_tracks_live_dialogs() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Two active calls
+        store.process_message(make_invite_msg("active-1@test", t0));
+        store.process_message(make_invite_msg("active-2@test", t0));
+
+        assert_eq!(store.active_count(), 2);
+
+        // Complete one
+        store.process_message(make_200_ok("active-1@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_bye_msg("active-1@test", t0 + TimeDelta::seconds(10)));
+
+        assert_eq!(store.active_count(), 1);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn message_without_call_id_is_dropped() {
+        let mut store = DialogStore::new(100, false);
+
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, "UDP")
+            .expect("should parse");
+
+        store.process_message(msg);
+        assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn is_empty_on_new_store() {
+        let store = DialogStore::new(100, false);
+        assert!(store.is_empty());
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.active_count(), 0);
+    }
+
+    #[test]
+    fn iter_returns_all_dialogs() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("iter-1@test", t0));
+        store.process_message(make_invite_msg("iter-2@test", t0));
+
+        let call_ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(call_ids.len(), 2);
+        assert!(call_ids.contains(&"iter-1@test"));
+        assert!(call_ids.contains(&"iter-2@test"));
+    }
+
+    #[test]
+    fn timing_populated_through_store() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::milliseconds(1500);
+
+        store.process_message(make_invite_msg("timed@test", t0));
+        store.process_message(make_200_ok("timed@test", t1));
+
+        let dialog = store.get("timed@test").expect("dialog should exist");
+        assert_eq!(dialog.timing.setup_ms(), Some(1500));
+    }
+
+    #[test]
+    fn different_response_codes_not_retransmission() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::milliseconds(100);
+        let t2 = t0 + TimeDelta::milliseconds(500);
+
+        store.process_message(make_invite_msg("multi-resp@test", t0));
+
+        // 100 Trying
+        let trying = {
+            let raw = build_sip(
+                "SIP/2.0 100 Trying",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: multi-resp@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse")
+        };
+        store.process_message(trying);
+
+        // 180 Ringing (different status code, same CSeq — NOT a retransmission)
+        let ringing = {
+            let raw = build_sip(
+                "SIP/2.0 180 Ringing",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: multi-resp@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse")
+        };
+        store.process_message(ringing);
+
+        let dialog = store.get("multi-resp@test").expect("dialog should exist");
+        assert_eq!(dialog.messages.len(), 3); // INVITE + 100 + 180
+        assert_eq!(dialog.timing.total_retransmits(), 0);
+    }
+}

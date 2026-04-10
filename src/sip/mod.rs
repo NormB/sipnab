@@ -5,11 +5,15 @@
 //! from the capture engine's [`ParsedPacket`](crate::capture::ParsedPacket)
 //! payloads.
 
+pub mod dialog;
+pub mod dialog_store;
 pub mod matcher;
 pub mod message;
 pub mod parser;
 pub mod response_codes;
 pub mod sdp;
+pub mod sdp_timeline;
+pub mod timing;
 
 pub use message::{SipHeader, SipMessage};
 pub use parser::parse_sip;
