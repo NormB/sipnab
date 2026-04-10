@@ -120,11 +120,7 @@ impl SipMatcher {
     /// final boolean is negated.
     pub fn matches(&self, msg: &SipMessage) -> bool {
         let positive = self.matches_positive(msg);
-        if self.invert {
-            !positive
-        } else {
-            positive
-        }
+        if self.invert { !positive } else { positive }
     }
 
     /// Returns `true` if any filter criterion is configured.
