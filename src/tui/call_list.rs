@@ -6,7 +6,7 @@
 //! show diagnosis warning indicators.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
@@ -187,6 +187,10 @@ pub fn render_call_list(
     .style(header_style)
     .bottom_margin(0);
 
+    // Dynamic column widths based on available terminal width.
+    // Fixed columns have minimum widths; From/To fill remaining space.
+    let widths = compute_column_widths(table_area.width);
+
     let dialogs: Vec<_> = if let Some(filter) = filter {
         store
             .iter()
@@ -196,16 +200,34 @@ pub fn render_call_list(
         store.iter().collect()
     };
 
-    // Show a centered help message when there are no dialogs
+    // Always render the header, even when empty (sngrep style).
+    // Show a help message below the header if there are no dialogs.
     if dialogs.is_empty() {
-        frame.render_widget(
-            Paragraph::new(
-                "No SIP dialogs found.\n\nIf reading a pcap file, it may not contain SIP traffic.\nPress 'q' to quit, F1 for help.",
-            )
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(Color::DarkGray)),
+        let empty_table = Table::new(Vec::<Row>::new(), widths)
+            .header(header)
+            .column_spacing(1);
+        frame.render_stateful_widget(
+            empty_table,
             table_area,
+            &mut state.table_state,
         );
+
+        // Render help message below the header row
+        if table_area.height > 1 {
+            let msg_area = Rect {
+                x: table_area.x,
+                y: table_area.y + 1,
+                width: table_area.width,
+                height: table_area.height - 1,
+            };
+            frame.render_widget(
+                Paragraph::new(
+                    "\n  No SIP dialogs found.\n\n  If reading a pcap file, it may not contain SIP traffic.\n  Press 'q' to quit, F1 for help.",
+                )
+                .style(Style::default().fg(Color::DarkGray)),
+                msg_area,
+            );
+        }
         return;
     }
 
@@ -304,19 +326,6 @@ pub fn render_call_list(
     state.table_state.select(Some(relative_selected));
     *state.table_state.offset_mut() = 0; // rows are pre-sliced, offset is 0
 
-    let widths = [
-        Constraint::Length(5),  // #
-        Constraint::Length(10), // Method
-        Constraint::Length(16), // From
-        Constraint::Length(16), // To
-        Constraint::Length(16), // Source
-        Constraint::Length(16), // Destination
-        Constraint::Length(12), // State
-        Constraint::Length(5),  // Msgs
-        Constraint::Length(10), // Date
-        Constraint::Length(8),  // PDD
-    ];
-
     // sngrep-style: no borders, reverse video for selected row
     let table = Table::new(rows, widths)
         .header(header)
@@ -329,6 +338,72 @@ pub fn render_call_list(
     // Restore absolute selected index so the rest of the app works correctly
     state.table_state.select(Some(selected));
     *state.table_state.offset_mut() = scroll_offset;
+}
+
+// ── Column width calculation ───────────────────────────────────────
+
+/// Compute dynamic column widths based on available terminal width.
+///
+/// Fixed-width columns (index, method, state, msgs, date, pdd) keep their
+/// minimum sizes. From/To and Source/Destination share the remaining space
+/// proportionally.
+fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
+    // Compute explicit column widths to guarantee no truncation of key fields.
+    //
+    // Fixed columns: # + Method + State + Msgs + Date + PDD
+    // Flex columns: From, To, Source, Destination share remaining space.
+    //
+    // At >= 120 cols: all columns generous, From/To visible.
+    // At 80-119 cols: From/To get smaller but still visible.
+    // At < 80 cols:   From/To get minimum, everything compressed.
+
+    // Column spacing consumed by ratatui: 1px between each of 10 cols = 9,
+    // plus 2 for the highlight symbol ">" prefix.
+    let overhead: u16 = 11;
+
+    if total_width >= 120 {
+        // Fixed: #(5) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8) = 48
+        let fixed: u16 = 48 + overhead;
+        let flex = total_width.saturating_sub(fixed);
+        // Src/Dst each get 21+, From/To split remainder
+        let addr_each = 21.min(flex / 4);
+        let from_to_pool = flex.saturating_sub(addr_each * 2);
+        let from_w = from_to_pool / 2;
+        let to_w = from_to_pool - from_w;
+        vec![
+            Constraint::Length(5),
+            Constraint::Length(10),
+            Constraint::Length(from_w),
+            Constraint::Length(to_w),
+            Constraint::Length(addr_each),
+            Constraint::Length(addr_each),
+            Constraint::Length(12),
+            Constraint::Length(5),
+            Constraint::Length(8),
+            Constraint::Length(8),
+        ]
+    } else {
+        // Tighter layout: #(4) + Method(8) + State(10) + Msgs(4) + Date(8) + PDD(6) = 40
+        let fixed: u16 = 40 + overhead;
+        let flex = total_width.saturating_sub(fixed);
+        // Give Source/Dest ~40% each, From/To ~10% each of flex
+        let addr_each = (flex * 2 / 5).max(11); // at least "Destination" header
+        let from_to_pool = flex.saturating_sub(addr_each * 2);
+        let from_w = (from_to_pool / 2).max(4);
+        let to_w = from_to_pool.saturating_sub(from_w).max(4);
+        vec![
+            Constraint::Length(4),
+            Constraint::Length(8),
+            Constraint::Length(from_w),
+            Constraint::Length(to_w),
+            Constraint::Length(addr_each),
+            Constraint::Length(addr_each),
+            Constraint::Length(10),
+            Constraint::Length(4),
+            Constraint::Length(8),
+            Constraint::Length(6),
+        ]
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

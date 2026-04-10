@@ -5,14 +5,12 @@ expression: output
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)
  Match Expression:     BPF Filter:
  Display Filter:
-                              No SIP dialogs found.
+ #   Method   From To   Source      Destination State      Msgs Date     PDD
 
-             If reading a pcap file, it may not contain SIP traffic.
-                         Press 'q' to quit, F1 for help.
+  No SIP dialogs found.
 
-
-
-
+  If reading a pcap file, it may not contain SIP traffic.
+  Press 'q' to quit, F1 for help.
 
 
 
@@ -25,4 +23,6 @@ expression: output
 
 
 
-Esc Quit  Enter Show  F2 Save  F3 Search  F4 Extended  F5 Clear  F6 Raw  F7 Filt
+
+
+Esc Quit  Enter Show  F2 Save  F3 Search  F6 Raw  F7 Filter  F9 Addrs

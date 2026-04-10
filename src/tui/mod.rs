@@ -394,13 +394,19 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Red)
     };
 
+    let content = format!(
+        " Current Mode: {}    Dialogs: {} ({} displayed)",
+        app.capture_mode, total_count, displayed_count
+    );
+    let padded = format!("{:<width$}", content, width = area.width as usize);
+
+    // Build spans with styling for the mode portion
+    let mode_start = " Current Mode: ".len();
+    let mode_end = mode_start + app.capture_mode.len();
     let spans = vec![
-        Span::raw(" Current Mode: "),
-        Span::styled(app.capture_mode.clone(), mode_style),
-        Span::raw(format!(
-            "    Dialogs: {} ({} displayed)",
-            total_count, displayed_count
-        )),
+        Span::raw(&padded[..mode_start]),
+        Span::styled(padded[mode_start..mode_end].to_string(), mode_style),
+        Span::raw(padded[mode_end..].to_string()),
     ];
 
     let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
@@ -411,11 +417,24 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let yellow = Style::default().fg(Color::Yellow);
 
+    // Build styled spans with trailing padding for solid background
+    let prefix1 = " Match Expression: ";
+    let filter_text = &app.active_filter_text;
+    let mid = "    BPF Filter: ";
+    let bpf_text = &app.bpf_filter;
+    let styled_len = prefix1.len() + filter_text.len() + mid.len() + bpf_text.len();
+    let trailing_pad = if styled_len < area.width as usize {
+        " ".repeat(area.width as usize - styled_len)
+    } else {
+        String::new()
+    };
+
     let spans = vec![
-        Span::raw(" Match Expression: "),
-        Span::styled(app.active_filter_text.clone(), yellow),
-        Span::raw("    BPF Filter: "),
-        Span::styled(app.bpf_filter.clone(), yellow),
+        Span::raw(prefix1),
+        Span::styled(filter_text.clone(), yellow),
+        Span::raw(mid),
+        Span::styled(bpf_text.clone(), yellow),
+        Span::raw(trailing_pad),
     ];
 
     let line2 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
@@ -424,21 +443,33 @@ fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
 /// Render status line 3 (sngrep-style): `Display Filter: <filter>` or search/error overlay.
 fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let w = area.width as usize;
+
     let spans = if app.search_active {
+        let content = format!(" /{}", app.search_query);
         vec![Span::styled(
-            format!(" /{}", app.search_query),
+            format!("{:<width$}", content, width = w),
             Style::default().fg(Color::Yellow),
         )]
     } else if let Some(ref err) = app.status_error {
+        let content = format!(" {}", err);
         vec![Span::styled(
-            format!(" {}", err),
+            format!("{:<width$}", content, width = w),
             Style::default().fg(Color::Red),
         )]
     } else {
         let yellow = Style::default().fg(Color::Yellow);
+        let prefix = " Display Filter: ";
+        let filter_text = &app.active_filter_text;
+        let trailing = if prefix.len() + filter_text.len() < w {
+            " ".repeat(w - prefix.len() - filter_text.len())
+        } else {
+            String::new()
+        };
         vec![
-            Span::raw(" Display Filter: "),
-            Span::styled(app.active_filter_text.clone(), yellow),
+            Span::raw(prefix),
+            Span::styled(filter_text.clone(), yellow),
+            Span::raw(trailing),
         ]
     };
 
@@ -450,37 +481,68 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 ///
 /// Format: `Esc Quit  Enter Show  F2 Save  ...`
 /// Key names in bold white, labels in default. Full-width dark background.
-/// The bar is context-sensitive based on the current view.
+/// The bar is context-sensitive based on the current view. On narrow
+/// terminals, lower-priority items are dropped to avoid truncation.
 fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
     let key_style = Style::default()
         .fg(Color::White)
         .add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(Color::White);
 
-    let items: &[(&str, &str)] = match view {
-        View::CallList => &[
-            ("Esc", "Quit"),
-            ("Enter", "Show"),
-            ("F2", "Save"),
-            ("F3", "Search"),
-            ("F4", "Extended"),
-            ("F5", "Clear"),
-            ("F6", "Raw"),
-            ("F7", "Filter"),
-            ("F9", "Addrs"),
-            ("F10", "Columns"),
-        ],
-        View::CallFlow(_) => &[
-            ("Esc", "Back"),
-            ("Enter", "Raw"),
-            ("F2", "Save"),
-            ("F5", "Compare"),
-            ("F7", "Filter"),
-            ("F9", "ClearFilter"),
-        ],
-        View::RawMessage { .. } => &[("Esc", "Back"), ("F2", "Save")],
-        View::StreamList => &[("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
-        _ => &[("Esc", "Back")],
+    let width = area.width;
+
+    // Full item sets per view; items near the end are lower priority.
+    let items: Vec<(&str, &str)> = match view {
+        View::CallList => {
+            if width < 80 {
+                vec![
+                    ("Esc", "Quit"),
+                    ("Enter", "Show"),
+                    ("F2", "Save"),
+                    ("F7", "Filter"),
+                ]
+            } else if width < 100 {
+                vec![
+                    ("Esc", "Quit"),
+                    ("Enter", "Show"),
+                    ("F2", "Save"),
+                    ("F3", "Search"),
+                    ("F6", "Raw"),
+                    ("F7", "Filter"),
+                    ("F9", "Addrs"),
+                ]
+            } else {
+                vec![
+                    ("Esc", "Quit"),
+                    ("Enter", "Show"),
+                    ("F2", "Save"),
+                    ("F3", "Search"),
+                    ("F4", "Extended"),
+                    ("F5", "Clear"),
+                    ("F6", "Raw"),
+                    ("F7", "Filter"),
+                    ("F9", "Addrs"),
+                    ("F10", "Columns"),
+                ]
+            }
+        }
+        View::CallFlow(_) => {
+            if width < 80 {
+                vec![("Esc", "Back"), ("Enter", "Raw"), ("F7", "Filter")]
+            } else {
+                vec![
+                    ("Esc", "Back"),
+                    ("Enter", "Raw"),
+                    ("F2", "Save"),
+                    ("F5", "Compare"),
+                    ("F7", "Filter"),
+                    ("F9", "ClearFilter"),
+                ]
+            }
+        }
+        View::RawMessage { .. } => vec![("Esc", "Back"), ("F2", "Save")],
+        View::StreamList => vec![("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
+        _ => vec![("Esc", "Back")],
     };
 
     let mut spans: Vec<Span> = Vec::new();
@@ -490,6 +552,12 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
         }
         spans.push(Span::styled(format!("{key} "), key_style));
         spans.push(Span::styled((*label).to_string(), label_style));
+    }
+
+    // Pad to full width for solid background
+    let content_len: usize = spans.iter().map(|s| s.content.len()).sum();
+    if content_len < width as usize {
+        spans.push(Span::raw(" ".repeat(width as usize - content_len)));
     }
 
     let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
