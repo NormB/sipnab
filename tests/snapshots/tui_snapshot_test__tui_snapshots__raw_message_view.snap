@@ -1,0 +1,35 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 337
+expression: output
+---
+┌ Raw SIP Message [1/4] (Esc: Back | /: Search) ─────────────────────────────────────────┐
+│12:00:00.000 10.0.0.1:5060 -> 10.0.0.2:5060 [UDP]                                       │
+│                                                                                        │
+│INVITE sip:1002@example.com SIP/2.0                                                     │
+│From: "1001" <sip:1001@example.com>;tag=t1                                              │
+│To: "1002" <sip:1002@example.com>                                                       │
+│Call-ID: call-1@test                                                                    │
+│CSeq: 1 INVITE                                                                          │
+│Content-Length: 0                                                                       │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+│                                                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+ sipnab | Raw Message | Dialogs: 3 (active: 1) | Streams: 0 | F1:Help q:Quit

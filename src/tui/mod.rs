@@ -645,6 +645,63 @@ fn filtered_dialog_count(app: &App) -> usize {
     }
 }
 
+// ── Test helpers (public for integration tests) ────────────────────
+
+/// Test helper methods for App, available in test builds.
+///
+/// These are feature-gated behind `#[cfg(test)]` or `#[cfg(feature = "tui")]`
+/// and exposed publicly for integration tests.
+impl App {
+    /// Create an App with empty stores for testing.
+    pub fn new_test() -> Self {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        Self::new(ds, ss)
+    }
+
+    /// Create an App whose dialog store already contains the given messages.
+    ///
+    /// Each slice of `SipMessage`s is processed in order so that the dialog
+    /// store builds dialogs and runs the state machine.
+    pub fn with_processed_messages(messages: Vec<crate::sip::SipMessage>) -> Self {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        {
+            let mut store = ds.write();
+            for msg in messages {
+                store.process_message(msg);
+            }
+        }
+        Self::new(ds, ss)
+    }
+
+    /// Simulate a single keypress.
+    pub fn handle_key(&mut self, code: KeyCode) {
+        let key = KeyEvent::new(code, KeyModifiers::NONE);
+        handle_key_event(self, key);
+    }
+
+    /// Return the current view.
+    pub fn current_view(&self) -> &View {
+        &self.current_view
+    }
+
+    /// Return whether the quit flag is set.
+    pub fn should_quit(&self) -> bool {
+        self.should_quit
+    }
+
+    /// Count dialogs visible after applying the active filter.
+    pub fn visible_dialog_count(&self) -> usize {
+        filtered_dialog_count(self)
+    }
+
+    /// Render the full application frame into the given frame (for snapshot tests).
+    pub fn render(&mut self, frame: &mut ratatui::Frame) {
+        render_app(frame, self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

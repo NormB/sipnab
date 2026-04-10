@@ -1,0 +1,29 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 289
+expression: output
+---
+┌ RTP Streams (Tab: Calls | Esc: Back) ────────────────────────────────────────┐
+│SSRC    Codec   Source  Destina Pkts    Jitter Loss    Duratio Dialog  Status │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+ sipnab | Stream List | Dialogs: 0 (active: 0) | Streams: 0 | F1:Help q:Quit

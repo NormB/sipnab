@@ -59,6 +59,7 @@ prost = { version = "0.13", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
+insta = "1"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

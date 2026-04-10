@@ -1,0 +1,45 @@
+---
+source: tests/tui_snapshot_test.rs
+assertion_line: 352
+expression: output
+---
+┌ Help (Esc to close) ─────────────────────────────────────────────────────────┐
+│sipnab v0.1.0-alpha — Keyboard Shortcuts                                      │
+│                                                                              │
+│Navigation:                                                                   │
+│  ↑/↓ or j/k        Scroll list / view                                        │
+│  Enter             Open selected item                                        │
+│  Esc               Go back to previous view                                  │
+│  Tab               Switch between Call List / Stream List                    │
+│  Home / End        Jump to first / last item                                 │
+│  PgUp / PgDn       Scroll by page                                            │
+│  q                 Quit sipnab                                               │
+│  Ctrl-C            Force quit                                                │
+│                                                                              │
+│Views:                                                                        │
+│  F1                Toggle this help screen                                   │
+│  F2                Save dialog (placeholder)                                 │
+│  F7                Open filter dialog                                        │
+│  s                 Statistics view                                           │
+│  /                 Search within current view                                │
+│                                                                              │
+│Call List:                                                                    │
+│  Space             Toggle multi-select on current row                        │
+│  Enter             Open Call Flow for selected dialog                        │
+│                                                                              │
+│Call Flow:                                                                    │
+│  ↑/↓               Scroll through messages                                   │
+│  Enter             View raw SIP message at current position                  │
+│  Esc               Return to Call List                                       │
+│                                                                              │
+│Raw Message:                                                                  │
+│  ↑/↓               Scroll message text                                       │
+│  PgUp / PgDn       Page scroll                                               │
+│  /                 Search within message (highlights matches)                │
+│  Esc               Return to Call Flow                                       │
+│                                                                              │
+│Stream List:                                                                  │
+│  Tab               Switch back to Call List                                  │
+│  Esc               Return to Call List                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+ sipnab | Help | Dialogs: 0 (active: 0) | Streams: 0 | F1:Help q:Quit
