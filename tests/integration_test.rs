@@ -229,13 +229,23 @@ fn hexdump_shows_hex_output() {
     assert!(stdout.contains('|'), "hexdump should contain ASCII column");
 }
 
-// ── No capture source ───────────────────────────────────────────────
+// ── Auto-detect device (no explicit source) ─────────────────────────
 
 #[test]
-fn no_source_exits_cleanly() {
-    let (_stdout, _stderr, code) = run_sipnab(&["-N", "-F"]);
-    // Should exit 0 with info message, not crash
-    assert_eq!(code, 0);
+fn no_source_auto_detects_device() {
+    let (_stdout, stderr, code) = run_sipnab(&["-N", "-F"]);
+    // With auto-detection, sipnab should NOT print the old "no capture source"
+    // message. It either succeeds (has permissions) or fails on permission/open.
+    assert!(
+        !stderr.contains("no capture source"),
+        "Should auto-detect instead of complaining about no source"
+    );
+    // In unprivileged CI/test environments, expect exit 1 (permission denied).
+    // With permissions (e.g., sudo), exit 0 is fine too.
+    assert!(
+        code == 0 || code == 1,
+        "Expected exit 0 (success) or 1 (permission denied), got {code}"
+    );
 }
 
 // ── Original fixture backward compat ────────────────────────────────
