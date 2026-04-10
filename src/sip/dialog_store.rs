@@ -122,9 +122,7 @@ impl DialogStore {
 
     /// Look up a dialog by Call-ID, returning a mutable reference.
     pub fn get_mut(&mut self, call_id: &str) -> Option<&mut SipDialog> {
-        self.index
-            .get(call_id)
-            .map(|&idx| &mut self.dialogs[idx])
+        self.index.get(call_id).map(|&idx| &mut self.dialogs[idx])
     }
 
     /// Iterate over all tracked dialogs.

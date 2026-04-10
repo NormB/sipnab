@@ -496,10 +496,7 @@ impl Cli {
         let mut warnings: Vec<(&str, &str)> = Vec::new();
 
         if self.portrange != "5060-5061" {
-            warnings.push((
-                "--portrange",
-                "not yet implemented; all ports are captured",
-            ));
+            warnings.push(("--portrange", "not yet implemented; all ports are captured"));
         }
         if self.replay {
             warnings.push((
@@ -520,10 +517,7 @@ impl Cli {
             ));
         }
         if self.pcapng {
-            warnings.push((
-                "--pcapng",
-                "not yet implemented; output uses pcap format",
-            ));
+            warnings.push(("--pcapng", "not yet implemented; output uses pcap format"));
         }
         if self.after.is_some() {
             warnings.push((
@@ -560,16 +554,10 @@ impl Cli {
         #[cfg(not(feature = "tls"))]
         {
             if self.tls_key.is_some() {
-                warnings.push((
-                    "--tls-key",
-                    "requires the 'tls' feature (not compiled in)",
-                ));
+                warnings.push(("--tls-key", "requires the 'tls' feature (not compiled in)"));
             }
             if self.keylog.is_some() {
-                warnings.push((
-                    "--keylog",
-                    "requires the 'tls' feature (not compiled in)",
-                ));
+                warnings.push(("--keylog", "requires the 'tls' feature (not compiled in)"));
             }
             if self.keylog_watch {
                 warnings.push((
@@ -595,16 +583,10 @@ impl Cli {
         #[cfg(not(feature = "api"))]
         {
             if self.api.is_some() {
-                warnings.push((
-                    "--api",
-                    "requires the 'api' feature (not compiled in)",
-                ));
+                warnings.push(("--api", "requires the 'api' feature (not compiled in)"));
             }
             if self.api_key.is_some() {
-                warnings.push((
-                    "--api-key",
-                    "requires the 'api' feature (not compiled in)",
-                ));
+                warnings.push(("--api-key", "requires the 'api' feature (not compiled in)"));
             }
             if self.api_tls_cert.is_some() {
                 warnings.push((

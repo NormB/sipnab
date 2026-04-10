@@ -748,7 +748,9 @@ fn run_batch_mode(
 
         // Helpful guidance when no SIP traffic was found
         if sip_count == 0 {
-            eprintln!("No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).");
+            eprintln!(
+                "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
+            );
             eprintln!("Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.");
         }
     }
