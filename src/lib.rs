@@ -7,6 +7,7 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod output;
+pub mod privilege;
 pub mod rtp;
 pub mod security;
 pub mod signals;
