@@ -48,6 +48,8 @@ base64 = "0.22"
 zeroize = { version = "1", features = ["derive"], optional = true }
 ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", optional = true }
+aes = { version = "0.8", optional = true }
+cbc = { version = "0.1", optional = true }
 
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
@@ -58,6 +60,7 @@ tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
 
 [dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 insta = "1"
 tokio = { version = "1", features = ["full"] }
@@ -65,10 +68,14 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 expectrl = "0.8"
 
+[[bench]]
+name = "parser_bench"
+harness = false
+
 [features]
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width"]
-tls = ["dep:zeroize", "dep:ring", "dep:rustls"]
+tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc"]
 tls-wolfssl = ["tls"]
 tls-openssl = ["tls"]
 hep = []
