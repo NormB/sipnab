@@ -13,7 +13,7 @@ mod tui_state {
 
     use sipnab::sip::SipMessage;
     use sipnab::sip::parser::parse_sip;
-    use sipnab::tui::{App, View};
+    use sipnab::tui::{App, Popup, View};
 
     // ── Helper: SIP message constructors ───────────────────────────────
 
@@ -188,18 +188,21 @@ mod tui_state {
     }
 
     #[test]
-    fn f7_opens_filter_dialog() {
+    fn f7_opens_filter_popup() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        assert_eq!(*app.current_view(), View::FilterDialog);
+        assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
+        // Underlying view is still CallList
+        assert_eq!(*app.current_view(), View::CallList);
     }
 
     #[test]
     fn filter_esc_cancels_without_applying() {
         let mut app = app_with_three_dialogs();
-        app.handle_key(KeyCode::F(7)); // open filter
-        assert_eq!(*app.current_view(), View::FilterDialog);
+        app.handle_key(KeyCode::F(7)); // open filter popup
+        assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
         app.handle_key(KeyCode::Esc); // cancel
+        assert_eq!(app.active_popup(), None);
         assert_eq!(*app.current_view(), View::CallList);
         assert_eq!(app.visible_dialog_count(), 3); // no filter applied
     }
@@ -332,9 +335,9 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList); // stays in call list
         assert_eq!(app.visible_dialog_count(), 3); // filter cleared
 
-        // Now F7 opens filter dialog since no filter is active
+        // Now F7 opens filter popup since no filter is active
         app.handle_key(KeyCode::F(7));
-        assert_eq!(*app.current_view(), View::FilterDialog);
+        assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
         // Submit empty string to clear (no-op since already cleared)
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 3);

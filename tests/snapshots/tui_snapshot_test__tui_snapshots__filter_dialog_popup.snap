@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)
+ Match Expression:     BPF Filter:
+ Display Filter:
+ #   Method   From To   Source      Destination State      Msgs Date     PDD
+
+  No SIP dialogs found.
+          ┌ Filter ──────────────────────────────────────────────────┐
+  If readi│                                                          │
+  Press 'q│  Expression: method == 'INVITE'                          │
+          │                                                          │
+          │  Examples: method == 'INVITE', state == 'Failed'         │
+          │            from =~ '1001', to =~ 'bob'                   │
+          │                                                          │
+          │                                                          │
+          │  [Enter] Apply  [Esc] Cancel  [F9] Clear                 │
+          │                                                          │
+          │                                                          │
+          └──────────────────────────────────────────────────────────┘
+
+
+
+
+
+Enter Apply  Esc Cancel  F9 Clear

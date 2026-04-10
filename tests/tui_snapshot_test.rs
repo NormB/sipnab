@@ -402,11 +402,26 @@ mod tui_snapshots {
     }
 
     #[test]
-    fn filter_dialog_view() {
+    fn filter_dialog_popup() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new_test();
-        app.handle_key(crossterm::event::KeyCode::F(7)); // open filter dialog
+        app.handle_key(crossterm::event::KeyCode::F(7)); // open filter popup
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn save_dialog_popup() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::F(2)); // open save popup
+        // Override the timestamp-based path for deterministic snapshots
+        app.set_save_path("/tmp/sipnab_20240615_120000.pcap");
 
         terminal.draw(|frame| app.render(frame)).unwrap();
 

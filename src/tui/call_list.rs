@@ -123,6 +123,11 @@ impl CallListState {
         }
     }
 
+    /// Return the count of multi-selected rows.
+    pub fn selected_rows_count(&self) -> usize {
+        self.selected_rows.len()
+    }
+
     /// Return the current sort column.
     pub fn sort_column(&self) -> SortColumn {
         self.sort_column
