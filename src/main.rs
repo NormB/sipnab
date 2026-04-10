@@ -148,7 +148,7 @@ fn main() {
     };
 
     // 8. Build CaptureConfig from CLI + config file
-    let capture_config = build_capture_config(&cli, &loaded.config);
+    let mut capture_config = build_capture_config(&cli, &loaded.config);
 
     // 8a. Parse --portrange (CLI > config file > default "5060-5061")
     let portrange_str = if cli.portrange != "5060-5061" {
@@ -165,6 +165,22 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // 8a2. Auto-generate BPF filter from portrange for live captures when no
+    //      explicit filter was set. This is critical for performance: without a
+    //      BPF filter, capturing on 'any' device processes ALL traffic.
+    if capture_config.bpf_filter.is_none() && matches!(source, CaptureSource::Live { .. }) {
+        let (lo, hi) = portrange;
+        capture_config.bpf_filter = Some(if lo == hi {
+            format!("port {lo}")
+        } else {
+            format!("portrange {lo}-{hi}")
+        });
+        log::info!(
+            "Auto-generated BPF filter: {}",
+            capture_config.bpf_filter.as_ref().unwrap()
+        );
+    }
 
     // 8b. Parse --autostop condition
     let autostop_duration: Option<std::time::Duration>;
@@ -712,7 +728,8 @@ fn tui_process_packet(
         transport_str
     };
 
-    // Try SIP detection first
+    // Try SIP detection first — parse OUTSIDE the lock, then do a quick
+    // write-lock-and-release to minimize contention with the TUI render thread.
     if sip::is_sip_message(effective_payload) {
         if let Ok(sip_msg) = sip::parse_sip(
             effective_payload,
@@ -724,21 +741,34 @@ fn tui_process_packet(
             effective_transport,
         ) && !cli.no_dialog
         {
-            let mut ds = dialog_store.write();
-            ds.process_message(sip_msg.clone());
+            // Extract SDP link info before acquiring any lock
+            let sdp_links: Vec<(std::net::IpAddr, u16, String)> =
+                if let Some(sdp) = sip_msg.sdp()
+                    && let Some(call_id) = sip_msg.call_id()
+                {
+                    sdp.media
+                        .iter()
+                        .filter_map(|media| {
+                            let addr_str = sip::sdp::effective_address(media, &sdp);
+                            addr_str
+                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                                .map(|ip| (ip, media.port, call_id.to_string()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
-            // Link SDP media endpoints to RTP streams
-            if let Some(sdp) = sip_msg.sdp()
-                && let Some(call_id) = sip_msg.call_id()
+            // Quick write to dialog store, then release
             {
+                dialog_store.write().process_message(sip_msg);
+            }
+
+            // Link SDP media endpoints to RTP streams (separate lock)
+            if !sdp_links.is_empty() {
                 let mut ss = stream_store.write();
-                for media in &sdp.media {
-                    let addr_str = sip::sdp::effective_address(media, &sdp);
-                    if let Some(addr) = addr_str
-                        && let Ok(ip) = addr.parse::<std::net::IpAddr>()
-                    {
-                        ss.link_to_dialog(ip, media.port, call_id);
-                    }
+                for (ip, port, call_id) in &sdp_links {
+                    ss.link_to_dialog(*ip, *port, call_id);
                 }
             }
         }

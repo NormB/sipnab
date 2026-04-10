@@ -209,10 +209,32 @@ pub fn render_call_list(
         return;
     }
 
-    let rows: Vec<Row> = dialogs
+    // Only build Row objects for the visible window. The header takes 1 row,
+    // so the visible data rows = area height - 1. We compute the scroll
+    // offset from the selected row and only format rows within the window.
+    let visible_rows = table_area.height.saturating_sub(1) as usize; // subtract header
+    let selected = state.selected();
+    let total = dialogs.len();
+
+    // Compute scroll offset: keep selected row within the visible window
+    let current_offset = state.table_state.offset();
+    let scroll_offset = if selected < current_offset {
+        selected
+    } else if selected >= current_offset + visible_rows {
+        selected.saturating_sub(visible_rows.saturating_sub(1))
+    } else {
+        current_offset
+    };
+
+    let visible_end = (scroll_offset + visible_rows).min(total);
+    let visible_dialogs = &dialogs[scroll_offset..visible_end];
+
+    let rows: Vec<Row> = visible_dialogs
         .iter()
         .enumerate()
-        .map(|(idx, dialog)| {
+        .map(|(vis_idx, dialog)| {
+            let idx = scroll_offset + vis_idx; // original index in full list
+
             // Diagnosis and correlation indicators
             let has_retransmits = dialog.timing.total_retransmits() > 0;
             let has_correlated = !store.find_correlated(&dialog.call_id).is_empty();
@@ -277,6 +299,11 @@ pub fn render_call_list(
         })
         .collect();
 
+    // Adjust TableState: selected row is relative to the visible slice
+    let relative_selected = selected.saturating_sub(scroll_offset);
+    state.table_state.select(Some(relative_selected));
+    *state.table_state.offset_mut() = 0; // rows are pre-sliced, offset is 0
+
     let widths = [
         Constraint::Length(5),  // #
         Constraint::Length(10), // Method
@@ -298,6 +325,10 @@ pub fn render_call_list(
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
+
+    // Restore absolute selected index so the rest of the app works correctly
+    state.table_state.select(Some(selected));
+    *state.table_state.offset_mut() = scroll_offset;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

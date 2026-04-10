@@ -11,6 +11,7 @@ pub mod help;
 pub mod msg_raw;
 pub mod stream_list;
 
+use std::collections::HashMap;
 use std::io;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -109,6 +110,13 @@ pub struct App {
     capture_mode: String,
     /// BPF filter string if set via CLI.
     bpf_filter: String,
+    /// Cached total dialog count (updated when lock is available).
+    cached_dialog_count: usize,
+    /// Cached displayed dialog count (updated when lock is available).
+    cached_displayed_count: usize,
+    /// Call flow line cache: `(call_id, msg_count) -> formatted lines`.
+    /// Invalidated when the dialog's message count changes.
+    call_flow_cache: HashMap<String, (usize, Vec<Line<'static>>)>,
 }
 
 impl App {
@@ -135,6 +143,9 @@ impl App {
             search_active: false,
             capture_mode: "Online (any)".to_string(),
             bpf_filter: String::new(),
+            cached_dialog_count: 0,
+            cached_displayed_count: 0,
+            call_flow_cache: HashMap::new(),
         }
     }
 
@@ -242,6 +253,12 @@ pub fn run_tui(
 // ── Rendering ───────────────────────────────────────────────────────
 
 /// Render the entire application frame based on the current view.
+///
+/// Uses `try_read()` for the shared stores so the TUI never blocks waiting
+/// for the processing thread to release a write lock. When the lock is
+/// contended, the previous frame's cached counts are shown in the status
+/// bar, and the main view simply skips its render (the terminal retains
+/// the last-drawn content).
 fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
 
@@ -261,45 +278,104 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     ])
     .areas(area);
 
-    // Status lines at top (sngrep-style)
+    // Update cached counts when the lock is available (non-blocking)
+    if let Some(store) = app.dialog_store.try_read() {
+        app.cached_dialog_count = store.len();
+        app.cached_displayed_count = if let Some(ref filter) = app.active_filter {
+            store
+                .iter()
+                .filter(|d| filter.matches_dialog(d, &[]))
+                .count()
+        } else {
+            store.len()
+        };
+    }
+
+    // Status lines at top (sngrep-style) — use cached counts
     render_status_line1(frame, status1_area, app);
     render_status_line2(frame, status2_area, app);
     render_status_line3(frame, status3_area, app);
 
-    // Render the current view
+    // Render the current view using try_read() to avoid blocking.
+    // If the lock is contended, skip the render — the terminal retains
+    // the previous frame's content, so the user sees no flicker.
     match &app.current_view.clone() {
         View::CallList => {
-            let store = app.dialog_store.read();
-            call_list::render_call_list(
-                frame,
-                main_area,
-                &mut app.call_list,
-                &store,
-                app.active_filter.as_ref(),
-            );
+            if let Some(store) = app.dialog_store.try_read() {
+                call_list::render_call_list(
+                    frame,
+                    main_area,
+                    &mut app.call_list,
+                    &store,
+                    app.active_filter.as_ref(),
+                );
+            }
         }
         View::StreamList => {
-            let store = app.stream_store.read();
-            stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store);
+            if let Some(store) = app.stream_store.try_read() {
+                stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store);
+            }
         }
         View::CallFlow(call_id) => {
-            let store = app.dialog_store.read();
-            call_flow::render_call_flow(frame, main_area, &store, call_id, app.call_flow_scroll);
+            if let Some(store) = app.dialog_store.try_read() {
+                let cid = call_id.clone();
+                let scroll = app.call_flow_scroll;
+
+                // Check cache: invalidate when message count changes
+                let cache_hit = app
+                    .call_flow_cache
+                    .get(&cid)
+                    .and_then(|(cached_count, cached_lines)| {
+                        let dialog = store.get(&cid)?;
+                        if dialog.messages.len() == *cached_count {
+                            Some(cached_lines.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                if let Some(lines) = cache_hit {
+                    call_flow::render_call_flow_lines(
+                        frame,
+                        main_area,
+                        &cid,
+                        scroll,
+                        || Some((lines.len(), lines)),
+                    );
+                } else if let Some((count, lines)) =
+                    call_flow::build_call_flow_lines(&store, &cid)
+                {
+                    app.call_flow_cache
+                        .insert(cid.clone(), (count, lines.clone()));
+                    call_flow::render_call_flow_lines(
+                        frame,
+                        main_area,
+                        &cid,
+                        scroll,
+                        || Some((count, lines)),
+                    );
+                } else {
+                    call_flow::render_call_flow_lines(
+                        frame, main_area, &cid, scroll, || None,
+                    );
+                }
+            }
         }
         View::RawMessage {
             call_id,
             message_index,
         } => {
-            let store = app.dialog_store.read();
-            msg_raw::render_raw_message(
-                frame,
-                main_area,
-                &store,
-                call_id,
-                *message_index,
-                app.raw_msg_scroll,
-                &app.search_query,
-            );
+            if let Some(store) = app.dialog_store.try_read() {
+                msg_raw::render_raw_message(
+                    frame,
+                    main_area,
+                    &store,
+                    call_id,
+                    *message_index,
+                    app.raw_msg_scroll,
+                    &app.search_query,
+                );
+            }
         }
         View::Help => {
             help::render_help(frame, main_area);
@@ -318,8 +394,8 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
 
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
 fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let total_count = app.dialog_store.read().len();
-    let displayed_count = filtered_dialog_count(app);
+    let total_count = app.cached_dialog_count;
+    let displayed_count = app.cached_displayed_count;
 
     // Determine if online (live capture) or offline (pcap file)
     let is_online = app.capture_mode.starts_with("Online");
