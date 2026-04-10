@@ -8,5 +8,9 @@ pub mod cli;
 pub mod config;
 pub mod output;
 pub mod rtp;
+pub mod security;
 pub mod signals;
 pub mod sip;
+
+#[cfg(feature = "tui")]
+pub mod tui;
