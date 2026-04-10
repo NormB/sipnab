@@ -44,6 +44,7 @@ unicode-width = { version = "0.2", optional = true }
 zeroize = { version = "1", features = ["derive"], optional = true }
 ring = { version = "0.17", optional = true }
 base64 = { version = "0.22", optional = true }
+rustls = { version = "0.23", optional = true }
 
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
@@ -59,7 +60,7 @@ tempfile = "3"
 [features]
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width"]
-tls = ["dep:zeroize", "dep:ring", "dep:base64"]
+tls = ["dep:zeroize", "dep:ring", "dep:base64", "dep:rustls"]
 tls-wolfssl = ["tls"]
 tls-openssl = ["tls"]
 hep = []

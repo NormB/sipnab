@@ -55,7 +55,7 @@ fn unknown_key_warns_but_loads() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("unknown.toml");
     let mut f = std::fs::File::create(&config_path).unwrap();
-    writeln!(f, "[capture]\ndevice = \"eth0\"\nfuture_option = true").unwrap();
+    writeln!(f, "[capture]\ndevice = \"eth0\"\nbogus = true").unwrap();
 
     let output = sipnab_cmd()
         .env("SIPNAB_LOG", "warn")
@@ -70,6 +70,14 @@ fn unknown_key_warns_but_loads() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("eth0"));
+
+    // Verify the warning was emitted
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Unknown config key: capture.bogus"),
+        "Expected warning about unknown key, got stderr:\n{}",
+        stderr
+    );
 }
 
 #[test]

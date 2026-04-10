@@ -49,7 +49,7 @@ fn main() {
         } else {
             println!("# No config file loaded (defaults only)");
         }
-        loaded.config.dump();
+        println!("{}", loaded.config.dump());
         return;
     }
 

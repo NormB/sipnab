@@ -1,4 +1,8 @@
-/target
-.DS_Store
 target/
+.DS_Store
 .claude/
+
+# Editor artifacts
+*.swp
+*.swo
+*~
