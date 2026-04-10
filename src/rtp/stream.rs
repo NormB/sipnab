@@ -100,6 +100,12 @@ pub struct RtpStream {
 }
 
 impl RtpStream {
+    /// Returns `true` if the stream has been active within the last 30 seconds.
+    pub fn is_active(&self) -> bool {
+        let thirty_secs_ago = Utc::now() - chrono::Duration::seconds(30);
+        self.last_seen > thirty_secs_ago
+    }
+
     /// Create a new stream from its first observed RTP packet.
     pub fn new(key: StreamKey, header: &RtpHeader, timestamp: DateTime<Utc>) -> Self {
         let codec = codec_from_pt(header.payload_type).map(String::from);

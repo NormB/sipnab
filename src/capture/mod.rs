@@ -49,6 +49,11 @@ pub enum CaptureSource {
     Hep {
         /// Address to bind the HEP listener on.
         bind_addr: String,
+        /// CIDR allowlist for source IP filtering.
+        #[cfg(feature = "hep")]
+        allowlist: Vec<hep::CidrRange>,
+        /// Maximum HEP packets per second (0 = unlimited).
+        rate_limit: u64,
     },
 }
 
@@ -68,6 +73,8 @@ pub struct CaptureConfig {
     pub count: Option<u64>,
     /// Stop after this duration.
     pub duration: Option<Duration>,
+    /// Replay pcap file with original inter-packet timing.
+    pub replay: bool,
 }
 
 impl Default for CaptureConfig {
@@ -78,6 +85,7 @@ impl Default for CaptureConfig {
             bpf_filter: None,
             count: None,
             duration: None,
+            replay: false,
         }
     }
 }
@@ -126,20 +134,28 @@ pub fn start_capture(
                 .spawn(move || file::capture_file(&path, &config, tx))
                 .context("Failed to spawn file reader thread")?
         }
-        CaptureSource::Hep { bind_addr } => {
-            #[cfg(feature = "hep")]
-            {
-                let addr = bind_addr.clone();
-                thread::Builder::new()
-                    .name("capture-hep".to_string())
-                    .spawn(move || hep::capture_hep(&addr, &config, tx))
-                    .context("Failed to spawn HEP capture thread")?
-            }
-            #[cfg(not(feature = "hep"))]
-            {
-                let _ = bind_addr;
-                anyhow::bail!("HEP support requires the 'hep' feature: cargo build --features hep");
-            }
+        #[cfg(feature = "hep")]
+        CaptureSource::Hep {
+            bind_addr,
+            allowlist,
+            rate_limit,
+        } => {
+            let addr = bind_addr.clone();
+            let allow = allowlist.clone();
+            let rate = *rate_limit;
+            thread::Builder::new()
+                .name("capture-hep".to_string())
+                .spawn(move || hep::capture_hep(&addr, &config, tx, &allow, rate))
+                .context("Failed to spawn HEP capture thread")?
+        }
+        #[cfg(not(feature = "hep"))]
+        CaptureSource::Hep {
+            bind_addr,
+            rate_limit,
+            ..
+        } => {
+            let _ = (bind_addr, rate_limit);
+            anyhow::bail!("HEP support requires the 'hep' feature: cargo build --features hep");
         }
     };
 
@@ -147,6 +163,92 @@ pub fn start_capture(
         thread,
         source: source_clone,
     })
+}
+
+/// Start captures on multiple devices simultaneously.
+///
+/// Splits the comma-separated device string, spawns a capture thread for
+/// each device, and all threads send to the same channel. Returns a
+/// [`CaptureHandle`] whose thread joins all sub-threads.
+pub fn start_multi_capture(
+    devices: &str,
+    config: CaptureConfig,
+    tx: Sender<Packet>,
+) -> Result<CaptureHandle> {
+    let device_list: Vec<String> = devices.split(',').map(|s| s.trim().to_string()).collect();
+
+    if device_list.is_empty() {
+        anyhow::bail!("No devices specified for multi-device capture");
+    }
+
+    if device_list.len() == 1 {
+        // Single device: fall back to normal capture
+        return start_capture(
+            CaptureSource::Live {
+                device: device_list.into_iter().next().unwrap(),
+            },
+            config,
+            tx,
+        );
+    }
+
+    log::info!(
+        "Multi-device capture on {} interfaces: {}",
+        device_list.len(),
+        devices
+    );
+
+    let source = CaptureSource::Live {
+        device: devices.to_string(),
+    };
+
+    let thread = thread::Builder::new()
+        .name("capture-multi".to_string())
+        .spawn(move || {
+            let mut handles = Vec::new();
+
+            for dev in &device_list {
+                let dev_name = dev.clone();
+                let config = config.clone();
+                let tx = tx.clone();
+
+                let dev_ctx = dev.clone(); // for error context
+                let h = thread::Builder::new()
+                    .name(format!("capture-{dev_name}"))
+                    .spawn(move || live::capture_live(&dev_name, &config, tx))
+                    .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))?;
+
+                handles.push(h);
+            }
+
+            // Drop our copy of tx so the channel closes when all capture
+            // threads finish.
+            drop(tx);
+
+            let mut first_error = None;
+            for h in handles {
+                match h.join() {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        log::warn!("Capture thread error: {e}");
+                        if first_error.is_none() {
+                            first_error = Some(e);
+                        }
+                    }
+                    Err(_) => {
+                        log::error!("Capture thread panicked");
+                    }
+                }
+            }
+
+            if let Some(e) = first_error {
+                return Err(e);
+            }
+            Ok(())
+        })
+        .context("Failed to spawn multi-capture coordinator thread")?;
+
+    Ok(CaptureHandle { thread, source })
 }
 
 /// Stateful packet processing pipeline.
@@ -327,12 +429,7 @@ mod tests {
         let file = CaptureSource::File {
             path: PathBuf::from("/tmp/test.pcap"),
         };
-        let hep = CaptureSource::Hep {
-            bind_addr: "0.0.0.0:9060".to_string(),
-        };
-
         assert!(format!("{live:?}").contains("eth0"));
         assert!(format!("{file:?}").contains("test.pcap"));
-        assert!(format!("{hep:?}").contains("9060"));
     }
 }

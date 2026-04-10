@@ -189,13 +189,38 @@ pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, String> {
         .map_err(|e| format!("invalid bind address '{addr}': {e}"))
 }
 
+/// Configuration for the API server.
+#[derive(Debug, Clone, Default)]
+pub struct ApiServerConfig {
+    /// Maximum concurrent connections (0 = unlimited).
+    pub max_conn: u32,
+    /// TLS certificate file path.
+    pub tls_cert: Option<String>,
+    /// TLS private key file path.
+    pub tls_key: Option<String>,
+}
+
 /// Start the API server on the given address.
 ///
 /// This function blocks the current tokio runtime until the server is
 /// shut down. It should be spawned in a dedicated thread or task.
 ///
 /// Logs a warning if the bind address is non-loopback without TLS.
-pub async fn run_server(bind_addr: SocketAddr, state: ApiState) -> Result<(), String> {
+pub async fn run_server(
+    bind_addr: SocketAddr,
+    state: ApiState,
+    server_config: ApiServerConfig,
+) -> Result<(), String> {
+    let has_tls = server_config.tls_cert.is_some() && server_config.tls_key.is_some();
+
+    if has_tls {
+        return Err(
+            "API TLS (--api-tls-cert/--api-tls-key) requires the axum-server crate \
+             which is not yet integrated. Use a TLS-terminating reverse proxy instead."
+                .to_string(),
+        );
+    }
+
     if !bind_addr.ip().is_loopback() {
         log::warn!(
             "API server binding to non-loopback address {} without TLS — \
@@ -204,9 +229,35 @@ pub async fn run_server(bind_addr: SocketAddr, state: ApiState) -> Result<(), St
         );
     }
 
+    let max_conn = server_config.max_conn;
+    let router = build_router(state);
+
+    // Wrap with connection limiter if max_conn > 0
+    let router = if max_conn > 0 {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_conn as usize));
+        log::info!("API server max concurrent connections: {}", max_conn);
+        router.layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let sem = Arc::clone(&semaphore);
+                async move {
+                    let _permit = match sem.try_acquire() {
+                        Ok(p) => p,
+                        Err(_) => {
+                            return Ok::<_, std::convert::Infallible>(
+                                StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                            );
+                        }
+                    };
+                    Ok(next.run(req).await)
+                }
+            },
+        ))
+    } else {
+        router
+    };
+
     log::info!("REST API listening on {}", bind_addr);
 
-    let router = build_router(state);
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| format!("failed to bind API to {bind_addr}: {e}"))?;

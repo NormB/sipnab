@@ -6,10 +6,8 @@
 //! filtering → output.
 
 use std::path::PathBuf;
-#[cfg(any(feature = "tui", feature = "api"))]
 use std::sync::Arc;
 
-#[cfg(any(feature = "tui", feature = "api"))]
 use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
@@ -96,8 +94,26 @@ fn main() {
             device: device.clone(),
         })
     } else {
-        cli.hep_listen.as_ref().map(|hep_addr| CaptureSource::Hep {
-            bind_addr: hep_addr.clone(),
+        cli.hep_listen.as_ref().map(|hep_addr| {
+            #[cfg(feature = "hep")]
+            let allowlist: Vec<sipnab::capture::hep::CidrRange> = cli
+                .hep_allow
+                .iter()
+                .map(|cidr| match sipnab::capture::hep::CidrRange::parse(cidr) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("Invalid --hep-allow CIDR '{}': {}", cidr, e);
+                        std::process::exit(2);
+                    }
+                })
+                .collect();
+
+            CaptureSource::Hep {
+                bind_addr: hep_addr.clone(),
+                #[cfg(feature = "hep")]
+                allowlist,
+                rate_limit: cli.hep_rate_limit,
+            }
         })
     };
 
@@ -111,6 +127,40 @@ fn main() {
 
     // 8. Build CaptureConfig from CLI + config file
     let capture_config = build_capture_config(&cli, &loaded.config);
+
+    // 8a. Parse --portrange (CLI > config file > default "5060-5061")
+    let portrange_str = if cli.portrange != "5060-5061" {
+        &cli.portrange
+    } else if let Some(ref pr) = loaded.config.capture.portrange {
+        pr.as_str()
+    } else {
+        "5060-5061"
+    };
+    let portrange = match parse_portrange(portrange_str) {
+        Ok(range) => range,
+        Err(e) => {
+            log::error!("Invalid --portrange: {e}");
+            std::process::exit(2);
+        }
+    };
+
+    // 8b. Parse --autostop condition
+    let autostop_duration: Option<std::time::Duration>;
+    let autostop_filesize_mb: Option<u64>;
+    if let Some(ref cond) = cli.autostop {
+        let (dur, size) = match parse_autostop(cond) {
+            Ok(v) => v,
+            Err(e) => {
+                log::error!("Invalid --autostop: {e}");
+                std::process::exit(2);
+            }
+        };
+        autostop_duration = dur;
+        autostop_filesize_mb = size;
+    } else {
+        autostop_duration = None;
+        autostop_filesize_mb = None;
+    }
 
     // 9. Parse --split for output rotation
     let (split_bytes, split_duration) = if let Some(ref split) = cli.split {
@@ -160,12 +210,29 @@ fn main() {
     // 14. Create the packet channel
     let (tx, rx) = crossbeam_channel::bounded(10_000);
 
-    // 15. Start the capture thread
-    let handle = match capture::start_capture(source, capture_config.clone(), tx) {
-        Ok(h) => h,
-        Err(e) => {
-            log::error!("Failed to start capture: {e}");
-            std::process::exit(1);
+    // 15. Start the capture thread (multi-device aware)
+    let handle = if cli.multi_device {
+        let device_str = match &source {
+            CaptureSource::Live { device } => device.clone(),
+            _ => {
+                log::error!("--multi-device requires a live capture device (-d)");
+                std::process::exit(2);
+            }
+        };
+        match capture::start_multi_capture(&device_str, capture_config.clone(), tx) {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("Failed to start multi-device capture: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        match capture::start_capture(source, capture_config.clone(), tx) {
+            Ok(h) => h,
+            Err(e) => {
+                log::error!("Failed to start capture: {e}");
+                std::process::exit(1);
+            }
         }
     };
 
@@ -175,8 +242,76 @@ fn main() {
         std::process::exit(1);
     }
 
+    // 16a. Chroot after privilege drop if --chroot is set
+    if let Some(ref chroot_dir) = cli.chroot
+        && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
+    {
+        log::error!("Failed to chroot: {e}");
+        std::process::exit(1);
+    }
+
+    // 16b. Initialize syslog if --syslog is set
+    if cli.syslog {
+        sipnab::security::alerting::init_syslog();
+    }
+
+    // 16c. Validate --hep-send requires hep feature
+    #[cfg(not(feature = "hep"))]
+    if cli.hep_send.is_some() {
+        log::error!("HEP support requires --features hep");
+        std::process::exit(2);
+    }
+
+    // 16d. Validate --hep-parse requires hep feature
+    #[cfg(not(feature = "hep"))]
+    if cli.hep_parse {
+        log::error!("HEP support requires --features hep");
+        std::process::exit(2);
+    }
+
+    // 16e. Validate --pcap-export-mode
+    match cli.pcap_export_mode.as_str() {
+        "decrypted" | "encrypted+dsb" | "raw" => {}
+        other => {
+            log::error!(
+                "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
+            );
+            std::process::exit(2);
+        }
+    }
+
+    // 16f. Load DTLS keylog if --dtls-keylog is set
+    #[cfg(feature = "tls")]
+    if let Some(ref dtls_path) = cli.dtls_keylog {
+        match sipnab::capture::decrypt::TlsDecryptor::load_dtls_keylog(std::path::Path::new(
+            dtls_path,
+        )) {
+            Ok(count) => {
+                log::info!("DTLS keylog: {count} entries loaded from {dtls_path}");
+            }
+            Err(e) => {
+                log::error!("Failed to load DTLS keylog: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    #[cfg(not(feature = "tls"))]
+    if cli.dtls_keylog.is_some() {
+        log::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
+        std::process::exit(2);
+    }
+
+    // 16g. Validate --api-tls-cert/--api-tls-key consistency
+    if cli.api_tls_cert.is_some() != cli.api_tls_key.is_some() {
+        log::error!("--api-tls-cert and --api-tls-key must both be specified together");
+        std::process::exit(2);
+    }
+
     // 17. Disable core dumps if any decryption keys are loaded (D19)
-    let has_decrypt_keys = cli.tls_key.is_some() || cli.keylog.is_some() || cli.srtp_keys.is_some();
+    let has_decrypt_keys = cli.tls_key.is_some()
+        || cli.keylog.is_some()
+        || cli.srtp_keys.is_some()
+        || cli.dtls_keylog.is_some();
     if has_decrypt_keys
         && !cli.allow_coredump
         && let Err(e) = privilege::disable_core_dumps()
@@ -184,6 +319,41 @@ fn main() {
         log::error!("Failed to disable core dumps: {e}");
         std::process::exit(1);
     }
+
+    // 17a. Start standalone metrics server if --metrics is set (without --api)
+    let _metrics_handle = if cli.metrics.is_some() {
+        let metrics_addr_str = cli.metrics.as_deref().unwrap();
+        let bind_addr =
+            match sipnab::output::prometheus_server::parse_metrics_addr(metrics_addr_str) {
+                Ok(a) => a,
+                Err(e) => {
+                    log::error!("Invalid --metrics address: {e}");
+                    std::process::exit(2);
+                }
+            };
+
+        // Create shared stores for the metrics server to read
+        let metrics_ds = Arc::new(RwLock::new(DialogStore::new(
+            cli.limit as usize,
+            cli.rotate,
+        )));
+        let metrics_ss = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
+
+        match sipnab::output::prometheus_server::start_metrics_server(
+            bind_addr,
+            metrics_ds,
+            metrics_ss,
+            cli.metrics_auth.clone(),
+        ) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                log::error!("Failed to start metrics server: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    };
 
     // 18. Branch: TUI mode vs non-interactive mode
     #[cfg(feature = "tui")]
@@ -201,6 +371,7 @@ fn main() {
             rx,
             split_bytes,
             split_duration,
+            portrange,
         );
     } else {
         run_batch_mode(
@@ -215,7 +386,70 @@ fn main() {
             event_exec,
             split_bytes,
             split_duration,
+            portrange,
+            autostop_duration,
+            autostop_filesize_mb,
         );
+    }
+}
+
+// ── Portrange parsing ──────────────────────────────────────────────────
+
+/// Parse a port range string like "5060-5061" or "5060-5080" into a `(u16, u16)` tuple.
+fn parse_portrange(s: &str) -> Result<(u16, u16), String> {
+    let parts: Vec<&str> = s.split('-').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Expected format 'start-end' (e.g., '5060-5061'), got '{s}'"
+        ));
+    }
+    let start: u16 = parts[0]
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid port number: '{}'", parts[0]))?;
+    let end: u16 = parts[1]
+        .trim()
+        .parse()
+        .map_err(|_| format!("Invalid port number: '{}'", parts[1]))?;
+    if start > end {
+        return Err(format!("Port range start ({start}) > end ({end})"));
+    }
+    Ok((start, end))
+}
+
+/// Check whether a source or destination port falls within the configured range.
+fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
+    let (lo, hi) = range;
+    (src_port >= lo && src_port <= hi) || (dst_port >= lo && dst_port <= hi)
+}
+
+// ── Autostop parsing ───────────────────────────────────────────────────
+
+/// Parse an `--autostop` condition string.
+///
+/// Supported formats:
+/// - `duration:N` — stop after N seconds
+/// - `filesize:N` — stop when output file reaches N megabytes
+///
+/// Returns `(Option<Duration>, Option<filesize_mb>)`.
+fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>), String> {
+    let parts: Vec<&str> = s.splitn(2, ':').collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "Expected format 'duration:N' or 'filesize:N', got '{s}'"
+        ));
+    }
+    let key = parts[0];
+    let value: u64 = parts[1]
+        .parse()
+        .map_err(|_| format!("Invalid autostop value: '{}'", parts[1]))?;
+
+    match key {
+        "duration" => Ok((Some(std::time::Duration::from_secs(value)), None)),
+        "filesize" => Ok((None, Some(value))),
+        _ => Err(format!(
+            "Unknown autostop condition: '{key}'. Expected 'duration' or 'filesize'"
+        )),
     }
 }
 
@@ -226,6 +460,7 @@ fn main() {
 /// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
 /// the TUI event loop on the main thread.
 #[cfg(feature = "tui")]
+#[allow(clippy::too_many_arguments)]
 fn run_tui_mode(
     cli: Cli,
     config: Config,
@@ -234,6 +469,7 @@ fn run_tui_mode(
     rx: crossbeam_channel::Receiver<capture::Packet>,
     split_bytes: Option<u64>,
     split_duration: Option<std::time::Duration>,
+    portrange: (u16, u16),
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
@@ -307,6 +543,9 @@ fn run_tui_mode(
 
                 let parsed_packets = processor.process(&packet);
                 for pp in &parsed_packets {
+                    if !port_in_range(pp.src_port, pp.dst_port, portrange) {
+                        continue;
+                    }
                     tui_process_packet(pp, &ds, &ss, &mut rtp_heuristic, &cli_clone, no_rtp);
                 }
 
@@ -444,9 +683,30 @@ fn run_batch_mode(
     mut event_exec: EventExecEngine,
     split_bytes: Option<u64>,
     split_duration: Option<std::time::Duration>,
+    portrange: (u16, u16),
+    autostop_duration: Option<std::time::Duration>,
+    autostop_filesize_mb: Option<u64>,
 ) {
     // 16. Open output writer if -O is specified
     let mut writer: Option<PcapWriter> = None;
+    let use_pcapng = cli.pcapng;
+
+    // 16a. Initialize HEP sender if --hep-send is set
+    #[cfg(feature = "hep")]
+    let hep_sender: Option<sipnab::capture::hep::HepSender> = if let Some(ref addr) = cli.hep_send {
+        match sipnab::capture::hep::HepSender::new(addr, 1) {
+            Ok(sender) => {
+                log::info!("HEP sender targeting {addr}");
+                Some(sender)
+            }
+            Err(e) => {
+                log::error!("Failed to create HEP sender: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // 17. Initialize processing state
     let mut processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
@@ -513,6 +773,9 @@ fn run_batch_mode(
         })
         .collect();
     let mut alert_engine = AlertEngine::new(alert_rules, cli.alert_exec.clone());
+    if cli.syslog {
+        alert_engine.set_syslog(true);
+    }
 
     // 17c. Initialize TLS decryptor if --keylog is provided
     #[cfg(feature = "tls")]
@@ -565,6 +828,13 @@ fn run_batch_mode(
     let mut rtp_count: u64 = 0;
     let mut prev_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
+    // --after / -A trailing context counter
+    let after_count = cli.after.unwrap_or(0);
+    let mut trailing_remaining: usize = 0;
+
+    // Autostop filesize in bytes (input is in MB)
+    let autostop_filesize_bytes = autostop_filesize_mb.map(|mb| mb * 1_000_000);
+
     loop {
         if signals::shutdown_requested() {
             break;
@@ -588,6 +858,16 @@ fn run_batch_mode(
             if let Some(ref ss) = shared_ss {
                 ss.write().mark_orphaned(std::time::Duration::from_secs(30));
             }
+
+            // --keylog-watch: poll for new keys in the keylog file
+            #[cfg(feature = "tls")]
+            if cli.keylog_watch
+                && let Some(ref mut decryptor) = tls_decryptor
+                && let Err(e) = decryptor.poll_keylog_file()
+            {
+                log::debug!("Keylog poll error: {e}");
+            }
+
             last_sweep = std::time::Instant::now();
         }
 
@@ -602,11 +882,12 @@ fn run_batch_mode(
         if writer.is_none()
             && let Some(ref output_path) = cli.output
         {
-            match PcapWriter::new(
+            match PcapWriter::with_format(
                 &PathBuf::from(output_path),
                 packet.link_type,
                 split_bytes,
                 split_duration,
+                use_pcapng,
             ) {
                 Ok(w) => writer = Some(w),
                 Err(e) => {
@@ -629,6 +910,34 @@ fn run_batch_mode(
         // Parse and reassemble the packet
         let parsed_packets = processor.process(&packet);
         for pp in &parsed_packets {
+            // --hep-parse: try to unwrap HEP-encapsulated packets
+            #[cfg(feature = "hep")]
+            let hep_unwrapped = if cli.hep_parse && pp.transport == TransportProto::Udp {
+                sipnab::capture::hep::parse_hep(&pp.payload)
+                    .ok()
+                    .map(|hep| {
+                        let mut unwrapped = pp.clone();
+                        unwrapped.payload = hep.payload;
+                        unwrapped.src_addr = hep.src_addr;
+                        unwrapped.dst_addr = hep.dst_addr;
+                        unwrapped.src_port = hep.src_port;
+                        unwrapped.dst_port = hep.dst_port;
+                        unwrapped
+                    })
+            } else {
+                None
+            };
+
+            #[cfg(not(feature = "hep"))]
+            let hep_unwrapped: Option<ParsedPacket> = None;
+
+            let pp = hep_unwrapped.as_ref().unwrap_or(pp);
+
+            // Port range filtering: skip packets outside the configured range
+            if !port_in_range(pp.src_port, pp.dst_port, portrange) {
+                continue;
+            }
+
             // Attempt TLS decryption for TCP payloads when --keylog is active
             #[cfg(feature = "tls")]
             let tls_decrypted = try_tls_decrypt(pp, &mut tls_decryptor);
@@ -661,7 +970,27 @@ fn run_batch_mode(
                 &mut prev_timestamp,
                 no_rtp,
                 is_tls,
+                after_count,
+                &mut trailing_remaining,
             );
+
+            // --hep-send: forward matched SIP messages via HEP
+            #[cfg(feature = "hep")]
+            if let Some(ref sender) = hep_sender
+                && sip::is_sip_message(&effective_pp.payload)
+                && let Ok(sip_msg) = sip::parse_sip(
+                    &effective_pp.payload,
+                    effective_pp.timestamp,
+                    effective_pp.src_addr,
+                    effective_pp.dst_addr,
+                    effective_pp.src_port,
+                    effective_pp.dst_port,
+                    "UDP",
+                )
+                && let Err(e) = sender.send(&sip_msg)
+            {
+                log::debug!("HEP send failed: {e}");
+            }
 
             // Mirror updates to shared stores for API access
             #[cfg(feature = "api")]
@@ -681,6 +1010,26 @@ fn run_batch_mode(
         if let Some(duration) = capture_config.duration
             && start.elapsed() >= duration
         {
+            break;
+        }
+
+        // Check --autostop duration
+        if let Some(autostop_dur) = autostop_duration
+            && start.elapsed() >= autostop_dur
+        {
+            log::info!("Autostop: duration limit reached ({autostop_dur:?})");
+            break;
+        }
+
+        // Check --autostop filesize
+        if let Some(max_bytes) = autostop_filesize_bytes
+            && let Some(ref w) = writer
+            && w.bytes_written() >= max_bytes
+        {
+            log::info!(
+                "Autostop: filesize limit reached ({} MB)",
+                autostop_filesize_mb.unwrap_or(0)
+            );
             break;
         }
     }
@@ -786,6 +1135,8 @@ fn process_parsed_packet(
     prev_timestamp: &mut Option<chrono::DateTime<chrono::Utc>>,
     no_rtp: bool,
     tls_decrypted: bool,
+    after_count: usize,
+    trailing_remaining: &mut usize,
 ) {
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
@@ -1010,9 +1361,19 @@ fn process_parsed_packet(
                     true
                 };
 
-                // Output if both matcher and filter pass
-                if matcher_pass && filter_pass && calls_only_pass && cli.no_tui {
+                // Output if matcher/filter pass, or if trailing context is active
+                let direct_match = matcher_pass && filter_pass && calls_only_pass;
+                let trailing_match = *trailing_remaining > 0;
+
+                if (direct_match || trailing_match) && cli.no_tui {
                     dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
+
+                    if direct_match {
+                        // Reset trailing counter on new match
+                        *trailing_remaining = after_count;
+                    } else if trailing_match {
+                        *trailing_remaining -= 1;
+                    }
                 }
 
                 *prev_timestamp = Some(sip_msg.timestamp);
@@ -1330,6 +1691,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         bpf_filter,
         count,
         duration,
+        replay: cli.replay,
     }
 }
 
@@ -1344,7 +1706,7 @@ fn start_api_server(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    use sipnab::output::api::{self, ApiState, RateLimiter};
+    use sipnab::output::api::{self, ApiServerConfig, ApiState, RateLimiter};
 
     let addr_str = cli.api.as_ref()?;
     let bind_addr = match api::parse_bind_addr(addr_str) {
@@ -1362,6 +1724,12 @@ fn start_api_server(
         rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100))),
     };
 
+    let server_config = ApiServerConfig {
+        max_conn: cli.api_max_conn,
+        tls_cert: cli.api_tls_cert.clone(),
+        tls_key: cli.api_tls_key.clone(),
+    };
+
     let handle = std::thread::Builder::new()
         .name("api-server".to_string())
         .spawn(move || {
@@ -1370,7 +1738,7 @@ fn start_api_server(
                 .build()
                 .expect("failed to create tokio runtime for API server");
 
-            if let Err(e) = rt.block_on(api::run_server(bind_addr, state)) {
+            if let Err(e) = rt.block_on(api::run_server(bind_addr, state, server_config)) {
                 log::error!("API server error: {e}");
             }
         })

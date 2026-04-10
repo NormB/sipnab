@@ -125,6 +125,8 @@ pub struct AlertEngine {
     /// `$SIPNAB_*` env var references. Values are passed via environment
     /// variables, never interpolated into the command string.
     exec_cmd: Option<String>,
+    /// Whether to send alerts to syslog via `libc::syslog()`.
+    syslog_enabled: bool,
 }
 
 impl AlertEngine {
@@ -142,7 +144,17 @@ impl AlertEngine {
             rules,
             cooldowns: HashMap::new(),
             exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
+            syslog_enabled: false,
         }
+    }
+
+    /// Enable or disable syslog output for alerts.
+    ///
+    /// When enabled, each alert is also sent to syslog at LOG_WARNING priority
+    /// under the LOCAL0 facility. Call [`init_syslog`] once at startup before
+    /// enabling this.
+    pub fn set_syslog(&mut self, enabled: bool) {
+        self.syslog_enabled = enabled;
     }
 
     /// Fire an alert for the given type and source.
@@ -191,6 +203,13 @@ impl AlertEngine {
         // Output to stderr
         eprintln!("[ALERT] {alert_type} src={src_ip} {sanitized_detail}");
 
+        // Send to syslog if enabled
+        if self.syslog_enabled {
+            send_to_syslog(&format!(
+                "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
+            ));
+        }
+
         // Execute command if configured — pass data via env vars, never interpolated
         if let Some(cmd) = &self.exec_cmd {
             let mut command = Command::new("sh");
@@ -226,6 +245,44 @@ fn migrate_alert_template(template: &str) -> String {
 /// Replaces `\r` and `\n` with spaces to prevent log injection attacks.
 pub fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
+}
+
+// ── Syslog support ──────────────────────────────────────────────────
+
+/// Initialize syslog with the "sipnab" ident.
+///
+/// Must be called once at startup before any `send_to_syslog()` calls.
+/// Uses `LOG_LOCAL0` facility and `LOG_NDELAY | LOG_PID` options.
+pub fn init_syslog() {
+    // SAFETY: openlog with a static string is safe. We use a string literal
+    // that lives for the entire program lifetime.
+    unsafe {
+        libc::openlog(
+            c"sipnab".as_ptr(),
+            libc::LOG_NDELAY | libc::LOG_PID,
+            libc::LOG_LOCAL0,
+        );
+    }
+    log::info!("Syslog output enabled (facility=LOCAL0)");
+}
+
+/// Send a message to syslog at LOG_WARNING priority.
+///
+/// The message is sanitized to remove null bytes before sending.
+pub fn send_to_syslog(message: &str) {
+    // Remove null bytes from message to prevent truncation
+    let clean = message.replace('\0', "");
+    if let Ok(msg) = std::ffi::CString::new(clean) {
+        // SAFETY: syslog with a valid CString and %s format is safe.
+        // We use "%s" as the format string to prevent format string attacks.
+        unsafe {
+            libc::syslog(
+                libc::LOG_LOCAL0 | libc::LOG_WARNING,
+                c"%s".as_ptr(),
+                msg.as_ptr(),
+            );
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

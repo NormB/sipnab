@@ -207,6 +207,44 @@ fn set_no_new_privs() -> Result<()> {
     Ok(())
 }
 
+/// Chroot to the specified directory after initialization.
+///
+/// After `chroot()`, the process calls `chdir("/")` so that the working
+/// directory is relative to the new root. This should be called after
+/// capture devices and key files are opened but before packet processing.
+///
+/// # Errors
+///
+/// Returns an error if `chroot()` or `chdir("/")` fails.
+pub fn do_chroot(dir: &std::path::Path) -> Result<()> {
+    let dir_str = dir
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("chroot path is not valid UTF-8"))?;
+    let dir_c = std::ffi::CString::new(dir_str)
+        .map_err(|_| anyhow::anyhow!("chroot path contains null byte"))?;
+
+    // SAFETY: chroot changes the root directory of the process. The CString
+    // is valid for the duration of the call.
+    unsafe {
+        if libc::chroot(dir_c.as_ptr()) != 0 {
+            bail!(
+                "chroot({}) failed: {}",
+                dir.display(),
+                std::io::Error::last_os_error()
+            );
+        }
+        if libc::chdir(c"/".as_ptr()) != 0 {
+            bail!(
+                "chdir(/) after chroot failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+
+    log::info!("Chrooted to {}", dir.display());
+    Ok(())
+}
+
 /// Verify that the process is now running with the expected UID and GID.
 fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
     // SAFETY: getuid/getgid are always safe read-only syscalls.

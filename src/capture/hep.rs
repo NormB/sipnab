@@ -22,7 +22,7 @@
 //! ```
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, TimeZone, Utc};
@@ -462,6 +462,139 @@ fn append_chunk(buf: &mut Vec<u8>, vendor: u16, chunk_type: u16, data: &[u8]) {
     buf.extend_from_slice(data);
 }
 
+// ── CIDR allowlist ──────────────────────────────────────────────────
+
+/// A parsed CIDR range for IP allowlisting.
+#[derive(Debug, Clone)]
+pub struct CidrRange {
+    /// Network address (masked).
+    network: u128,
+    /// Number of prefix bits.
+    prefix_len: u8,
+    /// Whether this is an IPv4 or IPv6 range.
+    is_v4: bool,
+}
+
+impl CidrRange {
+    /// Parse a CIDR string like "10.0.0.0/8" or "2001:db8::/32".
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string if the CIDR notation is invalid.
+    pub fn parse(cidr: &str) -> Result<Self, String> {
+        let (addr_str, prefix_str) = cidr
+            .split_once('/')
+            .ok_or_else(|| format!("invalid CIDR '{cidr}': missing /prefix"))?;
+
+        let prefix_len: u8 = prefix_str
+            .parse()
+            .map_err(|e| format!("invalid prefix length in '{cidr}': {e}"))?;
+
+        let addr: IpAddr = addr_str
+            .parse()
+            .map_err(|e| format!("invalid IP in '{cidr}': {e}"))?;
+
+        let (ip_bits, is_v4, max_prefix) = match addr {
+            IpAddr::V4(v4) => {
+                let bits = u32::from(v4) as u128;
+                (bits << 96, true, 32u8)
+            }
+            IpAddr::V6(v6) => (u128::from(v6), false, 128u8),
+        };
+
+        if prefix_len > max_prefix {
+            return Err(format!(
+                "prefix length {prefix_len} exceeds maximum {max_prefix} for '{cidr}'"
+            ));
+        }
+
+        let mask = if prefix_len == 0 {
+            0u128
+        } else if is_v4 {
+            let shift = 32 - prefix_len;
+            ((u32::MAX << shift) as u128) << 96
+        } else {
+            u128::MAX << (128 - prefix_len)
+        };
+
+        Ok(Self {
+            network: ip_bits & mask,
+            prefix_len,
+            is_v4,
+        })
+    }
+
+    /// Check whether an IP address falls within this CIDR range.
+    pub fn contains(&self, addr: IpAddr) -> bool {
+        let ip_bits = match addr {
+            IpAddr::V4(v4) => {
+                if !self.is_v4 {
+                    return false;
+                }
+                (u32::from(v4) as u128) << 96
+            }
+            IpAddr::V6(v6) => {
+                if self.is_v4 {
+                    return false;
+                }
+                u128::from(v6)
+            }
+        };
+
+        let max_prefix = if self.is_v4 { 32u8 } else { 128u8 };
+        let mask = if self.prefix_len == 0 {
+            0u128
+        } else if self.is_v4 {
+            let shift = 32 - self.prefix_len;
+            ((u32::MAX << shift) as u128) << 96
+        } else {
+            u128::MAX << (max_prefix - self.prefix_len)
+        };
+
+        (ip_bits & mask) == self.network
+    }
+}
+
+/// Simple token-bucket rate limiter for HEP input.
+struct HepRateLimiter {
+    max_per_second: u64,
+    count_this_second: u64,
+    window_start: Instant,
+    dropped_total: u64,
+}
+
+impl HepRateLimiter {
+    fn new(max_per_second: u64) -> Self {
+        Self {
+            max_per_second,
+            count_this_second: 0,
+            window_start: Instant::now(),
+            dropped_total: 0,
+        }
+    }
+
+    /// Returns `true` if the message should be processed, `false` if rate-limited.
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.window_start).as_secs() >= 1 {
+            self.window_start = now;
+            self.count_this_second = 0;
+        }
+
+        self.count_this_second += 1;
+        if self.count_this_second > self.max_per_second {
+            self.dropped_total += 1;
+            log::debug!(
+                "HEP rate limit exceeded ({}/s), dropping packet (total dropped: {})",
+                self.max_per_second,
+                self.dropped_total
+            );
+            return false;
+        }
+        true
+    }
+}
+
 // ── HEP capture (receiver) ──────────────────────────────────────────
 
 /// HEP listener: binds a UDP socket and receives HEP packets.
@@ -480,7 +613,13 @@ fn append_chunk(buf: &mut Vec<u8>, vendor: u16, chunk_type: u16, data: &[u8]) {
 /// # Errors
 ///
 /// Returns an error if the UDP socket cannot be bound.
-pub fn capture_hep(bind_addr: &str, config: &CaptureConfig, tx: Sender<Packet>) -> Result<()> {
+pub fn capture_hep(
+    bind_addr: &str,
+    config: &CaptureConfig,
+    tx: Sender<Packet>,
+    allowlist: &[CidrRange],
+    rate_limit: u64,
+) -> Result<()> {
     let socket = UdpSocket::bind(bind_addr)
         .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))?;
 
@@ -489,9 +628,14 @@ pub fn capture_hep(bind_addr: &str, config: &CaptureConfig, tx: Sender<Packet>) 
         .set_read_timeout(Some(Duration::from_millis(100)))
         .context("Failed to set socket read timeout")?;
 
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
+    let mut rate_limiter = HepRateLimiter::new(rate_limit);
+
+    if !allowlist.is_empty() {
+        log::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
+    }
 
     log::info!("HEP listener started on {bind_addr}");
 
@@ -515,8 +659,8 @@ pub fn capture_hep(bind_addr: &str, config: &CaptureConfig, tx: Sender<Packet>) 
             break;
         }
 
-        let n = match socket.recv_from(&mut buf) {
-            Ok((n, _peer)) => n,
+        let (n, peer) = match socket.recv_from(&mut buf) {
+            Ok((n, peer)) => (n, peer),
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(e) => {
@@ -524,6 +668,20 @@ pub fn capture_hep(bind_addr: &str, config: &CaptureConfig, tx: Sender<Packet>) 
                 return Err(e).context("Fatal HEP socket error");
             }
         };
+
+        // Check allowlist
+        if !allowlist.is_empty() {
+            let peer_ip = peer.ip();
+            if !allowlist.iter().any(|cidr| cidr.contains(peer_ip)) {
+                log::debug!("Dropping HEP packet from non-allowed source {peer_ip}");
+                continue;
+            }
+        }
+
+        // Check rate limit
+        if !rate_limiter.allow() {
+            continue;
+        }
 
         let hep = match parse_hep(&buf[..n]) {
             Ok(h) => h,

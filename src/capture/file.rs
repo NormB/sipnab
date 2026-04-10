@@ -32,8 +32,14 @@ pub fn capture_file(path: &Path, config: &CaptureConfig, tx: Sender<Packet>) -> 
     let link_type = cap.get_datalink().0;
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
+    let replay = config.replay;
+    let mut prev_ts: Option<DateTime<Utc>> = None;
 
-    log::info!("Reading from '{}'", path.display());
+    if replay {
+        log::info!("Replaying from '{}' with original timing", path.display());
+    } else {
+        log::info!("Reading from '{}'", path.display());
+    }
 
     loop {
         if signals::shutdown_requested() {
@@ -58,6 +64,21 @@ pub fn capture_file(path: &Path, config: &CaptureConfig, tx: Sender<Packet>) -> 
         match cap.next_packet() {
             Ok(pkt) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
+
+                // Replay mode: sleep for the inter-packet delta
+                if replay {
+                    if let Some(prev) = prev_ts {
+                        let delta = ts.signed_duration_since(prev);
+                        if let Ok(dur) = delta.to_std()
+                            && !dur.is_zero()
+                        {
+                            std::thread::sleep(dur);
+                        }
+                        // Negative deltas (out-of-order timestamps) are skipped
+                    }
+                    prev_ts = Some(ts);
+                }
+
                 let packet = Packet::new(
                     ts,
                     pkt.data.to_vec(),
