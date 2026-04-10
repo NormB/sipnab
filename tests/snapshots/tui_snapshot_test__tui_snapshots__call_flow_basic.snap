@@ -28,7 +28,7 @@ expression: output
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
  Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
-F1 Help F2 Save F5 Compare F7 Filter F9 ClearFiltr
+F1Help F2Save F5Compare F7Filter F9ClearFilter

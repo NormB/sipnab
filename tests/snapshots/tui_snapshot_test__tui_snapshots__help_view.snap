@@ -38,7 +38,7 @@ expression: output
 │Call Flow:                                                                    │
 │  ↑/↓               Scroll through messages                                   │
 │  Enter             View raw SIP message at current position                  │
-│  Esc               Return to Call List                                       │
 └──────────────────────────────────────────────────────────────────────────────┘
+
  Current Mode: Online (any)    Dialogs: 0    Match Expression:     BPF Filter:
-F1 Help
+F1Help

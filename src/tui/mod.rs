@@ -239,9 +239,11 @@ pub fn run_tui(
 fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
 
-    // Layout: main area + status bar + F-key bar
-    let [main_area, status_area, fkey_area] = Layout::vertical([
+    // Layout: main area + separator + status bar + F-key bar
+    // The separator prevents visual overlap between content and bottom bars.
+    let [main_area, _sep, status_area, fkey_area] = Layout::vertical([
         Constraint::Fill(1),
+        Constraint::Length(1), // blank separator line
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -342,27 +344,27 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
 
     let items: &[(&str, &str)] = match view {
         View::CallList => &[
-            ("F1", " Help "),
-            ("F2", " Save "),
-            ("F3", " Search "),
-            ("F4", " Extended "),
-            ("F5", " Compare "),
-            ("F6", " RTP "),
-            ("F7", " Filter "),
-            ("F8", " Settings "),
-            ("F9", " ClearFiltr"),
-            ("F10", " Columns "),
+            ("F1", "Help "),
+            ("F2", "Save "),
+            ("F3", "Search "),
+            ("F4", "Extended "),
+            ("F5", "Compare "),
+            ("F6", "RTP "),
+            ("F7", "Filter "),
+            ("F8", "Settings "),
+            ("F9", "ClearFilter "),
+            ("F10", "Columns "),
         ],
         View::CallFlow(_) => &[
-            ("F1", " Help "),
-            ("F2", " Save "),
-            ("F5", " Compare "),
-            ("F7", " Filter "),
-            ("F9", " ClearFiltr"),
+            ("F1", "Help "),
+            ("F2", "Save "),
+            ("F5", "Compare "),
+            ("F7", "Filter "),
+            ("F9", "ClearFilter "),
         ],
-        View::RawMessage { .. } => &[("F1", " Help "), ("F2", " Save ")],
-        View::StreamList => &[("F1", " Help "), ("F7", " Filter ")],
-        _ => &[("F1", " Help ")],
+        View::RawMessage { .. } => &[("F1", "Help "), ("F2", "Save ")],
+        View::StreamList => &[("F1", "Help "), ("F7", "Filter ")],
+        _ => &[("F1", "Help ")],
     };
 
     let mut spans: Vec<Span> = Vec::new();
