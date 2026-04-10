@@ -76,3 +76,16 @@ jobs:
 
       - name: Cargo deny
         run: cargo deny check
+
+  fuzz-check:
+    name: Fuzz targets compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Check fuzz targets
+        run: cd fuzz && cargo check

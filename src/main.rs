@@ -13,6 +13,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
+use sipnab::capture::websocket;
 use sipnab::capture::{self, CaptureConfig, CaptureSource, ParsedPacket, PcapWriter};
 use sipnab::cli::Cli;
 use sipnab::config::Config;
@@ -350,16 +351,25 @@ fn tui_process_packet(
         TransportProto::Sctp => "SCTP",
     };
 
+    // Try WebSocket unwrapping for TCP on common WS ports
+    let ws_payload = try_websocket_unwrap(pp);
+    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
+    let effective_transport = if ws_payload.is_some() {
+        "WS"
+    } else {
+        transport_str
+    };
+
     // Try SIP detection first
-    if sip::is_sip_message(&pp.payload) {
+    if sip::is_sip_message(effective_payload) {
         if let Ok(sip_msg) = sip::parse_sip(
-            &pp.payload,
+            effective_payload,
             pp.timestamp,
             pp.src_addr,
             pp.dst_addr,
             pp.src_port,
             pp.dst_port,
-            transport_str,
+            effective_transport,
         ) && !cli.no_dialog
         {
             let mut ds = dialog_store.write();
@@ -674,16 +684,21 @@ fn process_parsed_packet(
         );
     }
 
+    // Try WebSocket unwrapping for TCP on common WS ports
+    let ws_payload = try_websocket_unwrap(pp);
+    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
+
     // Try SIP detection first
-    if sip::is_sip_message(&pp.payload) {
+    if sip::is_sip_message(effective_payload) {
         let transport_str = match pp.transport {
             TransportProto::Udp => "UDP",
+            TransportProto::Tcp if ws_payload.is_some() => "WS",
             TransportProto::Tcp => "TCP",
             TransportProto::Sctp => "SCTP",
         };
 
         match sip::parse_sip(
-            &pp.payload,
+            effective_payload,
             pp.timestamp,
             pp.src_addr,
             pp.dst_addr,
@@ -929,6 +944,33 @@ fn process_parsed_packet(
     }
 }
 
+/// Try to unwrap a WebSocket frame from a TCP packet on common WS ports.
+///
+/// Returns `Some(payload)` if the packet is TCP, the destination or source
+/// port is a common WebSocket port (80, 443, 8080, 8443), and the data
+/// contains a valid WebSocket data frame wrapping SIP content.
+fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
+    if pp.transport != TransportProto::Tcp {
+        return None;
+    }
+
+    // Only attempt on common WebSocket ports
+    let is_ws_port =
+        websocket::WS_PORTS.contains(&pp.dst_port) || websocket::WS_PORTS.contains(&pp.src_port);
+    if !is_ws_port {
+        return None;
+    }
+
+    if !websocket::is_websocket_frame(&pp.payload) {
+        return None;
+    }
+
+    match websocket::unwrap_websocket_frame(&pp.payload) {
+        Ok(Some(payload)) if sip::is_sip_message(&payload) => Some(payload),
+        _ => None,
+    }
+}
+
 /// Check if a UDP payload looks like RTCP.
 ///
 /// RTCP convention: odd destination port (RTP port + 1), version=2,
@@ -1171,16 +1213,21 @@ fn mirror_to_shared_stores(
     stream_store: &Arc<RwLock<StreamStore>>,
     no_rtp: bool,
 ) {
+    // Try WebSocket unwrapping for TCP on common WS ports
+    let ws_payload = try_websocket_unwrap(pp);
+    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
+
     let transport_str = match pp.transport {
         TransportProto::Udp => "UDP",
+        TransportProto::Tcp if ws_payload.is_some() => "WS",
         TransportProto::Tcp => "TCP",
         TransportProto::Sctp => "SCTP",
     };
 
     // Mirror SIP messages
-    if sip::is_sip_message(&pp.payload) {
+    if sip::is_sip_message(effective_payload) {
         if let Ok(sip_msg) = sip::parse_sip(
-            &pp.payload,
+            effective_payload,
             pp.timestamp,
             pp.src_addr,
             pp.dst_addr,

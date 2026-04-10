@@ -21,6 +21,8 @@ pub mod heuristic;
 pub mod parser;
 pub mod quality;
 pub mod rtcp;
+#[cfg(feature = "tls")]
+pub mod srtp;
 pub mod stream;
 pub mod stream_store;
 

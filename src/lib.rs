@@ -6,6 +6,8 @@
 pub mod capture;
 pub mod cli;
 pub mod config;
+#[cfg(feature = "tls")]
+pub mod crypto;
 pub mod output;
 pub mod privilege;
 pub mod rtp;
