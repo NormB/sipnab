@@ -2,7 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- sipnab — RTP Streams
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)
+ Match Expression:     BPF Filter:
+ Display Filter:
   SSRC       Codec    Source                 Destination            Pkts     Jitter   Loss    Duration  Dialog             Status
 > AAAABBBB   PCMU     10.0.0.1:20000         10.0.0.2:30000         1        0.0ms    0.0%    0s        call-1@test        OK
   CCCCDDDD   PCMA     10.0.0.3:20002         10.0.0.4:30002         1        0.0ms    0.0%    0s        -                  ORPHAN
@@ -23,6 +25,4 @@ expression: output
 
 
 
-
- Current Mode: Online (any)    Dialogs: 0    Match Expression:     BPF Filter:
-F1Help  F7Filter
+Esc Back  Tab Calls  F7 Filter

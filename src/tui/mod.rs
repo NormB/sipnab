@@ -245,15 +245,26 @@ pub fn run_tui(
 fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     let area = frame.area();
 
-    // Layout: main area + separator + status bar + F-key bar
-    // The separator prevents visual overlap between content and bottom bars.
-    let [main_area, _sep, status_area, fkey_area] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1), // blank separator line
+    // Layout: 3 status lines at top (sngrep-style), main content, F-key bar at bottom
+    let [
+        status1_area,
+        status2_area,
+        status3_area,
+        main_area,
+        fkey_area,
+    ] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
         Constraint::Length(1),
     ])
     .areas(area);
+
+    // Status lines at top (sngrep-style)
+    render_status_line1(frame, status1_area, app);
+    render_status_line2(frame, status2_area, app);
+    render_status_line3(frame, status3_area, app);
 
     // Render the current view
     match &app.current_view.clone() {
@@ -301,97 +312,122 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         }
     }
 
-    // Status bar (sngrep-style)
-    render_status_bar(frame, status_area, app);
-
-    // F-key bar (sngrep-style, context-sensitive)
+    // F-key bar (sngrep-style, context-sensitive) at bottom
     render_fkey_bar(frame, fkey_area, &app.current_view);
 }
 
-/// Render the sngrep-style status bar above the F-key bar.
-///
-/// Format: `Current Mode: Online (any)    Dialogs: 10    Match Expression:     BPF Filter:`
-fn render_status_bar(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let dialog_count = app.dialog_store.read().len();
+/// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
+fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let total_count = app.dialog_store.read().len();
+    let displayed_count = filtered_dialog_count(app);
 
-    let status_text = if app.search_active {
-        format!("/{}", app.search_query)
-    } else if let Some(ref err) = app.status_error {
-        err.clone()
+    // Determine if online (live capture) or offline (pcap file)
+    let is_online = app.capture_mode.starts_with("Online");
+    let mode_style = if is_online {
+        Style::default().fg(Color::Green)
     } else {
-        let match_expr = &app.active_filter_text;
-        let bpf = &app.bpf_filter;
-        format!(
-            " Current Mode: {}    Dialogs: {}    Match Expression: {}    BPF Filter: {}",
-            app.capture_mode, dialog_count, match_expr, bpf,
-        )
+        Style::default().fg(Color::Red)
     };
 
-    let status = Paragraph::new(Line::from(vec![Span::styled(
-        status_text,
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
-    )]))
-    .style(Style::default().bg(Color::DarkGray));
+    let spans = vec![
+        Span::raw(" Current Mode: "),
+        Span::styled(app.capture_mode.clone(), mode_style),
+        Span::raw(format!(
+            "    Dialogs: {} ({} displayed)",
+            total_count, displayed_count
+        )),
+    ];
 
-    frame.render_widget(status, area);
+    let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(line1, area);
+}
+
+/// Render status line 2 (sngrep-style): `Match Expression: <expr>    BPF Filter: <bpf>`
+fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let yellow = Style::default().fg(Color::Yellow);
+
+    let spans = vec![
+        Span::raw(" Match Expression: "),
+        Span::styled(app.active_filter_text.clone(), yellow),
+        Span::raw("    BPF Filter: "),
+        Span::styled(app.bpf_filter.clone(), yellow),
+    ];
+
+    let line2 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(line2, area);
+}
+
+/// Render status line 3 (sngrep-style): `Display Filter: <filter>` or search/error overlay.
+fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let spans = if app.search_active {
+        vec![Span::styled(
+            format!(" /{}", app.search_query),
+            Style::default().fg(Color::Yellow),
+        )]
+    } else if let Some(ref err) = app.status_error {
+        vec![Span::styled(
+            format!(" {}", err),
+            Style::default().fg(Color::Red),
+        )]
+    } else {
+        let yellow = Style::default().fg(Color::Yellow);
+        vec![
+            Span::raw(" Display Filter: "),
+            Span::styled(app.active_filter_text.clone(), yellow),
+        ]
+    };
+
+    let line3 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    frame.render_widget(line3, area);
 }
 
 /// Render the sngrep-style F-key bar at the bottom of the screen.
 ///
-/// Each F-key label is a pair: the key name (white on blue) and the action
-/// label (black on cyan), matching sngrep's distinctive appearance.
+/// Format: `Esc Quit  Enter Show  F2 Save  ...`
+/// Key names in bold white, labels in default. Full-width dark background.
 /// The bar is context-sensitive based on the current view.
 fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
-    let key_style = Style::default().fg(Color::White).bg(Color::Blue);
-    let label_style = Style::default().fg(Color::Black).bg(Color::Cyan);
+    let key_style = Style::default()
+        .fg(Color::White)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(Color::White);
 
     let items: &[(&str, &str)] = match view {
         View::CallList => &[
-            ("F1", "Help "),
-            ("F2", "Save "),
-            ("F3", "Search "),
-            ("F4", "Extended "),
-            ("F5", "Compare "),
-            ("F6", "RTP "),
-            ("F7", "Filter "),
-            ("F8", "Settings "),
-            ("F9", "ClearFilter "),
-            ("F10", "Columns "),
+            ("Esc", "Quit"),
+            ("Enter", "Show"),
+            ("F2", "Save"),
+            ("F3", "Search"),
+            ("F4", "Extended"),
+            ("F5", "Clear"),
+            ("F6", "Raw"),
+            ("F7", "Filter"),
+            ("F9", "Addrs"),
+            ("F10", "Columns"),
         ],
         View::CallFlow(_) => &[
-            ("F1", "Help "),
-            ("F2", "Save "),
-            ("F5", "Compare "),
-            ("F7", "Filter "),
-            ("F9", "ClearFilter "),
+            ("Esc", "Back"),
+            ("Enter", "Raw"),
+            ("F2", "Save"),
+            ("F5", "Compare"),
+            ("F7", "Filter"),
+            ("F9", "ClearFilter"),
         ],
-        View::RawMessage { .. } => &[("F1", "Help "), ("F2", "Save ")],
-        View::StreamList => &[("F1", "Help "), ("F7", "Filter ")],
-        _ => &[("F1", "Help ")],
+        View::RawMessage { .. } => &[("Esc", "Back"), ("F2", "Save")],
+        View::StreamList => &[("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
+        _ => &[("Esc", "Back")],
     };
 
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
         if i > 0 {
-            // Space between F-key pairs
-            spans.push(Span::raw(" "));
+            spans.push(Span::raw("  "));
         }
-        spans.push(Span::styled((*key).to_string(), key_style));
+        spans.push(Span::styled(format!("{key} "), key_style));
         spans.push(Span::styled((*label).to_string(), label_style));
     }
 
-    // Pad remaining space
-    let used_width: usize =
-        items.iter().map(|(k, l)| k.len() + l.len()).sum::<usize>() + items.len().saturating_sub(1); // account for spaces between pairs
-    let remaining = (area.width as usize).saturating_sub(used_width);
-    if remaining > 0 {
-        spans.push(Span::raw(" ".repeat(remaining)));
-    }
-
-    let bar = Paragraph::new(Line::from(spans));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
     frame.render_widget(bar, area);
 }
 
@@ -546,7 +582,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
     let dialog_count = filtered_dialog_count(app);
 
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => app.call_list.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.call_list.move_down(dialog_count),
         KeyCode::Home => app.call_list.move_to_top(),

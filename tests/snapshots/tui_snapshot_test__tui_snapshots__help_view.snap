@@ -2,6 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)
+ Match Expression:     BPF Filter:
+ Display Filter:
 ┌ Help (Esc to close) ─────────────────────────────────────────────────────────┐
 │sipnab v0.1.0-alpha — Keyboard Shortcuts                                      │
 │                                                                              │
@@ -37,8 +40,5 @@ expression: output
 │                                                                              │
 │Call Flow:                                                                    │
 │  ↑/↓               Scroll through messages                                   │
-│  Enter             View raw SIP message at current position                  │
 └──────────────────────────────────────────────────────────────────────────────┘
-
- Current Mode: Online (any)    Dialogs: 0    Match Expression:     BPF Filter:
-F1Help
+Esc Back

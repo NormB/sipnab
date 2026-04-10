@@ -6,9 +6,9 @@
 //! show diagnosis warning indicators.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Span;
 use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
@@ -154,8 +154,9 @@ impl Default for CallListState {
 
 /// Render the call list table into the given area.
 ///
-/// Uses sngrep-style: borderless, white-on-blue header, blue highlight for
-/// selected row, full-width layout. Title line at top: "sipnab -- SIP Messages Flow Viewer".
+/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
+/// selected row, full-width layout. No title line -- status is rendered
+/// separately at the top of the screen.
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
@@ -163,23 +164,12 @@ pub fn render_call_list(
     store: &DialogStore,
     filter: Option<&FilterExpr>,
 ) {
-    // Layout: title line + table area
-    let [title_area, table_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    // The entire area is used for the table (no title line)
+    let table_area = area;
 
-    // Title line (sngrep-style)
-    let title = Paragraph::new(Line::from(Span::styled(
-        " sipnab \u{2014} SIP Messages Flow Viewer",
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )));
-    frame.render_widget(title, title_area);
-
-    // sngrep header style: white on blue, bold
+    // sngrep header style: bold on cyan background
     let header_style = Style::default()
-        .fg(Color::White)
-        .bg(Color::Blue)
+        .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
     let header = Row::new(vec![
@@ -243,11 +233,13 @@ pub fn render_call_list(
                 .map(|ms| format!("{}ms", ms))
                 .unwrap_or_default();
 
-            // Method cell: green for INVITE (sngrep style)
-            let method_style = if dialog.method == "INVITE" {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default()
+            // Method cell colors (sngrep style)
+            let method_style = match dialog.method.as_str() {
+                "INVITE" => Style::default().fg(Color::Green),
+                "BYE" => Style::default().fg(Color::Red),
+                "CANCEL" => Style::default().fg(Color::Yellow),
+                "REGISTER" => Style::default().fg(Color::Cyan),
+                _ => Style::default(),
             };
 
             let row = Row::new(vec![
@@ -298,11 +290,11 @@ pub fn render_call_list(
         Constraint::Length(8),  // PDD
     ];
 
-    // sngrep-style: no borders, blue highlight for selected row
+    // sngrep-style: no borders, reverse video for selected row
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(Style::default().fg(Color::White).bg(Color::Blue))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);

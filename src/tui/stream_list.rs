@@ -5,10 +5,10 @@
 //! health status. Rows are color-coded by quality thresholds.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
+use ratatui::text::Span;
+use ratatui::widgets::{Cell, Row, Table, TableState};
 
 use crate::rtp::stream::RtpStream;
 use crate::rtp::stream_store::StreamStore;
@@ -122,30 +122,20 @@ impl Default for StreamListState {
 
 /// Render the RTP stream list table into the given area.
 ///
-/// Uses sngrep-style: borderless, white-on-blue header, blue highlight.
+/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
+/// No title line -- status is rendered separately at the top of the screen.
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
 ) {
-    // Layout: title line + table area
-    let [title_area, table_area] =
-        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+    // The entire area is used for the table (no title line)
+    let table_area = area;
 
-    // Title line
-    let title = Paragraph::new(Line::from(Span::styled(
-        " sipnab \u{2014} RTP Streams",
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    )));
-    frame.render_widget(title, title_area);
-
-    // sngrep header style: white on blue, bold
+    // sngrep header style: bold on cyan background
     let header_style = Style::default()
-        .fg(Color::White)
-        .bg(Color::Blue)
+        .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
     let header = Row::new(vec![
@@ -231,11 +221,11 @@ pub fn render_stream_list(
         Constraint::Length(7),  // Status
     ];
 
-    // sngrep-style: no borders, blue highlight for selected row
+    // sngrep-style: no borders, reverse video for selected row
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
-        .row_highlight_style(Style::default().fg(Color::White).bg(Color::Blue))
+        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
 
     frame.render_stateful_widget(table, table_area, &mut state.table_state);
