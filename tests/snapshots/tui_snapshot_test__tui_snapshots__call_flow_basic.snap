@@ -2,6 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)
+ Match Expression:     BPF Filter:
+ Display Filter:
 ┌ Call Flow: call-1@test ──────────────────────────────────────────────────────────────────────────┐
 │             10.0.0.1:5060                                 10.0.0.2:5060                          │
 │                   |                                             |                                │
@@ -27,8 +30,5 @@ expression: output
 │                                                                                                  │
 │                                                                                                  │
 │                                                                                                  │
-│                                                                                                  │
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
-
- Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
-F1Help  F2Save  F5Compare  F7Filter  F9ClearFilter
+Esc Back  Enter Raw  F2 Save  F5 Compare  F7 Filter  F9 ClearFilter

@@ -2,7 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- sipnab — SIP Messages Flow Viewer
+ Current Mode: Online (any)    Dialogs: 3 (1 displayed)
+ Match Expression: state == 'Failed'    BPF Filter:
+ Display Filter: state == 'Failed'
    #    Method     From         To           Source      Destination  State        Msgs  Date  PDD
 >  1    INVITE     1003         1004         10.0.0.1    10.0.0.2     FAILED       2     12:00
 
@@ -23,6 +25,4 @@ expression: output
 
 
 
-
- Current Mode: Online (any)    Dialogs: 3    Match Expression: state == 'Failed'    BPF Filter:
-F1Help  F2Save  F3Search  F4Extended  F5Compare  F6RTP  F7Filter  F8Settings  F9ClearFilter  F10Colu
+Esc Quit  Enter Show  F2 Save  F3 Search  F4 Extended  F5 Clear  F6 Raw  F7 Filter  F9 Addrs  F10 Co

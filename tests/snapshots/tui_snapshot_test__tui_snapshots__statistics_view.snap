@@ -2,6 +2,9 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)
+ Match Expression:     BPF Filter:
+ Display Filter:
 ┌ Statistics ──────────────────────────────────────────────┐
 │sipnab Statistics                                         │
 │                                                          │
@@ -17,8 +20,5 @@ expression: output
 │  InCall           1                                      │
 │                                                          │
 │Method Distribution:                                      │
-│  INVITE           3                                      │
 └──────────────────────────────────────────────────────────┘
-
- Current Mode: Online (any)    Dialogs: 3    Match Expressio
-F1Help
+Esc Back
