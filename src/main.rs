@@ -26,6 +26,11 @@ use sipnab::security::{
 use sipnab::signals;
 use sipnab::sip::{self, dialog_store::DialogStore, dsl::FilterExpr, matcher::SipMatcher};
 
+#[cfg(feature = "tls")]
+use sipnab::capture::decrypt::TlsDecryptor;
+#[cfg(feature = "tls")]
+use sipnab::capture::tls;
+
 fn main() {
     // 1. Parse CLI arguments
     let cli = Cli::parse_args();
@@ -490,6 +495,30 @@ fn run_batch_mode(
         .collect();
     let mut alert_engine = AlertEngine::new(alert_rules, cli.alert_exec.clone());
 
+    // 17c. Initialize TLS decryptor if --keylog is provided
+    #[cfg(feature = "tls")]
+    let mut tls_decryptor: Option<TlsDecryptor> = if cli.keylog.is_some() {
+        let keylog_path = cli.keylog.as_deref().map(std::path::Path::new);
+        let crypto = sipnab::crypto::default_backend();
+        match TlsDecryptor::new(keylog_path, crypto) {
+            Ok(d) => {
+                if d.keylog_entry_count() > 0 {
+                    log::info!(
+                        "sipnab: TLS decryption active (keylog loaded). \
+                         Decrypted traffic visible in output."
+                    );
+                }
+                Some(d)
+            }
+            Err(e) => {
+                log::error!("Failed to initialize TLS decryptor: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Start API server if --api is specified (feature-gated)
     // In batch mode, we share stores via Arc<RwLock> when the API is active.
     #[cfg(feature = "api")]
@@ -581,8 +610,18 @@ fn run_batch_mode(
         // Parse and reassemble the packet
         let parsed_packets = processor.process(&packet);
         for pp in &parsed_packets {
+            // Attempt TLS decryption for TCP payloads when --keylog is active
+            #[cfg(feature = "tls")]
+            let tls_decrypted = try_tls_decrypt(pp, &mut tls_decryptor);
+
+            #[cfg(not(feature = "tls"))]
+            let tls_decrypted: Option<ParsedPacket> = None;
+
+            // If TLS decryption yielded a SIP message, process the decrypted packet
+            let is_tls = tls_decrypted.is_some();
+            let effective_pp = tls_decrypted.as_ref().unwrap_or(pp);
             process_parsed_packet(
-                pp,
+                effective_pp,
                 &matcher,
                 &filter_expr,
                 &output_opts,
@@ -600,12 +639,13 @@ fn run_batch_mode(
                 &mut rtp_count,
                 &mut prev_timestamp,
                 no_rtp,
+                is_tls,
             );
 
             // Mirror updates to shared stores for API access
             #[cfg(feature = "api")]
             if let (Some(ds), Some(ss)) = (&shared_ds, &shared_ss) {
-                mirror_to_shared_stores(pp, ds, ss, no_rtp);
+                mirror_to_shared_stores(effective_pp, ds, ss, no_rtp);
             }
         }
 
@@ -648,6 +688,9 @@ fn run_batch_mode(
 
 /// Process a single parsed packet through SIP/RTP detection, matching,
 /// dialog tracking, and output dispatch.
+///
+/// `tls_decrypted` should be `true` when the payload was decrypted from a
+/// TLS record, so the transport is reported as "TLS" rather than "TCP".
 #[allow(clippy::too_many_arguments)]
 fn process_parsed_packet(
     pp: &ParsedPacket,
@@ -668,6 +711,7 @@ fn process_parsed_packet(
     rtp_count: &mut u64,
     prev_timestamp: &mut Option<chrono::DateTime<chrono::Utc>>,
     no_rtp: bool,
+    tls_decrypted: bool,
 ) {
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
@@ -693,6 +737,7 @@ fn process_parsed_packet(
         let transport_str = match pp.transport {
             TransportProto::Udp => "UDP",
             TransportProto::Tcp if ws_payload.is_some() => "WS",
+            TransportProto::Tcp if tls_decrypted => "TLS",
             TransportProto::Tcp => "TCP",
             TransportProto::Sctp => "SCTP",
         };
@@ -942,6 +987,44 @@ fn process_parsed_packet(
         stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
         *rtp_count += 1;
     }
+}
+
+/// Attempt TLS decryption on a TCP payload.
+///
+/// If the payload looks like TLS, parses the records and tries to decrypt
+/// ApplicationData records. If decryption yields SIP content, returns a
+/// synthetic [`ParsedPacket`] with the decrypted payload and transport set
+/// to reflect the TLS origin.
+#[cfg(feature = "tls")]
+fn try_tls_decrypt(
+    pp: &ParsedPacket,
+    tls_decryptor: &mut Option<TlsDecryptor>,
+) -> Option<ParsedPacket> {
+    let decryptor = tls_decryptor.as_mut()?;
+
+    if pp.transport != TransportProto::Tcp {
+        return None;
+    }
+
+    if !tls::is_tls(&pp.payload) {
+        return None;
+    }
+
+    let records = tls::parse_tls_records(&pp.payload);
+    for record in &records {
+        if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
+            && sip::is_sip_message(&plaintext)
+        {
+            // Build a synthetic ParsedPacket with the decrypted SIP payload.
+            // The transport string "TLS" is set during SIP message construction
+            // in process_parsed_packet via the tls_decrypted flag.
+            let mut decrypted_pp = pp.clone();
+            decrypted_pp.payload = plaintext;
+            return Some(decrypted_pp);
+        }
+    }
+
+    None
 }
 
 /// Try to unwrap a WebSocket frame from a TCP packet on common WS ports.

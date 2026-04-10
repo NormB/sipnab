@@ -50,6 +50,11 @@ jobs:
       - name: Format
         run: cargo fmt --check
 
+      - name: E2E TUI tests (PTY)
+        if: runner.os != 'Windows'
+        run: cargo test --features tui --test tui_e2e_test -- --ignored
+        continue-on-error: true  # PTY tests can be flaky in CI
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest

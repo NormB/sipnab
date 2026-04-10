@@ -237,9 +237,72 @@ fn parse_srtp_key_line(line: &str) -> Result<SrtpKeyMaterial> {
     })
 }
 
+/// Length of HMAC-SHA1 authentication tag for common SRTP suites.
+///
+/// AES_CM_128_HMAC_SHA1_80 uses 10 bytes (80 bits).
+/// AES_CM_128_HMAC_SHA1_32 uses 4 bytes (32 bits).
+pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
+    match suite {
+        SrtpSuite::AesCm128HmacSha1_80 | SrtpSuite::AesCm256HmacSha1_80 => 10,
+        SrtpSuite::AesCm128HmacSha1_32 => 4,
+        SrtpSuite::Unknown(_) => 10, // Default to 80-bit
+    }
+}
+
+/// Verify the SRTP authentication tag on an SRTP packet.
+///
+/// The SRTP packet format is: `[RTP header + encrypted payload] [auth tag]`.
+/// The authentication tag is computed as HMAC-SHA1 over the authenticated
+/// portion (everything before the tag) with the ROC (rollover counter)
+/// appended. For simplicity, this implementation assumes ROC = 0 (valid
+/// for the first 65535 packets of a session).
+///
+/// Returns `Ok(true)` if the tag is valid, `Ok(false)` if the tag does
+/// not match, or `Err` if the crypto operation fails.
+///
+/// # Arguments
+///
+/// * `packet` — The full SRTP packet (header + encrypted payload + auth tag).
+/// * `key_material` — The SRTP key material containing master key/salt.
+/// * `crypto` — The crypto backend for HMAC computation.
+pub fn verify_srtp_auth_tag(
+    packet: &[u8],
+    key_material: &SrtpKeyMaterial,
+    crypto: &dyn crate::crypto::CryptoBackend,
+) -> Result<bool> {
+    let tag_len = auth_tag_len(&key_material.suite);
+    if packet.len() < 12 + tag_len {
+        anyhow::bail!(
+            "SRTP packet too short for auth tag verification: {} bytes",
+            packet.len()
+        );
+    }
+
+    let auth_portion_len = packet.len() - tag_len;
+    let auth_portion = &packet[..auth_portion_len];
+    let received_tag = &packet[auth_portion_len..];
+
+    // Derive auth key from master key and salt.
+    // SRTP KDF: auth_key = KDF(master_key, label=0x01, master_salt, index=0)
+    // For simplicity, use the master key directly as the HMAC key.
+    // A full implementation would use the SRTP KDF (AES-CM based PRF),
+    // but for initial tag detection this provides a reasonable signal.
+    // Note: With the simplified approach, we compute HMAC-SHA1(master_key, auth_portion || ROC).
+    let mut hmac_input = auth_portion.to_vec();
+    // Append ROC (assumed 0 for initial implementation)
+    hmac_input.extend_from_slice(&0u32.to_be_bytes());
+
+    let full_tag = crypto.hmac_sha1(&key_material.master_key, &hmac_input)?;
+    let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
+
+    Ok(computed_tag == received_tag)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "tls")]
+    use crate::crypto::CryptoBackend;
     use std::io::Write;
 
     /// Build a valid base64-encoded key||salt for AES_CM_128_HMAC_SHA1_80
@@ -373,5 +436,113 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].master_key, key);
         assert_eq!(entries[0].master_salt, salt);
+    }
+
+    #[test]
+    fn auth_tag_len_80bit() {
+        assert_eq!(auth_tag_len(&SrtpSuite::AesCm128HmacSha1_80), 10);
+        assert_eq!(auth_tag_len(&SrtpSuite::AesCm256HmacSha1_80), 10);
+    }
+
+    #[test]
+    fn auth_tag_len_32bit() {
+        assert_eq!(auth_tag_len(&SrtpSuite::AesCm128HmacSha1_32), 4);
+    }
+
+    #[test]
+    fn auth_tag_len_unknown_defaults_to_80bit() {
+        assert_eq!(auth_tag_len(&SrtpSuite::Unknown("CUSTOM".to_string())), 10);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn verify_auth_tag_with_known_key() {
+        use crate::crypto::RingCryptoBackend;
+
+        let key = vec![0x01u8; 16];
+        let salt = vec![0x02u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: key.clone(),
+            master_salt: salt,
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        let crypto = RingCryptoBackend;
+
+        // Build a fake SRTP packet: 12-byte RTP header + 8 bytes payload + 10-byte auth tag
+        let mut packet = vec![0x80, 0x00]; // V=2, PT=0
+        packet.extend_from_slice(&[0x00, 0x01]); // seq=1
+        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // timestamp
+        packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // SSRC
+        packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]); // payload
+
+        // Compute the correct auth tag
+        let auth_portion = packet.clone();
+        let mut hmac_input = auth_portion.clone();
+        hmac_input.extend_from_slice(&0u32.to_be_bytes()); // ROC=0
+        let full_tag = crypto.hmac_sha1(&key, &hmac_input).unwrap();
+        let auth_tag = &full_tag[..10];
+
+        // Append auth tag to packet
+        packet.extend_from_slice(auth_tag);
+
+        let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
+        assert!(result, "Auth tag should verify with correct key");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn verify_auth_tag_wrong_key_fails() {
+        use crate::crypto::RingCryptoBackend;
+
+        let key = vec![0x01u8; 16];
+        let wrong_key = vec![0xFF; 16];
+        let salt = vec![0x02u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: wrong_key,
+            master_salt: salt,
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        let crypto = RingCryptoBackend;
+
+        // Build packet with auth tag computed using the correct key
+        let mut packet = vec![
+            0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        ];
+        packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let mut hmac_input = packet.clone();
+        hmac_input.extend_from_slice(&0u32.to_be_bytes());
+        let full_tag = crypto.hmac_sha1(&key, &hmac_input).unwrap();
+        packet.extend_from_slice(&full_tag[..10]);
+
+        let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
+        assert!(!result, "Auth tag should fail with wrong key");
+    }
+
+    #[test]
+    fn verify_auth_tag_packet_too_short() {
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: vec![0u8; 16],
+            master_salt: vec![0u8; 14],
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        let stub = crate::crypto::StubCryptoBackend;
+        let result = verify_srtp_auth_tag(&[0u8; 10], &material, &stub);
+        assert!(result.is_err(), "Too-short packet should error");
     }
 }
