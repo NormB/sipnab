@@ -28,10 +28,9 @@ pub fn render_call_flow(
     call_id: &str,
     scroll_offset: usize,
 ) {
-    let block = Block::default().borders(Borders::ALL).title(format!(
-        " Call Flow: {} ",
-        truncate(call_id, 40)
-    ));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Call Flow: {} ", truncate(call_id, 40)));
 
     let dialog = match store.get(call_id) {
         Some(d) => d,
@@ -179,10 +178,7 @@ pub fn format_ladder(
         }
 
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{ts_str}  "),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!("{ts_str}  "), Style::default().fg(Color::DarkGray)),
             Span::raw(format!("{:^20}", "|")),
             Span::styled(arrow_line, msg_style),
             Span::raw(format!("{:^20}", "|")),
@@ -251,11 +247,7 @@ fn format_message_label(msg: &SipMessage) -> String {
     let sdp_suffix = if has_sdp { " (SDP)" } else { "" };
 
     if msg.is_request {
-        format!(
-            "{}{}",
-            msg.method.as_deref().unwrap_or("?"),
-            sdp_suffix
-        )
+        format!("{}{}", msg.method.as_deref().unwrap_or("?"), sdp_suffix)
     } else {
         let code = msg.status_code.unwrap_or(0);
         let reason = msg.reason.as_deref().unwrap_or("");
