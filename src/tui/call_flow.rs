@@ -13,10 +13,14 @@ use ratatui::widgets::{Paragraph, Wrap};
 use crate::sip::SipMessage;
 use crate::sip::dialog_store::DialogStore;
 
-// ── Arrow width constant ────────────────────────────────────────────
+// ── Layout constants ────────────────────────────────────────────────
 
-/// Width of the arrow shaft (dashes) between endpoints.
-const ARROW_WIDTH: usize = 24;
+/// Minimum width for the arrow shaft (dashes) between endpoints.
+const MIN_ARROW_WIDTH: usize = 24;
+/// Width reserved for the timestamp column (HH:MM:SS + 2 spaces).
+const TS_COL_WIDTH: usize = 10;
+/// Width reserved for each endpoint column (pipe + padding).
+const ENDPOINT_COL_WIDTH: usize = 20;
 
 // ── Public rendering ────────────────────────────────────────────────
 
@@ -29,14 +33,34 @@ pub fn build_call_flow_lines(
     store: &DialogStore,
     call_id: &str,
 ) -> Option<(usize, Vec<Line<'static>>)> {
+    build_call_flow_lines_with_width(store, call_id, 120)
+}
+
+/// Build call flow lines with a specific terminal width for arrow sizing.
+pub fn build_call_flow_lines_with_width(
+    store: &DialogStore,
+    call_id: &str,
+    term_width: usize,
+) -> Option<(usize, Vec<Line<'static>>)> {
     let dialog = store.get(call_id)?;
     if dialog.messages.is_empty() {
         return None;
     }
 
+    // Calculate arrow width based on terminal width:
+    // term_width = timestamp(10) + left_endpoint(20) + arrow + right_endpoint(20) + pdd(~15)
+    let arrow_width = term_width
+        .saturating_sub(TS_COL_WIDTH + ENDPOINT_COL_WIDTH * 2 + 15)
+        .max(MIN_ARROW_WIDTH);
+
     let msg_count = dialog.messages.len();
     let first_ts = dialog.messages[0].timestamp;
-    let mut lines = format_ladder(&dialog.messages, first_ts, dialog.timing.pdd_ms());
+    let mut lines = format_ladder(
+        &dialog.messages,
+        first_ts,
+        dialog.timing.pdd_ms(),
+        arrow_width,
+    );
 
     // Show correlated dialogs (multi-leg)
     let correlated = store.find_correlated(call_id);
@@ -73,8 +97,9 @@ pub fn render_call_flow(
     call_id: &str,
     scroll_offset: usize,
 ) {
+    let term_width = area.width as usize;
     render_call_flow_lines(frame, area, call_id, scroll_offset, || {
-        build_call_flow_lines(store, call_id)
+        build_call_flow_lines_with_width(store, call_id, term_width)
     });
 }
 
@@ -127,6 +152,7 @@ pub fn format_ladder(
     messages: &[SipMessage],
     _first_ts: chrono::DateTime<chrono::Utc>,
     pdd_ms: Option<i64>,
+    arrow_width: usize,
 ) -> Vec<Line<'static>> {
     if messages.is_empty() {
         return vec![Line::from("(no messages)")];
@@ -149,7 +175,7 @@ pub fn format_ladder(
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(format!("{:^width$}", "", width = ARROW_WIDTH + 2)),
+        Span::raw(format!("{:^width$}", "", width = arrow_width + 2)),
         Span::styled(
             right_label,
             Style::default()
@@ -164,7 +190,7 @@ pub fn format_ladder(
         "|",
         "",
         "|",
-        width = ARROW_WIDTH + 2
+        width = arrow_width + 2
     )));
 
     // Keep track of whether we've annotated PDD
@@ -182,9 +208,9 @@ pub fn format_ladder(
 
         // Build the arrow line
         let arrow_line = if is_left_to_right {
-            format_arrow_right(&label, ARROW_WIDTH)
+            format_arrow_right(&label, arrow_width)
         } else {
-            format_arrow_left(&label, ARROW_WIDTH)
+            format_arrow_left(&label, arrow_width)
         };
 
         // PDD annotation
@@ -213,7 +239,7 @@ pub fn format_ladder(
         "|",
         "",
         "|",
-        width = ARROW_WIDTH + 2
+        width = arrow_width + 2
     )));
 
     lines
@@ -338,7 +364,7 @@ mod tests {
 
     #[test]
     fn format_ladder_empty_messages() {
-        let lines = format_ladder(&[], chrono::Utc::now(), None);
+        let lines = format_ladder(&[], chrono::Utc::now(), None, 40);
         assert_eq!(lines.len(), 1);
     }
 
@@ -366,7 +392,7 @@ mod tests {
         )
         .expect("parse ok");
 
-        let lines = format_ladder(&[msg], ts, None);
+        let lines = format_ladder(&[msg], ts, None, 50);
         // Should have header + bar + message + closing bar
         assert!(lines.len() >= 4);
     }
