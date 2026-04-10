@@ -322,42 +322,31 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 let scroll = app.call_flow_scroll;
 
                 // Check cache: invalidate when message count changes
-                let cache_hit = app
-                    .call_flow_cache
-                    .get(&cid)
-                    .and_then(|(cached_count, cached_lines)| {
-                        let dialog = store.get(&cid)?;
-                        if dialog.messages.len() == *cached_count {
-                            Some(cached_lines.clone())
-                        } else {
-                            None
-                        }
-                    });
+                let cache_hit =
+                    app.call_flow_cache
+                        .get(&cid)
+                        .and_then(|(cached_count, cached_lines)| {
+                            let dialog = store.get(&cid)?;
+                            if dialog.messages.len() == *cached_count {
+                                Some(cached_lines.clone())
+                            } else {
+                                None
+                            }
+                        });
 
                 if let Some(lines) = cache_hit {
-                    call_flow::render_call_flow_lines(
-                        frame,
-                        main_area,
-                        &cid,
-                        scroll,
-                        || Some((lines.len(), lines)),
-                    );
-                } else if let Some((count, lines)) =
-                    call_flow::build_call_flow_lines(&store, &cid)
+                    call_flow::render_call_flow_lines(frame, main_area, &cid, scroll, || {
+                        Some((lines.len(), lines))
+                    });
+                } else if let Some((count, lines)) = call_flow::build_call_flow_lines(&store, &cid)
                 {
                     app.call_flow_cache
                         .insert(cid.clone(), (count, lines.clone()));
-                    call_flow::render_call_flow_lines(
-                        frame,
-                        main_area,
-                        &cid,
-                        scroll,
-                        || Some((count, lines)),
-                    );
+                    call_flow::render_call_flow_lines(frame, main_area, &cid, scroll, || {
+                        Some((count, lines))
+                    });
                 } else {
-                    call_flow::render_call_flow_lines(
-                        frame, main_area, &cid, scroll, || None,
-                    );
+                    call_flow::render_call_flow_lines(frame, main_area, &cid, scroll, || None);
                 }
             }
         }

@@ -742,22 +742,21 @@ fn tui_process_packet(
         ) && !cli.no_dialog
         {
             // Extract SDP link info before acquiring any lock
-            let sdp_links: Vec<(std::net::IpAddr, u16, String)> =
-                if let Some(sdp) = sip_msg.sdp()
-                    && let Some(call_id) = sip_msg.call_id()
-                {
-                    sdp.media
-                        .iter()
-                        .filter_map(|media| {
-                            let addr_str = sip::sdp::effective_address(media, &sdp);
-                            addr_str
-                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                                .map(|ip| (ip, media.port, call_id.to_string()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let sdp_links: Vec<(std::net::IpAddr, u16, String)> = if let Some(sdp) = sip_msg.sdp()
+                && let Some(call_id) = sip_msg.call_id()
+            {
+                sdp.media
+                    .iter()
+                    .filter_map(|media| {
+                        let addr_str = sip::sdp::effective_address(media, &sdp);
+                        addr_str
+                            .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                            .map(|ip| (ip, media.port, call_id.to_string()))
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
             // Quick write to dialog store, then release
             {
