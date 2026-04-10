@@ -70,6 +70,9 @@ pub struct FraudAlert {
     pub detail: String,
 }
 
+/// Maximum entries in the call patterns map.
+const MAX_PATTERN_ENTRIES: usize = 10_000;
+
 /// Detects toll fraud patterns in SIP call traffic.
 pub struct FraudDetector {
     /// Per-source call pattern tracking.
@@ -106,6 +109,21 @@ impl FraudDetector {
 
         let destination = msg.to_user().unwrap_or_default();
         let now = Instant::now();
+
+        // Cap the call patterns map to prevent memory exhaustion (H4)
+        if self.call_patterns.len() >= MAX_PATTERN_ENTRIES
+            && !self.call_patterns.contains_key(&msg.src_addr)
+        {
+            // Evict the entry with the oldest last call
+            if let Some(oldest_ip) = self
+                .call_patterns
+                .iter()
+                .min_by_key(|(_, p)| p.calls.first().map(|(t, _)| *t))
+                .map(|(&ip, _)| ip)
+            {
+                self.call_patterns.remove(&oldest_ip);
+            }
+        }
 
         let pattern = self
             .call_patterns

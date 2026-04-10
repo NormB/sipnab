@@ -9,6 +9,7 @@
 //! Future enhancement: replace threads with `fork()`/`Command` for true
 //! process-level isolation with separate address spaces.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
@@ -131,14 +132,61 @@ impl RateLimiter {
     }
 }
 
+/// Per-destination IP rate limiter to prevent amplification attacks.
+///
+/// Limits the number of responses to any single destination IP to
+/// `MAX_PER_DST_PER_MINUTE` within a sliding one-minute window.
+struct PerDstRateLimiter {
+    /// Map of destination IP to (window start, count).
+    buckets: HashMap<IpAddr, (Instant, u32)>,
+}
+
+/// Maximum responses per destination IP per minute.
+const MAX_PER_DST_PER_MINUTE: u32 = 3;
+
+impl PerDstRateLimiter {
+    fn new() -> Self {
+        Self {
+            buckets: HashMap::new(),
+        }
+    }
+
+    /// Check whether a response to `dst` is allowed. Returns `true` if under limit.
+    fn allow(&mut self, dst: IpAddr) -> bool {
+        let now = Instant::now();
+        let entry = self.buckets.entry(dst).or_insert((now, 0));
+
+        // Reset window if more than 60 seconds have passed
+        if now.duration_since(entry.0).as_secs() >= 60 {
+            *entry = (now, 0);
+        }
+
+        if entry.1 < MAX_PER_DST_PER_MINUTE {
+            entry.1 += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove entries older than 2 minutes to prevent memory growth.
+    fn cleanup(&mut self) {
+        let now = Instant::now();
+        self.buckets
+            .retain(|_, (start, _)| now.duration_since(*start).as_secs() < 120);
+    }
+}
+
 /// Scanner-kill worker that runs in a dedicated thread.
 ///
 /// Receives [`KillRequest`]s via channel, validates them, applies rate
-/// limiting, and (in future) injects SIP responses via pcap.
+/// limiting (both global and per-destination-IP), and (in future) injects
+/// SIP responses via pcap.
 struct ScannerKillWorker {
     rx: Receiver<KillRequest>,
     resp_tx: Sender<KillResponse>,
     rate_limiter: RateLimiter,
+    per_dst_limiter: PerDstRateLimiter,
 }
 
 impl ScannerKillWorker {
@@ -198,11 +246,20 @@ impl ScannerKillWorker {
             };
         }
 
-        // Apply rate limit
+        // Apply global rate limit
         if !self.rate_limiter.allow() {
             log::debug!("Scanner-kill: rate limited response to {dst_addr}:{dst_port}");
             return KillResponse::RateLimited;
         }
+
+        // Apply per-destination-IP rate limit (M6: amplification mitigation)
+        if !self.per_dst_limiter.allow(dst_addr) {
+            log::debug!("Scanner-kill: per-destination rate limited for {dst_addr}:{dst_port}");
+            return KillResponse::RateLimited;
+        }
+
+        // Periodic cleanup of per-dst limiter
+        self.per_dst_limiter.cleanup();
 
         // Log the response (actual pcap injection is a future enhancement)
         log::info!(
@@ -230,13 +287,19 @@ const DEFAULT_RATE_LIMIT: u32 = 10;
 /// The worker runs in a dedicated thread with its own rate limiter. Kill
 /// requests are sent via the returned [`ScannerKillHandle`]. The worker
 /// validates destinations (rejecting broadcast/multicast), applies rate
-/// limiting, and logs responses.
+/// limiting (both global and per-destination-IP), and logs responses.
 ///
 /// # Arguments
 ///
 /// * `rate_limit` — Maximum responses per second. Pass `None` for the
 ///   default of 10/sec.
-pub fn spawn_scanner_kill_worker(rate_limit: Option<u32>) -> ScannerKillHandle {
+///
+/// # Errors
+///
+/// Returns an error if the worker thread cannot be spawned.
+pub fn spawn_scanner_kill_worker(
+    rate_limit: Option<u32>,
+) -> Result<ScannerKillHandle, std::io::Error> {
     let rate = rate_limit.unwrap_or(DEFAULT_RATE_LIMIT);
     let (tx, rx) = crossbeam_channel::bounded(256);
     let (resp_tx, resp_rx) = crossbeam_channel::bounded(256);
@@ -245,18 +308,18 @@ pub fn spawn_scanner_kill_worker(rate_limit: Option<u32>) -> ScannerKillHandle {
         rx,
         resp_tx,
         rate_limiter: RateLimiter::new(rate),
+        per_dst_limiter: PerDstRateLimiter::new(),
     };
 
     let thread = std::thread::Builder::new()
         .name("scanner-kill".to_string())
-        .spawn(move || worker.run())
-        .expect("failed to spawn scanner-kill worker thread");
+        .spawn(move || worker.run())?;
 
-    ScannerKillHandle {
+    Ok(ScannerKillHandle {
         tx,
         resp_rx,
         thread: Some(thread),
-    }
+    })
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -276,7 +339,7 @@ mod tests {
 
     #[test]
     fn handle_send_and_receive() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
@@ -297,12 +360,14 @@ mod tests {
 
     #[test]
     fn rate_limiter_enforces_limit() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
-        // Send 15 requests rapidly
-        for _ in 0..15 {
+        // Send 15 requests to different destination IPs so the per-dst
+        // limiter doesn't interfere with the global rate limit test.
+        for i in 0..15u8 {
+            let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, i.wrapping_add(1)));
             let _ = handle.send_kill(KillRequest::SendResponse {
-                dst_addr: localhost_v4(),
+                dst_addr: dst,
                 dst_port: 5060,
                 response_bytes: sample_response(),
             });
@@ -330,7 +395,7 @@ mod tests {
 
     #[test]
     fn broadcast_address_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
@@ -353,7 +418,7 @@ mod tests {
 
     #[test]
     fn multicast_v4_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         // 224.0.0.1 is multicast
         handle
@@ -377,7 +442,7 @@ mod tests {
 
     #[test]
     fn multicast_v6_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         // ff02::1 is IPv6 multicast
         let multicast_v6 = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
@@ -402,14 +467,14 @@ mod tests {
 
     #[test]
     fn shutdown_exits_cleanly() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
         handle.shutdown();
         // No panic, thread joined successfully
     }
 
     #[test]
     fn empty_response_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10));
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {

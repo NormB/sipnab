@@ -287,7 +287,7 @@ pub struct Cli {
     pub kill_ua: Option<String>,
 
     /// SIP response code to use in scanner kill reports.
-    #[arg(long, value_name = "CODE", default_value = "200")]
+    #[arg(long, value_name = "CODE", default_value = "200", value_parser = clap::value_parser!(u16).range(100..=699))]
     pub kill_response: u16,
 
     /// Enable fraud detection heuristics.
@@ -341,7 +341,7 @@ pub struct Cli {
     pub api: Option<String>,
 
     /// API key for REST API authentication.
-    #[arg(long, value_name = "KEY")]
+    #[arg(long, value_name = "KEY", env = "SIPNAB_API_KEY")]
     pub api_key: Option<String>,
 
     /// TLS certificate for API endpoint.

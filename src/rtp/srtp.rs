@@ -32,6 +32,16 @@ pub struct SrtpKeyMaterial {
     pub media_port: Option<u16>,
 }
 
+#[cfg(feature = "tls")]
+impl Drop for SrtpKeyMaterial {
+    fn drop(&mut self) {
+        // Zeroize key material on drop to prevent key leakage via memory.
+        use zeroize::Zeroize;
+        self.master_key.zeroize();
+        self.master_salt.zeroize();
+    }
+}
+
 /// SRTP crypto suite identifiers (RFC 4568 Section 6.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SrtpSuite {

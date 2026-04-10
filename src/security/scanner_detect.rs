@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
-use regex::Regex;
+use log;
+use regex::{Regex, RegexBuilder};
 
 use crate::sip::SipMessage;
 
@@ -54,6 +55,12 @@ pub struct ScannerAlert {
     pub detection_method: String,
 }
 
+/// Maximum compiled regex size in bytes to prevent ReDoS.
+const REGEX_SIZE_LIMIT: usize = 1_000_000;
+
+/// Maximum entries in the behavioral tracking map.
+const MAX_BEHAVIORAL_ENTRIES: usize = 10_000;
+
 /// Detects SIP scanners via UA signature matching and behavioral heuristics.
 pub struct ScannerDetector {
     /// Compiled regex patterns for known scanner User-Agents.
@@ -68,21 +75,30 @@ impl ScannerDetector {
     /// # Arguments
     ///
     /// * `custom_patterns` — Additional User-Agent regex patterns to match
-    ///   (e.g., from `--kill-ua`). Invalid patterns are silently skipped.
+    ///   (e.g., from `--kill-ua`). Invalid or oversized patterns are silently skipped.
     pub fn new(custom_patterns: &[String]) -> Self {
         let mut patterns = Vec::with_capacity(KNOWN_SCANNER_PATTERNS.len() + custom_patterns.len());
 
-        // Compile built-in patterns (case-insensitive)
+        // Compile built-in patterns (case-insensitive, size-limited)
         for pat in KNOWN_SCANNER_PATTERNS {
-            if let Ok(re) = Regex::new(&format!("(?i){pat}")) {
+            if let Ok(re) = RegexBuilder::new(&format!("(?i){pat}"))
+                .size_limit(REGEX_SIZE_LIMIT)
+                .build()
+            {
                 patterns.push(re);
             }
         }
 
-        // Compile user-supplied patterns
+        // Compile user-supplied patterns (size-limited to prevent ReDoS)
         for pat in custom_patterns {
-            if let Ok(re) = Regex::new(&format!("(?i){pat}")) {
-                patterns.push(re);
+            match RegexBuilder::new(&format!("(?i){pat}"))
+                .size_limit(REGEX_SIZE_LIMIT)
+                .build()
+            {
+                Ok(re) => patterns.push(re),
+                Err(e) => {
+                    log::warn!("Skipping invalid or oversized --kill-ua pattern '{pat}': {e}");
+                }
             }
         }
 
@@ -123,6 +139,22 @@ impl ScannerDetector {
         // Behavioral analysis: track REGISTER/OPTIONS/INVITE rates
         if matches!(method, "REGISTER" | "OPTIONS" | "INVITE") {
             let now = Instant::now();
+
+            // Cap the behavioral map to prevent memory exhaustion (H4)
+            if self.behavioral.len() >= MAX_BEHAVIORAL_ENTRIES
+                && !self.behavioral.contains_key(&msg.src_addr)
+            {
+                // Evict the oldest entry by first_seen
+                if let Some(oldest_ip) = self
+                    .behavioral
+                    .iter()
+                    .min_by_key(|(_, s)| s.first_seen)
+                    .map(|(&ip, _)| ip)
+                {
+                    self.behavioral.remove(&oldest_ip);
+                }
+            }
+
             let state = self
                 .behavioral
                 .entry(msg.src_addr)

@@ -467,7 +467,13 @@ fn run_batch_mode(
 
     // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
     let mut scanner_kill_handle: Option<ScannerKillHandle> = if kill_scanner_active {
-        Some(process_isolation::spawn_scanner_kill_worker(None))
+        match process_isolation::spawn_scanner_kill_worker(None) {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                log::error!("Failed to spawn scanner-kill worker: {e}");
+                None
+            }
+        }
     } else {
         None
     };

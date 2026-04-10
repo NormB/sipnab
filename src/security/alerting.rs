@@ -111,6 +111,9 @@ fn parse_duration(s: &str) -> Option<Duration> {
     }
 }
 
+/// Maximum entries in the cooldowns map before eviction.
+const MAX_COOLDOWN_ENTRIES: usize = 10_000;
+
 /// Alerting engine that manages rules, cooldowns, and command execution.
 pub struct AlertEngine {
     /// Configured alert rules.
@@ -118,6 +121,9 @@ pub struct AlertEngine {
     /// Per (source IP, rule name) cooldown tracking.
     cooldowns: HashMap<(IpAddr, String), Instant>,
     /// Optional external command template to execute on alert.
+    /// After construction, legacy `%variable` placeholders are rewritten to
+    /// `$SIPNAB_*` env var references. Values are passed via environment
+    /// variables, never interpolated into the command string.
     exec_cmd: Option<String>,
 }
 
@@ -127,13 +133,15 @@ impl AlertEngine {
     /// # Arguments
     ///
     /// * `rules` — Alert rules to evaluate.
-    /// * `exec_cmd` — Optional command template. Variables `%src`, `%rule`,
-    ///   and `%detail` are expanded before execution.
+    /// * `exec_cmd` — Optional command template. SIP data is passed via
+    ///   `SIPNAB_SRC`, `SIPNAB_RULE`, and `SIPNAB_DETAIL` environment
+    ///   variables. Legacy `%src`/`%rule`/`%detail` placeholders are
+    ///   automatically migrated to `$SIPNAB_*` references.
     pub fn new(rules: Vec<AlertRule>, exec_cmd: Option<String>) -> Self {
         Self {
             rules,
             cooldowns: HashMap::new(),
-            exec_cmd,
+            exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
         }
     }
 
@@ -163,20 +171,35 @@ impl AlertEngine {
             return false; // Still in cooldown
         }
 
+        // Evict oldest cooldown entry if at capacity
+        if self.cooldowns.len() >= MAX_COOLDOWN_ENTRIES
+            && let Some(oldest_key) = self
+                .cooldowns
+                .iter()
+                .min_by_key(|(_, instant)| **instant)
+                .map(|(k, _)| k.clone())
+        {
+            self.cooldowns.remove(&oldest_key);
+        }
+
         // Record this firing
         self.cooldowns.insert(key, now);
 
+        // Sanitize attacker-controlled values for log output (M3)
+        let sanitized_detail = sanitize_log_value(detail);
+
         // Output to stderr
-        eprintln!("[ALERT] {alert_type} src={src_ip} {detail}");
+        eprintln!("[ALERT] {alert_type} src={src_ip} {sanitized_detail}");
 
-        // Execute command if configured
-        if let Some(template) = &self.exec_cmd {
-            let cmd = template
-                .replace("%src", &src_ip.to_string())
-                .replace("%rule", alert_type)
-                .replace("%detail", detail);
+        // Execute command if configured — pass data via env vars, never interpolated
+        if let Some(cmd) = &self.exec_cmd {
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(cmd);
+            command.env("SIPNAB_SRC", src_ip.to_string());
+            command.env("SIPNAB_RULE", alert_type);
+            command.env("SIPNAB_DETAIL", detail);
 
-            if let Err(e) = Command::new("sh").arg("-c").arg(&cmd).spawn() {
+            if let Err(e) = command.spawn() {
                 warn!("Failed to execute alert command: {e}");
             }
         }
@@ -188,6 +211,21 @@ impl AlertEngine {
     pub fn rules(&self) -> &[AlertRule] {
         &self.rules
     }
+}
+
+/// Rewrite legacy `%variable` placeholders to `$SIPNAB_VARIABLE` references.
+fn migrate_alert_template(template: &str) -> String {
+    template
+        .replace("%src", "$SIPNAB_SRC")
+        .replace("%rule", "$SIPNAB_RULE")
+        .replace("%detail", "$SIPNAB_DETAIL")
+}
+
+/// Sanitize attacker-controlled values for log output (CRLF injection prevention).
+///
+/// Replaces `\r` and `\n` with spaces to prevent log injection attacks.
+pub fn sanitize_log_value(s: &str) -> String {
+    s.replace(['\r', '\n'], " ")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

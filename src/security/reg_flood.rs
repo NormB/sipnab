@@ -36,6 +36,9 @@ pub struct RegFloodAlert {
     pub threshold: u32,
 }
 
+/// Maximum entries in the sources map.
+const MAX_SOURCE_ENTRIES: usize = 10_000;
+
 /// Detects registration flood attacks by tracking per-source REGISTER rates.
 pub struct RegFloodDetector {
     /// Per-source tracking state.
@@ -71,6 +74,18 @@ impl RegFloodDetector {
         let now = Instant::now();
 
         if msg.is_request && msg.method.as_deref() == Some("REGISTER") {
+            // Cap the sources map to prevent memory exhaustion (H4)
+            if self.sources.len() >= MAX_SOURCE_ENTRIES
+                && !self.sources.contains_key(&msg.src_addr)
+                && let Some(oldest_ip) = self
+                    .sources
+                    .iter()
+                    .min_by_key(|(_, s)| s.window_start)
+                    .map(|(&ip, _)| ip)
+            {
+                self.sources.remove(&oldest_ip);
+            }
+
             let state = self.sources.entry(msg.src_addr).or_insert(RegFloodState {
                 register_count: 0,
                 auth_fail_count: 0,

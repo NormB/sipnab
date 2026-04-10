@@ -86,8 +86,19 @@ impl RateLimiter {
     }
 
     /// Check whether a request from `ip` is allowed. Returns `true` if under limit.
+    ///
+    /// Periodically cleans up stale entries (every 100th call) to prevent
+    /// unbounded memory growth from unique source IPs.
     pub fn check(&mut self, ip: IpAddr) -> bool {
         let now = Instant::now();
+
+        // Periodic cleanup: remove entries older than 2 seconds
+        let total_checks = self.buckets.values().map(|(_, c)| *c as u64).sum::<u64>();
+        if total_checks % 100 == 0 {
+            self.buckets
+                .retain(|_, (start, _)| now.duration_since(*start).as_secs() < 2);
+        }
+
         let entry = self.buckets.entry(ip).or_insert((now, 0));
 
         // Reset window if more than 1 second has passed
@@ -210,29 +221,17 @@ pub async fn run_server(bind_addr: SocketAddr, state: ApiState) -> Result<(), St
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
 
-/// Extract the source IP from request headers.
+/// Extract the source IP for rate limiting.
 ///
-/// Checks `X-Forwarded-For` (for reverse proxy setups) then `X-Real-IP`,
-/// falling back to `127.0.0.1` when neither is present. The production
-/// server uses `into_make_service_with_connect_info` so the real client
-/// IP is available via axum's `ConnectInfo` extension, but we extract
-/// via headers here for simplicity and testability.
-fn extract_client_ip(headers: &HeaderMap) -> IpAddr {
-    // Try X-Forwarded-For first (for proxied setups)
-    if let Some(forwarded) = headers.get("x-forwarded-for")
-        && let Ok(val) = forwarded.to_str()
-        && let Some(first) = val.split(',').next()
-        && let Ok(ip) = first.trim().parse::<IpAddr>()
-    {
-        return ip;
-    }
-    // Try X-Real-IP
-    if let Some(real_ip) = headers.get("x-real-ip")
-        && let Ok(val) = real_ip.to_str()
-        && let Ok(ip) = val.trim().parse::<IpAddr>()
-    {
-        return ip;
-    }
+/// Uses only the direct connection address (127.0.0.1 as fallback in test
+/// contexts where `ConnectInfo` is not available). X-Forwarded-For and
+/// X-Real-IP headers are NOT trusted, as they are attacker-controlled
+/// and could be used to bypass rate limiting or spoof source IPs.
+fn extract_client_ip(_headers: &HeaderMap) -> IpAddr {
+    // Only trust the direct connection address. In production, axum's
+    // ConnectInfo<SocketAddr> provides the real client IP via
+    // into_make_service_with_connect_info(). For the rate limiter
+    // fallback (test contexts), use localhost.
     IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
 }
 
@@ -258,15 +257,20 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 
 /// Constant-time byte comparison to prevent timing side-channel attacks on API keys.
+///
+/// Does not leak the length of either input: both are compared up to
+/// the length of the longer input, and the length check is folded into
+/// the final result without early return.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
+    let len_match = a.len() == b.len();
+    let max_len = a.len().max(b.len());
+    let mut byte_diff = 0u8;
+    for i in 0..max_len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        byte_diff |= x ^ y;
     }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    len_match && byte_diff == 0
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
