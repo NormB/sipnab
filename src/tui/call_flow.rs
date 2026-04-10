@@ -20,37 +20,21 @@ const ARROW_WIDTH: usize = 24;
 
 // ── Public rendering ────────────────────────────────────────────────
 
-/// Render the call flow ladder diagram for a dialog identified by Call-ID.
-pub fn render_call_flow(
-    frame: &mut Frame,
-    area: Rect,
+/// Build the formatted lines for a call flow ladder diagram.
+///
+/// Returns `None` if the dialog is not found or has no messages.
+/// Returns `Some((msg_count, lines))` on success, where `msg_count` can be
+/// used as a cache invalidation key.
+pub fn build_call_flow_lines(
     store: &DialogStore,
     call_id: &str,
-    scroll_offset: usize,
-) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Call Flow: {} ", truncate(call_id, 40)));
-
-    let dialog = match store.get(call_id) {
-        Some(d) => d,
-        None => {
-            let para = Paragraph::new("Dialog not found.")
-                .block(block)
-                .style(Style::default().fg(Color::Red));
-            frame.render_widget(para, area);
-            return;
-        }
-    };
-
+) -> Option<(usize, Vec<Line<'static>>)> {
+    let dialog = store.get(call_id)?;
     if dialog.messages.is_empty() {
-        let para = Paragraph::new("No messages in dialog.")
-            .block(block)
-            .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(para, area);
-        return;
+        return None;
     }
 
+    let msg_count = dialog.messages.len();
     let first_ts = dialog.messages[0].timestamp;
     let mut lines = format_ladder(&dialog.messages, first_ts, dialog.timing.pdd_ms());
 
@@ -77,6 +61,47 @@ pub fn render_call_flow(
             )));
         }
     }
+
+    Some((msg_count, lines))
+}
+
+/// Render the call flow ladder diagram for a dialog identified by Call-ID.
+pub fn render_call_flow(
+    frame: &mut Frame,
+    area: Rect,
+    store: &DialogStore,
+    call_id: &str,
+    scroll_offset: usize,
+) {
+    render_call_flow_lines(frame, area, call_id, scroll_offset, || {
+        build_call_flow_lines(store, call_id)
+    });
+}
+
+/// Render call flow from pre-built lines or a builder closure.
+///
+/// Used by the caching layer: the closure is only called on cache miss.
+pub fn render_call_flow_lines(
+    frame: &mut Frame,
+    area: Rect,
+    call_id: &str,
+    scroll_offset: usize,
+    build: impl FnOnce() -> Option<(usize, Vec<Line<'static>>)>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Call Flow: {} ", truncate(call_id, 40)));
+
+    let lines = match build() {
+        Some((_count, lines)) => lines,
+        None => {
+            let para = Paragraph::new("Dialog not found or empty.")
+                .block(block)
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(para, area);
+            return;
+        }
+    };
 
     let para = Paragraph::new(lines)
         .block(block)
