@@ -330,7 +330,10 @@ mod tests {
         let session = parse_sdp(sdp).expect("should parse minimal SDP");
         assert_eq!(session.origin.as_deref(), Some("- 0 0 IN IP4 10.0.0.1"));
         assert_eq!(session.session_name.as_deref(), Some("sipnab"));
-        assert_eq!(session.connection.as_ref().map(|c| c.addr.as_str()), Some("10.0.0.1"));
+        assert_eq!(
+            session.connection.as_ref().map(|c| c.addr.as_str()),
+            Some("10.0.0.1")
+        );
         assert_eq!(session.media.len(), 1);
 
         let audio = &session.media[0];
