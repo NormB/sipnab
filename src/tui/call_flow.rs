@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::sip::SipMessage;
 use crate::sip::dialog_store::DialogStore;
@@ -84,27 +84,23 @@ pub fn render_call_flow(
 pub fn render_call_flow_lines(
     frame: &mut Frame,
     area: Rect,
-    call_id: &str,
+    _call_id: &str,
     scroll_offset: usize,
     build: impl FnOnce() -> Option<(usize, Vec<Line<'static>>)>,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" Call Flow: {} ", truncate(call_id, 40)));
-
     let lines = match build() {
         Some((_count, lines)) => lines,
         None => {
             let para = Paragraph::new("Dialog not found or empty.")
-                .block(block)
                 .style(Style::default().fg(Color::DarkGray));
             frame.render_widget(para, area);
             return;
         }
     };
 
+    // No borders — the ladder fills the full main area (sngrep style).
+    // The call-id is shown in the status bar area by the caller.
     let para = Paragraph::new(lines)
-        .block(block)
         .scroll((scroll_offset as u16, 0))
         .wrap(Wrap { trim: false });
 
@@ -225,14 +221,16 @@ pub fn format_ladder(
 
 // ── Arrow formatting helpers ────────────────────────────────────────
 
-/// Format a right-pointing arrow: `── LABEL ──────────>`
+/// Format a right-pointing arrow with the label centered: `------- LABEL -------->`
 fn format_arrow_right(label: &str, width: usize) -> String {
-    let label_space = label.len() + 2; // space on each side
-    if width <= label_space + 4 {
-        return format!("--{label}->");
+    let label_with_pad = label.len() + 2; // space on each side of label
+    if width <= label_with_pad + 3 {
+        return format!("-- {label} ->");
     }
-    let left_dashes = 2;
-    let right_dashes = width.saturating_sub(left_dashes + label_space + 1);
+    // Total dashes = width - label_with_pad - 1 (for '>')
+    let total_dashes = width.saturating_sub(label_with_pad + 1);
+    let left_dashes = total_dashes / 2;
+    let right_dashes = total_dashes - left_dashes;
     format!(
         "{} {} {}",
         "-".repeat(left_dashes),
@@ -241,14 +239,16 @@ fn format_arrow_right(label: &str, width: usize) -> String {
     )
 }
 
-/// Format a left-pointing arrow: `<────────── LABEL ──`
+/// Format a left-pointing arrow with the label centered: `<-------- LABEL -------`
 fn format_arrow_left(label: &str, width: usize) -> String {
-    let label_space = label.len() + 2;
-    if width <= label_space + 4 {
-        return format!("<-{label}--");
+    let label_with_pad = label.len() + 2;
+    if width <= label_with_pad + 3 {
+        return format!("<- {label} --");
     }
-    let right_dashes = 2;
-    let left_dashes = width.saturating_sub(right_dashes + label_space + 1);
+    // Total dashes = width - label_with_pad - 1 (for '<')
+    let total_dashes = width.saturating_sub(label_with_pad + 1);
+    let left_dashes = total_dashes / 2;
+    let right_dashes = total_dashes - left_dashes;
     format!(
         "{} {} {}",
         "<".to_string() + &"-".repeat(left_dashes),
