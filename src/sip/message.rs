@@ -8,6 +8,8 @@ use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 
+use super::sdp::{self, SdpSession};
+
 /// A single SIP header: name (normalized to long form) and value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SipHeader {
@@ -99,6 +101,21 @@ impl SipMessage {
     /// Return the value of the `Content-Type` header, if present.
     pub fn content_type(&self) -> Option<&str> {
         self.header("Content-Type")
+    }
+
+    /// Parse the SDP body, if the `Content-Type` is `application/sdp`.
+    ///
+    /// Returns `None` if the content type is not SDP or if parsing fails.
+    pub fn sdp(&self) -> Option<SdpSession> {
+        if self
+            .content_type()
+            .map(|ct| ct.contains("application/sdp"))
+            .unwrap_or(false)
+        {
+            sdp::parse_sdp(&self.body).ok()
+        } else {
+            None
+        }
     }
 
     /// Return the value of the `Contact` header, if present.

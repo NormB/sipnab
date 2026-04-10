@@ -8,10 +8,12 @@
 pub mod message;
 pub mod parser;
 pub mod response_codes;
+pub mod sdp;
 
 pub use message::{SipHeader, SipMessage};
 pub use parser::parse_sip;
 pub use response_codes::explain_response_code;
+pub use sdp::{SdpConnection, SdpCrypto, SdpDirection, SdpMedia, SdpSession, parse_sdp};
 
 /// Known SIP request methods for quick first-line detection.
 const SIP_METHODS: &[&[u8]] = &[
