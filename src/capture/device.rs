@@ -7,16 +7,22 @@ use anyhow::Result;
 
 /// Find the default capture device.
 ///
-/// Strategy:
-/// 1. Use the device pcap considers "default" (based on routing table).
-/// 2. Fall back to the first non-loopback device from `pcap::Device::list()`.
-/// 3. On Linux, fall back to the "any" pseudo-device.
-/// 4. Otherwise, return an error with available device names for diagnostics.
+/// On Linux, defaults to the "any" pseudo-device which captures on ALL
+/// interfaces (including loopback). This matches sngrep behavior — SIP
+/// traffic may be on any interface, especially loopback for local proxies.
+///
+/// On macOS/BSD, uses pcap's default device (based on routing table),
+/// then falls back to the first non-loopback interface.
 pub fn find_default_device() -> Result<String> {
+    // On Linux, "any" captures all interfaces — this is what sngrep does.
+    // SIP servers often listen on loopback, so capturing only eth0 misses traffic.
+    if cfg!(target_os = "linux") {
+        return Ok("any".to_string());
+    }
+
     use pcap::Device;
 
-    // Prefer the device pcap considers "default" (usually the one with
-    // the default route).
+    // macOS/BSD: use pcap's default device (based on routing table).
     if let Ok(Some(dev)) = Device::lookup()
         && !dev.name.is_empty()
     {
@@ -29,11 +35,6 @@ pub fn find_default_device() -> Result<String> {
         if dev.name != "lo" && dev.name != "lo0" {
             return Ok(dev.name.clone());
         }
-    }
-
-    // Last resort on Linux: the "any" pseudo-device captures everything.
-    if cfg!(target_os = "linux") {
-        return Ok("any".to_string());
     }
 
     // Nothing found — build a helpful error message.
