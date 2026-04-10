@@ -25,4 +25,4 @@ expression: output
 
 
  Current Mode: Online (any)    Dialogs: 3    Match Expression: state == 'Failed'    BPF Filter:
-F1Help F2Save F3Search F4Extended F5Compare F6RTP F7Filter F8Settings F9ClearFilter F10Columns
+F1Help  F2Save  F3Search  F4Extended  F5Compare  F6RTP  F7Filter  F8Settings  F9ClearFilter  F10Colu

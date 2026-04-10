@@ -31,4 +31,4 @@ expression: output
 └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 
  Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
-F1Help F2Save F5Compare F7Filter F9ClearFilter
+F1Help  F2Save  F5Compare  F7Filter  F9ClearFilter

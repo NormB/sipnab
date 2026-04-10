@@ -374,16 +374,21 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View) {
     };
 
     let mut spans: Vec<Span> = Vec::new();
-    for (key, label) in items {
+    for (i, (key, label)) in items.iter().enumerate() {
+        if i > 0 {
+            // Space between F-key pairs
+            spans.push(Span::raw(" "));
+        }
         spans.push(Span::styled((*key).to_string(), key_style));
         spans.push(Span::styled((*label).to_string(), label_style));
     }
 
-    // Pad remaining space with the label background
-    let used_width: usize = items.iter().map(|(k, l)| k.len() + l.len()).sum();
+    // Pad remaining space
+    let used_width: usize =
+        items.iter().map(|(k, l)| k.len() + l.len()).sum::<usize>() + items.len().saturating_sub(1); // account for spaces between pairs
     let remaining = (area.width as usize).saturating_sub(used_width);
     if remaining > 0 {
-        spans.push(Span::styled(" ".repeat(remaining), label_style));
+        spans.push(Span::raw(" ".repeat(remaining)));
     }
 
     let bar = Paragraph::new(Line::from(spans));
