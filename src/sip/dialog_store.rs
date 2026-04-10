@@ -539,4 +539,84 @@ mod tests {
         assert_eq!(dialog.messages.len(), 3); // INVITE + 100 + 180
         assert_eq!(dialog.timing.total_retransmits(), 0);
     }
+
+    /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
+    fn make_invite_with_x_call_id(call_id: &str, x_call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                &format!("X-Call-ID: {x_call_id}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+            .expect("should parse INVITE with X-Call-ID")
+    }
+
+    #[test]
+    fn find_correlated_via_x_call_id() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // A-leg: normal INVITE
+        store.process_message(make_invite_msg("a-leg@test", t0));
+
+        // B-leg: INVITE with X-Call-ID pointing to A-leg
+        store.process_message(make_invite_with_x_call_id(
+            "b-leg@test",
+            "a-leg@test",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        // A-leg should find B-leg as correlated
+        let correlated = store.find_correlated("a-leg@test");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].call_id, "b-leg@test");
+
+        // B-leg should also find A-leg as correlated
+        let correlated = store.find_correlated("b-leg@test");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].call_id, "a-leg@test");
+    }
+
+    #[test]
+    fn find_correlated_returns_empty_for_unlinked() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("standalone@test", t0));
+        store.process_message(make_invite_msg("another@test", t0));
+
+        assert!(store.find_correlated("standalone@test").is_empty());
+        assert!(store.find_correlated("another@test").is_empty());
+    }
+
+    #[test]
+    fn find_correlated_unknown_call_id_returns_empty() {
+        let store = DialogStore::new(100, false);
+        assert!(store.find_correlated("nonexistent@test").is_empty());
+    }
+
+    #[test]
+    fn find_correlated_bidirectional_x_call_id() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Both legs have X-Call-ID pointing to each other
+        store.process_message(make_invite_with_x_call_id("leg-1@test", "leg-2@test", t0));
+        store.process_message(make_invite_with_x_call_id(
+            "leg-2@test",
+            "leg-1@test",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        let correlated = store.find_correlated("leg-1@test");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].call_id, "leg-2@test");
+    }
 }
