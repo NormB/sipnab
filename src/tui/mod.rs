@@ -170,8 +170,8 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = execute!(io::stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
         let _ = terminal::disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
     }
 }
 
@@ -197,7 +197,13 @@ pub fn run_tui(
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+        crossterm::cursor::Hide,
+        crossterm::cursor::MoveTo(0, 0)
+    )?;
 
     // Guard ensures terminal is restored even on panic
     let _guard = TerminalGuard;
