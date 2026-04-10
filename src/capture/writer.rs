@@ -1,28 +1,45 @@
 //! Pcap output writer with rotation support.
 //!
 //! [`PcapWriter`] wraps `pcap::Savefile` and adds support for:
-//! - Writing captured packets to pcap files
+//! - Writing captured packets to pcap files (standard pcap or PCAP-NG)
 //! - File rotation by size (`--split filesize:N`)
 //! - File rotation by duration (`--split duration:N`)
 //! - On-demand rotation via SIGUSR1 (checked via [`crate::signals::rotation_requested`])
 
+use std::borrow::Cow;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
+use pcap_file::DataLink;
+use pcap_file::pcapng::PcapNgWriter as PcapFileNgWriter;
+use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
+use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
 
 use super::packet::Packet;
 use crate::signals;
 
+/// Internal writer backend: either standard pcap or PCAP-NG.
+enum WriterBackend {
+    /// Standard pcap via the `pcap` crate.
+    Pcap(pcap::Savefile),
+    /// PCAP-NG via the `pcap-file` crate.
+    PcapNg(PcapFileNgWriter<BufWriter<std::fs::File>>),
+}
+
 /// Pcap output writer with optional file rotation.
 ///
-/// Wraps a pcap `Savefile` and tracks state for rotation decisions.
+/// Wraps a pcap `Savefile` or a PCAP-NG writer and tracks state for rotation decisions.
 pub struct PcapWriter {
-    /// The underlying pcap savefile handle.
-    savefile: pcap::Savefile,
+    /// The underlying writer backend.
+    backend: WriterBackend,
     /// Base path for output files (used for rotation naming).
     base_path: PathBuf,
-    /// Link-layer type for the pcap header.
-    link_type: pcap::Linktype,
+    /// Link-layer type (pcap integer value).
+    link_type_raw: i32,
+    /// Whether to use PCAP-NG format.
+    use_pcapng: bool,
     /// Current file sequence number (0 for the first file).
     sequence: u32,
     /// Bytes written to the current file.
@@ -49,6 +66,20 @@ impl PcapWriter {
         max_file_bytes: Option<u64>,
         max_file_duration: Option<std::time::Duration>,
     ) -> Result<Self> {
+        Self::with_format(path, link_type, max_file_bytes, max_file_duration, false)
+    }
+
+    /// Create a new writer with explicit format selection.
+    ///
+    /// When `pcapng` is `true`, the output uses PCAP-NG format; otherwise
+    /// standard pcap.
+    pub fn with_format(
+        path: &Path,
+        link_type: i32,
+        max_file_bytes: Option<u64>,
+        max_file_duration: Option<std::time::Duration>,
+        pcapng: bool,
+    ) -> Result<Self> {
         // M5: Warn on path traversal components
         if path
             .components()
@@ -60,15 +91,24 @@ impl PcapWriter {
             );
         }
 
-        let linktype = pcap::Linktype(link_type);
-        let savefile = create_savefile(path, linktype)?;
+        let backend = if pcapng {
+            create_pcapng_backend(path, link_type)?
+        } else {
+            let linktype = pcap::Linktype(link_type);
+            WriterBackend::Pcap(create_savefile(path, linktype)?)
+        };
 
-        log::info!("Writing packets to '{}'", path.display());
+        log::info!(
+            "Writing packets to '{}' ({})",
+            path.display(),
+            if pcapng { "pcapng" } else { "pcap" }
+        );
 
         Ok(Self {
-            savefile,
+            backend,
             base_path: path.to_path_buf(),
-            link_type: linktype,
+            link_type_raw: link_type,
+            use_pcapng: pcapng,
             sequence: 0,
             bytes_written: 0,
             file_opened_at: std::time::Instant::now(),
@@ -88,26 +128,53 @@ impl PcapWriter {
             self.rotate()?;
         }
 
-        let ts = packet.timestamp;
-        let secs = ts.timestamp();
-        let usecs = ts.timestamp_subsec_micros();
+        match &mut self.backend {
+            WriterBackend::Pcap(savefile) => {
+                let ts = packet.timestamp;
+                let secs = ts.timestamp();
+                let usecs = ts.timestamp_subsec_micros();
 
-        let header = pcap::PacketHeader {
-            ts: libc::timeval {
-                tv_sec: secs as libc::time_t,
-                tv_usec: usecs as libc::suseconds_t,
-            },
-            caplen: packet.caplen as u32,
-            len: packet.origlen as u32,
-        };
+                let header = pcap::PacketHeader {
+                    ts: libc::timeval {
+                        tv_sec: secs as libc::time_t,
+                        tv_usec: usecs as libc::suseconds_t,
+                    },
+                    caplen: packet.caplen as u32,
+                    len: packet.origlen as u32,
+                };
 
-        self.savefile.write(&pcap::Packet {
-            header: &header,
-            data: &packet.data,
-        });
+                savefile.write(&pcap::Packet {
+                    header: &header,
+                    data: &packet.data,
+                });
+            }
+            WriterBackend::PcapNg(writer) => {
+                let ts = packet.timestamp;
+                // PCAP-NG timestamps are in nanoseconds since epoch
+                let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u128;
+                let timestamp = Duration::from_nanos(nanos as u64);
+
+                let epb = EnhancedPacketBlock {
+                    interface_id: 0,
+                    timestamp,
+                    original_len: packet.origlen as u32,
+                    data: Cow::Borrowed(&packet.data),
+                    options: vec![],
+                };
+
+                writer
+                    .write_pcapng_block(epb)
+                    .map_err(|e| anyhow::anyhow!("PCAP-NG write error: {e}"))?;
+            }
+        }
 
         self.bytes_written += packet.caplen as u64;
         Ok(())
+    }
+
+    /// Return the number of bytes written to the current output file.
+    pub fn bytes_written(&self) -> u64 {
+        self.bytes_written
     }
 
     /// Force rotation to a new output file.
@@ -126,8 +193,13 @@ impl PcapWriter {
             self.file_opened_at.elapsed(),
         );
 
-        // Drop the old savefile (flushes and closes) by replacing it
-        self.savefile = create_savefile(&new_path, self.link_type)?;
+        // Drop the old backend (flushes and closes) by replacing it
+        self.backend = if self.use_pcapng {
+            create_pcapng_backend(&new_path, self.link_type_raw)?
+        } else {
+            let linktype = pcap::Linktype(self.link_type_raw);
+            WriterBackend::Pcap(create_savefile(&new_path, linktype)?)
+        };
         self.bytes_written = 0;
         self.file_opened_at = std::time::Instant::now();
 
@@ -171,6 +243,28 @@ fn create_savefile(path: &Path, linktype: pcap::Linktype) -> Result<pcap::Savefi
         pcap::Capture::dead(linktype).context("Failed to create dead capture for savefile")?;
     dead.savefile(path)
         .with_context(|| format!("Failed to create output file '{}'", path.display()))
+}
+
+/// Create a PCAP-NG writer backend at the given path.
+fn create_pcapng_backend(path: &Path, link_type: i32) -> Result<WriterBackend> {
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
+    let buf_writer = BufWriter::new(file);
+
+    let mut writer = PcapFileNgWriter::new(buf_writer)
+        .map_err(|e| anyhow::anyhow!("Failed to create PCAP-NG writer: {e}"))?;
+
+    // Write the Interface Description Block
+    let idb = InterfaceDescriptionBlock {
+        linktype: DataLink::from(link_type as u32),
+        snaplen: 0xFFFF,
+        options: vec![],
+    };
+    writer
+        .write_pcapng_block(idb)
+        .map_err(|e| anyhow::anyhow!("Failed to write PCAP-NG interface block: {e}"))?;
+
+    Ok(WriterBackend::PcapNg(writer))
 }
 
 /// Generate a rotated filename from a base path and sequence number.

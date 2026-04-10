@@ -152,6 +152,10 @@ pub struct TlsDecryptor {
     crypto: Box<dyn CryptoBackend>,
     /// Number of records successfully decrypted (for logging).
     pub decrypted_count: u64,
+    /// Path to the keylog file (for --keylog-watch polling).
+    keylog_path: Option<std::path::PathBuf>,
+    /// Last known size of the keylog file (for change detection).
+    last_keylog_size: u64,
 }
 
 impl TlsDecryptor {
@@ -172,17 +176,108 @@ impl TlsDecryptor {
             log::info!("Loaded {} keylog entries", entry_count);
         }
 
+        let last_keylog_size = keylog_path
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .unwrap_or(0);
+
         Ok(Self {
             keylog_entries,
             sessions: HashMap::new(),
             crypto,
             decrypted_count: 0,
+            keylog_path: keylog_path.map(|p| p.to_path_buf()),
+            last_keylog_size,
         })
     }
 
     /// Return the number of loaded keylog entries.
     pub fn keylog_entry_count(&self) -> usize {
         self.keylog_entries.len()
+    }
+
+    /// Poll the keylog file for new entries (for --keylog-watch).
+    ///
+    /// Checks if the file has grown since the last poll. If so, reads
+    /// the new lines and parses them as keylog entries. Returns the
+    /// number of new keys loaded.
+    ///
+    /// Should be called periodically (e.g., every 5 seconds).
+    pub fn poll_keylog_file(&mut self) -> Result<usize> {
+        let Some(ref path) = self.keylog_path else {
+            return Ok(0);
+        };
+
+        let metadata = match std::fs::metadata(path) {
+            Ok(m) => m,
+            Err(e) => {
+                log::debug!("Failed to stat keylog file: {e}");
+                return Ok(0);
+            }
+        };
+
+        let current_size = metadata.len();
+        if current_size <= self.last_keylog_size {
+            return Ok(0);
+        }
+
+        // Read from where we left off
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = std::fs::File::open(path)
+            .with_context(|| format!("Failed to open keylog file: {}", path.display()))?;
+        file.seek(SeekFrom::Start(self.last_keylog_size))?;
+
+        let mut new_data = String::new();
+        file.read_to_string(&mut new_data)?;
+
+        let mut new_count = 0;
+        for line in new_data.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match super::tls::parse_keylog_line(line) {
+                Ok(entry) => {
+                    self.keylog_entries.push(entry);
+                    new_count += 1;
+                }
+                Err(e) => {
+                    log::debug!("Skipping invalid keylog line: {e}");
+                }
+            }
+        }
+
+        self.last_keylog_size = current_size;
+
+        if new_count > 0 {
+            // Clear sessions cache so new entries are picked up
+            self.sessions.clear();
+            log::info!("Keylog watch: loaded {new_count} new key(s)");
+        }
+
+        Ok(new_count)
+    }
+
+    /// Load DTLS keylog entries from a file.
+    ///
+    /// DTLS keylog files use the same NSS SSLKEYLOGFILE format as TLS.
+    /// The entries are appended to the existing keylog entries and can be
+    /// used for DTLS-SRTP key extraction when that feature is implemented.
+    ///
+    /// Returns the number of entries loaded.
+    pub fn load_dtls_keylog(path: &Path) -> Result<usize> {
+        let entries = parse_keylog_file(path)
+            .with_context(|| format!("Loading DTLS keylog from {}", path.display()))?;
+        let count = entries.len();
+        if count > 0 {
+            log::info!("DTLS keys loaded: {count} entries from {}", path.display());
+        } else {
+            log::info!(
+                "DTLS keylog file {} is empty (no entries loaded)",
+                path.display()
+            );
+        }
+        Ok(count)
     }
 
     /// Attempt to decrypt a TLS ApplicationData record.
@@ -563,6 +658,8 @@ mod tests {
                 decrypt_result: None,
             }),
             decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
         };
 
         d.ensure_sessions_populated();
@@ -584,6 +681,8 @@ mod tests {
                 decrypt_result: None,
             }),
             decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
         };
 
         let record = TlsRecord {
@@ -614,6 +713,8 @@ mod tests {
                 decrypt_result: Some(plaintext),
             }),
             decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
         };
 
         let record = TlsRecord {
@@ -643,6 +744,8 @@ mod tests {
                 decrypt_result: Some(vec![0x42]),
             }),
             decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
         };
 
         let record = TlsRecord {

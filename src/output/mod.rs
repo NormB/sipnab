@@ -20,6 +20,7 @@ pub mod fail2ban;
 pub mod hexdump;
 pub mod json;
 pub mod prometheus;
+pub mod prometheus_server;
 
 pub use call_report::{ReportFormat, generate_call_report};
 pub use cli_print::{ColorMode, OutputOptions, print_sip_message};

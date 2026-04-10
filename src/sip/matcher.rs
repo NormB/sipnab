@@ -49,7 +49,10 @@ impl SipMatcher {
     ///
     /// Each pattern is compiled with case-insensitive mode if `cli.ignore_case`
     /// is set. If `cli.word` is set, patterns are wrapped in `\b...\b` for
-    /// whole-word matching.
+    /// whole-word matching. If `cli.single_line` is false (the default), the
+    /// payload regex is compiled with `dot_matches_new_line(true)` so `.`
+    /// matches across header lines; when true, `.` only matches within a
+    /// single line.
     ///
     /// The `payload_pattern` argument is intended for the sipgrep-style
     /// positional match expression that tests against the full raw message.
@@ -61,37 +64,41 @@ impl SipMatcher {
     pub fn new(cli: &Cli, payload_pattern: Option<&str>) -> Result<Self> {
         let case_insensitive = cli.ignore_case;
         let word = cli.word;
+        // When single_line is false (default), `.` matches newlines so
+        // patterns can span across SIP header lines. When true, `.` does
+        // NOT match `\n` (standard regex default).
+        let dot_matches_new_line = !cli.single_line;
 
         let payload_regex = payload_pattern
-            .map(|p| compile_pattern(p, case_insensitive, word))
+            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid payload match expression")?;
 
         let from_regex = cli
             .from
             .as_deref()
-            .map(|p| compile_pattern(p, case_insensitive, word))
+            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --from pattern")?;
 
         let to_regex = cli
             .to
             .as_deref()
-            .map(|p| compile_pattern(p, case_insensitive, word))
+            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --to pattern")?;
 
         let contact_regex = cli
             .contact
             .as_deref()
-            .map(|p| compile_pattern(p, case_insensitive, word))
+            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --contact pattern")?;
 
         let ua_regex = cli
             .ua
             .as_deref()
-            .map(|p| compile_pattern(p, case_insensitive, word))
+            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --ua pattern")?;
 
@@ -199,15 +206,20 @@ impl SipMatcher {
 
 /// Compile a user-provided pattern into a [`Regex`] with safety limits.
 ///
-/// Applies case-insensitive mode and word-boundary wrapping as requested.
-/// The compiled regex is limited to [`REGEX_SIZE_LIMIT`] bytes to prevent
-/// ReDoS attacks (D17).
+/// Applies case-insensitive mode, word-boundary wrapping, and
+/// dot-matches-newline as requested. The compiled regex is limited to
+/// [`REGEX_SIZE_LIMIT`] bytes to prevent ReDoS attacks (D17).
 ///
 /// # Errors
 ///
 /// Returns an error if the pattern is invalid regex syntax or exceeds the
 /// size limit.
-fn compile_pattern(pattern: &str, case_insensitive: bool, word: bool) -> Result<Regex> {
+fn compile_pattern(
+    pattern: &str,
+    case_insensitive: bool,
+    word: bool,
+    dot_matches_new_line: bool,
+) -> Result<Regex> {
     let effective = if word {
         format!(r"\b{pattern}\b")
     } else {
@@ -216,6 +228,7 @@ fn compile_pattern(pattern: &str, case_insensitive: bool, word: bool) -> Result<
 
     RegexBuilder::new(&effective)
         .case_insensitive(case_insensitive)
+        .dot_matches_new_line(dot_matches_new_line)
         .size_limit(REGEX_SIZE_LIMIT)
         .build()
         .with_context(|| format!("failed to compile pattern '{pattern}'"))
