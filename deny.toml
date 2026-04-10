@@ -1,0 +1,45 @@
+# cargo-deny configuration for sipnab
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Advisories with no explicit ignore are denied by default.
+# Yanked crate versions or unmaintained crates can be ignored on a case-by-case basis.
+ignore = [
+    # paste is unmaintained (transitive dep via ratatui); no action available yet
+    { id = "RUSTSEC-2024-0436", reason = "transitive dep from ratatui, awaiting upstream migration to pastey" },
+]
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+
+# ring uses a custom license (ISC-style + OpenSSL); clarify it so the check passes
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[licenses.private]
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
