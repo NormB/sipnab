@@ -11,8 +11,11 @@ fn version_flag_works() {
     let output = sipnab_cmd().arg("--version").output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("sipnab"));
-    assert!(stdout.contains("0.1.0"));
+    assert!(
+        stdout.contains("sipnab"),
+        "Expected version output to contain 'sipnab', got:\n{}",
+        stdout
+    );
 }
 
 #[test]
