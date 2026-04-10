@@ -7,6 +7,7 @@
 
 pub mod dialog;
 pub mod dialog_store;
+pub mod dsl;
 pub mod matcher;
 pub mod message;
 pub mod parser;
