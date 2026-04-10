@@ -9,6 +9,7 @@ pub mod digest_leak;
 pub mod fraud_detect;
 pub mod reg_flood;
 pub mod scanner_detect;
+pub mod scanner_kill;
 
 pub use alerting::{AlertEngine, AlertRule};
 pub use digest_leak::{DigestAlert, DigestLeakDetector, DigestVulnerability};

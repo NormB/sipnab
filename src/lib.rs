@@ -9,6 +9,7 @@ pub mod config;
 pub mod crypto;
 pub mod output;
 pub mod privilege;
+pub mod process_isolation;
 pub mod rtp;
 pub mod security;
 pub mod signals;
