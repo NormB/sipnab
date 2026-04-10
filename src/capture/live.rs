@@ -20,19 +20,45 @@ use crate::signals;
 /// reached, or the duration limit expires.
 ///
 /// This function blocks and is intended to be called from a dedicated thread.
-pub fn capture_live(device: &str, config: &CaptureConfig, tx: Sender<Packet>) -> Result<()> {
-    let mut cap = pcap::Capture::from_device(device)
-        .with_context(|| format!("Failed to open device '{device}'"))?
-        .promisc(true)
-        .snaplen(config.snaplen as i32)
-        .buffer_size((config.buffer_mb * 1_000_000) as i32)
-        .timeout(100) // Return from next_packet every 100ms even without traffic
-        .open()
-        .with_context(|| format!("Failed to activate capture on '{device}'"))?;
+pub fn capture_live(
+    device: &str,
+    config: &CaptureConfig,
+    tx: Sender<Packet>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let mut cap = match pcap::Capture::from_device(device)
+        .with_context(|| format!("Failed to open device '{device}'"))
+        .and_then(|inactive| {
+            inactive
+                .promisc(true)
+                .snaplen(config.snaplen as i32)
+                .buffer_size((config.buffer_mb * 1_000_000) as i32)
+                .timeout(100) // Return from next_packet every 100ms even without traffic
+                .open()
+                .with_context(|| format!("Failed to activate capture on '{device}'"))
+        }) {
+        Ok(cap) => cap,
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
 
-    if let Some(ref bpf) = config.bpf_filter {
-        cap.filter(bpf, true)
-            .with_context(|| format!("Failed to compile BPF filter: {bpf}"))?;
+    if let Some(ref bpf) = config.bpf_filter
+        && let Err(e) = cap.filter(bpf, true)
+    {
+        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(format!("{err:#}")));
+        }
+        return Err(err);
+    }
+
+    // Signal that the capture device is open and ready.
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
     }
 
     let link_type = cap.get_datalink().0;

@@ -24,7 +24,7 @@ fn fixture_path() -> PathBuf {
 /// Collect all packets from a file capture with the given config.
 fn collect_packets(config: CaptureConfig) -> Vec<Packet> {
     let (tx, rx) = unbounded();
-    capture_file(&fixture_path(), &config, tx).expect("capture_file should succeed");
+    capture_file(&fixture_path(), &config, tx, None).expect("capture_file should succeed");
     rx.try_iter().collect()
 }
 
@@ -141,7 +141,7 @@ fn writer_roundtrip() {
 
     // Re-read the written file
     let (tx, rx) = unbounded();
-    capture_file(&output_path, &CaptureConfig::default(), tx).expect("re-read");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
     let reread: Vec<Packet> = rx.try_iter().collect();
 
     assert_eq!(
@@ -181,7 +181,7 @@ fn writer_with_count_limit() {
 
     // Re-read
     let (tx, rx) = unbounded();
-    capture_file(&output_path, &CaptureConfig::default(), tx).expect("re-read");
+    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(
         reread.len(),
@@ -200,7 +200,7 @@ fn start_capture_file_source() {
     let source = CaptureSource::File {
         path: fixture_path(),
     };
-    let handle = start_capture(source, CaptureConfig::default(), tx).expect("start_capture");
+    let handle = start_capture(source, CaptureConfig::default(), tx, None).expect("start_capture");
 
     // Wait for the thread to finish
     handle.thread.join().expect("join").expect("capture result");

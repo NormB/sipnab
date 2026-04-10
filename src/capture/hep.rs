@@ -619,14 +619,35 @@ pub fn capture_hep(
     tx: Sender<Packet>,
     allowlist: &[CidrRange],
     rate_limit: u64,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    let socket = UdpSocket::bind(bind_addr)
-        .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))?;
+    let socket = match UdpSocket::bind(bind_addr)
+        .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
+    {
+        Ok(s) => s,
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
 
     // 100ms timeout so we can check shutdown_requested() frequently
-    socket
+    if let Err(e) = socket
         .set_read_timeout(Some(Duration::from_millis(100)))
-        .context("Failed to set socket read timeout")?;
+        .context("Failed to set socket read timeout")
+    {
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(format!("{e:#}")));
+        }
+        return Err(e);
+    }
+
+    // Signal that the HEP socket is bound and ready.
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
+    }
 
     let start = Instant::now();
     let mut count: u64 = 0;

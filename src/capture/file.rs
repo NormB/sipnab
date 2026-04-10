@@ -20,13 +20,37 @@ use crate::signals;
 /// and reads packets until EOF, shutdown, count limit, or duration limit.
 ///
 /// This function blocks and is intended to be called from a dedicated thread.
-pub fn capture_file(path: &Path, config: &CaptureConfig, tx: Sender<Packet>) -> Result<()> {
-    let mut cap = pcap::Capture::from_file(path)
-        .with_context(|| format!("Failed to open pcap file '{}'", path.display()))?;
+pub fn capture_file(
+    path: &Path,
+    config: &CaptureConfig,
+    tx: Sender<Packet>,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+) -> Result<()> {
+    let mut cap = match pcap::Capture::from_file(path)
+        .with_context(|| format!("Failed to open pcap file '{}'", path.display()))
+    {
+        Ok(cap) => cap,
+        Err(e) => {
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(format!("{e:#}")));
+            }
+            return Err(e);
+        }
+    };
 
-    if let Some(ref bpf) = config.bpf_filter {
-        cap.filter(bpf, true)
-            .with_context(|| format!("Failed to compile BPF filter: {bpf}"))?;
+    if let Some(ref bpf) = config.bpf_filter
+        && let Err(e) = cap.filter(bpf, true)
+    {
+        let err = anyhow::Error::new(e).context(format!("Failed to compile BPF filter: {bpf}"));
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(format!("{err:#}")));
+        }
+        return Err(err);
+    }
+
+    // Signal that the capture file is open and ready.
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
     }
 
     let link_type = cap.get_datalink().0;
@@ -144,7 +168,7 @@ mod tests {
 
         let (tx, rx) = unbounded();
         let config = CaptureConfig::default();
-        capture_file(&path, &config, tx).unwrap();
+        capture_file(&path, &config, tx, None).unwrap();
 
         let packets: Vec<Packet> = rx.try_iter().collect();
         assert!(
