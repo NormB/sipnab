@@ -19,7 +19,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
-    combinator::{map, recognize, opt},
+    combinator::{map, opt, recognize},
     number::complete::double,
     sequence::{preceded, tuple},
 };
@@ -227,9 +227,7 @@ fn check_nesting_depth(input: &str) -> Result<()> {
         if ch == '(' {
             depth += 1;
             if depth > MAX_NESTING_DEPTH {
-                bail!(
-                    "expression exceeds maximum nesting depth of {MAX_NESTING_DEPTH}"
-                );
+                bail!("expression exceeds maximum nesting depth of {MAX_NESTING_DEPTH}");
             }
         } else if ch == ')' {
             depth = depth.saturating_sub(1);
@@ -436,10 +434,7 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
                 .size_limit(REGEX_SIZE_LIMIT)
                 .build()
                 .map_err(|_| {
-                    nom::Err::Failure(nom::error::Error::new(
-                        input,
-                        nom::error::ErrorKind::Verify,
-                    ))
+                    nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Verify))
                 })?;
             return Ok((rest, Value::Re(re)));
         }
@@ -527,8 +522,16 @@ fn eval_compare(
         }
 
         // ── Numeric fields ─────────────────────────────────────────
-        Field::SrcPort => compare_num(f64::from(dialog.messages.first().map_or(0, |m| m.src_port)), op, value),
-        Field::DstPort => compare_num(f64::from(dialog.messages.first().map_or(0, |m| m.dst_port)), op, value),
+        Field::SrcPort => compare_num(
+            f64::from(dialog.messages.first().map_or(0, |m| m.src_port)),
+            op,
+            value,
+        ),
+        Field::DstPort => compare_num(
+            f64::from(dialog.messages.first().map_or(0, |m| m.dst_port)),
+            op,
+            value,
+        ),
         Field::Duration => {
             let dur = (dialog.updated_at - dialog.created_at).num_milliseconds() as f64 / 1000.0;
             compare_num(dur, op, value)
@@ -551,9 +554,7 @@ fn eval_compare(
                 .unwrap_or(0.0);
             compare_num(setup, op, value)
         }
-        Field::Retransmits => {
-            compare_num(f64::from(dialog.timing.total_retransmits()), op, value)
-        }
+        Field::Retransmits => compare_num(f64::from(dialog.timing.total_retransmits()), op, value),
         Field::RtpMos => {
             // Use worst (lowest) MOS across streams for filtering
             // MOS is approximated from jitter and loss using E-model R-factor
@@ -723,9 +724,7 @@ mod tests {
         let raw = build_sip(
             &format!("{method} sip:{to_user}@example.com SIP/2.0"),
             &[
-                &format!(
-                    "From: <sip:{from_user}@example.com>;tag=t1"
-                ),
+                &format!("From: <sip:{from_user}@example.com>;tag=t1"),
                 &format!("To: <sip:{to_user}@example.com>"),
                 "Call-ID: test-call-id@example.com",
                 &format!("CSeq: 1 {method}"),
@@ -734,16 +733,8 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(
-            &raw,
-            base_ts(),
-            localhost(),
-            localhost(),
-            5060,
-            5060,
-            "UDP",
-        )
-        .expect("should parse");
+        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, "UDP")
+            .expect("should parse");
         SipDialog::new(&msg).expect("should create dialog")
     }
 
@@ -959,9 +950,16 @@ mod tests {
 
     #[test]
     fn all_aliases_expand_and_parse() {
-        let aliases = ["problems", "slow-setup", "short-calls", "one-way", "nat-issues"];
+        let aliases = [
+            "problems",
+            "slow-setup",
+            "short-calls",
+            "one-way",
+            "nat-issues",
+        ];
         for alias in &aliases {
-            let expanded = expand_alias(alias).unwrap_or_else(|| panic!("alias '{alias}' should exist"));
+            let expanded =
+                expand_alias(alias).unwrap_or_else(|| panic!("alias '{alias}' should exist"));
             let result = FilterExpr::parse(expanded);
             assert!(
                 result.is_ok(),
@@ -1013,10 +1011,8 @@ mod tests {
     #[test]
     fn complex_compound_expr() {
         let dialog = make_dialog_with_timing(4000);
-        let filter = FilterExpr::parse(
-            "from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')",
-        )
-        .expect("should parse");
+        let filter = FilterExpr::parse("from.user == '1001' AND (pdd > 3.0 OR state == 'Failed')")
+            .expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[]));
     }
 
