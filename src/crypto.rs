@@ -80,11 +80,11 @@ impl CryptoBackend for StubCryptoBackend {
 // ring-based crypto backend (feature = "tls")
 // ---------------------------------------------------------------------------
 
-/// Pure-Rust crypto backend powered by the `ring` crate.
+/// Pure-Rust crypto backend powered by `ring` (GCM, HMAC, HKDF) and the
+/// RustCrypto `aes`+`cbc` crates (AES-CBC for TLS 1.2 CBC cipher suites).
 ///
-/// Supports AES-128-GCM, AES-256-GCM, HMAC-SHA1, and HKDF-SHA256. AES-CBC
-/// is not directly supported by `ring` and returns an error directing users
-/// to an alternative approach for TLS 1.2 CBC cipher suites.
+/// Supports AES-128-GCM, AES-256-GCM, AES-128-CBC, AES-256-CBC,
+/// HMAC-SHA1, and HKDF-SHA256.
 #[cfg(feature = "tls")]
 pub struct RingCryptoBackend;
 
@@ -119,13 +119,45 @@ impl CryptoBackend for RingCryptoBackend {
         Ok(plaintext.to_vec())
     }
 
-    fn aes_cbc_decrypt(&self, _key: &[u8], _iv: &[u8], _ciphertext: &[u8]) -> Result<Vec<u8>> {
-        // ring doesn't directly support AES-CBC. For TLS 1.2 CBC cipher suites,
-        // we would need to implement CBC mode manually using AES block operations.
-        anyhow::bail!(
-            "AES-CBC decryption not yet supported with ring backend. \
-             Use --keylog for TLS 1.2 CBC suites."
-        )
+    fn aes_cbc_decrypt(&self, key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
+        use cbc::cipher::{BlockDecryptMut, KeyIvInit};
+
+        if iv.len() != 16 {
+            anyhow::bail!("AES-CBC IV must be 16 bytes, got {}", iv.len());
+        }
+        if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
+            anyhow::bail!(
+                "AES-CBC ciphertext must be a non-empty multiple of 16 bytes, got {}",
+                ciphertext.len()
+            );
+        }
+
+        let mut buf = ciphertext.to_vec();
+
+        match key.len() {
+            16 => {
+                type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
+                let decryptor = Aes128CbcDec::new_from_slices(key, iv)
+                    .map_err(|e| anyhow::anyhow!("AES-128-CBC key/IV error: {e}"))?;
+                let plaintext = decryptor
+                    .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
+                    .map_err(|e| anyhow::anyhow!("AES-128-CBC decrypt failed: {e}"))?;
+                Ok(plaintext.to_vec())
+            }
+            32 => {
+                type Aes256CbcDec = cbc::Decryptor<aes::Aes256>;
+                let decryptor = Aes256CbcDec::new_from_slices(key, iv)
+                    .map_err(|e| anyhow::anyhow!("AES-256-CBC key/IV error: {e}"))?;
+                let plaintext = decryptor
+                    .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
+                    .map_err(|e| anyhow::anyhow!("AES-256-CBC decrypt failed: {e}"))?;
+                Ok(plaintext.to_vec())
+            }
+            _ => anyhow::bail!(
+                "Invalid AES-CBC key length: {} (expected 16 or 32)",
+                key.len()
+            ),
+        }
     }
 
     fn hmac_sha1(&self, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
@@ -362,11 +394,62 @@ mod tests {
         }
 
         #[test]
-        fn aes_cbc_returns_unsupported() {
+        fn aes_128_cbc_roundtrip() {
+            use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+
+            let key = [0xAAu8; 16];
+            let iv = [0xBBu8; 16];
+            let plaintext = b"SIP/2.0 200 OK\r\n";
+
+            // Encrypt with PKCS7 padding
+            type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
+            let encryptor = Aes128CbcEnc::new_from_slices(&key, &iv).unwrap();
+            let ciphertext =
+                encryptor.encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext);
+
+            // Decrypt
             let backend = RingCryptoBackend;
-            let result = backend.aes_cbc_decrypt(&[0u8; 16], &[0u8; 16], b"ct");
+            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
+            assert_eq!(decrypted, plaintext);
+        }
+
+        #[test]
+        fn aes_256_cbc_roundtrip() {
+            use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+
+            let key = [0xCCu8; 32];
+            let iv = [0xDDu8; 16];
+            let plaintext = b"INVITE sip:test SIP/2.0\r\n\r\n";
+
+            type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
+            let encryptor = Aes256CbcEnc::new_from_slices(&key, &iv).unwrap();
+            let ciphertext =
+                encryptor.encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext);
+
+            let backend = RingCryptoBackend;
+            let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
+            assert_eq!(decrypted, plaintext);
+        }
+
+        #[test]
+        fn aes_cbc_invalid_key_length() {
+            let backend = RingCryptoBackend;
+            let result = backend.aes_cbc_decrypt(&[0u8; 24], &[0u8; 16], &[0u8; 16]);
             assert!(result.is_err());
-            assert!(result.unwrap_err().to_string().contains("AES-CBC"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Invalid AES-CBC key length")
+            );
+        }
+
+        #[test]
+        fn aes_cbc_invalid_ciphertext_length() {
+            let backend = RingCryptoBackend;
+            // Not a multiple of 16
+            let result = backend.aes_cbc_decrypt(&[0u8; 16], &[0u8; 16], &[0u8; 15]);
+            assert!(result.is_err());
         }
     }
 }
