@@ -25,7 +25,7 @@ Navigation:
 
 Views:
   F1              Toggle this help screen
-  F2              Save dialog (placeholder)
+  F2              Save selected dialog (or all) to pcap
   F7              Open filter dialog
   s               Statistics view
   /               Search within current view

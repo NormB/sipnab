@@ -12,6 +12,8 @@ pub mod msg_raw;
 pub mod stream_list;
 
 use std::io;
+use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -63,9 +65,9 @@ pub enum View {
     },
     /// Keybinding help overlay.
     Help,
-    /// Filter input dialog (placeholder).
+    /// Filter input dialog.
     FilterDialog,
-    /// Statistics summary view (placeholder).
+    /// Statistics summary view.
     Statistics,
 }
 
@@ -319,7 +321,7 @@ fn render_status_bar(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
     frame.render_widget(status, area);
 }
 
-/// Render a placeholder filter dialog.
+/// Render the filter dialog input view.
 fn render_filter_dialog(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, input: &str) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -338,21 +340,75 @@ fn render_filter_dialog(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
     frame.render_widget(paragraph, area);
 }
 
-/// Render a placeholder statistics view.
+/// Render the statistics summary view with real data from stores.
 fn render_statistics(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
-    let dialog_count = app.dialog_store.read().len();
-    let active_count = app.dialog_store.read().active_count();
-    let stream_count = app.stream_store.read().len();
-    let orphaned = app.stream_store.read().orphaned_count();
+    use crate::sip::dialog::DialogState;
+    use std::collections::HashMap;
 
-    let text = format!(
+    let ds = app.dialog_store.read();
+    let ss = app.stream_store.read();
+
+    let dialog_count = ds.len();
+    let active_count = ds.active_count();
+    let stream_count = ss.len();
+    let orphaned = ss.orphaned_count();
+
+    // Per-state counts
+    let mut state_counts: HashMap<&str, usize> = HashMap::new();
+    let mut method_counts: HashMap<&str, usize> = HashMap::new();
+    let mut total_messages: usize = 0;
+
+    for dialog in ds.iter() {
+        let state_name = match dialog.state {
+            DialogState::Trying => "Trying",
+            DialogState::Ringing => "Ringing",
+            DialogState::InCall => "InCall",
+            DialogState::Completed => "Completed",
+            DialogState::Cancelled => "Cancelled",
+            DialogState::Failed => "Failed",
+            DialogState::Registered => "Registered",
+            DialogState::Expired => "Expired",
+            DialogState::Pending => "Pending",
+            DialogState::Active => "Active",
+            DialogState::Terminated => "Terminated",
+        };
+        *state_counts.entry(state_name).or_insert(0) += 1;
+        *method_counts.entry(dialog.method.as_str()).or_insert(0) += 1;
+        total_messages += dialog.messages.len();
+    }
+
+    // Sort methods by count descending, then alphabetically
+    let mut methods: Vec<(&&str, &usize)> = method_counts.iter().collect();
+    methods.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+
+    let mut text = format!(
         "sipnab Statistics\n\n\
-         Dialogs:        {dialog_count}\n\
-         Active Calls:   {active_count}\n\
-         RTP Streams:    {stream_count}\n\
-         Orphaned:       {orphaned}\n\n\
-         Press Esc to return."
+         Dialogs:           {dialog_count}\n\
+         Active Calls:      {active_count}\n\
+         Total Messages:    {total_messages}\n\
+         RTP Streams:       {stream_count}\n\
+         Orphaned Streams:  {orphaned}\n"
     );
+
+    // State breakdown
+    if !state_counts.is_empty() {
+        text.push_str("\nDialog States:\n");
+        let mut states: Vec<(&&str, &usize)> = state_counts.iter().collect();
+        states.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (state, count) in states {
+            text.push_str(&format!("  {:<16} {count}\n", state));
+        }
+    }
+
+    // Method distribution
+    if !methods.is_empty() {
+        text.push_str("\nMethod Distribution:\n");
+        for (method, count) in methods {
+            text.push_str(&format!("  {:<16} {count}\n", method));
+        }
+    }
+
+    text.push_str("\nPress Esc to return.");
 
     let block = Block::default().borders(Borders::ALL).title(" Statistics ");
 
@@ -441,7 +497,13 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.search_query.clear();
         }
         KeyCode::F(1) => app.current_view = View::Help,
-        KeyCode::F(2) => { /* placeholder: save dialog */ }
+        KeyCode::F(2) => {
+            // Save: if a dialog is selected, save just that dialog;
+            // otherwise save all dialogs.
+            let selected_call_id = get_selected_call_id(app);
+            let msg = save_to_pcap(app, selected_call_id.as_deref());
+            app.status_error = Some(msg);
+        }
         KeyCode::F(7) => {
             if app.active_filter.is_some() {
                 // F7 again clears the active filter
@@ -643,6 +705,109 @@ fn filtered_dialog_count(app: &App) -> usize {
     } else {
         store.len()
     }
+}
+
+// ── Save functionality ─────────────────────────────────────────────
+
+/// Choose a non-colliding output path. If `sipnab_save.pcap` exists, try
+/// `sipnab_save_1.pcap`, `sipnab_save_2.pcap`, etc.
+fn choose_save_path() -> PathBuf {
+    let base = PathBuf::from("sipnab_save.pcap");
+    if !base.exists() {
+        return base;
+    }
+    for i in 1..1000 {
+        let candidate = PathBuf::from(format!("sipnab_save_{i}.pcap"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    // Fallback — overwrite
+    base
+}
+
+/// Build a synthetic Ethernet + IPv4 + UDP packet from a SIP message's raw bytes.
+///
+/// The link-layer type is DLT_EN10MB (1). IP addresses and ports come from
+/// the SipMessage metadata.
+fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packet {
+    let payload = &msg.raw;
+    let udp_len: u16 = (8 + payload.len()) as u16;
+    let ip_total_len: u16 = 20 + udp_len;
+    let mut pkt = Vec::with_capacity(14 + ip_total_len as usize);
+
+    // Ethernet header (14 bytes)
+    pkt.extend_from_slice(&[0x00; 6]); // dst MAC
+    pkt.extend_from_slice(&[0x00; 6]); // src MAC
+    pkt.extend_from_slice(&[0x08, 0x00]); // EtherType: IPv4
+
+    // IPv4 header (20 bytes, no options)
+    pkt.push(0x45); // version=4, IHL=5
+    pkt.push(0x00); // DSCP/ECN
+    pkt.extend_from_slice(&ip_total_len.to_be_bytes());
+    pkt.extend_from_slice(&[0x00, 0x00]); // identification
+    pkt.extend_from_slice(&[0x40, 0x00]); // flags=DF, fragment offset=0
+    pkt.push(64); // TTL
+    pkt.push(17); // protocol: UDP
+    pkt.extend_from_slice(&[0x00, 0x00]); // checksum (skip)
+    match msg.src_addr {
+        IpAddr::V4(v4) => pkt.extend_from_slice(&v4.octets()),
+        IpAddr::V6(_) => pkt.extend_from_slice(&[0; 4]), // fallback for v6
+    }
+    match msg.dst_addr {
+        IpAddr::V4(v4) => pkt.extend_from_slice(&v4.octets()),
+        IpAddr::V6(_) => pkt.extend_from_slice(&[0; 4]),
+    }
+
+    // UDP header (8 bytes)
+    pkt.extend_from_slice(&msg.src_port.to_be_bytes());
+    pkt.extend_from_slice(&msg.dst_port.to_be_bytes());
+    pkt.extend_from_slice(&udp_len.to_be_bytes());
+    pkt.extend_from_slice(&[0x00, 0x00]); // checksum
+
+    // Payload
+    pkt.extend_from_slice(payload);
+
+    let len = pkt.len();
+    crate::capture::Packet::new(msg.timestamp, pkt, len, len, None, 1) // DLT_EN10MB
+}
+
+/// Save dialogs to a pcap file. If `call_id` is `Some`, save only that dialog;
+/// otherwise save all dialogs.
+fn save_to_pcap(app: &App, call_id: Option<&str>) -> String {
+    let path = choose_save_path();
+    let store = app.dialog_store.read();
+
+    // Collect messages
+    let messages: Vec<&crate::sip::SipMessage> = if let Some(cid) = call_id {
+        store
+            .get(cid)
+            .map(|d| d.messages.iter().collect())
+            .unwrap_or_default()
+    } else {
+        store.iter().flat_map(|d| d.messages.iter()).collect()
+    };
+
+    if messages.is_empty() {
+        return "No messages to save".to_string();
+    }
+
+    // Create writer (DLT_EN10MB = 1)
+    let mut writer = match crate::capture::PcapWriter::new(&path, 1, None, None) {
+        Ok(w) => w,
+        Err(e) => return format!("Save failed: {e}"),
+    };
+
+    let mut count = 0;
+    for msg in &messages {
+        let pkt = build_synthetic_packet(msg);
+        if let Err(e) = writer.write(&pkt) {
+            return format!("Write error after {count} packets: {e}");
+        }
+        count += 1;
+    }
+
+    format!("Saved {count} packets to {}", path.display())
 }
 
 // ── Test helpers (public for integration tests) ────────────────────

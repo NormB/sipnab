@@ -322,6 +322,31 @@ fn extract_parsed_packet(
         });
     }
 
+    // SCTP: etherparse does not parse SCTP, so it arrives with no transport slice.
+    // Detect it via the IP protocol number and return a debug log rather than an error.
+    if ip_protocol == 132 {
+        log::debug!("SCTP packet detected — not yet parsed");
+        let payload = net
+            .ip_payload_ref()
+            .map(|p| p.payload.to_vec())
+            .unwrap_or_default();
+        return Ok(ParsedPacket {
+            timestamp,
+            src_addr,
+            dst_addr,
+            src_port: 0,
+            dst_port: 0,
+            transport: TransportProto::Sctp,
+            payload,
+            ip_id,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset,
+            more_fragments,
+            ip_protocol,
+        });
+    }
+
     // Transport header extraction
     let transport_slice = transport
         .as_ref()
