@@ -162,55 +162,80 @@ pub fn format_ladder(
     let left_addr = format!("{}:{}", messages[0].src_addr, messages[0].src_port);
     let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
 
+    // Fixed column positions:
+    //   [timestamp 10] [left_pipe 1] [arrow_width] [right_pipe 1]
+    // Left pipe is at column TS_COL_WIDTH (10)
+    // Right pipe is at column TS_COL_WIDTH + 1 + arrow_width
+    // Endpoint labels are centered above their respective pipes
+
+    let left_pipe_col = TS_COL_WIDTH;
+    let right_pipe_col = left_pipe_col + 1 + arrow_width;
+
     let mut lines: Vec<Line<'static>> = Vec::new();
 
-    // Header with endpoint labels (with timestamp column space)
-    let left_label = format!("{:^20}", truncate(&left_addr, 20));
-    let right_label = format!("{:^20}", truncate(&right_addr, 20));
-    lines.push(Line::from(vec![
-        Span::raw("          "), // timestamp column placeholder
-        Span::styled(
-            left_label,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("{:^width$}", "", width = arrow_width + 2)),
-        Span::styled(
-            right_label,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]));
+    // Header: endpoint labels centered above their pipe positions
+    let mut header = String::new();
+    // Pad to left pipe position, then place left label centered around it
+    let left_label = truncate(&left_addr, 25);
+    let right_label = truncate(&right_addr, 25);
 
-    // Vertical bars header
-    lines.push(Line::from(format!(
-        "          {:^20}{:^width$}{:^20}",
-        "|",
-        "",
-        "|",
-        width = arrow_width + 2
+    // Left label: right-aligned to end near the pipe position
+    header.push_str(&format!(
+        "{:>width$}",
+        left_label,
+        width = left_pipe_col + left_label.len() / 2
+    ));
+    // Gap to right label
+    let gap = right_pipe_col.saturating_sub(header.len() + right_label.len() / 2);
+    header.push_str(&" ".repeat(gap));
+    header.push_str(&right_label);
+
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD),
     )));
 
-    // Keep track of whether we've annotated PDD
+    // Pipe line helper
+    let pipe_line = |prefix: &str| -> String {
+        let mut s = String::new();
+        s.push_str(prefix);
+        // Pad to left_pipe_col
+        while s.len() < left_pipe_col {
+            s.push(' ');
+        }
+        s.push('|');
+        // Pad to right_pipe_col
+        while s.len() < right_pipe_col {
+            s.push(' ');
+        }
+        s.push('|');
+        s
+    };
+
+    // Vertical bars header
+    lines.push(Line::from(pipe_line("          ")));
+
     let mut pdd_annotated = false;
 
     for msg in messages {
-        // Absolute timestamp (HH:MM:SS) — sngrep style
         let ts_str = msg.timestamp.format("%H:%M:%S").to_string();
-
         let label = format_message_label(msg);
         let msg_style = message_style(msg);
 
         let this_src = format!("{}:{}", msg.src_addr, msg.src_port);
         let is_left_to_right = this_src == left_addr;
 
-        // Build the arrow line
+        // Build the full line: timestamp + pipe + arrow + pipe
+        let ts_part = format!("{:<10}", ts_str);
+
+        // Arrow spans from left_pipe_col+1 to right_pipe_col-1
+        let arrow_span = arrow_width.saturating_sub(1);
         let arrow_line = if is_left_to_right {
-            format_arrow_right(&label, arrow_width)
+            format_arrow_right(&label, arrow_span)
         } else {
-            format_arrow_left(&label, arrow_width)
+            format_arrow_left(&label, arrow_span)
         };
 
         // PDD annotation
@@ -225,22 +250,16 @@ pub fn format_ladder(
         }
 
         lines.push(Line::from(vec![
-            Span::styled(format!("{ts_str}  "), Style::default().fg(Color::DarkGray)),
-            Span::raw(format!("{:^20}", "|")),
+            Span::styled(ts_part, Style::default().fg(Color::DarkGray)),
+            Span::raw("|"),
             Span::styled(arrow_line, msg_style),
-            Span::raw(format!("{:^20}", "|")),
+            Span::raw("|"),
             Span::styled(pdd_note, Style::default().fg(Color::Magenta)),
         ]));
     }
 
     // Closing bars
-    lines.push(Line::from(format!(
-        "          {:^20}{:^width$}{:^20}",
-        "|",
-        "",
-        "|",
-        width = arrow_width + 2
-    )));
+    lines.push(Line::from(pipe_line("          ")));
 
     lines
 }
