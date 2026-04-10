@@ -6,6 +6,7 @@
 pub mod capture;
 pub mod cli;
 pub mod config;
+pub mod output;
 pub mod rtp;
 pub mod signals;
 pub mod sip;
