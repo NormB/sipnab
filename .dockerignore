@@ -1,0 +1,6 @@
+target/
+.git/
+.claude/
+*.pcap
+fuzz/corpus/
+fuzz/artifacts/

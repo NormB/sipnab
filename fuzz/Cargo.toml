@@ -1,0 +1,29 @@
+[package]
+name = "sipnab-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+sipnab = { path = ".." }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[[bin]]
+name = "fuzz_sip_parser"
+path = "fuzz_targets/sip_parser.rs"
+
+[[bin]]
+name = "fuzz_sdp_parser"
+path = "fuzz_targets/sdp_parser.rs"
+
+[[bin]]
+name = "fuzz_rtp_parser"
+path = "fuzz_targets/rtp_parser.rs"
+
+[[bin]]
+name = "fuzz_filter_dsl"
+path = "fuzz_targets/filter_dsl.rs"
