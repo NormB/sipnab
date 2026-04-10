@@ -30,32 +30,40 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     );
     m.insert(
         "capture",
-        ["device", "portrange", "buffer_mb", "snaplen", "rtp"].as_slice(),
+        ["device", "portrange", "snaplen", "buffer", "no_rtp"].as_slice(),
     );
     m.insert(
         "display",
-        ["only_calls", "autoscroll", "columns"].as_slice(),
+        ["color", "payload_limit", "delta_time"].as_slice(),
     );
-    m.insert("filter", ["from", "to"].as_slice());
+    m.insert("filter", ["from", "to", "expression"].as_slice());
     m.insert(
         "security",
-        ["scanner_patterns", "reg_flood_threshold", "irsf_prefixes"].as_slice(),
+        [
+            "kill_scanner",
+            "kill_response",
+            "fraud_detect",
+            "alert",
+            "alert_exec",
+        ]
+        .as_slice(),
     );
     m.insert(
         "limits",
         [
-            "max_dialogs",
+            "dialog_limit",
             "max_streams",
             "max_reassembly",
             "hep_rate_limit",
-            "exec_rate_limit",
-            "api_max_connections",
         ]
         .as_slice(),
     );
-    m.insert("privilege", ["user", "chroot"].as_slice());
-    m.insert("theme", ["highlight", "invite", "bye", "error"].as_slice());
-    m.insert("keybindings", ["quit", "filter", "save"].as_slice());
+    m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
+    m.insert(
+        "theme",
+        ["background", "foreground", "highlight"].as_slice(),
+    );
+    m.insert("keybindings", ["quit", "help", "filter"].as_slice());
     m
 }
 

@@ -120,6 +120,13 @@ impl RegFloodDetector {
 
         None
     }
+
+    /// Remove tracking entries older than `max_age`.
+    pub fn sweep(&mut self, max_age: std::time::Duration) {
+        let now = Instant::now();
+        self.sources
+            .retain(|_, state| now.duration_since(state.window_start) < max_age);
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

@@ -150,6 +150,20 @@ impl PacketProcessor {
         }
     }
 
+    /// Create a new packet processor with a custom maximum reassembly session count.
+    pub fn with_max_sessions(max_sessions: usize) -> Self {
+        Self {
+            fragment_reassembler: FragmentReassembler::with_limits(
+                max_sessions,
+                std::time::Duration::from_secs(30),
+            ),
+            tcp_reassembler: TcpReassembler::with_limits(
+                max_sessions,
+                std::time::Duration::from_secs(30),
+            ),
+        }
+    }
+
     /// Process a raw captured packet through the parsing and reassembly pipeline.
     ///
     /// Returns zero or more [`ParsedPacket`]s:

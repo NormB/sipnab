@@ -185,6 +185,18 @@ impl FraudDetector {
 
         None
     }
+
+    /// Remove call pattern entries older than `max_age`.
+    pub fn sweep(&mut self, max_age: std::time::Duration) {
+        let now = Instant::now();
+        for pattern in self.call_patterns.values_mut() {
+            pattern
+                .calls
+                .retain(|(t, _)| now.duration_since(*t) < max_age);
+        }
+        // Drop sources with no remaining calls
+        self.call_patterns.retain(|_, p| !p.calls.is_empty());
+    }
 }
 
 /// Check for wangiri pattern: multiple short calls to same number prefix.
