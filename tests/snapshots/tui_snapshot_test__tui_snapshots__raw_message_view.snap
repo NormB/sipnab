@@ -1,6 +1,5 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 337
 expression: output
 ---
 ┌ Raw SIP Message [1/4] (Esc: Back | /: Search) ─────────────────────────────────────────┐
@@ -30,6 +29,6 @@ expression: output
 │                                                                                        │
 │                                                                                        │
 │                                                                                        │
-│                                                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────┘
- sipnab | Raw Message | Dialogs: 3 (active: 1) | Streams: 0 | F1:Help q:Quit
+ Current Mode: Online (any)    Dialogs: 3    Match Expression:     BPF Filter:
+F1 Help F2 Save

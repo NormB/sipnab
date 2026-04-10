@@ -1,29 +1,28 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 374
 expression: output
 ---
-┌ Call List (Tab: Streams | Enter: Flow | F1: Help) ───────────────────────────────────────────────┐
-│   #    Method     From        To           Source      Destination  State       Msgs  Durat PDD  │
-│>  1    INVITE     1003        1004         10.0.0.1    10.0.0.2     FAILED      2     1.0s       │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-│                                                                                                  │
-└──────────────────────────────────────────────────────────────────────────────────────────────────┘
- sipnab | Call List | Filter: state == 'Failed' | Dialogs: 3 (active: 1) | Streams: 0 | F7:Clear
+ sipnab — SIP Messages Flow Viewer
+   #    Method     From         To           Source      Destination  State        Msgs  Date  PDD
+>  1    INVITE     1003         1004         10.0.0.1    10.0.0.2     FAILED       2     12:00
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ Current Mode: Online (any)    Dialogs: 3    Match Expression: state == 'Failed'    BPF Filter:
+F1 Help F2 Save F3 Search F4 Extended F5 Compare F6 RTP F7 Filter F8 Settings F9 ClearFiltrF10 Colum

@@ -5,10 +5,10 @@
 //! health status. Rows are color-coded by quality thresholds.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
 
 use crate::rtp::stream::RtpStream;
 use crate::rtp::stream_store::StreamStore;
@@ -121,12 +121,33 @@ impl Default for StreamListState {
 // ── Rendering ───────────────────────────────────────────────────────
 
 /// Render the RTP stream list table into the given area.
+///
+/// Uses sngrep-style: borderless, white-on-blue header, blue highlight.
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
 ) {
+    // Layout: title line + table area
+    let [title_area, table_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+
+    // Title line
+    let title = Paragraph::new(Line::from(Span::styled(
+        " sipnab \u{2014} RTP Streams",
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD),
+    )));
+    frame.render_widget(title, title_area);
+
+    // sngrep header style: white on blue, bold
+    let header_style = Style::default()
+        .fg(Color::White)
+        .bg(Color::Blue)
+        .add_modifier(Modifier::BOLD);
+
     let header = Row::new(vec![
         Cell::from("SSRC"),
         Cell::from("Codec"),
@@ -139,11 +160,7 @@ pub fn render_stream_list(
         Cell::from("Dialog"),
         Cell::from("Status"),
     ])
-    .style(
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD),
-    )
+    .style(header_style)
     .bottom_margin(0);
 
     let streams: Vec<_> = store.iter().collect();
@@ -214,22 +231,18 @@ pub fn render_stream_list(
         Constraint::Length(7),  // Status
     ];
 
+    // sngrep-style: no borders, blue highlight for selected row
     let table = Table::new(rows, widths)
         .header(header)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" RTP Streams (Tab: Calls | Esc: Back) "),
-        )
         .column_spacing(1)
         .row_highlight_style(
             Style::default()
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
+                .fg(Color::White)
+                .bg(Color::Blue),
         )
         .highlight_symbol("> ");
 
-    frame.render_stateful_widget(table, area, &mut state.table_state);
+    frame.render_stateful_widget(table, table_area, &mut state.table_state);
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
