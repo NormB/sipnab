@@ -6,10 +6,10 @@
 //! show diagnosis warning indicators.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Rect};
+use ratatui::layout::{Alignment, Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Block, Borders, Cell, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
@@ -187,6 +187,20 @@ pub fn render_call_list(
     } else {
         store.iter().collect()
     };
+
+    // Show a centered help message when there are no dialogs
+    if dialogs.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Call List (Tab: Streams | Enter: Flow | F1: Help) ");
+        let text = "No SIP dialogs found.\n\nIf reading a pcap file, it may not contain SIP traffic.\nPress 'q' to quit, F1 for help.";
+        let paragraph = Paragraph::new(text)
+            .block(block)
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(paragraph, area);
+        return;
+    }
 
     let rows: Vec<Row> = dialogs
         .iter()

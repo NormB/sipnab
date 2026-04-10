@@ -265,7 +265,7 @@ mod tui_snapshots {
 
     #[test]
     fn call_list_with_dialogs_wide() {
-        let backend = TestBackend::new(120, 40);
+        let backend = TestBackend::new(130, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
 
