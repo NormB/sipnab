@@ -6,39 +6,39 @@ expression: output
  Match Expression:     BPF Filter:
  Display Filter:
 ┌ Help (Esc to close) ─────────────────────────────────────────────────────────┐
-│sipnab v0.1.0-alpha — Keyboard Shortcuts                                      │
+│sipnab — Keyboard Shortcuts                                                   │
 │                                                                              │
-│Navigation:                                                                   │
-│  ↑/↓ or j/k        Scroll list / view                                        │
-│  Enter             Open selected item                                        │
-│  Esc               Go back to previous view                                  │
-│  Tab               Switch between Call List / Stream List                    │
-│  Home / End        Jump to first / last item                                 │
-│  PgUp / PgDn       Scroll by page                                            │
-│  q                 Quit sipnab                                               │
-│  Ctrl-C            Force quit                                                │
-│                                                                              │
-│Function Keys:                                                                │
-│  F1                Help (this screen)                                        │
-│  F2                Save selected dialog (or all) to pcap                     │
+│CALL LIST:                                                                    │
+│  ↑/↓, j/k          Navigate dialogs                                          │
+│  PgUp/PgDn         Page scroll                                               │
+│  Home/End          Jump to first/last                                        │
+│  Enter             Open call flow                                            │
+│  Space             Select/deselect dialog                                    │
+│  Esc, q            Quit                                                      │
+│  < / >             Change sort column                                        │
+│  Z                 Reverse sort direction                                    │
+│  A                 Toggle autoscroll                                         │
+│  p                 Pause/resume capture                                      │
+│  /                 Search                                                    │
+│  i                 Clear non-matching dialogs                                │
+│  I                 Clear matching dialogs                                    │
+│  F1                This help                                                 │
+│  F2                Save capture (PCAP/PCAP-NG/TXT)                           │
 │  F3                Search (same as /)                                        │
-│  F4 / x            Extended call flow (multi-leg toggle)                     │
-│  F5                Compare mode (Space to select messages)                   │
-│  F6                Toggle RTP display in flow                                │
-│  F7                Open filter dialog / clear filter                         │
-│  F8                Settings                                                  │
+│  F5                Clear calls                                               │
+│  F6                Show raw SIP message                                      │
+│  F7                Filter dialog                                             │
 │  F9                Clear active filter                                       │
-│  F10               Column selection                                          │
+│  F10               Column selector                                           │
+│  Tab               Switch to RTP Streams                                     │
 │                                                                              │
-│Views:                                                                        │
-│  s                 Statistics view                                           │
-│  /                 Search within current view                                │
-│                                                                              │
-│Call List:                                                                    │
-│  Space             Toggle multi-select on current row                        │
-│  Enter             Open Call Flow for selected dialog                        │
-│  F5 / Ctrl-L       Clear all (or selected) dialogs                           │
-│  F6 / r            Show raw SIP for selected dialog                          │
-│  F10 / t           Column selector popup                                     │
+│CALL FLOW:                                                                    │
+│  ↑/↓               Navigate messages (detail panel updates)                  │
+│  PgUp/PgDn         Page through messages                                     │
+│  Home/End          First/last message                                        │
+│  Enter             Full-screen raw message                                   │
+│  Space             Select message for diff (press twice to compare)          │
+│  Esc               Back to call list                                         │
+│  d                 Cycle SDP display (none / summary / full)                 │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

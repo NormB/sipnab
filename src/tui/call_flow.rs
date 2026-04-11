@@ -22,8 +22,8 @@ use super::TimestampMode; // Timestamp display mode enum
 
 /// Minimum width for the arrow shaft (dashes) between endpoints.
 const MIN_ARROW_WIDTH: usize = 24;
-/// Width reserved for the timestamp column (HH:MM:SS + 2 spaces).
-const TS_COL_WIDTH: usize = 10;
+/// Width reserved for the timestamp column (`HH:MM:SS.mmm` or `+60.000s ` + padding).
+const TS_COL_WIDTH: usize = 13;
 /// Width reserved for each endpoint column (pipe + padding).
 const ENDPOINT_COL_WIDTH: usize = 20;
 
@@ -53,7 +53,7 @@ pub fn build_call_flow_lines_with_width(
     }
 
     // Calculate arrow width based on terminal width:
-    // term_width = timestamp(10) + left_endpoint(20) + arrow + right_endpoint(20) + pdd(~15)
+    // term_width = timestamp(13) + left_endpoint(20) + arrow + right_endpoint(20) + pdd(~15)
     let arrow_width = term_width
         .saturating_sub(TS_COL_WIDTH + ENDPOINT_COL_WIDTH * 2 + 15)
         .max(MIN_ARROW_WIDTH);
@@ -110,10 +110,7 @@ pub fn build_call_flow_lines_with_options(
     if dialog.messages.is_empty() {
         return None;
     }
-    let tw = match ts_mode {
-        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
-        TimestampMode::Hidden => 0,
-    };
+    let tw = TS_COL_WIDTH;
     let aw = term_width
         .saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15)
         .max(MIN_ARROW_WIDTH);
@@ -176,10 +173,7 @@ pub fn build_extended_flow_lines(
     if owned.is_empty() {
         return None;
     }
-    let tw = match ts_mode {
-        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
-        TimestampMode::Hidden => 0,
-    };
+    let tw = TS_COL_WIDTH;
     let aw = term_width
         .saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15)
         .max(MIN_ARROW_WIDTH);
@@ -256,6 +250,8 @@ pub fn render_call_flow_lines(
 pub struct FormattedMessage {
     /// Formatted timestamp string (or empty if hidden).
     pub timestamp: String,
+    /// Style for the timestamp (delta modes use color-coded styles).
+    pub timestamp_style: Style,
     /// Arrow label (e.g., "INVITE (SDP)" or "200 OK").
     pub label: String,
     /// Style for the arrow line.
@@ -268,6 +264,26 @@ pub struct FormattedMessage {
     pub extra_lines: Vec<(String, Style)>,
     /// Whether this message is selected (for highlighting).
     pub selected: bool,
+}
+
+/// Compute a color-coded style for a delta timestamp based on its magnitude.
+///
+/// - Green: <100ms (fast / normal)
+/// - Yellow: 100ms-1s (moderate delay)
+/// - Red: 1s-5s (slow)
+/// - Bold red: >5s (very slow / timeout risk)
+fn delta_style(delta_ms: i64) -> Style {
+    if delta_ms < 100 {
+        Style::default().fg(Color::Green)
+    } else if delta_ms < 1000 {
+        Style::default().fg(Color::Yellow)
+    } else if delta_ms < 5000 {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    }
 }
 
 /// Prepare formatted messages from a dialog's SIP messages.
@@ -292,10 +308,7 @@ pub fn prepare_messages(
     let left_addr = format!("{}:{}", messages[0].src_addr, messages[0].src_port);
     let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
 
-    let ts_width = match ts_mode {
-        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
-        TimestampMode::Hidden => 0,
-    };
+    let ts_width = TS_COL_WIDTH;
 
     let cid_colors = [
         Color::Green,
@@ -309,28 +322,45 @@ pub fn prepare_messages(
     let mut pdd_done = false;
     let mut in_call = false;
     let mut result = Vec::with_capacity(messages.len());
+    let mut prev_ts = first_ts;
 
     for (mi, msg) in messages.iter().enumerate() {
-        let timestamp = match ts_mode {
+        let (timestamp, timestamp_style) = match ts_mode {
             TimestampMode::Absolute => {
-                format!(
+                let ts_str = format!(
                     "{:<width$}",
-                    msg.timestamp.format("%H:%M:%S"),
+                    msg.timestamp.format("%H:%M:%S%.3f"),
                     width = ts_width
-                )
+                );
+                (ts_str, Style::default().fg(Color::DarkGray))
             }
-            TimestampMode::Relative => {
+            TimestampMode::DeltaPrev => {
+                let d = msg
+                    .timestamp
+                    .signed_duration_since(prev_ts)
+                    .num_milliseconds();
+                let ts_str = format!(
+                    "{:>width$}",
+                    format!("+{:.3}s", d as f64 / 1000.0),
+                    width = ts_width - 1
+                ) + " ";
+                let sty = delta_style(d);
+                prev_ts = msg.timestamp;
+                (ts_str, sty)
+            }
+            TimestampMode::DeltaFirst => {
                 let d = msg
                     .timestamp
                     .signed_duration_since(first_ts)
                     .num_milliseconds();
-                format!(
-                    "{:<width$}",
+                let ts_str = format!(
+                    "{:>width$}",
                     format!("+{:.3}s", d as f64 / 1000.0),
-                    width = ts_width
-                )
+                    width = ts_width - 1
+                ) + " ";
+                let sty = delta_style(d);
+                (ts_str, sty)
             }
-            TimestampMode::Hidden => String::new(),
         };
 
         let label = format_message_label(msg);
@@ -422,6 +452,7 @@ pub fn prepare_messages(
 
         result.push(FormattedMessage {
             timestamp,
+            timestamp_style,
             label,
             style,
             is_left_to_right,
@@ -462,9 +493,9 @@ pub fn render_call_flow_direct(
     }
 
     // Fixed column positions — mirrors the original layout:
-    //   [timestamp 10] [left_pipe 1] [arrow_width] [right_pipe 1] [pdd ~15]
+    //   [timestamp 13] [left_pipe 1] [arrow_width] [right_pipe 1] [pdd ~15]
     let ts_col = area.x;
-    let left_pipe = area.x + TS_COL_WIDTH as u16; // col 10
+    let left_pipe = area.x + TS_COL_WIDTH as u16; // col 13
     // Reserve ~15 chars after the right pipe for PDD annotations
     let right_pipe = area.x + width.saturating_sub(16);
     let arrow_start = left_pipe + 1;
@@ -528,12 +559,7 @@ pub fn render_call_flow_direct(
                     .add_modifier(Modifier::BOLD);
                 buf.set_string(ts_col, y, ">>>", marker_style);
             } else if !msg.timestamp.is_empty() {
-                buf.set_string(
-                    ts_col,
-                    y,
-                    &msg.timestamp,
-                    Style::default().fg(Color::DarkGray),
-                );
+                buf.set_string(ts_col, y, &msg.timestamp, msg.timestamp_style);
             }
 
             // Pipes at fixed positions
@@ -772,8 +798,8 @@ pub fn format_ladder(
     let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
 
     // Fixed column positions:
-    //   [timestamp 10] [left_pipe 1] [arrow_width] [right_pipe 1]
-    // Left pipe is at column TS_COL_WIDTH (10)
+    //   [timestamp 13] [left_pipe 1] [arrow_width] [right_pipe 1]
+    // Left pipe is at column TS_COL_WIDTH (13)
     // Right pipe is at column TS_COL_WIDTH + 1 + arrow_width
     // Endpoint labels are centered above their respective pipes
 
@@ -824,12 +850,12 @@ pub fn format_ladder(
     };
 
     // Vertical bars header
-    lines.push(Line::from(pipe_line("          ")));
+    lines.push(Line::from(pipe_line(&" ".repeat(TS_COL_WIDTH))));
 
     let mut pdd_annotated = false;
 
     for msg in messages {
-        let ts_str = msg.timestamp.format("%H:%M:%S").to_string();
+        let ts_str = msg.timestamp.format("%H:%M:%S%.3f").to_string();
         let label = format_message_label(msg);
         let msg_style = message_style(msg);
 
@@ -837,7 +863,7 @@ pub fn format_ladder(
         let is_left_to_right = this_src == left_addr;
 
         // Build the full line: timestamp + pipe + arrow + pipe
-        let ts_part = format!("{:<10}", ts_str);
+        let ts_part = format!("{:<width$}", ts_str, width = TS_COL_WIDTH);
 
         // Arrow spans from left_pipe_col+1 to right_pipe_col-1
         let arrow_span = arrow_width.saturating_sub(1);
@@ -868,7 +894,7 @@ pub fn format_ladder(
     }
 
     // Closing bars
-    lines.push(Line::from(pipe_line("          ")));
+    lines.push(Line::from(pipe_line(&" ".repeat(TS_COL_WIDTH))));
 
     lines
 }
@@ -893,10 +919,7 @@ fn format_ladder_with_options(
     let left_addr = format!("{}:{}", messages[0].src_addr, messages[0].src_port);
     let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
 
-    let ts_width = match ts_mode {
-        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
-        TimestampMode::Hidden => 0,
-    };
+    let ts_width = TS_COL_WIDTH;
     let left_pipe_col = ts_width;
     let right_pipe_col = left_pipe_col + 1 + arrow_width;
 
@@ -938,6 +961,7 @@ fn format_ladder_with_options(
 
     let mut pdd_done = false;
     let mut in_call = false;
+    let mut prev_ts = first_ts;
     let cid_colors = [
         Color::Green,
         Color::Blue,
@@ -948,24 +972,42 @@ fn format_ladder_with_options(
     ];
 
     for (mi, msg) in messages.iter().enumerate() {
-        let ts_str = match ts_mode {
-            TimestampMode::Absolute => format!(
-                "{:<width$}",
-                msg.timestamp.format("%H:%M:%S"),
-                width = ts_width
-            ),
-            TimestampMode::Relative => {
+        let (ts_str, ts_style) = match ts_mode {
+            TimestampMode::Absolute => {
+                let s = format!(
+                    "{:<width$}",
+                    msg.timestamp.format("%H:%M:%S%.3f"),
+                    width = ts_width
+                );
+                (s, Style::default().fg(Color::DarkGray))
+            }
+            TimestampMode::DeltaPrev => {
+                let d = msg
+                    .timestamp
+                    .signed_duration_since(prev_ts)
+                    .num_milliseconds();
+                let s = format!(
+                    "{:>width$}",
+                    format!("+{:.3}s", d as f64 / 1000.0),
+                    width = ts_width - 1
+                ) + " ";
+                let sty = delta_style(d);
+                prev_ts = msg.timestamp;
+                (s, sty)
+            }
+            TimestampMode::DeltaFirst => {
                 let d = msg
                     .timestamp
                     .signed_duration_since(first_ts)
                     .num_milliseconds();
-                format!(
-                    "{:<width$}",
+                let s = format!(
+                    "{:>width$}",
                     format!("+{:.3}s", d as f64 / 1000.0),
-                    width = ts_width
-                )
+                    width = ts_width - 1
+                ) + " ";
+                let sty = delta_style(d);
+                (s, sty)
             }
-            TimestampMode::Hidden => String::new(),
         };
         let label = format_message_label(msg);
         let sty = match color_mode {
@@ -1009,7 +1051,7 @@ fn format_ladder_with_options(
 
         let mut sp = Vec::new();
         if !ts_str.is_empty() {
-            sp.push(Span::styled(ts_str, Style::default().fg(Color::DarkGray)));
+            sp.push(Span::styled(ts_str, ts_style));
         }
         sp.push(Span::raw("|"));
         sp.push(Span::styled(al, fsty));

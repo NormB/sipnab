@@ -61,6 +61,23 @@ sudo sipnab -N -d eth0 --json | jq .
 sudo sipnab -N -d eth0 --kill-scanner --alert syslog
 ```
 
+## TUI
+
+The default interactive mode provides an sngrep-compatible terminal interface
+with additional features:
+
+- **Call list** with sortable columns, multi-select, inline search, filter DSL
+- **Call flow ladder** with color-coded arrows, SDP codec display, PDD annotation
+- **Three timestamp modes** -- absolute (`HH:MM:SS.mmm`), delta from previous
+  message (color-coded by latency), delta from first message
+- **Split view** -- raw SIP detail panel alongside the ladder diagram, resizable
+  with `9`/`0` or `+`/`-`
+- **Message diff** -- select two messages with Space to compare side-by-side
+- **Extended flow** -- merge correlated dialog legs into a single ladder (`F4`/`x`)
+- **RTP stream list** -- jitter, loss, MOS scores (Tab to switch)
+
+All sngrep keybindings are supported. Press `F1` for the full shortcut reference.
+
 ## Feature Flags
 
 | Flag | Description | Default |
@@ -84,6 +101,7 @@ cargo build --release --features full
 ## Documentation
 
 - [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
+- [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
 - [Config Reference](docs/config-reference.md) -- TOML config file format
 - [Implementation Plan](implementation-plan-v6.md) -- architecture and roadmap
 

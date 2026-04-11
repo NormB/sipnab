@@ -2,6 +2,22 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.3.1] - 2026-04-09
+
+### Changed
+- Timestamp column redesigned with three diagnostic modes: absolute
+  (`HH:MM:SS.mmm`), delta from previous message, delta from first message
+- Delta timestamps are color-coded by latency (green <100ms, yellow <1s,
+  red <5s, bold red >5s)
+- Timestamp column widened from 10 to 13 characters for millisecond precision
+- Absolute timestamps now show milliseconds (`HH:MM:SS.mmm`)
+- Help screen (`F1`) rewritten with comprehensive per-view keybinding reference
+- Man page updated with TUI keybindings section
+
+### Added
+- `docs/keybindings.md` -- full TUI keyboard shortcut reference
+- README TUI section describing sngrep-compatible features
+
 ## [0.3.0] - 2026-04-10
 
 ### Added

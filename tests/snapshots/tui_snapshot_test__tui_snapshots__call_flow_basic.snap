@@ -5,13 +5,13 @@ expression: output
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-    10.0.0.1:5060                     10.0.0.2:5060         ┌ [1/4] INVITE ────────────────────────┐
-          |                                 |               │INVITE sip:1002@example.com SIP/2.0   │
->>>       |----------- INVITE ------------> |               │From: "1001"                          │
-12:00:01  |<--------- 180 Ringing --------- |  PDD: 1000ms  │<sip:1001@example.com>;tag=t1         │
-12:00:02  |<----------- 200 OK ------------ |               │To: "1002" <sip:1002@example.com>     │
-12:01:02  |------------- BYE -------------> |               │Call-ID: call-1@test                  │
-          |                                 |               │CSeq: 1 INVITE                        │
+       10.0.0.1:5060                  10.0.0.2:5060         ┌ [1/4] INVITE ────────────────────────┐
+             |                              |               │INVITE sip:1002@example.com SIP/2.0   │
+>>>          |---------- INVITE ----------> |               │From: "1001"                          │
+12:00:01.000 |<------- 180 Ringing -------- |  PDD: 1000ms  │<sip:1001@example.com>;tag=t1         │
+12:00:02.000 |<---------- 200 OK ---------- |               │To: "1002" <sip:1002@example.com>     │
+12:01:02.000 |----------- BYE ------------> |               │Call-ID: call-1@test                  │
+             |                              |               │CSeq: 1 INVITE                        │
                                                             │Content-Length: 0                     │
                                                             │                                      │
                                                             │                                      │
