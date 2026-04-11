@@ -12,6 +12,11 @@ use ratatui::widgets::{Paragraph, Wrap};
 
 use crate::sip::SipMessage;
 use crate::sip::dialog_store::DialogStore;
+use crate::sip::sdp; // SDP parser types for codec display
+
+use super::ColorMode; // Color mode enum
+use super::SdpDisplayMode; // SDP display mode enum
+use super::TimestampMode; // Timestamp display mode enum
 
 // ── Layout constants ────────────────────────────────────────────────
 
@@ -89,37 +94,54 @@ pub fn build_call_flow_lines_with_width(
     Some((msg_count, lines))
 }
 
-/// Build call flow lines with display options.
-///
-/// Currently delegates to [`build_call_flow_lines_with_width`]; the display
-/// mode parameters are reserved for future SDP/timestamp/color enhancements.
+/// Build call flow lines with display options (SDP mode, timestamp mode, color mode, etc.).
 #[allow(clippy::too_many_arguments)]
 pub fn build_call_flow_lines_with_options(
-    store: &DialogStore,
-    call_id: &str,
-    term_width: usize,
-    _sdp_mode: super::SdpDisplayMode,
-    _ts_mode: super::TimestampMode,
-    _color_mode: super::ColorMode,
-    _show_rtp: bool,
-    _selected_msg: Option<usize>,
+    store: &DialogStore, call_id: &str, term_width: usize,
+    sdp_mode: SdpDisplayMode, ts_mode: TimestampMode, color_mode: ColorMode,
+    show_rtp: bool, selected_msg: Option<usize>,
 ) -> Option<(usize, Vec<Line<'static>>)> {
-    build_call_flow_lines_with_width(store, call_id, term_width)
+    let dialog = store.get(call_id)?;
+    if dialog.messages.is_empty() { return None; }
+    let tw = match ts_mode { TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH, TimestampMode::Hidden => 0 };
+    let aw = term_width.saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15).max(MIN_ARROW_WIDTH);
+    let mc = dialog.messages.len();
+    let ft = dialog.messages[0].timestamp;
+    let mut lines = format_ladder_with_options(&dialog.messages, ft, dialog.timing.pdd_ms(), aw, sdp_mode, ts_mode, color_mode, show_rtp, selected_msg);
+    let correlated = store.find_correlated(call_id);
+    if !correlated.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(" Correlated Legs:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))));
+        for leg in &correlated {
+            lines.push(Line::from(Span::styled(format!("   \u{2194} Call-ID: {} ({})", truncate(&leg.call_id, 40), leg.method), Style::default().fg(Color::Magenta))));
+        }
+    }
+    Some((mc, lines))
 }
 
-/// Build extended (multi-leg) flow lines.
-///
-/// Currently delegates to [`build_call_flow_lines_with_width`]; multi-leg
-/// merging is reserved for a future enhancement.
+/// Build extended (multi-leg) flow lines merging correlated dialogs.
 pub fn build_extended_flow_lines(
-    store: &DialogStore,
-    call_id: &str,
-    term_width: usize,
-    _sdp_mode: super::SdpDisplayMode,
-    _ts_mode: super::TimestampMode,
-    _color_mode: super::ColorMode,
+    store: &DialogStore, call_id: &str, term_width: usize,
+    sdp_mode: SdpDisplayMode, ts_mode: TimestampMode, color_mode: ColorMode,
 ) -> Option<(usize, Vec<Line<'static>>)> {
-    build_call_flow_lines_with_width(store, call_id, term_width)
+    let dialog = store.get(call_id)?;
+    if dialog.messages.is_empty() { return None; }
+    let mut all: Vec<&SipMessage> = dialog.messages.iter().collect();
+    let correlated = store.find_correlated(call_id);
+    for leg in &correlated { all.extend(leg.messages.iter()); }
+    all.sort_by_key(|m| m.timestamp);
+    let owned: Vec<SipMessage> = all.into_iter().cloned().collect();
+    if owned.is_empty() { return None; }
+    let tw = match ts_mode { TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH, TimestampMode::Hidden => 0 };
+    let aw = term_width.saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15).max(MIN_ARROW_WIDTH);
+    let mc = owned.len();
+    let ft = owned[0].timestamp;
+    let mut lines = vec![
+        Line::from(Span::styled(format!(" Extended Flow: {} + {} correlated leg(s)", truncate(call_id, 40), correlated.len()), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))),
+        Line::from(""),
+    ];
+    lines.extend(format_ladder_with_options(&owned, ft, None, aw, sdp_mode, ts_mode, color_mode, false, None));
+    Some((mc, lines))
 }
 
 /// Render the call flow ladder diagram for a dialog identified by Call-ID.
@@ -295,6 +317,161 @@ pub fn format_ladder(
     lines.push(Line::from(pipe_line("          ")));
 
     lines
+}
+
+/// Format ladder with full display options (SDP mode, timestamp mode, color, etc.).
+#[allow(clippy::too_many_arguments)]
+fn format_ladder_with_options(
+    messages: &[SipMessage],
+    first_ts: chrono::DateTime<chrono::Utc>,
+    pdd_ms: Option<i64>,
+    arrow_width: usize,
+    sdp_mode: SdpDisplayMode,
+    ts_mode: TimestampMode,
+    color_mode: ColorMode,
+    show_rtp: bool,
+    selected_msg: Option<usize>,
+) -> Vec<Line<'static>> {
+    if messages.is_empty() {
+        return vec![Line::from("(no messages)")];
+    }
+
+    let left_addr = format!("{}:{}", messages[0].src_addr, messages[0].src_port);
+    let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
+
+    let ts_width = match ts_mode {
+        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
+        TimestampMode::Hidden => 0,
+    };
+    let left_pipe_col = ts_width;
+    let right_pipe_col = left_pipe_col + 1 + arrow_width;
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let left_label = truncate(&left_addr, 25);
+    let right_label = truncate(&right_addr, 25);
+
+    let mut hdr = String::new();
+    hdr.push_str(&format!(
+        "{:>width$}",
+        left_label,
+        width = left_pipe_col + left_label.len() / 2
+    ));
+    let g = right_pipe_col.saturating_sub(hdr.len() + right_label.len() / 2);
+    hdr.push_str(&" ".repeat(g));
+    hdr.push_str(&right_label);
+    lines.push(Line::from(Span::styled(
+        hdr,
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )));
+
+    let ts_prefix = " ".repeat(ts_width);
+    let mk_pipe = |pfx: &str| -> String {
+        let mut s = String::new();
+        s.push_str(pfx);
+        while s.len() < left_pipe_col { s.push(' '); }
+        s.push('|');
+        while s.len() < right_pipe_col { s.push(' '); }
+        s.push('|');
+        s
+    };
+    lines.push(Line::from(mk_pipe(&ts_prefix)));
+
+    let mut pdd_done = false;
+    let mut in_call = false;
+    let cid_colors = [Color::Green, Color::Blue, Color::Yellow, Color::Magenta, Color::Cyan, Color::Red];
+
+    for (mi, msg) in messages.iter().enumerate() {
+        let ts_str = match ts_mode {
+            TimestampMode::Absolute => format!("{:<width$}", msg.timestamp.format("%H:%M:%S"), width = ts_width),
+            TimestampMode::Relative => {
+                let d = msg.timestamp.signed_duration_since(first_ts).num_milliseconds();
+                format!("{:<width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width)
+            }
+            TimestampMode::Hidden => String::new(),
+        };
+        let label = format_message_label(msg);
+        let sty = match color_mode {
+            ColorMode::Method => message_style(msg),
+            ColorMode::CallId => {
+                let ci = msg.call_id().unwrap_or("");
+                let i = ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % cid_colors.len();
+                Style::default().fg(cid_colors[i])
+            }
+            ColorMode::CSeq => {
+                let cn = msg.cseq().map(|(n, _)| n).unwrap_or(0);
+                Style::default().fg(cid_colors[(cn as usize) % cid_colors.len()])
+            }
+        };
+        let sel = selected_msg == Some(mi);
+        let fsty = if sel { sty.add_modifier(Modifier::BOLD | Modifier::UNDERLINED) } else { sty };
+
+        let src = format!("{}:{}", msg.src_addr, msg.src_port);
+        let ltr = src == left_addr;
+        let as_ = arrow_width.saturating_sub(1);
+        let al = if ltr { format_arrow_right(&label, as_) } else { format_arrow_left(&label, as_) };
+
+        let mut pn = String::new();
+        if !pdd_done && let Some(p) = pdd_ms && !msg.is_request && msg.status_code == Some(180) {
+            pn = format!("  PDD: {p}ms");
+            pdd_done = true;
+        }
+
+        let mut sp = Vec::new();
+        if !ts_str.is_empty() { sp.push(Span::styled(ts_str, Style::default().fg(Color::DarkGray))); }
+        sp.push(Span::raw("|"));
+        sp.push(Span::styled(al, fsty));
+        sp.push(Span::raw("|"));
+        if !pn.is_empty() { sp.push(Span::styled(pn, Style::default().fg(Color::Magenta))); }
+        if sel { sp.push(Span::styled("  [SELECTED]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))); }
+        lines.push(Line::from(sp));
+
+        if sdp_mode != SdpDisplayMode::None && let Some(ss) = msg.sdp() {
+            let ind = " ".repeat(ts_width + 1);
+            match sdp_mode {
+                SdpDisplayMode::Summary => {
+                    let c = format_sdp_codecs(&ss);
+                    if !c.is_empty() {
+                        lines.push(Line::from(Span::styled(format!("{ind} Codecs: {c}"), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))));
+                    }
+                }
+                SdpDisplayMode::Full => {
+                    let bt = String::from_utf8_lossy(&msg.body);
+                    for sl in bt.lines() {
+                        lines.push(Line::from(Span::styled(format!("{ind}  {sl}"), Style::default().fg(Color::DarkGray).add_modifier(Modifier::ITALIC))));
+                    }
+                }
+                SdpDisplayMode::None => {}
+            }
+        }
+
+        if show_rtp {
+            if !msg.is_request && msg.status_code == Some(200) { in_call = true; }
+            if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
+                lines.push(Line::from(Span::styled(
+                    format!("{}\u{2500}\u{2500}\u{2500}\u{2500} RTP stream active \u{2500}\u{2500}\u{2500}\u{2500}", " ".repeat(ts_width + 1)),
+                    Style::default().fg(Color::DarkGray),
+                )));
+                in_call = false;
+            }
+        }
+    }
+
+    lines.push(Line::from(mk_pipe(&ts_prefix)));
+    lines
+}
+
+/// Format SDP codec list from an SDP session for the summary display.
+fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
+    let mut codecs = Vec::new();
+    for media in &session.media {
+        for rm in &media.rtpmap { codecs.push(rm.encoding.clone()); }
+        if media.rtpmap.is_empty() {
+            for f in &media.formats {
+                codecs.push(match f.as_str() { "0" => "PCMU", "8" => "PCMA", "9" => "G722", "18" => "G729", "4" => "G723", "3" => "GSM", "101" => "telephone-event", o => o }.to_string());
+            }
+        }
+    }
+    codecs.join(", ")
 }
 
 // ── Arrow formatting helpers ────────────────────────────────────────
