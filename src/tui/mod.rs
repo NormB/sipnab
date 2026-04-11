@@ -571,15 +571,13 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     // Extended: merge all correlated legs
                     let dialog = store.get(&cid);
                     if let Some(d) = dialog {
-                        let mut all: Vec<&crate::sip::SipMessage> =
-                            d.messages.iter().collect();
+                        let mut all: Vec<&crate::sip::SipMessage> = d.messages.iter().collect();
                         let correlated = store.find_correlated(&cid);
                         for leg in &correlated {
                             all.extend(leg.messages.iter());
                         }
                         all.sort_by_key(|m| m.timestamp);
-                        let owned: Vec<crate::sip::SipMessage> =
-                            all.into_iter().cloned().collect();
+                        let owned: Vec<crate::sip::SipMessage> = all.into_iter().cloned().collect();
                         if owned.is_empty() {
                             None
                         } else {
@@ -971,7 +969,10 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     // Build format selector spans: highlight the active format, dim the others.
     let formats = [SaveFormat::Pcap, SaveFormat::PcapNg, SaveFormat::Txt];
-    let mut fmt_spans: Vec<Span<'_>> = vec![Span::styled("  Format:  ", Style::default().fg(Color::Cyan))];
+    let mut fmt_spans: Vec<Span<'_>> = vec![Span::styled(
+        "  Format:  ",
+        Style::default().fg(Color::Cyan),
+    )];
     for (i, fmt) in formats.iter().enumerate() {
         if i > 0 {
             fmt_spans.push(Span::raw("  "));
@@ -2110,11 +2111,10 @@ fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> String {
     }
 
     // Create writer (DLT_EN10MB = 1)
-    let mut writer =
-        match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng) {
-            Ok(w) => w,
-            Err(e) => return format!("Save failed: {e}"),
-        };
+    let mut writer = match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng) {
+        Ok(w) => w,
+        Err(e) => return format!("Save failed: {e}"),
+    };
 
     let fmt_label = if pcapng { "pcapng" } else { "pcap" };
     let mut count = 0;
@@ -2168,7 +2168,11 @@ fn save_to_txt_path(app: &App, path_str: &str) -> String {
     }
 
     match std::fs::write(&path, &output) {
-        Ok(()) => format!("Saved {} messages (txt) to {}", messages.len(), path.display()),
+        Ok(()) => format!(
+            "Saved {} messages (txt) to {}",
+            messages.len(),
+            path.display()
+        ),
         Err(e) => format!("Save failed: {e}"),
     }
 }

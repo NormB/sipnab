@@ -313,7 +313,11 @@ pub fn prepare_messages(
     for (mi, msg) in messages.iter().enumerate() {
         let timestamp = match ts_mode {
             TimestampMode::Absolute => {
-                format!("{:<width$}", msg.timestamp.format("%H:%M:%S"), width = ts_width)
+                format!(
+                    "{:<width$}",
+                    msg.timestamp.format("%H:%M:%S"),
+                    width = ts_width
+                )
             }
             TimestampMode::Relative => {
                 let d = msg
@@ -518,7 +522,12 @@ pub fn render_call_flow_direct(
 
             // Timestamp
             if !msg.timestamp.is_empty() {
-                buf.set_string(ts_col, y, &msg.timestamp, Style::default().fg(Color::DarkGray));
+                buf.set_string(
+                    ts_col,
+                    y,
+                    &msg.timestamp,
+                    Style::default().fg(Color::DarkGray),
+                );
             }
 
             // Pipes at fixed positions
