@@ -187,8 +187,16 @@ impl SaveFormat {
 /// SIP methods displayed as checkboxes in the filter dialog.
 /// Arranged in two columns matching sngrep's layout.
 const FILTER_METHODS: [&str; 10] = [
-    "REGISTER", "OPTIONS", "INVITE", "PUBLISH", "SUBSCRIBE", "MESSAGE", "NOTIFY", "REFER",
-    "INFO", "UPDATE",
+    "REGISTER",
+    "OPTIONS",
+    "INVITE",
+    "PUBLISH",
+    "SUBSCRIBE",
+    "MESSAGE",
+    "NOTIFY",
+    "REFER",
+    "INFO",
+    "UPDATE",
 ];
 
 /// Number of text input fields in the filter dialog.
@@ -256,8 +264,7 @@ impl FilterDialogState {
 
     /// Whether the currently focused element is a checkbox.
     fn is_checkbox_focused(&self) -> bool {
-        self.focused_field >= FILTER_TEXT_FIELD_COUNT
-            && self.focused_field < FILTER_BUTTON_IDX
+        self.focused_field >= FILTER_TEXT_FIELD_COUNT && self.focused_field < FILTER_BUTTON_IDX
     }
 
     /// Get the checkbox index (0-9) for the currently focused element.
@@ -1377,12 +1384,7 @@ fn render_filter_text_field(
         let filled = value.len().max(cursor + 1).min(inner_width);
         if filled < inner_width {
             let pad = " ".repeat(inner_width - filled);
-            buf.set_string(
-                content_x + filled as u16,
-                y,
-                &pad,
-                Style::default(),
-            );
+            buf.set_string(content_x + filled as u16, y, &pad, Style::default());
         }
     } else {
         // Not focused: just show value dimmed
@@ -1395,12 +1397,7 @@ fn render_filter_text_field(
         // Fill remaining
         if display.len() < inner_width {
             let pad = " ".repeat(inner_width - display.len());
-            buf.set_string(
-                content_x + display.len() as u16,
-                y,
-                &pad,
-                Style::default(),
-            );
+            buf.set_string(content_x + display.len() as u16, y, &pad, Style::default());
         }
     }
 
@@ -1452,7 +1449,13 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
     let iw = inner.width;
 
     // ── Text input fields ──────────────────────────────────────────
-    let labels = ["  SIP From:    ", "  SIP To:      ", "  Source:      ", "  Destination: ", "  Payload:     "];
+    let labels = [
+        "  SIP From:    ",
+        "  SIP To:      ",
+        "  Source:      ",
+        "  Destination: ",
+        "  Payload:     ",
+    ];
     let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
 
     for (i, label) in labels.iter().enumerate() {
@@ -1473,12 +1476,7 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
     // ── Separator line ─────────────────────────────────────────────
     let sep_y = iy + 1 + labels.len() as u16;
     let sep = "\u{2500}".repeat((iw - 4) as usize);
-    buf.set_string(
-        ix + 2,
-        sep_y,
-        &sep,
-        Style::default().fg(Color::DarkGray),
-    );
+    buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(Color::DarkGray));
 
     // ── Method checkboxes (two columns, 5 rows) ───────────────────
     let cb_y = sep_y + 1;
@@ -2479,14 +2477,10 @@ fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.toggle_checkbox();
         }
-        KeyCode::Char(' ')
-            if app.filter_dialog.focused_field == FILTER_BUTTON_IDX =>
-        {
+        KeyCode::Char(' ') if app.filter_dialog.focused_field == FILTER_BUTTON_IDX => {
             apply_filter_dialog(app);
         }
-        KeyCode::Char(' ')
-            if app.filter_dialog.focused_field == CANCEL_BUTTON_IDX =>
-        {
+        KeyCode::Char(' ') if app.filter_dialog.focused_field == CANCEL_BUTTON_IDX => {
             app.active_popup = None;
         }
         // Text editing (only when a text field is focused)
