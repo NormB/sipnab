@@ -182,6 +182,196 @@ impl SaveFormat {
     }
 }
 
+// ── Filter dialog state ────────────────────────────────────────────
+
+/// SIP methods displayed as checkboxes in the filter dialog.
+/// Arranged in two columns matching sngrep's layout.
+const FILTER_METHODS: [&str; 10] = [
+    "REGISTER", "OPTIONS", "INVITE", "PUBLISH", "SUBSCRIBE", "MESSAGE", "NOTIFY", "REFER",
+    "INFO", "UPDATE",
+];
+
+/// Number of text input fields in the filter dialog.
+const FILTER_TEXT_FIELD_COUNT: usize = 5;
+
+/// Total focusable items: 5 text fields + 10 checkboxes + 2 buttons.
+const FILTER_ITEM_COUNT: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 2;
+
+/// Index of the "Filter" button in focused_field.
+const FILTER_BUTTON_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
+/// Index of the "Cancel" button in focused_field.
+const CANCEL_BUTTON_IDX: usize = FILTER_BUTTON_IDX + 1;
+
+/// Structured state for the sngrep-style filter dialog.
+#[derive(Debug, Clone, Default)]
+pub struct FilterDialogState {
+    /// SIP From header filter text.
+    sip_from: String,
+    /// SIP To header filter text.
+    sip_to: String,
+    /// Source IP/port filter text.
+    source: String,
+    /// Destination IP/port filter text.
+    destination: String,
+    /// Payload content filter text.
+    payload: String,
+    /// Method checkbox states, indexed by position in FILTER_METHODS.
+    methods: [bool; 10],
+    /// Currently focused UI element index.
+    /// 0-4 = text fields, 5-14 = checkboxes, 15 = Filter button, 16 = Cancel button.
+    focused_field: usize,
+    /// Cursor position within the currently focused text field.
+    cursor_pos: usize,
+}
+
+impl FilterDialogState {
+    /// Get a reference to the text field at the given index (0-4).
+    fn text_field(&self, idx: usize) -> &str {
+        match idx {
+            0 => &self.sip_from,
+            1 => &self.sip_to,
+            2 => &self.source,
+            3 => &self.destination,
+            4 => &self.payload,
+            _ => "",
+        }
+    }
+
+    /// Get a mutable reference to the text field at the given index (0-4).
+    fn text_field_mut(&mut self, idx: usize) -> Option<&mut String> {
+        match idx {
+            0 => Some(&mut self.sip_from),
+            1 => Some(&mut self.sip_to),
+            2 => Some(&mut self.source),
+            3 => Some(&mut self.destination),
+            4 => Some(&mut self.payload),
+            _ => None,
+        }
+    }
+
+    /// Whether the currently focused element is a text field.
+    fn is_text_field_focused(&self) -> bool {
+        self.focused_field < FILTER_TEXT_FIELD_COUNT
+    }
+
+    /// Whether the currently focused element is a checkbox.
+    fn is_checkbox_focused(&self) -> bool {
+        self.focused_field >= FILTER_TEXT_FIELD_COUNT
+            && self.focused_field < FILTER_BUTTON_IDX
+    }
+
+    /// Get the checkbox index (0-9) for the currently focused element.
+    fn checkbox_index(&self) -> Option<usize> {
+        if self.is_checkbox_focused() {
+            Some(self.focused_field - FILTER_TEXT_FIELD_COUNT)
+        } else {
+            None
+        }
+    }
+
+    /// Move focus to the next element.
+    fn focus_next(&mut self) {
+        if self.focused_field + 1 < FILTER_ITEM_COUNT {
+            self.focused_field += 1;
+        } else {
+            self.focused_field = 0;
+        }
+        self.sync_cursor();
+    }
+
+    /// Move focus to the previous element.
+    fn focus_prev(&mut self) {
+        if self.focused_field > 0 {
+            self.focused_field -= 1;
+        } else {
+            self.focused_field = FILTER_ITEM_COUNT - 1;
+        }
+        self.sync_cursor();
+    }
+
+    /// Sync cursor position to end of the newly focused text field.
+    fn sync_cursor(&mut self) {
+        if self.is_text_field_focused() {
+            let len = self.text_field(self.focused_field).len();
+            self.cursor_pos = len;
+        }
+    }
+
+    /// Toggle the currently focused checkbox.
+    fn toggle_checkbox(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            self.methods[idx] = !self.methods[idx];
+        }
+    }
+
+    /// Build a DSL filter expression from the current dialog state.
+    /// Returns `None` if all fields are empty and no methods are checked.
+    fn build_filter_expression(&self) -> Option<String> {
+        let mut parts: Vec<String> = Vec::new();
+
+        if !self.sip_from.is_empty() {
+            parts.push(format!("from.user =~ '{}'", self.sip_from));
+        }
+        if !self.sip_to.is_empty() {
+            parts.push(format!("to.user =~ '{}'", self.sip_to));
+        }
+        if !self.source.is_empty() {
+            parts.push(format!("src.ip =~ '{}'", self.source));
+        }
+        if !self.destination.is_empty() {
+            parts.push(format!("dst.ip =~ '{}'", self.destination));
+        }
+        // Payload is not in the DSL; skip it for now (placeholder for future)
+
+        // Method filter: if some (but not all or none) methods are checked
+        let checked: Vec<&str> = self
+            .methods
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| **v)
+            .map(|(i, _)| FILTER_METHODS[i])
+            .collect();
+        let total = self.methods.len();
+        if !checked.is_empty() && checked.len() < total {
+            let method_filter = checked
+                .iter()
+                .map(|m| format!("method == '{m}'"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            parts.push(format!("({})", method_filter));
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" AND "))
+        }
+    }
+
+    /// Clear all fields and checkboxes back to defaults.
+    fn clear(&mut self) {
+        self.sip_from.clear();
+        self.sip_to.clear();
+        self.source.clear();
+        self.destination.clear();
+        self.payload.clear();
+        self.methods = [false; 10];
+        self.focused_field = 0;
+        self.cursor_pos = 0;
+    }
+
+    /// Whether all fields are empty and no methods are checked.
+    #[allow(dead_code)]
+    fn is_empty(&self) -> bool {
+        self.sip_from.is_empty()
+            && self.sip_to.is_empty()
+            && self.source.is_empty()
+            && self.destination.is_empty()
+            && self.payload.is_empty()
+            && self.methods.iter().all(|&v| !v)
+    }
+}
+
 // ── View enum ───────────────────────────────────────────────────────
 
 /// Which view is currently displayed in the TUI.
@@ -244,8 +434,8 @@ pub struct App {
     should_quit: bool,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
-    /// Filter input buffer (for filter popup).
-    filter_input: String,
+    /// Structured filter dialog state (preserved between opens).
+    filter_dialog: FilterDialogState,
     /// Active filter expression (applied to the call list).
     active_filter: Option<FilterExpr>,
     /// Human-readable text of the active filter (for the status bar).
@@ -330,7 +520,7 @@ impl App {
             stream_list: StreamListState::new(),
             should_quit: false,
             last_data_update: Instant::now(),
-            filter_input: String::new(),
+            filter_dialog: FilterDialogState::default(),
             active_filter: None,
             active_filter_text: String::new(),
             status_error: None,
@@ -692,7 +882,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 render_save_popup(frame, area, app);
             }
             Popup::FilterDialog => {
-                render_filter_popup(frame, area, &app.filter_input);
+                render_filter_popup(frame, area, &app.filter_dialog);
             }
         }
     }
@@ -846,7 +1036,13 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
         match p {
             Popup::SaveDialog => vec![("Enter", "Save"), ("Tab", "Format"), ("Esc", "Cancel")],
             Popup::FilterDialog => {
-                vec![("Enter", "Apply"), ("Esc", "Cancel"), ("F9", "Clear")]
+                vec![
+                    ("Tab", "Next"),
+                    ("Space", "Toggle"),
+                    ("Enter", "Apply"),
+                    ("Esc", "Cancel"),
+                    ("F9", "Clear"),
+                ]
             }
         }
     } else {
@@ -1106,9 +1302,138 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(para, inner);
 }
 
-/// Render the filter dialog as a centered popup overlay.
-fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, input: &str) {
-    let popup_area = centered_popup(area, 60, 12);
+/// Render a text input field with cursor for the filter dialog.
+///
+/// Paints: `label [content_with_cursor_________________]`
+/// The field content is rendered with a block cursor at `cursor_pos` when focused.
+#[allow(clippy::too_many_arguments)]
+fn render_filter_text_field(
+    buf: &mut ratatui::buffer::Buffer,
+    x: u16,
+    y: u16,
+    label: &str,
+    value: &str,
+    field_width: u16,
+    focused: bool,
+    cursor_pos: usize,
+) {
+    let label_style = Style::default().fg(Color::Cyan);
+    let bracket_style = if focused {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    // Paint label
+    let label_area = Rect::new(x, y, label.len() as u16, 1);
+    buf.set_string(label_area.x, label_area.y, label, label_style);
+
+    // Paint opening bracket
+    let field_x = x + label.len() as u16;
+    buf.set_string(field_x, y, "[", bracket_style);
+
+    // Paint field content with cursor
+    let content_x = field_x + 1;
+    let inner_width = (field_width - 2) as usize; // subtract brackets
+    let cursor = cursor_pos.min(value.len());
+
+    if focused {
+        // Before cursor
+        let before = &value[..cursor.min(inner_width)];
+        buf.set_string(
+            content_x,
+            y,
+            before,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+        // Cursor character (reverse video)
+        let cursor_char = if cursor < value.len() {
+            &value[cursor..cursor + 1]
+        } else {
+            " "
+        };
+        buf.set_string(
+            content_x + cursor as u16,
+            y,
+            cursor_char,
+            Style::default().bg(Color::White).fg(Color::Black),
+        );
+        // After cursor
+        if cursor + 1 < value.len() {
+            let after_end = value.len().min(inner_width);
+            let after = &value[cursor + 1..after_end];
+            buf.set_string(
+                content_x + cursor as u16 + 1,
+                y,
+                after,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        // Fill remaining with spaces
+        let filled = value.len().max(cursor + 1).min(inner_width);
+        if filled < inner_width {
+            let pad = " ".repeat(inner_width - filled);
+            buf.set_string(
+                content_x + filled as u16,
+                y,
+                &pad,
+                Style::default(),
+            );
+        }
+    } else {
+        // Not focused: just show value dimmed
+        let display = if value.len() > inner_width {
+            &value[..inner_width]
+        } else {
+            value
+        };
+        buf.set_string(content_x, y, display, Style::default().fg(Color::White));
+        // Fill remaining
+        if display.len() < inner_width {
+            let pad = " ".repeat(inner_width - display.len());
+            buf.set_string(
+                content_x + display.len() as u16,
+                y,
+                &pad,
+                Style::default(),
+            );
+        }
+    }
+
+    // Closing bracket
+    buf.set_string(field_x + field_width - 1, y, "]", bracket_style);
+}
+
+/// Render the filter dialog as a centered popup overlay (sngrep-style).
+///
+/// Layout:
+/// ```text
+/// +- Filter -----------------------------------------+
+/// |                                                    |
+/// |  SIP From:    [                             ]      |
+/// |  SIP To:      [                             ]      |
+/// |  Source:      [                             ]      |
+/// |  Destination: [                             ]      |
+/// |  Payload:     [                             ]      |
+/// |  ──────────────────────────────────────────────    |
+/// |  REGISTER [*]          OPTIONS  [ ]                |
+/// |  INVITE   [*]          PUBLISH  [ ]                |
+/// |  SUBSCRIBE[ ]          MESSAGE  [ ]                |
+/// |  NOTIFY   [ ]          REFER    [ ]                |
+/// |  INFO     [ ]          UPDATE   [ ]                |
+/// |                                                    |
+/// |     [ Filter ]              [ Cancel ]             |
+/// |                                                    |
+/// +----------------------------------------------------+
+/// ```
+fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDialogState) {
+    let popup_width: u16 = 56;
+    let popup_height: u16 = 19;
+    let popup_area = centered_popup(area, popup_width, popup_height);
 
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
@@ -1121,65 +1446,110 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, input: &str) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let expr_display = if input.is_empty() {
-        Span::styled(
-            "method == 'INVITE'",
-            Style::default()
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::ITALIC),
-        )
-    } else {
-        Span::styled(
-            input.to_string(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
-    };
+    let buf = frame.buffer_mut();
+    let ix = inner.x;
+    let iy = inner.y;
+    let iw = inner.width;
 
-    let lines: Vec<Line<'_>> = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Expression: ", Style::default().fg(Color::Cyan)),
-            expr_display,
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Examples: method == 'INVITE', state == 'Failed'",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(Span::styled(
-            "            from =~ '1001', to =~ 'bob'",
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(""),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(
-                "  [Enter]",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Apply  "),
-            Span::styled(
-                "[Esc]",
+    // ── Text input fields ──────────────────────────────────────────
+    let labels = ["  SIP From:    ", "  SIP To:      ", "  Source:      ", "  Destination: ", "  Payload:     "];
+    let field_width = iw.saturating_sub(labels[0].len() as u16 + 2); // +2 for margin
+
+    for (i, label) in labels.iter().enumerate() {
+        let focused = state.focused_field == i;
+        let cursor = if focused { state.cursor_pos } else { 0 };
+        render_filter_text_field(
+            buf,
+            ix,
+            iy + 1 + i as u16,
+            label,
+            state.text_field(i),
+            field_width,
+            focused,
+            cursor,
+        );
+    }
+
+    // ── Separator line ─────────────────────────────────────────────
+    let sep_y = iy + 1 + labels.len() as u16;
+    let sep = "\u{2500}".repeat((iw - 4) as usize);
+    buf.set_string(
+        ix + 2,
+        sep_y,
+        &sep,
+        Style::default().fg(Color::DarkGray),
+    );
+
+    // ── Method checkboxes (two columns, 5 rows) ───────────────────
+    let cb_y = sep_y + 1;
+    let col1_x = ix + 2;
+    let col2_x = ix + (iw / 2) + 1;
+
+    for row in 0..5u16 {
+        let left_idx = (row * 2) as usize;
+        let right_idx = left_idx + 1;
+
+        // Left column
+        if left_idx < FILTER_METHODS.len() {
+            let method = FILTER_METHODS[left_idx];
+            let checked = state.methods[left_idx];
+            let focused = state.focused_field == FILTER_TEXT_FIELD_COUNT + left_idx;
+            let marker = if checked { "[*]" } else { "[ ]" };
+            let name = format!("{:<10}", method);
+            let style = if focused {
                 Style::default()
                     .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Cancel  "),
-            Span::styled(
-                "[F9]",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Clear"),
-        ]),
-    ];
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            buf.set_string(col1_x, cb_y + row, &name, style);
+            buf.set_string(col1_x + 10, cb_y + row, marker, style);
+        }
 
-    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
-    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
-    frame.render_widget(para, inner);
+        // Right column
+        if right_idx < FILTER_METHODS.len() {
+            let method = FILTER_METHODS[right_idx];
+            let checked = state.methods[right_idx];
+            let focused = state.focused_field == FILTER_TEXT_FIELD_COUNT + right_idx;
+            let marker = if checked { "[*]" } else { "[ ]" };
+            let name = format!("{:<10}", method);
+            let style = if focused {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            buf.set_string(col2_x, cb_y + row, &name, style);
+            buf.set_string(col2_x + 10, cb_y + row, marker, style);
+        }
+    }
+
+    // ── Buttons ────────────────────────────────────────────────────
+    let btn_y = cb_y + 6;
+    let filter_focused = state.focused_field == FILTER_BUTTON_IDX;
+    let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
+
+    let filter_style = if filter_focused {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let cancel_style = if cancel_focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let btn_col1 = ix + 5;
+    let btn_col2 = ix + iw / 2 + 5;
+    buf.set_string(btn_col1, btn_y, "[ Filter ]", filter_style);
+    buf.set_string(btn_col2, btn_y, "[ Cancel ]", cancel_style);
 }
 
 /// Render the statistics summary view with real data from stores.
@@ -1512,15 +1882,10 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.status_error = Some("Extended view not yet implemented".to_string());
         }
         KeyCode::F(7) => {
-            if app.active_filter.is_some() {
-                // F7 again clears the active filter
-                app.active_filter = None;
-                app.active_filter_text.clear();
-                app.status_error = None;
-            } else {
-                app.filter_input.clear();
-                app.active_popup = Some(Popup::FilterDialog);
-            }
+            // Always open the filter dialog (state is preserved)
+            app.filter_dialog.focused_field = 0;
+            app.filter_dialog.sync_cursor();
+            app.active_popup = Some(Popup::FilterDialog);
         }
         KeyCode::F(8) => {
             app.status_error = Some("Settings not yet implemented".to_string());
@@ -1529,6 +1894,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             // F9 Clear Filter
             app.active_filter = None;
             app.active_filter_text.clear();
+            app.filter_dialog.clear();
             app.status_error = None;
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
@@ -1658,14 +2024,9 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::F(1) => app.current_view = View::Help,
         KeyCode::F(7) => {
-            if app.active_filter.is_some() {
-                app.active_filter = None;
-                app.active_filter_text.clear();
-                app.status_error = None;
-            } else {
-                app.filter_input.clear();
-                app.active_popup = Some(Popup::FilterDialog);
-            }
+            app.filter_dialog.focused_field = 0;
+            app.filter_dialog.sync_cursor();
+            app.active_popup = Some(Popup::FilterDialog);
         }
         KeyCode::Esc => app.current_view = View::CallList,
         _ => {}
@@ -1860,18 +2221,14 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 Some("Compare: press Space on first message, then Space on second".to_string());
         }
         KeyCode::F(7) => {
-            if app.active_filter.is_some() {
-                app.active_filter = None;
-                app.active_filter_text.clear();
-                app.status_error = None;
-            } else {
-                app.filter_input.clear();
-                app.active_popup = Some(Popup::FilterDialog);
-            }
+            app.filter_dialog.focused_field = 0;
+            app.filter_dialog.sync_cursor();
+            app.active_popup = Some(Popup::FilterDialog);
         }
         KeyCode::F(9) => {
             app.active_filter = None;
             app.active_filter_text.clear();
+            app.filter_dialog.clear();
             app.status_error = None;
         }
         _ => {}
@@ -2054,47 +2411,128 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
+fn apply_filter_dialog(app: &mut App) {
+    match app.filter_dialog.build_filter_expression() {
+        Some(expr_text) => match FilterExpr::parse(&expr_text) {
+            Ok(expr) => {
+                app.active_filter = Some(expr);
+                app.active_filter_text = expr_text;
+                app.status_error = None;
+            }
+            Err(e) => {
+                app.status_error = Some(format!("Filter error: {e}"));
+            }
+        },
+        None => {
+            // All fields empty — clear any active filter
+            app.active_filter = None;
+            app.active_filter_text.clear();
+            app.status_error = None;
+        }
+    }
+    app.active_popup = None;
+}
+
 /// Handle keys in the filter dialog popup.
 fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
+    let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
     match key.code {
         KeyCode::Esc => {
             // Cancel without applying
             app.active_popup = None;
         }
         KeyCode::Enter => {
-            let input = app.filter_input.trim().to_string();
-            if input.is_empty() {
-                // Empty input clears any active filter
-                app.active_filter = None;
-                app.active_filter_text.clear();
-                app.status_error = None;
+            if app.filter_dialog.focused_field == CANCEL_BUTTON_IDX {
+                // Cancel button
+                app.active_popup = None;
             } else {
-                match FilterExpr::parse(&input) {
-                    Ok(expr) => {
-                        app.active_filter = Some(expr);
-                        app.active_filter_text = input;
-                        app.status_error = None;
-                    }
-                    Err(e) => {
-                        app.status_error = Some(format!("Filter error: {e}"));
-                    }
-                }
+                // Apply filter (from Filter button or any other field)
+                apply_filter_dialog(app);
             }
-            app.active_popup = None;
+        }
+        KeyCode::Tab => {
+            if is_shift {
+                app.filter_dialog.focus_prev();
+            } else {
+                app.filter_dialog.focus_next();
+            }
+        }
+        KeyCode::BackTab => {
+            app.filter_dialog.focus_prev();
+        }
+        KeyCode::Down => {
+            app.filter_dialog.focus_next();
+        }
+        KeyCode::Up => {
+            app.filter_dialog.focus_prev();
         }
         KeyCode::F(9) => {
-            // F9 clears filter and closes popup
+            // F9 clears all fields and the active filter, closes popup
+            app.filter_dialog.clear();
             app.active_filter = None;
             app.active_filter_text.clear();
-            app.filter_input.clear();
             app.status_error = None;
             app.active_popup = None;
         }
-        KeyCode::Backspace => {
-            app.filter_input.pop();
+        KeyCode::Char(' ') if app.filter_dialog.is_checkbox_focused() => {
+            app.filter_dialog.toggle_checkbox();
         }
-        KeyCode::Char(c) => {
-            app.filter_input.push(c);
+        KeyCode::Char(' ')
+            if app.filter_dialog.focused_field == FILTER_BUTTON_IDX =>
+        {
+            apply_filter_dialog(app);
+        }
+        KeyCode::Char(' ')
+            if app.filter_dialog.focused_field == CANCEL_BUTTON_IDX =>
+        {
+            app.active_popup = None;
+        }
+        // Text editing (only when a text field is focused)
+        KeyCode::Backspace if app.filter_dialog.is_text_field_focused() => {
+            let idx = app.filter_dialog.focused_field;
+            let cursor = app.filter_dialog.cursor_pos;
+            if cursor > 0
+                && let Some(field) = app.filter_dialog.text_field_mut(idx)
+            {
+                field.remove(cursor - 1);
+                app.filter_dialog.cursor_pos -= 1;
+            }
+        }
+        KeyCode::Delete if app.filter_dialog.is_text_field_focused() => {
+            let idx = app.filter_dialog.focused_field;
+            let cursor = app.filter_dialog.cursor_pos;
+            if let Some(field) = app.filter_dialog.text_field_mut(idx)
+                && cursor < field.len()
+            {
+                field.remove(cursor);
+            }
+        }
+        KeyCode::Left if app.filter_dialog.is_text_field_focused() => {
+            app.filter_dialog.cursor_pos = app.filter_dialog.cursor_pos.saturating_sub(1);
+        }
+        KeyCode::Right if app.filter_dialog.is_text_field_focused() => {
+            let idx = app.filter_dialog.focused_field;
+            let len = app.filter_dialog.text_field(idx).len();
+            if app.filter_dialog.cursor_pos < len {
+                app.filter_dialog.cursor_pos += 1;
+            }
+        }
+        KeyCode::Home if app.filter_dialog.is_text_field_focused() => {
+            app.filter_dialog.cursor_pos = 0;
+        }
+        KeyCode::End if app.filter_dialog.is_text_field_focused() => {
+            let idx = app.filter_dialog.focused_field;
+            app.filter_dialog.cursor_pos = app.filter_dialog.text_field(idx).len();
+        }
+        KeyCode::Char(c) if app.filter_dialog.is_text_field_focused() => {
+            let idx = app.filter_dialog.focused_field;
+            let cursor = app.filter_dialog.cursor_pos;
+            if let Some(field) = app.filter_dialog.text_field_mut(idx) {
+                field.insert(cursor, c);
+                app.filter_dialog.cursor_pos += 1;
+            }
         }
         _ => {}
     }
@@ -2339,6 +2777,16 @@ impl App {
     /// Count dialogs visible after applying the active filter.
     pub fn visible_dialog_count(&self) -> usize {
         filtered_dialog_count(self)
+    }
+
+    /// Return a reference to the filter dialog state (for tests).
+    pub fn filter_dialog_state(&self) -> &FilterDialogState {
+        &self.filter_dialog
+    }
+
+    /// Return a mutable reference to the filter dialog state (for tests).
+    pub fn filter_dialog_state_mut(&mut self) -> &mut FilterDialogState {
+        &mut self.filter_dialog
     }
 
     /// Override the save dialog path (for deterministic snapshot tests).

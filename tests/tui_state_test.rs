@@ -212,31 +212,31 @@ mod tui_state {
         let mut app = app_with_three_dialogs();
         assert_eq!(app.visible_dialog_count(), 3);
 
-        // Open filter, type "state == 'Failed'", apply
+        // Open filter, type "1003" into SIP From field, apply
         app.handle_key(KeyCode::F(7));
-        for c in "state == 'Failed'".chars() {
+        for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
 
         assert_eq!(*app.current_view(), View::CallList);
-        assert_eq!(app.visible_dialog_count(), 1); // only the Failed dialog
+        assert_eq!(app.visible_dialog_count(), 1); // only dialog with From=1003
     }
 
     #[test]
-    fn f7_again_clears_filter() {
+    fn f9_clears_filter() {
         let mut app = app_with_three_dialogs();
 
         // Apply filter
         app.handle_key(KeyCode::F(7));
-        for c in "state == 'Failed'".chars() {
+        for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 1);
 
-        // F7 again clears
-        app.handle_key(KeyCode::F(7));
+        // F9 clears
+        app.handle_key(KeyCode::F(9));
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
@@ -304,17 +304,17 @@ mod tui_state {
     }
 
     #[test]
-    fn invalid_filter_shows_error_returns_to_call_list() {
+    fn invalid_regex_filter_shows_error_returns_to_call_list() {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(7)); // open filter
-        // Type an invalid expression
-        for c in "invalid garbage!!".chars() {
+        // Type an invalid regex pattern into SIP From field
+        for c in "[invalid".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
         // Should return to call list
         assert_eq!(*app.current_view(), View::CallList);
-        // No filter applied (expression was invalid)
+        // No filter applied (regex was invalid)
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
@@ -322,23 +322,22 @@ mod tui_state {
     fn empty_filter_clears_active_filter() {
         let mut app = app_with_three_dialogs();
 
-        // Apply a valid filter
+        // Apply a valid filter via SIP From field
         app.handle_key(KeyCode::F(7));
-        for c in "state == 'Failed'".chars() {
+        for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 1);
 
-        // F7 clears active filter (since one is set)
-        app.handle_key(KeyCode::F(7));
-        assert_eq!(*app.current_view(), View::CallList); // stays in call list
+        // F9 clears the filter and dialog state
+        app.handle_key(KeyCode::F(9));
         assert_eq!(app.visible_dialog_count(), 3); // filter cleared
 
-        // Now F7 opens filter popup since no filter is active
+        // F7 opens filter popup (state was cleared)
         app.handle_key(KeyCode::F(7));
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
-        // Submit empty string to clear (no-op since already cleared)
+        // Submit empty fields to clear (no-op since already cleared)
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 3);
     }
@@ -506,20 +505,20 @@ mod tui_state {
         let mut app = app_with_three_dialogs();
         assert_eq!(app.visible_dialog_count(), 3);
 
-        // Apply filter: keep only Failed
+        // Apply filter via SIP From field: match only dialog with From=1003
         app.handle_key(KeyCode::F(7));
-        for c in "state == 'Failed'".chars() {
+        for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 1);
 
-        // i: clear non-matching (keep only Failed)
+        // i: clear non-matching (keep only the matching dialog)
         app.handle_key(KeyCode::Char('i'));
 
         // Now clear filter to see all remaining
-        app.handle_key(KeyCode::F(7)); // clears active filter
-        // Only the Failed dialog should remain
+        app.handle_key(KeyCode::F(9)); // F9 clears filter
+        // Only the matching dialog should remain
         assert_eq!(app.visible_dialog_count(), 1);
     }
 
@@ -528,19 +527,19 @@ mod tui_state {
         let mut app = app_with_three_dialogs();
         assert_eq!(app.visible_dialog_count(), 3);
 
-        // Apply filter: match Failed
+        // Apply filter via SIP From field: match dialog with From=1003
         app.handle_key(KeyCode::F(7));
-        for c in "state == 'Failed'".chars() {
+        for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 1);
 
-        // I: clear matching (remove Failed, keep the rest)
+        // I: clear matching (remove the matched dialog, keep the rest)
         app.handle_key(KeyCode::Char('I'));
 
         // Clear filter to see all remaining
-        app.handle_key(KeyCode::F(7));
+        app.handle_key(KeyCode::F(9)); // F9 clears filter
         assert_eq!(app.visible_dialog_count(), 2);
     }
 

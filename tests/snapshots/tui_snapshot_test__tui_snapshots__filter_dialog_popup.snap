@@ -4,25 +4,25 @@ expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
- Display Filter:
-# ▲  Method   From To   Source      Destination State      Msgs Date     PDD
+ Display Fil┌ Filter ──────────────────────────────────────────────┐
+# ▲  Method │                                                      │     PDD
+            │  SIP From:    [                                   ]  │
+  No SIP dia│  SIP To:      [                                   ]  │
+            │  Source:      [                                   ]  │
+  If reading│  Destination: [                                   ]  │
+  Press 'q' │  Payload:     [                                   ]  │
+            │  ──────────────────────────────────────────────────  │
+            │  REGISTER  [ ]             OPTIONS   [ ]             │
+            │  INVITE    [ ]             PUBLISH   [ ]             │
+            │  SUBSCRIBE [ ]             MESSAGE   [ ]             │
+            │  NOTIFY    [ ]             REFER     [ ]             │
+            │  INFO      [ ]             UPDATE    [ ]             │
+            │                                                      │
+            │     [ Filter ]                 [ Cancel ]            │
+            │                                                      │
+            │                                                      │
+            │                                                      │
+            └──────────────────────────────────────────────────────┘
 
-  No SIP dialogs found.
-          ┌ Filter ──────────────────────────────────────────────────┐
-  If readi│                                                          │
-  Press 'q│  Expression: method == 'INVITE'                          │
-          │                                                          │
-          │  Examples: method == 'INVITE', state == 'Failed'         │
-          │            from =~ '1001', to =~ 'bob'                   │
-          │                                                          │
-          │                                                          │
-          │  [Enter] Apply  [Esc] Cancel  [F9] Clear                 │
-          │                                                          │
-          │                                                          │
-          └──────────────────────────────────────────────────────────┘
 
-
-
-
-
-Enter Apply  Esc Cancel  F9 Clear
+Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear

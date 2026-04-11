@@ -349,10 +349,10 @@ mod tui_snapshots {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
 
-        // Open filter dialog, type a filter, and apply it
+        // Open filter dialog, type From filter "1003", and apply it
         app.handle_key(crossterm::event::KeyCode::F(7)); // open filter
-        // Type "state == 'Failed'"
-        for c in "state == 'Failed'".chars() {
+        // Type "1003" into the SIP From field (focused by default)
+        for c in "1003".chars() {
             app.handle_key(crossterm::event::KeyCode::Char(c));
         }
         app.handle_key(crossterm::event::KeyCode::Enter); // apply filter
