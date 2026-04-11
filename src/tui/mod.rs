@@ -292,9 +292,14 @@ pub struct App {
     /// Color mode for arrows (Method / CallId / CSeq).
     color_mode: ColorMode,
     /// Whether the raw preview split is active in call flow view.
+    /// Default is `true` (matching sngrep: split view on by default).
     raw_preview: bool,
-    /// Split percentage for the raw preview pane (10..=80, default 33).
+    /// Split percentage for the raw preview (right) pane (10..=80, default 40).
     raw_preview_pct: u16,
+    /// Index of the currently selected message in the call flow ladder.
+    selected_msg_index: usize,
+    /// Scroll offset for the detail (right) panel in split view.
+    detail_scroll: u16,
     /// Whether extended (multi-leg) flow is active.
     extended_flow: bool,
     /// Whether RTP stream info is displayed in the call flow.
@@ -347,8 +352,10 @@ impl App {
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
-            raw_preview: false,
-            raw_preview_pct: 33,
+            raw_preview: true,
+            raw_preview_pct: 40,
+            selected_msg_index: 0,
+            detail_scroll: 0,
             extended_flow: false,
             show_rtp_in_flow: false,
             diff_selected_msg: None,
@@ -549,18 +556,17 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             if let Some(store) = app.dialog_store.try_read() {
                 let cid = call_id.clone();
                 let scroll = app.call_flow_scroll;
+                let sel = app.selected_msg_index;
 
-                // Split area when raw preview is active
-                let (ladder_area, raw_area) = if app.raw_preview {
+                // Horizontal split: ladder on left, raw detail on right (sngrep style)
+                let (ladder_area, detail_area) = if app.raw_preview {
                     let pct = app.raw_preview_pct;
-                    let raw_height = (main_area.height as u32 * pct as u32 / 100) as u16;
-                    let ladder_height = main_area.height.saturating_sub(raw_height);
-                    let chunks = Layout::vertical([
-                        Constraint::Length(ladder_height),
-                        Constraint::Length(raw_height),
+                    let [left, right] = Layout::horizontal([
+                        Constraint::Percentage(100 - pct),
+                        Constraint::Percentage(pct),
                     ])
-                    .areas::<2>(main_area);
-                    (chunks[0], Some(chunks[1]))
+                    .areas(main_area);
+                    (left, Some(right))
                 } else {
                     (main_area, None)
                 };
@@ -590,7 +596,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 app.timestamp_mode,
                                 app.color_mode,
                                 false,
-                                None,
+                                Some(sel),
                             );
                             Some((l, r, msgs))
                         }
@@ -613,7 +619,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 app.timestamp_mode,
                                 app.color_mode,
                                 app.show_rtp_in_flow,
-                                app.diff_selected_msg,
+                                Some(sel),
                             );
                             Some((l, r, msgs))
                         }
@@ -622,7 +628,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     }
                 };
 
-                // Render using direct buffer painting
+                // Render ladder using direct buffer painting
                 call_flow::render_call_flow_direct_or_empty(
                     frame,
                     ladder_area,
@@ -630,12 +636,15 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     scroll,
                 );
 
-                // Render raw preview pane if active
-                if let Some(raw_area) = raw_area {
-                    msg_raw::render_raw_message(
-                        frame, raw_area, &store, &cid,
-                        scroll, // show raw of the message at current scroll position
-                        0, "",
+                // Render message detail panel (right side) if split is active
+                if let Some(detail_area) = detail_area {
+                    call_flow::render_message_detail(
+                        frame,
+                        detail_area,
+                        &store,
+                        &cid,
+                        sel,
+                        app.detail_scroll,
                     );
                 }
             }
@@ -877,29 +886,31 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
             }
             View::CallFlow(_) => {
                 if width < 80 {
-                    vec![("Esc", "Back"), ("Enter", "Raw"), ("Space", "Diff")]
+                    vec![("Esc", "Back"), ("\u{2191}\u{2193}", "Nav"), ("Enter", "Raw")]
                 } else if width < 120 {
                     vec![
                         ("Esc", "Back"),
+                        ("\u{2191}\u{2193}", "Nav"),
                         ("Enter", "Raw"),
                         ("Space", "Diff"),
                         ("d", "SDP"),
                         ("t", "Time"),
                         ("c", "Color"),
-                        ("F4", "Extend"),
+                        ("R", "Split"),
                     ]
                 } else {
                     vec![
                         ("Esc", "Back"),
+                        ("\u{2191}\u{2193}", "Nav"),
                         ("Enter", "Raw"),
                         ("Space", "Diff"),
                         ("d", "SDP"),
                         ("t", "Time"),
                         ("c", "Color"),
-                        ("R", "RawSplit"),
+                        ("R", "Split"),
+                        ("9/0", "Resize"),
                         ("F4", "Extend"),
                         ("F6", "RTP"),
-                        ("F7", "Filter"),
                     ]
                 }
             }
@@ -1421,6 +1432,8 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             // Open call flow for selected dialog
             if let Some(call_id) = get_selected_call_id(app) {
                 app.call_flow_scroll = 0;
+                app.selected_msg_index = 0;
+                app.detail_scroll = 0;
                 app.current_view = View::CallFlow(call_id);
             }
         }
@@ -1657,77 +1670,105 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
 
 /// Handle keys in the call flow view.
 fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
+    // Helper: get message count for the current dialog
+    let msg_count = if let View::CallFlow(ref call_id) = app.current_view {
+        app.dialog_store
+            .try_read()
+            .and_then(|s| s.get(call_id).map(|d| d.messages.len()))
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    // Clamp selected_msg_index to valid range
+    if msg_count > 0 && app.selected_msg_index >= msg_count {
+        app.selected_msg_index = msg_count - 1;
+    }
+
     match key.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
-            app.call_flow_scroll = app.call_flow_scroll.saturating_sub(1);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            app.call_flow_scroll = app.call_flow_scroll.saturating_add(1);
-        }
-        KeyCode::PageUp => {
-            app.call_flow_scroll = app.call_flow_scroll.saturating_sub(20);
-        }
-        KeyCode::PageDown => {
-            app.call_flow_scroll = app.call_flow_scroll.saturating_add(20);
-        }
-        KeyCode::Home => app.call_flow_scroll = 0,
-        KeyCode::End => {
-            // Jump to last message
-            if let View::CallFlow(ref call_id) = app.current_view {
-                let store = app.dialog_store.read();
-                if let Some(dialog) = store.get(call_id) {
-                    app.call_flow_scroll = dialog.messages.len().saturating_sub(1);
-                }
+            if app.selected_msg_index > 0 {
+                app.selected_msg_index -= 1;
+                app.detail_scroll = 0;
+            }
+            // Auto-scroll ladder to keep selection visible
+            if app.selected_msg_index < app.call_flow_scroll {
+                app.call_flow_scroll = app.selected_msg_index;
             }
         }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if msg_count > 0 && app.selected_msg_index < msg_count - 1 {
+                app.selected_msg_index += 1;
+                app.detail_scroll = 0;
+            }
+            // Auto-scroll ladder to keep selection visible
+            // (each message takes ~1 row in the ladder, header takes 2 rows)
+            let visible_rows = app.call_flow_scroll + 20; // approximate
+            if app.selected_msg_index >= visible_rows {
+                app.call_flow_scroll = app.selected_msg_index.saturating_sub(10);
+            }
+        }
+        KeyCode::PageUp => {
+            app.selected_msg_index = app.selected_msg_index.saturating_sub(20);
+            app.call_flow_scroll = app.call_flow_scroll.saturating_sub(20);
+            app.detail_scroll = 0;
+        }
+        KeyCode::PageDown => {
+            let max = if msg_count > 0 { msg_count - 1 } else { 0 };
+            app.selected_msg_index = (app.selected_msg_index + 20).min(max);
+            app.call_flow_scroll += 20;
+            app.detail_scroll = 0;
+        }
+        KeyCode::Home => {
+            app.selected_msg_index = 0;
+            app.call_flow_scroll = 0;
+            app.detail_scroll = 0;
+        }
+        KeyCode::End => {
+            if msg_count > 0 {
+                app.selected_msg_index = msg_count - 1;
+                app.call_flow_scroll = msg_count.saturating_sub(1);
+            }
+            app.detail_scroll = 0;
+        }
         KeyCode::Enter => {
-            // Open raw message for the line at scroll offset
-            if let View::CallFlow(ref call_id) = app.current_view {
-                let store = app.dialog_store.read();
-                if let Some(dialog) = store.get(call_id) {
-                    let msg_count = dialog.messages.len();
-                    if app.call_flow_scroll < msg_count {
-                        let cid = call_id.clone();
-                        drop(store);
-                        app.raw_msg_scroll = 0;
-                        app.current_view = View::RawMessage {
-                            call_id: cid,
-                            message_index: app.call_flow_scroll,
-                        };
-                    }
-                }
+            // Open full-screen raw message view for the selected message
+            if let View::CallFlow(ref call_id) = app.current_view
+                && app.selected_msg_index < msg_count
+            {
+                let cid = call_id.clone();
+                app.raw_msg_scroll = 0;
+                app.current_view = View::RawMessage {
+                    call_id: cid,
+                    message_index: app.selected_msg_index,
+                };
             }
         }
         KeyCode::Char(' ') => {
             // Select message for diff comparison
-            if let View::CallFlow(ref call_id) = app.current_view {
-                let store = app.dialog_store.read();
-                if let Some(dialog) = store.get(call_id) {
-                    let msg_count = dialog.messages.len();
-                    if app.call_flow_scroll < msg_count {
-                        if let Some(first) = app.diff_selected_msg {
-                            if first != app.call_flow_scroll {
-                                // Second selection — open diff view
-                                let cid = call_id.clone();
-                                let msg2 = app.call_flow_scroll;
-                                app.diff_selected_msg = None;
-                                drop(store);
-                                app.current_view = View::MessageDiff {
-                                    call_id: cid,
-                                    msg1_idx: first,
-                                    msg2_idx: msg2,
-                                };
-                            }
-                        } else {
-                            // First selection
-                            app.diff_selected_msg = Some(app.call_flow_scroll);
-                            app.status_error = Some(format!(
-                                "Selected: message {} (press Space on another to diff)",
-                                app.call_flow_scroll + 1
-                            ));
-                        }
+            if let View::CallFlow(ref call_id) = app.current_view
+                && app.selected_msg_index < msg_count
+            {
+                if let Some(first) = app.diff_selected_msg {
+                    if first != app.selected_msg_index {
+                        // Second selection — open diff view
+                        let cid = call_id.clone();
+                        let msg2 = app.selected_msg_index;
+                        app.diff_selected_msg = None;
+                        app.current_view = View::MessageDiff {
+                            call_id: cid,
+                            msg1_idx: first,
+                            msg2_idx: msg2,
+                        };
                     }
+                } else {
+                    // First selection
+                    app.diff_selected_msg = Some(app.selected_msg_index);
+                    app.status_error = Some(format!(
+                        "Selected: message {} (press Space on another to diff)",
+                        app.selected_msg_index + 1
+                    ));
                 }
             }
         }
@@ -1758,19 +1799,27 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 "Raw preview: OFF".to_string()
             });
         }
-        KeyCode::Char('+') | KeyCode::Char('=') => {
-            // Increase raw preview size
+        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') => {
+            // Increase detail panel size (make right panel wider)
             if app.raw_preview && app.raw_preview_pct < 80 {
                 app.raw_preview_pct = (app.raw_preview_pct + 5).min(80);
-                app.status_error = Some(format!("Raw preview: {}%", app.raw_preview_pct));
+                app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
             }
         }
-        KeyCode::Char('-') => {
-            // Decrease raw preview size
+        KeyCode::Char('-') | KeyCode::Char('9') => {
+            // Decrease detail panel size (make left panel wider)
             if app.raw_preview && app.raw_preview_pct > 10 {
                 app.raw_preview_pct = app.raw_preview_pct.saturating_sub(5).max(10);
-                app.status_error = Some(format!("Raw preview: {}%", app.raw_preview_pct));
+                app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
             }
+        }
+        KeyCode::Char('[') => {
+            // Scroll detail panel up
+            app.detail_scroll = app.detail_scroll.saturating_sub(1);
+        }
+        KeyCode::Char(']') => {
+            // Scroll detail panel down
+            app.detail_scroll = app.detail_scroll.saturating_add(1);
         }
         KeyCode::F(4) | KeyCode::Char('x') => {
             // Toggle extended (multi-leg) flow
