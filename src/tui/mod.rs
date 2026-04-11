@@ -886,7 +886,11 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
             }
             View::CallFlow(_) => {
                 if width < 80 {
-                    vec![("Esc", "Back"), ("\u{2191}\u{2193}", "Nav"), ("Enter", "Raw")]
+                    vec![
+                        ("Esc", "Back"),
+                        ("\u{2191}\u{2193}", "Nav"),
+                        ("Enter", "Raw"),
+                    ]
                 } else if width < 120 {
                     vec![
                         ("Esc", "Back"),
