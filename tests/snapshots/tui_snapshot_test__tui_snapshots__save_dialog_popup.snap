@@ -8,18 +8,18 @@ expression: output
   # ▲  Method  From To   Source      Destination State      Msgs Date     PDD
 >  1   INVITE  1001 1002 10.0.0.1    10.0.0.2    Completed  4    12:00:00 1000ms
    2   INVITE  1003 1004 10.0.0.1    10.0.0.2    FAILED     2    12:00:05
-   3   INV┌ Save Capture ────────────────────────────────────────────┐:10
-          │                                                          │
-          │  Save to: /tmp/sipnab_20240615_120000.pcap               │
-          │  Format:  [PCAP]  PCAP-NG  TXT      (Tab)                │
-          │                                                          │
-          │  Dialogs: 3 (0 selected)                                 │
-          │  Messages: 8                                             │
-          │                                                          │
-          │  [Enter] Save  [Tab] Format  [Esc] Cancel                │
-          │                                                          │
-          │                                                          │
-          └──────────────────────────────────────────────────────────┘
+   3 ┌ Save Capture ──────────────────────────────────────────────────────┐
+     │                                                                    │
+     │  Save to: /tmp/sipnab_20240615_120000.pcap                         │
+     │  Format:  [PCAP]  PCAP-NG  TXT      (Tab)                          │
+     │                                                                    │
+     │  Dialogs: 3 (0 selected)                                           │
+     │  Messages: 8                                                       │
+     │                                                                    │
+     │  [Enter] Save  [Tab] Format  [Esc] Cancel                          │
+     │                                                                    │
+     │                                                                    │
+     └────────────────────────────────────────────────────────────────────┘
 
 
 
