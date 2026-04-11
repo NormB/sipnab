@@ -100,6 +100,56 @@ Skip loading any configuration file.
 .TP
 .B \-D, \-\-dump\-config
 Print the effective configuration and exit.
+.SH TUI KEYBINDINGS
+The interactive TUI supports sngrep-compatible navigation:
+.SS Call List
+.TP
+.B j/k, \(ua/\(da
+Navigate dialogs.
+.TP
+.B Enter
+Open call flow for the selected dialog.
+.TP
+.B Space
+Select/deselect dialog for batch operations.
+.TP
+.B Tab
+Switch between Call List and RTP Streams.
+.TP
+.B </>/Z
+Change sort column / reverse sort.
+.TP
+.B /
+Search dialogs.
+.TP
+.B F7
+Open filter dialog.
+.TP
+.B F9
+Clear active filter.
+.SS Call Flow
+.TP
+.B t
+Cycle timestamp mode: absolute (HH:MM:SS.mmm), delta from previous
+message (+N.NNNs, color-coded), delta from first message.
+.TP
+.B d
+Cycle SDP display: none, summary (codecs), full body.
+.TP
+.B c
+Cycle color mode: by method, by Call-ID, by CSeq.
+.TP
+.B R
+Toggle detail panel (raw SIP message split view).
+.TP
+.B 9/0, +/\-
+Resize ladder/detail panel split (10%-80% range).
+.TP
+.B F4/x
+Toggle extended multi-leg call flow.
+.TP
+.B Space
+Select messages for side-by-side diff comparison.
 .SH ENVIRONMENT
 .TP
 .B SIPNAB_LOG

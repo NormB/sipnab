@@ -11,72 +11,63 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 /// The full help text as a constant for testing.
 pub const HELP_TEXT: &str = "\
-sipnab v0.1.0-alpha \u{2014} Keyboard Shortcuts
+sipnab \u{2014} Keyboard Shortcuts
 
-Navigation:
-  \u{2191}/\u{2193} or j/k     Scroll list / view
-  Enter           Open selected item
-  Esc             Go back to previous view
-  Tab             Switch between Call List / Stream List
-  Home / End      Jump to first / last item
-  PgUp / PgDn     Scroll by page
-  q               Quit sipnab
-  Ctrl-C          Force quit
+CALL LIST:
+  \u{2191}/\u{2193}, j/k       Navigate dialogs
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to first/last
+  Enter            Open call flow
+  Space            Select/deselect dialog
+  Esc, q           Quit
+  < / >            Change sort column
+  Z                Reverse sort direction
+  A                Toggle autoscroll
+  p                Pause/resume capture
+  /                Search
+  i                Clear non-matching dialogs
+  I                Clear matching dialogs
+  F1               This help
+  F2               Save capture (PCAP/PCAP-NG/TXT)
+  F3               Search (same as /)
+  F5               Clear calls
+  F6               Show raw SIP message
+  F7               Filter dialog
+  F9               Clear active filter
+  F10              Column selector
+  Tab              Switch to RTP Streams
 
-Function Keys:
-  F1              Help (this screen)
-  F2              Save selected dialog (or all) to pcap
-  F3              Search (same as /)
-  F4 / x          Extended call flow (multi-leg toggle)
-  F5              Compare mode (Space to select messages)
-  F6              Toggle RTP display in flow
-  F7              Open filter dialog / clear filter
-  F8              Settings
-  F9              Clear active filter
-  F10             Column selection
+CALL FLOW:
+  \u{2191}/\u{2193}             Navigate messages (detail panel updates)
+  PgUp/PgDn       Page through messages
+  Home/End         First/last message
+  Enter            Full-screen raw message
+  Space            Select message for diff (press twice to compare)
+  Esc              Back to call list
+  d                Cycle SDP display (none / summary / full)
+  t                Cycle timestamps (absolute / delta-prev / delta-first)
+  c                Cycle colors (method / call-id / cseq)
+  R                Toggle detail panel
+  9/0, +/-         Resize ladder/detail split
+  [ / ]            Scroll detail panel
+  F2               Save
+  F4, x            Extended multi-leg flow
+  F6               Toggle RTP display
 
-Views:
-  s               Statistics view
-  /               Search within current view
+RAW MESSAGE:
+  \u{2191}/\u{2193}             Scroll
+  PgUp/PgDn       Page scroll
+  /                Search in message
+  s                Toggle syntax highlighting
+  c                Cycle colors
+  Esc              Back to call flow
 
-Call List:
-  Space           Toggle multi-select on current row
-  Enter           Open Call Flow for selected dialog
-  F5 / Ctrl-L     Clear all (or selected) dialogs
-  F6 / r          Show raw SIP for selected dialog
-  F10 / t         Column selector popup
-  < / >           Change sort column
-  Z               Reverse sort direction
-  A               Toggle autoscroll
-  p               Pause/resume capture processing
-  i               Clear non-matching (keep filtered)
-  I               Clear matching (keep non-matching)
-
-Call Flow:
-  \u{2191}/\u{2193}             Scroll through messages
-  Enter           View raw SIP message at current position
-  Home / End      Jump to first / last message
-  Space           Select message for diff (press twice to compare)
-  d               Cycle SDP display (none / summary / full)
-  t               Cycle timestamp (absolute / relative / hidden)
-  c               Cycle color mode (method / call-id / cseq)
-  R               Toggle raw preview split
-  +/-             Resize raw preview pane
-  F4 / x          Toggle extended multi-leg flow
-  F6              Toggle RTP display in flow
-  Esc             Return to Call List
-
-Raw Message:
-  \u{2191}/\u{2193}             Scroll message text
-  PgUp / PgDn     Page scroll
-  /               Search within message (highlights matches)
-  s               Toggle syntax highlighting
-  c               Cycle color mode
-  Esc             Return to Call Flow
-
-Stream List:
-  Tab             Switch back to Call List
-  Esc             Return to Call List
+RTP STREAMS (Tab):
+  \u{2191}/\u{2193}             Navigate streams
+  Tab              Switch to Call List
+  F1               Help
+  F7               Filter
+  Esc              Back to Call List
 
 Press Esc or F1 to close this help.";
 
@@ -177,8 +168,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn help_text_contains_navigation() {
-        assert!(HELP_TEXT.contains("Navigation:"));
+    fn help_text_contains_call_list() {
+        assert!(HELP_TEXT.contains("CALL LIST:"));
     }
 
     #[test]
@@ -187,23 +178,18 @@ mod tests {
     }
 
     #[test]
-    fn help_text_contains_call_list() {
-        assert!(HELP_TEXT.contains("Call List:"));
-    }
-
-    #[test]
     fn help_text_contains_call_flow() {
-        assert!(HELP_TEXT.contains("Call Flow:"));
+        assert!(HELP_TEXT.contains("CALL FLOW:"));
     }
 
     #[test]
     fn help_text_contains_raw_message() {
-        assert!(HELP_TEXT.contains("Raw Message:"));
+        assert!(HELP_TEXT.contains("RAW MESSAGE:"));
     }
 
     #[test]
-    fn help_text_contains_stream_list() {
-        assert!(HELP_TEXT.contains("Stream List:"));
+    fn help_text_contains_rtp_streams() {
+        assert!(HELP_TEXT.contains("RTP STREAMS"));
     }
 
     #[test]

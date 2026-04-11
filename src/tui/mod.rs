@@ -84,29 +84,29 @@ impl SdpDisplayMode {
 /// Timestamp display mode for the call flow ladder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimestampMode {
-    /// Absolute HH:MM:SS.
+    /// Absolute `HH:MM:SS.mmm`.
     #[default]
     Absolute,
-    /// Relative delta from the first message (+0.000s, +1.234s, ...).
-    Relative,
-    /// Hidden — no timestamp column.
-    Hidden,
+    /// Delta from the previous message (`+N.NNNs`).
+    DeltaPrev,
+    /// Delta from the first message (`+N.NNNs`).
+    DeltaFirst,
 }
 
 impl TimestampMode {
     fn next(self) -> Self {
         match self {
-            Self::Absolute => Self::Relative,
-            Self::Relative => Self::Hidden,
-            Self::Hidden => Self::Absolute,
+            Self::Absolute => Self::DeltaPrev,
+            Self::DeltaPrev => Self::DeltaFirst,
+            Self::DeltaFirst => Self::Absolute,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::Absolute => "Time: Absolute",
-            Self::Relative => "Time: Relative",
-            Self::Hidden => "Time: Hidden",
+            Self::DeltaPrev => "Time: Delta-prev",
+            Self::DeltaFirst => "Time: Delta-first",
         }
     }
 }
@@ -484,7 +484,7 @@ pub struct App {
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
     sdp_display_mode: SdpDisplayMode,
-    /// Timestamp display mode (Absolute / Relative / Hidden).
+    /// Timestamp display mode (Absolute / Delta-prev / Delta-first).
     timestamp_mode: TimestampMode,
     /// Color mode for arrows (Method / CallId / CSeq).
     color_mode: ColorMode,
