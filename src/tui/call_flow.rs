@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::sip::SipMessage;
 use crate::sip::dialog_store::DialogStore;
@@ -520,8 +520,14 @@ pub fn render_call_flow_direct(
         if logical_row >= scroll_offset && row < max_row {
             let y = area.y + row as u16;
 
-            // Timestamp
-            if !msg.timestamp.is_empty() {
+            // Timestamp / selection indicator
+            if msg.selected {
+                // Show `>>>` marker instead of timestamp for the selected row
+                let marker_style = Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                buf.set_string(ts_col, y, ">>>", marker_style);
+            } else if !msg.timestamp.is_empty() {
                 buf.set_string(
                     ts_col,
                     y,
@@ -534,32 +540,22 @@ pub fn render_call_flow_direct(
             buf.set_string(left_pipe, y, "|", pipe_style);
             buf.set_string(right_pipe, y, "|", pipe_style);
 
-            // Arrow between pipes
+            // Arrow between pipes — use reverse video when selected
             let arrow = if msg.is_left_to_right {
                 format_arrow_right(&msg.label, arrow_width.saturating_sub(1))
             } else {
                 format_arrow_left(&msg.label, arrow_width.saturating_sub(1))
             };
-            buf.set_string(arrow_start, y, &arrow, msg.style);
+            let arrow_style = if msg.selected {
+                msg.style.add_modifier(Modifier::REVERSED)
+            } else {
+                msg.style
+            };
+            buf.set_string(arrow_start, y, &arrow, arrow_style);
 
             // PDD annotation after right pipe
             if let Some(ref pdd) = msg.pdd_note {
                 buf.set_string(right_pipe + 1, y, pdd, Style::default().fg(Color::Magenta));
-            }
-
-            // Selected marker
-            if msg.selected {
-                let marker_x = right_pipe + 1 + msg.pdd_note.as_ref().map_or(0, |s| s.len() as u16);
-                if marker_x + 12 <= area.x + width {
-                    buf.set_string(
-                        marker_x,
-                        y,
-                        "  [SELECTED]",
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    );
-                }
             }
 
             row += 1;
@@ -616,6 +612,129 @@ pub fn render_call_flow_direct_or_empty(
             );
         }
     }
+}
+
+/// Render the message detail panel (right side of the split view).
+///
+/// Shows the raw SIP message of the selected message with syntax highlighting:
+/// method/status line in bold, header names in cyan, SDP body dimmed.
+pub fn render_message_detail(
+    frame: &mut Frame,
+    area: Rect,
+    store: &DialogStore,
+    call_id: &str,
+    selected_msg: usize,
+    scroll_offset: u16,
+) {
+    let dialog = match store.get(call_id) {
+        Some(d) => d,
+        None => {
+            let para = Paragraph::new("Dialog not found.")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(para, area);
+            return;
+        }
+    };
+
+    let msg = match dialog.messages.get(selected_msg) {
+        Some(m) => m,
+        None => {
+            let para = Paragraph::new("No message selected.")
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(para, area);
+            return;
+        }
+    };
+
+    let title = format!(
+        " [{}/{}] {} ",
+        selected_msg + 1,
+        dialog.messages.len(),
+        if msg.is_request {
+            msg.method.as_deref().unwrap_or("?").to_string()
+        } else {
+            format!("{} {}", msg.status_code.unwrap_or(0), msg.reason.as_deref().unwrap_or(""))
+        },
+    );
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().fg(Color::White));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Build highlighted lines from the raw SIP message
+    let raw_text = String::from_utf8_lossy(&msg.raw);
+    let lines = highlight_sip_detail(&raw_text);
+
+    let para = Paragraph::new(lines)
+        .scroll((scroll_offset, 0))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(para, inner);
+}
+
+/// Highlight a raw SIP message for the detail panel.
+///
+/// - First line (request/status): bold white
+/// - Header names (before ':'): cyan
+/// - Header values: default
+/// - SDP body lines: dimmed italic
+fn highlight_sip_detail(raw_text: &str) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut in_body = false;
+    let mut is_first = true;
+
+    for raw_line in raw_text.lines() {
+        if !in_body && raw_line.trim().is_empty() {
+            in_body = true;
+            lines.push(Line::from(""));
+            continue;
+        }
+
+        if in_body {
+            // SDP / body: dimmed italic
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            )));
+        } else if is_first {
+            // Request/status line: bold
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            is_first = false;
+        } else if let Some(colon_pos) = raw_line.find(':') {
+            // Header: name in cyan, value in default
+            let name = &raw_line[..colon_pos];
+            let value = &raw_line[colon_pos..];
+            lines.push(Line::from(vec![
+                Span::styled(name.to_string(), Style::default().fg(Color::Cyan)),
+                Span::styled(value.to_string(), Style::default().fg(Color::White)),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                raw_line.to_string(),
+                Style::default().fg(Color::White),
+            )));
+        }
+    }
+
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(empty message)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines
 }
 
 // ── Ladder formatting ───────────────────────────────────────────────
