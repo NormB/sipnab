@@ -141,6 +141,47 @@ impl ColorMode {
     }
 }
 
+/// Save file format for the F2 save dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SaveFormat {
+    /// Standard pcap format.
+    #[default]
+    Pcap,
+    /// PCAP-NG format.
+    PcapNg,
+    /// Plain text SIP messages.
+    Txt,
+}
+
+impl SaveFormat {
+    /// Cycle to the next format.
+    fn next(self) -> Self {
+        match self {
+            Self::Pcap => Self::PcapNg,
+            Self::PcapNg => Self::Txt,
+            Self::Txt => Self::Pcap,
+        }
+    }
+
+    /// File extension for this format.
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Pcap => "pcap",
+            Self::PcapNg => "pcapng",
+            Self::Txt => "txt",
+        }
+    }
+
+    /// Display label for this format.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Pcap => "PCAP",
+            Self::PcapNg => "PCAP-NG",
+            Self::Txt => "TXT",
+        }
+    }
+}
+
 // ── View enum ───────────────────────────────────────────────────────
 
 /// Which view is currently displayed in the TUI.
@@ -240,6 +281,8 @@ pub struct App {
     save_selected_count: usize,
     /// Cached total message count for the save dialog display.
     save_message_count: usize,
+    /// Selected save format (PCAP, PCAP-NG, or TXT).
+    save_format: SaveFormat,
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
@@ -300,6 +343,7 @@ impl App {
             save_dialog_count: 0,
             save_selected_count: 0,
             save_message_count: 0,
+            save_format: SaveFormat::default(),
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
@@ -521,44 +565,72 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     (main_area, None)
                 };
 
-                // Build call flow lines with mode awareness
-                // For extended flow, merge correlated dialog messages
-                let build_lines = |term_w: usize| -> Option<(usize, Vec<Line<'static>>)> {
-                    if app.extended_flow {
-                        call_flow::build_extended_flow_lines(
-                            &store,
-                            &cid,
-                            term_w,
-                            app.sdp_display_mode,
-                            app.timestamp_mode,
-                            app.color_mode,
-                        )
+                // Gather messages for the direct-paint renderer.
+                // For extended flow, merge correlated dialog messages.
+                let prepared = if app.extended_flow {
+                    // Extended: merge all correlated legs
+                    let dialog = store.get(&cid);
+                    if let Some(d) = dialog {
+                        let mut all: Vec<&crate::sip::SipMessage> =
+                            d.messages.iter().collect();
+                        let correlated = store.find_correlated(&cid);
+                        for leg in &correlated {
+                            all.extend(leg.messages.iter());
+                        }
+                        all.sort_by_key(|m| m.timestamp);
+                        let owned: Vec<crate::sip::SipMessage> =
+                            all.into_iter().cloned().collect();
+                        if owned.is_empty() {
+                            None
+                        } else {
+                            let ft = owned[0].timestamp;
+                            let (l, r, msgs) = call_flow::prepare_messages(
+                                &owned,
+                                ft,
+                                None,
+                                app.sdp_display_mode,
+                                app.timestamp_mode,
+                                app.color_mode,
+                                false,
+                                None,
+                            );
+                            Some((l, r, msgs))
+                        }
                     } else {
-                        call_flow::build_call_flow_lines_with_options(
-                            &store,
-                            &cid,
-                            term_w,
-                            app.sdp_display_mode,
-                            app.timestamp_mode,
-                            app.color_mode,
-                            app.show_rtp_in_flow,
-                            app.diff_selected_msg,
-                        )
+                        None
+                    }
+                } else {
+                    let dialog = store.get(&cid);
+                    if let Some(d) = dialog {
+                        if d.messages.is_empty() {
+                            None
+                        } else {
+                            let ft = d.messages[0].timestamp;
+                            let pdd = d.timing.pdd_ms();
+                            let (l, r, msgs) = call_flow::prepare_messages(
+                                &d.messages,
+                                ft,
+                                pdd,
+                                app.sdp_display_mode,
+                                app.timestamp_mode,
+                                app.color_mode,
+                                app.show_rtp_in_flow,
+                                app.diff_selected_msg,
+                            );
+                            Some((l, r, msgs))
+                        }
+                    } else {
+                        None
                     }
                 };
 
-                let term_width = ladder_area.width as usize;
-
-                // Invalidate cache when display modes change (always rebuild)
-                if let Some((count, lines)) = build_lines(term_width) {
-                    app.call_flow_cache
-                        .insert(cid.clone(), (count, lines.clone()));
-                    call_flow::render_call_flow_lines(frame, ladder_area, &cid, scroll, || {
-                        Some((count, lines))
-                    });
-                } else {
-                    call_flow::render_call_flow_lines(frame, ladder_area, &cid, scroll, || None);
-                }
+                // Render using direct buffer painting
+                call_flow::render_call_flow_direct_or_empty(
+                    frame,
+                    ladder_area,
+                    prepared.as_ref(),
+                    scroll,
+                );
 
                 // Render raw preview pane if active
                 if let Some(raw_area) = raw_area {
@@ -765,7 +837,7 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
     // Popup-specific bars take precedence.
     let items: Vec<(&str, &str)> = if let Some(p) = popup {
         match p {
-            Popup::SaveDialog => vec![("Enter", "Save"), ("Esc", "Cancel")],
+            Popup::SaveDialog => vec![("Enter", "Save"), ("Tab", "Format"), ("Esc", "Cancel")],
             Popup::FilterDialog => {
                 vec![("Enter", "Apply"), ("Esc", "Cancel"), ("F9", "Clear")]
             }
@@ -897,8 +969,32 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Build popup content lines
-    let path_label = format!("  Save to: {}", app.save_path);
+    // Build format selector spans: highlight the active format, dim the others.
+    let formats = [SaveFormat::Pcap, SaveFormat::PcapNg, SaveFormat::Txt];
+    let mut fmt_spans: Vec<Span<'_>> = vec![Span::styled("  Format:  ", Style::default().fg(Color::Cyan))];
+    for (i, fmt) in formats.iter().enumerate() {
+        if i > 0 {
+            fmt_spans.push(Span::raw("  "));
+        }
+        if *fmt == app.save_format {
+            fmt_spans.push(Span::styled(
+                format!("[{}]", fmt.label()),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            fmt_spans.push(Span::styled(
+                fmt.label().to_string(),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+    fmt_spans.push(Span::styled(
+        "      (Tab)",
+        Style::default().fg(Color::DarkGray),
+    ));
+
     let dialog_info = format!(
         "  Dialogs: {} ({} selected)",
         app.save_dialog_count, app.save_selected_count
@@ -916,13 +1012,13 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
         ]),
+        Line::from(fmt_spans),
         Line::from(""),
         Line::from(Span::styled(
             dialog_info,
             Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(msg_info, Style::default().fg(Color::DarkGray))),
-        Line::from(""),
         Line::from(""),
         Line::from(vec![
             Span::styled(
@@ -932,6 +1028,13 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Save  "),
+            Span::styled(
+                "[Tab]",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Format  "),
             Span::styled(
                 "[Esc]",
                 Style::default()
@@ -946,9 +1049,6 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
     let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
     frame.render_widget(para, inner);
-
-    // Drop the unused binding (kept for clarity of what info is available)
-    let _ = path_label;
 }
 
 /// Render the filter dialog as a centered popup overlay.
@@ -1761,6 +1861,9 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
 
 /// Open the save popup, pre-populating path and counts.
 fn open_save_popup(app: &mut App) {
+    // Reset format to default (PCAP)
+    app.save_format = SaveFormat::default();
+
     // Generate default path with timestamp
     let now = chrono::Local::now();
     let default_path = format!("/tmp/sipnab_{}.pcap", now.format("%Y%m%d_%H%M%S"));
@@ -1798,9 +1901,37 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Enter => {
             let path = app.save_path.clone();
-            let msg = save_to_pcap_path(app, &path);
+            let msg = match app.save_format {
+                SaveFormat::Pcap => save_to_pcap_path(app, &path, false),
+                SaveFormat::PcapNg => save_to_pcap_path(app, &path, true),
+                SaveFormat::Txt => save_to_txt_path(app, &path),
+            };
             app.status_error = Some(msg);
             app.active_popup = None;
+        }
+        KeyCode::Tab | KeyCode::BackTab => {
+            // Cycle save format and update file extension
+            let old_ext = app.save_format.extension();
+            app.save_format = if key.code == KeyCode::BackTab {
+                // Reverse cycle on Shift+Tab
+                match app.save_format {
+                    SaveFormat::Pcap => SaveFormat::Txt,
+                    SaveFormat::PcapNg => SaveFormat::Pcap,
+                    SaveFormat::Txt => SaveFormat::PcapNg,
+                }
+            } else {
+                app.save_format.next()
+            };
+            let new_ext = app.save_format.extension();
+            // Update the file extension in the path
+            if let Some(dot_pos) = app.save_path.rfind('.') {
+                let after_dot = &app.save_path[dot_pos + 1..];
+                if after_dot == old_ext {
+                    app.save_path.truncate(dot_pos + 1);
+                    app.save_path.push_str(new_ext);
+                    app.save_cursor = app.save_path.len();
+                }
+            }
         }
         KeyCode::Backspace => {
             if app.save_cursor > 0 {
@@ -1965,8 +2096,8 @@ fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packe
     crate::capture::Packet::new(msg.timestamp, pkt, len, len, None, 1) // DLT_EN10MB
 }
 
-/// Save all dialogs to the specified pcap file path.
-fn save_to_pcap_path(app: &App, path_str: &str) -> String {
+/// Save all dialogs to a pcap or pcap-ng file.
+fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
 
@@ -1979,11 +2110,13 @@ fn save_to_pcap_path(app: &App, path_str: &str) -> String {
     }
 
     // Create writer (DLT_EN10MB = 1)
-    let mut writer = match crate::capture::PcapWriter::new(&path, 1, None, None) {
-        Ok(w) => w,
-        Err(e) => return format!("Save failed: {e}"),
-    };
+    let mut writer =
+        match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng) {
+            Ok(w) => w,
+            Err(e) => return format!("Save failed: {e}"),
+        };
 
+    let fmt_label = if pcapng { "pcapng" } else { "pcap" };
     let mut count = 0;
     for msg in &messages {
         let pkt = build_synthetic_packet(msg);
@@ -1993,7 +2126,51 @@ fn save_to_pcap_path(app: &App, path_str: &str) -> String {
         count += 1;
     }
 
-    format!("Saved {count} packets to {}", path.display())
+    format!("Saved {count} packets ({fmt_label}) to {}", path.display())
+}
+
+/// Save all dialogs as plain text SIP messages.
+fn save_to_txt_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+
+    let messages: Vec<&crate::sip::SipMessage> =
+        store.iter().flat_map(|d| d.messages.iter()).collect();
+
+    if messages.is_empty() {
+        return "No messages to save".to_string();
+    }
+
+    let mut output = String::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if i > 0 {
+            output.push_str("\n---\n\n");
+        }
+        // Header with timestamp, source, destination, and transport
+        output.push_str(&format!(
+            "# Message {} | {} | {} {}:{} -> {}:{}\n",
+            i + 1,
+            msg.timestamp.format("%Y-%m-%d %H:%M:%S%.3f UTC"),
+            msg.transport,
+            msg.src_addr,
+            msg.src_port,
+            msg.dst_addr,
+            msg.dst_port,
+        ));
+        // Raw SIP message
+        match std::str::from_utf8(&msg.raw) {
+            Ok(text) => output.push_str(text),
+            Err(_) => output.push_str(&format!("(binary: {} bytes)", msg.raw.len())),
+        }
+        if !output.ends_with('\n') {
+            output.push('\n');
+        }
+    }
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => format!("Saved {} messages (txt) to {}", messages.len(), path.display()),
+        Err(e) => format!("Save failed: {e}"),
+    }
 }
 
 // ── Test helpers (public for integration tests) ────────────────────
