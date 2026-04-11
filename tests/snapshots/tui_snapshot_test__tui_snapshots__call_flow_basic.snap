@@ -4,7 +4,7 @@ expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
- Display Filter:
+ Time: Absolute | SDP: Hidden | Color: Method | Split: 40%
        10.0.0.1:5060                  10.0.0.2:5060         ┌ [1/4] INVITE ────────────────────────┐
              |                              |               │INVITE sip:1002@example.com SIP/2.0   │
 >>>          |---------- INVITE ----------> |               │From: "1001"                          │

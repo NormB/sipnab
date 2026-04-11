@@ -1003,6 +1003,22 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             format!("{:<width$}", content, width = w),
             Style::default().fg(Color::Red),
         )]
+    } else if let View::CallFlow(_) = app.current_view {
+        // In call flow: show current display modes so user knows what t/d/c do
+        let cyan = Style::default().fg(Color::Cyan);
+        let content = format!(
+            " {} | {} | {} | Split: {}%",
+            app.timestamp_mode.label(),
+            app.sdp_display_mode.label(),
+            app.color_mode.label(),
+            if app.raw_preview {
+                app.raw_preview_pct
+            } else {
+                0
+            },
+        );
+        let trailing = " ".repeat(w.saturating_sub(content.len()));
+        vec![Span::styled(content, cyan), Span::raw(trailing)]
     } else {
         let yellow = Style::default().fg(Color::Yellow);
         let prefix = " Display Filter: ";
