@@ -280,9 +280,7 @@ fn delta_style(delta_ms: i64) -> Style {
     } else if delta_ms < 5000 {
         Style::default().fg(Color::Red)
     } else {
-        Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     }
 }
 
