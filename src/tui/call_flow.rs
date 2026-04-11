@@ -89,6 +89,39 @@ pub fn build_call_flow_lines_with_width(
     Some((msg_count, lines))
 }
 
+/// Build call flow lines with display options.
+///
+/// Currently delegates to [`build_call_flow_lines_with_width`]; the display
+/// mode parameters are reserved for future SDP/timestamp/color enhancements.
+#[allow(clippy::too_many_arguments)]
+pub fn build_call_flow_lines_with_options(
+    store: &DialogStore,
+    call_id: &str,
+    term_width: usize,
+    _sdp_mode: super::SdpDisplayMode,
+    _ts_mode: super::TimestampMode,
+    _color_mode: super::ColorMode,
+    _show_rtp: bool,
+    _selected_msg: Option<usize>,
+) -> Option<(usize, Vec<Line<'static>>)> {
+    build_call_flow_lines_with_width(store, call_id, term_width)
+}
+
+/// Build extended (multi-leg) flow lines.
+///
+/// Currently delegates to [`build_call_flow_lines_with_width`]; multi-leg
+/// merging is reserved for a future enhancement.
+pub fn build_extended_flow_lines(
+    store: &DialogStore,
+    call_id: &str,
+    term_width: usize,
+    _sdp_mode: super::SdpDisplayMode,
+    _ts_mode: super::TimestampMode,
+    _color_mode: super::ColorMode,
+) -> Option<(usize, Vec<Line<'static>>)> {
+    build_call_flow_lines_with_width(store, call_id, term_width)
+}
+
 /// Render the call flow ladder diagram for a dialog identified by Call-ID.
 pub fn render_call_flow(
     frame: &mut Frame,

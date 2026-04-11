@@ -5,11 +5,13 @@
 //! count, duration, and PDD. Rows are color-coded by dialog state and
 //! show diagnosis warning indicators.
 
+use std::cmp::Ordering;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
-use ratatui::widgets::{Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
@@ -17,7 +19,10 @@ use crate::sip::dsl::FilterExpr;
 
 // ── Sort column ─────────────────────────────────────────────────────
 
-/// Columns available for sorting the call list.
+/// Column identifiers for the call list table.
+///
+/// Each variant corresponds to a visible column. The ordering matches
+/// the default column display order and is used for sort cycling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     /// Sort by dialog index (insertion order).
@@ -28,11 +33,38 @@ pub enum SortColumn {
     From,
     /// Sort by To user.
     To,
+    /// Sort by source address.
+    Source,
+    /// Sort by destination address.
+    Destination,
     /// Sort by dialog state.
     State,
     /// Sort by message count.
     Messages,
+    /// Sort by creation date.
+    Date,
+    /// Sort by Post-Dial Delay.
+    Pdd,
 }
+
+/// All columns in display order, used for cycling with `<` and `>`.
+pub const ALL_COLUMNS: [SortColumn; 10] = [
+    SortColumn::Index,
+    SortColumn::Method,
+    SortColumn::From,
+    SortColumn::To,
+    SortColumn::Source,
+    SortColumn::Destination,
+    SortColumn::State,
+    SortColumn::Messages,
+    SortColumn::Date,
+    SortColumn::Pdd,
+];
+
+/// Column display labels matching [`ALL_COLUMNS`] order.
+pub const COLUMN_LABELS: [&str; 10] = [
+    "#", "Method", "From", "To", "Source", "Destination", "State", "Msgs", "Date", "PDD",
+];
 
 // ── Call list state ─────────────────────────────────────────────────
 
@@ -46,6 +78,14 @@ pub struct CallListState {
     sort_ascending: bool,
     /// Set of selected (multi-select) row indices.
     selected_rows: Vec<usize>,
+    /// Per-column visibility (indexed by [`ALL_COLUMNS`] order).
+    pub visible_columns: [bool; 10],
+    /// Whether the column selector popup is open.
+    pub column_selector_open: bool,
+    /// Currently highlighted row in the column selector popup.
+    pub column_selector_cursor: usize,
+    /// Whether autoscroll is enabled (new dialogs scroll to bottom).
+    pub autoscroll: bool,
 }
 
 impl CallListState {
@@ -58,6 +98,10 @@ impl CallListState {
             sort_column: SortColumn::Index,
             sort_ascending: true,
             selected_rows: Vec::new(),
+            visible_columns: [true; 10],
+            column_selector_open: false,
+            column_selector_cursor: 0,
+            autoscroll: true,
         }
     }
 
@@ -147,6 +191,77 @@ impl CallListState {
             self.sort_ascending = true;
         }
     }
+
+    /// Reverse the current sort direction.
+    pub fn reverse_sort(&mut self) {
+        self.sort_ascending = !self.sort_ascending;
+    }
+
+    /// Cycle to the next sort column (wrapping at the end).
+    pub fn sort_next_column(&mut self) {
+        let current_idx = ALL_COLUMNS
+            .iter()
+            .position(|c| *c == self.sort_column)
+            .unwrap_or(0);
+        let next_idx = (current_idx + 1) % ALL_COLUMNS.len();
+        self.sort_column = ALL_COLUMNS[next_idx];
+        self.sort_ascending = true;
+    }
+
+    /// Cycle to the previous sort column (wrapping at the beginning).
+    pub fn sort_prev_column(&mut self) {
+        let current_idx = ALL_COLUMNS
+            .iter()
+            .position(|c| *c == self.sort_column)
+            .unwrap_or(0);
+        let prev_idx = if current_idx == 0 {
+            ALL_COLUMNS.len() - 1
+        } else {
+            current_idx - 1
+        };
+        self.sort_column = ALL_COLUMNS[prev_idx];
+        self.sort_ascending = true;
+    }
+
+    /// Return the index of the current sort column in [`ALL_COLUMNS`].
+    pub fn sort_column_index(&self) -> usize {
+        ALL_COLUMNS
+            .iter()
+            .position(|c| *c == self.sort_column)
+            .unwrap_or(0)
+    }
+
+    /// Toggle visibility of the column at the column selector cursor.
+    pub fn toggle_column_visibility(&mut self) {
+        if self.column_selector_cursor < self.visible_columns.len() {
+            self.visible_columns[self.column_selector_cursor] =
+                !self.visible_columns[self.column_selector_cursor];
+        }
+    }
+
+    /// Move the column selector cursor up.
+    pub fn column_selector_up(&mut self) {
+        if self.column_selector_cursor > 0 {
+            self.column_selector_cursor -= 1;
+        }
+    }
+
+    /// Move the column selector cursor down.
+    pub fn column_selector_down(&mut self) {
+        if self.column_selector_cursor + 1 < ALL_COLUMNS.len() {
+            self.column_selector_cursor += 1;
+        }
+    }
+
+    /// Clear the multi-selected rows list.
+    pub fn clear_selections(&mut self) {
+        self.selected_rows.clear();
+    }
+
+    /// Return the multi-selected row indices.
+    pub fn selected_rows(&self) -> &[usize] {
+        &self.selected_rows
+    }
 }
 
 impl Default for CallListState {
@@ -177,26 +292,31 @@ pub fn render_call_list(
         .bg(Color::Cyan)
         .add_modifier(Modifier::BOLD);
 
-    let header = Row::new(vec![
-        Cell::from(" # "),
-        Cell::from("Method"),
-        Cell::from("From"),
-        Cell::from("To"),
-        Cell::from("Source"),
-        Cell::from("Destination"),
-        Cell::from("State"),
-        Cell::from("Msgs"),
-        Cell::from("Date"),
-        Cell::from("PDD"),
-    ])
-    .style(header_style)
-    .bottom_margin(0);
+    // Build header cells with sort indicator on the active sort column
+    let sort_col_idx = state.sort_column_index();
+    let sort_indicator = if state.sort_ascending() { " \u{25b2}" } else { " \u{25bc}" };
+    let base_labels = [" # ", "Method", "From", "To", "Source", "Destination", "State", "Msgs", "Date", "PDD"];
+    let header_cells: Vec<Cell> = base_labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            if i == sort_col_idx {
+                Cell::from(format!("{}{}", label.trim(), sort_indicator))
+            } else {
+                Cell::from(*label)
+            }
+        })
+        .collect();
+
+    let header = Row::new(header_cells)
+        .style(header_style)
+        .bottom_margin(0);
 
     // Dynamic column widths based on available terminal width.
     // Fixed columns have minimum widths; From/To fill remaining space.
     let widths = compute_column_widths(table_area.width);
 
-    let dialogs: Vec<_> = if let Some(filter) = filter {
+    let mut dialogs: Vec<_> = if let Some(filter) = filter {
         store
             .iter()
             .filter(|d| filter.matches_dialog(d, &[]))
@@ -204,6 +324,9 @@ pub fn render_call_list(
     } else {
         store.iter().collect()
     };
+
+    // Sort dialogs by the selected column
+    sort_dialogs(&mut dialogs, state.sort_column(), state.sort_ascending());
 
     // Always render the header, even when empty (sngrep style).
     // Show a help message below the header if there are no dialogs.
@@ -424,6 +547,97 @@ fn format_state(state: &DialogState) -> String {
         DialogState::Active => "Active".to_string(),
         DialogState::Terminated => "Terminated".to_string(),
     }
+}
+
+/// Sort a list of dialog references by the given column and direction.
+fn sort_dialogs(
+    dialogs: &mut [&crate::sip::dialog::SipDialog],
+    column: SortColumn,
+    ascending: bool,
+) {
+    dialogs.sort_by(|a, b| {
+        let ord = match column {
+            SortColumn::Index => Ordering::Equal, // insertion order is the default
+            SortColumn::Method => a.method.cmp(&b.method),
+            SortColumn::From => a
+                .from_user
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.from_user.as_deref().unwrap_or("")),
+            SortColumn::To => a
+                .to_user
+                .as_deref()
+                .unwrap_or("")
+                .cmp(b.to_user.as_deref().unwrap_or("")),
+            SortColumn::Source => a.src_addr.cmp(&b.src_addr),
+            SortColumn::Destination => a.dst_addr.cmp(&b.dst_addr),
+            SortColumn::State => format_state(&a.state).cmp(&format_state(&b.state)),
+            SortColumn::Messages => a.messages.len().cmp(&b.messages.len()),
+            SortColumn::Date => a.created_at.cmp(&b.created_at),
+            SortColumn::Pdd => a
+                .timing
+                .pdd_ms()
+                .unwrap_or(i64::MAX)
+                .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
+        };
+        if ascending {
+            ord
+        } else {
+            ord.reverse()
+        }
+    });
+}
+
+/// Render the column selector popup as a centered overlay.
+pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListState) {
+    let popup_width: u16 = 38;
+    let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 5; // columns + borders + footer
+    let w = popup_width.min(area.width);
+    let h = popup_height.min(area.height);
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Columns ")
+        .style(Style::default().bg(Color::Black));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<ratatui::text::Line<'_>> = Vec::new();
+    for (i, label) in COLUMN_LABELS.iter().enumerate() {
+        let check = if state.visible_columns[i] { "x" } else { " " };
+        let prefix = if i == state.column_selector_cursor {
+            "> "
+        } else {
+            "  "
+        };
+        let style = if i == state.column_selector_cursor {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(ratatui::text::Line::from(Span::styled(
+            format!("{}[{}] {:<16}", prefix, check, label),
+            style,
+        )));
+    }
+    lines.push(ratatui::text::Line::from(""));
+    lines.push(ratatui::text::Line::from(Span::styled(
+        "  Space: toggle  Enter: apply",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let visible_lines: Vec<ratatui::text::Line<'_>> =
+        lines.into_iter().take(inner.height as usize).collect();
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
+    frame.render_widget(para, inner);
 }
 
 /// Return a style for a dialog state label.

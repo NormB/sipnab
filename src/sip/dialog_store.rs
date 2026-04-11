@@ -140,6 +140,27 @@ impl DialogStore {
         self.dialogs.is_empty()
     }
 
+    /// Remove all dialogs from the store.
+    pub fn clear(&mut self) {
+        self.dialogs.clear();
+        self.index.clear();
+    }
+
+    /// Retain only dialogs for which `predicate` returns `true`.
+    ///
+    /// Dialogs that do not satisfy the predicate are removed and the
+    /// internal index is rebuilt.
+    pub fn retain<F>(&mut self, predicate: F)
+    where
+        F: Fn(&SipDialog) -> bool,
+    {
+        self.dialogs.retain(|d| predicate(d));
+        self.index.clear();
+        for (idx, dialog) in self.dialogs.iter().enumerate() {
+            self.index.insert(dialog.call_id.clone(), idx);
+        }
+    }
+
     /// Count dialogs in an active state (Trying, Ringing, InCall, Pending, Active).
     pub fn active_count(&self) -> usize {
         self.dialogs
