@@ -403,16 +403,9 @@ pub fn render_call_list(
         .map(|(vis_idx, dialog)| {
             let idx = scroll_offset + vis_idx; // original index in full list
 
-            // Diagnosis and correlation indicators
-            let has_retransmits = dialog.timing.total_retransmits() > 0;
-            let has_correlated = !store.find_correlated(&dialog.call_id).is_empty();
-            let diag_icon = if has_correlated {
-                "\u{2194}" // ↔ for correlated legs
-            } else if has_retransmits {
-                "!"
-            } else {
-                " "
-            };
+            // Clean index — no icons. Diagnosis info is in call flow, not the list.
+            // sngrep doesn't show indicators in the index column.
+            let diag_icon = " ";
 
             // Date column: HH:MM:SS of first message
             let date_str = dialog.created_at.format("%H:%M:%S").to_string();
