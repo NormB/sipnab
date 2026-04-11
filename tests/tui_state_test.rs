@@ -357,10 +357,7 @@ mod tui_state {
     fn ctrl_l_clears_all_dialogs() {
         let mut app = app_with_three_dialogs();
         assert_eq!(app.visible_dialog_count(), 3);
-        app.handle_key_with_modifiers(
-            KeyCode::Char('l'),
-            crossterm::event::KeyModifiers::CONTROL,
-        );
+        app.handle_key_with_modifiers(KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
         assert_eq!(app.visible_dialog_count(), 0);
     }
 

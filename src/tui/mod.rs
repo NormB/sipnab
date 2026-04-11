@@ -563,13 +563,9 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 // Render raw preview pane if active
                 if let Some(raw_area) = raw_area {
                     msg_raw::render_raw_message(
-                        frame,
-                        raw_area,
-                        &store,
-                        &cid,
+                        frame, raw_area, &store, &cid,
                         scroll, // show raw of the message at current scroll position
-                        0,
-                        "",
+                        0, "",
                     );
                 }
             }
@@ -676,9 +672,7 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         spans.push(Span::raw(padded[mode_end..ps].to_string()));
         spans.push(Span::styled(
             "PAUSED".to_string(),
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(padded[ps + 6..].to_string()));
     } else {
@@ -1124,8 +1118,7 @@ fn render_message_diff(
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
-            let para = Paragraph::new("Dialog not found.")
-                .style(Style::default().fg(Color::Red));
+            let para = Paragraph::new("Dialog not found.").style(Style::default().fg(Color::Red));
             frame.render_widget(para, area);
             return;
         }
@@ -1135,8 +1128,7 @@ fn render_message_diff(
     let msg2 = dialog.messages.get(msg2_idx);
 
     if msg1.is_none() || msg2.is_none() {
-        let para = Paragraph::new("Message not found.")
-            .style(Style::default().fg(Color::Red));
+        let para = Paragraph::new("Message not found.").style(Style::default().fg(Color::Red));
         frame.render_widget(para, area);
         return;
     }
@@ -1153,11 +1145,8 @@ fn render_message_diff(
 
     // Split area into two halves
     let half_width = area.width / 2;
-    let [left_area, right_area] = Layout::horizontal([
-        Constraint::Length(half_width),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Length(half_width), Constraint::Fill(1)]).areas(area);
 
     let mut left_lines: Vec<Line<'static>> = Vec::new();
     let mut right_lines: Vec<Line<'static>> = Vec::new();
@@ -1176,7 +1165,9 @@ fn render_message_diff(
             .add_modifier(Modifier::BOLD),
     )));
 
-    let diff_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let diff_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let normal_style = Style::default();
 
     for i in 0..max_lines {
@@ -1341,8 +1332,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         // p — Pause/resume capture processing
         KeyCode::Char('p') => {
             app.paused = !app.paused;
-            app.paused_flag
-                .store(app.paused, AtomicOrdering::Relaxed);
+            app.paused_flag.store(app.paused, AtomicOrdering::Relaxed);
         }
         // i — Clear calls that DON'T match the current filter
         KeyCode::Char('i') => {

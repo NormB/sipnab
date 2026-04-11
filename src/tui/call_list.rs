@@ -63,7 +63,16 @@ pub const ALL_COLUMNS: [SortColumn; 10] = [
 
 /// Column display labels matching [`ALL_COLUMNS`] order.
 pub const COLUMN_LABELS: [&str; 10] = [
-    "#", "Method", "From", "To", "Source", "Destination", "State", "Msgs", "Date", "PDD",
+    "#",
+    "Method",
+    "From",
+    "To",
+    "Source",
+    "Destination",
+    "State",
+    "Msgs",
+    "Date",
+    "PDD",
 ];
 
 // ── Call list state ─────────────────────────────────────────────────
@@ -294,8 +303,23 @@ pub fn render_call_list(
 
     // Build header cells with sort indicator on the active sort column
     let sort_col_idx = state.sort_column_index();
-    let sort_indicator = if state.sort_ascending() { " \u{25b2}" } else { " \u{25bc}" };
-    let base_labels = [" # ", "Method", "From", "To", "Source", "Destination", "State", "Msgs", "Date", "PDD"];
+    let sort_indicator = if state.sort_ascending() {
+        " \u{25b2}"
+    } else {
+        " \u{25bc}"
+    };
+    let base_labels = [
+        " # ",
+        "Method",
+        "From",
+        "To",
+        "Source",
+        "Destination",
+        "State",
+        "Msgs",
+        "Date",
+        "PDD",
+    ];
     let header_cells: Vec<Cell> = base_labels
         .iter()
         .enumerate()
@@ -308,9 +332,7 @@ pub fn render_call_list(
         })
         .collect();
 
-    let header = Row::new(header_cells)
-        .style(header_style)
-        .bottom_margin(0);
+    let header = Row::new(header_cells).style(header_style).bottom_margin(0);
 
     // Dynamic column widths based on available terminal width.
     // Fixed columns have minimum widths; From/To fill remaining space.
@@ -580,11 +602,7 @@ fn sort_dialogs(
                 .unwrap_or(i64::MAX)
                 .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
         };
-        if ascending {
-            ord
-        } else {
-            ord.reverse()
-        }
+        if ascending { ord } else { ord.reverse() }
     });
 }
 
