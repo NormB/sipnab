@@ -2,7 +2,7 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
 ┌ Raw SIP Message [1/4] (Esc: Back | /: Search) ─────────────────────────────────────────┐
@@ -31,4 +31,4 @@ expression: output
 │                                                                                        │
 │                                                                                        │
 └────────────────────────────────────────────────────────────────────────────────────────┘
-Esc Back  F2 Save
+Esc Back  s Highlight  c Color  / Search  F2 Save

@@ -147,6 +147,12 @@ impl StreamStore {
         self.streams.is_empty()
     }
 
+    /// Remove all streams from the store.
+    pub fn clear(&mut self) {
+        self.streams.clear();
+        self.index.clear();
+    }
+
     /// Count of streams flagged as orphaned.
     pub fn orphaned_count(&self) -> usize {
         self.streams.iter().filter(|s| s.orphaned).count()

@@ -50,6 +50,7 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 /// let filter = FilterExpr::parse("from.user == '1001' AND rtp.loss > 2.0")?;
 /// let matches = filter.matches_dialog(&dialog, &streams);
 /// ```
+#[derive(Clone)]
 pub struct FilterExpr {
     root: Expr,
 }
@@ -63,7 +64,7 @@ impl std::fmt::Debug for FilterExpr {
 }
 
 /// Expression tree node.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Expr {
     And(Box<Expr>, Box<Expr>),
     Or(Box<Expr>, Box<Expr>),
@@ -114,7 +115,7 @@ enum Operator {
 }
 
 /// A literal value on the right-hand side of a comparison.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Value {
     Str(String),
     Num(f64),

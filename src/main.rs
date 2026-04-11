@@ -598,9 +598,13 @@ fn run_tui_mode(
     )));
     let stream_store = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
 
+    // Shared pause flag between TUI and processing thread
+    let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // Clone references for the processing thread
     let ds = Arc::clone(&dialog_store);
     let ss = Arc::clone(&stream_store);
+    let paused_for_thread = Arc::clone(&paused_flag);
     let cli_clone = cli.clone();
 
     // Spawn packet processing thread
@@ -662,6 +666,10 @@ fn run_tui_mode(
 
                 let parsed_packets = processor.process(&packet);
                 for pp in &parsed_packets {
+                    // Skip processing when paused (capture continues to prevent buffer overflow)
+                    if paused_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
                     if !port_in_range(pp.src_port, pp.dst_port, portrange) {
                         continue;
                     }
@@ -688,7 +696,11 @@ fn run_tui_mode(
     let _api_thread = start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store));
 
     // Run TUI on the main thread
-    if let Err(e) = sipnab::tui::run_tui(Arc::clone(&dialog_store), Arc::clone(&stream_store)) {
+    if let Err(e) = sipnab::tui::run_tui_with_pause(
+        Arc::clone(&dialog_store),
+        Arc::clone(&stream_store),
+        Some(paused_flag),
+    ) {
         log::error!("TUI error: {e}");
     }
 

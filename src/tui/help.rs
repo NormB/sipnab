@@ -27,9 +27,9 @@ Function Keys:
   F1              Help (this screen)
   F2              Save selected dialog (or all) to pcap
   F3              Search (same as /)
-  F4              Extended call flow (toggle Via headers)
-  F5              Compare two messages side-by-side
-  F6              Switch to RTP Stream List
+  F4 / x          Extended call flow (multi-leg toggle)
+  F5              Compare mode (Space to select messages)
+  F6              Toggle RTP display in flow
   F7              Open filter dialog / clear filter
   F8              Settings
   F9              Clear active filter
@@ -42,16 +42,36 @@ Views:
 Call List:
   Space           Toggle multi-select on current row
   Enter           Open Call Flow for selected dialog
+  F5 / Ctrl-L     Clear all (or selected) dialogs
+  F6 / r          Show raw SIP for selected dialog
+  F10 / t         Column selector popup
+  < / >           Change sort column
+  Z               Reverse sort direction
+  A               Toggle autoscroll
+  p               Pause/resume capture processing
+  i               Clear non-matching (keep filtered)
+  I               Clear matching (keep non-matching)
 
 Call Flow:
   \u{2191}/\u{2193}             Scroll through messages
   Enter           View raw SIP message at current position
+  Home / End      Jump to first / last message
+  Space           Select message for diff (press twice to compare)
+  d               Cycle SDP display (none / summary / full)
+  t               Cycle timestamp (absolute / relative / hidden)
+  c               Cycle color mode (method / call-id / cseq)
+  R               Toggle raw preview split
+  +/-             Resize raw preview pane
+  F4 / x          Toggle extended multi-leg flow
+  F6              Toggle RTP display in flow
   Esc             Return to Call List
 
 Raw Message:
   \u{2191}/\u{2193}             Scroll message text
   PgUp / PgDn     Page scroll
   /               Search within message (highlights matches)
+  s               Toggle syntax highlighting
+  c               Cycle color mode
   Esc             Return to Call Flow
 
 Stream List:

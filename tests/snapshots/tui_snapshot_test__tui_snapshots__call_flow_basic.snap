@@ -2,16 +2,16 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-   10.0.0.1:5060                                            10.0.0.2:5060
-          |                                                       |
-12:00:00  |---------------------- INVITE ----------------------->|
-12:00:01  |<-------------------- 180 Ringing --------------------|  PDD: 1000ms
-12:00:02  |<---------------------- 200 OK -----------------------|
-12:01:02  |------------------------ BYE ------------------------>|
-          |                                                       |
+   10.0.0.1:5060                        10.0.0.2:5060
+          |                                   |
+12:00:00  |------------ INVITE ------------->|
+12:00:01  |<---------- 180 Ringing ----------|  PDD: 1000ms
+12:00:02  |<------------ 200 OK -------------|
+12:01:02  |-------------- BYE -------------->|
+          |                                   |
 
 
 
@@ -31,4 +31,4 @@ expression: output
 
 
 
-Esc Back  Enter Raw  F2 Save  F5 Compare  F7 Filter  F9 ClearFilter
+Esc Back  Enter Raw  Space Diff  d SDP  t Time  c Color  F4 Extend

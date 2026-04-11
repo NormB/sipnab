@@ -2,7 +2,7 @@
 source: tests/tui_snapshot_test.rs
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 0 (0 displayed)
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
   SSRC       Codec    Source                 Destination            Pkts     Jitter   Loss    Duration  Dialog             Status

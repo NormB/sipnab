@@ -342,4 +342,224 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.visible_dialog_count(), 3);
     }
+
+    // ── F5 / Ctrl-L — Clear calls ─────────────────────────────────────
+
+    #[test]
+    fn f5_clears_all_dialogs() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+        app.handle_key(KeyCode::F(5));
+        assert_eq!(app.visible_dialog_count(), 0);
+    }
+
+    #[test]
+    fn ctrl_l_clears_all_dialogs() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+        app.handle_key_with_modifiers(
+            KeyCode::Char('l'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        assert_eq!(app.visible_dialog_count(), 0);
+    }
+
+    #[test]
+    fn f5_clears_only_selected_dialogs() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+        // Select first dialog (row 0)
+        app.handle_key(KeyCode::Char(' ')); // toggle select row 0
+        // Clear selected only
+        app.handle_key(KeyCode::F(5));
+        assert_eq!(app.visible_dialog_count(), 2);
+    }
+
+    // ── F6 / r — Raw message view ─────────────────────────────────────
+
+    #[test]
+    fn f6_opens_raw_message_view() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(6));
+        assert!(
+            matches!(app.current_view(), View::RawMessage { .. }),
+            "expected RawMessage, got {:?}",
+            app.current_view()
+        );
+    }
+
+    #[test]
+    fn r_opens_raw_message_view() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('r'));
+        assert!(
+            matches!(app.current_view(), View::RawMessage { .. }),
+            "expected RawMessage, got {:?}",
+            app.current_view()
+        );
+    }
+
+    // ── F10 / t — Column selector ─────────────────────────────────────
+
+    #[test]
+    fn f10_opens_column_selector() {
+        let mut app = App::new_test();
+        assert!(!app.call_list_state().column_selector_open);
+        app.handle_key(KeyCode::F(10));
+        assert!(app.call_list_state().column_selector_open);
+    }
+
+    #[test]
+    fn t_opens_column_selector() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('t'));
+        assert!(app.call_list_state().column_selector_open);
+    }
+
+    #[test]
+    fn column_selector_enter_closes() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(10)); // open
+        assert!(app.call_list_state().column_selector_open);
+        app.handle_key(KeyCode::Enter); // close
+        assert!(!app.call_list_state().column_selector_open);
+    }
+
+    #[test]
+    fn column_selector_esc_closes() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(10));
+        app.handle_key(KeyCode::Esc);
+        assert!(!app.call_list_state().column_selector_open);
+    }
+
+    #[test]
+    fn column_selector_space_toggles_visibility() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(10)); // open column selector
+        // All columns visible by default
+        assert!(app.call_list_state().visible_columns[0]);
+        app.handle_key(KeyCode::Char(' ')); // toggle first column
+        assert!(!app.call_list_state().visible_columns[0]);
+        app.handle_key(KeyCode::Char(' ')); // toggle back
+        assert!(app.call_list_state().visible_columns[0]);
+    }
+
+    // ── Sort column cycling ───────────────────────────────────────────
+
+    #[test]
+    fn angle_brackets_cycle_sort_column() {
+        use sipnab::tui::call_list::SortColumn;
+        let mut app = App::new_test();
+        assert_eq!(app.call_list_state().sort_column(), SortColumn::Index);
+
+        app.handle_key(KeyCode::Char('>')); // next -> Method
+        assert_eq!(app.call_list_state().sort_column(), SortColumn::Method);
+
+        app.handle_key(KeyCode::Char('>')); // next -> From
+        assert_eq!(app.call_list_state().sort_column(), SortColumn::From);
+
+        app.handle_key(KeyCode::Char('<')); // prev -> Method
+        assert_eq!(app.call_list_state().sort_column(), SortColumn::Method);
+
+        app.handle_key(KeyCode::Char('<')); // prev -> Index
+        assert_eq!(app.call_list_state().sort_column(), SortColumn::Index);
+    }
+
+    // ── Z — Reverse sort ──────────────────────────────────────────────
+
+    #[test]
+    fn z_reverses_sort_direction() {
+        let mut app = App::new_test();
+        assert!(app.call_list_state().sort_ascending());
+        app.handle_key(KeyCode::Char('Z'));
+        assert!(!app.call_list_state().sort_ascending());
+        app.handle_key(KeyCode::Char('Z'));
+        assert!(app.call_list_state().sort_ascending());
+    }
+
+    // ── A — Toggle autoscroll ─────────────────────────────────────────
+
+    #[test]
+    fn a_toggles_autoscroll() {
+        let mut app = App::new_test();
+        assert!(app.call_list_state().autoscroll);
+        app.handle_key(KeyCode::Char('A'));
+        assert!(!app.call_list_state().autoscroll);
+        app.handle_key(KeyCode::Char('A'));
+        assert!(app.call_list_state().autoscroll);
+    }
+
+    // ── p — Pause/resume ──────────────────────────────────────────────
+
+    #[test]
+    fn p_toggles_paused() {
+        let mut app = App::new_test();
+        assert!(!app.paused());
+        app.handle_key(KeyCode::Char('p'));
+        assert!(app.paused());
+        app.handle_key(KeyCode::Char('p'));
+        assert!(!app.paused());
+    }
+
+    // ── i/I — Clear with filter ───────────────────────────────────────
+
+    #[test]
+    fn i_clears_non_matching_dialogs() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+
+        // Apply filter: keep only Failed
+        app.handle_key(KeyCode::F(7));
+        for c in "state == 'Failed'".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.visible_dialog_count(), 1);
+
+        // i: clear non-matching (keep only Failed)
+        app.handle_key(KeyCode::Char('i'));
+
+        // Now clear filter to see all remaining
+        app.handle_key(KeyCode::F(7)); // clears active filter
+        // Only the Failed dialog should remain
+        assert_eq!(app.visible_dialog_count(), 1);
+    }
+
+    #[test]
+    fn i_uppercase_clears_matching_dialogs() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+
+        // Apply filter: match Failed
+        app.handle_key(KeyCode::F(7));
+        for c in "state == 'Failed'".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.visible_dialog_count(), 1);
+
+        // I: clear matching (remove Failed, keep the rest)
+        app.handle_key(KeyCode::Char('I'));
+
+        // Clear filter to see all remaining
+        app.handle_key(KeyCode::F(7));
+        assert_eq!(app.visible_dialog_count(), 2);
+    }
+
+    #[test]
+    fn i_without_filter_does_nothing() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+        app.handle_key(KeyCode::Char('i'));
+        assert_eq!(app.visible_dialog_count(), 3); // no change
+    }
+
+    #[test]
+    fn i_uppercase_without_filter_does_nothing() {
+        let mut app = app_with_three_dialogs();
+        assert_eq!(app.visible_dialog_count(), 3);
+        app.handle_key(KeyCode::Char('I'));
+        assert_eq!(app.visible_dialog_count(), 3); // no change
+    }
 }
