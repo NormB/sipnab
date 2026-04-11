@@ -629,8 +629,8 @@ pub fn render_message_detail(
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
-            let para = Paragraph::new("Dialog not found.")
-                .style(Style::default().fg(Color::DarkGray));
+            let para =
+                Paragraph::new("Dialog not found.").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(para, area);
             return;
         }
@@ -639,8 +639,8 @@ pub fn render_message_detail(
     let msg = match dialog.messages.get(selected_msg) {
         Some(m) => m,
         None => {
-            let para = Paragraph::new("No message selected.")
-                .style(Style::default().fg(Color::DarkGray));
+            let para =
+                Paragraph::new("No message selected.").style(Style::default().fg(Color::DarkGray));
             frame.render_widget(para, area);
             return;
         }
@@ -653,7 +653,11 @@ pub fn render_message_detail(
         if msg.is_request {
             msg.method.as_deref().unwrap_or("?").to_string()
         } else {
-            format!("{} {}", msg.status_code.unwrap_or(0), msg.reason.as_deref().unwrap_or(""))
+            format!(
+                "{} {}",
+                msg.status_code.unwrap_or(0),
+                msg.reason.as_deref().unwrap_or("")
+            )
         },
     );
 
