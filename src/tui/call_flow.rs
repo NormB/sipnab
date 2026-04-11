@@ -247,6 +247,368 @@ pub fn render_call_flow_lines(
     frame.render_widget(para, area);
 }
 
+// ── Direct buffer painting (TUI path) ───────────────────────────────
+
+/// Pre-formatted message data for the direct-paint renderer.
+///
+/// Separates data preparation (display modes, color, timestamps) from
+/// the actual buffer painting, keeping the render function simple.
+pub struct FormattedMessage {
+    /// Formatted timestamp string (or empty if hidden).
+    pub timestamp: String,
+    /// Arrow label (e.g., "INVITE (SDP)" or "200 OK").
+    pub label: String,
+    /// Style for the arrow line.
+    pub style: Style,
+    /// Direction: `true` if the arrow points left-to-right.
+    pub is_left_to_right: bool,
+    /// Optional PDD annotation (e.g., "  PDD: 1234ms").
+    pub pdd_note: Option<String>,
+    /// Optional extra lines below the arrow (SDP info, RTP markers, etc.).
+    pub extra_lines: Vec<(String, Style)>,
+    /// Whether this message is selected (for highlighting).
+    pub selected: bool,
+}
+
+/// Prepare formatted messages from a dialog's SIP messages.
+///
+/// Applies all display modes (SDP, timestamp, color, RTP) and returns
+/// a list of `FormattedMessage`s plus the endpoint labels.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_messages(
+    messages: &[SipMessage],
+    first_ts: chrono::DateTime<chrono::Utc>,
+    pdd_ms: Option<i64>,
+    sdp_mode: SdpDisplayMode,
+    ts_mode: TimestampMode,
+    color_mode: ColorMode,
+    show_rtp: bool,
+    selected_msg: Option<usize>,
+) -> (String, String, Vec<FormattedMessage>) {
+    if messages.is_empty() {
+        return (String::new(), String::new(), Vec::new());
+    }
+
+    let left_addr = format!("{}:{}", messages[0].src_addr, messages[0].src_port);
+    let right_addr = format!("{}:{}", messages[0].dst_addr, messages[0].dst_port);
+
+    let ts_width = match ts_mode {
+        TimestampMode::Absolute | TimestampMode::Relative => TS_COL_WIDTH,
+        TimestampMode::Hidden => 0,
+    };
+
+    let cid_colors = [
+        Color::Green,
+        Color::Blue,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Red,
+    ];
+
+    let mut pdd_done = false;
+    let mut in_call = false;
+    let mut result = Vec::with_capacity(messages.len());
+
+    for (mi, msg) in messages.iter().enumerate() {
+        let timestamp = match ts_mode {
+            TimestampMode::Absolute => {
+                format!("{:<width$}", msg.timestamp.format("%H:%M:%S"), width = ts_width)
+            }
+            TimestampMode::Relative => {
+                let d = msg
+                    .timestamp
+                    .signed_duration_since(first_ts)
+                    .num_milliseconds();
+                format!(
+                    "{:<width$}",
+                    format!("+{:.3}s", d as f64 / 1000.0),
+                    width = ts_width
+                )
+            }
+            TimestampMode::Hidden => String::new(),
+        };
+
+        let label = format_message_label(msg);
+
+        let sty = match color_mode {
+            ColorMode::Method => message_style(msg),
+            ColorMode::CallId => {
+                let ci = msg.call_id().unwrap_or("");
+                let i =
+                    ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % cid_colors.len();
+                Style::default().fg(cid_colors[i])
+            }
+            ColorMode::CSeq => {
+                let cn = msg.cseq().map(|(n, _)| n).unwrap_or(0);
+                Style::default().fg(cid_colors[(cn as usize) % cid_colors.len()])
+            }
+        };
+
+        let sel = selected_msg == Some(mi);
+        let style = if sel {
+            sty.add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            sty
+        };
+
+        let src = format!("{}:{}", msg.src_addr, msg.src_port);
+        let is_left_to_right = src == left_addr;
+
+        let mut pdd_note = None;
+        if !pdd_done
+            && let Some(p) = pdd_ms
+            && !msg.is_request
+            && msg.status_code == Some(180)
+        {
+            pdd_note = Some(format!("  PDD: {p}ms"));
+            pdd_done = true;
+        }
+
+        let mut extra_lines = Vec::new();
+
+        // SDP info lines
+        if sdp_mode != SdpDisplayMode::None
+            && let Some(ss) = msg.sdp()
+        {
+            let ind = " ".repeat(ts_width + 1);
+            match sdp_mode {
+                SdpDisplayMode::Summary => {
+                    let c = format_sdp_codecs(&ss);
+                    if !c.is_empty() {
+                        extra_lines.push((
+                            format!("{ind} Codecs: {c}"),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                    }
+                }
+                SdpDisplayMode::Full => {
+                    let bt = String::from_utf8_lossy(&msg.body);
+                    for sl in bt.lines() {
+                        extra_lines.push((
+                            format!("{ind}  {sl}"),
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
+                        ));
+                    }
+                }
+                SdpDisplayMode::None => {}
+            }
+        }
+
+        // RTP marker
+        if show_rtp {
+            if !msg.is_request && msg.status_code == Some(200) {
+                in_call = true;
+            }
+            if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
+                extra_lines.push((
+                    format!(
+                        "{}\u{2500}\u{2500}\u{2500}\u{2500} RTP stream active \u{2500}\u{2500}\u{2500}\u{2500}",
+                        " ".repeat(ts_width + 1)
+                    ),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                in_call = false;
+            }
+        }
+
+        result.push(FormattedMessage {
+            timestamp,
+            label,
+            style,
+            is_left_to_right,
+            pdd_note,
+            extra_lines,
+            selected: sel,
+        });
+    }
+
+    (left_addr, right_addr, result)
+}
+
+/// Render a call flow ladder diagram by painting directly into the terminal buffer.
+///
+/// Instead of building `Line`/`Span` objects and rendering via `Paragraph`,
+/// this writes characters at exact `(x, y)` coordinates in the buffer,
+/// guaranteeing perfect column alignment regardless of character widths.
+pub fn render_call_flow_direct(
+    frame: &mut Frame,
+    area: Rect,
+    messages: &[FormattedMessage],
+    scroll_offset: usize,
+    left_label: &str,
+    right_label: &str,
+) {
+    let buf = frame.buffer_mut();
+    let width = area.width;
+    let height = area.height;
+
+    if width < 30 || height < 5 {
+        buf.set_string(
+            area.x,
+            area.y,
+            "Terminal too small",
+            Style::default().fg(Color::DarkGray),
+        );
+        return;
+    }
+
+    // Fixed column positions — mirrors the original layout:
+    //   [timestamp 10] [left_pipe 1] [arrow_width] [right_pipe 1] [pdd ~15]
+    let ts_col = area.x;
+    let left_pipe = area.x + TS_COL_WIDTH as u16; // col 10
+    // Reserve ~15 chars after the right pipe for PDD annotations
+    let right_pipe = area.x + width.saturating_sub(16);
+    let arrow_start = left_pipe + 1;
+    let arrow_end = right_pipe;
+    let arrow_width = (arrow_end.saturating_sub(arrow_start)) as usize;
+
+    if arrow_width < 10 {
+        buf.set_string(
+            area.x,
+            area.y,
+            "Terminal too narrow for ladder",
+            Style::default().fg(Color::DarkGray),
+        );
+        return;
+    }
+
+    let label_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+    let pipe_style = Style::default().fg(Color::DarkGray);
+
+    // Row 0: Endpoint labels centered around their pipe positions
+    let y = area.y;
+    let left_lbl = truncate(left_label, 25);
+    let left_x = left_pipe.saturating_sub(left_lbl.len() as u16 / 2);
+    buf.set_string(left_x, y, &left_lbl, label_style);
+
+    let right_lbl = truncate(right_label, 25);
+    let right_x = right_pipe.saturating_sub(right_lbl.len() as u16 / 2);
+    buf.set_string(right_x, y, &right_lbl, label_style);
+
+    // Row 1: Pipe line
+    let y = area.y + 1;
+    buf.set_string(left_pipe, y, "|", pipe_style);
+    buf.set_string(right_pipe, y, "|", pipe_style);
+
+    // Message rows: we expand each FormattedMessage into 1 + extra_lines rows
+    let mut row: usize = 2;
+    // Track the logical row for scrolling (each message contributes 1 + extra_lines.len())
+    let mut logical_row: usize = 0;
+    let max_row = (height as usize).saturating_sub(1); // leave room for closing pipes
+
+    for msg in messages {
+        let msg_rows = 1 + msg.extra_lines.len();
+
+        // Skip if entirely before the scroll window
+        if logical_row + msg_rows <= scroll_offset {
+            logical_row += msg_rows;
+            continue;
+        }
+
+        // Render the main arrow row (may be partially scrolled)
+        if logical_row >= scroll_offset && row < max_row {
+            let y = area.y + row as u16;
+
+            // Timestamp
+            if !msg.timestamp.is_empty() {
+                buf.set_string(ts_col, y, &msg.timestamp, Style::default().fg(Color::DarkGray));
+            }
+
+            // Pipes at fixed positions
+            buf.set_string(left_pipe, y, "|", pipe_style);
+            buf.set_string(right_pipe, y, "|", pipe_style);
+
+            // Arrow between pipes
+            let arrow = if msg.is_left_to_right {
+                format_arrow_right(&msg.label, arrow_width.saturating_sub(1))
+            } else {
+                format_arrow_left(&msg.label, arrow_width.saturating_sub(1))
+            };
+            buf.set_string(arrow_start, y, &arrow, msg.style);
+
+            // PDD annotation after right pipe
+            if let Some(ref pdd) = msg.pdd_note {
+                buf.set_string(right_pipe + 1, y, pdd, Style::default().fg(Color::Magenta));
+            }
+
+            // Selected marker
+            if msg.selected {
+                let marker_x = right_pipe + 1 + msg.pdd_note.as_ref().map_or(0, |s| s.len() as u16);
+                if marker_x + 12 <= area.x + width {
+                    buf.set_string(
+                        marker_x,
+                        y,
+                        "  [SELECTED]",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    );
+                }
+            }
+
+            row += 1;
+        } else if logical_row < scroll_offset {
+            // This main row is scrolled off; advance logical but not visual
+            // (extra lines handled below)
+        }
+
+        // Render extra lines (SDP, RTP markers)
+        for (ei, (text, style)) in msg.extra_lines.iter().enumerate() {
+            let extra_logical = logical_row + 1 + ei;
+            if extra_logical >= scroll_offset && row < max_row {
+                let y = area.y + row as u16;
+                buf.set_string(area.x, y, text, *style);
+                row += 1;
+            }
+        }
+
+        logical_row += msg_rows;
+
+        if row >= max_row {
+            break;
+        }
+    }
+
+    // Closing pipe line
+    if row < height as usize {
+        let y = area.y + row as u16;
+        buf.set_string(left_pipe, y, "|", pipe_style);
+        buf.set_string(right_pipe, y, "|", pipe_style);
+    }
+}
+
+/// Render call flow with a fallback "not found" message using direct buffer painting.
+///
+/// This is the TUI entry point that replaces the Paragraph-based `render_call_flow_lines`.
+pub fn render_call_flow_direct_or_empty(
+    frame: &mut Frame,
+    area: Rect,
+    messages: Option<&(String, String, Vec<FormattedMessage>)>,
+    scroll_offset: usize,
+) {
+    match messages {
+        Some((left, right, msgs)) => {
+            render_call_flow_direct(frame, area, msgs, scroll_offset, left, right);
+        }
+        None => {
+            let buf = frame.buffer_mut();
+            buf.set_string(
+                area.x,
+                area.y,
+                "Dialog not found or empty.",
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+    }
+}
+
 // ── Ladder formatting ───────────────────────────────────────────────
 
 /// Format all messages in a dialog as ladder diagram lines.

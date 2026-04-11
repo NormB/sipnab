@@ -11,12 +11,12 @@ expression: output
    3   INV┌ Save Capture ────────────────────────────────────────────┐:10
           │                                                          │
           │  Save to: /tmp/sipnab_20240615_120000.pcap               │
+          │  Format:  [PCAP]  PCAP-NG  TXT      (Tab)                │
           │                                                          │
           │  Dialogs: 3 (0 selected)                                 │
           │  Messages: 8                                             │
           │                                                          │
-          │                                                          │
-          │  [Enter] Save  [Esc] Cancel                              │
+          │  [Enter] Save  [Tab] Format  [Esc] Cancel                │
           │                                                          │
           │                                                          │
           └──────────────────────────────────────────────────────────┘
@@ -25,4 +25,4 @@ expression: output
 
 
 
-Enter Save  Esc Cancel
+Enter Save  Tab Format  Esc Cancel
