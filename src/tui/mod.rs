@@ -954,7 +954,8 @@ fn centered_popup(area: Rect, width: u16, height: u16) -> Rect {
 
 /// Render the save dialog as a centered popup overlay.
 fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let popup_area = centered_popup(area, 60, 12);
+    let popup_width = 70.min(area.width.saturating_sub(4));
+    let popup_area = centered_popup(area, popup_width, 12);
 
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
@@ -1002,17 +1003,55 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     );
     let msg_info = format!("  Messages: {}", app.save_message_count);
 
-    let lines: Vec<Line<'_>> = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Save to: ", Style::default().fg(Color::Cyan)),
-            Span::styled(
-                app.save_path.clone(),
+    // Build the path display with a visible cursor (reverse video at cursor position)
+    let path = &app.save_path;
+    let cursor = app.save_cursor.min(path.len());
+    let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
+        "  Save to: ",
+        Style::default().fg(Color::Cyan),
+    )];
+    if path.is_empty() {
+        path_spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::White).fg(Color::Black),
+        ));
+    } else {
+        // Text before cursor
+        if cursor > 0 {
+            path_spans.push(Span::styled(
+                path[..cursor].to_string(),
                 Style::default()
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD),
-            ),
-        ]),
+            ));
+        }
+        // Cursor character (reverse video)
+        if cursor < path.len() {
+            path_spans.push(Span::styled(
+                path[cursor..cursor + 1].to_string(),
+                Style::default().bg(Color::White).fg(Color::Black),
+            ));
+            // Text after cursor
+            if cursor + 1 < path.len() {
+                path_spans.push(Span::styled(
+                    path[cursor + 1..].to_string(),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        } else {
+            // Cursor at end — show block cursor
+            path_spans.push(Span::styled(
+                " ",
+                Style::default().bg(Color::White).fg(Color::Black),
+            ));
+        }
+    }
+
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(path_spans),
         Line::from(fmt_spans),
         Line::from(""),
         Line::from(Span::styled(
