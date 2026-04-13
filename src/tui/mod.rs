@@ -411,6 +411,11 @@ impl FilterDialogState {
         self.cursor_pos = 0;
     }
 
+    /// Return the currently focused field index (for testing).
+    pub fn focused_field(&self) -> usize {
+        self.focused_field
+    }
+
     /// Whether all fields are empty and no methods are checked.
     #[allow(dead_code)]
     fn is_empty(&self) -> bool {
@@ -486,7 +491,7 @@ pub struct App {
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
     /// Structured filter dialog state (preserved between opens).
-    filter_dialog: FilterDialogState,
+    pub filter_dialog: FilterDialogState,
     /// Active filter expression (applied to the call list).
     active_filter: Option<FilterExpr>,
     /// Human-readable text of the active filter (for the status bar).
