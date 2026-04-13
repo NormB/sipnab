@@ -131,6 +131,7 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
@@ -157,7 +158,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE")
     }
 
@@ -178,7 +179,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse response")
     }
 
@@ -194,7 +195,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse BYE")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse BYE")
     }
 
     #[test]

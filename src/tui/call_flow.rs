@@ -1246,6 +1246,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
 
     #[test]
     fn format_arrow_right_contains_label() {
@@ -1287,7 +1288,7 @@ mod tests {
             IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("parse ok");
 

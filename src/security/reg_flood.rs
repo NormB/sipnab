@@ -150,6 +150,7 @@ impl RegFloodDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -184,7 +185,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse")
+        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse")
     }
 
     #[test]
@@ -252,7 +253,7 @@ mod tests {
             b"",
         );
         let resp =
-            parse_sip(&raw, ts(), localhost(), attacker_ip(), 5060, 5060, "UDP").expect("parse");
+            parse_sip(&raw, ts(), localhost(), attacker_ip(), 5060, 5060, TransportProto::Udp).expect("parse");
         detector.check(&resp);
 
         // Verify the attacker's state includes the auth failure

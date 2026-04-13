@@ -695,6 +695,7 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
 
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::dialog::DialogState;
@@ -723,7 +724,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
         SipDialog::new(&msg).expect("should create dialog")
     }

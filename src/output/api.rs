@@ -778,7 +778,7 @@ mod tests {
                 b"",
             );
             let msg =
-                crate::sip::parser::parse_sip(&raw, ts, localhost, localhost, 5060, 5060, "UDP")
+                crate::sip::parser::parse_sip(&raw, ts, localhost, localhost, 5060, 5060, TransportProto::Udp)
                     .expect("parse");
             ds.process_message(msg);
         }

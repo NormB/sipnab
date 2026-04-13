@@ -359,6 +359,7 @@ fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::rtp::diagnosis::MediaDiagnosis;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
@@ -393,7 +394,7 @@ mod tests {
             ],
             b"",
         );
-        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, "UDP")
+        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         let raw_ringing = build_sip(
@@ -414,7 +415,7 @@ mod tests {
             localhost(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
 
@@ -429,7 +430,7 @@ mod tests {
             ],
             b"",
         );
-        let ok = parse_sip(&raw_ok, t2, localhost(), localhost(), 5060, 5060, "UDP")
+        let ok = parse_sip(&raw_ok, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         let mut d = SipDialog::new(&invite).expect("should create");

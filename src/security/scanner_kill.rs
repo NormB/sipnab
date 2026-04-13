@@ -111,6 +111,7 @@ fn simple_hash(data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -146,7 +147,7 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, "UDP").expect("parse")
+        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse")
     }
 
     fn make_options() -> SipMessage {
@@ -162,7 +163,7 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, "UDP").expect("parse")
+        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse")
     }
 
     #[test]
@@ -244,7 +245,7 @@ mod tests {
             ],
         );
         let msg =
-            parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, "UDP").expect("parse");
+            parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse");
         assert!(build_scanner_response(&msg, 200).is_none());
     }
 

@@ -725,19 +725,13 @@ fn tui_process_packet(
     cli: &Cli,
     no_rtp: bool,
 ) {
-    let transport_str = match pp.transport {
-        TransportProto::Udp => "UDP",
-        TransportProto::Tcp => "TCP",
-        TransportProto::Sctp => "SCTP",
-    };
-
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
     let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
     let effective_transport = if ws_payload.is_some() {
-        "WS"
+        TransportProto::Ws
     } else {
-        transport_str
+        pp.transport
     };
 
     // Try SIP detection first — parse OUTSIDE the lock, then do a quick
@@ -1303,12 +1297,10 @@ fn process_parsed_packet(
 
     // Try SIP detection first
     if sip::is_sip_message(effective_payload) {
-        let transport_str = match pp.transport {
-            TransportProto::Udp => "UDP",
-            TransportProto::Tcp if ws_payload.is_some() => "WS",
-            TransportProto::Tcp if tls_decrypted => "TLS",
-            TransportProto::Tcp => "TCP",
-            TransportProto::Sctp => "SCTP",
+        let effective_transport = match pp.transport {
+            TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
+            TransportProto::Tcp if tls_decrypted => TransportProto::Tls,
+            other => other,
         };
 
         match sip::parse_sip(
@@ -1318,7 +1310,7 @@ fn process_parsed_packet(
             pp.dst_addr,
             pp.src_port,
             pp.dst_port,
-            transport_str,
+            effective_transport,
         ) {
             Ok(sip_msg) => {
                 *sip_count += 1;
@@ -1907,11 +1899,9 @@ fn mirror_to_shared_stores(
     let ws_payload = try_websocket_unwrap(pp);
     let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
 
-    let transport_str = match pp.transport {
-        TransportProto::Udp => "UDP",
-        TransportProto::Tcp if ws_payload.is_some() => "WS",
-        TransportProto::Tcp => "TCP",
-        TransportProto::Sctp => "SCTP",
+    let effective_transport = match pp.transport {
+        TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
+        other => other,
     };
 
     // Mirror SIP messages
@@ -1923,7 +1913,7 @@ fn mirror_to_shared_stores(
             pp.dst_addr,
             pp.src_port,
             pp.dst_port,
-            transport_str,
+            effective_transport,
         ) {
             let mut ds = dialog_store.write();
             ds.process_message(sip_msg.clone());

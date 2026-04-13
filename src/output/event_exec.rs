@@ -267,6 +267,7 @@ fn migrate_template_vars(template: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::dialog::SipDialog;
@@ -296,7 +297,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
         SipDialog::new(&msg).expect("should create dialog")
     }

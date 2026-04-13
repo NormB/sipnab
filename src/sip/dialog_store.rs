@@ -82,7 +82,7 @@ impl DialogStore {
             update_state(dialog, &msg);
 
             // Update timing
-            update_timing(&mut dialog.timing, &msg, &dialog.method.clone());
+            update_timing(&mut dialog.timing, &msg, &dialog.method);
 
             // Track SDP
             track_sdp(&mut dialog.sdp_timeline, &msg);
@@ -103,7 +103,7 @@ impl DialogStore {
             // Create the new dialog
             if let Some(mut dialog) = SipDialog::new(&msg) {
                 // Update timing for the initial message
-                update_timing(&mut dialog.timing, &msg, &dialog.method.clone());
+                update_timing(&mut dialog.timing, &msg, &dialog.method);
 
                 // Track SDP for the initial message
                 track_sdp(&mut dialog.sdp_timeline, &msg);
@@ -217,19 +217,20 @@ impl DialogStore {
     }
 
     /// Evict the oldest dialog (first in the vector) to make room.
+    ///
+    /// Uses swap_remove for O(1) deletion instead of O(n) shift + full
+    /// index rebuild.
     fn evict_oldest(&mut self) {
         if self.dialogs.is_empty() {
             return;
         }
 
-        // Remove the first dialog
-        let evicted = self.dialogs.remove(0);
-        self.index.remove(&evicted.call_id);
+        self.index.remove(&self.dialogs[0].call_id);
+        self.dialogs.swap_remove(0);
 
-        // Rebuild the index since all indices shifted by -1
-        self.index.clear();
-        for (idx, dialog) in self.dialogs.iter().enumerate() {
-            self.index.insert(dialog.call_id.clone(), idx);
+        // If we swapped an element into index 0, update its index entry
+        if !self.dialogs.is_empty() {
+            self.index.insert(self.dialogs[0].call_id.clone(), 0);
         }
     }
 }
@@ -275,6 +276,7 @@ fn cseq_key(msg: &SipMessage) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -301,7 +303,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE")
     }
 
@@ -317,7 +319,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse 200 OK")
     }
 
@@ -333,7 +335,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse BYE")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse BYE")
     }
 
     #[test]
@@ -465,7 +467,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         store.process_message(msg);
@@ -529,7 +531,7 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse")
+            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
         };
         store.process_message(trying);
 
@@ -546,7 +548,7 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, "UDP").expect("should parse")
+            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
         };
         store.process_message(ringing);
 
@@ -569,7 +571,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE with X-Call-ID")
     }
 

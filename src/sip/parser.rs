@@ -4,11 +4,13 @@
 //! response first-lines, header folding (RFC 3261 SS7.3.1), compact header
 //! form expansion, and body extraction with Content-Length validation.
 
+use std::borrow::Cow;
 use std::net::IpAddr;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
+use crate::capture::parse::TransportProto;
 use super::message::{SipHeader, SipMessage};
 
 /// Mapping from single-character compact header names to canonical long forms
@@ -47,7 +49,7 @@ pub fn parse_sip(
     dst_addr: IpAddr,
     src_port: u16,
     dst_port: u16,
-    transport: &str,
+    transport: TransportProto,
 ) -> Result<SipMessage> {
     if data.is_empty() {
         anyhow::bail!("Empty data is not a SIP message");
@@ -83,7 +85,7 @@ pub fn parse_sip(
         dst_addr,
         src_port,
         dst_port,
-        transport: transport.to_string(),
+        transport,
     })
 }
 
@@ -276,16 +278,16 @@ fn parse_header_line(line: &str) -> Option<SipHeader> {
 ///
 /// Single-character names are looked up in the compact header mapping table.
 /// Multi-character names are returned as-is (preserving original casing).
-fn expand_compact_header(name: &str) -> String {
+fn expand_compact_header(name: &str) -> Cow<'static, str> {
     if name.len() == 1 {
         let ch = name.as_bytes()[0].to_ascii_lowercase();
         for &(compact, long) in COMPACT_HEADERS {
             if ch == compact {
-                return long.to_string();
+                return Cow::Borrowed(long);
             }
         }
     }
-    name.to_string()
+    Cow::Owned(name.to_string())
 }
 
 /// Find the position of the first `\r\n` in `data`.
@@ -335,7 +337,7 @@ mod tests {
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse INVITE");
 
@@ -384,7 +386,7 @@ mod tests {
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse 200 OK");
 
@@ -418,7 +420,7 @@ mod tests {
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse compact headers");
 
@@ -449,7 +451,7 @@ Call-ID: folding-test@example.com\r\n\
 Content-Length: 0\r\n\
 \r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, "UDP")
+        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
             .expect("should parse folded headers");
 
         let via = sip.via_headers();
@@ -482,7 +484,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse multiple Via");
 
@@ -508,7 +510,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse CSeq");
 
@@ -533,7 +535,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse body");
 
@@ -556,7 +558,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
         assert_eq!(sip.from_user(), Some("1001".to_string()));
@@ -577,7 +579,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
         assert_eq!(sip.to_user(), Some("1002".to_string()));
@@ -588,7 +590,7 @@ Content-Length: 0\r\n\
         // Has a first line and one header but no \r\n\r\n separator
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP x\r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, "UDP")
+        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
             .expect("partial parse should succeed");
 
         assert!(sip.is_request);
@@ -607,7 +609,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         );
         assert!(result.is_err(), "Binary garbage should return an error");
     }
@@ -617,7 +619,7 @@ Content-Length: 0\r\n\
         // Headers end with \r\n but no blank line separator
         let msg = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP host\r\nContent-Length: 0\r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, "UDP")
+        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
             .expect("should parse with empty body");
 
         assert!(!sip.is_request);
@@ -629,7 +631,7 @@ Content-Length: 0\r\n\
     #[test]
     fn non_sip_data() {
         let msg = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let result = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 80, 80, "TCP");
+        let result = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 80, 80, TransportProto::Tcp);
         assert!(result.is_err());
     }
 
@@ -648,7 +650,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
 
@@ -659,7 +661,7 @@ Content-Length: 0\r\n\
 
     #[test]
     fn empty_data_returns_error() {
-        let result = parse_sip(b"", ts(), localhost_v4(), localhost_v4(), 5060, 5060, "UDP");
+        let result = parse_sip(b"", ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp);
         assert!(result.is_err());
     }
 
@@ -682,7 +684,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
 
@@ -705,7 +707,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse");
 
@@ -721,7 +723,7 @@ Via: SIP/2.0/UDP host.example.com\r\n\
 Content-Length: 0\r\n\
 \r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, "UDP")
+        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
             .expect("should parse tab-folded header");
 
         let via = sip.via_headers();
@@ -744,7 +746,7 @@ Content-Length: 0\r\n\
             localhost_v4(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("should parse with error flag");
 

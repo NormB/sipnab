@@ -194,6 +194,7 @@ fn extract_param<'a>(header: &'a str, param_name: &str) -> Option<&'a str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -221,7 +222,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP").expect("parse 401")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
     }
 
     fn make_401_no_qop() -> SipMessage {
@@ -237,7 +238,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP").expect("parse 401")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
     }
 
     fn make_401_good() -> SipMessage {
@@ -253,7 +254,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP").expect("parse 401")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
     }
 
     #[test]
@@ -333,7 +334,7 @@ mod tests {
             b"",
         );
         let msg =
-            parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP").expect("parse");
+            parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
 
         let alerts = detector.check(&msg);
         assert!(
