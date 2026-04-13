@@ -2528,22 +2528,40 @@ fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             if app.filter_dialog.is_checkbox_focused() {
                 app.filter_dialog.checkbox_down();
+                app.status_error = Some(format!(
+                    "CB_DOWN ff={}", app.filter_dialog.focused_field()
+                ));
             } else {
                 app.filter_dialog.focus_next();
+                app.status_error = Some(format!(
+                    "FOCUS_NEXT ff={}", app.filter_dialog.focused_field()
+                ));
             }
         }
         KeyCode::Up => {
             if app.filter_dialog.is_checkbox_focused() {
                 app.filter_dialog.checkbox_up();
+                app.status_error = Some(format!(
+                    "CB_UP ff={}", app.filter_dialog.focused_field()
+                ));
             } else {
                 app.filter_dialog.focus_prev();
+                app.status_error = Some(format!(
+                    "FOCUS_PREV ff={}", app.filter_dialog.focused_field()
+                ));
             }
         }
         KeyCode::Right if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.checkbox_right();
+            app.status_error = Some(format!(
+                "CB_RIGHT ff={}", app.filter_dialog.focused_field()
+            ));
         }
         KeyCode::Left if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.checkbox_left();
+            app.status_error = Some(format!(
+                "CB_LEFT ff={}", app.filter_dialog.focused_field()
+            ));
         }
         KeyCode::F(9) => {
             // F9 clears all fields and the active filter, closes popup
