@@ -304,6 +304,50 @@ impl FilterDialogState {
         }
     }
 
+    /// Move checkbox focus down one row (same column).
+    fn checkbox_down(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            let next = idx + 2;
+            if next < FILTER_METHODS.len() {
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + next;
+            } else {
+                // Move to buttons row
+                self.focused_field = FILTER_BUTTON_IDX;
+            }
+        }
+    }
+
+    /// Move checkbox focus up one row (same column).
+    fn checkbox_up(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            if idx >= 2 {
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + (idx - 2);
+            } else {
+                // Move up to last text field
+                self.focused_field = FILTER_TEXT_FIELD_COUNT - 1;
+                self.sync_cursor();
+            }
+        }
+    }
+
+    /// Move checkbox focus right one column (same row).
+    fn checkbox_right(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            if idx % 2 == 0 && idx + 1 < FILTER_METHODS.len() {
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + idx + 1;
+            }
+        }
+    }
+
+    /// Move checkbox focus left one column (same row).
+    fn checkbox_left(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            if idx % 2 == 1 {
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + idx - 1;
+            }
+        }
+    }
+
     /// Toggle the currently focused checkbox.
     fn toggle_checkbox(&mut self) {
         if let Some(idx) = self.checkbox_index() {
@@ -2477,10 +2521,24 @@ fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
             app.filter_dialog.focus_prev();
         }
         KeyCode::Down => {
-            app.filter_dialog.focus_next();
+            if app.filter_dialog.is_checkbox_focused() {
+                app.filter_dialog.checkbox_down();
+            } else {
+                app.filter_dialog.focus_next();
+            }
         }
         KeyCode::Up => {
-            app.filter_dialog.focus_prev();
+            if app.filter_dialog.is_checkbox_focused() {
+                app.filter_dialog.checkbox_up();
+            } else {
+                app.filter_dialog.focus_prev();
+            }
+        }
+        KeyCode::Right if app.filter_dialog.is_checkbox_focused() => {
+            app.filter_dialog.checkbox_right();
+        }
+        KeyCode::Left if app.filter_dialog.is_checkbox_focused() => {
+            app.filter_dialog.checkbox_left();
         }
         KeyCode::F(9) => {
             // F9 clears all fields and the active filter, closes popup
