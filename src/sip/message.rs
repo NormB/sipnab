@@ -4,17 +4,20 @@
 //! and normalized. Accessor methods provide convenient typed access to
 //! commonly used headers.
 
+use std::borrow::Cow;
 use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 
+use crate::capture::parse::TransportProto;
 use super::sdp::{self, SdpSession};
 
 /// A single SIP header: name (normalized to long form) and value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SipHeader {
     /// Header name, normalized to canonical long form (e.g., `"Call-ID"` not `"i"`).
-    pub name: String,
+    /// Compact-form headers use `Cow::Borrowed` from static strings; others are owned.
+    pub name: Cow<'static, str>,
     /// Header value with leading/trailing whitespace trimmed.
     pub value: String,
 }
@@ -54,8 +57,8 @@ pub struct SipMessage {
     pub src_port: u16,
     /// Destination transport port.
     pub dst_port: u16,
-    /// Transport protocol name: `"UDP"`, `"TCP"`, `"TLS"`, or `"WS"`.
-    pub transport: String,
+    /// Transport protocol used to carry this message.
+    pub transport: TransportProto,
 }
 
 impl SipMessage {
@@ -82,11 +85,12 @@ impl SipMessage {
     /// Parse the `CSeq` header into its sequence number and method.
     ///
     /// Returns `None` if the header is missing or malformed.
-    pub fn cseq(&self) -> Option<(u32, String)> {
+    /// The method string borrows from the header value (zero allocation).
+    pub fn cseq(&self) -> Option<(u32, &str)> {
         let val = self.header("CSeq")?;
         let mut parts = val.trim().splitn(2, char::is_whitespace);
         let num: u32 = parts.next()?.parse().ok()?;
-        let method = parts.next()?.trim().to_string();
+        let method = parts.next()?.trim();
         if method.is_empty() {
             return None;
         }
@@ -125,19 +129,17 @@ impl SipMessage {
 
     /// Look up a header by name (case-insensitive). Returns the first match.
     pub fn header(&self, name: &str) -> Option<&str> {
-        let name_lower = name.to_ascii_lowercase();
         self.headers
             .iter()
-            .find(|h| h.name.to_ascii_lowercase() == name_lower)
+            .find(|h| h.name.eq_ignore_ascii_case(name))
             .map(|h| h.value.as_str())
     }
 
     /// Return all header values matching `name` (case-insensitive).
     pub fn headers_by_name(&self, name: &str) -> Vec<&str> {
-        let name_lower = name.to_ascii_lowercase();
         self.headers
             .iter()
-            .filter(|h| h.name.to_ascii_lowercase() == name_lower)
+            .filter(|h| h.name.eq_ignore_ascii_case(name))
             .map(|h| h.value.as_str())
             .collect()
     }

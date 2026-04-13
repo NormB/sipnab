@@ -153,7 +153,7 @@ pub fn format_sip_message(
 
     // Transport tag
     out.push(' ');
-    out.push_str(&msg.transport);
+    out.push_str(msg.transport.as_str());
     out.push('\n');
 
     // Payload (optional, with truncation)
@@ -196,6 +196,7 @@ fn should_use_color(mode: ColorMode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -221,7 +222,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE")
     }
 
@@ -237,7 +238,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse response")
     }
 
@@ -307,7 +308,7 @@ mod tests {
             ],
             body,
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         let opts = OutputOptions {

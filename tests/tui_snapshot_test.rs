@@ -13,6 +13,7 @@ mod tui_snapshots {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use sipnab::capture::parse::TransportProto;
     use sipnab::rtp::parser::RtpHeader;
     use sipnab::rtp::stream_store::StreamStore;
     use sipnab::sip::SipMessage;
@@ -76,7 +77,7 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, "UDP").expect("parse INVITE")
+        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse INVITE")
     }
 
     fn make_response(
@@ -96,7 +97,7 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp)
             .expect("parse response")
     }
 
@@ -111,7 +112,7 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, "UDP").expect("parse BYE")
+        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse BYE")
     }
 
     // ── Helper: create App with 3 test dialogs ─────────────────────────

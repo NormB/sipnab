@@ -96,7 +96,7 @@ impl SipDialog {
         } else {
             // For responses, derive the method from CSeq
             msg.cseq()
-                .map(|(_, m)| m)
+                .map(|(_, m)| m.to_string())
                 .unwrap_or_else(|| "UNKNOWN".to_string())
         };
 
@@ -274,6 +274,7 @@ fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
@@ -299,7 +300,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE")
     }
 
@@ -315,7 +316,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse response")
     }
 
@@ -331,7 +332,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse request")
     }
 
@@ -413,7 +414,7 @@ mod tests {
             ],
             b"",
         );
-        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse REGISTER");
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
@@ -438,7 +439,7 @@ mod tests {
             ],
             b"",
         );
-        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse REGISTER");
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
@@ -462,7 +463,7 @@ mod tests {
             ],
             b"",
         );
-        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse SUBSCRIBE");
 
         let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
@@ -487,7 +488,7 @@ mod tests {
             ],
             b"",
         );
-        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse SUBSCRIBE");
 
         let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
@@ -535,7 +536,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         assert!(SipDialog::new(&msg).is_none());

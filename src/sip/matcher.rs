@@ -239,6 +239,7 @@ fn compile_pattern(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -274,7 +275,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("test INVITE should parse")
     }
 
@@ -291,7 +292,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("test REGISTER should parse")
     }
 
@@ -476,7 +477,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         assert!(matcher.matches(&msg));
@@ -497,7 +498,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         assert!(!matcher.matches(&msg));
@@ -520,7 +521,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         assert!(matcher.matches(&msg));
@@ -611,7 +612,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         assert!(!matcher.matches(&msg));

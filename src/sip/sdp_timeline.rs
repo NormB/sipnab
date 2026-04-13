@@ -184,6 +184,7 @@ fn detect_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
@@ -211,7 +212,7 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse INVITE with SDP")
     }
 
@@ -228,7 +229,7 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse 200 OK with SDP")
     }
 
@@ -420,7 +421,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         track_sdp(&mut timeline, &msg);

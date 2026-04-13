@@ -173,6 +173,7 @@ impl SipMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
 
     /// Build a minimal SHAKEN JWT with the given claims.
     ///
@@ -307,7 +308,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             src_port: 5060,
             dst_port: 5060,
-            transport: "UDP".to_string(),
+            transport: TransportProto::Udp,
         };
 
         assert!(msg.stir_shaken().is_none());
@@ -329,7 +330,7 @@ mod tests {
             reason: None,
             request_uri: Some("sip:bob@example.com".to_string()),
             headers: vec![SipHeader {
-                name: "Identity".to_string(),
+                name: "Identity".into(),
                 value: identity_value,
             }],
             body: Vec::new(),
@@ -339,7 +340,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
             src_port: 5060,
             dst_port: 5060,
-            transport: "UDP".to_string(),
+            transport: TransportProto::Udp,
         };
 
         let info = msg

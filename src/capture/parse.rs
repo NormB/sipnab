@@ -24,15 +24,28 @@ pub enum TransportProto {
     Tcp,
     /// Stream Control Transmission Protocol (stub for future use).
     Sctp,
+    /// TLS-encrypted TCP.
+    Tls,
+    /// WebSocket (SIP over WS).
+    Ws,
+}
+
+impl TransportProto {
+    /// Return the canonical string representation without allocating.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Udp => "UDP",
+            Self::Tcp => "TCP",
+            Self::Sctp => "SCTP",
+            Self::Tls => "TLS",
+            Self::Ws => "WS",
+        }
+    }
 }
 
 impl std::fmt::Display for TransportProto {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Udp => write!(f, "UDP"),
-            Self::Tcp => write!(f, "TCP"),
-            Self::Sctp => write!(f, "SCTP"),
-        }
+        f.write_str(self.as_str())
     }
 }
 

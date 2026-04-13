@@ -11,6 +11,7 @@ mod tui_state {
     use chrono::{DateTime, TimeDelta, Utc};
     use crossterm::event::KeyCode;
 
+    use sipnab::capture::parse::TransportProto;
     use sipnab::sip::SipMessage;
     use sipnab::sip::parser::parse_sip;
     use sipnab::tui::{App, Popup, View};
@@ -52,7 +53,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, "UDP").expect("parse INVITE")
+        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse INVITE")
     }
 
     fn make_response(
@@ -72,7 +73,7 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, "UDP")
+        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp)
             .expect("parse response")
     }
 

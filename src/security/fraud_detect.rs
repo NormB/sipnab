@@ -305,6 +305,7 @@ fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::dialog::SipDialog;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
@@ -337,7 +338,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("should parse")
+        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
     }
 
     fn make_dialog_from_msg(msg: &SipMessage) -> SipDialog {
@@ -434,7 +435,7 @@ mod tests {
             localhost(),
             5060,
             5060,
-            "UDP",
+            TransportProto::Udp,
         )
         .expect("parse");
         let dialog = make_dialog_from_msg(&msg);
@@ -461,7 +462,7 @@ mod tests {
             b"",
         );
         let msg =
-            parse_sip(&raw, ts(), attacker_ip(), localhost(), 5060, 5060, "UDP").expect("parse");
+            parse_sip(&raw, ts(), attacker_ip(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
         let dialog = make_dialog_from_msg(&msg);
 
         assert!(

@@ -210,6 +210,7 @@ impl ScannerDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -241,7 +242,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("should parse")
+        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
     }
 
     fn make_request_no_ua(method: &str, src: IpAddr, call_id: &str) -> SipMessage {
@@ -256,7 +257,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("should parse")
+        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
     }
 
     #[test]
@@ -340,7 +341,7 @@ mod tests {
             b"",
         );
         let msg =
-            parse_sip(&raw, ts(), scanner_ip(), localhost(), 5060, 5060, "UDP").expect("parse");
+            parse_sip(&raw, ts(), scanner_ip(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
         assert!(
             detector.check(&msg).is_none(),
             "responses should not trigger scanner alerts"

@@ -180,6 +180,7 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
@@ -209,7 +210,7 @@ mod tests {
             ],
             b"",
         );
-        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, "UDP")
+        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         let raw_bye = build_sip(
@@ -223,7 +224,7 @@ mod tests {
             ],
             b"",
         );
-        let bye = parse_sip(&raw_bye, t1, localhost(), localhost(), 5060, 5060, "UDP")
+        let bye = parse_sip(&raw_bye, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
 
         let mut dialog = SipDialog::new(&invite).expect("should create dialog");

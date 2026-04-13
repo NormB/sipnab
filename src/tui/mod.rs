@@ -1934,7 +1934,7 @@ fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
 /// If any rows are multi-selected, only those dialogs are removed.
 /// Otherwise all dialogs are cleared.
 fn clear_calls(app: &mut App) {
-    let selected_rows = app.call_list.selected_rows().to_vec();
+    let selected_rows: Vec<usize> = app.call_list.selected_rows().iter().copied().collect();
 
     if selected_rows.is_empty() {
         // Clear everything

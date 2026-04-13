@@ -6,6 +6,7 @@
 //! show diagnosis warning indicators.
 
 use std::cmp::Ordering;
+use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
@@ -86,7 +87,7 @@ pub struct CallListState {
     /// Sort in ascending order.
     sort_ascending: bool,
     /// Set of selected (multi-select) row indices.
-    selected_rows: Vec<usize>,
+    selected_rows: HashSet<usize>,
     /// Per-column visibility (indexed by [`ALL_COLUMNS`] order).
     pub visible_columns: [bool; 10],
     /// Whether the column selector popup is open.
@@ -106,7 +107,7 @@ impl CallListState {
             table_state,
             sort_column: SortColumn::Index,
             sort_ascending: true,
-            selected_rows: Vec::new(),
+            selected_rows: HashSet::new(),
             visible_columns: [true; 10],
             column_selector_open: false,
             column_selector_cursor: 0,
@@ -169,10 +170,8 @@ impl CallListState {
     /// Toggle multi-selection for the currently selected row.
     pub fn toggle_selection(&mut self) {
         let idx = self.selected();
-        if let Some(pos) = self.selected_rows.iter().position(|&r| r == idx) {
-            self.selected_rows.remove(pos);
-        } else {
-            self.selected_rows.push(idx);
+        if !self.selected_rows.remove(&idx) {
+            self.selected_rows.insert(idx);
         }
     }
 
@@ -268,7 +267,7 @@ impl CallListState {
     }
 
     /// Return the multi-selected row indices.
-    pub fn selected_rows(&self) -> &[usize] {
+    pub fn selected_rows(&self) -> &HashSet<usize> {
         &self.selected_rows
     }
 }
@@ -548,19 +547,19 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Format a [`DialogState`] as a short display string.
-fn format_state(state: &DialogState) -> String {
+fn format_state(state: &DialogState) -> &'static str {
     match state {
-        DialogState::Trying => "Trying".to_string(),
-        DialogState::Ringing => "Ringing".to_string(),
-        DialogState::InCall => "InCall".to_string(),
-        DialogState::Completed => "Completed".to_string(),
-        DialogState::Cancelled => "Cancelled".to_string(),
-        DialogState::Failed => "FAILED".to_string(),
-        DialogState::Registered => "Registered".to_string(),
-        DialogState::Expired => "Expired".to_string(),
-        DialogState::Pending => "Pending".to_string(),
-        DialogState::Active => "Active".to_string(),
-        DialogState::Terminated => "Terminated".to_string(),
+        DialogState::Trying => "Trying",
+        DialogState::Ringing => "Ringing",
+        DialogState::InCall => "InCall",
+        DialogState::Completed => "Completed",
+        DialogState::Cancelled => "Cancelled",
+        DialogState::Failed => "FAILED",
+        DialogState::Registered => "Registered",
+        DialogState::Expired => "Expired",
+        DialogState::Pending => "Pending",
+        DialogState::Active => "Active",
+        DialogState::Terminated => "Terminated",
     }
 }
 
@@ -586,7 +585,7 @@ fn sort_dialogs(
                 .cmp(b.to_user.as_deref().unwrap_or("")),
             SortColumn::Source => a.src_addr.cmp(&b.src_addr),
             SortColumn::Destination => a.dst_addr.cmp(&b.dst_addr),
-            SortColumn::State => format_state(&a.state).cmp(&format_state(&b.state)),
+            SortColumn::State => format_state(&a.state).cmp(format_state(&b.state)),
             SortColumn::Messages => a.messages.len().cmp(&b.messages.len()),
             SortColumn::Date => a.created_at.cmp(&b.created_at),
             SortColumn::Pdd => a
@@ -716,7 +715,8 @@ mod tests {
         let mut state = CallListState::new();
         assert!(state.selected_rows.is_empty());
         state.toggle_selection();
-        assert_eq!(state.selected_rows, vec![0]);
+        assert!(state.selected_rows.contains(&0));
+        assert_eq!(state.selected_rows.len(), 1);
         state.toggle_selection();
         assert!(state.selected_rows.is_empty());
     }

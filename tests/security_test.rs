@@ -11,6 +11,7 @@ use sipnab::output::event_exec::EventExecEngine;
 use sipnab::output::fail2ban;
 use sipnab::output::prometheus::{PrometheusMetrics, format_metrics};
 use sipnab::security::alerting::{AlertEngine, AlertRule, sanitize_log_value};
+use sipnab::capture::parse::TransportProto;
 use sipnab::security::{FraudDetector, RegFloodDetector, ScannerDetector};
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -61,7 +62,7 @@ fn exec_template_no_command_injection_via_call_id() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     // The SIP message holds the malicious value as-is
@@ -103,7 +104,7 @@ fn exec_template_no_injection_via_from_header() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     // The From header retains the malicious value
@@ -148,7 +149,7 @@ fn exec_template_no_injection_via_backticks() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -182,7 +183,7 @@ fn exec_template_no_injection_via_semicolon() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -216,7 +217,7 @@ fn exec_template_no_injection_via_pipe() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -265,7 +266,7 @@ fn template_migration_converts_percent_to_env_vars() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("should parse");
 
     // Use legacy %call_id syntax -- it should be migrated to $SIPNAB_CALL_ID
@@ -323,7 +324,7 @@ fn scanner_detect_rejects_oversized_regex() {
         localhost(),
         5060,
         5060,
-        "UDP",
+        TransportProto::Udp,
     )
     .expect("parse");
 
@@ -409,7 +410,7 @@ fn scanner_detector_caps_behavioral_entries() {
             b"",
         );
         let msg =
-            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
         detector.check(&msg);
     }
 
@@ -438,7 +439,7 @@ fn fraud_detector_caps_call_pattern_entries() {
             b"",
         );
         let msg =
-            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
         let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
         detector.check(&msg, &dialog);
     }
@@ -466,7 +467,7 @@ fn reg_flood_detector_caps_source_entries() {
             b"",
         );
         let msg =
-            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, "UDP").expect("parse");
+            sipnab::sip::parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
         detector.check(&msg);
     }
     // No panic or OOM -- the cap held.
@@ -506,7 +507,7 @@ fn event_exec_reaps_completed_children() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("parse");
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
 
@@ -553,7 +554,7 @@ fn event_exec_queue_depth_recovers_after_reaping() {
         ],
         b"",
     );
-    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+    let msg = sipnab::sip::parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
         .expect("parse");
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
 

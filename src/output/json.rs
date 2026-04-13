@@ -161,7 +161,7 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         src_port: msg.src_port,
         dst: msg.dst_addr.to_string(),
         dst_port: msg.dst_port,
-        transport: &msg.transport,
+        transport: msg.transport.as_str(),
         is_request: msg.is_request,
         method: msg.method.as_deref(),
         status_code: msg.status_code,
@@ -313,6 +313,7 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::parser::parse_sip;
@@ -342,7 +343,7 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP").expect("should parse")
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
     }
 
     fn make_stream() -> RtpStream {
@@ -396,7 +397,7 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, "UDP")
+        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
             .expect("should parse");
         let json_str = message_to_json(&msg);
         let parsed: serde_json::Value =
