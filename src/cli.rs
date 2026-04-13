@@ -6,6 +6,28 @@
 
 use clap::Parser;
 
+/// Build a version string including git commit hash and optional tag.
+///
+/// Examples: "0.1.0-alpha.1 (abc12345)", "0.1.0-alpha.1 (v0.1.0 abc12345-dirty)"
+pub fn build_version() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    let commit = env!("SIPNAB_GIT_COMMIT");
+    let tag = env!("SIPNAB_GIT_TAG");
+    let dirty = env!("SIPNAB_GIT_DIRTY");
+
+    if commit.is_empty() {
+        return version.to_string();
+    }
+    let mut parts = String::new();
+    if !tag.is_empty() {
+        parts.push_str(tag);
+        parts.push(' ');
+    }
+    parts.push_str(commit);
+    parts.push_str(dirty);
+    format!("{version} ({parts})")
+}
+
 /// SIP & RTP capture, analysis, and security tool.
 ///
 /// sipnab unifies the capabilities of sngrep and sipgrep into a single binary
@@ -14,7 +36,7 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "sipnab",
-    version,
+    version = build_version(),
     about = "SIP & RTP capture, analysis, and security",
     long_about = "sipnab — SIP & RTP capture, analysis, and security tool.\n\n\
         Unifies sngrep + sipgrep with added security analysis, RTP quality \

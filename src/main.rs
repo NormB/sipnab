@@ -13,7 +13,7 @@ use parking_lot::RwLock;
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::websocket;
 use sipnab::capture::{self, CaptureConfig, CaptureSource, ParsedPacket, PcapWriter};
-use sipnab::cli::Cli;
+use sipnab::cli::{self, Cli};
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
 use sipnab::privilege;
@@ -69,7 +69,7 @@ fn main() {
 
     // 6. --dump-config: print version + effective config, then exit
     if cli.dump_config {
-        println!("sipnab v{}", env!("CARGO_PKG_VERSION"));
+        println!("sipnab v{}", cli::build_version());
         println!();
         if let Some(ref source) = loaded.source {
             println!("# Loaded from: {}", source.display());

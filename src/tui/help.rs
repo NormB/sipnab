@@ -48,7 +48,7 @@ CALL FLOW:
   t                Cycle timestamps (absolute / delta-prev / delta-first)
   c                Cycle colors (method / call-id / cseq)
   R                Toggle detail panel
-  9/0, +/-         Resize ladder/detail split
+  9/0, +/-, ←/→    Resize ladder/detail split
   [ / ]            Scroll detail panel
   F2               Save
   F4, x            Extended multi-leg flow
