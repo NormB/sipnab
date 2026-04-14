@@ -1,10 +1,7 @@
 +++
-title = "Theme Customization"
-description = "Customize sipnab's TUI colors with 11 semantic color slots. Includes Catppuccin, Nord, Solarized, and high-contrast presets."
+title = "Theme Guide"
 weight = 6
-
-[extra]
-weight = 6
+description = "Customize sipnab's TUI colors with 11 semantic color slots and preset themes."
 +++
 
 sipnab's TUI uses 11 semantic color slots that control every visual element. Customize them via the `[theme]` section in your config file.

@@ -1,232 +1,79 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Documentation -- sipnab</title>
-  <meta name="description" content="sipnab documentation hub -- installation, CLI reference, configuration, keybindings, filter DSL, themes, and REST API.">
-  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
-</head>
-<body>
-
-<!-- Header -->
-<header class="site-header">
-  <div style="display:flex;align-items:center;gap:1em;">
-    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
-      <span></span><span></span><span></span>
-    </button>
-    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
-  </div>
-  <div class="header-links">
-    <a href="https://www.sipnab.com/docs/">Docs</a>
-    
-    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </a>
-    
-    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-    </a>
-  </div>
-</header>
-
-<!-- Search overlay -->
-
-<div id="search-overlay" class="search-overlay" style="display:none;">
-  <div class="search-container">
-    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
-    <div id="search-results" class="search-results"></div>
-  </div>
-</div>
-
-
-<!-- Sidebar overlay (mobile) -->
-<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
-
-<!-- Sidebar -->
-<aside class="sidebar">
-  <nav>
-    <div class="nav-section">
-      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Getting Started</div>
-      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Reference</div>
-      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
-      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
-      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
-      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
-      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
-      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Project</div>
-      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
-      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
-    </div>
-  </nav>
-</aside>
-
-<!-- Main content -->
-<main class="main">
-  
-<h1>Documentation</h1>
-<p>Complete documentation for sipnab, the SIP &amp; RTP capture, analysis, and security tool.</p>
-
-
-
-<div class="section-listing">
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;install&#x2F;" class="section-listing-item">
-    <h3>Installation</h3>
-    
-    <p>How to install sipnab: pre-built binaries, cargo, package managers, Docker, and building from source.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;" class="section-listing-item">
-    <h3>CLI Reference</h3>
-    
-    <p>Complete reference for all sipnab command-line flags, organized by functional group.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;config&#x2F;" class="section-listing-item">
-    <h3>Configuration</h3>
-    
-    <p>sipnab TOML configuration file reference: capture, display, filter, security, limits, privilege, theme, and keybinding settings.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;keybindings&#x2F;" class="section-listing-item">
-    <h3>Keybindings</h3>
-    
-    <p>Complete keyboard shortcut reference for sipnab&#x27;s interactive TUI.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;" class="section-listing-item">
-    <h3>Filter DSL</h3>
-    
-    <p>sipnab filter DSL reference: grammar, fields, operators, named aliases, and example queries.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;" class="section-listing-item">
-    <h3>Theme Customization</h3>
-    
-    <p>Customize sipnab&#x27;s TUI colors with 11 semantic color slots. Includes Catppuccin, Nord, Solarized, and high-contrast presets.</p>
-    
-  </a>
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;api&#x2F;" class="section-listing-item">
-    <h3>REST API</h3>
-    
-    <p>sipnab REST API reference: 8 endpoints with authentication, rate limiting, and Prometheus metrics.</p>
-    
-  </a>
-  
-</div>
-
-
-</main>
-
-<script>
-function toggleSidebar() {
-  document.querySelector('.sidebar').classList.toggle('open');
-  document.querySelector('.sidebar-overlay').classList.toggle('visible');
-}
-
-
-function toggleSearch(e) {
-  e.preventDefault();
-  var overlay = document.getElementById('search-overlay');
-  if (overlay.style.display === 'none') {
-    overlay.style.display = 'flex';
-    document.getElementById('search-input').focus();
-  } else {
-    overlay.style.display = 'none';
-  }
-}
-
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    document.getElementById('search-overlay').style.display = 'none';
-  }
-  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
-    e.preventDefault();
-    document.getElementById('search-overlay').style.display = 'flex';
-    document.getElementById('search-input').focus();
-  }
-});
-
-var searchIndex = null;
-document.getElementById('search-input').addEventListener('input', function() {
-  var query = this.value;
-  var resultsDiv = document.getElementById('search-results');
-  if (query.length < 2) { resultsDiv.textContent = ''; return; }
-  if (!searchIndex) {
-    fetch('https://www.sipnab.com/search_index.en.json')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        searchIndex = elasticlunr.Index.load(data);
-        doSearch(query);
-      });
-  } else {
-    doSearch(query);
-  }
-});
-
-function doSearch(query) {
-  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
-  var resultsDiv = document.getElementById('search-results');
-  resultsDiv.textContent = '';
-  if (results.length === 0) {
-    var noResults = document.createElement('div');
-    noResults.className = 'search-no-results';
-    noResults.textContent = 'No results found.';
-    resultsDiv.appendChild(noResults);
-    return;
-  }
-  results.slice(0, 10).forEach(function(r) {
-    var item = searchIndex.documentStore.getDoc(r.ref);
-    var link = document.createElement('a');
-    link.href = r.ref;
-    link.className = 'search-result-item';
-    var title = document.createElement('div');
-    title.className = 'search-result-title';
-    title.textContent = item.title;
-    link.appendChild(title);
-    if (item.body) {
-      var body = document.createElement('div');
-      body.className = 'search-result-body';
-      body.textContent = item.body.substring(0, 150) + '...';
-      link.appendChild(body);
-    }
-    resultsDiv.appendChild(link);
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Documentation -- sipnab</title><meta content="SIP &amp;amp; RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust." name=description><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Documentation</h1><p>sipnab is a SIP & RTP capture, analysis, and security tool that unifies <a href=https://github.com/irontec/sngrep rel=external>sngrep</a> and <a href=https://github.com/sipcapture/sipgrep rel=external>sipgrep</a> into a single Rust binary with first-class RTP quality monitoring, VoIP diagnostic aliases, and security analysis.<div class=doc-index><a class=doc-index-item href=https://www.sipnab.com/docs/install/> <h3>Installation</h3> <p>Install sipnab from pre-built binaries, cargo, package managers, or source.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/cli/> <h3>CLI Reference</h3> <p>Complete flag reference for sipnab, organized by functional group.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/config/> <h3>Config Reference</h3> <p>TOML configuration file format and all configurable sections.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/keybindings/> <h3>Keybindings</h3> <p>Complete TUI keyboard shortcut reference for all views.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/filter-dsl/> <h3>Filter DSL</h3> <p>Declarative filter language for matching SIP dialogs and RTP streams.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/theme/> <h3>Theme Guide</h3> <p>Customize sipnab's TUI colors with 11 semantic color slots and preset themes.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/api/> <h3>REST API & Metrics</h3> <p>REST API endpoints, Prometheus metrics, and HEP protocol integration.</p> </a></div></article></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class=footer-col><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a></div><div class=footer-col><span class=footer-credit>Built by Norm Brandinger</span></div></div></footer><script>// Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
   });
-}
 
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
 
-document.querySelectorAll('pre').forEach(function(block) {
-  block.addEventListener('click', function() {
-    var code = block.querySelector('code');
-    if (code) {
-      navigator.clipboard.writeText(code.textContent).then(function() {
-        block.classList.add('copied');
-        setTimeout(function() { block.classList.remove('copied'); }, 1500);
-      });
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
     }
-  });
-});
-</script>
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
 
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
 
-<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
 
-
-</body>
-</html>
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();</script>

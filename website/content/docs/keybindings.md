@@ -1,15 +1,12 @@
 +++
 title = "Keybindings"
-description = "Complete keyboard shortcut reference for sipnab's interactive TUI."
 weight = 4
-
-[extra]
-weight = 4
+description = "Complete TUI keyboard shortcut reference for all views."
 +++
 
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
-Keys marked with **(configurable)** can be remapped via the `[keybindings]` config section. See [Configuration](@/docs/config.md) for details. All other keys are hardcoded.
+Keys marked with **(configurable)** can be remapped via the `[keybindings]` config section. See [Config Reference](@/docs/config.md) for details. All other keys are hardcoded.
 
 ## Global
 

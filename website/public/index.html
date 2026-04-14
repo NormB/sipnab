@@ -1,267 +1,118 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>sipnab -- SIP &amp; RTP capture, analysis, and security</title>
-  <meta name="description" content="SIP &amp; RTP capture, analysis, and security. The modern replacement for sngrep + sipgrep, written in Rust.">
-  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
-</head>
-<body>
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>sipnab -- SIP & RTP analysis tool</title><meta content="SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust." name=description><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><section class=hero><div class=hero-inner><h1 class=hero-title>sipnab</h1><p class=hero-tagline>The SIP & RTP analysis tool for people who ship voice infrastructure.<p class=hero-sub>One binary. Zero dependencies. Replaces sngrep + sipgrep.<br>Built in Rust for speed, safety, and correctness.<div class=hero-actions><a class="btn btn-primary" href=https://www.sipnab.com/docs/install/>Get Started →</a><a class="btn btn-secondary" href=https://github.com/NormB/sipnab>View on GitHub →</a></div></div><div class=terminal-wrap><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>sipnab -I voip-debug.pcap</span></div><pre class=terminal-body><span class=t-muted>  Call-ID                         From         To           State     Duration  MOS</span>
+<span class=t-selected>▶</span> <span class=t-accent>abc123@pbx.example.com</span>          1001         1002         <span class=t-good>InCall</span>    00:02:34  <span class=t-good>4.2</span>
+  <span class=t-accent>def456@pbx.example.com</span>          1003         1004         <span class=t-warn>Ringing</span>   00:00:03  <span class=t-muted>--</span>
+  <span class=t-accent>ghi789@trunk.carrier.net</span>        +15551234    +15559876    <span class=t-bad>Failed</span>    00:00:00  <span class=t-muted>--</span>
+  <span class=t-accent>jkl012@pbx.example.com</span>          1005         1006         <span class=t-good>Completed</span> 00:05:12  <span class=t-bad>2.1</span>
+  <span class=t-accent>mno345@sbc.example.com</span>          +15557777    +15558888    <span class=t-good>InCall</span>    00:01:45  <span class=t-good>4.4</span>
 
-<!-- Header -->
-<header class="site-header">
-  <div style="display:flex;align-items:center;gap:1em;">
-    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
-      <span></span><span></span><span></span>
-    </button>
-    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
-  </div>
-  <div class="header-links">
-    <a href="https://www.sipnab.com/docs/">Docs</a>
-    
-    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </a>
-    
-    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-    </a>
-  </div>
-</header>
+<span class=t-muted>───────────────────────────────── Call Flow ─────────────────────────────────</span>
 
-<!-- Search overlay -->
+  <span class=t-header>10.0.0.1:5060</span>                                           <span class=t-header>10.0.0.2:5060</span>
+       <span class=t-muted>│</span>                                                        <span class=t-muted>│</span>
+       <span class=t-muted>│</span> <span class=t-good>────── INVITE (PCMU,PCMA) ──────></span>                      <span class=t-muted>│</span>
+       <span class=t-muted>│</span>          <span class=t-accent>+0.000s</span>                                       <span class=t-muted>│</span>
+       <span class=t-muted>│</span> <span class=t-warn>&lt;──────── 100 Trying ───────────</span>                        <span class=t-muted>│</span>
+       <span class=t-muted>│</span>          <span class=t-good>+0.003s</span>                                       <span class=t-muted>│</span>
+       <span class=t-muted>│</span> <span class=t-warn>&lt;──────── 180 Ringing ──────────</span>                        <span class=t-muted>│</span>
+       <span class=t-muted>│</span>          <span class=t-good>+0.847s</span>   <span class=t-accent>PDD: 0.847s</span>                       <span class=t-muted>│</span>
+       <span class=t-muted>│</span> <span class=t-good>&lt;──────── 200 OK ───────────────</span>                        <span class=t-muted>│</span>
+       <span class=t-muted>│</span>          <span class=t-good>+2.134s</span>                                       <span class=t-muted>│</span>
+       <span class=t-muted>│</span> <span class=t-good>────── ACK ─────────────────────></span>                      <span class=t-muted>│</span>
+       <span class=t-muted>│</span>          <span class=t-good>+0.001s</span>                                       <span class=t-muted>│</span></pre></div></div></section><section class=features id=features><div class=features-inner><div class=feature-card><div class=feature-icon><svg viewbox="0 0 24 24" fill=none height=32 stroke=currentColor stroke-width=1.5 width=32><rect height=14 rx=2 width=20 x=2 y=3 /><line x1=8 x2=16 y1=21 y2=21 /><line x1=12 x2=12 y1=17 y2=21 /></svg></div><h3>See Everything</h3><p>Interactive TUI with multi-participant ladder diagrams, auth collapse, retransmit folding, mark+delta timing. Three timestamp modes, message diff, split view with resizable panels. Every sngrep keybinding works.</div><div class=feature-card><div class=feature-icon><svg viewbox="0 0 24 24" fill=none height=32 stroke=currentColor stroke-width=1.5 width=32><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div><h3>Analyze Everything</h3><p>First-class RTP: jitter, loss, MOS per stream. RTCP XR. Comfort noise detection. One-way audio diagnosis. NAT mismatch detection. SDP offer/answer timeline. Post-dial delay and setup time measurement.</div><div class=feature-card><div class=feature-icon><svg viewbox="0 0 24 24" fill=none height=32 stroke=currentColor stroke-width=1.5 width=32><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1=12 x2=12 y1=15 y2=3 /></svg></div><h3>Export Everything</h3><p>PCAP, PCAP-NG, TXT, Mermaid sequence diagrams, JSON, NDJSON, Markdown call reports, fail2ban format, Wireshark filters, tshark display filters. Pipe NDJSON to jq for custom pipelines.</div></div></section><section class=quickstart id=quickstart><div class=quickstart-inner><h2>Quick Start</h2><div class=code-block-wrap><pre><code class=language-bash><span class=t-muted># Install</span>
+cargo install sipnab
 
-<div id="search-overlay" class="search-overlay" style="display:none;">
-  <div class="search-container">
-    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
-    <div id="search-results" class="search-results"></div>
-  </div>
-</div>
+<span class=t-muted># Capture live SIP traffic</span>
+sudo sipnab -d eth0
 
+<span class=t-muted># Analyze a pcap file</span>
+sipnab -I capture.pcap
 
-<!-- Sidebar overlay (mobile) -->
-<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+<span class=t-muted># CLI mode with JSON output</span>
+sipnab -N --json -I capture.pcap
 
-<!-- Sidebar -->
-<aside class="sidebar">
-  <nav>
-    <div class="nav-section">
-      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="active">Home</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Getting Started</div>
-      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Reference</div>
-      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
-      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
-      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
-      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
-      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
-      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Project</div>
-      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
-      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
-    </div>
-  </nav>
-</aside>
+<span class=t-muted># Show only problematic calls</span>
+sudo sipnab -N -d eth0 --problems
 
-<!-- Main content -->
-<main class="main">
-  
-<section class="hero">
-  <h1 class="hero-title">sip<span class="accent">nab</span></h1>
-  <p class="hero-tagline">SIP & RTP capture, analysis, and security</p>
-  <p class="hero-oneliner">The modern replacement for sngrep + sipgrep, written in Rust</p>
-  <div class="hero-install">
-    <pre><code>cargo install sipnab</code></pre>
-  </div>
-</section>
-<section class="feature-highlights">
-  <div class="feature-card">
-    <h3>Interactive TUI</h3>
-    <p>sngrep-compatible call list with multi-participant ladder diagrams, SDP inspection, RTP stream overlay, message diff, and Mermaid export.</p>
-  </div>
-  <div class="feature-card">
-    <h3>First-Class RTP</h3>
-    <p>Per-stream jitter, packet loss, MOS quality estimation, DTMF extraction, and one-way audio detection -- built in, on by default.</p>
-  </div>
-  <div class="feature-card">
-    <h3>Security Analysis</h3>
-    <p>Scanner detection and kill, registration flood alerting, digest credential leak detection, toll fraud heuristics, and STIR/SHAKEN validation.</p>
-  </div>
-</section>
-<hr>
-<section id="quickstart">
-<h2 id="quick-start">Quick Start</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture live SIP traffic (opens interactive TUI)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Analyze a pcap file</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># CLI mode with JSON output</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N --json -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter specific calls</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39; AND rtp.mos &lt; 3.0&quot;</span></span></code></pre>
-<p>Without arguments, sipnab opens the interactive TUI and captures on the default
-interface. Add <code>-N</code> for non-interactive (CLI) mode, <code>-I</code> to read pcap files, or
-combine both with <code>--json</code> for pipeline-friendly NDJSON output.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Show only problematic calls (retransmits, timeouts, errors)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --problems</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect SIP scanners</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --kill-scanner</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Export RTP quality metrics to Prometheus</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --metrics</span><span style="color: #AAD94C;"> 0.0.0.0:9090</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by From/To with regex</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --from</span><span style="color: #AAD94C;"> alice</span><span style="color: #95E6CB;"> --to</span><span style="color: #AAD94C;"> bob</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Write capture to pcap while viewing</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -O</span><span style="color: #AAD94C;"> output.pcap</span></span></code></pre></section>
-<hr>
-<h2 id="features">Features</h2>
-<div class="feature-grid">
-  <div class="feature-item"><span class="check">&#10003;</span> Zero-copy SIP parser</div>
-  <div class="feature-item"><span class="check">&#10003;</span> Dialog state tracking</div>
-  <div class="feature-item"><span class="check">&#10003;</span> Filter DSL (24 fields, 7 operators)</div>
-  <div class="feature-item"><span class="check">&#10003;</span> TLS 1.2/1.3 decryption</div>
-  <div class="feature-item"><span class="check">&#10003;</span> SRTP decryption (SDES)</div>
-  <div class="feature-item"><span class="check">&#10003;</span> HEP v2/v3 support</div>
-  <div class="feature-item"><span class="check">&#10003;</span> REST API + Prometheus</div>
-  <div class="feature-item"><span class="check">&#10003;</span> Configurable theme + keybindings</div>
-  <div class="feature-item"><span class="check">&#10003;</span> Multi-leg B2BUA correlation</div>
-  <div class="feature-item"><span class="check">&#10003;</span> DTMF extraction (RFC 4733)</div>
-  <div class="feature-item"><span class="check">&#10003;</span> RTCP XR (RFC 3611) parsing</div>
-  <div class="feature-item"><span class="check">&#10003;</span> Mermaid diagram export</div>
-</div>
-<hr>
-<h2 id="architecture">Architecture</h2>
-<p>One parser, one dialog engine, one reassembly path. The mode flag only affects output:</p>
-<ul>
-<li><code>sipnab</code> -- interactive TUI (ratatui + crossterm)</li>
-<li><code>sipnab -N</code> -- CLI print mode (sipgrep-like)</li>
-<li><code>sipnab -N --json</code> -- NDJSON streaming for pipelines</li>
-</ul>
-<p>Capture threads own their reassembly state with no shared mutables. The main
-thread is the sole writer to the dialog and stream stores. Security features
-(scanner kill) run in isolated child processes. The API runs in its own process
-with no access to capture file descriptors or key material.</p>
-<hr>
-<h2 id="performance">Performance</h2>
-<table><thead><tr><th>Metric</th><th>Target</th></tr></thead><tbody>
-<tr><td>SIP parse throughput</td><td>&gt;= 100K pps</td></tr>
-<tr><td>RTP parse throughput</td><td>&gt;= 500K pps</td></tr>
-<tr><td>100K dialogs RSS</td><td>&lt;= 500 MB</td></tr>
-<tr><td>50K streams RSS</td><td>&lt;= 200 MB</td></tr>
-<tr><td>TUI redraw (100K dialogs)</td><td>&lt;= 5 ms</td></tr>
-<tr><td>Idle CPU</td><td>&lt; 0.5% core</td></tr>
-<tr><td>Default binary (musl, stripped)</td><td>&lt;= 5 MB</td></tr>
-</tbody></table>
+<span class=t-muted># Filter specific calls</span>
+sipnab --filter "from.user == '1001' AND rtp.mos &lt; 3.0"
 
-
-</main>
-
-<script>
-function toggleSidebar() {
-  document.querySelector('.sidebar').classList.toggle('open');
-  document.querySelector('.sidebar-overlay').classList.toggle('visible');
-}
-
-
-function toggleSearch(e) {
-  e.preventDefault();
-  var overlay = document.getElementById('search-overlay');
-  if (overlay.style.display === 'none') {
-    overlay.style.display = 'flex';
-    document.getElementById('search-input').focus();
-  } else {
-    overlay.style.display = 'none';
-  }
-}
-
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    document.getElementById('search-overlay').style.display = 'none';
-  }
-  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
-    e.preventDefault();
-    document.getElementById('search-overlay').style.display = 'flex';
-    document.getElementById('search-input').focus();
-  }
-});
-
-var searchIndex = null;
-document.getElementById('search-input').addEventListener('input', function() {
-  var query = this.value;
-  var resultsDiv = document.getElementById('search-results');
-  if (query.length < 2) { resultsDiv.textContent = ''; return; }
-  if (!searchIndex) {
-    fetch('https://www.sipnab.com/search_index.en.json')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        searchIndex = elasticlunr.Index.load(data);
-        doSearch(query);
-      });
-  } else {
-    doSearch(query);
-  }
-});
-
-function doSearch(query) {
-  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
-  var resultsDiv = document.getElementById('search-results');
-  resultsDiv.textContent = '';
-  if (results.length === 0) {
-    var noResults = document.createElement('div');
-    noResults.className = 'search-no-results';
-    noResults.textContent = 'No results found.';
-    resultsDiv.appendChild(noResults);
-    return;
-  }
-  results.slice(0, 10).forEach(function(r) {
-    var item = searchIndex.documentStore.getDoc(r.ref);
-    var link = document.createElement('a');
-    link.href = r.ref;
-    link.className = 'search-result-item';
-    var title = document.createElement('div');
-    title.className = 'search-result-title';
-    title.textContent = item.title;
-    link.appendChild(title);
-    if (item.body) {
-      var body = document.createElement('div');
-      body.className = 'search-result-body';
-      body.textContent = item.body.substring(0, 150) + '...';
-      link.appendChild(body);
-    }
-    resultsDiv.appendChild(link);
+<span class=t-muted># Detailed call report</span>
+sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre></div></div></section><section class=comparison id=comparison><div class=comparison-inner><h2>How sipnab Compares</h2><div class=comparison-table-wrap><table class=comparison-table><thead><tr><th>Capability<th>sipnab<th>sngrep<th>sipgrep<tbody><tr><td>Interactive TUI<td class=yes>Yes<td class=yes>Yes<td class=no>No<tr><td>CLI / batch mode<td class=yes>Yes<td class=no>No<td class=yes>Yes<tr><td>RTP quality (jitter, loss, MOS)<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>One-way audio detection<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>Filter DSL (27 fields, 7 operators)<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>Security (scanner detect, fraud, digest leak)<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>TLS/SRTP decryption<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>JSON/NDJSON output<td class=yes>Yes<td class=no>No<td class=no>No<tr><td>HEP v3 (Homer)<td class=yes>Yes<td class=yes>Yes<td class=no>No<tr><td>Memory safety<td class=yes>Rust<td class=no>C<td class=no>Perl</table></div></div></section><section class=arch-callout><div class=arch-inner><h2>Engineered for Production</h2><div class=arch-grid><div class=arch-item><span class=arch-stat>≥100K</span><span class=arch-label>SIP messages/sec parse throughput</span></div><div class=arch-item><span class=arch-stat>≥500K</span><span class=arch-label>RTP packets/sec parse throughput</span></div><div class=arch-item><span class=arch-stat>≤5 MB</span><span class=arch-label>Stripped binary (musl, static)</span></div><div class=arch-item><span class=arch-stat>&lt;0.5%</span><span class=arch-label>Idle CPU utilization</span></div></div></div></section></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class=footer-col><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a></div><div class=footer-col><span class=footer-credit>Built by Norm Brandinger</span></div></div></footer><script>// Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
   });
-}
 
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
 
-document.querySelectorAll('pre').forEach(function(block) {
-  block.addEventListener('click', function() {
-    var code = block.querySelector('code');
-    if (code) {
-      navigator.clipboard.writeText(code.textContent).then(function() {
-        block.classList.add('copied');
-        setTimeout(function() { block.classList.remove('copied'); }, 1500);
-      });
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
     }
-  });
-});
-</script>
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
 
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
 
-<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
 
-
-</body>
-</html>
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();</script>

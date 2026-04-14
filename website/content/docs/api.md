@@ -1,282 +1,130 @@
 +++
-title = "REST API"
-description = "sipnab REST API reference: 8 endpoints with authentication, rate limiting, and Prometheus metrics."
+title = "REST API & Metrics"
 weight = 7
-
-[extra]
-weight = 7
+description = "REST API endpoints, Prometheus metrics, and HEP protocol integration."
 +++
 
-sipnab provides a read-only REST API for querying active SIP dialogs and RTP streams. Requires the `api` feature flag at build time and the `--api` flag at runtime.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.
+
+## Enabling the API
+
+Build with the `api` feature:
 
 ```bash
-# Start sipnab with REST API on port 8080
-sipnab --api :8080 --api-key "your-secret-key" -d eth0
+cargo build --release --features api
+# or
+cargo build --release --features full
 ```
 
-## Overview
+Start with API and metrics endpoints:
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | No | Health check |
-| GET | `/v1/dialogs` | Yes | List dialogs (paginated, filterable) |
-| GET | `/v1/dialogs/:call_id` | Yes | Get single dialog with full detail |
-| GET | `/v1/dialogs/:call_id/report` | Yes | Get call diagnosis report |
-| GET | `/v1/streams` | Yes | List RTP streams (paginated, filterable) |
-| GET | `/v1/streams/:id` | Yes | Get single RTP stream by SSRC |
-| GET | `/v1/stats` | Yes | Aggregate statistics |
-| GET | `/metrics` | Yes | Prometheus exposition format |
-
-All responses include a `schema_version` field (currently `1`) for forward compatibility.
+```bash
+sipnab -d eth0 --api 127.0.0.1:8080 --api-key "your-secret-key" \
+  --metrics 127.0.0.1:9090 --metrics-auth "your-metrics-token"
+```
 
 ## Authentication
 
-If `--api-key` is provided (or the `SIPNAB_API_KEY` env var is set), all endpoints except `/health` require a Bearer token in the `Authorization` header.
+The REST API requires a bearer token passed via the `--api-key` flag or the `$SIPNAB_API_KEY` environment variable.
 
 ```bash
-curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/v1/dialogs
+curl -H "Authorization: Bearer your-secret-key" http://127.0.0.1:8080/api/v1/dialogs
 ```
 
-Missing or invalid keys return `401 Unauthorized`. Token comparison uses constant-time equality to prevent timing side-channel attacks.
+The metrics endpoint optionally requires a bearer token via `--metrics-auth`.
 
-If no API key is configured, all endpoints are accessible without authentication. The API binds to localhost by default (defense-in-depth).
+## API TLS
 
-## Rate Limiting
-
-Requests are rate-limited to **100 per second per source IP**. Excess requests return `503 Service Unavailable`. The rate limiter uses a sliding one-second window.
-
-Source IP is determined from the direct connection address only. `X-Forwarded-For` and `X-Real-IP` headers are not trusted (they are attacker-controlled).
-
-Maximum concurrent connections is controlled by `--api-max-conn` (default 100). When exceeded, new connections return `503 Service Unavailable`.
-
-## Endpoints
-
-### GET /health
-
-Health check. Always returns `200 OK` with body `ok`. No authentication required.
+Secure the API endpoint with TLS:
 
 ```bash
-curl http://localhost:8080/health
-# ok
+sipnab -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
+  --api-tls-cert /etc/sipnab/cert.pem --api-tls-key /etc/sipnab/key.pem
 ```
 
-### GET /v1/dialogs
+## Connection Limits
 
-List dialogs with optional filtering and pagination.
+The `--api-max-conn` flag (default: 100) limits concurrent API connections to prevent resource exhaustion.
 
-**Query Parameters:**
+## Prometheus Metrics
 
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `offset` | integer | `0` | Pagination offset |
-| `limit` | integer | `50` | Max results (capped at 1000) |
-| `state` | string | -- | Filter by dialog state: `Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled` |
-| `from` | string | -- | Filter by From user (regex) |
+When `--metrics` is specified, sipnab exposes a Prometheus-compatible `/metrics` endpoint.
 
-**Response:**
+Available metrics include:
 
-```json
-{
-  "schema_version": 1,
-  "total": 1523,
-  "offset": 0,
-  "limit": 50,
-  "dialogs": [
-    {
-      "call_id": "abc123@192.168.1.10",
-      "method": "INVITE",
-      "from_user": "1001",
-      "to_user": "1002",
-      "state": "InCall",
-      "msg_count": 6,
-      "first_seen": "2025-01-15T10:30:00Z",
-      "last_seen": "2025-01-15T10:30:45Z"
-    }
-  ]
-}
-```
+- **sipnab_dialogs_total** -- Total number of tracked dialogs
+- **sipnab_dialogs_active** -- Currently active dialogs
+- **sipnab_rtp_streams_total** -- Total RTP streams tracked
+- **sipnab_rtp_mos_histogram** -- MOS score distribution
+- **sipnab_packets_captured_total** -- Total packets captured
+- **sipnab_security_alerts_total** -- Security alerts by type
 
-**Example:**
+### Grafana Integration
+
+A sample Grafana dashboard JSON is included in the repository at `contrib/grafana-dashboard.json`.
+
+## HEP Protocol
+
+sipnab supports HEP v2/v3 (Homer Encapsulation Protocol) for integration with Homer/SIPCAPTURE.
+
+### Receiving HEP
 
 ```bash
-# List failed dialogs
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/dialogs?state=Failed&limit=10"
-
-# Filter by From user
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/dialogs?from=1001"
+sipnab -L 0.0.0.0:9060 -E
 ```
 
-### GET /v1/dialogs/:call\_id
-
-Get a single dialog with full detail, including all SIP messages, associated RTP streams, and media diagnosis.
-
-Returns the same JSON format as `sipnab -N --json --call-report`.
-
-Returns `404` if the Call-ID is not found.
+Restrict sources with `--hep-allow` and rate-limit with `--hep-rate-limit`:
 
 ```bash
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/dialogs/abc123@192.168.1.10"
+sipnab -L 0.0.0.0:9060 -E --hep-allow 10.0.0.0/24 --hep-rate-limit 25000
 ```
 
-### GET /v1/dialogs/:call\_id/report
+### Sending HEP
 
-Get a structured call diagnosis report in JSON format. Includes SIP transaction timing, RTP quality metrics, media diagnosis, and VoIP troubleshooting information.
-
-Returns `404` if the Call-ID is not found.
+Mirror captured traffic to a Homer collector:
 
 ```bash
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/dialogs/abc123@192.168.1.10/report"
+sipnab -d eth0 -H 10.0.0.50:9060
 ```
 
-**Response:**
+## Security Model
 
-```json
-{
-  "call_id": "abc123@192.168.1.10",
-  "state": "Completed",
-  "timing": {
-    "pdd_ms": 245,
-    "setup_time_ms": 1200,
-    "duration_ms": 45000
-  },
-  "rtp": {
-    "streams": 2,
-    "quality": {
-      "mos": 4.2,
-      "jitter_ms": 3.5,
-      "loss_pct": 0.1
-    }
-  },
-  "diagnosis": {
-    "one_way_audio": false,
-    "nat_mismatch": false,
-    "no_media": false
-  }
-}
-```
+- The API child process is isolated: no capture fd, no key material
+- All network listeners bind to localhost by default
+- Rate limiting on all listener endpoints
+- Bearer token authentication (required for API, optional for metrics)
+- TLS available for API endpoint
 
-### GET /v1/streams
+## Event Execution
 
-List RTP streams with optional filtering and pagination.
-
-**Query Parameters:**
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `offset` | integer | `0` | Pagination offset |
-| `limit` | integer | `50` | Max results (capped at 1000) |
-| `orphaned` | boolean | -- | Filter by orphaned status. `true` = only orphaned, `false` = only associated |
-| `mos_below` | float | -- | Filter streams with MOS below this threshold |
-
-**Example:**
+sipnab can execute external commands on dialog state changes or quality drops:
 
 ```bash
-# Find low-quality streams
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/streams?mos_below=3.0"
+# Run a script when any dialog changes state
+sipnab -d eth0 --on-dialog-exec "/usr/local/bin/sip-event.sh"
 
-# List orphaned streams (no associated SIP dialog)
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/streams?orphaned=true"
+# Run a script when RTP quality drops below threshold
+sipnab -d eth0 --on-quality-exec "/usr/local/bin/quality-alert.sh" \
+  --quality-threshold 3.0
+
+# Rate limit exec invocations (default: 10/sec)
+sipnab -d eth0 --on-dialog-exec "logger" --exec-rate-limit 5
 ```
 
-### GET /v1/streams/:id
+## Fail2ban Integration
 
-Get a single RTP stream by SSRC hex string. The `:id` parameter is the SSRC in hex format, with optional `0x` prefix.
-
-Returns `400` if the SSRC is not valid hex. Returns `404` if the stream is not found.
+Generate fail2ban-compatible output for SIP security events:
 
 ```bash
-# Both formats work
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/streams/0x12345678"
-
-curl -H "Authorization: Bearer $KEY" \
-  "http://localhost:8080/v1/streams/12345678"
+sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab-fail2ban.log
 ```
 
-### GET /v1/stats
+Configure fail2ban to watch the log file for scanner and flood events.
 
-Aggregate statistics across all tracked dialogs and streams.
+## Syslog Alerts
 
-**Response:**
-
-```json
-{
-  "schema_version": 1,
-  "dialogs": {
-    "total": 15230,
-    "active": 42,
-    "completed": 14500,
-    "failed": 688,
-    "cancelled": 0
-  },
-  "streams": {
-    "total": 28400,
-    "orphaned": 12
-  },
-  "timing": {
-    "pdd_p50_ms": 180,
-    "pdd_p95_ms": 1200,
-    "pdd_p99_ms": 3500
-  }
-}
-```
-
-### GET /metrics
-
-Prometheus exposition format metrics. Compatible with Prometheus, Grafana Agent, Victoria Metrics, and any OpenMetrics scraper.
-
-All metric names are prefixed with `sipnab_`.
-
-**Available Metrics:**
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `sipnab_dialogs_total` | counter | `state` | Total SIP dialogs by state |
-| `sipnab_messages_total` | counter | `method` | Total SIP messages by method |
-| `sipnab_responses_total` | counter | `code` | Total SIP responses by code class (2xx, 4xx, ...) |
-| `sipnab_rtp_streams_active` | gauge | -- | Currently active RTP streams |
-| `sipnab_rtp_streams_total` | counter | `status` | Total RTP streams by status |
-| `sipnab_capture_packets_total` | counter | -- | Total captured packets |
-| `sipnab_security_alerts_total` | counter | `type` | Security alerts by type |
-| `sipnab_pdd_seconds` | histogram | -- | Post-dial delay distribution |
-| `sipnab_mos_score` | histogram | -- | MOS score distribution |
-| `sipnab_jitter_ms` | histogram | -- | Jitter distribution |
-| `sipnab_loss_pct` | histogram | -- | Packet loss distribution |
-| `sipnab_reassembly_timeouts_total` | counter | -- | TCP reassembly timeouts |
-| `sipnab_diagnosis_total` | counter | `type` | Media diagnosis events (one_way_audio, nat_mismatch, ...) |
-
-**Example:**
+Send security alerts to syslog:
 
 ```bash
-curl -H "Authorization: Bearer $KEY" http://localhost:8080/metrics
+sipnab -d eth0 --kill-scanner --alert syslog --syslog
 ```
-
-**Prometheus Configuration:**
-
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: sipnab
-    scheme: http
-    bearer_token: your-secret-key
-    static_configs:
-      - targets: ['localhost:8080']
-```
-
-You can also enable a separate metrics-only endpoint with `--metrics` and `--metrics-auth`, independent of the REST API.
-
-## TLS
-
-The API supports TLS via `--api-tls-cert` and `--api-tls-key` flags. For production deployments, a TLS-terminating reverse proxy (nginx, HAProxy, Caddy) is recommended over direct TLS.
-
-Binding to a non-loopback address without TLS produces a warning at startup.
-
-## Process Isolation
-
-The API server runs in an isolated child process. It has no access to packet capture file descriptors or TLS key material. It communicates with the main process through shared read-only stores (DialogStore and StreamStore), protected by read-write locks.

@@ -1,20 +1,27 @@
 base_url = "https://www.sipnab.com"
 title = "sipnab"
-description = "SIP & RTP capture, analysis, and security"
-compile_sass = false
+description = "SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust."
+default_language = "en"
+compile_sass = true
 build_search_index = true
 generate_feeds = false
-
-[markdown.highlighting]
-theme = "ayu-dark"
-style = "inline"
+minify_html = true
 
 [search]
 include_title = true
 include_description = true
+include_path = true
 include_content = true
 index_format = "elasticlunr_json"
 
+[markdown]
+smart_punctuation = true
+
+[markdown.highlighting]
+enabled = true
+theme = "ayu-dark"
+
 [extra]
-github_url = "https://github.com/NormB/sipnab"
 version = "0.3.1"
+github_url = "https://github.com/NormB/sipnab"
+author = "Norm Brandinger"

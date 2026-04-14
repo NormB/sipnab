@@ -1,462 +1,91 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>REST API -- sipnab</title>
-  <meta name="description" content="sipnab REST API reference: 8 endpoints with authentication, rate limiting, and Prometheus metrics.">
-  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
-</head>
-<body>
-
-<!-- Header -->
-<header class="site-header">
-  <div style="display:flex;align-items:center;gap:1em;">
-    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
-      <span></span><span></span><span></span>
-    </button>
-    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
-  </div>
-  <div class="header-links">
-    <a href="https://www.sipnab.com/docs/">Docs</a>
-    
-    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </a>
-    
-    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-    </a>
-  </div>
-</header>
-
-<!-- Search overlay -->
-
-<div id="search-overlay" class="search-overlay" style="display:none;">
-  <div class="search-container">
-    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
-    <div id="search-results" class="search-results"></div>
-  </div>
-</div>
-
-
-<!-- Sidebar overlay (mobile) -->
-<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
-
-<!-- Sidebar -->
-<aside class="sidebar">
-  <nav>
-    <div class="nav-section">
-      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Getting Started</div>
-      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Reference</div>
-      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
-      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
-      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
-      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
-      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
-      <a href="https://www.sipnab.com/docs/api/" class="indent active">REST API</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Project</div>
-      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
-      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
-    </div>
-  </nav>
-</aside>
-
-<!-- Main content -->
-<main class="main">
-  
-<h1>REST API</h1>
-
-
-<nav class="toc">
-  <h4>On this page</h4>
-  <ul>
-    
-    <li><a href="#overview">Overview</a>
-      
-    </li>
-    
-    <li><a href="#authentication">Authentication</a>
-      
-    </li>
-    
-    <li><a href="#rate-limiting">Rate Limiting</a>
-      
-    </li>
-    
-    <li><a href="#endpoints">Endpoints</a>
-      
-      <ul>
-        
-        <li><a href="#get-health">GET &#x2F;health</a></li>
-        
-        <li><a href="#get-v1-dialogs">GET &#x2F;v1&#x2F;dialogs</a></li>
-        
-        <li><a href="#get-v1-dialogs-call-id">GET &#x2F;v1&#x2F;dialogs&#x2F;:call_id</a></li>
-        
-        <li><a href="#get-v1-dialogs-call-id-report">GET &#x2F;v1&#x2F;dialogs&#x2F;:call_id&#x2F;report</a></li>
-        
-        <li><a href="#get-v1-streams">GET &#x2F;v1&#x2F;streams</a></li>
-        
-        <li><a href="#get-v1-streams-id">GET &#x2F;v1&#x2F;streams&#x2F;:id</a></li>
-        
-        <li><a href="#get-v1-stats">GET &#x2F;v1&#x2F;stats</a></li>
-        
-        <li><a href="#get-metrics">GET &#x2F;metrics</a></li>
-        
-      </ul>
-      
-    </li>
-    
-    <li><a href="#tls">TLS</a>
-      
-    </li>
-    
-    <li><a href="#process-isolation">Process Isolation</a>
-      
-    </li>
-    
-  </ul>
-</nav>
-
-
-<p>sipnab provides a read-only REST API for querying active SIP dialogs and RTP streams. Requires the <code>api</code> feature flag at build time and the <code>--api</code> flag at runtime.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Start sipnab with REST API on port 8080</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --api</span><span style="color: #AAD94C;"> :8080</span><span style="color: #95E6CB;"> --api-key</span><span style="color: #AAD94C;"> &quot;your-secret-key&quot;</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span></span></code></pre><h2 id="overview">Overview</h2>
-<table><thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead><tbody>
-<tr><td>GET</td><td><code>/health</code></td><td>No</td><td>Health check</td></tr>
-<tr><td>GET</td><td><code>/v1/dialogs</code></td><td>Yes</td><td>List dialogs (paginated, filterable)</td></tr>
-<tr><td>GET</td><td><code>/v1/dialogs/:call_id</code></td><td>Yes</td><td>Get single dialog with full detail</td></tr>
-<tr><td>GET</td><td><code>/v1/dialogs/:call_id/report</code></td><td>Yes</td><td>Get call diagnosis report</td></tr>
-<tr><td>GET</td><td><code>/v1/streams</code></td><td>Yes</td><td>List RTP streams (paginated, filterable)</td></tr>
-<tr><td>GET</td><td><code>/v1/streams/:id</code></td><td>Yes</td><td>Get single RTP stream by SSRC</td></tr>
-<tr><td>GET</td><td><code>/v1/stats</code></td><td>Yes</td><td>Aggregate statistics</td></tr>
-<tr><td>GET</td><td><code>/metrics</code></td><td>Yes</td><td>Prometheus exposition format</td></tr>
-</tbody></table>
-<p>All responses include a <code>schema_version</code> field (currently <code>1</code>) for forward compatibility.</p>
-<h2 id="authentication">Authentication</h2>
-<p>If <code>--api-key</code> is provided (or the <code>SIPNAB_API_KEY</code> env var is set), all endpoints except <code>/health</code> require a Bearer token in the <code>Authorization</code> header.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer your-secret-key&quot; http://localhost:8080/v1/dialogs</span></span></code></pre>
-<p>Missing or invalid keys return <code>401 Unauthorized</code>. Token comparison uses constant-time equality to prevent timing side-channel attacks.</p>
-<p>If no API key is configured, all endpoints are accessible without authentication. The API binds to localhost by default (defense-in-depth).</p>
-<h2 id="rate-limiting">Rate Limiting</h2>
-<p>Requests are rate-limited to <strong>100 per second per source IP</strong>. Excess requests return <code>503 Service Unavailable</code>. The rate limiter uses a sliding one-second window.</p>
-<p>Source IP is determined from the direct connection address only. <code>X-Forwarded-For</code> and <code>X-Real-IP</code> headers are not trusted (they are attacker-controlled).</p>
-<p>Maximum concurrent connections is controlled by <code>--api-max-conn</code> (default 100). When exceeded, new connections return <code>503 Service Unavailable</code>.</p>
-<h2 id="endpoints">Endpoints</h2>
-<h3 id="get-health">GET /health</h3>
-<p>Health check. Always returns <code>200 OK</code> with body <code>ok</code>. No authentication required.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #AAD94C;"> http://localhost:8080/health</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># ok</span></span></code></pre><h3 id="get-v1-dialogs">GET /v1/dialogs</h3>
-<p>List dialogs with optional filtering and pagination.</p>
-<p><strong>Query Parameters:</strong></p>
-<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>offset</code></td><td>integer</td><td><code>0</code></td><td>Pagination offset</td></tr>
-<tr><td><code>limit</code></td><td>integer</td><td><code>50</code></td><td>Max results (capped at 1000)</td></tr>
-<tr><td><code>state</code></td><td>string</td><td>--</td><td>Filter by dialog state: <code>Trying</code>, <code>Ringing</code>, <code>InCall</code>, <code>Completed</code>, <code>Failed</code>, <code>Cancelled</code></td></tr>
-<tr><td><code>from</code></td><td>string</td><td>--</td><td>Filter by From user (regex)</td></tr>
-</tbody></table>
-<p><strong>Response:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;schema_version&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 1</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;total&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 1523</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;offset&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 0</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;limit&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 50</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;dialogs&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span></span>
-<span class="giallo-l"><span>    {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;call_id&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;abc123@192.168.1.10&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;method&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;INVITE&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;from_user&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;1001&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;to_user&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;1002&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;state&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;InCall&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;msg_count&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 6</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;first_seen&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;2025-01-15T10:30:00Z&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;last_seen&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;2025-01-15T10:30:45Z&quot;</span></span>
-<span class="giallo-l"><span>    }</span></span>
-<span class="giallo-l"><span>  ]</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre>
-<p><strong>Example:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># List failed dialogs</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/dialogs?state=Failed&amp;limit=10&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by From user</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/dialogs?from=1001&quot;</span></span></code></pre><h3 id="get-v1-dialogs-call-id">GET /v1/dialogs/:call_id</h3>
-<p>Get a single dialog with full detail, including all SIP messages, associated RTP streams, and media diagnosis.</p>
-<p>Returns the same JSON format as <code>sipnab -N --json --call-report</code>.</p>
-<p>Returns <code>404</code> if the Call-ID is not found.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/dialogs/abc123@192.168.1.10&quot;</span></span></code></pre><h3 id="get-v1-dialogs-call-id-report">GET /v1/dialogs/:call_id/report</h3>
-<p>Get a structured call diagnosis report in JSON format. Includes SIP transaction timing, RTP quality metrics, media diagnosis, and VoIP troubleshooting information.</p>
-<p>Returns <code>404</code> if the Call-ID is not found.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/dialogs/abc123@192.168.1.10/report&quot;</span></span></code></pre>
-<p><strong>Response:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;call_id&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;abc123@192.168.1.10&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;state&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;Completed&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;timing&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;pdd_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 245</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;setup_time_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 1200</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;duration_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 45000</span></span>
-<span class="giallo-l"><span>  }</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;rtp&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;streams&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 2</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;quality&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;mos&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 4.2</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;jitter_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 3.5</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;loss_pct&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 0.1</span></span>
-<span class="giallo-l"><span>    }</span></span>
-<span class="giallo-l"><span>  }</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;diagnosis&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;one_way_audio&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> false</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;nat_mismatch&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> false</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;no_media&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> false</span></span>
-<span class="giallo-l"><span>  }</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre><h3 id="get-v1-streams">GET /v1/streams</h3>
-<p>List RTP streams with optional filtering and pagination.</p>
-<p><strong>Query Parameters:</strong></p>
-<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>offset</code></td><td>integer</td><td><code>0</code></td><td>Pagination offset</td></tr>
-<tr><td><code>limit</code></td><td>integer</td><td><code>50</code></td><td>Max results (capped at 1000)</td></tr>
-<tr><td><code>orphaned</code></td><td>boolean</td><td>--</td><td>Filter by orphaned status. <code>true</code> = only orphaned, <code>false</code> = only associated</td></tr>
-<tr><td><code>mos_below</code></td><td>float</td><td>--</td><td>Filter streams with MOS below this threshold</td></tr>
-</tbody></table>
-<p><strong>Example:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find low-quality streams</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/streams?mos_below=3.0&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># List orphaned streams (no associated SIP dialog)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/streams?orphaned=true&quot;</span></span></code></pre><h3 id="get-v1-streams-id">GET /v1/streams/:id</h3>
-<p>Get a single RTP stream by SSRC hex string. The <code>:id</code> parameter is the SSRC in hex format, with optional <code>0x</code> prefix.</p>
-<p>Returns <code>400</code> if the SSRC is not valid hex. Returns <code>404</code> if the stream is not found.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Both formats work</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/streams/0x12345678&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">  &quot;http://localhost:8080/v1/streams/12345678&quot;</span></span></code></pre><h3 id="get-v1-stats">GET /v1/stats</h3>
-<p>Aggregate statistics across all tracked dialogs and streams.</p>
-<p><strong>Response:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;schema_version&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 1</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;dialogs&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;total&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 15230</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;active&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 42</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;completed&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 14500</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;failed&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 688</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;cancelled&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 0</span></span>
-<span class="giallo-l"><span>  }</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;streams&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;total&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 28400</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;orphaned&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 12</span></span>
-<span class="giallo-l"><span>  }</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;timing&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;pdd_p50_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 180</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;pdd_p95_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 1200</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;pdd_p99_ms&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 3500</span></span>
-<span class="giallo-l"><span>  }</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre><h3 id="get-metrics">GET /metrics</h3>
-<p>Prometheus exposition format metrics. Compatible with Prometheus, Grafana Agent, Victoria Metrics, and any OpenMetrics scraper.</p>
-<p>All metric names are prefixed with <code>sipnab_</code>.</p>
-<p><strong>Available Metrics:</strong></p>
-<table><thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>sipnab_dialogs_total</code></td><td>counter</td><td><code>state</code></td><td>Total SIP dialogs by state</td></tr>
-<tr><td><code>sipnab_messages_total</code></td><td>counter</td><td><code>method</code></td><td>Total SIP messages by method</td></tr>
-<tr><td><code>sipnab_responses_total</code></td><td>counter</td><td><code>code</code></td><td>Total SIP responses by code class (2xx, 4xx, ...)</td></tr>
-<tr><td><code>sipnab_rtp_streams_active</code></td><td>gauge</td><td>--</td><td>Currently active RTP streams</td></tr>
-<tr><td><code>sipnab_rtp_streams_total</code></td><td>counter</td><td><code>status</code></td><td>Total RTP streams by status</td></tr>
-<tr><td><code>sipnab_capture_packets_total</code></td><td>counter</td><td>--</td><td>Total captured packets</td></tr>
-<tr><td><code>sipnab_security_alerts_total</code></td><td>counter</td><td><code>type</code></td><td>Security alerts by type</td></tr>
-<tr><td><code>sipnab_pdd_seconds</code></td><td>histogram</td><td>--</td><td>Post-dial delay distribution</td></tr>
-<tr><td><code>sipnab_mos_score</code></td><td>histogram</td><td>--</td><td>MOS score distribution</td></tr>
-<tr><td><code>sipnab_jitter_ms</code></td><td>histogram</td><td>--</td><td>Jitter distribution</td></tr>
-<tr><td><code>sipnab_loss_pct</code></td><td>histogram</td><td>--</td><td>Packet loss distribution</td></tr>
-<tr><td><code>sipnab_reassembly_timeouts_total</code></td><td>counter</td><td>--</td><td>TCP reassembly timeouts</td></tr>
-<tr><td><code>sipnab_diagnosis_total</code></td><td>counter</td><td><code>type</code></td><td>Media diagnosis events (one_way_audio, nat_mismatch, ...)</td></tr>
-</tbody></table>
-<p><strong>Example:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&quot; http://localhost:8080/metrics</span></span></code></pre>
-<p><strong>Prometheus Configuration:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="yaml"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># prometheus.yml</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">scrape_configs</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span>  -</span><span style="color: #39BAE6;"> job_name</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> sipnab</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    scheme</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> http</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    bearer_token</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> your-secret-key</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    static_configs</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span>      -</span><span style="color: #39BAE6;"> targets</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&#39;localhost:8080&#39;</span><span>]</span></span></code></pre>
-<p>You can also enable a separate metrics-only endpoint with <code>--metrics</code> and <code>--metrics-auth</code>, independent of the REST API.</p>
-<h2 id="tls">TLS</h2>
-<p>The API supports TLS via <code>--api-tls-cert</code> and <code>--api-tls-key</code> flags. For production deployments, a TLS-terminating reverse proxy (nginx, HAProxy, Caddy) is recommended over direct TLS.</p>
-<p>Binding to a non-loopback address without TLS produces a warning at startup.</p>
-<h2 id="process-isolation">Process Isolation</h2>
-<p>The API server runs in an isolated child process. It has no access to packet capture file descriptors or TLS key material. It communicates with the main process through shared read-only stores (DialogStore and StreamStore), protected by read-write locks.</p>
-
-
-
-
-
-
-
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-    
-  
-  
-
-
-<nav class="page-nav">
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;" class="page-nav-prev">&larr; Theme Customization</a>
-  
-  
-  <span></span>
-  
-</nav>
-
-</main>
-
-<script>
-function toggleSidebar() {
-  document.querySelector('.sidebar').classList.toggle('open');
-  document.querySelector('.sidebar-overlay').classList.toggle('visible');
-}
-
-
-function toggleSearch(e) {
-  e.preventDefault();
-  var overlay = document.getElementById('search-overlay');
-  if (overlay.style.display === 'none') {
-    overlay.style.display = 'flex';
-    document.getElementById('search-input').focus();
-  } else {
-    overlay.style.display = 'none';
-  }
-}
-
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    document.getElementById('search-overlay').style.display = 'none';
-  }
-  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
-    e.preventDefault();
-    document.getElementById('search-overlay').style.display = 'flex';
-    document.getElementById('search-input').focus();
-  }
-});
-
-var searchIndex = null;
-document.getElementById('search-input').addEventListener('input', function() {
-  var query = this.value;
-  var resultsDiv = document.getElementById('search-results');
-  if (query.length < 2) { resultsDiv.textContent = ''; return; }
-  if (!searchIndex) {
-    fetch('https://www.sipnab.com/search_index.en.json')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        searchIndex = elasticlunr.Index.load(data);
-        doSearch(query);
-      });
-  } else {
-    doSearch(query);
-  }
-});
-
-function doSearch(query) {
-  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
-  var resultsDiv = document.getElementById('search-results');
-  resultsDiv.textContent = '';
-  if (results.length === 0) {
-    var noResults = document.createElement('div');
-    noResults.className = 'search-no-results';
-    noResults.textContent = 'No results found.';
-    resultsDiv.appendChild(noResults);
-    return;
-  }
-  results.slice(0, 10).forEach(function(r) {
-    var item = searchIndex.documentStore.getDoc(r.ref);
-    var link = document.createElement('a');
-    link.href = r.ref;
-    link.className = 'search-result-item';
-    var title = document.createElement('div');
-    title.className = 'search-result-title';
-    title.textContent = item.title;
-    link.appendChild(title);
-    if (item.body) {
-      var body = document.createElement('div');
-      body.className = 'search-result-body';
-      body.textContent = item.body.substring(0, 150) + '...';
-      link.appendChild(body);
-    }
-    resultsDiv.appendChild(link);
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>REST API & Metrics -- sipnab</title><meta content="REST API endpoints, Prometheus metrics, and HEP protocol integration." name=description><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a class=active href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>REST API & Metrics</h1><p>sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the <code>api</code> feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.<h2 id=enabling-the-api>Enabling the API</h2><p>Build with the <code>api</code> feature:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>cargo</span><span style=color:#aad94c> build</span><span style=color:#95e6cb> --release --features</span><span style=color:#aad94c> api</span></span>
+<span class=giallo-l><span style=color:#5a6673;font-style:italic># or</span></span>
+<span class=giallo-l><span style=color:#59c2ff>cargo</span><span style=color:#aad94c> build</span><span style=color:#95e6cb> --release --features</span><span style=color:#aad94c> full</span></span></code></pre><p>Start with API and metrics endpoints:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --api</span><span style=color:#aad94c> 127.0.0.1:8080</span><span style=color:#95e6cb> --api-key</span><span style=color:#aad94c> "your-secret-key"</span><span style=color:#95e6cb> \</span></span>
+<span class=giallo-l><span style=color:#95e6cb>  --metrics</span><span style=color:#aad94c> 127.0.0.1:9090</span><span style=color:#95e6cb> --metrics-auth</span><span style=color:#aad94c> "your-metrics-token"</span></span></code></pre><h2 id=authentication>Authentication</h2><p>The REST API requires a bearer token passed via the <code>--api-key</code> flag or the <code>$SIPNAB_API_KEY</code> environment variable.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>curl</span><span style=color:#95e6cb> -H</span><span style=color:#aad94c> "Authorization: Bearer your-secret-key" http://127.0.0.1:8080/api/v1/dialogs</span></span></code></pre><p>The metrics endpoint optionally requires a bearer token via <code>--metrics-auth</code>.<h2 id=api-tls>API TLS</h2><p>Secure the API endpoint with TLS:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --api</span><span style=color:#aad94c> 0.0.0.0:8443</span><span style=color:#95e6cb> --api-key</span><span style=color:#aad94c> "secret"</span><span style=color:#95e6cb> \</span></span>
+<span class=giallo-l><span style=color:#95e6cb>  --api-tls-cert</span><span style=color:#aad94c> /etc/sipnab/cert.pem</span><span style=color:#95e6cb> --api-tls-key</span><span style=color:#aad94c> /etc/sipnab/key.pem</span></span></code></pre><h2 id=connection-limits>Connection Limits</h2><p>The <code>--api-max-conn</code> flag (default: 100) limits concurrent API connections to prevent resource exhaustion.<h2 id=prometheus-metrics>Prometheus Metrics</h2><p>When <code>--metrics</code> is specified, sipnab exposes a Prometheus-compatible <code>/metrics</code> endpoint.<p>Available metrics include:<ul><li><strong>sipnab_dialogs_total</strong> – Total number of tracked dialogs<li><strong>sipnab_dialogs_active</strong> – Currently active dialogs<li><strong>sipnab_rtp_streams_total</strong> – Total RTP streams tracked<li><strong>sipnab_rtp_mos_histogram</strong> – MOS score distribution<li><strong>sipnab_packets_captured_total</strong> – Total packets captured<li><strong>sipnab_security_alerts_total</strong> – Security alerts by type</ul><h3 id=grafana-integration>Grafana Integration</h3><p>A sample Grafana dashboard JSON is included in the repository at <code>contrib/grafana-dashboard.json</code>.<h2 id=hep-protocol>HEP Protocol</h2><p>sipnab supports HEP v2/v3 (Homer Encapsulation Protocol) for integration with Homer/SIPCAPTURE.<h3 id=receiving-hep>Receiving HEP</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -L</span><span style=color:#aad94c> 0.0.0.0:9060</span><span style=color:#95e6cb> -E</span></span></code></pre><p>Restrict sources with <code>--hep-allow</code> and rate-limit with <code>--hep-rate-limit</code>:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -L</span><span style=color:#aad94c> 0.0.0.0:9060</span><span style=color:#95e6cb> -E --hep-allow</span><span style=color:#aad94c> 10.0.0.0/24</span><span style=color:#95e6cb> --hep-rate-limit</span><span style=color:#d2a6ff> 25000</span></span></code></pre><h3 id=sending-hep>Sending HEP</h3><p>Mirror captured traffic to a Homer collector:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> -H</span><span style=color:#aad94c> 10.0.0.50:9060</span></span></code></pre><h2 id=security-model>Security Model</h2><ul><li>The API child process is isolated: no capture fd, no key material<li>All network listeners bind to localhost by default<li>Rate limiting on all listener endpoints<li>Bearer token authentication (required for API, optional for metrics)<li>TLS available for API endpoint</ul><h2 id=event-execution>Event Execution</h2><p>sipnab can execute external commands on dialog state changes or quality drops:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#5a6673;font-style:italic># Run a script when any dialog changes state</span></span>
+<span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --on-dialog-exec</span><span style=color:#aad94c> "/usr/local/bin/sip-event.sh"</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span style=color:#5a6673;font-style:italic># Run a script when RTP quality drops below threshold</span></span>
+<span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --on-quality-exec</span><span style=color:#aad94c> "/usr/local/bin/quality-alert.sh"</span><span style=color:#95e6cb> \</span></span>
+<span class=giallo-l><span style=color:#95e6cb>  --quality-threshold</span><span style=color:#d2a6ff> 3.0</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span style=color:#5a6673;font-style:italic># Rate limit exec invocations (default: 10/sec)</span></span>
+<span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --on-dialog-exec</span><span style=color:#aad94c> "logger"</span><span style=color:#95e6cb> --exec-rate-limit</span><span style=color:#d2a6ff> 5</span></span></code></pre><h2 id=fail2ban-integration>Fail2ban Integration</h2><p>Generate fail2ban-compatible output for SIP security events:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -N -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --kill-scanner --fail2ban</span><span style=color:#f29668> >></span><span style=color:#aad94c> /var/log/sipnab-fail2ban.log</span></span></code></pre><p>Configure fail2ban to watch the log file for scanner and flood events.<h2 id=syslog-alerts>Syslog Alerts</h2><p>Send security alerts to syslog:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span><span style=color:#95e6cb> --kill-scanner --alert</span><span style=color:#aad94c> syslog</span><span style=color:#95e6cb> --syslog</span></span></code></pre><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/theme/>← Theme Guide</a><span></span></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#enabling-the-api>Enabling the API</a><li><a href=#authentication>Authentication</a><li><a href=#api-tls>API TLS</a><li><a href=#connection-limits>Connection Limits</a><li><a href=#prometheus-metrics>Prometheus Metrics</a> <ul><li><a href=#grafana-integration>Grafana Integration</a></ul><li><a href=#hep-protocol>HEP Protocol</a> <ul><li><a href=#receiving-hep>Receiving HEP</a><li><a href=#sending-hep>Sending HEP</a></ul><li><a href=#security-model>Security Model</a><li><a href=#event-execution>Event Execution</a><li><a href=#fail2ban-integration>Fail2ban Integration</a><li><a href=#syslog-alerts>Syslog Alerts</a></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class=footer-col><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a></div><div class=footer-col><span class=footer-credit>Built by Norm Brandinger</span></div></div></footer><script>// Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
   });
-}
 
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
 
-document.querySelectorAll('pre').forEach(function(block) {
-  block.addEventListener('click', function() {
-    var code = block.querySelector('code');
-    if (code) {
-      navigator.clipboard.writeText(code.textContent).then(function() {
-        block.classList.add('copied');
-        setTimeout(function() { block.classList.remove('copied'); }, 1500);
-      });
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
     }
-  });
-});
-</script>
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
 
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
 
-<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
 
-
-</body>
-</html>
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();</script>

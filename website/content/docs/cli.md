@@ -1,10 +1,7 @@
 +++
 title = "CLI Reference"
-description = "Complete reference for all sipnab command-line flags, organized by functional group."
 weight = 2
-
-[extra]
-weight = 2
+description = "Complete flag reference for sipnab, organized by functional group."
 +++
 
 Complete flag reference for sipnab. Flags are organized by functional group.
@@ -59,13 +56,13 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 
 Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL](@/docs/filter-dsl.md) for the exact expansion of each alias.
 
-| Flag | Value | Default | Description |
-|------|-------|---------|-------------|
-| `--problems` | -- | off | Show calls with retransmits, timeouts, errors, quality issues, or NAT mismatch |
-| `--slow-setup` | -- | off | Show calls with post-dial delay > 3 seconds |
-| `--short-calls` | -- | off | Show completed calls shorter than 5 seconds |
-| `--one-way` | -- | off | Show calls with potential one-way audio issues |
-| `--nat-issues` | -- | off | Show calls with Contact/Via NAT mismatch |
+| Flag | Description |
+|------|-------------|
+| `--problems` | Show calls with retransmits, timeouts, errors, quality issues, or NAT mismatch |
+| `--slow-setup` | Show calls with post-dial delay > 3 seconds |
+| `--short-calls` | Show completed calls shorter than 5 seconds |
+| `--one-way` | Show calls with potential one-way audio issues |
+| `--nat-issues` | Show calls with Contact/Via NAT mismatch |
 
 ## Output
 

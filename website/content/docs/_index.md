@@ -1,8 +1,8 @@
 +++
 title = "Documentation"
-description = "sipnab documentation hub -- installation, CLI reference, configuration, keybindings, filter DSL, themes, and REST API."
 sort_by = "weight"
 template = "section.html"
+page_template = "page.html"
 +++
 
-Complete documentation for sipnab, the SIP & RTP capture, analysis, and security tool.
+sipnab is a SIP & RTP capture, analysis, and security tool that unifies [sngrep](https://github.com/irontec/sngrep) and [sipgrep](https://github.com/sipcapture/sipgrep) into a single Rust binary with first-class RTP quality monitoring, VoIP diagnostic aliases, and security analysis.

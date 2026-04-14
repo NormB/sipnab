@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block title %}404 -- {{ config.title }}{% endblock title %}
+
+{% block content %}
+<div class="error-page">
+  <h1>404</h1>
+  <p>This page doesn't exist. Maybe it was a phantom INVITE.</p>
+  <a href="{{ config.base_url }}" class="btn btn-primary">Back to Home</a>
+</div>
+{% endblock content %}
