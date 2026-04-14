@@ -95,7 +95,7 @@ sipnab -N -I capture.pcap --json \
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-d`, `--device` | `<IFACE>` | -- | Network interface to capture on |
+| `-d`, `--device` | `<IFACE>` | auto-detect | Network interface to capture on. Auto-detects the default interface if no `-I` file or `-L` HEP listener is specified |
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | OS default | Kernel capture buffer size in MiB |
