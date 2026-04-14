@@ -1,5 +1,5 @@
 /* =============================================================================
-   sipnab Analyze Page -- Ayu Mirage palette
+   sipnab Analyze Page -- Terminal TUI Style
    ============================================================================= */
 
 :root {
@@ -17,7 +17,9 @@
   --border: #2d3640;
   --border-light: #3d4754;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Consolas, monospace;
-  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+
+  /* TUI status bar bg (matches native ratatui rgb(48,48,64)) */
+  --status-bg: rgb(48, 48, 64);
 
   /* SIP method colors (matching TUI) */
   --color-invite: #5ccfe6;
@@ -31,6 +33,21 @@
   --color-cancel: #ffa759;
   --color-register: #73d0ff;
   --color-options: #707a8c;
+
+  /* TUI semantic colors */
+  --tui-cyan: #5fafaf;
+  --tui-teal: #5ccfe6;
+  --tui-coral: #d75f5f;
+  --tui-blue: #5f87d7;
+}
+
+/* =============================================================================
+   Everything monospace -- terminal app
+   ============================================================================= */
+
+.analyze-app,
+.analyze-app * {
+  font-family: var(--font-mono) !important;
 }
 
 /* =============================================================================
@@ -42,10 +59,14 @@
   flex-direction: column;
   height: calc(100vh - 60px); /* subtract nav height */
   overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* =============================================================================
-   Drop Zone
+   Drop Zone -- terminal style
    ============================================================================= */
 
 .analyze-dropzone {
@@ -54,71 +75,76 @@
   align-items: center;
   justify-content: center;
   padding: 2rem;
+  background: var(--bg);
 }
 
 .dropzone-inner {
   text-align: center;
-  padding: 4rem 3rem;
-  border: 2px dashed var(--border-light);
-  border-radius: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
   max-width: 560px;
   width: 100%;
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  transition: border-color 0.2s;
 }
 
-.dropzone-inner:hover,
-.analyze-dropzone.drag-over .dropzone-inner {
+.dropzone-inner:hover .dropzone-box,
+.analyze-dropzone.drag-over .dropzone-box {
   border-color: var(--accent);
-  background: rgba(255, 204, 102, 0.03);
 }
 
-.analyze-dropzone.drag-over .dropzone-inner {
-  border-style: solid;
-  box-shadow: 0 0 0 4px rgba(255, 204, 102, 0.08);
+.analyze-dropzone.drag-over .dropzone-box {
+  border-color: var(--accent);
 }
 
+/* The ASCII box drawn inside the dropzone */
+.dropzone-box {
+  border: 1px dashed var(--text-dim);
+  padding: 2.5rem 2rem;
+  display: inline-block;
+  width: 100%;
+  transition: border-color 0.2s;
+}
+
+/* Hide the old SVG icon */
 .dropzone-icon {
-  color: var(--text-dim);
-  margin-bottom: 1.5rem;
-  transition: color 0.2s;
-}
-
-.dropzone-inner:hover .dropzone-icon,
-.analyze-dropzone.drag-over .dropzone-icon {
-  color: var(--accent);
+  display: none;
 }
 
 .dropzone-title {
-  font-size: 1.5rem;
-  font-weight: 700;
+  font-size: 1rem;
+  font-weight: 400;
   color: var(--text);
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.25rem;
 }
 
 .dropzone-sub {
-  font-size: 0.95rem;
+  font-size: 0.85rem;
   color: var(--text-dim);
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
 .dropzone-formats {
-  font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--text-dim);
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
 .dropzone-privacy {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   color: var(--good);
-  background: rgba(186, 230, 126, 0.06);
-  border: 1px solid rgba(186, 230, 126, 0.15);
-  border-radius: 6px;
-  padding: 0.4rem 0.85rem;
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+}
+
+.dropzone-privacy svg {
+  display: none;
 }
 
 /* =============================================================================
@@ -130,92 +156,126 @@
   flex-direction: column;
   height: calc(100vh - 60px);
   overflow: hidden;
+  /* Room for the F-key bar at bottom */
+  padding-bottom: 24px;
 }
 
 /* =============================================================================
-   Top Bar
+   Top Bar -- TUI Status Lines
    ============================================================================= */
 
 .analyze-topbar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  flex-direction: column;
+  padding: 0;
+  background: var(--status-bg);
+  border-bottom: none;
   flex-shrink: 0;
-  min-height: 44px;
+  min-height: auto;
+  gap: 0;
 }
 
-.topbar-info {
+.topbar-status-line {
   display: flex;
   align-items: center;
-  gap: 1.25rem;
-  flex-shrink: 0;
+  gap: 0;
+  padding: 1px 8px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  min-height: 20px;
+}
+
+.topbar-status-line .tui-label {
+  color: var(--text-dim);
+}
+
+.topbar-status-line .tui-value {
+  color: var(--text);
+}
+
+.topbar-status-line .tui-accent {
+  color: var(--accent);
+}
+
+.topbar-status-line .tui-sep {
+  color: var(--text-dim);
+  margin: 0 10px;
 }
 
 .topbar-filename {
-  font-family: var(--font-mono);
-  font-size: 0.85rem;
-  font-weight: 600;
+  font-size: 12px;
+  font-weight: 400;
   color: var(--accent);
-  max-width: 200px;
+  max-width: 300px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .topbar-stat {
-  font-size: 0.8rem;
+  font-size: 12px;
   color: var(--text-dim);
 }
 
 .topbar-stat strong {
   color: var(--text);
-  font-weight: 600;
+  font-weight: 400;
 }
 
-.topbar-actions {
+/* Second status line: filter */
+.topbar-filter-line {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  flex-shrink: 0;
+  padding: 1px 8px;
+  font-size: 12px;
+  min-height: 20px;
+  gap: 0;
+  background: var(--status-bg);
 }
 
 .topbar-filter {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
   color: var(--text);
-  padding: 0.35rem 0.75rem;
-  width: 280px;
+  padding: 0 4px;
+  flex: 1;
+  max-width: 400px;
   outline: none;
   transition: border-color 0.15s;
 }
 
 .topbar-filter:focus {
-  border-color: var(--accent);
+  border-bottom-color: var(--accent);
 }
 
 .topbar-filter::placeholder {
   color: var(--text-dim);
 }
 
+/* Actions in the status bar */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
 .topbar-btn {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  font-family: var(--font-sans);
-  font-size: 0.8rem;
-  font-weight: 500;
-  background: var(--surface-2);
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 400;
+  background: transparent;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 0;
   color: var(--text-dim);
-  padding: 0.35rem 0.7rem;
+  padding: 1px 8px;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
   white-space: nowrap;
@@ -231,6 +291,11 @@
   border-color: var(--bad);
 }
 
+.topbar-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
 .topbar-export-wrap {
   position: relative;
 }
@@ -238,15 +303,15 @@
 .export-dropdown {
   display: none;
   position: absolute;
-  top: calc(100% + 4px);
+  top: calc(100% + 2px);
   right: 0;
-  background: var(--surface);
+  background: var(--status-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 0;
   overflow: hidden;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
   z-index: 50;
-  min-width: 120px;
+  min-width: 110px;
 }
 
 .export-dropdown.open {
@@ -257,12 +322,11 @@
   display: block;
   width: 100%;
   text-align: left;
-  font-family: var(--font-sans);
-  font-size: 0.8rem;
+  font-size: 12px;
   color: var(--text-dim);
   background: none;
   border: none;
-  padding: 0.5rem 0.85rem;
+  padding: 4px 8px;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
 }
@@ -290,6 +354,7 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  border: 1px solid var(--border);
 }
 
 .panel-left {
@@ -323,14 +388,14 @@
 }
 
 .panel-header {
-  font-size: 0.7rem;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-dim);
-  padding: 0.4rem 0.75rem;
-  background: var(--surface-2);
-  border-bottom: 1px solid var(--border);
+  color: var(--bg);
+  background: var(--tui-cyan);
+  padding: 1px 8px;
+  border-bottom: none;
   flex-shrink: 0;
 }
 
@@ -343,12 +408,12 @@
 }
 
 .panel-resize[data-direction="horizontal"] {
-  width: 5px;
+  width: 3px;
   cursor: col-resize;
 }
 
 .panel-resize[data-direction="vertical"] {
-  height: 5px;
+  height: 3px;
   cursor: row-resize;
 }
 
@@ -358,7 +423,7 @@
 }
 
 /* =============================================================================
-   Call List Table
+   Call List Table -- dense monospace like native TUI
    ============================================================================= */
 
 .call-list-wrap {
@@ -369,7 +434,7 @@
 .call-list {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.8rem;
+  font-size: 12px;
 }
 
 .call-list thead {
@@ -379,30 +444,30 @@
 }
 
 .call-list th {
-  font-size: 0.7rem;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: bold;
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-dim);
-  background: var(--surface);
-  padding: 0.45rem 0.6rem;
+  letter-spacing: 0;
+  color: var(--bg);
+  background: var(--tui-cyan);
+  padding: 1px 6px;
   text-align: left;
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   white-space: nowrap;
   user-select: none;
 }
 
 .call-list th.sortable {
   cursor: pointer;
-  transition: color 0.15s;
+  transition: background 0.15s;
 }
 
 .call-list th.sortable:hover {
-  color: var(--text);
+  background: #6fbfbf;
 }
 
 .call-list th.sort-active {
-  color: var(--accent);
+  color: var(--bg);
 }
 
 .call-list th.sort-active::after {
@@ -410,24 +475,24 @@
   display: inline-block;
   width: 0;
   height: 0;
-  margin-left: 0.35rem;
+  margin-left: 4px;
   vertical-align: middle;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
 }
 
 .call-list th.sort-active.sort-asc::after {
-  border-bottom: 5px solid var(--accent);
+  border-bottom: 5px solid var(--bg);
 }
 
 .call-list th.sort-active.sort-desc::after {
-  border-top: 5px solid var(--accent);
+  border-top: 5px solid var(--bg);
 }
 
 .call-list td {
-  padding: 0.4rem 0.6rem;
+  padding: 1px 6px;
   color: var(--text-dim);
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -436,15 +501,15 @@
 
 .call-list tbody tr {
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.05s;
 }
 
 .call-list tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
 }
 
 .call-list tbody tr.selected {
-  background: var(--accent-glow);
+  background: var(--surface);
 }
 
 .call-list tbody tr.selected td {
@@ -452,25 +517,35 @@
 }
 
 /* Method cell coloring */
-.call-list .cell-method { font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; }
-.call-list .method-invite { color: var(--color-invite); }
-.call-list .method-register { color: var(--color-register); }
-.call-list .method-bye { color: var(--color-bye); }
+.call-list .cell-method { font-weight: 600; font-size: 12px; }
+.call-list .method-invite { color: var(--tui-teal); }
+.call-list .method-subscribe { color: var(--tui-teal); }
+.call-list .method-register { color: var(--tui-blue); }
 .call-list .method-options { color: var(--color-options); }
+.call-list .method-bye { color: var(--tui-coral); }
 .call-list .method-cancel { color: var(--color-cancel); }
+.call-list .method-ack { color: var(--text-dim); }
+.call-list .method-prack { color: var(--text-dim); }
 
-/* State cell coloring */
-.call-list .state-completed { color: var(--good); }
-.call-list .state-confirmed { color: var(--good); }
+/* State cell coloring -- matching native TUI */
+.call-list .state-incall,
+.call-list .state-registered,
+.call-list .state-completed,
+.call-list .state-confirmed,
+.call-list .state-active { color: var(--good); }
+
+.call-list .state-trying,
+.call-list .state-ringing,
 .call-list .state-early { color: var(--warn); }
-.call-list .state-trying { color: var(--color-invite); }
-.call-list .state-failed { color: var(--bad); }
+
+.call-list .state-failed,
+.call-list .state-cancelled { color: var(--bad); }
+
 .call-list .state-terminated { color: var(--text-dim); }
 
 /* PDD cell */
 .call-list .cell-pdd {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
+  font-size: 12px;
 }
 
 /* =============================================================================
@@ -484,13 +559,14 @@
   align-items: center;
   justify-content: center;
   color: var(--text-dim);
-  font-size: 0.85rem;
+  font-size: 12px;
 }
 
 .flow-container {
   flex: 1;
   overflow: auto;
-  padding: 0.5rem 0;
+  padding: 0.25rem 0;
+  background: var(--bg);
 }
 
 /* Endpoint headers */
@@ -501,15 +577,14 @@
   z-index: 5;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
-  padding: 0.5rem 0;
-  min-height: 40px;
+  padding: 4px 0;
+  min-height: 24px;
 }
 
 .flow-endpoint {
   flex: 1;
   text-align: center;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
+  font-size: 11px;
   font-weight: 600;
   color: var(--link);
   white-space: nowrap;
@@ -519,35 +594,37 @@
 .flow-endpoint::after {
   content: '';
   position: absolute;
-  bottom: -0.5rem;
+  bottom: -4px;
   left: 50%;
   width: 1px;
-  height: 0.5rem;
-  background: var(--border-light);
+  height: 4px;
+  background: var(--border);
 }
 
 /* Endpoint vertical lines (swim lanes) */
 .flow-messages {
   position: relative;
+  font-size: 12px;
+  padding: 4px 0;
 }
 
 /* Individual message row */
 .flow-msg {
   display: flex;
   align-items: center;
-  padding: 0.3rem 0.75rem;
+  padding: 2px 8px;
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background 0.05s;
   position: relative;
-  min-height: 28px;
+  min-height: 24px;
 }
 
 .flow-msg:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--surface);
 }
 
 .flow-msg.selected {
-  background: var(--accent-glow);
+  background: var(--surface);
 }
 
 .flow-msg.retransmission {
@@ -558,11 +635,10 @@
 .flow-time {
   flex-shrink: 0;
   width: 72px;
-  font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 11px;
   color: var(--text-dim);
   text-align: right;
-  padding-right: 0.75rem;
+  padding-right: 8px;
 }
 
 /* Arrow area */
@@ -571,7 +647,7 @@
   display: flex;
   align-items: center;
   position: relative;
-  min-height: 24px;
+  min-height: 22px;
 }
 
 /* Arrow drawing */
@@ -603,9 +679,8 @@
 
 .flow-label {
   position: absolute;
-  top: -14px;
-  font-family: var(--font-mono);
-  font-size: 0.7rem;
+  top: -13px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
   pointer-events: none;
@@ -621,10 +696,10 @@
   transform: translateX(-50%);
 }
 
-/* Arrow head */
+/* Arrow head -- Unicode triangles */
 .flow-head {
   flex-shrink: 0;
-  font-size: 0.6rem;
+  font-size: 8px;
   line-height: 1;
 }
 
@@ -643,6 +718,8 @@
 .flow-label-cancel { color: var(--color-cancel); }
 .flow-label-register { color: var(--color-register); }
 .flow-label-options { color: var(--color-options); }
+.flow-label-subscribe { color: var(--color-invite); }
+.flow-label-notify { color: var(--color-invite); }
 
 .flow-label-1xx { color: var(--color-provisional); }
 .flow-label-2xx { color: var(--color-success); }
@@ -662,16 +739,15 @@
 }
 
 /* =============================================================================
-   Raw Message
+   Raw Message -- terminal style
    ============================================================================= */
 
 .raw-message {
   flex: 1;
   margin: 0;
-  padding: 0.75rem 1rem;
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  line-height: 1.6;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg);
   overflow: auto;
@@ -689,8 +765,40 @@
 .raw-message .sip-header-sep { color: var(--text-dim); }
 .raw-message .sip-status-code { color: var(--good); font-weight: 600; }
 .raw-message .sip-status-reason { color: var(--text-dim); }
-.raw-message .sip-body { color: var(--text-dim); }
-.raw-message .sip-body-key { color: var(--color-provisional); }
+.raw-message .sip-body { color: var(--text-dim); font-style: italic; }
+.raw-message .sip-body-key { color: var(--color-provisional); font-style: italic; }
+.raw-message .sip-request-line { font-weight: 600; }
+.raw-message .sip-status-line { font-weight: 600; }
+
+/* =============================================================================
+   F-key Bar -- fixed at bottom, matches native TUI
+   ============================================================================= */
+
+.fkey-bar {
+  background: var(--status-bg);
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-height: 22px;
+}
+
+.fkey-bar .fkey {
+  white-space: nowrap;
+}
+
+.fkey-bar .fkey b {
+  color: var(--text);
+  font-weight: 600;
+  margin-right: 4px;
+}
 
 /* =============================================================================
    Loading overlay
@@ -709,16 +817,16 @@
 }
 
 .analyze-loading-spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid var(--border);
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--border);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;
 }
 
 .analyze-loading-text {
-  font-size: 0.9rem;
+  font-size: 12px;
   color: var(--text-dim);
 }
 
@@ -749,36 +857,30 @@
 
   .panel-resize[data-direction="horizontal"] {
     width: 100%;
-    height: 5px;
+    height: 3px;
     cursor: row-resize;
   }
 
   .topbar-filter {
-    width: 160px;
+    max-width: 200px;
   }
 }
 
 @media (max-width: 600px) {
-  .analyze-topbar {
+  .topbar-status-line {
     flex-wrap: wrap;
-    gap: 0.5rem;
-  }
-
-  .topbar-info {
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 4px;
   }
 
   .topbar-filter {
-    width: 100%;
-    order: 10;
+    max-width: 100%;
   }
 
   .dropzone-title {
-    font-size: 1.2rem;
+    font-size: 0.9rem;
   }
 
-  .dropzone-inner {
-    padding: 2.5rem 1.5rem;
+  .dropzone-box {
+    padding: 1.5rem 1rem;
   }
 }

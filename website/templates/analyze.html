@@ -4,7 +4,7 @@
 {% block description %}{{ section.description }}{% endblock description %}
 
 {% block head_extra %}
-<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=4">
+<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=5">
 {% endblock head_extra %}
 
 {% block content %}
@@ -13,20 +13,14 @@
   <!-- Drop zone (initial view) -->
   <div class="analyze-dropzone" id="dropzone">
     <div class="dropzone-inner">
-      <div class="dropzone-icon">
-        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/>
-          <line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-      </div>
-      <h1 class="dropzone-title">Drop a PCAP file to analyze</h1>
-      <p class="dropzone-sub">Or click to browse</p>
-      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
-      <div class="dropzone-formats">Supports .pcap, .pcapng, .cap</div>
-      <div class="dropzone-privacy">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
-        Your data stays in your browser -- nothing is uploaded
+      <div class="dropzone-box">
+        <h1 class="dropzone-title">Drop a .pcap file here to analyze</h1>
+        <p class="dropzone-sub">or click to browse</p>
+        <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+        <div class="dropzone-formats">Supports .pcap, .pcapng, .cap</div>
+        <div class="dropzone-privacy">
+          All processing in your browser -- nothing is uploaded
+        </div>
       </div>
     </div>
   </div>
@@ -34,31 +28,33 @@
   <!-- Analysis view (shown after file loads) -->
   <div class="analyze-workspace" id="workspace" style="display: none;">
 
-    <!-- Top bar -->
+    <!-- Top bar -- TUI status lines -->
     <div class="analyze-topbar" id="topbar">
-      <div class="topbar-info">
+      <div class="topbar-status-line">
+        <span class="tui-label">Mode:</span>&nbsp;<span class="tui-value">Offline</span>
+        <span class="tui-sep">|</span>
         <span class="topbar-filename" id="topbar-filename"></span>
-        <span class="topbar-stat" id="topbar-packets"><strong>0</strong> packets</span>
-        <span class="topbar-stat" id="topbar-sip"><strong>0</strong> SIP messages</span>
+        <span class="tui-sep">|</span>
         <span class="topbar-stat" id="topbar-dialogs"><strong>0</strong> dialogs</span>
-      </div>
-      <div class="topbar-actions">
-        <input type="text" class="topbar-filter" id="filter-input" placeholder="Filter (e.g. method == 'INVITE')" spellcheck="false">
-        <div class="topbar-export-wrap">
-          <button class="topbar-btn" id="export-btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            Export
-          </button>
-          <div class="export-dropdown" id="export-dropdown">
-            <button data-format="json">JSON</button>
-            <button data-format="csv">CSV</button>
-            <button data-format="mermaid">Mermaid</button>
+        <span class="tui-sep">|</span>
+        <span class="topbar-stat" id="topbar-sip"><strong>0</strong> SIP</span>
+        <span class="tui-sep">|</span>
+        <span class="topbar-stat" id="topbar-packets"><strong>0</strong> packets</span>
+        <div class="topbar-actions">
+          <div class="topbar-export-wrap">
+            <button class="topbar-btn" id="export-btn">Export</button>
+            <div class="export-dropdown" id="export-dropdown">
+              <button data-format="json">JSON</button>
+              <button data-format="csv">CSV</button>
+              <button data-format="mermaid">Mermaid</button>
+            </div>
           </div>
+          <button class="topbar-btn topbar-btn--clear" id="clear-btn">Clear</button>
         </div>
-        <button class="topbar-btn topbar-btn--clear" id="clear-btn">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-          Clear
-        </button>
+      </div>
+      <div class="topbar-filter-line">
+        <span class="tui-label">Filter:</span>&nbsp;
+        <input type="text" class="topbar-filter" id="filter-input" placeholder="Type to search (e.g. INVITE, alice, Failed) or use DSL: method == 'INVITE'" spellcheck="false">
       </div>
     </div>
 
@@ -76,8 +72,8 @@
                 <th data-sort="method" class="sortable">Method</th>
                 <th data-sort="from_user" class="sortable">From</th>
                 <th data-sort="to_user" class="sortable">To</th>
-                <th data-sort="src_addr" class="sortable">Source IP</th>
-                <th data-sort="dst_addr" class="sortable">Dest IP</th>
+                <th data-sort="src_addr" class="sortable">Source</th>
+                <th data-sort="dst_addr" class="sortable">Dest</th>
                 <th data-sort="state" class="sortable">State</th>
                 <th data-sort="message_count" class="sortable">Msgs</th>
                 <th data-sort="pdd_ms" class="sortable">PDD</th>
@@ -116,9 +112,17 @@
     </div>
   </div>
 
+  <!-- F-key bar at bottom -- always visible -->
+  <div class="fkey-bar" id="fkey-bar">
+    <span class="fkey"><b>Esc</b> Back</span>
+    <span class="fkey"><b>/</b> Filter</span>
+    <span class="fkey"><b>Click</b> Select</span>
+    <span class="fkey"><b>Export</b> JSON/CSV/Mermaid</span>
+  </div>
+
 </div>
 
-<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=4"></script>
+<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=5"></script>
 {% endblock content %}
 
 {% block footer %}{% endblock footer %}

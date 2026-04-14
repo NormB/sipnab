@@ -390,8 +390,8 @@ async function handleFile(file) {
     $("#topbar-filename").textContent = isMock
       ? file.name + " (demo mode — WASM loading failed, showing sample data)"
       : file.name;
-    updateStat("topbar-packets", result.packets, "packets");
-    updateStat("topbar-sip", result.sip_messages, "SIP messages");
+    updateStat("topbar-packets", result.packets, "pkts");
+    updateStat("topbar-sip", result.sip_messages, "SIP");
     updateStat("topbar-dialogs", result.dialogs, "dialogs");
 
     allDialogs = JSON.parse(session.get_dialogs());
@@ -819,6 +819,27 @@ function appendSpan(parent, text, className) {
 // Filter
 // ---------------------------------------------------------------------------
 
+// Detect if input looks like a DSL expression (contains operators)
+function isDslExpression(s) {
+  return /[=!<>~]/.test(s) || /\bAND\b|\bOR\b|\bNOT\b/i.test(s);
+}
+
+// Simple text search across all dialog fields
+function textSearch(query) {
+  var q = query.toLowerCase();
+  return allDialogs
+    .filter(function(d) {
+      return (d.call_id || "").toLowerCase().indexOf(q) >= 0
+        || (d.method || "").toLowerCase().indexOf(q) >= 0
+        || (d.from_user || "").toLowerCase().indexOf(q) >= 0
+        || (d.to_user || "").toLowerCase().indexOf(q) >= 0
+        || (d.src_addr || "").toLowerCase().indexOf(q) >= 0
+        || (d.dst_addr || "").toLowerCase().indexOf(q) >= 0
+        || (d.state || "").toLowerCase().indexOf(q) >= 0;
+    })
+    .map(function(d) { return d.call_id; });
+}
+
 function setupFilter() {
   var input = $("#filter-input");
   var debounce = null;
@@ -829,13 +850,18 @@ function setupFilter() {
       var expr = input.value.trim();
       if (!expr) {
         filteredCallIds = null;
-      } else {
+      } else if (isDslExpression(expr)) {
+        // DSL filter: method == 'INVITE' AND rtp.mos < 3.0
         try {
           var resultStr = session.filter(expr);
           filteredCallIds = JSON.parse(resultStr);
         } catch (_e) {
-          filteredCallIds = null;
+          // DSL parse failed — fall back to text search
+          filteredCallIds = textSearch(expr);
         }
+      } else {
+        // Simple text search across all columns
+        filteredCallIds = textSearch(expr);
       }
       renderDialogList();
     }, 200);
@@ -996,6 +1022,33 @@ function setupResizeHandle(handle, direction) {
 
 function setupKeyboard() {
   document.addEventListener("keydown", function(e) {
+    // Let Escape blur filter input and go back
+    if (e.key === "Escape") {
+      if (e.target.tagName === "INPUT") {
+        e.target.blur();
+        return;
+      }
+      // If workspace is visible and we have a selection, clear it step by step
+      if ($("#workspace").style.display !== "none") {
+        if (selectedMsgIndex !== null) {
+          selectedMsgIndex = null;
+          var rows = $$("#flow-messages .flow-msg");
+          for (var i = 0; i < rows.length; i++) rows[i].classList.remove("selected");
+          clearRawMessage();
+          return;
+        }
+        if (selectedCallId !== null) {
+          selectedCallId = null;
+          var trs = $$("#call-list-body tr");
+          for (var i = 0; i < trs.length; i++) trs[i].classList.remove("selected");
+          clearCallFlow();
+          clearRawMessage();
+          return;
+        }
+      }
+      return;
+    }
+
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
 
     if (e.key === "f" || e.key === "/") {
