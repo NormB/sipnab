@@ -338,4 +338,50 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Network Monitor"));
     }
+
+    // ── Load every capture file in tests/pcap-samples/ ──────────────
+
+    /// Helper: load a file and assert it parses with at least `min_packets` packets.
+    fn assert_loads(path: &str, min_packets: usize) {
+        let data = std::fs::read(path).unwrap_or_else(|e| panic!("Can't read {path}: {e}"));
+        let reader = PcapReader::new(&data).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let packets: Vec<_> = reader.collect();
+        assert!(
+            packets.len() >= min_packets,
+            "{path}: expected >= {min_packets} packets, got {}",
+            packets.len()
+        );
+    }
+
+    // -- pcap format files --
+
+    #[test] fn load_asterisk_zfone() { assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10); }
+    #[test] fn load_dtmfsipinfo() { assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1); }
+    #[test] fn load_h263_rtp() { assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1); }
+    #[test] fn load_metasploit() { assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1); }
+    #[test] fn load_rtp_protocol() { assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1); }
+    #[test] fn load_sip_call_g711() { assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100); }
+    #[test] fn load_sip_dtmf2_cap() { assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10); }
+    #[test] fn load_sip_over_tcp() { assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1); }
+    #[test] fn load_sip_proxy() { assert_loads("tests/pcap-samples/sip-proxy.pcap", 1); }
+    #[test] fn load_sip_register() { assert_loads("tests/pcap-samples/sip-register.pcap", 1); }
+    #[test] fn load_sip_rtp_g711() { assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10); }
+    #[test] fn load_sip_rtp_g722() { assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10); }
+    #[test] fn load_sip_rtp_g729a() { assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10); }
+    #[test] fn load_sip_rtp_opus() { assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1); }
+    #[test] fn load_sip_sdp_example() { assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1); }
+    #[test] fn load_rtsp_tcp_cap() { assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1); }
+    #[test] fn load_voipshark_normal() { assert_loads("tests/pcap-samples/voipshark-normal-call.pcap", 100); }
+    #[test] fn load_voipshark_dtmf() { assert_loads("tests/pcap-samples/voipshark-dtmf.pcap", 100); }
+    #[test] fn load_voipshark_srtp() { assert_loads("tests/pcap-samples/voipshark-srtp-call.pcap", 100); }
+    #[test] fn load_voipshark_tls_rtp() { assert_loads("tests/pcap-samples/voipshark-tls-rtp.pcap", 100); }
+    #[test] fn load_voipshark_tls_srtp() { assert_loads("tests/pcap-samples/voipshark-tls-srtp.pcap", 100); }
+
+    // -- pcapng format files --
+
+    #[test] fn load_b2bua_pcapng() { assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10); }
+    #[test] fn load_sip_488_pcapng() { assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1); }
+    #[test] fn load_sip_auth_pcapng() { assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1); }
+    #[test] fn load_sip_routing_pcapng() { assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1); }
+    #[test] fn load_sipp_branch_pcapng() { assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100); }
 }
