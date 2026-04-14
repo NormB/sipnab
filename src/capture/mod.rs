@@ -13,6 +13,7 @@ pub mod hep;
 pub mod live;
 pub mod packet;
 pub mod parse;
+pub mod pcap_reader;
 pub mod reassembly;
 #[cfg(feature = "tls")]
 pub mod tls;
