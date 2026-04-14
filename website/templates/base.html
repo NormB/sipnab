@@ -6,6 +6,15 @@
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
 
+  <!-- Open Graph -->
+  <meta property="og:title" content="{% block og_title %}{{ config.title }}{% endblock og_title %}">
+  <meta property="og:description" content="{{ config.description }}">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
   <!-- Fonts -->
   <link rel="preconnect" href="https://fonts.bunny.net">
   <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel="stylesheet">
@@ -76,13 +85,18 @@
         <span class="footer-logo">sipnab</span>
         <span class="footer-version">v{{ config.extra.version }}</span>
       </div>
-      <div class="footer-col">
-        <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
+      <div class="footer-col footer-links">
+        <a href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
         <a href="{{ config.extra.github_url }}">GitHub</a>
         <a href="https://www.gnu.org/licenses/gpl-3.0.html">License (GPLv3)</a>
+        <a href="{{ config.extra.github_url }}/blob/main/CHANGELOG.md">Changelog</a>
       </div>
-      <div class="footer-col">
-        <span class="footer-credit">Built by {{ config.extra.author }}</span>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with Rust + <a href="https://ratatui.rs">ratatui</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit">{{ config.extra.author }}</span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
       </div>
     </div>
   </footer>

@@ -121,6 +121,24 @@ img { max-width: 100%; height: auto; }
     &.active {
       color: $accent;
       background: $accent-glow;
+      position: relative;
+    }
+
+    &.active::after {
+      content: '';
+      position: absolute;
+      bottom: 2px;
+      left: 0.75rem;
+      right: 0.75rem;
+      height: 2px;
+      background: $accent;
+      border-radius: 1px;
+      animation: navUnderline 0.3s ease;
+    }
+
+    @keyframes navUnderline {
+      from { transform: scaleX(0); }
+      to { transform: scaleX(1); }
     }
   }
 }
@@ -269,6 +287,7 @@ img { max-width: 100%; height: auto; }
 .hero {
   padding: 6rem 1.5rem 3rem;
   text-align: center;
+  background: radial-gradient(ellipse at 50% 0%, rgba(255,204,102,0.06) 0%, transparent 60%);
 }
 
 .hero-inner {
@@ -278,12 +297,27 @@ img { max-width: 100%; height: auto; }
 
 .hero-title {
   font-family: $font-mono;
-  font-size: 3.5rem;
+  font-size: 4.5rem;
   font-weight: 700;
   color: $accent;
   letter-spacing: -0.03em;
   line-height: 1.1;
   margin-bottom: 1rem;
+}
+
+.version-badge {
+  display: inline-block;
+  font-family: $font-mono;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: $text-dim;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 6px;
+  padding: 0.2rem 0.6rem;
+  vertical-align: middle;
+  position: relative;
+  top: -0.15em;
 }
 
 .hero-tagline {
@@ -352,7 +386,7 @@ img { max-width: 100%; height: auto; }
   border: 1px solid $border;
   border-radius: 10px;
   overflow: hidden;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  box-shadow: 0 20px 80px rgba(255, 204, 102, 0.08), 0 0 0 1px rgba(255, 204, 102, 0.1);
   text-align: left;
 }
 
@@ -398,6 +432,18 @@ img { max-width: 100%; height: auto; }
   .t-bad     { color: $bad; }
   .t-header  { color: $link; font-weight: 600; }
   .t-selected { color: $accent; font-weight: 700; }
+  .t-badge-delta {
+    display: inline-block;
+    font-size: 0.7rem;
+    color: $text-dim;
+    background: rgba($accent, 0.1);
+    border: 1px solid rgba($accent, 0.2);
+    border-radius: 3px;
+    padding: 0 0.3em;
+    margin-left: 0.25em;
+    font-weight: 500;
+  }
+  .t-comment { color: lighten($text-dim, 10%); }
 }
 
 // =============================================================================
@@ -420,14 +466,24 @@ img { max-width: 100%; height: auto; }
 .feature-card {
   background: $surface;
   border: 1px solid $border;
+  border-top: 3px solid transparent;
   border-radius: 10px;
   padding: 2rem;
   transition: border-color 0.2s, box-shadow 0.2s;
 
   &:hover {
     border-color: $border-light;
+    border-top-color: inherit;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
   }
+
+  &--amber { border-top-color: $accent; }
+  &--green { border-top-color: $code-green; }
+  &--blue  { border-top-color: $link; }
+
+  &--amber:hover { border-top-color: $accent; }
+  &--green:hover { border-top-color: $code-green; }
+  &--blue:hover  { border-top-color: $link; }
 
   h3 {
     font-size: 1.125rem;
@@ -445,6 +501,16 @@ img { max-width: 100%; height: auto; }
 
 .feature-icon {
   color: $accent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba($accent, 0.08);
+  border-radius: 50%;
+  width: 56px;
+  height: 56px;
+
+  .feature-card--green & { color: $code-green; background: rgba($code-green, 0.08); }
+  .feature-card--blue &  { color: $link; background: rgba($link, 0.08); }
 }
 
 // =============================================================================
@@ -474,6 +540,7 @@ img { max-width: 100%; height: auto; }
   border: 1px solid $border;
   border-radius: 10px;
   overflow: hidden;
+  position: relative;
 
   pre {
     font-family: $font-mono;
@@ -484,6 +551,51 @@ img { max-width: 100%; height: auto; }
     color: $code-green;
 
     .t-muted { color: $text-dim; }
+    .t-comment { color: lighten($text-dim, 10%); }
+  }
+
+  // Line numbers via CSS counter
+  pre.line-numbers {
+    counter-reset: line;
+    padding-left: 3.5rem;
+
+    code {
+      display: block;
+    }
+
+    code > span,
+    code > br {
+      // Handled via wrapping below
+    }
+  }
+
+  pre.line-numbers code::before {
+    // Not practical with inline HTML — use wrapper approach
+  }
+}
+
+// Copy button
+.copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: $surface-2;
+  border: 1px solid $border;
+  border-radius: 6px;
+  color: $text-dim;
+  font-family: $font-sans;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  z-index: 2;
+
+  &:hover {
+    color: $text;
+    border-color: $text-dim;
   }
 }
 
@@ -538,9 +650,21 @@ img { max-width: 100%; height: auto; }
 
   td.yes { color: $good; font-weight: 600; }
   td.no { color: $text-dim; }
+  td.lang { color: $text; font-weight: 500; font-family: $font-mono; font-size: 0.8rem; }
+
+  // sipnab column highlight
+  th.col-sipnab,
+  td.col-sipnab {
+    background: rgba($accent, 0.04);
+  }
+
+  // Checkmark/cross sizing
+  td.yes span { font-size: 1.1em; }
+  td.no span { font-size: 1.0em; opacity: 0.5; }
 
   tr:last-child td { border-bottom: none; }
   tr:hover td { background: rgba($text, 0.02); }
+  tr:hover td.col-sipnab { background: rgba($accent, 0.07); }
 }
 
 // =============================================================================
@@ -567,7 +691,7 @@ img { max-width: 100%; height: auto; }
 
 .arch-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 1.5rem;
 }
 
@@ -582,7 +706,7 @@ img { max-width: 100%; height: auto; }
 .arch-stat {
   display: block;
   font-family: $font-mono;
-  font-size: 2rem;
+  font-size: 2.5rem;
   font-weight: 700;
   color: $accent;
   line-height: 1.2;
@@ -612,6 +736,25 @@ img { max-width: 100%; height: auto; }
   flex: 1;
   min-width: 0;
   max-width: $doc-width;
+
+  // Heading anchors: offset for sticky nav
+  h1, h2, h3, h4 {
+    scroll-margin-top: 80px;
+  }
+
+  // kbd styling for keybindings
+  kbd {
+    display: inline-block;
+    font-family: $font-mono;
+    font-size: 0.8em;
+    background: $surface-2;
+    color: $text;
+    border: 1px solid $border-light;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0.1em 0.45em;
+    line-height: 1.4;
+  }
 
   h1 {
     font-size: 2rem;
@@ -793,10 +936,15 @@ img { max-width: 100%; height: auto; }
     display: block;
     font-size: 0.8rem;
     color: $text-dim;
-    padding: 0.2rem 0;
+    padding: 0.2rem 0 0.2rem 0.5rem;
+    margin-left: -1rem;
+    border-left: 2px solid transparent;
     line-height: 1.4;
-    transition: color 0.1s;
-    &:hover { color: $accent; }
+    transition: color 0.15s, border-color 0.15s;
+    &:hover {
+      color: $accent;
+      border-left-color: $accent;
+    }
   }
 
   ul {
@@ -860,6 +1008,42 @@ img { max-width: 100%; height: auto; }
 }
 
 // =============================================================================
+// Animations
+// =============================================================================
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+
+  &.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+// Stagger feature cards
+.feature-card.fade-in-up:nth-child(2).visible { transition-delay: 0.1s; }
+.feature-card.fade-in-up:nth-child(3).visible { transition-delay: 0.2s; }
+
+// Stagger arch items
+.arch-item.fade-in-up:nth-child(2).visible { transition-delay: 0.08s; }
+.arch-item.fade-in-up:nth-child(3).visible { transition-delay: 0.16s; }
+.arch-item.fade-in-up:nth-child(4).visible { transition-delay: 0.24s; }
+.arch-item.fade-in-up:nth-child(5).visible { transition-delay: 0.32s; }
+
+// =============================================================================
 // Footer
 // =============================================================================
 
@@ -902,15 +1086,35 @@ img { max-width: 100%; height: auto; }
   border: 1px solid $border;
 }
 
+.footer-links {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
 .footer-col a {
   font-size: 0.85rem;
   color: $text-dim;
   &:hover { color: $text; }
 }
 
+.footer-sep {
+  color: $border-light;
+  font-size: 0.8rem;
+}
+
+.footer-meta {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .footer-credit {
   font-size: 0.825rem;
   color: $text-dim;
+
+  a {
+    color: $text-dim;
+    &:hover { color: $text; }
+  }
 }
 
 // =============================================================================
@@ -969,6 +1173,7 @@ img { max-width: 100%; height: auto; }
 @media (max-width: 1024px) {
   .doc-toc { display: none; }
   .doc-layout { max-width: $doc-width; }
+  .arch-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
 @media (max-width: 768px) {
@@ -995,7 +1200,7 @@ img { max-width: 100%; height: auto; }
   .nav-toggle { display: flex; }
 
   .hero { padding: 3rem 1rem 2rem; }
-  .hero-title { font-size: 2.5rem; }
+  .hero-title { font-size: 2.75rem; }
   .hero-tagline { font-size: 1.1rem; }
 
   .features-inner { grid-template-columns: 1fr; gap: 1rem; }
@@ -1016,12 +1221,15 @@ img { max-width: 100%; height: auto; }
 
   .footer-inner { flex-direction: column; text-align: center; }
   .footer-col { justify-content: center; }
+  .footer-meta { justify-content: center; }
 
   .terminal-body { font-size: 0.65rem; padding: 0.75rem; }
 }
 
 @media (max-width: 480px) {
-  .hero-title { font-size: 2rem; }
+  .hero-title { font-size: 2.25rem; }
   .hero-actions { flex-direction: column; align-items: center; }
   .arch-grid { grid-template-columns: 1fr; }
+  .arch-stat { font-size: 2rem; }
+  .version-badge { font-size: 0.7rem; }
 }
