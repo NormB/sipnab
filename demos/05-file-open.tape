@@ -15,12 +15,10 @@ Show
 Sleep 3s
 Type "O"
 Sleep 2s
-Type "tests/pcap-samples/b2bua-asterisk.pcapng"
+Type "tests/pcap-samples/sip-rtp-g722.pcap"
 Sleep 2s
 Enter
 Sleep 6s
-Down
-Sleep 2s
 Down
 Sleep 2s
 Sleep 4s
