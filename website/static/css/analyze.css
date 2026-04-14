@@ -1,0 +1,784 @@
+/* =============================================================================
+   sipnab Analyze Page -- Ayu Mirage palette
+   ============================================================================= */
+
+:root {
+  --bg: #0a0e14;
+  --surface: #1f2430;
+  --surface-2: #242936;
+  --text: #cbccc6;
+  --text-dim: #707a8c;
+  --accent: #ffcc66;
+  --accent-glow: rgba(255, 204, 102, 0.12);
+  --link: #73d0ff;
+  --good: #bae67e;
+  --warn: #ffcc66;
+  --bad: #ff6666;
+  --border: #2d3640;
+  --border-light: #3d4754;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+
+  /* SIP method colors (matching TUI) */
+  --color-invite: #5ccfe6;
+  --color-provisional: #ffcc66;
+  --color-success: #bae67e;
+  --color-redirect: #d4bfff;
+  --color-client-err: #ff6666;
+  --color-server-err: #f28779;
+  --color-bye: #f29e74;
+  --color-ack: #95e6cb;
+  --color-cancel: #ffa759;
+  --color-register: #73d0ff;
+  --color-options: #707a8c;
+}
+
+/* =============================================================================
+   Analyze App Shell
+   ============================================================================= */
+
+.analyze-app {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 60px); /* subtract nav height */
+  overflow: hidden;
+}
+
+/* =============================================================================
+   Drop Zone
+   ============================================================================= */
+
+.analyze-dropzone {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+}
+
+.dropzone-inner {
+  text-align: center;
+  padding: 4rem 3rem;
+  border: 2px dashed var(--border-light);
+  border-radius: 16px;
+  max-width: 560px;
+  width: 100%;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.dropzone-inner:hover,
+.analyze-dropzone.drag-over .dropzone-inner {
+  border-color: var(--accent);
+  background: rgba(255, 204, 102, 0.03);
+}
+
+.analyze-dropzone.drag-over .dropzone-inner {
+  border-style: solid;
+  box-shadow: 0 0 0 4px rgba(255, 204, 102, 0.08);
+}
+
+.dropzone-icon {
+  color: var(--text-dim);
+  margin-bottom: 1.5rem;
+  transition: color 0.2s;
+}
+
+.dropzone-inner:hover .dropzone-icon,
+.analyze-dropzone.drag-over .dropzone-icon {
+  color: var(--accent);
+}
+
+.dropzone-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+}
+
+.dropzone-sub {
+  font-size: 0.95rem;
+  color: var(--text-dim);
+  margin-bottom: 1.5rem;
+}
+
+.dropzone-formats {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-bottom: 1.5rem;
+}
+
+.dropzone-privacy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--good);
+  background: rgba(186, 230, 126, 0.06);
+  border: 1px solid rgba(186, 230, 126, 0.15);
+  border-radius: 6px;
+  padding: 0.4rem 0.85rem;
+}
+
+/* =============================================================================
+   Workspace Layout
+   ============================================================================= */
+
+.analyze-workspace {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 60px);
+  overflow: hidden;
+}
+
+/* =============================================================================
+   Top Bar
+   ============================================================================= */
+
+.analyze-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 44px;
+}
+
+.topbar-info {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  flex-shrink: 0;
+}
+
+.topbar-filename {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--accent);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-stat {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.topbar-stat strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.topbar-filter {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.35rem 0.75rem;
+  width: 280px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.topbar-filter:focus {
+  border-color: var(--accent);
+}
+
+.topbar-filter::placeholder {
+  color: var(--text-dim);
+}
+
+.topbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+
+.topbar-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+.topbar-btn--clear:hover {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.topbar-export-wrap {
+  position: relative;
+}
+
+.export-dropdown {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 50;
+  min-width: 120px;
+}
+
+.export-dropdown.open {
+  display: block;
+}
+
+.export-dropdown button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.export-dropdown button:hover {
+  background: var(--accent-glow);
+  color: var(--text);
+}
+
+.export-dropdown button + button {
+  border-top: 1px solid var(--border);
+}
+
+/* =============================================================================
+   Panels
+   ============================================================================= */
+
+.analyze-panels {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-left {
+  width: 45%;
+  min-width: 280px;
+  border-right: 1px solid var(--border);
+}
+
+.panel-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 320px;
+}
+
+.panel-right-top {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 100px;
+}
+
+.panel-right-bottom {
+  height: 30%;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+.panel-header {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  padding: 0.4rem 0.75rem;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Resize handles */
+.panel-resize {
+  flex-shrink: 0;
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+}
+
+.panel-resize[data-direction="horizontal"] {
+  width: 5px;
+  cursor: col-resize;
+}
+
+.panel-resize[data-direction="vertical"] {
+  height: 5px;
+  cursor: row-resize;
+}
+
+.panel-resize:hover,
+.panel-resize.active {
+  background: var(--accent);
+}
+
+/* =============================================================================
+   Call List Table
+   ============================================================================= */
+
+.call-list-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+.call-list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.call-list thead {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.call-list th {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim);
+  background: var(--surface);
+  padding: 0.45rem 0.6rem;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  user-select: none;
+}
+
+.call-list th.sortable {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.call-list th.sortable:hover {
+  color: var(--text);
+}
+
+.call-list th.sort-active {
+  color: var(--accent);
+}
+
+.call-list th.sort-active::after {
+  content: '';
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 0.35rem;
+  vertical-align: middle;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+
+.call-list th.sort-active.sort-asc::after {
+  border-bottom: 5px solid var(--accent);
+}
+
+.call-list th.sort-active.sort-desc::after {
+  border-top: 5px solid var(--accent);
+}
+
+.call-list td {
+  padding: 0.4rem 0.6rem;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.call-list tbody tr {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.call-list tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.call-list tbody tr.selected {
+  background: var(--accent-glow);
+}
+
+.call-list tbody tr.selected td {
+  color: var(--text);
+}
+
+/* Method cell coloring */
+.call-list .cell-method { font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem; }
+.call-list .method-invite { color: var(--color-invite); }
+.call-list .method-register { color: var(--color-register); }
+.call-list .method-bye { color: var(--color-bye); }
+.call-list .method-options { color: var(--color-options); }
+.call-list .method-cancel { color: var(--color-cancel); }
+
+/* State cell coloring */
+.call-list .state-completed { color: var(--good); }
+.call-list .state-confirmed { color: var(--good); }
+.call-list .state-early { color: var(--warn); }
+.call-list .state-trying { color: var(--color-invite); }
+.call-list .state-failed { color: var(--bad); }
+.call-list .state-terminated { color: var(--text-dim); }
+
+/* PDD cell */
+.call-list .cell-pdd {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+/* =============================================================================
+   Call Flow Diagram
+   ============================================================================= */
+
+.flow-placeholder,
+.raw-placeholder {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}
+
+.flow-container {
+  flex: 1;
+  overflow: auto;
+  padding: 0.5rem 0;
+}
+
+/* Endpoint headers */
+.flow-endpoints {
+  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0;
+  min-height: 40px;
+}
+
+.flow-endpoint {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--link);
+  white-space: nowrap;
+  position: relative;
+}
+
+.flow-endpoint::after {
+  content: '';
+  position: absolute;
+  bottom: -0.5rem;
+  left: 50%;
+  width: 1px;
+  height: 0.5rem;
+  background: var(--border-light);
+}
+
+/* Endpoint vertical lines (swim lanes) */
+.flow-messages {
+  position: relative;
+}
+
+/* Individual message row */
+.flow-msg {
+  display: flex;
+  align-items: center;
+  padding: 0.3rem 0.75rem;
+  cursor: pointer;
+  transition: background 0.1s;
+  position: relative;
+  min-height: 28px;
+}
+
+.flow-msg:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.flow-msg.selected {
+  background: var(--accent-glow);
+}
+
+.flow-msg.retransmission {
+  opacity: 0.5;
+}
+
+/* Timestamp */
+.flow-time {
+  flex-shrink: 0;
+  width: 72px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  text-align: right;
+  padding-right: 0.75rem;
+}
+
+/* Arrow area */
+.flow-arrow-area {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-height: 24px;
+}
+
+/* Arrow drawing */
+.flow-arrow {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  height: 1px;
+}
+
+.flow-arrow.request .flow-line {
+  background: var(--color-invite);
+}
+
+.flow-arrow.response .flow-line {
+  background: repeating-linear-gradient(
+    to right,
+    var(--text-dim) 0px,
+    var(--text-dim) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+
+.flow-line {
+  flex: 1;
+  height: 1px;
+}
+
+.flow-label {
+  position: absolute;
+  top: -14px;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.flow-arrow.right .flow-label {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.flow-arrow.left .flow-label {
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Arrow head */
+.flow-head {
+  flex-shrink: 0;
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+.flow-arrow.right .flow-head {
+  margin-left: -2px;
+}
+
+.flow-arrow.left .flow-head {
+  margin-right: -2px;
+}
+
+/* Method/status colors for labels */
+.flow-label-invite { color: var(--color-invite); }
+.flow-label-ack { color: var(--color-ack); }
+.flow-label-bye { color: var(--color-bye); }
+.flow-label-cancel { color: var(--color-cancel); }
+.flow-label-register { color: var(--color-register); }
+.flow-label-options { color: var(--color-options); }
+
+.flow-label-1xx { color: var(--color-provisional); }
+.flow-label-2xx { color: var(--color-success); }
+.flow-label-3xx { color: var(--color-redirect); }
+.flow-label-4xx { color: var(--color-client-err); }
+.flow-label-5xx { color: var(--color-server-err); }
+.flow-label-6xx { color: var(--color-server-err); }
+
+/* Swim lane lines */
+.flow-lane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
+}
+
+/* =============================================================================
+   Raw Message
+   ============================================================================= */
+
+.raw-message {
+  flex: 1;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  border: none;
+  border-radius: 0;
+}
+
+/* Syntax highlighting for raw SIP */
+.raw-message .sip-method { color: var(--color-invite); font-weight: 600; }
+.raw-message .sip-uri { color: var(--accent); }
+.raw-message .sip-version { color: var(--text-dim); }
+.raw-message .sip-header-name { color: var(--link); }
+.raw-message .sip-header-sep { color: var(--text-dim); }
+.raw-message .sip-status-code { color: var(--good); font-weight: 600; }
+.raw-message .sip-status-reason { color: var(--text-dim); }
+.raw-message .sip-body { color: var(--text-dim); }
+.raw-message .sip-body-key { color: var(--color-provisional); }
+
+/* =============================================================================
+   Loading overlay
+   ============================================================================= */
+
+.analyze-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(10, 14, 20, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.analyze-loading-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+.analyze-loading-text {
+  font-size: 0.9rem;
+  color: var(--text-dim);
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* =============================================================================
+   Responsive
+   ============================================================================= */
+
+@media (max-width: 900px) {
+  .analyze-panels {
+    flex-direction: column;
+  }
+
+  .panel-left {
+    width: 100%;
+    height: 40%;
+    min-width: unset;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .panel-right {
+    min-width: unset;
+  }
+
+  .panel-resize[data-direction="horizontal"] {
+    width: 100%;
+    height: 5px;
+    cursor: row-resize;
+  }
+
+  .topbar-filter {
+    width: 160px;
+  }
+}
+
+@media (max-width: 600px) {
+  .analyze-topbar {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .topbar-info {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .topbar-filter {
+    width: 100%;
+    order: 10;
+  }
+
+  .dropzone-title {
+    font-size: 1.2rem;
+  }
+
+  .dropzone-inner {
+    padding: 2.5rem 1.5rem;
+  }
+}
