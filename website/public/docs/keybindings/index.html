@@ -13,20 +13,20 @@
 <span class=t-header>      (alice UAC)             (OpenSIPS proxy)       (bob UAS)</span>
 <span class=t-muted>          │                        │                        │</span>
 <span class=t-accent> +0.000s</span>  <span class=t-good>│------- INVITE -------->│</span>                        <span class=t-muted>│</span>
-<span class=t-accent> +0.003s</span>  <span class=t-muted>│</span>  <span class=t-warn>│<------- ---------│< 100 span>                        <span class=t-muted>│</span>
+<span class=t-accent> +0.003s</span>  <span class=t-warn>│<-------- ----------│< 100 span>                        <span class=t-muted>│</span>
 <span class=t-accent> +0.005s</span>  <span class=t-muted>│</span>                        <span class=t-good>│------- INVITE -------->│</span>
 <span class=t-accent> +0.008s</span>  <span class=t-muted>│</span>                        <span class=t-warn>│<------- ---------│< 100 span>
 <span class=t-accent> +0.847s</span>  <span class=t-muted>│</span>                        <span class=t-warn>│<------- ---------│< 180 span>  <span class=t-badge-delta>+839ms</span>
 <span class=t-accent> +0.850s</span>  <span class=t-warn>│<------- ---------│< 180 span>                        <span class=t-muted>│</span>
 <span class=t-accent> +2.134s</span>  <span class=t-muted>│</span>                        <span class=t-good>│<------- ---------│< 200 span>  <span class=t-badge-delta>+1.28s</span>
 <span class=t-accent> +2.137s</span>  <span class=t-good>│<------- ---------│< 200 span>                        <span class=t-muted>│</span>
-<span class=t-accent> +2.140s</span>  <span class=t-good>│-------- ACK --------->│</span>                        <span class=t-muted>│</span>
-<span class=t-accent> +2.143s</span>  <span class=t-muted>│</span>                        <span class=t-good>│-------- ACK --------->│</span>
+<span class=t-accent> +2.140s</span>  <span class=t-good>│--------- ACK --------->│</span>                        <span class=t-muted>│</span>
+<span class=t-accent> +2.143s</span>  <span class=t-muted>│</span>                        <span class=t-good>│--------- ACK --------->│</span>
 <span class=t-muted>          │</span>    <span class=t-good>██████████ RTP (PCMU, MOS 4.2)</span>          <span class=t-muted>│</span>
 <span class=t-muted>          │</span>    <span class=t-good>██████████ RTP (PCMU, MOS 4.1)</span>          <span class=t-muted>│</span>
 <span class=t-accent>+65.320s</span>  <span class=t-muted>│</span>                        <span class=t-bad>│<------- ---------│< bye span>
 <span class=t-accent>+65.323s</span>  <span class=t-bad>│<------- ---------│< bye span>                        <span class=t-muted>│</span>
-<span class=t-accent>+65.326s</span>  <span class=t-good>│------- 200 OK ------->│</span>                        <span class=t-muted>│</span>
+<span class=t-accent>+65.326s</span>  <span class=t-good>│-------- 200 OK ------->│</span>                        <span class=t-muted>│</span>
 <span class=t-muted>          │                        │                        │</span>
 <span class=t-muted>  Esc Back  Enter Raw  Space Diff  d SDP  t Time  m Mark  x Extended  F6 RTP</span>
 
@@ -93,15 +93,15 @@
 </div>
 <pre class=terminal-body><span class=t-muted> ┌──────────────────── Filter ────────────────────┐</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-header>From:</span>     <span class=t-selected>[alice                       ]</span>  <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-header>To:</span>       [                            ]  <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-header>Filter:</span>   [method == 'INVITE'          ]  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>From:</span>     <span class=t-selected>[alice                       ]</span>      <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>To:</span>       [                            ]      <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>Filter:</span>   [method == 'INVITE'          ]      <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-good>[x]</span> Case insensitive                         <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-good>[x]</span> Case insensitive                          <span class=t-muted>│</span>
 <span class=t-muted> │</span>  <span class=t-muted>[ ]</span> Invert match                              <span class=t-muted>│</span>
 <span class=t-muted> │</span>  <span class=t-muted>[ ]</span> Calls only                                <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
-<span class=t-muted> │</span>     <span class=t-good>[ Apply ]</span>          <span class=t-muted>[ Cancel ]</span>           <span class=t-muted>│</span>
+<span class=t-muted> │</span>     <span class=t-good>[ Apply ]</span>          <span class=t-muted>[ Cancel ]</span>              <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
 <span class=t-muted> └────────────────────────────────────────────────┘</span>
 <span class=t-muted> Tab: next field  Enter: apply  Esc: cancel  F9: clear all</span></pre>
@@ -120,12 +120,12 @@
 <span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
 <span class=t-muted> │</span>  <span class=t-header>Format:</span>  <span class=t-good>PCAP</span> <span class=t-muted>│ PCAP-NG │ TXT │ Mermaid</span>     <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-header>File:</span>    <span class=t-selected>[/tmp/capture.pcap           ]</span>    <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>File:</span>    <span class=t-selected>[/tmp/capture.pcap           ]</span>         <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-muted>Saving: All 47 dialogs</span>                         <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-accent>(3 selected -- will save selected only)</span>        <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-muted>Saving: All 47 dialogs</span>                          <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-accent>(3 selected -- will save selected only)</span>         <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
-<span class=t-muted> │</span>     <span class=t-good>[ Save ]</span>           <span class=t-muted>[ Cancel ]</span>            <span class=t-muted>│</span>
+<span class=t-muted> │</span>     <span class=t-good>[ Save ]</span>           <span class=t-muted>[ Cancel ]</span>                <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
 <span class=t-muted> └──────────────────────────────────────────────────┘</span>
 <span class=t-muted> Tab: cycle format  Enter: save  Esc: cancel</span></pre>
@@ -142,11 +142,11 @@
 </div>
 <pre class=terminal-body><span class=t-muted> ┌──────────────────── Settings ───────────────────┐</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
-<span class=t-muted> │</span>  <span class=t-selected>▸ Color mode         </span><span class=t-good>always</span>                  <span class=t-muted>│</span>
-<span class=t-muted> │</span>    Timestamp mode     <span class=t-accent>delta-prev</span>              <span class=t-muted>│</span>
-<span class=t-muted> │</span>    Autoscroll         <span class=t-good>on</span>                      <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-selected>▸ Color mode         </span><span class=t-good>always</span>                   <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Timestamp mode     <span class=t-accent>delta-prev</span>               <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Autoscroll         <span class=t-good>on</span>                       <span class=t-muted>│</span>
 <span class=t-muted> │</span>    Raw preview         <span class=t-bad>off</span>                     <span class=t-muted>│</span>
-<span class=t-muted> │</span>    SDP display         <span class=t-accent>summary</span>                <span class=t-muted>│</span>
+<span class=t-muted> │</span>    SDP display         <span class=t-accent>summary</span>                 <span class=t-muted>│</span>
 <span class=t-muted> │</span>    Syntax highlighting <span class=t-good>on</span>                      <span class=t-muted>│</span>
 <span class=t-muted> │</span>                                                <span class=t-muted>│</span>
 <span class=t-muted> └────────────────────────────────────────────────┘</span>
