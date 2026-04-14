@@ -5,8 +5,8 @@
 //! secrets (the keylog already provides derived per-direction secrets,
 //! so only HKDF-Expand-Label is needed to derive key + IV).
 //!
-//! TLS 1.2 with `CLIENT_RANDOM` requires the full TLS PRF key derivation,
-//! which is planned but not yet implemented.
+//! TLS 1.2 with `CLIENT_RANDOM` is supported via `tls12_prf()` and
+//! `derive_tls12_keys()` — requires observing the ServerHello on the wire.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -535,8 +535,8 @@ impl TlsDecryptor {
         // Lazily populate sessions from keylog entries
         self.ensure_sessions_populated();
 
-        // Try each session — in practice, the right session is found quickly
-        // because captures typically have very few concurrent TLS sessions.
+        // NOTE: Collects session keys to avoid borrow conflict with try_decrypt_with_session's &mut self.
+        // In practice, session count is 1-3 per capture, making this negligible.
         let session_keys: Vec<TlsSessionKey> = self.sessions.keys().cloned().collect();
         for key in &session_keys {
             // Read cipher suite before mutable borrow in try_decrypt_with_session

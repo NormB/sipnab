@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installation -- sipnab</title>
+  <meta name="description" content="Install sipnab from source, via cargo, Docker, or pre-built binaries.">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="../" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="./">Docs</a>
+    <a href="https://github.com/normbrandinger/sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<div class="sidebar-overlay"></div>
+
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="../">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="install.html" class="indent active">Installation</a>
+      <a href="../#quickstart" class="indent">Quick Start</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="cli.html" class="indent">CLI Flags</a>
+      <a href="config.html" class="indent">Configuration</a>
+      <a href="keybindings.html" class="indent">Keybindings</a>
+      <a href="filter-dsl.html" class="indent">Filter DSL</a>
+      <a href="theme.html" class="indent">Theme</a>
+      <a href="api.html" class="indent">REST API</a>
+    </div>
+  </nav>
+</aside>
+
+<main class="main">
+  <h1>Installation</h1>
+
+  <h2>From crates.io</h2>
+  <p>The simplest approach. Requires a Rust toolchain (1.80+) and libpcap headers.</p>
+  <pre><code>cargo install sipnab</code></pre>
+  <p>To install with all feature flags:</p>
+  <pre><code>cargo install sipnab --features full</code></pre>
+
+  <h2>From Source</h2>
+
+  <h3>Prerequisites</h3>
+  <ul style="margin-bottom:1em;">
+    <li>Rust 1.80+ (nightly recommended for <code>let-chains</code>)</li>
+    <li>libpcap development headers</li>
+    <li>A C compiler (for pcap-sys)</li>
+  </ul>
+
+  <p><strong>Debian/Ubuntu:</strong></p>
+  <pre><code>sudo apt install libpcap-dev build-essential</code></pre>
+
+  <p><strong>Fedora/RHEL:</strong></p>
+  <pre><code>sudo dnf install libpcap-devel gcc</code></pre>
+
+  <p><strong>macOS:</strong></p>
+  <pre><code>brew install libpcap
+<span class="comment"># libpcap is also available from Xcode command-line tools</span></code></pre>
+
+  <h3>Build</h3>
+  <pre><code>git clone https://github.com/normbrandinger/sipnab.git
+cd sipnab
+cargo build --release</code></pre>
+  <p>The binary will be at <code>target/release/sipnab</code>.</p>
+
+  <h3>Feature Flags</h3>
+  <pre><code><span class="comment"># Core only (default: capture, SIP, TUI, CLI, JSON)</span>
+cargo build --release
+
+<span class="comment"># With TLS decryption (pure Rust)</span>
+cargo build --release --features tls
+
+<span class="comment"># With HEP v2/v3 support</span>
+cargo build --release --features hep
+
+<span class="comment"># With REST API + Prometheus</span>
+cargo build --release --features api
+
+<span class="comment"># Everything</span>
+cargo build --release --features full</code></pre>
+
+  <h2>Static Binary (musl)</h2>
+  <p>For a fully static binary with no runtime dependencies:</p>
+  <pre><code>rustup target add x86_64-unknown-linux-musl
+cargo build --release --target x86_64-unknown-linux-musl</code></pre>
+  <p>The resulting binary is under 5 MB when stripped.</p>
+
+  <h2>Docker</h2>
+  <pre><code><span class="comment"># Build</span>
+docker build -t sipnab .
+
+<span class="comment"># Run with host networking (for live capture)</span>
+docker run --rm --net=host sipnab -d eth0
+
+<span class="comment"># Analyze a pcap file</span>
+docker run --rm -v /path/to/files:/data sipnab -N -I /data/capture.pcap</code></pre>
+
+  <h2>Cross-Compilation</h2>
+  <p>sipnab supports cross-compilation via <a href="https://github.com/cross-rs/cross">cross</a>:</p>
+  <pre><code>cargo install cross
+cross build --release --target aarch64-unknown-linux-musl</code></pre>
+
+  <h2>Permissions</h2>
+  <p>Live packet capture requires either root privileges or the <code>CAP_NET_RAW</code> capability:</p>
+  <pre><code><span class="comment"># Option A: setcap (recommended)</span>
+sudo setcap cap_net_raw=eip target/release/sipnab
+
+<span class="comment"># Option B: run as root (sipnab will drop privileges after opening devices)</span>
+sudo sipnab -d eth0 --user nobody</code></pre>
+  <p>sipnab automatically drops privileges after opening capture devices unless <code>--no-priv-drop</code> is specified. See the <a href="cli.html#privilege">CLI reference</a> for details.</p>
+
+  <h2>Verifying the Install</h2>
+  <pre><code>sipnab --version
+sipnab --dump-config</code></pre>
+</main>
+
+<script src="../js/main.js"></script>
+</body>
+</html>

@@ -172,6 +172,42 @@ impl PcapWriter {
         Ok(())
     }
 
+    /// Write a Decryption Secrets Block (DSB) containing TLS key material.
+    ///
+    /// The `secrets_data` should be SSLKEYLOGFILE-format content.
+    /// Call after IDB, before first EPB. Only works with PCAP-NG backend;
+    /// silently skips if using standard pcap format.
+    pub fn write_dsb(&mut self, secrets_data: &[u8]) -> Result<()> {
+        match &mut self.backend {
+            WriterBackend::PcapNg(writer) => {
+                // DSB body: secrets_type (4 LE) + secrets_length (4 LE) + data + padding
+                let mut body = Vec::with_capacity(8 + secrets_data.len());
+                // TLS Key Log type = 0x544c534b ("TLSK")
+                body.extend_from_slice(&0x544c534bu32.to_le_bytes());
+                body.extend_from_slice(&(secrets_data.len() as u32).to_le_bytes());
+                body.extend_from_slice(secrets_data);
+                // Pad to 4-byte boundary
+                let pad = (4 - (secrets_data.len() % 4)) % 4;
+                body.resize(body.len() + pad, 0);
+
+                use pcap_file::pcapng::blocks::unknown::UnknownBlock;
+                let block = UnknownBlock {
+                    type_: 0x0000000A, // DSB block type
+                    length: (12 + body.len()) as u32,
+                    value: Cow::Owned(body),
+                };
+                writer
+                    .write_pcapng_block(block)
+                    .map_err(|e| anyhow::anyhow!("DSB write error: {e}"))?;
+                Ok(())
+            }
+            WriterBackend::Pcap(_) => {
+                log::warn!("DSB blocks require PCAP-NG format; skipping");
+                Ok(())
+            }
+        }
+    }
+
     /// Return the number of bytes written to the current output file.
     pub fn bytes_written(&self) -> u64 {
         self.bytes_written
@@ -353,5 +389,23 @@ mod tests {
         assert!(parse_split("bogus:5").is_err());
         assert!(parse_split("filesize").is_err());
         assert!(parse_split("filesize:abc").is_err());
+    }
+
+    #[test]
+    fn dsb_body_format() {
+        let keylog = b"CLIENT_RANDOM abcd1234 deadbeef\n";
+        let mut body = Vec::new();
+        body.extend_from_slice(&0x544c534bu32.to_le_bytes());
+        body.extend_from_slice(&(keylog.len() as u32).to_le_bytes());
+        body.extend_from_slice(keylog);
+        let pad = (4 - (keylog.len() % 4)) % 4;
+        body.resize(body.len() + pad, 0);
+
+        // Verify TLS Key Log type
+        assert_eq!(&body[0..4], &0x544c534bu32.to_le_bytes());
+        // Verify length
+        assert_eq!(&body[4..8], &(keylog.len() as u32).to_le_bytes());
+        // Verify data
+        assert_eq!(&body[8..8 + keylog.len()], keylog);
     }
 }

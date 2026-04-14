@@ -45,6 +45,17 @@ pub struct QualityInterval {
     pub packets: u64,
 }
 
+/// A detected silence period from Comfort Noise packets.
+#[derive(Debug, Clone)]
+pub struct SilencePeriod {
+    /// First sequence number in the silence period.
+    pub start_seq: u16,
+    /// Last sequence number in the silence period.
+    pub end_seq: u16,
+    /// Estimated duration in milliseconds (20ms per CN frame).
+    pub duration_ms: u32,
+}
+
 /// An RTP media stream tracked as a first-class entity.
 ///
 /// Streams are top-level objects that peer with SIP dialogs via
@@ -85,6 +96,10 @@ pub struct RtpStream {
     /// Sequence numbers of lost packets (capped at 1000 most recent entries).
     /// Used for burst/gap analysis.
     pub lost_sequences: Vec<u16>,
+    /// Count of Comfort Noise (PT=13) frames received.
+    pub cn_frames: u32,
+    /// Detected silence periods (capped at 100).
+    pub silence_periods: Vec<SilencePeriod>,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Wall-clock arrival time of the previous packet (for jitter calc).
@@ -126,6 +141,8 @@ impl RtpStream {
             heuristic: false,
             quality_intervals: Vec::new(),
             lost_sequences: Vec::new(),
+            cn_frames: 0,
+            silence_periods: Vec::new(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
             interval_start: timestamp,
@@ -164,6 +181,29 @@ impl RtpStream {
             }
         }
         self.last_seq = header.sequence;
+
+        // Comfort Noise (PT=13) tracking for silence detection
+        if header.payload_type == 13 {
+            self.cn_frames += 1;
+            if let Some(last) = self.silence_periods.last_mut() {
+                if header.sequence == last.end_seq.wrapping_add(1) {
+                    last.end_seq = header.sequence;
+                    last.duration_ms += 20;
+                } else if self.silence_periods.len() < 100 {
+                    self.silence_periods.push(SilencePeriod {
+                        start_seq: header.sequence,
+                        end_seq: header.sequence,
+                        duration_ms: 20,
+                    });
+                }
+            } else {
+                self.silence_periods.push(SilencePeriod {
+                    start_seq: header.sequence,
+                    end_seq: header.sequence,
+                    duration_ms: 20,
+                });
+            }
+        }
 
         // RFC 3550 jitter calculation (Section 6.4.1, A.8)
         if let (Some(prev_arrival), Some(prev_rtp_ts)) = (self.prev_arrival, self.prev_rtp_ts) {

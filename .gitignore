@@ -1,6 +1,7 @@
 target/
 .DS_Store
 .claude/
+sipnab-x86_64-linux
 
 # Editor artifacts
 *.swp

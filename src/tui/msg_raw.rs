@@ -23,6 +23,7 @@ use crate::sip::dialog_store::DialogStore;
 /// * `message_index` — Index of the message within the dialog.
 /// * `scroll_offset` — Vertical scroll position.
 /// * `search_query` — Text to highlight within the message.
+#[allow(clippy::too_many_arguments)]
 pub fn render_raw_message(
     frame: &mut Frame,
     area: Rect,
@@ -31,6 +32,7 @@ pub fn render_raw_message(
     message_index: usize,
     scroll_offset: u16,
     search_query: &str,
+    theme: &super::Theme,
 ) {
     let title = format!(
         " Raw SIP Message [{}/{}] (Esc: Back | /: Search) ",
@@ -45,7 +47,7 @@ pub fn render_raw_message(
         None => {
             let para = Paragraph::new("Dialog not found.")
                 .block(block)
-                .style(Style::default().fg(Color::Red));
+                .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
             return;
         }
@@ -56,7 +58,7 @@ pub fn render_raw_message(
         None => {
             let para = Paragraph::new("Message not found.")
                 .block(block)
-                .style(Style::default().fg(Color::Red));
+                .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
             return;
         }
@@ -74,7 +76,7 @@ pub fn render_raw_message(
     );
 
     let raw_text = String::from_utf8_lossy(&msg.raw);
-    let lines = highlight_sip_message(&info, &raw_text, search_query);
+    let lines = highlight_sip_message(&info, &raw_text, search_query, theme);
 
     let para = Paragraph::new(lines)
         .block(block)
@@ -93,14 +95,14 @@ pub fn render_raw_message(
 /// - Header values: default
 /// - SDP body: dimmed/italic
 /// - Search matches: highlighted background
-fn highlight_sip_message<'a>(info: &str, raw_text: &str, search_query: &str) -> Vec<Line<'a>> {
+fn highlight_sip_message<'a>(info: &str, raw_text: &str, search_query: &str, theme: &super::Theme) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'a>> = Vec::new();
 
     // Info line
     lines.push(Line::from(Span::styled(
         info.to_string(),
         Style::default()
-            .fg(Color::DarkGray)
+            .fg(theme.muted)
             .add_modifier(Modifier::ITALIC),
     )));
     lines.push(Line::from(""));
@@ -125,14 +127,14 @@ fn highlight_sip_message<'a>(info: &str, raw_text: &str, search_query: &str) -> 
                     raw_line,
                     search_query,
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::ITALIC),
                 )
             } else {
                 Line::from(Span::styled(
                     raw_line.to_string(),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::ITALIC),
                 ))
             };
@@ -165,7 +167,7 @@ fn highlight_sip_message<'a>(info: &str, raw_text: &str, search_query: &str) -> 
                     highlight_search_in_line(raw_line, search_query, Style::default())
                 } else {
                     Line::from(vec![
-                        Span::styled(name.to_string(), Style::default().fg(Color::Cyan)),
+                        Span::styled(name.to_string(), Style::default().fg(theme.header)),
                         Span::raw(value.to_string()),
                     ])
                 }
@@ -245,8 +247,9 @@ mod tests {
 
     #[test]
     fn highlight_sip_message_basic() {
+        let theme = crate::tui::Theme::default();
         let raw = "INVITE sip:bob@example.com SIP/2.0\r\nFrom: alice\r\n\r\nv=0\r\n";
-        let lines = highlight_sip_message("info line", raw, "");
+        let lines = highlight_sip_message("info line", raw, "", &theme);
         // info + blank + first line + header + blank separator + sdp line
         assert!(lines.len() >= 4);
     }
