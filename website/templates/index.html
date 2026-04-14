@@ -226,24 +226,24 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
     <h2>Engineered for Production</h2>
     <div class="arch-grid">
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="100" data-prefix="&ge;" data-suffix="K">&ge;100K</span>
-        <span class="arch-label">SIP messages/sec parse throughput</span>
+        <span class="arch-stat" data-count="778" data-suffix="K">778K</span>
+        <span class="arch-label">SIP parses/sec (INVITE, benchmarked)</span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="500" data-prefix="&ge;" data-suffix="K">&ge;500K</span>
-        <span class="arch-label">RTP packets/sec parse throughput</span>
+        <span class="arch-stat" data-count="452" data-suffix="M">452M</span>
+        <span class="arch-label">RTP header parses/sec (benchmarked)</span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="5" data-prefix="&le;" data-suffix=" MB">&le;5 MB</span>
+        <span class="arch-stat" data-count="5" data-suffix=" MB">5 MB</span>
         <span class="arch-label">Stripped binary (musl, static)</span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="0.5" data-prefix="&lt;" data-suffix="%">&lt;0.5%</span>
-        <span class="arch-label">Idle CPU utilization</span>
+        <span class="arch-stat" data-count="100" data-suffix="/500ms">100/500ms</span>
+        <span class="arch-label">Adaptive poll (active/idle)</span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="976" data-suffix="">976</span>
-        <span class="arch-label">Automated test coverage</span>
+        <span class="arch-stat" data-count="971" data-suffix="">971</span>
+        <span class="arch-label">Automated tests</span>
       </div>
     </div>
   </div>

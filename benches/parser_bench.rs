@@ -18,7 +18,7 @@ fn bench_sip_parser(c: &mut Criterion) {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                 5060,
                 5060,
-                "UDP",
+                sipnab::capture::parse::TransportProto::Udp,
             )
             .unwrap()
         })
@@ -33,7 +33,7 @@ fn bench_sip_parser(c: &mut Criterion) {
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 5060,
                 5060,
-                "UDP",
+                sipnab::capture::parse::TransportProto::Udp,
             )
             .unwrap()
         })
@@ -63,7 +63,7 @@ fn bench_sip_scaling(c: &mut Criterion) {
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                         5060,
                         5060,
-                        "UDP",
+                        sipnab::capture::parse::TransportProto::Udp,
                     )
                     .unwrap()
                 })
