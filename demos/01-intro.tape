@@ -4,41 +4,41 @@ Set FontSize 20
 Set Width 1200
 Set Height 700
 Set Padding 10
-Set TypingSpeed 40ms
+Set TypingSpeed 80ms
 Set Theme { "name": "sipnab", "black": "#0a0e14", "red": "#ff6666", "green": "#bae67e", "yellow": "#ffcc66", "blue": "#73d0ff", "magenta": "#d4bfff", "cyan": "#95e6cb", "white": "#cbccc6", "brightBlack": "#707a8c", "brightRed": "#ff6666", "brightGreen": "#bae67e", "brightYellow": "#ffcc66", "brightBlue": "#73d0ff", "brightMagenta": "#d4bfff", "brightCyan": "#95e6cb", "brightWhite": "#f0f0f0", "background": "#0a0e14", "foreground": "#cbccc6", "selectionBackground": "#1f2430", "cursorColor": "#ffcc66" }
 
 # Show the command
 Type "sipnab -I tests/pcap-samples/SIP_CALL_RTP_G711"
-Sleep 500ms
+Sleep 5s
 Enter
-Sleep 3s
+Sleep 5s
 
 # Navigate down through dialogs
 Down
-Sleep 400ms
+Sleep 2.5s
 Down
-Sleep 400ms
+Sleep 2.5s
 Down
-Sleep 400ms
+Sleep 2.5s
 
 # Open call flow
 Enter
-Sleep 2s
+Sleep 4s
 
 # Navigate messages
 Down
-Sleep 300ms
+Sleep 800ms
 Down
-Sleep 300ms
+Sleep 800ms
 Down
-Sleep 300ms
+Sleep 800ms
 Down
-Sleep 300ms
+Sleep 800ms
 
 # Toggle RTP display
 Type "R"
-Sleep 2s
+Sleep 4s
 
 # Back to list
 Escape
-Sleep 1s
+Sleep 2.5s
