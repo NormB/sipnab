@@ -389,7 +389,9 @@ img { max-width: 100%; height: auto; }
 .hero-screenshot {
   width: 100%;
   border-radius: 10px;
-  border: 1px solid $border;
+  border: 2px solid $border-light;
+  outline: 1px solid rgba($accent, 0.15);
+  outline-offset: 2px;
   box-shadow: 0 20px 80px rgba($accent, 0.08), 0 0 0 1px rgba($accent, 0.1);
 }
 
