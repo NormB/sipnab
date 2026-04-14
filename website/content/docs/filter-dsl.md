@@ -84,6 +84,8 @@ Notes:
 - Regex (`=~`) is not applicable to numeric or boolean fields.
 - Numeric equality uses epsilon comparison for floating-point precision.
 
+> **Note:** String comparisons are case-sensitive. State values must match exactly: `'Completed'`, `'Failed'`, `'Trying'`, `'Ringing'`, `'InCall'`, `'Cancelled'`, `'Terminated'`. Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
+
 ## Values
 
 | Syntax | Type | Examples |
@@ -92,6 +94,8 @@ Notes:
 | Number | Numeric (f64) | `3.0`, `100`, `0.5` |
 | `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
 | `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
+
+> **Tip:** Regex patterns are compiled once and reused across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer `from.user =~ '^100[0-9]$'` over `from.user =~ '.*100[0-9].*'`).
 
 ## Boolean Combinators
 

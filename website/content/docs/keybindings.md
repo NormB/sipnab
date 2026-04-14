@@ -243,7 +243,7 @@ Toggle display options without leaving the TUI.
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter |
-| F10 | Column selector **(configurable: `column_selector`)** |
+| F10 | Column selector **(configurable: `column_selector`)**. Opens a popup to show/hide columns in the Call List (e.g., PDD, Source IP, Destination). |
 
 ## Call Flow
 
@@ -267,10 +267,10 @@ Toggle display options without leaving the TUI.
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
 | e | Toggle fold/expand for selected message |
-| m | Set mark at current message |
+| m | Set mark at current message. Places a reference marker on the current message. Navigate to another message to see the **delta** time between the mark and your current position -- useful for measuring delays between specific SIP messages. |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
-| x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** |
+| x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)**. Shows related B2BUA/SBC call legs together in the flow view -- useful for tracing calls through proxies and back-to-back user agents. |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Start compare mode **(configurable: `clear_calls`)** |

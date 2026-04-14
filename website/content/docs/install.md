@@ -37,13 +37,13 @@ cargo install sipnab --features full
 ### Debian/Ubuntu (.deb)
 
 ```bash
-sudo dpkg -i sipnab_0.3.1_amd64.deb
+sudo dpkg -i sipnab_0.3.1_amd64.deb  # replace 0.3.1 with latest version from releases page
 ```
 
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-0.3.1-1.x86_64.rpm
+sudo rpm -i sipnab-0.3.1-1.x86_64.rpm  # replace 0.3.1 with latest version from releases page
 ```
 
 ### Homebrew (macOS)
@@ -99,6 +99,13 @@ cargo build --release --no-default-features --features hep
 # Everything
 cargo build --release --features full
 ```
+
+### What Features Do You Need?
+
+- **Most users:** `cargo build --release` -- default features (`native` + `tui`) give you interactive analysis and CLI mode.
+- **CI/scripting only (no TUI):** `cargo build --release --no-default-features --features native` -- headless binary for automation pipelines.
+- **Full installation:** `cargo build --release --features full` -- everything: TUI, TLS decryption, HEP, REST API.
+- **WASM/browser analysis:** `cargo build --release --features wasm` -- WebAssembly target for in-browser pcap analysis (see Analyze page).
 
 ## Release Profile
 
