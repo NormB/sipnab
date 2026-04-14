@@ -695,11 +695,17 @@ fn run_tui_mode(
     #[cfg(feature = "api")]
     let _api_thread = start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store));
 
+    // Build resolved theme and keymap from config
+    let theme = sipnab::tui::Theme::from_config(&config.theme);
+    let keymap = sipnab::tui::Keymap::from_config(&config.keybindings);
+
     // Run TUI on the main thread
     if let Err(e) = sipnab::tui::run_tui_with_pause(
         Arc::clone(&dialog_store),
         Arc::clone(&stream_store),
         Some(paused_flag),
+        theme,
+        keymap,
     ) {
         log::error!("TUI error: {e}");
     }
@@ -1123,7 +1129,7 @@ fn run_batch_mode(
                     effective_pp.dst_addr,
                     effective_pp.src_port,
                     effective_pp.dst_port,
-                    "UDP",
+                    sipnab::capture::parse::TransportProto::Udp,
                 )
                 && let Err(e) = sender.send(&sip_msg)
             {

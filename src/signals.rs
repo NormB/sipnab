@@ -1,7 +1,7 @@
 //! Signal handling for sipnab.
 //!
 //! Installs handlers for SIGINT, SIGTERM (graceful shutdown) and SIGUSR1
-//! (log/pcap rotation). Uses `libc::signal()` with atomic flags for
+//! (log/pcap rotation). Uses `libc::sigaction()` with atomic flags for
 //! async-signal-safe operation.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,14 +38,26 @@ pub fn rotation_requested() -> bool {
 ///
 /// # Safety
 ///
-/// Uses `libc::signal()` which is safe to call from a single-threaded
+/// Uses `libc::sigaction()` which is safe to call from a single-threaded
 /// context during initialization. The handlers only perform atomic writes,
 /// which are async-signal-safe.
 pub fn install_handlers() {
+    // SAFETY: sigaction() is called once during single-threaded initialization before
+    // any threads are spawned. The handlers only perform atomic store operations,
+    // which are async-signal-safe per POSIX.1-2008 §2.4.3.
     unsafe {
-        libc::signal(libc::SIGINT, shutdown_handler as libc::sighandler_t);
-        libc::signal(libc::SIGTERM, shutdown_handler as libc::sighandler_t);
-        libc::signal(libc::SIGUSR1, rotate_handler as libc::sighandler_t);
+        let mut sa_shutdown: libc::sigaction = std::mem::zeroed();
+        sa_shutdown.sa_sigaction = shutdown_handler as usize;
+        sa_shutdown.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa_shutdown.sa_mask);
+        libc::sigaction(libc::SIGINT, &sa_shutdown, std::ptr::null_mut());
+        libc::sigaction(libc::SIGTERM, &sa_shutdown, std::ptr::null_mut());
+
+        let mut sa_rotate: libc::sigaction = std::mem::zeroed();
+        sa_rotate.sa_sigaction = rotate_handler as usize;
+        sa_rotate.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut sa_rotate.sa_mask);
+        libc::sigaction(libc::SIGUSR1, &sa_rotate, std::ptr::null_mut());
     }
     log::debug!("Signal handlers installed (SIGINT, SIGTERM, SIGUSR1)");
 }

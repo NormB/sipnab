@@ -38,12 +38,15 @@ pub enum DialogState {
     Active,
     /// Subscription terminated.
     Terminated,
+    /// REFER sent; transfer in progress.
+    Transferring,
 }
 
 /// A tracked SIP dialog (call, registration, or subscription).
 ///
 /// Created when the first message for a given Call-ID is processed.
 /// Updated by subsequent messages via [`update_state`].
+#[derive(Debug)]
 pub struct SipDialog {
     /// Call-ID that uniquely identifies this dialog.
     pub call_id: String,
@@ -79,6 +82,8 @@ pub struct SipDialog {
     pub timing: DialogTiming,
     /// SDP offer/answer timeline.
     pub sdp_timeline: Vec<SdpExchange>,
+    /// SIPREC recording metadata, if present.
+    pub siprec_metadata: Option<super::siprec::SirecMetadata>,
 }
 
 impl SipDialog {
@@ -123,6 +128,7 @@ impl SipDialog {
             tags: Vec::new(),
             timing: DialogTiming::default(),
             sdp_timeline: Vec::new(),
+            siprec_metadata: None,
         })
     }
 }
@@ -168,6 +174,19 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
             }
             "ACK" => {
                 // ACK doesn't change state
+            }
+            "REFER" => {
+                if dialog.state == DialogState::InCall {
+                    dialog.state = DialogState::Transferring;
+                }
+            }
+            "NOTIFY" => {
+                if dialog.state == DialogState::Transferring
+                    && let Some(sub_state) = msg.header("Subscription-State")
+                    && sub_state.starts_with("terminated")
+                {
+                    dialog.state = DialogState::InCall;
+                }
             }
             _ => {
                 // Re-INVITE, UPDATE, etc. don't change top-level dialog state
@@ -551,5 +570,117 @@ mod tests {
         let progress = make_response(183, "Session Progress", "INVITE");
         update_state(&mut dialog, &progress);
         assert_eq!(dialog.state, DialogState::Ringing);
+    }
+
+    // ── Transfer detection tests ────────────────────────────────────────
+
+    fn make_refer() -> SipMessage {
+        let raw = build_sip(
+            "REFER sip:bob@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "To: \"Bob\" <sip:bob@example.com>;tag=t2",
+                "Call-ID: dialog-test@example.com",
+                "CSeq: 3 REFER",
+                "Refer-To: <sip:carol@example.com>",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse REFER")
+    }
+
+    fn make_notify_terminated() -> SipMessage {
+        let raw = build_sip(
+            "NOTIFY sip:alice@example.com SIP/2.0",
+            &[
+                "From: \"Bob\" <sip:bob@example.com>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "Call-ID: dialog-test@example.com",
+                "CSeq: 4 NOTIFY",
+                "Subscription-State: terminated;reason=noresource",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse NOTIFY")
+    }
+
+    fn make_notify_active() -> SipMessage {
+        let raw = build_sip(
+            "NOTIFY sip:alice@example.com SIP/2.0",
+            &[
+                "From: \"Bob\" <sip:bob@example.com>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "Call-ID: dialog-test@example.com",
+                "CSeq: 4 NOTIFY",
+                "Subscription-State: active",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse NOTIFY")
+    }
+
+    #[test]
+    fn refer_during_incall_transitions_to_transferring() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut dialog, &ok);
+        assert_eq!(dialog.state, DialogState::InCall);
+
+        let refer = make_refer();
+        update_state(&mut dialog, &refer);
+        assert_eq!(dialog.state, DialogState::Transferring);
+    }
+
+    #[test]
+    fn notify_terminated_returns_to_incall() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut dialog, &ok);
+        let refer = make_refer();
+        update_state(&mut dialog, &refer);
+        assert_eq!(dialog.state, DialogState::Transferring);
+
+        let notify = make_notify_terminated();
+        update_state(&mut dialog, &notify);
+        assert_eq!(dialog.state, DialogState::InCall);
+    }
+
+    #[test]
+    fn refer_outside_incall_no_transition() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+        assert_eq!(dialog.state, DialogState::Trying);
+
+        let refer = make_refer();
+        update_state(&mut dialog, &refer);
+        // Should remain Trying — REFER only triggers transfer from InCall
+        assert_eq!(dialog.state, DialogState::Trying);
+    }
+
+    #[test]
+    fn notify_active_does_not_change_transferring() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut dialog, &ok);
+        let refer = make_refer();
+        update_state(&mut dialog, &refer);
+        assert_eq!(dialog.state, DialogState::Transferring);
+
+        // NOTIFY with Subscription-State: active should NOT transition back
+        let notify = make_notify_active();
+        update_state(&mut dialog, &notify);
+        assert_eq!(dialog.state, DialogState::Transferring);
     }
 }

@@ -4,25 +4,25 @@ expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
- Display Filter:
-  # ▲  Method  From To   Source      Destination State      Msgs Date     PDD
->  1   INVITE  1001 1002 10.0.0.1    10.0.0.2    Completed  4    12:00:00 1000ms
-   2   INVITE  1003 1004 10.0.0.1    10.0.0.2    FAILED     2    12:00:05
-   3 ┌ Save Capture ──────────────────────────────────────────────────────┐
-     │                                                                    │
-     │  Save to: /tmp/sipnab_20240615_120000.pcap                         │
-     │  Format:  [PCAP]  PCAP-NG  TXT      (Tab)                          │
-     │                                                                    │
-     │  Dialogs: 3 (0 selected)                                           │
-     │  Messages: 8                                                       │
-     │                                                                    │
-     │  [Enter] Save  [Tab] Format  [Esc] Cancel                          │
-     │                                                                    │
-     │                                                                    │
-     └────────────────────────────────────────────────────────────────────┘
-
-
-
-
+ Dis┌ Save Capture ────────────────────────────────────────────────────────┐
+  # │                                                                      │D
+>  1│  Save to: /tmp/sipnab_20240615_120000.pcap                           │00ms
+   2│                                                                      │
+   3│  Packet Capture                                                      │
+    │    ▸ PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │
+    │      PCAP-NG Modern format with metadata and annotations             │
+    │                                                                      │
+    │  SIP-Specific                                                        │
+    │      TXT     Plain text SIP messages (sngrep-compatible)             │
+    │      SIPp    Replayable SIPp scenario for QA testing                 │
+    │                                                                      │
+    │  Structured/Analytics                                                │
+    │      JSON    Full call detail for ELK, ClickHouse, etc.              │
+    │      NDJSON  Streaming-friendly for large captures                   │
+    │      CSV     Summary rows for spreadsheets and BI tools              │
+    │                                                                      │
+    │  Reporting                                                           │
+    │      HTML    Self-contained ladder diagram, zero dependencies        │
+    └──────────────────────────────────────────────────────────────────────┘
 
 Enter Save  Tab Format  Esc Cancel

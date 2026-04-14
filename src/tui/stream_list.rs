@@ -6,7 +6,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Cell, Row, Table, TableState};
 
@@ -129,13 +129,14 @@ pub fn render_stream_list(
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
+    theme: &super::Theme,
 ) {
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // sngrep header style: bold on cyan background
+    // sngrep header style: bold on header-color background
     let header_style = Style::default()
-        .bg(Color::Cyan)
+        .bg(theme.header)
         .add_modifier(Modifier::BOLD);
 
     let header = Row::new(vec![
@@ -201,10 +202,10 @@ pub fn render_stream_list(
                 Cell::from(Span::raw(format!("{:.1}%", loss_pct))),
                 Cell::from(Span::raw(duration)),
                 Cell::from(Span::raw(dialog_id)),
-                Cell::from(Span::styled(status_label, health_style(health))),
+                Cell::from(Span::styled(status_label, health_style(health, theme))),
             ]);
 
-            row.style(health_row_style(health))
+            row.style(health_row_style(health, theme))
         })
         .collect();
 
@@ -234,24 +235,24 @@ pub fn render_stream_list(
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /// Return a style for the health status label.
-fn health_style(health: StreamHealth) -> Style {
+fn health_style(health: StreamHealth, theme: &super::Theme) -> Style {
     match health {
-        StreamHealth::Good => Style::default().fg(Color::Green),
+        StreamHealth::Good => Style::default().fg(theme.good),
         StreamHealth::Warning => Style::default()
-            .fg(Color::Yellow)
+            .fg(theme.warning)
             .add_modifier(Modifier::BOLD),
-        StreamHealth::Bad => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        StreamHealth::Orphaned => Style::default().fg(Color::DarkGray),
+        StreamHealth::Bad => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
+        StreamHealth::Orphaned => Style::default().fg(theme.muted),
     }
 }
 
 /// Return a row style for the given stream health.
-fn health_row_style(health: StreamHealth) -> Style {
+fn health_row_style(health: StreamHealth, theme: &super::Theme) -> Style {
     match health {
-        StreamHealth::Good => Style::default().fg(Color::Green),
-        StreamHealth::Warning => Style::default().fg(Color::Yellow),
-        StreamHealth::Bad => Style::default().fg(Color::Red),
-        StreamHealth::Orphaned => Style::default().fg(Color::DarkGray),
+        StreamHealth::Good => Style::default().fg(theme.good),
+        StreamHealth::Warning => Style::default().fg(theme.warning),
+        StreamHealth::Bad => Style::default().fg(theme.bad),
+        StreamHealth::Orphaned => Style::default().fg(theme.muted),
     }
 }
 

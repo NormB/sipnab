@@ -12,6 +12,28 @@ use super::dialog::{DialogState, SipDialog, update_state};
 use super::sdp_timeline::track_sdp;
 use super::timing::update_timing;
 
+/// Reason a dialog was correlated to another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CorrelationReason {
+    /// Matched via X-Call-ID header.
+    XCallId,
+    /// Matched via shared Via branch parameter.
+    ViaBranch,
+    /// Matched via endpoint overlap + timing heuristic.
+    TimingHeuristic,
+}
+
+/// A correlated dialog with a confidence score.
+#[derive(Debug, Clone)]
+pub struct CorrelationResult<'a> {
+    /// The correlated dialog.
+    pub dialog: &'a SipDialog,
+    /// Confidence score (0-100).
+    pub score: u8,
+    /// Why this dialog was considered correlated.
+    pub reason: CorrelationReason,
+}
+
 /// In-memory store of active and completed SIP dialogs.
 ///
 /// Dialogs are indexed by Call-ID for O(1) lookup. When the store reaches
@@ -58,7 +80,7 @@ impl DialogStore {
     /// 7. Evicts the oldest dialog if at capacity and `rotate` is enabled
     ///
     /// Messages without a Call-ID header are silently dropped.
-    pub fn process_message(&mut self, msg: SipMessage) {
+    pub fn process_message(&mut self, mut msg: SipMessage) {
         let call_id = match msg.call_id() {
             Some(id) => id.to_string(),
             None => return,
@@ -74,7 +96,10 @@ impl DialogStore {
                 if let Some(key) = cseq_key {
                     *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
                 }
-                dialog.updated_at = msg.timestamp;
+                // Mark as retransmission but store it for ladder display
+                msg.is_retransmission = true;
+                dialog.messages.push(msg);
+                dialog.updated_at = dialog.messages.last().map(|m| m.timestamp).unwrap_or(dialog.updated_at);
                 return;
             }
 
@@ -87,9 +112,25 @@ impl DialogStore {
             // Track SDP
             track_sdp(&mut dialog.sdp_timeline, &msg);
 
-            // Record the message
-            dialog.messages.push(msg.clone());
-            dialog.updated_at = msg.timestamp;
+            // TODO: Track REFER-based transfers (track_transfer not yet implemented)
+            // if msg.is_request && msg.method.as_deref() == Some("REFER") {
+            //     super::sdp_timeline::track_transfer(&mut dialog.sdp_timeline, &msg);
+            // }
+
+            // TODO: Parse SIPREC metadata from multipart/mixed bodies (siprec module not yet implemented)
+            // if let Some(ct) = msg.content_type() {
+            //     if ct.contains("multipart/mixed") {
+            //         match super::siprec::parse_siprec_body(ct, &msg.body) {
+            //             Ok(metadata) => dialog.siprec_metadata = Some(metadata),
+            //             Err(_) => {} // Not a SIPREC message, ignore silently
+            //         }
+            //     }
+            // }
+
+            // Record the message (move instead of clone)
+            let ts = msg.timestamp;
+            dialog.messages.push(msg);
+            dialog.updated_at = ts;
         } else {
             // New dialog — check capacity
             if self.dialogs.len() >= self.max_dialogs {
@@ -161,7 +202,7 @@ impl DialogStore {
         }
     }
 
-    /// Count dialogs in an active state (Trying, Ringing, InCall, Pending, Active).
+    /// Count dialogs in an active state (Trying, Ringing, InCall, Transferring, Pending, Active).
     pub fn active_count(&self) -> usize {
         self.dialogs
             .iter()
@@ -171,6 +212,7 @@ impl DialogStore {
                     DialogState::Trying
                         | DialogState::Ringing
                         | DialogState::InCall
+                        | DialogState::Transferring
                         | DialogState::Pending
                         | DialogState::Active
                 )
@@ -178,61 +220,149 @@ impl DialogStore {
             .count()
     }
 
-    /// Find dialogs correlated to the given Call-ID via X-Call-ID headers.
+    /// Find dialogs correlated to the given Call-ID with confidence scores.
     ///
-    /// A B-leg dialog is correlated if its Call-ID matches an X-Call-ID header
-    /// value in the given dialog, or if any of its messages carry an X-Call-ID
-    /// header whose value matches the given Call-ID.
-    pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
+    /// Checks three correlation strategies per candidate dialog (first match wins):
+    /// 1. **X-Call-ID** (score=100): B-leg carries X-Call-ID pointing to source, or vice versa.
+    /// 2. **Via branch** (score=80): INVITE messages share a Via branch parameter.
+    /// 3. **Timing heuristic** (score=50): both INVITE dialogs share an endpoint IP
+    ///    and were created within 2 seconds of each other.
+    ///
+    /// Results are deduplicated (highest score wins) and sorted by score descending.
+    pub fn find_correlated_scored(&self, call_id: &str) -> Vec<CorrelationResult<'_>> {
         let dialog = match self.get(call_id) {
             Some(d) => d,
             None => return Vec::new(),
         };
 
-        // Collect X-Call-ID values from the given dialog
+        // Strategy 1 data: X-Call-ID values from the source dialog
         let x_call_ids: Vec<&str> = dialog
             .messages
             .iter()
             .filter_map(|m| m.header("X-Call-ID"))
             .collect();
 
-        self.dialogs
+        // Strategy 2 data: Via branches from INVITE messages in the source dialog
+        let src_branches: Vec<&str> = dialog
+            .messages
             .iter()
-            .filter(|d| {
-                if d.call_id == call_id {
-                    return false;
-                }
+            .filter(|m| m.is_request && m.method.as_deref() == Some("INVITE"))
+            .flat_map(|m| m.via_headers())
+            .filter_map(|v| extract_via_branch(v))
+            .collect();
 
-                // Check if this dialog's Call-ID matches an X-Call-ID from the source dialog
-                if x_call_ids.iter().any(|&xid| xid == d.call_id) {
-                    return true;
-                }
+        // Strategy 3 data: endpoint IPs and creation time
+        let src_ips = [dialog.src_addr, dialog.dst_addr];
+        let is_invite = dialog.method == "INVITE";
 
-                // Check if this dialog has an X-Call-ID pointing back to the source
-                d.messages
+        let mut results: Vec<CorrelationResult<'_>> = Vec::new();
+
+        for candidate in &self.dialogs {
+            if candidate.call_id == call_id {
+                continue;
+            }
+
+            // Strategy 1: X-Call-ID match (score=100)
+            let xcid_match = x_call_ids.iter().any(|&xid| xid == candidate.call_id)
+                || candidate
+                    .messages
                     .iter()
-                    .any(|m| m.header("X-Call-ID").is_some_and(|v| v == call_id))
-            })
+                    .any(|m| m.header("X-Call-ID").is_some_and(|v| v == call_id));
+
+            if xcid_match {
+                results.push(CorrelationResult {
+                    dialog: candidate,
+                    score: 100,
+                    reason: CorrelationReason::XCallId,
+                });
+                continue;
+            }
+
+            // Strategy 2: Via branch overlap (score=80)
+            if !src_branches.is_empty() {
+                let candidate_branches: Vec<&str> = candidate
+                    .messages
+                    .iter()
+                    .filter(|m| m.is_request && m.method.as_deref() == Some("INVITE"))
+                    .flat_map(|m| m.via_headers())
+                    .filter_map(|v| extract_via_branch(v))
+                    .collect();
+
+                let branch_overlap = src_branches
+                    .iter()
+                    .any(|b| candidate_branches.contains(b));
+
+                if branch_overlap {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 80,
+                        reason: CorrelationReason::ViaBranch,
+                    });
+                    continue;
+                }
+            }
+
+            // Strategy 3: Timing heuristic (score=50)
+            if is_invite && candidate.method == "INVITE" {
+                let candidate_ips = [candidate.src_addr, candidate.dst_addr];
+                let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
+                if ip_overlap {
+                    let time_diff = (dialog.created_at - candidate.created_at)
+                        .num_milliseconds()
+                        .unsigned_abs();
+                    if time_diff <= 2000 {
+                        results.push(CorrelationResult {
+                            dialog: candidate,
+                            score: 50,
+                            reason: CorrelationReason::TimingHeuristic,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Sort by score descending
+        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results
+    }
+
+    /// Find dialogs correlated to the given Call-ID via X-Call-ID headers,
+    /// Via branch overlap, or timing heuristics.
+    ///
+    /// Returns dialogs with a correlation score of at least 50.
+    pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
+        self.find_correlated_scored(call_id)
+            .into_iter()
+            .filter(|r| r.score >= 50)
+            .map(|r| r.dialog)
             .collect()
     }
 
     /// Evict the oldest dialog (first in the vector) to make room.
     ///
-    /// Uses swap_remove for O(1) deletion instead of O(n) shift + full
-    /// index rebuild.
+    /// Uses `remove(0)` + full index rebuild to preserve FIFO insertion
+    /// order. O(n) but only runs at most once per new dialog at capacity.
     fn evict_oldest(&mut self) {
         if self.dialogs.is_empty() {
             return;
         }
 
-        self.index.remove(&self.dialogs[0].call_id);
-        self.dialogs.swap_remove(0);
+        let removed = self.dialogs.remove(0);
+        self.index.remove(&removed.call_id);
 
-        // If we swapped an element into index 0, update its index entry
-        if !self.dialogs.is_empty() {
-            self.index.insert(self.dialogs[0].call_id.clone(), 0);
+        // Rebuild index — all indices shifted down by 1
+        self.index.clear();
+        for (i, d) in self.dialogs.iter().enumerate() {
+            self.index.insert(d.call_id.clone(), i);
         }
     }
+}
+
+/// Extract the `branch=` parameter value from a Via header.
+fn extract_via_branch(via_header: &str) -> Option<&str> {
+    via_header
+        .split(';')
+        .find_map(|param| param.trim().strip_prefix("branch="))
 }
 
 /// Detect whether `msg` is a retransmission of an already-seen message
@@ -388,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn retransmission_dedup() {
+    fn retransmission_stored_with_flag() {
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(500);
@@ -400,10 +530,40 @@ mod tests {
         store.process_message(make_invite_msg("retrans@test", t2));
 
         let dialog = store.get("retrans@test").expect("dialog should exist");
-        // Only the first INVITE should be in the messages list
-        assert_eq!(dialog.messages.len(), 1);
+        // All three INVITEs stored: original + 2 retransmissions
+        assert_eq!(dialog.messages.len(), 3);
         // Retransmit count should be 2 (second and third are retransmissions)
         assert_eq!(dialog.timing.total_retransmits(), 2);
+        // First message is NOT a retransmission
+        assert!(!dialog.messages[0].is_retransmission);
+        // Second and third ARE retransmissions
+        assert!(dialog.messages[1].is_retransmission);
+        assert!(dialog.messages[2].is_retransmission);
+    }
+
+    #[test]
+    fn retransmissions_do_not_update_state() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+        let t2 = t0 + TimeDelta::seconds(2);
+
+        // INVITE, then 200 OK, then retransmitted INVITE
+        store.process_message(make_invite_msg("state-test@test", t0));
+        store.process_message(make_200_ok("state-test@test", t1));
+
+        let dialog = store.get("state-test@test").expect("dialog should exist");
+        assert_eq!(dialog.state, DialogState::InCall);
+
+        // Now process a retransmitted INVITE (same CSeq)
+        store.process_message(make_invite_msg("state-test@test", t2));
+
+        let dialog = store.get("state-test@test").expect("dialog should exist");
+        // State should still be InCall — the retransmission should not change it
+        assert_eq!(dialog.state, DialogState::InCall);
+        // Should have 3 messages now (original INVITE + 200 OK + retransmitted INVITE)
+        assert_eq!(dialog.messages.len(), 3);
+        assert!(dialog.messages[2].is_retransmission);
     }
 
     #[test]
@@ -606,8 +766,9 @@ mod tests {
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();
 
+        // Use timestamps > 2s apart so the timing heuristic doesn't match
         store.process_message(make_invite_msg("standalone@test", t0));
-        store.process_message(make_invite_msg("another@test", t0));
+        store.process_message(make_invite_msg("another@test", t0 + TimeDelta::seconds(5)));
 
         assert!(store.find_correlated("standalone@test").is_empty());
         assert!(store.find_correlated("another@test").is_empty());
@@ -635,5 +796,152 @@ mod tests {
         let correlated = store.find_correlated("leg-1@test");
         assert_eq!(correlated.len(), 1);
         assert_eq!(correlated[0].call_id, "leg-2@test");
+    }
+
+    // ── Step 4: Scored correlation tests ────────────────────────────────
+
+    #[test]
+    fn scored_x_call_id_returns_100() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("scored-a@test", t0));
+        store.process_message(make_invite_with_x_call_id(
+            "scored-b@test",
+            "scored-a@test",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        let results = store.find_correlated_scored("scored-a@test");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].dialog.call_id, "scored-b@test");
+        assert_eq!(results[0].score, 100);
+        assert_eq!(results[0].reason, CorrelationReason::XCallId);
+    }
+
+    /// Build an INVITE with a Via header containing a specific branch parameter.
+    fn make_invite_with_via_branch(
+        call_id: &str,
+        branch: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}"),
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp,
+        )
+        .expect("should parse INVITE with Via branch")
+    }
+
+    #[test]
+    fn scored_via_branch_returns_80() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_with_via_branch(
+            "via-a@test",
+            "z9hG4bK-shared-branch",
+            t0,
+        ));
+        store.process_message(make_invite_with_via_branch(
+            "via-b@test",
+            "z9hG4bK-shared-branch",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        let results = store.find_correlated_scored("via-a@test");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].dialog.call_id, "via-b@test");
+        assert_eq!(results[0].score, 80);
+        assert_eq!(results[0].reason, CorrelationReason::ViaBranch);
+    }
+
+    #[test]
+    fn scored_timing_heuristic_returns_50() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Two INVITEs from same IP within 2 seconds, no other correlation signal
+        store.process_message(make_invite_msg("timing-a@test", t0));
+        store.process_message(make_invite_msg(
+            "timing-b@test",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        let results = store.find_correlated_scored("timing-a@test");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].dialog.call_id, "timing-b@test");
+        assert_eq!(results[0].score, 50);
+        assert_eq!(results[0].reason, CorrelationReason::TimingHeuristic);
+    }
+
+    #[test]
+    fn timing_heuristic_excluded_beyond_2s() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_invite_msg("gap-a@test", t0));
+        store.process_message(make_invite_msg(
+            "gap-b@test",
+            t0 + TimeDelta::seconds(3),
+        ));
+
+        let results = store.find_correlated_scored("gap-a@test");
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn scored_dedup_highest_score_wins() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // A-leg: INVITE with a Via branch
+        store.process_message(make_invite_with_via_branch(
+            "dedup-a@test",
+            "z9hG4bK-shared",
+            t0,
+        ));
+
+        // B-leg: INVITE with X-Call-ID AND matching Via branch
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-shared",
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: dedup-b@test",
+                "CSeq: 1 INVITE",
+                "X-Call-ID: dedup-a@test",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            t0 + TimeDelta::seconds(1),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        store.process_message(msg);
+
+        // X-Call-ID is checked first and wins (score=100), Via is skipped (dedup)
+        let results = store.find_correlated_scored("dedup-a@test");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].score, 100);
+        assert_eq!(results[0].reason, CorrelationReason::XCallId);
     }
 }

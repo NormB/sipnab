@@ -6,6 +6,7 @@
 //! Supports rate limiting and non-blocking execution with queue depth caps.
 
 use std::process::Command;
+use std::sync::Arc;
 use std::time::Instant;
 
 use log::warn;
@@ -31,9 +32,11 @@ const MAX_QUEUE_DEPTH: usize = 100;
 /// shell command string.
 pub struct EventExecEngine {
     /// Command template for dialog events. `None` disables dialog hooks.
-    on_dialog_cmd: Option<String>,
+    /// Stored as `Arc<str>` so cloning for the child process is cheap (pointer bump).
+    on_dialog_cmd: Option<Arc<str>>,
     /// Command template for quality events. `None` disables quality hooks.
-    on_quality_cmd: Option<String>,
+    /// Stored as `Arc<str>` so cloning for the child process is cheap (pointer bump).
+    on_quality_cmd: Option<Arc<str>>,
     /// Maximum command executions per second.
     rate_limit: u32,
     /// MOS threshold below which quality events fire.
@@ -63,8 +66,8 @@ impl EventExecEngine {
         quality_threshold: f64,
     ) -> Self {
         Self {
-            on_dialog_cmd: on_dialog_cmd.map(|c| migrate_template_vars(&c)),
-            on_quality_cmd: on_quality_cmd.map(|c| migrate_template_vars(&c)),
+            on_dialog_cmd: on_dialog_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
+            on_quality_cmd: on_quality_cmd.map(|c| Arc::from(migrate_template_vars(&c))),
             rate_limit,
             quality_threshold,
             window_start: Instant::now(),
@@ -83,8 +86,8 @@ impl EventExecEngine {
     /// - `SIPNAB_STATE` — Dialog state (e.g., "Completed")
     /// - `SIPNAB_METHOD` — Initial method (e.g., "INVITE")
     pub fn fire_dialog_event(&mut self, dialog: &SipDialog) {
-        let cmd = match &self.on_dialog_cmd {
-            Some(cmd) => cmd.clone(),
+        let cmd = match self.on_dialog_cmd {
+            Some(ref cmd) => cmd.clone(),
             None => return,
         };
 
@@ -126,8 +129,8 @@ impl EventExecEngine {
     /// - `SIPNAB_JITTER` — Current jitter in ms
     /// - `SIPNAB_LOSS` — Loss percentage
     pub fn fire_quality_event(&mut self, stream: &RtpStream) {
-        let cmd = match &self.on_quality_cmd {
-            Some(cmd) => cmd.clone(),
+        let cmd = match self.on_quality_cmd {
+            Some(ref cmd) => cmd.clone(),
             None => return,
         };
 

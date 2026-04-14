@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>REST API -- sipnab</title>
+  <meta name="description" content="sipnab REST API reference. 8 endpoints with authentication, rate limiting, and Prometheus metrics.">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="../" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="./">Docs</a>
+    <a href="https://github.com/normbrandinger/sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<div class="sidebar-overlay"></div>
+
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="../">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="install.html" class="indent">Installation</a>
+      <a href="../#quickstart" class="indent">Quick Start</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="cli.html" class="indent">CLI Flags</a>
+      <a href="config.html" class="indent">Configuration</a>
+      <a href="keybindings.html" class="indent">Keybindings</a>
+      <a href="filter-dsl.html" class="indent">Filter DSL</a>
+      <a href="theme.html" class="indent">Theme</a>
+      <a href="api.html" class="indent active">REST API</a>
+    </div>
+  </nav>
+</aside>
+
+<main class="main">
+  <h1>REST API</h1>
+  <p>sipnab provides a read-only REST API for querying active SIP dialogs and RTP streams. Requires the <code>api</code> feature flag at build time and the <code>--api</code> flag at runtime.</p>
+  <pre><code><span class="comment"># Start sipnab with REST API on port 8080</span>
+sipnab --api :8080 --api-key "your-secret-key" -d eth0</code></pre>
+
+  <h2 id="overview">Overview</h2>
+  <table>
+    <thead><tr><th>Method</th><th>Path</th><th>Auth</th><th>Description</th></tr></thead>
+    <tbody>
+      <tr><td><span class="method-get">GET</span></td><td><code>/health</code></td><td>No</td><td>Health check</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/dialogs</code></td><td>Yes</td><td>List dialogs (paginated, filterable)</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/dialogs/:call_id</code></td><td>Yes</td><td>Get single dialog with full detail</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/dialogs/:call_id/report</code></td><td>Yes</td><td>Get call diagnosis report</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/streams</code></td><td>Yes</td><td>List RTP streams (paginated, filterable)</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/streams/:id</code></td><td>Yes</td><td>Get single RTP stream by SSRC</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/v1/stats</code></td><td>Yes</td><td>Aggregate statistics</td></tr>
+      <tr><td><span class="method-get">GET</span></td><td><code>/metrics</code></td><td>Yes</td><td>Prometheus exposition format</td></tr>
+    </tbody>
+  </table>
+  <p>All responses include a <code>schema_version</code> field (currently <code>1</code>) for forward compatibility.</p>
+
+  <h2 id="auth">Authentication</h2>
+  <p>If <code>--api-key</code> is provided (or the <code>SIPNAB_API_KEY</code> env var is set), all endpoints except <code>/health</code> require a Bearer token in the <code>Authorization</code> header.</p>
+  <pre><code>curl -H "Authorization: Bearer your-secret-key" http://localhost:8080/v1/dialogs</code></pre>
+  <p>Missing or invalid keys return <code>401 Unauthorized</code>. Token comparison uses constant-time equality to prevent timing side-channel attacks.</p>
+  <p>If no API key is configured, all endpoints are accessible without authentication. The API binds to localhost by default (defense-in-depth).</p>
+
+  <h2 id="rate-limiting">Rate Limiting</h2>
+  <p>Requests are rate-limited to <strong>100 per second per source IP</strong>. Excess requests return <code>503 Service Unavailable</code>. The rate limiter uses a sliding one-second window.</p>
+  <p>Source IP is determined from the direct connection address only. <code>X-Forwarded-For</code> and <code>X-Real-IP</code> headers are not trusted (they are attacker-controlled).</p>
+  <p>Maximum concurrent connections is controlled by <code>--api-max-conn</code> (default 100). When exceeded, new connections return <code>503 Service Unavailable</code>.</p>
+
+  <hr>
+
+  <h2 id="endpoints">Endpoints</h2>
+
+  <!-- GET /health -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/health</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Health check. Always returns <code>200 OK</code> with body <code>ok</code>. No authentication required.</p>
+      <pre><code>curl http://localhost:8080/health
+<span class="comment"># ok</span></code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/dialogs -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/dialogs</span>
+    </div>
+    <div class="endpoint-body">
+      <p>List dialogs with optional filtering and pagination.</p>
+
+      <h4>Query Parameters</h4>
+      <table>
+        <thead><tr><th>Param</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>offset</code></td><td>integer</td><td><code>0</code></td><td>Pagination offset.</td></tr>
+          <tr><td><code>limit</code></td><td>integer</td><td><code>50</code></td><td>Max results (capped at 1000).</td></tr>
+          <tr><td><code>state</code></td><td>string</td><td>&mdash;</td><td>Filter by dialog state: <code>Trying</code>, <code>Ringing</code>, <code>InCall</code>, <code>Completed</code>, <code>Failed</code>, <code>Cancelled</code>.</td></tr>
+          <tr><td><code>from</code></td><td>string</td><td>&mdash;</td><td>Filter by From user (regex).</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Response</h4>
+      <pre><code>{
+  "schema_version": 1,
+  "total": 1523,
+  "offset": 0,
+  "limit": 50,
+  "dialogs": [
+    {
+      "call_id": "abc123@192.168.1.10",
+      "method": "INVITE",
+      "from_user": "1001",
+      "to_user": "1002",
+      "state": "InCall",
+      "msg_count": 6,
+      "first_seen": "2025-01-15T10:30:00Z",
+      "last_seen": "2025-01-15T10:30:45Z"
+    }
+  ]
+}</code></pre>
+
+      <h4>Example</h4>
+      <pre><code><span class="comment"># List failed dialogs</span>
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/dialogs?state=Failed&limit=10"
+
+<span class="comment"># Filter by From user</span>
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/dialogs?from=1001"</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/dialogs/:call_id -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/dialogs/:call_id</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Get a single dialog with full detail, including all SIP messages, associated RTP streams, and media diagnosis.</p>
+      <p>Returns the same JSON format as <code>sipnab -N --json --call-report</code>.</p>
+      <p>Returns <code>404</code> if the Call-ID is not found.</p>
+      <pre><code>curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/dialogs/abc123@192.168.1.10"</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/dialogs/:call_id/report -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/dialogs/:call_id/report</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Get a structured call diagnosis report in JSON format. Includes SIP transaction timing, RTP quality metrics, media diagnosis, and VoIP troubleshooting information.</p>
+      <p>Returns <code>404</code> if the Call-ID is not found.</p>
+      <pre><code>curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/dialogs/abc123@192.168.1.10/report"</code></pre>
+
+      <h4>Response</h4>
+      <pre><code>{
+  "call_id": "abc123@192.168.1.10",
+  "state": "Completed",
+  "timing": {
+    "pdd_ms": 245,
+    "setup_time_ms": 1200,
+    "duration_ms": 45000
+  },
+  "rtp": {
+    "streams": 2,
+    "quality": {
+      "mos": 4.2,
+      "jitter_ms": 3.5,
+      "loss_pct": 0.1
+    }
+  },
+  "diagnosis": {
+    "one_way_audio": false,
+    "nat_mismatch": false,
+    "no_media": false
+  }
+}</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/streams -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/streams</span>
+    </div>
+    <div class="endpoint-body">
+      <p>List RTP streams with optional filtering and pagination.</p>
+
+      <h4>Query Parameters</h4>
+      <table>
+        <thead><tr><th>Param</th><th>Type</th><th>Default</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>offset</code></td><td>integer</td><td><code>0</code></td><td>Pagination offset.</td></tr>
+          <tr><td><code>limit</code></td><td>integer</td><td><code>50</code></td><td>Max results (capped at 1000).</td></tr>
+          <tr><td><code>orphaned</code></td><td>boolean</td><td>&mdash;</td><td>Filter by orphaned status. <code>true</code> = only orphaned, <code>false</code> = only associated.</td></tr>
+          <tr><td><code>mos_below</code></td><td>float</td><td>&mdash;</td><td>Filter streams with MOS below this threshold.</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Example</h4>
+      <pre><code><span class="comment"># Find low-quality streams</span>
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/streams?mos_below=3.0"
+
+<span class="comment"># List orphaned streams (no associated SIP dialog)</span>
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/streams?orphaned=true"</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/streams/:id -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/streams/:id</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Get a single RTP stream by SSRC hex string. The <code>:id</code> parameter is the SSRC in hex format, with optional <code>0x</code> prefix.</p>
+      <p>Returns <code>400</code> if the SSRC is not valid hex. Returns <code>404</code> if the stream is not found.</p>
+      <pre><code><span class="comment"># Both formats work</span>
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/streams/0x12345678"
+
+curl -H "Authorization: Bearer $KEY" \
+  "http://localhost:8080/v1/streams/12345678"</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /v1/stats -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/v1/stats</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Aggregate statistics across all tracked dialogs and streams.</p>
+
+      <h4>Response</h4>
+      <pre><code>{
+  "schema_version": 1,
+  "dialogs": {
+    "total": 15230,
+    "active": 42,
+    "completed": 14500,
+    "failed": 688,
+    "cancelled": 0
+  },
+  "streams": {
+    "total": 28400,
+    "orphaned": 12
+  },
+  "timing": {
+    "pdd_p50_ms": 180,
+    "pdd_p95_ms": 1200,
+    "pdd_p99_ms": 3500
+  }
+}</code></pre>
+    </div>
+  </div>
+
+  <!-- GET /metrics -->
+  <div class="endpoint">
+    <div class="endpoint-header">
+      <span class="method-get">GET</span>
+      <span class="endpoint-path">/metrics</span>
+    </div>
+    <div class="endpoint-body">
+      <p>Prometheus exposition format metrics. Compatible with Prometheus, Grafana Agent, Victoria Metrics, and any OpenMetrics scraper.</p>
+      <p>All metric names are prefixed with <code>sipnab_</code>.</p>
+
+      <h4>Available Metrics</h4>
+      <table>
+        <thead><tr><th>Metric</th><th>Type</th><th>Labels</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td><code>sipnab_dialogs_total</code></td><td>counter</td><td><code>state</code></td><td>Total SIP dialogs by state</td></tr>
+          <tr><td><code>sipnab_messages_total</code></td><td>counter</td><td><code>method</code></td><td>Total SIP messages by method</td></tr>
+          <tr><td><code>sipnab_responses_total</code></td><td>counter</td><td><code>code</code></td><td>Total SIP responses by code class (2xx, 4xx, ...)</td></tr>
+          <tr><td><code>sipnab_rtp_streams_active</code></td><td>gauge</td><td>&mdash;</td><td>Currently active RTP streams</td></tr>
+          <tr><td><code>sipnab_rtp_streams_total</code></td><td>counter</td><td><code>status</code></td><td>Total RTP streams by status</td></tr>
+          <tr><td><code>sipnab_capture_packets_total</code></td><td>counter</td><td>&mdash;</td><td>Total captured packets</td></tr>
+          <tr><td><code>sipnab_security_alerts_total</code></td><td>counter</td><td><code>type</code></td><td>Security alerts by type</td></tr>
+          <tr><td><code>sipnab_pdd_seconds</code></td><td>histogram</td><td>&mdash;</td><td>Post-dial delay distribution</td></tr>
+          <tr><td><code>sipnab_mos_score</code></td><td>histogram</td><td>&mdash;</td><td>MOS score distribution</td></tr>
+          <tr><td><code>sipnab_jitter_ms</code></td><td>histogram</td><td>&mdash;</td><td>Jitter distribution</td></tr>
+          <tr><td><code>sipnab_loss_pct</code></td><td>histogram</td><td>&mdash;</td><td>Packet loss distribution</td></tr>
+          <tr><td><code>sipnab_reassembly_timeouts_total</code></td><td>counter</td><td>&mdash;</td><td>TCP reassembly timeouts</td></tr>
+          <tr><td><code>sipnab_diagnosis_total</code></td><td>counter</td><td><code>type</code></td><td>Media diagnosis events (one_way_audio, nat_mismatch, ...)</td></tr>
+        </tbody>
+      </table>
+
+      <h4>Example</h4>
+      <pre><code>curl -H "Authorization: Bearer $KEY" http://localhost:8080/metrics</code></pre>
+
+      <h4>Prometheus Configuration</h4>
+      <pre><code><span class="comment"># prometheus.yml</span>
+scrape_configs:
+  - job_name: sipnab
+    scheme: http
+    bearer_token: your-secret-key
+    static_configs:
+      - targets: ['localhost:8080']</code></pre>
+
+      <p>You can also enable a separate metrics-only endpoint with <code>--metrics</code> and <code>--metrics-auth</code>, independent of the REST API.</p>
+    </div>
+  </div>
+
+  <hr>
+
+  <h2 id="tls">TLS</h2>
+  <p>The API supports TLS via <code>--api-tls-cert</code> and <code>--api-tls-key</code> flags. For production deployments, a TLS-terminating reverse proxy (nginx, HAProxy, Caddy) is recommended over direct TLS.</p>
+  <p>Binding to a non-loopback address without TLS produces a warning at startup.</p>
+
+  <h2 id="process-isolation">Process Isolation</h2>
+  <p>The API server runs in an isolated child process. It has no access to packet capture file descriptors or TLS key material. It communicates with the main process through shared read-only stores (DialogStore and StreamStore), protected by read-write locks.</p>
+</main>
+
+<script src="../js/main.js"></script>
+</body>
+</html>

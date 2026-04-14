@@ -86,6 +86,7 @@ pub fn parse_sip(
         src_port,
         dst_port,
         transport,
+        is_retransmission: false,
     })
 }
 

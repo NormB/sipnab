@@ -41,6 +41,8 @@ pub enum SdpEvent {
     T38Switch,
     /// Media anchor (IP address or port) changed.
     MediaAnchorChange,
+    /// Call transfer initiated via REFER.
+    Transfer { target: String },
 }
 
 /// Whether an SDP body is an offer or an answer in the offer/answer model.
@@ -78,6 +80,26 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         media_port,
         mode,
         event,
+    });
+}
+
+/// Track REFER-based transfer events.
+///
+/// Appends a [`SdpEvent::Transfer`] entry when the message is a REFER request.
+/// Non-REFER messages are silently ignored.
+pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
+    if !msg.is_request || msg.method.as_deref() != Some("REFER") {
+        return;
+    }
+    let target = msg.header("Refer-To").unwrap_or("unknown").to_string();
+    timeline.push(SdpExchange {
+        timestamp: msg.timestamp,
+        direction: OfferAnswer::Offer,
+        codecs: Vec::new(),
+        media_addr: None,
+        media_port: None,
+        mode: "transfer".to_string(),
+        event: Some(SdpEvent::Transfer { target }),
     });
 }
 
@@ -444,5 +466,59 @@ mod tests {
         track_sdp(&mut timeline, &reinvite);
 
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
+    }
+
+    #[test]
+    fn track_transfer_creates_event() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+
+        let raw = build_sip(
+            "REFER sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: transfer-test@example.com",
+                "CSeq: 3 REFER",
+                "Refer-To: <sip:carol@example.com>",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse REFER");
+
+        track_transfer(&mut timeline, &msg);
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].mode, "transfer");
+        assert_eq!(
+            timeline[0].event,
+            Some(SdpEvent::Transfer {
+                target: "<sip:carol@example.com>".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn track_transfer_ignores_non_refer() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: noref@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse INVITE");
+
+        track_transfer(&mut timeline, &msg);
+        assert!(timeline.is_empty());
     }
 }

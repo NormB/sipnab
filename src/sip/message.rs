@@ -46,7 +46,8 @@ pub struct SipMessage {
     /// Message body (SDP or other payload after the blank line).
     pub body: Vec<u8>,
     /// `true` if the message was only partially parseable.
-    pub parse_error: bool,
+    #[allow(dead_code)] // Read in parser tests and available for future use
+    pub(crate) parse_error: bool,
     /// Capture timestamp.
     pub timestamp: DateTime<Utc>,
     /// Source IP address from the network layer.
@@ -59,6 +60,8 @@ pub struct SipMessage {
     pub dst_port: u16,
     /// Transport protocol used to carry this message.
     pub transport: TransportProto,
+    /// Whether this message is a retransmission of a previously seen message.
+    pub(crate) is_retransmission: bool,
 }
 
 impl SipMessage {

@@ -138,6 +138,7 @@ fn state_str(state: &DialogState) -> &'static str {
         DialogState::Pending => "Pending",
         DialogState::Active => "Active",
         DialogState::Terminated => "Terminated",
+        DialogState::Transferring => "Transferring",
     }
 }
 
