@@ -1069,19 +1069,21 @@ function setupKeyboard() {
     // Only handle keys when workspace is visible
     var wsVisible = $("#workspace") && $("#workspace").style.display !== "none";
 
-    // h or F1 — toggle help popup (works everywhere, not just workspace)
-    if (e.key === "F1" || e.key === "h" || e.key === "?") {
+    // Help popup
+    if (e.key === "h" || e.key === "?") {
       e.preventDefault();
       toggleHelpPopup();
       return;
     }
-    if ((e.key === "F2" || e.key === "e") && wsVisible) {
+    // Export dropdown
+    if (e.key === "e" && wsVisible) {
       e.preventDefault();
       var dropdown = $("#export-dropdown");
       if (dropdown) dropdown.classList.toggle("open");
       return;
     }
-    if ((e.key === "F3" || e.key === "F7" || e.key === "f" || e.key === "/") && wsVisible) {
+    // Search / filter
+    if ((e.key === "f" || e.key === "/") && wsVisible) {
       e.preventDefault();
       var filterInput = $("#filter-input");
       if (filterInput) filterInput.focus();
