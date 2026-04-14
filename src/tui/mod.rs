@@ -11,7 +11,7 @@ pub mod help;
 pub mod msg_raw;
 pub mod stream_list;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -37,6 +37,136 @@ use crate::sip::dsl::FilterExpr;
 
 use call_list::CallListState;
 use stream_list::StreamListState;
+
+use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
+
+// ── Resolved theme and keymap ──────────────────────────────────────
+
+/// Resolved TUI color theme — all fields are concrete `Color` values.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub background: Color,
+    pub foreground: Color,
+    pub header: Color,
+    pub selected: Color,
+    pub accent: Color,
+    pub good: Color,
+    pub warning: Color,
+    pub bad: Color,
+    pub muted: Color,
+    pub border: Color,
+    /// Status bar background — distinct from terminal bg for visibility.
+    pub status_bg: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Self {
+            background: Color::Reset,
+            foreground: Color::White,
+            header: Color::Cyan,
+            selected: Color::Yellow,
+            accent: Color::Magenta,
+            good: Color::Green,
+            warning: Color::Yellow,
+            bad: Color::Red,
+            muted: Color::DarkGray,
+            border: Color::White,
+            status_bg: Color::Rgb(48, 48, 64), // Dark blue-gray, readable on both dark and light
+        }
+    }
+}
+
+/// Apply an optional config color string to a theme field.
+fn apply_color(field: &mut Color, value: &Option<String>) {
+    if let Some(s) = value
+        && let Some(c) = parse_color(s)
+    {
+        *field = c;
+    }
+}
+
+/// Apply an optional config key string to a keymap field.
+fn apply_key(field: &mut KeyCode, value: &Option<String>) {
+    if let Some(s) = value
+        && let Some(k) = parse_keycode(s)
+    {
+        *field = k;
+    }
+}
+
+impl Theme {
+    /// Build a resolved theme from config, falling back to defaults.
+    pub fn from_config(config: &ThemeConfig) -> Self {
+        let mut t = Self::default();
+        apply_color(&mut t.background, &config.background);
+        apply_color(&mut t.foreground, &config.foreground);
+        apply_color(&mut t.header, &config.header);
+        // "highlight" is a legacy alias for "selected"
+        apply_color(&mut t.selected, &config.highlight);
+        apply_color(&mut t.selected, &config.selected);
+        apply_color(&mut t.accent, &config.accent);
+        apply_color(&mut t.good, &config.good);
+        apply_color(&mut t.warning, &config.warning);
+        apply_color(&mut t.bad, &config.bad);
+        apply_color(&mut t.muted, &config.muted);
+        apply_color(&mut t.border, &config.border);
+        t
+    }
+}
+
+/// Resolved keymap — all fields are concrete `KeyCode` values.
+#[derive(Debug, Clone)]
+pub struct Keymap {
+    pub quit: KeyCode,
+    pub help: KeyCode,
+    pub save: KeyCode,
+    pub search: KeyCode,
+    pub filter: KeyCode,
+    pub settings: KeyCode,
+    pub pause: KeyCode,
+    pub autoscroll: KeyCode,
+    pub extended_flow: KeyCode,
+    pub clear_calls: KeyCode,
+    pub column_selector: KeyCode,
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Self {
+            quit: KeyCode::Char('q'),
+            help: KeyCode::F(1),
+            save: KeyCode::F(2),
+            search: KeyCode::Char('/'),
+            filter: KeyCode::F(7),
+            settings: KeyCode::F(8),
+            pause: KeyCode::Char('p'),
+            autoscroll: KeyCode::Char('A'),
+            extended_flow: KeyCode::F(4),
+            clear_calls: KeyCode::F(5),
+            column_selector: KeyCode::F(10),
+        }
+    }
+}
+
+impl Keymap {
+    /// Build a resolved keymap from config, falling back to defaults.
+    pub fn from_config(config: &KeybindingsConfig) -> Self {
+        let mut km = Self::default();
+        apply_key(&mut km.quit, &config.quit);
+        apply_key(&mut km.help, &config.help);
+        apply_key(&mut km.save, &config.save);
+        apply_key(&mut km.search, &config.search);
+        apply_key(&mut km.filter, &config.filter);
+        apply_key(&mut km.settings, &config.settings);
+        apply_key(&mut km.pause, &config.pause);
+        apply_key(&mut km.autoscroll, &config.autoscroll);
+        apply_key(&mut km.extended_flow, &config.extended_flow);
+        apply_key(&mut km.clear_calls, &config.clear_calls);
+        apply_key(&mut km.column_selector, &config.column_selector);
+        km
+    }
+}
 
 // ── Adaptive refresh constants ──────────────────────────────────────
 
@@ -85,12 +215,14 @@ impl SdpDisplayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TimestampMode {
     /// Absolute `HH:MM:SS.mmm`.
-    #[default]
     Absolute,
     /// Delta from the previous message (`+N.NNNs`).
+    #[default]
     DeltaPrev,
     /// Delta from the first message (`+N.NNNs`).
     DeltaFirst,
+    /// Time-proportional: insert spacer rows for large timing gaps.
+    Scaled,
 }
 
 impl TimestampMode {
@@ -98,7 +230,8 @@ impl TimestampMode {
         match self {
             Self::Absolute => Self::DeltaPrev,
             Self::DeltaPrev => Self::DeltaFirst,
-            Self::DeltaFirst => Self::Absolute,
+            Self::DeltaFirst => Self::Scaled,
+            Self::Scaled => Self::Absolute,
         }
     }
 
@@ -107,6 +240,7 @@ impl TimestampMode {
             Self::Absolute => "Time: Absolute",
             Self::DeltaPrev => "Time: Delta-prev",
             Self::DeltaFirst => "Time: Delta-first",
+            Self::Scaled => "Time: Scaled",
         }
     }
 }
@@ -142,6 +276,9 @@ impl ColorMode {
 }
 
 /// Save file format for the F2 save dialog.
+///
+/// Cycle order (Tab): PCAP → PCAP-NG → TXT → JSON → NDJSON → CSV →
+/// HTML → Markdown → WAV → SIPp → RTP → PCAP
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SaveFormat {
     /// Standard pcap format.
@@ -149,35 +286,120 @@ pub enum SaveFormat {
     Pcap,
     /// PCAP-NG format.
     PcapNg,
-    /// Plain text SIP messages.
+    /// Plain text SIP messages (sngrep-compatible .txt/.sip).
     Txt,
+    /// JSON — full call detail with parsed headers, timings, RTP stats.
+    Json,
+    /// NDJSON — newline-delimited JSON, streaming-friendly for large captures.
+    Ndjson,
+    /// CSV — summary rows per call/dialog for spreadsheets and BI tools.
+    Csv,
+    /// HTML ladder diagram (Mermaid + renderer, zero dependencies).
+    Html,
+    /// Markdown call summary — for tickets and incident documentation.
+    Markdown,
+    /// WAV audio extracted from RTP (G.711 mu-law/A-law).
+    Wav,
+    /// SIPp XML scenario for call replay/testing.
+    SippXml,
+    /// RTP/RTCP quality JSON — jitter, loss, MOS per stream.
+    RtpJson,
 }
 
 impl SaveFormat {
-    /// Cycle to the next format.
-    fn next(self) -> Self {
+    /// Cycle to the next format (Tab).
+    pub fn next(self) -> Self {
         match self {
             Self::Pcap => Self::PcapNg,
             Self::PcapNg => Self::Txt,
-            Self::Txt => Self::Pcap,
+            Self::Txt => Self::Json,
+            Self::Json => Self::Ndjson,
+            Self::Ndjson => Self::Csv,
+            Self::Csv => Self::Html,
+            Self::Html => Self::Markdown,
+            Self::Markdown => Self::Wav,
+            Self::Wav => Self::SippXml,
+            Self::SippXml => Self::RtpJson,
+            Self::RtpJson => Self::Pcap,
+        }
+    }
+
+    /// Cycle to the previous format (Shift-Tab).
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Pcap => Self::RtpJson,
+            Self::PcapNg => Self::Pcap,
+            Self::Txt => Self::PcapNg,
+            Self::Json => Self::Txt,
+            Self::Ndjson => Self::Json,
+            Self::Csv => Self::Ndjson,
+            Self::Html => Self::Csv,
+            Self::Markdown => Self::Html,
+            Self::Wav => Self::Markdown,
+            Self::SippXml => Self::Wav,
+            Self::RtpJson => Self::SippXml,
         }
     }
 
     /// File extension for this format.
-    fn extension(self) -> &'static str {
+    pub fn extension(self) -> &'static str {
         match self {
             Self::Pcap => "pcap",
             Self::PcapNg => "pcapng",
             Self::Txt => "txt",
+            Self::Json => "json",
+            Self::Ndjson => "ndjson",
+            Self::Csv => "csv",
+            Self::Html => "html",
+            Self::Markdown => "md",
+            Self::Wav => "wav",
+            Self::SippXml => "xml",
+            Self::RtpJson => "rtp.json",
         }
     }
 
     /// Display label for this format.
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Pcap => "PCAP",
             Self::PcapNg => "PCAP-NG",
             Self::Txt => "TXT",
+            Self::Json => "JSON",
+            Self::Ndjson => "NDJSON",
+            Self::Csv => "CSV",
+            Self::Html => "HTML",
+            Self::Markdown => "MD",
+            Self::Wav => "WAV",
+            Self::SippXml => "SIPp",
+            Self::RtpJson => "RTP",
+        }
+    }
+
+    /// Category grouping for the save dialog display.
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::Pcap | Self::PcapNg => "Packet Capture",
+            Self::Txt | Self::SippXml => "SIP-Specific",
+            Self::Json | Self::Ndjson | Self::Csv => "Structured/Analytics",
+            Self::Html | Self::Markdown => "Reporting",
+            Self::Wav | Self::RtpJson => "RTP/Media",
+        }
+    }
+
+    /// Short description for the save dialog.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Pcap => "Universal baseline (Wireshark, tcpdump, Homer)",
+            Self::PcapNg => "Modern format with metadata and annotations",
+            Self::Txt => "Plain text SIP messages (sngrep-compatible)",
+            Self::Json => "Full call detail for ELK, ClickHouse, etc.",
+            Self::Ndjson => "Streaming-friendly for large captures",
+            Self::Csv => "Summary rows for spreadsheets and BI tools",
+            Self::Html => "Self-contained ladder diagram, zero dependencies",
+            Self::Markdown => "Call summary for tickets and incidents",
+            Self::Wav => "Decoded G.711 audio per RTP stream",
+            Self::SippXml => "Replayable SIPp scenario for QA testing",
+            Self::RtpJson => "Jitter, packet loss, MOS per stream",
         }
     }
 }
@@ -209,6 +431,16 @@ const FILTER_ITEM_COUNT: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() 
 const FILTER_BUTTON_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
 /// Index of the "Cancel" button in focused_field.
 const CANCEL_BUTTON_IDX: usize = FILTER_BUTTON_IDX + 1;
+
+/// Number of rows in the settings popup.
+const SETTINGS_ITEM_COUNT: usize = 6;
+
+/// Structured state for the settings popup dialog.
+#[derive(Debug, Clone, Default)]
+struct SettingsDialogState {
+    /// Currently highlighted row (0-based).
+    focused_item: usize,
+}
 
 /// Structured state for the sngrep-style filter dialog.
 #[derive(Debug, Clone, Default)]
@@ -332,19 +564,20 @@ impl FilterDialogState {
 
     /// Move checkbox focus right one column (same row).
     fn checkbox_right(&mut self) {
-        if let Some(idx) = self.checkbox_index() {
-            if idx % 2 == 0 && idx + 1 < FILTER_METHODS.len() {
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + idx + 1;
-            }
+        if let Some(idx) = self.checkbox_index()
+            && idx % 2 == 0
+            && idx + 1 < FILTER_METHODS.len()
+        {
+            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx + 1;
         }
     }
 
     /// Move checkbox focus left one column (same row).
     fn checkbox_left(&mut self) {
-        if let Some(idx) = self.checkbox_index() {
-            if idx % 2 == 1 {
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + idx - 1;
-            }
+        if let Some(idx) = self.checkbox_index()
+            && idx % 2 == 1
+        {
+            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx - 1;
         }
     }
 
@@ -468,6 +701,10 @@ pub enum Popup {
     SaveDialog,
     /// Filter expression input popup.
     FilterDialog,
+    /// Settings/preferences popup.
+    SettingsDialog,
+    /// File-open dialog for loading a pcap file.
+    FileOpenDialog,
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -492,6 +729,8 @@ pub struct App {
     last_data_update: Instant,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
+    /// Settings popup state.
+    settings_dialog: SettingsDialogState,
     /// Active filter expression (applied to the call list).
     active_filter: Option<FilterExpr>,
     /// Human-readable text of the active filter (for the status bar).
@@ -514,6 +753,8 @@ pub struct App {
     cached_dialog_count: usize,
     /// Cached displayed dialog count (updated when lock is available).
     cached_displayed_count: usize,
+    /// Cached rendered message count for the current call flow (after folding).
+    cached_flow_msg_count: usize,
     /// Call flow line cache: `(call_id, msg_count) -> formatted lines`.
     /// Invalidated when the dialog's message count changes.
     call_flow_cache: HashMap<String, (usize, Vec<Line<'static>>)>,
@@ -529,6 +770,10 @@ pub struct App {
     save_message_count: usize,
     /// Selected save format (PCAP, PCAP-NG, or TXT).
     save_format: SaveFormat,
+    /// File-open dialog: path being edited.
+    open_path: String,
+    /// File-open dialog: cursor position in path.
+    open_cursor: usize,
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
@@ -552,6 +797,10 @@ pub struct App {
     show_rtp_in_flow: bool,
     /// First selected message index for diff comparison (Space key).
     diff_selected_msg: Option<usize>,
+    /// Marked message index for delta measurement (set with 'm').
+    mark_index: Option<usize>,
+    /// Set of message indices where folds are expanded (press 'e' to toggle).
+    fold_expanded: HashSet<usize>,
     /// Whether syntax highlighting is enabled in raw message view.
     syntax_highlight: bool,
     /// Whether packet processing is paused (TUI-local flag).
@@ -559,6 +808,10 @@ pub struct App {
     /// Shared pause flag for the processing thread.
     /// When `true`, the processing thread skips `process_message()`.
     paused_flag: Arc<AtomicBool>,
+    /// Resolved TUI color theme.
+    pub theme: Theme,
+    /// Resolved key bindings.
+    pub keymap: Keymap,
 }
 
 impl App {
@@ -566,6 +819,8 @@ impl App {
     pub fn new(
         dialog_store: Arc<RwLock<DialogStore>>,
         stream_store: Arc<RwLock<StreamStore>>,
+        theme: Theme,
+        keymap: Keymap,
     ) -> Self {
         Self {
             dialog_store,
@@ -577,6 +832,7 @@ impl App {
             should_quit: false,
             last_data_update: Instant::now(),
             filter_dialog: FilterDialogState::default(),
+            settings_dialog: SettingsDialogState::default(),
             active_filter: None,
             active_filter_text: String::new(),
             status_error: None,
@@ -588,6 +844,7 @@ impl App {
             bpf_filter: String::new(),
             cached_dialog_count: 0,
             cached_displayed_count: 0,
+            cached_flow_msg_count: 0,
             call_flow_cache: HashMap::new(),
             save_path: String::new(),
             save_cursor: 0,
@@ -595,6 +852,8 @@ impl App {
             save_selected_count: 0,
             save_message_count: 0,
             save_format: SaveFormat::default(),
+            open_path: String::new(),
+            open_cursor: 0,
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
@@ -605,9 +864,13 @@ impl App {
             extended_flow: false,
             show_rtp_in_flow: false,
             diff_selected_msg: None,
+            mark_index: None,
+            fold_expanded: HashSet::new(),
             syntax_highlight: true,
             paused: false,
             paused_flag: Arc::new(AtomicBool::new(false)),
+            theme,
+            keymap,
         }
     }
 
@@ -673,7 +936,7 @@ pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Result<()> {
-    run_tui_with_pause(dialog_store, stream_store, None)
+    run_tui_with_pause(dialog_store, stream_store, None, Theme::default(), Keymap::default())
 }
 
 /// Run the TUI with an optional shared pause flag.
@@ -684,6 +947,8 @@ pub fn run_tui_with_pause(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
     paused_flag: Option<Arc<AtomicBool>>,
+    theme: Theme,
+    keymap: Keymap,
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -702,7 +967,7 @@ pub fn run_tui_with_pause(
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut app = App::new(dialog_store, stream_store);
+    let mut app = App::new(dialog_store, stream_store, theme, keymap);
     if let Some(flag) = paused_flag {
         app.paused_flag = flag;
     }
@@ -790,12 +1055,14 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &mut app.call_list,
                     &store,
                     app.active_filter.as_ref(),
+                    app.timestamp_mode,
+                    &app.theme,
                 );
             }
         }
         View::StreamList => {
             if let Some(store) = app.stream_store.try_read() {
-                stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store);
+                stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store, &app.theme);
             }
         }
         View::CallFlow(call_id) => {
@@ -834,7 +1101,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             None
                         } else {
                             let ft = owned[0].timestamp;
-                            let (l, r, msgs) = call_flow::prepare_messages(
+                            let (participants, msgs) = call_flow::prepare_messages(
                                 &owned,
                                 ft,
                                 None,
@@ -843,8 +1110,10 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 app.color_mode,
                                 false,
                                 Some(sel),
+                                &app.theme,
+                                &app.fold_expanded,
                             );
-                            Some((l, r, msgs))
+                            Some((participants, msgs))
                         }
                     } else {
                         None
@@ -857,7 +1126,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         } else {
                             let ft = d.messages[0].timestamp;
                             let pdd = d.timing.pdd_ms();
-                            let (l, r, msgs) = call_flow::prepare_messages(
+                            let (participants, msgs) = call_flow::prepare_messages(
                                 &d.messages,
                                 ft,
                                 pdd,
@@ -866,13 +1135,20 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 app.color_mode,
                                 app.show_rtp_in_flow,
                                 Some(sel),
+                                &app.theme,
+                                &app.fold_expanded,
                             );
-                            Some((l, r, msgs))
+                            Some((participants, msgs))
                         }
                     } else {
                         None
                     }
                 };
+
+                // Update cached rendered message count (excluding spacers)
+                if let Some((_, ref msgs)) = prepared {
+                    app.cached_flow_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                }
 
                 // Render ladder using direct buffer painting
                 call_flow::render_call_flow_direct_or_empty(
@@ -880,6 +1156,9 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     ladder_area,
                     prepared.as_ref(),
                     scroll,
+                    &app.theme,
+                    app.mark_index,
+                    sel,
                 );
 
                 // Render message detail panel (right side) if split is active
@@ -891,6 +1170,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         &cid,
                         sel,
                         app.detail_scroll,
+                        &app.theme,
                     );
                 }
             }
@@ -908,6 +1188,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     *message_index,
                     app.raw_msg_scroll,
                     &app.search_query,
+                    &app.theme,
                 );
             }
         }
@@ -917,11 +1198,11 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             msg2_idx,
         } => {
             if let Some(store) = app.dialog_store.try_read() {
-                render_message_diff(frame, main_area, &store, call_id, *msg1_idx, *msg2_idx);
+                render_message_diff(frame, main_area, &store, call_id, *msg1_idx, *msg2_idx, &app.theme);
             }
         }
         View::Help => {
-            help::render_help(frame, main_area);
+            help::render_help(frame, main_area, &app.theme);
         }
         View::Statistics => {
             render_statistics(frame, main_area, app);
@@ -929,7 +1210,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     }
 
     // F-key bar (sngrep-style, context-sensitive) at bottom
-    render_fkey_bar(frame, fkey_area, &app.current_view, &app.active_popup);
+    render_fkey_bar(frame, fkey_area, &app.current_view, &app.active_popup, &app.theme);
 
     // Render popup overlay on top of everything (if active)
     if let Some(popup) = &app.active_popup.clone() {
@@ -938,14 +1219,20 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 render_save_popup(frame, area, app);
             }
             Popup::FilterDialog => {
-                render_filter_popup(frame, area, &app.filter_dialog);
+                render_filter_popup(frame, area, &app.filter_dialog, &app.theme);
+            }
+            Popup::SettingsDialog => {
+                render_settings_popup(frame, area, app);
+            }
+            Popup::FileOpenDialog => {
+                render_file_open_popup(frame, area, app);
             }
         }
     }
 
     // Render column selector popup (not a Popup variant — it's call_list internal state)
     if app.call_list.column_selector_open {
-        call_list::render_column_selector(frame, area, &app.call_list);
+        call_list::render_column_selector(frame, area, &app.call_list, &app.theme);
     }
 }
 
@@ -957,9 +1244,9 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     // Determine if online (live capture) or offline (pcap file)
     let is_online = app.capture_mode.starts_with("Online");
     let mode_style = if is_online {
-        Style::default().fg(Color::Green)
+        Style::default().fg(app.theme.good)
     } else {
-        Style::default().fg(Color::Red)
+        Style::default().fg(app.theme.bad)
     };
 
     // Build status indicators for paused/autoscroll
@@ -997,20 +1284,20 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         spans.push(Span::raw(padded[mode_end..ps].to_string()));
         spans.push(Span::styled(
             "PAUSED".to_string(),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            Style::default().fg(app.theme.bad).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(padded[ps + 6..].to_string()));
     } else {
         spans.push(Span::raw(padded[mode_end..].to_string()));
     };
 
-    let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
     frame.render_widget(line1, area);
 }
 
 /// Render status line 2 (sngrep-style): `Match Expression: <expr>    BPF Filter: <bpf>`
 fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let yellow = Style::default().fg(Color::Yellow);
+    let yellow = Style::default().fg(app.theme.selected);
 
     // Build styled spans with trailing padding for solid background
     let prefix1 = " Match Expression: ";
@@ -1032,7 +1319,7 @@ fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         Span::raw(trailing_pad),
     ];
 
-    let line2 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    let line2 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
     frame.render_widget(line2, area);
 }
 
@@ -1044,17 +1331,26 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let content = format!(" /{}", app.search_query);
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(app.theme.selected),
         )]
     } else if let Some(ref err) = app.status_error {
         let content = format!(" {}", err);
+        // Use bright foreground + bold for high contrast on the dark status bar.
+        // Actual errors (containing "error" or "fail") get the bad/red color.
+        let is_error = err.to_ascii_lowercase().contains("error")
+            || err.to_ascii_lowercase().contains("fail");
+        let fg = if is_error {
+            app.theme.bad
+        } else {
+            app.theme.foreground
+        };
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
-            Style::default().fg(Color::Red),
+            Style::default().fg(fg).add_modifier(Modifier::BOLD),
         )]
     } else if let View::CallFlow(_) = app.current_view {
         // In call flow: show current display modes so user knows what t/d/c do
-        let cyan = Style::default().fg(Color::Cyan);
+        let cyan = Style::default().fg(app.theme.header);
         let content = format!(
             " {} | {} | {} | Split: {}%",
             app.timestamp_mode.label(),
@@ -1069,7 +1365,7 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let trailing = " ".repeat(w.saturating_sub(content.len()));
         vec![Span::styled(content, cyan), Span::raw(trailing)]
     } else {
-        let yellow = Style::default().fg(Color::Yellow);
+        let yellow = Style::default().fg(app.theme.selected);
         let prefix = " Display Filter: ";
         let filter_text = &app.active_filter_text;
         let trailing = if prefix.len() + filter_text.len() < w {
@@ -1084,7 +1380,7 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         ]
     };
 
-    let line3 = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    let line3 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
     frame.render_widget(line3, area);
 }
 
@@ -1094,11 +1390,11 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 /// Key names in bold white, labels in default. Full-width dark background.
 /// The bar is context-sensitive based on the current view. On narrow
 /// terminals, lower-priority items are dropped to avoid truncation.
-fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &Option<Popup>) {
+fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &Option<Popup>, theme: &Theme) {
     let key_style = Style::default()
-        .fg(Color::White)
+        .fg(theme.foreground)
         .add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(Color::White);
+    let label_style = Style::default().fg(theme.foreground);
 
     let width = area.width;
 
@@ -1116,6 +1412,14 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
                     ("F9", "Clear"),
                 ]
             }
+            Popup::SettingsDialog => {
+                vec![
+                    ("Up/Down", "Navigate"),
+                    ("Enter", "Toggle"),
+                    ("Esc", "Close"),
+                ]
+            }
+            Popup::FileOpenDialog => vec![("Enter", "Open"), ("Esc", "Cancel")],
         }
     } else {
         match view {
@@ -1220,7 +1524,7 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
         spans.push(Span::raw(" ".repeat(width as usize - content_len)));
     }
 
-    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::DarkGray));
+    let bar = Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.status_bg));
     frame.render_widget(bar, area);
 }
 
@@ -1237,8 +1541,8 @@ fn centered_popup(area: Rect, width: u16, height: u16) -> Rect {
 
 /// Render the save dialog as a centered popup overlay.
 fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let popup_width = 70.min(area.width.saturating_sub(4));
-    let popup_area = centered_popup(area, popup_width, 12);
+    let popup_width = 72.min(area.width.saturating_sub(4));
+    let popup_area = centered_popup(area, popup_width, 20);
 
     // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
@@ -1246,52 +1550,64 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Save Capture ")
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(app.theme.background));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Build format selector spans: highlight the active format, dim the others.
-    let formats = [SaveFormat::Pcap, SaveFormat::PcapNg, SaveFormat::Txt];
-    let mut fmt_spans: Vec<Span<'_>> = vec![Span::styled(
-        "  Format:  ",
-        Style::default().fg(Color::Cyan),
-    )];
-    for (i, fmt) in formats.iter().enumerate() {
-        if i > 0 {
-            fmt_spans.push(Span::raw("  "));
+    // Build vertical format list grouped by category.
+    let all_formats = [
+        SaveFormat::Pcap, SaveFormat::PcapNg,          // Packet Capture
+        SaveFormat::Txt, SaveFormat::SippXml,           // SIP-Specific
+        SaveFormat::Json, SaveFormat::Ndjson, SaveFormat::Csv, // Structured
+        SaveFormat::Html, SaveFormat::Markdown,          // Reporting
+        SaveFormat::Wav, SaveFormat::RtpJson,            // RTP/Media
+    ];
+    let mut fmt_lines: Vec<Line<'_>> = Vec::new();
+    let mut last_cat = "";
+    for fmt in &all_formats {
+        let cat = fmt.category();
+        if cat != last_cat {
+            // Category header
+            if !last_cat.is_empty() {
+                fmt_lines.push(Line::from("")); // spacer between categories
+            }
+            fmt_lines.push(Line::from(Span::styled(
+                format!("  {cat}"),
+                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+            )));
+            last_cat = cat;
         }
-        if *fmt == app.save_format {
-            fmt_spans.push(Span::styled(
-                format!("[{}]", fmt.label()),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ));
+        let is_selected = *fmt == app.save_format;
+        let marker = if is_selected { "\u{25B8} " } else { "  " }; // ▸ or space
+        let label_style = if is_selected {
+            Style::default().fg(app.theme.foreground).add_modifier(Modifier::BOLD)
         } else {
-            fmt_spans.push(Span::styled(
-                fmt.label().to_string(),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
+            Style::default().fg(app.theme.muted)
+        };
+        let desc_style = if is_selected {
+            Style::default().fg(app.theme.foreground)
+        } else {
+            Style::default().fg(app.theme.muted)
+        };
+        fmt_lines.push(Line::from(vec![
+            Span::styled(format!("    {marker}"), label_style),
+            Span::styled(format!("{:<7}", fmt.label()), label_style),
+            Span::styled(format!(" {}", fmt.description()), desc_style),
+        ]));
     }
-    fmt_spans.push(Span::styled(
-        "      (Tab)",
-        Style::default().fg(Color::DarkGray),
-    ));
 
-    let dialog_info = format!(
-        "  Dialogs: {} ({} selected)",
-        app.save_dialog_count, app.save_selected_count
+    let info_line = format!(
+        "  Dialogs: {} ({} selected) \u{00B7} Messages: {}",
+        app.save_dialog_count, app.save_selected_count, app.save_message_count
     );
-    let msg_info = format!("  Messages: {}", app.save_message_count);
 
     // Build the path display with a visible cursor (reverse video at cursor position)
     let path = &app.save_path;
     let cursor = app.save_cursor.min(path.len());
     let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
         "  Save to: ",
-        Style::default().fg(Color::Cyan),
+        Style::default().fg(app.theme.header),
     )];
     if path.is_empty() {
         path_spans.push(Span::styled(
@@ -1304,7 +1620,7 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             path_spans.push(Span::styled(
                 path[..cursor].to_string(),
                 Style::default()
-                    .fg(Color::White)
+                    .fg(app.theme.foreground)
                     .add_modifier(Modifier::BOLD),
             ));
         }
@@ -1319,7 +1635,111 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 path_spans.push(Span::styled(
                     path[cursor + 1..].to_string(),
                     Style::default()
-                        .fg(Color::White)
+                        .fg(app.theme.foreground)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        } else {
+            // Cursor at end — show block cursor
+            path_spans.push(Span::styled(
+                " ",
+                Style::default().bg(Color::White).fg(Color::Black),
+            ));
+        }
+    }
+
+    let mut lines: Vec<Line<'_>> = vec![
+        Line::from(""),
+        Line::from(path_spans),
+        Line::from(""),
+    ];
+    lines.extend(fmt_lines);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        info_line,
+        Style::default().fg(app.theme.muted),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  [Enter]",
+            Style::default()
+                .fg(app.theme.good)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Save  "),
+        Span::styled(
+            "[Tab/\u{21E7}Tab]",
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Format  "),
+        Span::styled(
+            "[Esc]",
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Cancel"),
+    ]));
+
+    // Ensure we don't exceed the inner area height
+    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(app.theme.background));
+    frame.render_widget(para, inner);
+}
+
+/// Render the file-open dialog as a centered popup overlay.
+fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let popup_width = 70.min(area.width.saturating_sub(4));
+    let popup_area = centered_popup(area, popup_width, 8);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Open PCAP File ")
+        .style(Style::default().bg(app.theme.background));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // Build the path display with a visible cursor (reverse video at cursor position)
+    let path = &app.open_path;
+    let cursor = app.open_cursor.min(path.len());
+    let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
+        "  File: ",
+        Style::default().fg(app.theme.header),
+    )];
+    if path.is_empty() {
+        path_spans.push(Span::styled(
+            " ",
+            Style::default().bg(Color::White).fg(Color::Black),
+        ));
+    } else {
+        // Text before cursor
+        if cursor > 0 {
+            path_spans.push(Span::styled(
+                path[..cursor].to_string(),
+                Style::default()
+                    .fg(app.theme.foreground)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        // Cursor character (reverse video)
+        if cursor < path.len() {
+            path_spans.push(Span::styled(
+                path[cursor..cursor + 1].to_string(),
+                Style::default().bg(Color::White).fg(Color::Black),
+            ));
+            // Text after cursor
+            if cursor + 1 < path.len() {
+                path_spans.push(Span::styled(
+                    path[cursor + 1..].to_string(),
+                    Style::default()
+                        .fg(app.theme.foreground)
                         .add_modifier(Modifier::BOLD),
                 ));
             }
@@ -1335,33 +1755,24 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let lines: Vec<Line<'_>> = vec![
         Line::from(""),
         Line::from(path_spans),
-        Line::from(fmt_spans),
         Line::from(""),
         Line::from(Span::styled(
-            dialog_info,
-            Style::default().fg(Color::DarkGray),
+            "  Supports .pcap, .pcapng, .cap files",
+            Style::default().fg(app.theme.muted),
         )),
-        Line::from(Span::styled(msg_info, Style::default().fg(Color::DarkGray))),
         Line::from(""),
         Line::from(vec![
             Span::styled(
                 "  [Enter]",
                 Style::default()
-                    .fg(Color::Green)
+                    .fg(app.theme.good)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" Save  "),
-            Span::styled(
-                "[Tab]",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Format  "),
+            Span::raw(" Open  "),
             Span::styled(
                 "[Esc]",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(app.theme.warning)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" Cancel"),
@@ -1370,7 +1781,7 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     // Ensure we don't exceed the inner area height
     let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
-    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(app.theme.background));
     frame.render_widget(para, inner);
 }
 
@@ -1388,12 +1799,13 @@ fn render_filter_text_field(
     field_width: u16,
     focused: bool,
     cursor_pos: usize,
+    theme: &Theme,
 ) {
-    let label_style = Style::default().fg(Color::Cyan);
+    let label_style = Style::default().fg(theme.header);
     let bracket_style = if focused {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.foreground)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.muted)
     };
 
     // Paint label
@@ -1417,7 +1829,7 @@ fn render_filter_text_field(
             y,
             before,
             Style::default()
-                .fg(Color::White)
+                .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD),
         );
         // Cursor character (reverse video)
@@ -1441,7 +1853,7 @@ fn render_filter_text_field(
                 y,
                 after,
                 Style::default()
-                    .fg(Color::White)
+                    .fg(theme.foreground)
                     .add_modifier(Modifier::BOLD),
             );
         }
@@ -1458,7 +1870,7 @@ fn render_filter_text_field(
         } else {
             value
         };
-        buf.set_string(content_x, y, display, Style::default().fg(Color::White));
+        buf.set_string(content_x, y, display, Style::default().fg(theme.foreground));
         // Fill remaining
         if display.len() < inner_width {
             let pad = " ".repeat(inner_width - display.len());
@@ -1492,7 +1904,7 @@ fn render_filter_text_field(
 /// |                                                    |
 /// +----------------------------------------------------+
 /// ```
-fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDialogState) {
+fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDialogState, theme: &Theme) {
     let popup_width: u16 = 56;
     let popup_height: u16 = 19;
     let popup_area = centered_popup(area, popup_width, popup_height);
@@ -1503,7 +1915,7 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Filter ")
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(theme.background));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -1535,13 +1947,14 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
             field_width,
             focused,
             cursor,
+            theme,
         );
     }
 
     // ── Separator line ─────────────────────────────────────────────
     let sep_y = iy + 1 + labels.len() as u16;
     let sep = "\u{2500}".repeat((iw - 4) as usize);
-    buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(Color::DarkGray));
+    buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(theme.muted));
 
     // ── Method checkboxes (two columns, 5 rows) ───────────────────
     let cb_y = sep_y + 1;
@@ -1561,10 +1974,10 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
             let name = format!("{:<10}", method);
             let style = if focused {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.foreground)
             };
             buf.set_string(col1_x, cb_y + row, &name, style);
             buf.set_string(col1_x + 10, cb_y + row, marker, style);
@@ -1579,10 +1992,10 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
             let name = format!("{:<10}", method);
             let style = if focused {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(theme.foreground)
             };
             buf.set_string(col2_x, cb_y + row, &name, style);
             buf.set_string(col2_x + 10, cb_y + row, marker, style);
@@ -1596,23 +2009,98 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
 
     let filter_style = if filter_focused {
         Style::default()
-            .fg(Color::Green)
+            .fg(theme.good)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.foreground)
     };
     let cancel_style = if cancel_focused {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(theme.warning)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(theme.foreground)
     };
 
     let btn_col1 = ix + 5;
     let btn_col2 = ix + iw / 2 + 5;
     buf.set_string(btn_col1, btn_y, "[ Filter ]", filter_style);
     buf.set_string(btn_col2, btn_y, "[ Cancel ]", cancel_style);
+}
+
+/// Render the settings popup as a centered overlay.
+fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let popup_width: u16 = 50;
+    let popup_height: u16 = 12;
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Settings ")
+        .style(Style::default().bg(app.theme.background));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let buf = frame.buffer_mut();
+    let ix = inner.x;
+    let iy = inner.y;
+
+    let labels = [
+        "Color Mode:",
+        "Timestamp Mode:",
+        "Autoscroll:",
+        "Raw Preview:",
+        "SDP Display:",
+        "Syntax Highlight:",
+    ];
+
+    let values = [
+        match app.color_mode {
+            ColorMode::Method => "Method",
+            ColorMode::CallId => "CallId",
+            ColorMode::CSeq => "CSeq",
+        },
+        match app.timestamp_mode {
+            TimestampMode::Absolute => "Absolute",
+            TimestampMode::DeltaPrev => "DeltaPrev",
+            TimestampMode::DeltaFirst => "DeltaFirst",
+            TimestampMode::Scaled => "Scaled",
+        },
+        if app.call_list.autoscroll { "ON" } else { "OFF" },
+        if app.raw_preview { "ON" } else { "OFF" },
+        match app.sdp_display_mode {
+            SdpDisplayMode::None => "None",
+            SdpDisplayMode::Summary => "Summary",
+            SdpDisplayMode::Full => "Full",
+        },
+        if app.syntax_highlight { "ON" } else { "OFF" },
+    ];
+
+    for (i, (label, value)) in labels.iter().zip(values.iter()).enumerate() {
+        let focused = app.settings_dialog.focused_item == i;
+        let style = if focused {
+            Style::default()
+                .fg(app.theme.selected)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.foreground)
+        };
+        let value_style = if focused {
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.good)
+        };
+
+        let row_y = iy + 1 + i as u16;
+        buf.set_string(ix + 2, row_y, format!("{:<18}", label), style);
+        buf.set_string(ix + 20, row_y, format!("[{}]", value), value_style);
+    }
 }
 
 /// Render the statistics summary view with real data from stores.
@@ -1646,6 +2134,7 @@ fn render_statistics(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
             DialogState::Pending => "Pending",
             DialogState::Active => "Active",
             DialogState::Terminated => "Terminated",
+            DialogState::Transferring => "Transferring",
         };
         *state_counts.entry(state_name).or_insert(0) += 1;
         *method_counts.entry(dialog.method.as_str()).or_insert(0) += 1;
@@ -1689,7 +2178,7 @@ fn render_statistics(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
 
     let paragraph = Paragraph::new(text)
         .block(block)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(app.theme.foreground));
 
     frame.render_widget(paragraph, area);
 }
@@ -1702,11 +2191,12 @@ fn render_message_diff(
     call_id: &str,
     msg1_idx: usize,
     msg2_idx: usize,
+    theme: &Theme,
 ) {
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
-            let para = Paragraph::new("Dialog not found.").style(Style::default().fg(Color::Red));
+            let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
             return;
         }
@@ -1716,7 +2206,7 @@ fn render_message_diff(
     let msg2 = dialog.messages.get(msg2_idx);
 
     if msg1.is_none() || msg2.is_none() {
-        let para = Paragraph::new("Message not found.").style(Style::default().fg(Color::Red));
+        let para = Paragraph::new("Message not found.").style(Style::default().fg(theme.bad));
         frame.render_widget(para, area);
         return;
     }
@@ -1743,18 +2233,18 @@ fn render_message_diff(
     left_lines.push(Line::from(Span::styled(
         format!(" Message {} ", msg1_idx + 1),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.header)
             .add_modifier(Modifier::BOLD),
     )));
     right_lines.push(Line::from(Span::styled(
         format!(" Message {} ", msg2_idx + 1),
         Style::default()
-            .fg(Color::Cyan)
+            .fg(theme.header)
             .add_modifier(Modifier::BOLD),
     )));
 
     let diff_style = Style::default()
-        .fg(Color::Yellow)
+        .fg(theme.warning)
         .add_modifier(Modifier::BOLD);
     let normal_style = Style::default();
 
@@ -1858,7 +2348,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
+        k if k == app.keymap.quit || k == KeyCode::Esc => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => app.call_list.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.call_list.move_down(dialog_count),
         KeyCode::Home => app.call_list.move_to_top(),
@@ -1880,12 +2370,12 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') => {
             app.call_list.toggle_selection();
         }
-        KeyCode::Char('/') => {
+        k if k == app.keymap.search => {
             app.search_active = true;
             app.search_query.clear();
         }
         // F5 — Clear calls
-        KeyCode::F(5) => {
+        k if k == app.keymap.clear_calls => {
             clear_calls(app);
         }
         // F6 / r — Raw view for selected dialog's first message
@@ -1898,8 +2388,13 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 };
             }
         }
-        // F10 / t — Column selector popup
-        KeyCode::F(10) | KeyCode::Char('t') => {
+        // t — Cycle timestamp display mode
+        KeyCode::Char('t') => {
+            app.timestamp_mode = app.timestamp_mode.next();
+            app.status_error = Some(app.timestamp_mode.label().to_string());
+        }
+        // F10 — Column selector popup
+        k if k == app.keymap.column_selector => {
             app.call_list.column_selector_open = true;
             app.call_list.column_selector_cursor = 0;
         }
@@ -1916,11 +2411,11 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.call_list.reverse_sort();
         }
         // A — Toggle autoscroll
-        KeyCode::Char('A') => {
+        k if k == app.keymap.autoscroll => {
             app.call_list.autoscroll = !app.call_list.autoscroll;
         }
         // p — Pause/resume capture processing
-        KeyCode::Char('p') => {
+        k if k == app.keymap.pause => {
             app.paused = !app.paused;
             app.paused_flag.store(app.paused, AtomicOrdering::Relaxed);
         }
@@ -1932,8 +2427,8 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('I') => {
             clear_matching(app);
         }
-        KeyCode::F(1) => app.current_view = View::Help,
-        KeyCode::F(2) => {
+        k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.save => {
             open_save_popup(app);
         }
         KeyCode::F(3) => {
@@ -1941,17 +2436,25 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.search_active = true;
             app.search_query.clear();
         }
-        KeyCode::F(4) => {
-            app.status_error = Some("Extended view not yet implemented".to_string());
+        k if k == app.keymap.extended_flow => {
+            if let Some(call_id) = get_selected_call_id(app) {
+                app.extended_flow = true;
+                app.call_flow_scroll = 0;
+                app.selected_msg_index = 0;
+                app.detail_scroll = 0;
+                app.call_flow_cache.clear();
+                app.current_view = View::CallFlow(call_id);
+            }
         }
-        KeyCode::F(7) => {
+        k if k == app.keymap.filter => {
             // Always open the filter dialog (state is preserved)
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
         }
-        KeyCode::F(8) => {
-            app.status_error = Some("Settings not yet implemented".to_string());
+        k if k == app.keymap.settings => {
+            app.settings_dialog.focused_item = 0;
+            app.active_popup = Some(Popup::SettingsDialog);
         }
         KeyCode::F(9) => {
             // F9 Clear Filter
@@ -1959,6 +2462,12 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.active_filter_text.clear();
             app.filter_dialog.clear();
             app.status_error = None;
+        }
+        // O — Open pcap file
+        KeyCode::Char('O') => {
+            app.open_path = String::new();
+            app.open_cursor = 0;
+            app.active_popup = Some(Popup::FileOpenDialog);
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
         _ => {}
@@ -2073,7 +2582,7 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
     let stream_count = app.stream_store.read().len();
 
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        k if k == app.keymap.quit => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => app.stream_list.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.stream_list.move_down(stream_count),
         KeyCode::Home => app.stream_list.move_to_top(),
@@ -2081,12 +2590,12 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Tab => {
             app.current_view = View::CallList;
         }
-        KeyCode::Char('/') => {
+        k if k == app.keymap.search => {
             app.search_active = true;
             app.search_query.clear();
         }
-        KeyCode::F(1) => app.current_view = View::Help,
-        KeyCode::F(7) => {
+        k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.filter => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
@@ -2098,14 +2607,34 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
 
 /// Handle keys in the call flow view.
 fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
-    // Helper: get message count for the current dialog
-    let msg_count = if let View::CallFlow(ref call_id) = app.current_view {
-        app.dialog_store
-            .try_read()
-            .and_then(|s| s.get(call_id).map(|d| d.messages.len()))
-            .unwrap_or(0)
+    // Use the rendered (folded) message count. For extended flow, this includes
+    // correlated legs. Fall back to raw dialog count if render hasn't run yet.
+    let raw_count = if let View::CallFlow(ref call_id) = app.current_view {
+        if app.extended_flow {
+            // Extended: sum messages from main dialog + all correlated
+            app.dialog_store
+                .try_read()
+                .map(|s| {
+                    let base = s.get(call_id).map(|d| d.messages.len()).unwrap_or(0);
+                    let correlated: usize = s.find_correlated(call_id).iter().map(|d| d.messages.len()).sum();
+                    base + correlated
+                })
+                .unwrap_or(0)
+        } else {
+            app.dialog_store
+                .try_read()
+                .and_then(|s| s.get(call_id).map(|d| d.messages.len()))
+                .unwrap_or(0)
+        }
     } else {
         0
+    };
+    // Use cached rendered count if available, but never less than raw count
+    // (folding reduces count, but raw count is the safe upper bound for navigation)
+    let msg_count = if app.cached_flow_msg_count > 0 {
+        app.cached_flow_msg_count.max(raw_count)
+    } else {
+        raw_count
     };
 
     // Clamp selected_msg_index to valid range
@@ -2114,7 +2643,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     }
 
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        k if k == app.keymap.quit => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
             if app.selected_msg_index > 0 {
                 app.selected_msg_index -= 1;
@@ -2249,7 +2778,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // Scroll detail panel down
             app.detail_scroll = app.detail_scroll.saturating_add(1);
         }
-        KeyCode::F(4) | KeyCode::Char('x') => {
+        k if k == app.keymap.extended_flow || k == KeyCode::Char('x') => {
             // Toggle extended (multi-leg) flow
             app.extended_flow = !app.extended_flow;
             app.call_flow_cache.clear();
@@ -2269,21 +2798,100 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 "RTP in flow: OFF".to_string()
             });
         }
+        KeyCode::Char('m') => {
+            app.mark_index = Some(app.selected_msg_index);
+            app.status_error = Some("Mark set".to_string());
+        }
+        KeyCode::Char('M') => {
+            app.mark_index = None;
+            app.status_error = Some("Mark cleared".to_string());
+        }
+        KeyCode::Char('e') => {
+            let idx = app.selected_msg_index;
+            if app.fold_expanded.contains(&idx) {
+                app.fold_expanded.remove(&idx);
+            } else {
+                app.fold_expanded.insert(idx);
+            }
+            app.call_flow_cache.clear();
+        }
+        KeyCode::Char('E') => {
+            // Export Mermaid sequence diagram to clipboard
+            if let View::CallFlow(ref call_id) = app.current_view
+                && let Some(store) = app.dialog_store.try_read()
+            {
+                let prepared = store.get(call_id).and_then(|d| {
+                    if d.messages.is_empty() {
+                        return None;
+                    }
+                    let ft = d.messages[0].timestamp;
+                    let pdd = d.timing.pdd_ms();
+                    let (participants, msgs) = call_flow::prepare_messages(
+                        &d.messages,
+                        ft,
+                        pdd,
+                        app.sdp_display_mode,
+                        app.timestamp_mode,
+                        app.color_mode,
+                        app.show_rtp_in_flow,
+                        None,
+                        &app.theme,
+                        &app.fold_expanded,
+                    );
+                    Some((participants, msgs))
+                });
+                if let Some((ref participants, ref msgs)) = prepared {
+                    let mermaid = call_flow::export::export_mermaid(participants, msgs);
+                    let cmd = if cfg!(target_os = "macos") {
+                        "pbcopy"
+                    } else {
+                        "xclip"
+                    };
+                    let args: Vec<&str> = if cfg!(target_os = "macos") {
+                        vec![]
+                    } else {
+                        vec!["-selection", "clipboard"]
+                    };
+                    let result = std::process::Command::new(cmd)
+                        .args(&args)
+                        .stdin(std::process::Stdio::piped())
+                        .spawn()
+                        .and_then(|mut child| {
+                            use std::io::Write;
+                            if let Some(ref mut stdin) = child.stdin {
+                                stdin.write_all(mermaid.as_bytes())?;
+                            }
+                            child.wait()
+                        });
+                    match result {
+                        Ok(_) => {
+                            app.status_error =
+                                Some("Mermaid diagram copied to clipboard".to_string());
+                        }
+                        Err(e) => {
+                            app.status_error = Some(format!("Clipboard: {e}"));
+                        }
+                    }
+                } else {
+                    app.status_error = Some("No messages to export".to_string());
+                }
+            }
+        }
         KeyCode::Esc => {
             app.diff_selected_msg = None;
             app.current_view = View::CallList;
         }
-        KeyCode::F(1) => app.current_view = View::Help,
-        KeyCode::F(2) => {
+        k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.save => {
             open_save_popup(app);
         }
-        KeyCode::F(5) => {
+        k if k == app.keymap.clear_calls => {
             // F5 also starts compare mode (same as first Space press)
             app.diff_selected_msg = None;
             app.status_error =
                 Some("Compare: press Space on first message, then Space on second".to_string());
         }
-        KeyCode::F(7) => {
+        k if k == app.keymap.filter => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
@@ -2301,7 +2909,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
 /// Handle keys in the raw message view.
 fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        k if k == app.keymap.quit => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => {
             app.raw_msg_scroll = app.raw_msg_scroll.saturating_sub(1);
         }
@@ -2315,7 +2923,7 @@ fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
             app.raw_msg_scroll = app.raw_msg_scroll.saturating_add(20);
         }
         KeyCode::Home => app.raw_msg_scroll = 0,
-        KeyCode::Char('/') => {
+        k if k == app.keymap.search => {
             app.search_active = true;
             app.search_query.clear();
         }
@@ -2339,8 +2947,8 @@ fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
                 app.current_view = View::CallFlow(cid);
             }
         }
-        KeyCode::F(1) => app.current_view = View::Help,
-        KeyCode::F(2) => {
+        k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.save => {
             open_save_popup(app);
         }
         _ => {}
@@ -2365,7 +2973,7 @@ fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
 /// Handle keys in the help view.
 fn handle_help_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc | KeyCode::F(1) | KeyCode::Char('q') => {
+        k if k == KeyCode::Esc || k == app.keymap.help || k == app.keymap.quit => {
             app.current_view = View::CallList;
         }
         _ => {}
@@ -2403,6 +3011,8 @@ fn handle_popup_key(app: &mut App, key: KeyEvent) {
     match popup {
         Popup::SaveDialog => handle_save_popup_key(app, key),
         Popup::FilterDialog => handle_filter_popup_key(app, key),
+        Popup::SettingsDialog => handle_settings_popup_key(app, key),
+        Popup::FileOpenDialog => handle_file_open_popup_key(app, key),
     }
 }
 
@@ -2418,20 +3028,23 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
                 SaveFormat::Pcap => save_to_pcap_path(app, &path, false),
                 SaveFormat::PcapNg => save_to_pcap_path(app, &path, true),
                 SaveFormat::Txt => save_to_txt_path(app, &path),
+                SaveFormat::Json => save_to_json_path(app, &path),
+                SaveFormat::Ndjson => save_to_ndjson_path(app, &path),
+                SaveFormat::Csv => save_to_csv_path(app, &path),
+                SaveFormat::Html => save_to_mermaid_path(app, &path),
+                SaveFormat::Markdown => save_to_markdown_path(app, &path),
+                SaveFormat::Wav => save_to_wav_path(app, &path),
+                SaveFormat::SippXml => save_to_sipp_path(app, &path),
+                SaveFormat::RtpJson => save_to_rtp_json_path(app, &path),
             };
             app.status_error = Some(msg);
             app.active_popup = None;
         }
-        KeyCode::Tab | KeyCode::BackTab => {
+        KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up => {
             // Cycle save format and update file extension
             let old_ext = app.save_format.extension();
-            app.save_format = if key.code == KeyCode::BackTab {
-                // Reverse cycle on Shift+Tab
-                match app.save_format {
-                    SaveFormat::Pcap => SaveFormat::Txt,
-                    SaveFormat::PcapNg => SaveFormat::Pcap,
-                    SaveFormat::Txt => SaveFormat::PcapNg,
-                }
+            app.save_format = if key.code == KeyCode::BackTab || key.code == KeyCode::Up {
+                app.save_format.prev()
             } else {
                 app.save_format.next()
             };
@@ -2472,6 +3085,144 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
         }
         _ => {}
     }
+}
+
+/// Handle keys in the file-open dialog popup.
+fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_popup = None;
+        }
+        KeyCode::Enter => {
+            let path = app.open_path.clone();
+            if path.is_empty() {
+                app.status_error = Some("No file path specified".to_string());
+                app.active_popup = None;
+                return;
+            }
+            let msg = load_pcap_file(app, &path);
+            app.status_error = Some(msg);
+            app.active_popup = None;
+        }
+        KeyCode::Backspace => {
+            if app.open_cursor > 0 {
+                app.open_cursor -= 1;
+                app.open_path.remove(app.open_cursor);
+            }
+        }
+        KeyCode::Left => {
+            app.open_cursor = app.open_cursor.saturating_sub(1);
+        }
+        KeyCode::Right => {
+            if app.open_cursor < app.open_path.len() {
+                app.open_cursor += 1;
+            }
+        }
+        KeyCode::Home => {
+            app.open_cursor = 0;
+        }
+        KeyCode::End => {
+            app.open_cursor = app.open_path.len();
+        }
+        KeyCode::Char(c) => {
+            app.open_path.insert(app.open_cursor, c);
+            app.open_cursor += 1;
+        }
+        _ => {}
+    }
+}
+
+/// Load a pcap file into the application, replacing all existing data.
+///
+/// Parses each packet through etherparse, extracts SIP messages, and feeds
+/// them into the dialog store. Returns a status message describing the result.
+fn load_pcap_file(app: &mut App, path_str: &str) -> String {
+    use std::path::Path;
+
+    let path = Path::new(path_str);
+    if !path.exists() {
+        return format!("File not found: {path_str}");
+    }
+
+    // Open pcap file
+    let mut cap = match pcap::Capture::from_file(path) {
+        Ok(c) => c,
+        Err(e) => return format!("Failed to open: {e}"),
+    };
+
+    // Clear existing data
+    {
+        let mut ds = app.dialog_store.write();
+        ds.clear();
+    }
+    {
+        let mut ss = app.stream_store.write();
+        ss.clear();
+    }
+
+    // Reset TUI state
+    app.call_list = CallListState::new();
+    app.stream_list = StreamListState::new();
+    app.active_filter = None;
+    app.active_filter_text.clear();
+    app.call_flow_cache.clear();
+    app.selected_msg_index = 0;
+    app.call_flow_scroll = 0;
+    app.cached_flow_msg_count = 0;
+    app.fold_expanded.clear();
+    app.mark_index = None;
+    app.current_view = View::CallList;
+
+    // Process packets using the existing parse pipeline
+    let mut packet_count = 0u64;
+    let mut sip_count = 0u64;
+    let link_type = cap.get_datalink().0;
+
+    while let Ok(pkt) = cap.next_packet() {
+        packet_count += 1;
+
+        let ts = chrono::DateTime::from_timestamp(
+            pkt.header.ts.tv_sec,
+            (pkt.header.ts.tv_usec as u32) * 1000,
+        )
+        .unwrap_or_else(chrono::Utc::now);
+
+        let capture_pkt = crate::capture::Packet::new(
+            ts,
+            pkt.data.to_vec(),
+            pkt.header.caplen as usize,
+            pkt.header.len as usize,
+            None,
+            link_type,
+        );
+
+        if let Ok(parsed) = crate::capture::parse::parse_packet(&capture_pkt)
+            && !parsed.payload.is_empty()
+            && crate::sip::is_sip_message(&parsed.payload)
+            && let Ok(sip_msg) = crate::sip::parser::parse_sip(
+                &parsed.payload,
+                parsed.timestamp,
+                parsed.src_addr,
+                parsed.dst_addr,
+                parsed.src_port,
+                parsed.dst_port,
+                parsed.transport,
+            )
+        {
+            app.dialog_store.write().process_message(sip_msg);
+            sip_count += 1;
+        }
+    }
+
+    // Update capture mode display
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path_str);
+    app.set_capture_mode(format!("Offline ({filename})"));
+    app.mark_data_updated();
+
+    format!("Loaded {sip_count} SIP messages from {packet_count} packets ({filename})")
 }
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
@@ -2629,10 +3380,42 @@ fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Handle keys in the settings popup.
+fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_popup = None;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.settings_dialog.focused_item > 0 {
+                app.settings_dialog.focused_item -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.settings_dialog.focused_item + 1 < SETTINGS_ITEM_COUNT {
+                app.settings_dialog.focused_item += 1;
+            }
+        }
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            match app.settings_dialog.focused_item {
+                0 => app.color_mode = app.color_mode.next(),
+                1 => app.timestamp_mode = app.timestamp_mode.next(),
+                2 => app.call_list.autoscroll = !app.call_list.autoscroll,
+                3 => app.raw_preview = !app.raw_preview,
+                4 => app.sdp_display_mode = app.sdp_display_mode.next(),
+                5 => app.syntax_highlight = !app.syntax_highlight,
+                _ => {}
+            }
+            app.call_flow_cache.clear();
+        }
+        _ => {}
+    }
+}
+
 /// Handle keys in the statistics view.
 fn handle_statistics_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('s') => {
+        k if k == KeyCode::Esc || k == app.keymap.quit || k == KeyCode::Char('s') => {
             app.current_view = View::CallList;
         }
         _ => {}
@@ -2798,6 +3581,559 @@ fn save_to_txt_path(app: &App, path_str: &str) -> String {
     }
 }
 
+/// Save current call flow as a Mermaid sequence diagram.
+fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
+    let path = std::path::PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+
+    // Collect messages based on current view
+    let messages: Vec<crate::sip::SipMessage> = if let View::CallFlow(ref call_id) = app.current_view {
+        // In call flow: export just this dialog (+ correlated if extended)
+        if app.extended_flow {
+            if let Some(dialog) = store.get(call_id) {
+                let mut all: Vec<&crate::sip::SipMessage> = dialog.messages.iter().collect();
+                let correlated = store.find_correlated(call_id);
+                for leg in &correlated {
+                    all.extend(leg.messages.iter());
+                }
+                all.sort_by_key(|m| m.timestamp);
+                all.into_iter().cloned().collect()
+            } else {
+                Vec::new()
+            }
+        } else if let Some(dialog) = store.get(call_id) {
+            dialog.messages.clone()
+        } else {
+            Vec::new()
+        }
+    } else {
+        // In call list: export all dialogs
+        store.iter().flat_map(|d| d.messages.clone()).collect()
+    };
+
+    if messages.is_empty() {
+        return "No messages to export".to_string();
+    }
+
+    let ft = messages[0].timestamp;
+    let (participants, msgs) = call_flow::prepare_messages(
+        &messages,
+        ft,
+        None,
+        SdpDisplayMode::None,
+        TimestampMode::Absolute,
+        ColorMode::Method,
+        false,
+        None,
+        &app.theme,
+        &std::collections::HashSet::new(),
+    );
+
+    let mermaid = call_flow::export::export_mermaid_html(&participants, &msgs);
+
+    match std::fs::write(&path, &mermaid) {
+        Ok(()) => format!(
+            "Saved Mermaid diagram ({} messages) to {}",
+            msgs.iter().filter(|m| !m.is_spacer).count(),
+            path.display()
+        ),
+        Err(e) => format!("Save failed: {e}"),
+    }
+}
+
+/// Format a [`DialogState`] as a display string for export.
+fn format_dialog_state(state: &crate::sip::dialog::DialogState) -> &'static str {
+    use crate::sip::dialog::DialogState;
+    match state {
+        DialogState::Trying => "Trying",
+        DialogState::Ringing => "Ringing",
+        DialogState::InCall => "InCall",
+        DialogState::Completed => "Completed",
+        DialogState::Cancelled => "Cancelled",
+        DialogState::Failed => "Failed",
+        DialogState::Registered => "Registered",
+        DialogState::Expired => "Expired",
+        DialogState::Pending => "Pending",
+        DialogState::Active => "Active",
+        DialogState::Terminated => "Terminated",
+        DialogState::Transferring => "Transferring",
+    }
+}
+
+/// Escape a field for CSV output: if it contains commas, quotes, or newlines,
+/// wrap in double quotes and double any existing quotes.
+fn csv_escape(field: &str) -> String {
+    if field.contains(',') || field.contains('"') || field.contains('\n') {
+        format!("\"{}\"", field.replace('"', "\"\""))
+    } else {
+        field.to_string()
+    }
+}
+
+/// Export all dialogs as pretty-printed JSON with parsed headers, timing, and state.
+fn save_to_json_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+
+    if dialogs.is_empty() {
+        return "No dialogs to save".to_string();
+    }
+
+    let json_dialogs: Vec<serde_json::Value> = dialogs
+        .iter()
+        .map(|d| {
+            let messages: Vec<serde_json::Value> = d
+                .messages
+                .iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "timestamp": m.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                        "is_request": m.is_request,
+                        "method": m.method,
+                        "status_code": m.status_code,
+                        "src": format!("{}:{}", m.src_addr, m.src_port),
+                        "dst": format!("{}:{}", m.dst_addr, m.dst_port),
+                        "is_retransmission": m.is_retransmission,
+                    })
+                })
+                .collect();
+
+            let duration_ms = d.timing.bye_sent.and_then(|bye| {
+                d.timing.answered_at.map(|ans| (bye - ans).num_milliseconds())
+            });
+            let timing = serde_json::json!({
+                "pdd_ms": d.timing.pdd_ms(),
+                "setup_ms": d.timing.setup_ms(),
+                "duration_ms": duration_ms,
+            });
+
+            serde_json::json!({
+                "call_id": d.call_id,
+                "method": d.method,
+                "state": format_dialog_state(&d.state),
+                "from_user": d.from_user,
+                "to_user": d.to_user,
+                "src_addr": d.src_addr.to_string(),
+                "dst_addr": d.dst_addr.to_string(),
+                "created_at": d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                "message_count": d.messages.len(),
+                "timing": timing,
+                "messages": messages,
+            })
+        })
+        .collect();
+
+    match serde_json::to_string_pretty(&json_dialogs) {
+        Ok(json_str) => match std::fs::write(&path, &json_str) {
+            Ok(()) => format!(
+                "Saved {} dialogs (JSON) to {}",
+                dialogs.len(),
+                path.display()
+            ),
+            Err(e) => format!("Save failed: {e}"),
+        },
+        Err(e) => format!("JSON serialization failed: {e}"),
+    }
+}
+
+/// Export all dialogs as newline-delimited JSON (one JSON object per line).
+fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+
+    if dialogs.is_empty() {
+        return "No dialogs to save".to_string();
+    }
+
+    let mut output = String::new();
+    for d in &dialogs {
+        let messages: Vec<serde_json::Value> = d
+            .messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "timestamp": m.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    "is_request": m.is_request,
+                    "method": m.method,
+                    "status_code": m.status_code,
+                    "src": format!("{}:{}", m.src_addr, m.src_port),
+                    "dst": format!("{}:{}", m.dst_addr, m.dst_port),
+                })
+            })
+            .collect();
+
+        let duration_ms = d.timing.bye_sent.and_then(|bye| {
+            d.timing.answered_at.map(|ans| (bye - ans).num_milliseconds())
+        });
+        let timing = serde_json::json!({
+            "pdd_ms": d.timing.pdd_ms(),
+            "setup_ms": d.timing.setup_ms(),
+            "duration_ms": duration_ms,
+        });
+
+        let obj = serde_json::json!({
+            "call_id": d.call_id,
+            "method": d.method,
+            "state": format_dialog_state(&d.state),
+            "from_user": d.from_user,
+            "to_user": d.to_user,
+            "src_addr": d.src_addr.to_string(),
+            "dst_addr": d.dst_addr.to_string(),
+            "created_at": d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "message_count": d.messages.len(),
+            "timing": timing,
+            "messages": messages,
+        });
+
+        match serde_json::to_string(&obj) {
+            Ok(line) => {
+                output.push_str(&line);
+                output.push('\n');
+            }
+            Err(e) => return format!("JSON serialization failed: {e}"),
+        }
+    }
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => format!(
+            "Saved {} dialogs (NDJSON) to {}",
+            dialogs.len(),
+            path.display()
+        ),
+        Err(e) => format!("Save failed: {e}"),
+    }
+}
+
+/// Export dialog summaries as CSV (one row per dialog).
+fn save_to_csv_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+
+    if dialogs.is_empty() {
+        return "No dialogs to save".to_string();
+    }
+
+    let mut output = String::from("call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,setup_ms,created_at\n");
+
+    for d in &dialogs {
+        let row = format!(
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
+            csv_escape(&d.call_id),
+            csv_escape(&d.method),
+            csv_escape(format_dialog_state(&d.state)),
+            csv_escape(d.from_user.as_deref().unwrap_or("")),
+            csv_escape(d.to_user.as_deref().unwrap_or("")),
+            csv_escape(&d.src_addr.to_string()),
+            csv_escape(&d.dst_addr.to_string()),
+            d.messages.len(),
+            d.timing.pdd_ms().map_or(String::new(), |v| v.to_string()),
+            d.timing.setup_ms().map_or(String::new(), |v| v.to_string()),
+            d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        );
+        output.push_str(&row);
+    }
+
+    match std::fs::write(&path, &output) {
+        Ok(()) => format!(
+            "Saved {} dialogs (CSV) to {}",
+            dialogs.len(),
+            path.display()
+        ),
+        Err(e) => format!("Save failed: {e}"),
+    }
+}
+
+/// Export a Markdown call summary suitable for tickets and incident docs.
+fn save_to_markdown_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+
+    if dialogs.is_empty() {
+        return "No dialogs to save".to_string();
+    }
+
+    let mut md = String::from("# Call Summary\n\nGenerated by sipnab v0.3.1\n\n");
+
+    for d in &dialogs {
+        md.push_str(&format!(
+            "## Dialog: {} ({})\n\n",
+            d.call_id, d.method,
+        ));
+
+        md.push_str("| Field | Value |\n|-------|-------|\n");
+        md.push_str(&format!("| State | {} |\n", format_dialog_state(&d.state)));
+        md.push_str(&format!(
+            "| From | {} |\n",
+            d.from_user.as_deref().unwrap_or("-")
+        ));
+        md.push_str(&format!(
+            "| To | {} |\n",
+            d.to_user.as_deref().unwrap_or("-")
+        ));
+
+        // Source/destination from first message if available
+        if let Some(first) = d.messages.first() {
+            md.push_str(&format!(
+                "| Source | {}:{} |\n",
+                first.src_addr, first.src_port
+            ));
+            md.push_str(&format!(
+                "| Destination | {}:{} |\n",
+                first.dst_addr, first.dst_port
+            ));
+        }
+
+        md.push_str(&format!("| Messages | {} |\n", d.messages.len()));
+
+        if let Some(pdd) = d.timing.pdd_ms() {
+            md.push_str(&format!("| PDD | {pdd}ms |\n"));
+        }
+        if let Some(setup) = d.timing.setup_ms() {
+            md.push_str(&format!("| Setup | {setup}ms |\n"));
+        }
+
+        md.push_str(&format!(
+            "| Created | {} |\n\n",
+            d.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+
+        // Message flow table
+        if !d.messages.is_empty() {
+            md.push_str("### Message Flow\n\n");
+            md.push_str("| # | Time | Direction | Method/Status |\n");
+            md.push_str("|---|------|-----------|---------------|\n");
+
+            for (i, m) in d.messages.iter().enumerate() {
+                let direction = if m.is_request {
+                    "\u{2192}" // →
+                } else {
+                    "\u{2190}" // ←
+                };
+                let label = if m.is_request {
+                    m.method.as_deref().unwrap_or("?").to_string()
+                } else {
+                    match (m.status_code, m.reason.as_deref()) {
+                        (Some(code), Some(reason)) => format!("{code} {reason}"),
+                        (Some(code), None) => code.to_string(),
+                        _ => "?".to_string(),
+                    }
+                };
+                md.push_str(&format!(
+                    "| {} | {} | {} | {} |\n",
+                    i + 1,
+                    m.timestamp.format("%H:%M:%S%.3f"),
+                    direction,
+                    label,
+                ));
+            }
+            md.push('\n');
+        }
+    }
+
+    match std::fs::write(&path, &md) {
+        Ok(()) => format!(
+            "Saved {} dialogs (Markdown) to {}",
+            dialogs.len(),
+            path.display()
+        ),
+        Err(e) => format!("Save failed: {e}"),
+    }
+}
+
+/// WAV export stub — requires RTP payload storage not yet available.
+fn save_to_wav_path(_app: &App, _path_str: &str) -> String {
+    "WAV export: G.711 audio extraction requires RTP payload capture (planned for v0.4)".to_string()
+}
+
+/// Export a SIPp scenario XML from the current dialog's call flow.
+fn save_to_sipp_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let store = app.dialog_store.read();
+
+    // Pick dialog: current call flow view or first dialog
+    let dialog = if let View::CallFlow(ref call_id) = app.current_view {
+        store.get(call_id)
+    } else {
+        store.iter().next()
+    };
+
+    let dialog = match dialog {
+        Some(d) => d,
+        None => return "No dialog to export".to_string(),
+    };
+
+    if dialog.messages.is_empty() {
+        return "No messages in dialog".to_string();
+    }
+
+    // Determine the "caller" side from the first request
+    let caller_addr = dialog.messages.first().map(|m| (m.src_addr, m.src_port));
+
+    let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml.push_str("<!-- Generated by sipnab v0.3.1 -->\n");
+    xml.push_str(&format!(
+        "<scenario name=\"sipnab_{}\">\n",
+        dialog.method.to_lowercase()
+    ));
+
+    let mut prev_ts = dialog.messages[0].timestamp;
+    for m in &dialog.messages {
+        // Insert pause for gaps > 500ms
+        let gap_ms = (m.timestamp - prev_ts).num_milliseconds();
+        if gap_ms > 500 {
+            xml.push_str(&format!(
+                "\n  <pause milliseconds=\"{}\"/>\n",
+                gap_ms
+            ));
+        }
+        prev_ts = m.timestamp;
+
+        let is_from_caller = caller_addr
+            .map(|(addr, port)| m.src_addr == addr && m.src_port == port)
+            .unwrap_or(false);
+
+        if m.is_request {
+            if is_from_caller {
+                // Caller sends request
+                let method = m.method.as_deref().unwrap_or("UNKNOWN");
+                let ruri = m.request_uri.as_deref().unwrap_or("sip:[service]@[remote_ip]:[remote_port]");
+                let ruri_sipp = ruri
+                    .replace(&m.dst_addr.to_string(), "[remote_ip]")
+                    .replace(&m.dst_port.to_string(), "[remote_port]");
+
+                xml.push_str("\n  <send>\n    <![CDATA[\n");
+                xml.push_str(&format!("      {} {} SIP/2.0\r\n", method, ruri_sipp));
+                xml.push_str("      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\r\n");
+                xml.push_str(&format!(
+                    "      From: <sip:{}@[local_ip]>;tag=[call_number]\r\n",
+                    dialog.from_user.as_deref().unwrap_or("user")
+                ));
+                xml.push_str(&format!(
+                    "      To: <sip:{}@[remote_ip]>\r\n",
+                    dialog.to_user.as_deref().unwrap_or("service")
+                ));
+                xml.push_str("      Call-ID: [call_id]\r\n");
+                // Derive CSeq from the original message
+                let cseq = m.cseq().map_or_else(
+                    || format!("1 {method}"),
+                    |(num, meth)| format!("{num} {meth}"),
+                );
+                xml.push_str(&format!("      CSeq: {cseq}\r\n"));
+                xml.push_str("      Max-Forwards: 70\r\n");
+                xml.push_str("      Content-Length: [len]\r\n");
+                xml.push_str("    ]]>\n  </send>\n");
+            } else {
+                // Callee sends request (e.g., BYE from remote) — receive it
+                let method = m.method.as_deref().unwrap_or("UNKNOWN");
+                xml.push_str(&format!(
+                    "\n  <recv request=\"{method}\"/>\n"
+                ));
+            }
+        } else {
+            // Response
+            let code = m.status_code.unwrap_or(0);
+            if is_from_caller {
+                // Caller sending a response (unusual, but handle it)
+                xml.push_str(&format!(
+                    "\n  <send>\n    <![CDATA[\n      SIP/2.0 {} {}\r\n      [last_Via:]\r\n      [last_From:]\r\n      [last_To:]\r\n      [last_Call-ID:]\r\n      [last_CSeq:]\r\n      Content-Length: 0\r\n\n    ]]>\n  </send>\n",
+                    code,
+                    m.reason.as_deref().unwrap_or("OK"),
+                ));
+            } else {
+                // Receive response from remote
+                let optional = if (100..200).contains(&code) {
+                    " optional=\"true\""
+                } else {
+                    ""
+                };
+                xml.push_str(&format!(
+                    "\n  <recv response=\"{code}\"{optional}/>\n"
+                ));
+            }
+        }
+    }
+
+    xml.push_str("\n</scenario>\n");
+
+    match std::fs::write(&path, &xml) {
+        Ok(()) => format!(
+            "Saved SIPp scenario ({} messages) to {}",
+            dialog.messages.len(),
+            path.display()
+        ),
+        Err(e) => format!("Save failed: {e}"),
+    }
+}
+
+/// Export RTP/RTCP stream quality data as JSON.
+fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+    let stream_store = app.stream_store.read();
+    let streams: Vec<&crate::rtp::stream::RtpStream> = stream_store.iter().collect();
+
+    if streams.is_empty() {
+        return "No RTP streams to save".to_string();
+    }
+
+    let json_streams: Vec<serde_json::Value> = streams
+        .iter()
+        .map(|s| {
+            let total = s.packet_count + s.lost_packets;
+            let loss_pct = if total > 0 {
+                (s.lost_packets as f64 / total as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            let duration_secs = s
+                .last_seen
+                .signed_duration_since(s.first_seen)
+                .num_milliseconds() as f64
+                / 1000.0;
+
+            // Simplified E-model R-factor → MOS estimate
+            // R = 93.2 - loss% * 2.5 - jitter_ms * 0.1
+            let r_factor = (93.2 - loss_pct * 2.5 - s.jitter * 0.1).clamp(0.0, 100.0);
+            let mos = if r_factor < 6.5 {
+                1.0
+            } else {
+                1.0 + 0.035 * r_factor + r_factor * (r_factor - 60.0) * (100.0 - r_factor) * 7e-6
+            };
+            let mos = (mos * 10.0).round() / 10.0; // Round to 1 decimal
+
+            serde_json::json!({
+                "ssrc": format!("0x{:08x}", s.key.ssrc),
+                "src": s.key.src.to_string(),
+                "dst": s.key.dst.to_string(),
+                "codec": s.codec.as_deref().unwrap_or("unknown"),
+                "packets": s.packet_count,
+                "jitter_ms": (s.jitter * 10.0).round() / 10.0,
+                "loss_pct": (loss_pct * 10.0).round() / 10.0,
+                "mos": mos,
+                "duration_secs": (duration_secs * 10.0).round() / 10.0,
+                "cn_frames": s.cn_frames,
+                "silence_periods": s.silence_periods.len(),
+            })
+        })
+        .collect();
+
+    match serde_json::to_string_pretty(&json_streams) {
+        Ok(json_str) => match std::fs::write(&path, &json_str) {
+            Ok(()) => format!(
+                "Saved {} RTP streams (JSON) to {}",
+                streams.len(),
+                path.display()
+            ),
+            Err(e) => format!("Save failed: {e}"),
+        },
+        Err(e) => format!("JSON serialization failed: {e}"),
+    }
+}
+
 // ── Test helpers (public for integration tests) ────────────────────
 
 /// Test helper methods for App, available in test builds.
@@ -2809,7 +4145,7 @@ impl App {
     pub fn new_test() -> Self {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        Self::new(ds, ss)
+        Self::new(ds, ss, Theme::default(), Keymap::default())
     }
 
     /// Create an App whose dialog store already contains the given messages.
@@ -2825,7 +4161,7 @@ impl App {
                 store.process_message(msg);
             }
         }
-        Self::new(ds, ss)
+        Self::new(ds, ss, Theme::default(), Keymap::default())
     }
 
     /// Simulate a single keypress.
@@ -2865,6 +4201,11 @@ impl App {
         &self.call_list
     }
 
+    /// Return the current timestamp display mode.
+    pub fn timestamp_mode(&self) -> TimestampMode {
+        self.timestamp_mode
+    }
+
     /// Count dialogs visible after applying the active filter.
     pub fn visible_dialog_count(&self) -> usize {
         filtered_dialog_count(self)
@@ -2878,6 +4219,116 @@ impl App {
     /// Return a mutable reference to the filter dialog state (for tests).
     pub fn filter_dialog_state_mut(&mut self) -> &mut FilterDialogState {
         &mut self.filter_dialog
+    }
+
+    /// Return the current SDP display mode.
+    pub fn sdp_display_mode(&self) -> SdpDisplayMode {
+        self.sdp_display_mode
+    }
+
+    /// Return the current color mode.
+    pub fn color_mode(&self) -> ColorMode {
+        self.color_mode
+    }
+
+    /// Return whether the raw preview split is active.
+    pub fn raw_preview(&self) -> bool {
+        self.raw_preview
+    }
+
+    /// Return the raw preview pane percentage.
+    pub fn raw_preview_pct(&self) -> u16 {
+        self.raw_preview_pct
+    }
+
+    /// Return whether extended multi-leg flow is active.
+    pub fn extended_flow(&self) -> bool {
+        self.extended_flow
+    }
+
+    /// Return whether RTP is shown in the call flow.
+    pub fn show_rtp_in_flow(&self) -> bool {
+        self.show_rtp_in_flow
+    }
+
+    /// Return whether search mode is active.
+    pub fn search_active(&self) -> bool {
+        self.search_active
+    }
+
+    /// Return the current search query.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Return whether syntax highlighting is enabled.
+    pub fn syntax_highlight(&self) -> bool {
+        self.syntax_highlight
+    }
+
+    /// Return the current status error message, if any.
+    pub fn status_error(&self) -> Option<&str> {
+        self.status_error.as_deref()
+    }
+
+    /// Return the selected message index in the call flow.
+    pub fn selected_msg_index(&self) -> usize {
+        self.selected_msg_index
+    }
+
+    /// Return the detail panel scroll offset.
+    pub fn detail_scroll(&self) -> u16 {
+        self.detail_scroll
+    }
+
+    /// Return the raw message view scroll offset.
+    pub fn raw_msg_scroll(&self) -> u16 {
+        self.raw_msg_scroll
+    }
+
+    /// Return the call flow ladder scroll offset.
+    pub fn call_flow_scroll(&self) -> usize {
+        self.call_flow_scroll
+    }
+
+    /// Return the first selected message for diff comparison.
+    pub fn diff_selected_msg(&self) -> Option<usize> {
+        self.diff_selected_msg
+    }
+
+    /// Return the marked message index (for mark + delta).
+    pub fn mark_index(&self) -> Option<usize> {
+        self.mark_index
+    }
+
+    /// Return the set of expanded fold indices.
+    pub fn fold_expanded(&self) -> &HashSet<usize> {
+        &self.fold_expanded
+    }
+
+    /// Return the selected save format.
+    pub fn save_format(&self) -> SaveFormat {
+        self.save_format
+    }
+
+    /// Return the save dialog file path.
+    pub fn save_path(&self) -> &str {
+        &self.save_path
+    }
+
+    /// Return the save dialog cursor position.
+    pub fn save_cursor(&self) -> usize {
+        self.save_cursor
+    }
+
+    /// Return the file-open dialog path.
+    pub fn open_path(&self) -> &str {
+        &self.open_path
+    }
+
+    /// Return the file-open dialog cursor position.
+    pub fn open_cursor(&self) -> usize {
+        self.open_cursor
     }
 
     /// Override the save dialog path (for deterministic snapshot tests).
@@ -2900,7 +4351,7 @@ mod tests {
     fn app_default_view_is_call_list() {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        let app = App::new(ds, ss);
+        let app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
     }
@@ -2909,7 +4360,7 @@ mod tests {
     fn adaptive_timeout_active_vs_idle() {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        let mut app = App::new(ds, ss);
+        let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
 
         // Just created — should be active
         assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));

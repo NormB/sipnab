@@ -1,6 +1,6 @@
 [package]
 name = "sipnab"
-version = "0.1.0-alpha.1"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Norm Brandinger"]
@@ -55,10 +55,6 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 
-# Phase 6: gRPC
-tonic = { version = "0.12", optional = true }
-prost = { version = "0.13", optional = true }
-
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
@@ -76,12 +72,9 @@ harness = false
 default = ["tui"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc"]
-tls-wolfssl = ["tls"]
-tls-openssl = ["tls"]
 hep = []
-grpc = ["dep:tonic", "dep:prost"]
 api = ["dep:axum", "dep:tokio"]
-full = ["tui", "tls", "hep", "grpc", "api"]
+full = ["tui", "tls", "hep", "api"]
 
 [lib]
 name = "sipnab"

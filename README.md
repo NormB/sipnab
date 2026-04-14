@@ -24,11 +24,32 @@ security analysis.
 
 ## Prerequisites
 
+### Build Dependencies
+
 - **Rust 1.92+** (edition 2024)
 - **libpcap headers**
   - macOS: included with Xcode Command Line Tools (`xcode-select --install`)
   - Debian/Ubuntu: `apt install libpcap-dev`
   - Fedora/RHEL: `dnf install libpcap-devel`
+
+### Runtime Dependencies
+
+sipnab dynamically links to system libraries. These must be present on the
+target system:
+
+| Library | Package (Debian/Ubuntu) | Package (Fedora/RHEL) | Required |
+|---------|------------------------|-----------------------|----------|
+| `libpcap.so.1` | `libpcap0.8` | `libpcap` | always |
+
+Future feature flags may add additional runtime dependencies:
+
+| Feature | Library | Package (Debian/Ubuntu) | Package (Fedora/RHEL) |
+|---------|---------|------------------------|-----------------------|
+| `tls-openssl` | `libssl.so`, `libcrypto.so` | `libssl3` | `openssl-libs` |
+| `tls-wolfssl` | `libwolfssl.so` | -- | -- |
+
+The default `tls` feature uses pure-Rust cryptography (`ring`/`rustls`) and
+requires no additional system libraries.
 
 ## Build
 
@@ -38,6 +59,22 @@ cargo build --release
 
 The binary is at `target/release/sipnab`. Live capture requires root or
 `CAP_NET_RAW` (Linux) / BPF access (macOS).
+
+### Cross-Compilation
+
+Pre-built binaries for x86_64 and aarch64 Linux can be built from macOS using
+[cross](https://github.com/cross-rs/cross):
+
+```bash
+# x86_64 Linux (dynamically linked, requires libpcap on target)
+cross build --release --target x86_64-unknown-linux-gnu
+
+# aarch64 Linux
+cross build --release --target aarch64-unknown-linux-gnu
+```
+
+Cross-compilation requires Docker (via [Colima](https://github.com/abiosoft/colima),
+Docker Desktop, or similar) and `cross` (`cargo install cross`).
 
 ## Quick Start
 

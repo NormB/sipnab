@@ -6,7 +6,7 @@ expression: output
  Match Expression:     BPF Filter:
  Display Filter:
   # ▲  Method  From To   Source      Destination State      Msgs Date     PDD
->  1   INVITE  1003 1004 10.0.0.1    10.0.0.2    FAILED     2    12:00:00
+>  1   INVITE  1003 1004 10.0.0.1    10.0.0.2    FAILED     2    +0.000s
 
 
 

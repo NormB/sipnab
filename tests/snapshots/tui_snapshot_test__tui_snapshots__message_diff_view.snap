@@ -1,0 +1,34 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Selected: message 1 (press Space on another to diff)
+┌ Message 1 ─────────────────────────────────────┐┌ Message 2 ─────────────────────────────────────┐
+│ Message 1                                      ││ Message 2                                      │
+│INVITE sip:1002@example.com SIP/2.0             ││SIP/2.0 180 Ringing                             │
+│From: "1001" <sip:1001@example.com>;tag=t1      ││From: "Alice" <sip:1001@example.com>;tag=t1     │
+│To: "1002" <sip:1002@example.com>               ││To: "Bob" <sip:1002@example.com>;tag=t2         │
+│Call-ID: call-1@test                            ││Call-ID: call-1@test                            │
+│CSeq: 1 INVITE                                  ││CSeq: 1 INVITE                                  │
+│Content-Length: 0                               ││Content-Length: 0                               │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+│                                                ││                                                │
+└────────────────────────────────────────────────┘└────────────────────────────────────────────────┘
+Esc Back

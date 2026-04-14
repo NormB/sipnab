@@ -10,13 +10,14 @@ use std::collections::HashSet;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::FilterExpr;
+use super::TimestampMode;
 
 // ── Sort column ─────────────────────────────────────────────────────
 
@@ -291,14 +292,21 @@ pub fn render_call_list(
     state: &mut CallListState,
     store: &DialogStore,
     filter: Option<&FilterExpr>,
+    timestamp_mode: TimestampMode,
+    theme: &super::Theme,
 ) {
     // The entire area is used for the table (no title line)
     let table_area = area;
 
-    // sngrep header style: bold on cyan background
+    // sngrep header style: bold on header-color background
     let header_style = Style::default()
-        .bg(Color::Cyan)
+        .bg(theme.header)
         .add_modifier(Modifier::BOLD);
+
+    // Determine which column indices are visible
+    let vis_indices: Vec<usize> = (0..10)
+        .filter(|&i| state.visible_columns[i])
+        .collect();
 
     // Build header cells with sort indicator on the active sort column
     let sort_col_idx = state.sort_column_index();
@@ -319,23 +327,26 @@ pub fn render_call_list(
         "Date",
         "PDD",
     ];
-    let header_cells: Vec<Cell> = base_labels
+    let header_cells: Vec<Cell> = vis_indices
         .iter()
-        .enumerate()
-        .map(|(i, label)| {
+        .map(|&i| {
             if i == sort_col_idx {
-                Cell::from(format!("{}{}", label.trim(), sort_indicator))
+                Cell::from(format!("{}{}", base_labels[i].trim(), sort_indicator))
             } else {
-                Cell::from(*label)
+                Cell::from(base_labels[i])
             }
         })
         .collect();
 
     let header = Row::new(header_cells).style(header_style).bottom_margin(0);
 
-    // Dynamic column widths based on available terminal width.
-    // Fixed columns have minimum widths; From/To fill remaining space.
-    let widths = compute_column_widths(table_area.width);
+    // Dynamic column widths based on available terminal width,
+    // filtered to only include visible columns.
+    let all_widths = compute_column_widths(table_area.width);
+    let widths: Vec<Constraint> = vis_indices
+        .iter()
+        .map(|&i| all_widths[i])
+        .collect();
 
     let mut dialogs: Vec<_> = if let Some(filter) = filter {
         store
@@ -369,7 +380,7 @@ pub fn render_call_list(
                 Paragraph::new(
                     "\n  No SIP dialogs found.\n\n  If reading a pcap file, it may not contain SIP traffic.\n  Press 'q' to quit, F1 for help.",
                 )
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(theme.muted)),
                 msg_area,
             );
         }
@@ -396,18 +407,60 @@ pub fn render_call_list(
     let visible_end = (scroll_offset + visible_rows).min(total);
     let visible_dialogs = &dialogs[scroll_offset..visible_end];
 
+    // Reference timestamps for delta modes (from full sorted list, not just visible slice)
+    let first_ts = dialogs.first().map(|d| d.created_at);
+
     let rows: Vec<Row> = visible_dialogs
         .iter()
         .enumerate()
         .map(|(vis_idx, dialog)| {
             let idx = scroll_offset + vis_idx; // original index in full list
 
-            // Clean index — no icons. Diagnosis info is in call flow, not the list.
-            // sngrep doesn't show indicators in the index column.
-            let diag_icon = " ";
+            // Show selection marker for multi-selected rows
+            let diag_icon = if state.selected_rows.contains(&idx) {
+                "\u{25B8}" // ▸
+            } else {
+                " "
+            };
 
-            // Date column: HH:MM:SS of first message
-            let date_str = dialog.created_at.format("%H:%M:%S").to_string();
+            // Date column formatting based on timestamp mode
+            let date_str = match timestamp_mode {
+                TimestampMode::Absolute => {
+                    dialog.created_at.format("%H:%M:%S").to_string()
+                }
+                TimestampMode::DeltaPrev => {
+                    // Delta from previous dialog in the sorted list
+                    let full_idx = scroll_offset + vis_idx;
+                    let prev_ts = if full_idx > 0 {
+                        Some(dialogs[full_idx - 1].created_at)
+                    } else {
+                        None
+                    };
+                    match prev_ts {
+                        Some(prev) => format_delta(dialog.created_at - prev),
+                        None => "+0.000s".to_string(),
+                    }
+                }
+                TimestampMode::DeltaFirst => {
+                    match first_ts {
+                        Some(first) => format_delta(dialog.created_at - first),
+                        None => "+0.000s".to_string(),
+                    }
+                }
+                TimestampMode::Scaled => {
+                    // Scaled mode uses delta-prev in the call list
+                    let full_idx = scroll_offset + vis_idx;
+                    let prev_ts = if full_idx > 0 {
+                        Some(dialogs[full_idx - 1].created_at)
+                    } else {
+                        None
+                    };
+                    match prev_ts {
+                        Some(prev) => format_delta(dialog.created_at - prev),
+                        None => "+0.000s".to_string(),
+                    }
+                }
+            };
 
             let pdd = dialog
                 .timing
@@ -417,14 +470,14 @@ pub fn render_call_list(
 
             // Method cell colors (sngrep style)
             let method_style = match dialog.method.as_str() {
-                "INVITE" => Style::default().fg(Color::Green),
-                "BYE" => Style::default().fg(Color::Red),
-                "CANCEL" => Style::default().fg(Color::Yellow),
-                "REGISTER" => Style::default().fg(Color::Cyan),
+                "INVITE" => Style::default().fg(theme.good),
+                "BYE" => Style::default().fg(theme.bad),
+                "CANCEL" => Style::default().fg(theme.warning),
+                "REGISTER" => Style::default().fg(theme.header),
                 _ => Style::default(),
             };
 
-            let row = Row::new(vec![
+            let all_cells = [
                 Cell::from(Span::raw(format!("{}{}", diag_icon, idx + 1))),
                 Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                 Cell::from(Span::raw(dialog.from_user.as_deref().unwrap_or("-"))),
@@ -433,24 +486,29 @@ pub fn render_call_list(
                 Cell::from(Span::raw(dialog.dst_addr.to_string())),
                 Cell::from(Span::styled(
                     format_state(&dialog.state),
-                    state_style(&dialog.state),
+                    state_style(&dialog.state, theme),
                 )),
                 Cell::from(Span::raw(dialog.messages.len().to_string())),
                 Cell::from(Span::raw(date_str)),
                 Cell::from(Span::raw(pdd)),
-            ]);
+            ];
+            let visible_cells: Vec<Cell> = vis_indices
+                .iter()
+                .map(|&i| all_cells[i].clone())
+                .collect();
+            let row = Row::new(visible_cells);
 
             // Row style based on state
             let row_style = match dialog.state {
-                DialogState::Failed => Style::default().fg(Color::Red),
-                DialogState::InCall | DialogState::Active => Style::default().fg(Color::Green),
-                DialogState::Cancelled => Style::default().fg(Color::Yellow),
+                DialogState::Failed => Style::default().fg(theme.bad),
+                DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
+                DialogState::Cancelled => Style::default().fg(theme.warning),
                 _ => Style::default(),
             };
 
-            // If multi-selected, add underline
+            // If multi-selected, bold the row instead of underline
             let row_style = if state.selected_rows.contains(&idx) {
-                row_style.add_modifier(Modifier::UNDERLINED)
+                row_style.add_modifier(Modifier::BOLD)
             } else {
                 row_style
             };
@@ -560,6 +618,7 @@ fn format_state(state: &DialogState) -> &'static str {
         DialogState::Pending => "Pending",
         DialogState::Active => "Active",
         DialogState::Terminated => "Terminated",
+        DialogState::Transferring => "Transferring",
     }
 }
 
@@ -599,7 +658,7 @@ fn sort_dialogs(
 }
 
 /// Render the column selector popup as a centered overlay.
-pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListState) {
+pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListState, theme: &super::Theme) {
     let popup_width: u16 = 38;
     let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 5; // columns + borders + footer
     let w = popup_width.min(area.width);
@@ -613,7 +672,7 @@ pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListSta
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Columns ")
-        .style(Style::default().bg(Color::Black));
+        .style(Style::default().bg(theme.background));
 
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -628,7 +687,7 @@ pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListSta
         };
         let style = if i == state.column_selector_cursor {
             Style::default()
-                .fg(Color::Yellow)
+                .fg(theme.selected)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -641,22 +700,28 @@ pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListSta
     lines.push(ratatui::text::Line::from(""));
     lines.push(ratatui::text::Line::from(Span::styled(
         "  Space: toggle  Enter: apply",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(theme.muted),
     )));
 
     let visible_lines: Vec<ratatui::text::Line<'_>> =
         lines.into_iter().take(inner.height as usize).collect();
-    let para = Paragraph::new(visible_lines).style(Style::default().bg(Color::Black));
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(theme.background));
     frame.render_widget(para, inner);
 }
 
+/// Format a chrono TimeDelta as `+N.NNNs`.
+fn format_delta(delta: chrono::TimeDelta) -> String {
+    let ms = delta.num_milliseconds();
+    format!("+{:.3}s", ms as f64 / 1000.0)
+}
+
 /// Return a style for a dialog state label.
-fn state_style(state: &DialogState) -> Style {
+fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
     match state {
-        DialogState::Failed => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        DialogState::InCall | DialogState::Active => Style::default().fg(Color::Green),
-        DialogState::Cancelled => Style::default().fg(Color::Yellow),
-        DialogState::Completed | DialogState::Registered => Style::default().fg(Color::Cyan),
+        DialogState::Failed => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
+        DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
+        DialogState::Cancelled => Style::default().fg(theme.warning),
+        DialogState::Completed | DialogState::Registered => Style::default().fg(theme.header),
         _ => Style::default(),
     }
 }

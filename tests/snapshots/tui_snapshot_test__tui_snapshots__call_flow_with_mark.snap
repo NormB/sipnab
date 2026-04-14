@@ -1,0 +1,34 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Mark set
+             10.0.0.1:5060                    10.Δ +1.000s0 ┌ [2/4] 180 Ringing ───────────────────┐
+             │                                            │ │SIP/2.0 180 Ringing                   │
+     +0.000s │───────────────── INVITE ──────────────────▶│ │From: "Alice"                         │
+▎     +1.000s│◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 180 Ringing ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │<sip:1001@example.com>;tag=t1         │
+     +1.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │To: "Bob"                             │
+    +60.000s │─────────────────── BYE ───────────────────▶│ │<sip:1002@example.com>;tag=t2         │
+                                                            │Call-ID: call-1@test                  │
+                                                            │CSeq: 1 INVITE                        │
+                                                            │Content-Length: 0                     │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+             │                                            │ │                                      │
+             10.0.0.1:5060                    10.0.0.2:5060 └──────────────────────────────────────┘
+Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split

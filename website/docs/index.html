@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Documentation -- sipnab</title>
+  <meta name="description" content="sipnab documentation hub. Installation, CLI reference, configuration, keybindings, filter DSL, theme customization, and REST API.">
+  <link rel="stylesheet" href="../css/style.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="../" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="./">Docs</a>
+    <a href="https://github.com/normbrandinger/sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<div class="sidebar-overlay"></div>
+
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="../">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="install.html" class="indent">Installation</a>
+      <a href="../#quickstart" class="indent">Quick Start</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="cli.html" class="indent">CLI Flags</a>
+      <a href="config.html" class="indent">Configuration</a>
+      <a href="keybindings.html" class="indent">Keybindings</a>
+      <a href="filter-dsl.html" class="indent">Filter DSL</a>
+      <a href="theme.html" class="indent">Theme</a>
+      <a href="api.html" class="indent">REST API</a>
+    </div>
+  </nav>
+</aside>
+
+<main class="main">
+  <h1>Documentation</h1>
+
+  <p>Everything you need to capture, analyze, and secure SIP traffic with sipnab.</p>
+
+  <h2>Getting Started</h2>
+  <div class="feature-grid">
+    <a href="install.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Installation</strong> &mdash; Build from source, cargo install, Docker, packages
+    </a>
+    <a href="../#quickstart" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Quick Start</strong> &mdash; Capture your first call in 30 seconds
+    </a>
+  </div>
+
+  <h2>Reference</h2>
+  <div class="feature-grid">
+    <a href="cli.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>CLI Flags</strong> &mdash; All ~80 command-line options organized by group
+    </a>
+    <a href="config.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Configuration</strong> &mdash; TOML config file format with every section
+    </a>
+    <a href="keybindings.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Keybindings</strong> &mdash; TUI keyboard shortcuts by view
+    </a>
+    <a href="filter-dsl.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Filter DSL</strong> &mdash; 24-field filter language with regex support
+    </a>
+    <a href="theme.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>Theme</strong> &mdash; 11 color slots with hex RGB and named color support
+    </a>
+    <a href="api.html" class="feature-item" style="text-decoration:none;color:inherit;">
+      <span class="check" style="color:#58a6ff;">&#9654;</span> <strong>REST API</strong> &mdash; 8 endpoints with authentication, rate limiting, Prometheus
+    </a>
+  </div>
+
+  <h2>Feature Flags</h2>
+  <p>sipnab uses Cargo feature flags to control optional dependencies:</p>
+  <table>
+    <thead>
+      <tr><th>Flag</th><th>Description</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>default</code></td><td>Core: capture, SIP parsing, TUI, CLI, JSON output</td></tr>
+      <tr><td><code>tls</code></td><td>TLS decryption (pure-Rust via ring/aws-lc-rs)</td></tr>
+      <tr><td><code>tls-wolfssl</code></td><td>wolfSSL backend (FIPS 140-3, DTLS)</td></tr>
+      <tr><td><code>tls-openssl</code></td><td>OpenSSL backend (compatibility)</td></tr>
+      <tr><td><code>hep</code></td><td>HEP v2/v3 (Homer Encapsulation Protocol)</td></tr>
+      <tr><td><code>grpc</code></td><td>gRPC API (tonic/prost)</td></tr>
+      <tr><td><code>api</code></td><td>REST API + Prometheus (axum/tokio)</td></tr>
+      <tr><td><code>full</code></td><td>All of the above</td></tr>
+    </tbody>
+  </table>
+</main>
+
+<script src="../js/main.js"></script>
+</body>
+</html>

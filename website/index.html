@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>sipnab -- SIP &amp; RTP capture, analysis, and security</title>
+  <meta name="description" content="The modern replacement for sngrep + sipgrep, written in Rust. Interactive TUI, first-class RTP quality metrics, and security analysis.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="/" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="docs/">Docs</a>
+    <a href="https://github.com/normbrandinger/sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="/" class="active">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="docs/install.html" class="indent">Installation</a>
+      <a href="/#quickstart" class="indent">Quick Start</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="docs/cli.html" class="indent">CLI Flags</a>
+      <a href="docs/config.html" class="indent">Configuration</a>
+      <a href="docs/keybindings.html" class="indent">Keybindings</a>
+      <a href="docs/filter-dsl.html" class="indent">Filter DSL</a>
+      <a href="docs/theme.html" class="indent">Theme</a>
+      <a href="docs/api.html" class="indent">REST API</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<main class="main">
+
+  <!-- Hero -->
+  <section class="hero">
+    <h1 class="hero-title">sip<span class="accent">nab</span></h1>
+    <p class="hero-tagline">SIP &amp; RTP capture, analysis, and security</p>
+    <p class="hero-oneliner">The modern replacement for sngrep + sipgrep, written in Rust</p>
+    <div class="hero-install">
+      <pre><code>cargo install sipnab</code></pre>
+    </div>
+  </section>
+
+  <!-- Feature highlights -->
+  <section class="feature-highlights">
+    <div class="feature-card">
+      <h3>Interactive TUI</h3>
+      <p>sngrep-compatible call list with multi-participant ladder diagrams, SDP inspection, RTP stream overlay, and diff view.</p>
+    </div>
+    <div class="feature-card">
+      <h3>First-Class RTP</h3>
+      <p>Per-stream jitter, packet loss, MOS quality estimation, DTMF extraction, and one-way audio detection -- built in, on by default.</p>
+    </div>
+    <div class="feature-card">
+      <h3>Security Analysis</h3>
+      <p>Scanner detection and kill, registration flood alerting, digest credential leak detection, and STIR/SHAKEN validation.</p>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- Quick Start -->
+  <section id="quickstart">
+    <h2>Quick Start</h2>
+
+    <pre><code><span class="comment"># Capture live SIP traffic</span>
+sipnab
+
+<span class="comment"># Analyze a pcap file</span>
+sipnab -I capture.pcap
+
+<span class="comment"># CLI mode with JSON output</span>
+sipnab -N --json -I capture.pcap
+
+<span class="comment"># Filter specific calls</span>
+sipnab --filter "from.user == '1001' AND rtp.mos &lt; 3.0"</code></pre>
+
+    <p>Without arguments, sipnab opens the interactive TUI and captures on the default interface. Add <code>-N</code> for non-interactive (CLI) mode, <code>-I</code> to read pcap files, or combine both with <code>--json</code> for pipeline-friendly NDJSON output.</p>
+
+    <pre><code><span class="comment"># Show only problematic calls (retransmits, timeouts, errors)</span>
+sipnab --problems
+
+<span class="comment"># Detect SIP scanners</span>
+sipnab --kill-scanner
+
+<span class="comment"># Export RTP quality metrics to Prometheus</span>
+sipnab --metrics 0.0.0.0:9090
+
+<span class="comment"># Filter by From/To with regex</span>
+sipnab --from alice --to bob
+
+<span class="comment"># Write capture to pcap while viewing</span>
+sipnab -O output.pcap</code></pre>
+  </section>
+
+  <hr>
+
+  <!-- Feature grid -->
+  <section>
+    <h2>Features</h2>
+    <div class="feature-grid">
+      <div class="feature-item"><span class="check">&#10003;</span> Zero-copy SIP parser</div>
+      <div class="feature-item"><span class="check">&#10003;</span> Dialog state tracking</div>
+      <div class="feature-item"><span class="check">&#10003;</span> Filter DSL (24 fields, 7 operators)</div>
+      <div class="feature-item"><span class="check">&#10003;</span> TLS 1.2/1.3 decryption</div>
+      <div class="feature-item"><span class="check">&#10003;</span> SRTP decryption (SDES)</div>
+      <div class="feature-item"><span class="check">&#10003;</span> HEP v2/v3 support</div>
+      <div class="feature-item"><span class="check">&#10003;</span> REST API + Prometheus</div>
+      <div class="feature-item"><span class="check">&#10003;</span> Configurable theme + keybindings</div>
+      <div class="feature-item"><span class="check">&#10003;</span> Multi-leg B2BUA correlation</div>
+      <div class="feature-item"><span class="check">&#10003;</span> DTMF extraction (RFC 4733)</div>
+      <div class="feature-item"><span class="check">&#10003;</span> RTCP XR (RFC 3611) parsing</div>
+      <div class="feature-item"><span class="check">&#10003;</span> Mermaid diagram export</div>
+    </div>
+  </section>
+
+  <hr>
+
+  <!-- Architecture -->
+  <section>
+    <h2>Architecture</h2>
+    <p>One parser, one dialog engine, one reassembly path. The mode flag only affects output:</p>
+    <ul style="margin-bottom:1em;">
+      <li><code>sipnab</code> &mdash; interactive TUI (ratatui + crossterm)</li>
+      <li><code>sipnab -N</code> &mdash; CLI print mode (sipgrep-like)</li>
+      <li><code>sipnab -N --json</code> &mdash; NDJSON streaming for pipelines</li>
+    </ul>
+    <p>Capture threads own their reassembly state with no shared mutables. The main thread is the sole writer to the dialog and stream stores. Security features (scanner kill) run in isolated child processes. The API runs in its own process with no access to capture file descriptors or key material.</p>
+  </section>
+
+  <hr>
+
+  <!-- Performance -->
+  <section>
+    <h2>Performance</h2>
+    <table>
+      <thead>
+        <tr><th>Metric</th><th>Target</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>SIP parse throughput</td><td>&ge; 100K pps</td></tr>
+        <tr><td>RTP parse throughput</td><td>&ge; 500K pps</td></tr>
+        <tr><td>100K dialogs RSS</td><td>&le; 500 MB</td></tr>
+        <tr><td>50K streams RSS</td><td>&le; 200 MB</td></tr>
+        <tr><td>TUI redraw (100K dialogs)</td><td>&le; 5 ms</td></tr>
+        <tr><td>Idle CPU</td><td>&lt; 0.5% core</td></tr>
+        <tr><td>Default binary (musl, stripped)</td><td>&le; 5 MB</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+</main>
+
+<script src="js/main.js"></script>
+</body>
+</html>

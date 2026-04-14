@@ -309,6 +309,7 @@ mod tests {
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
+            is_retransmission: false,
         };
 
         assert!(msg.stir_shaken().is_none());
@@ -341,6 +342,7 @@ mod tests {
             src_port: 5060,
             dst_port: 5060,
             transport: TransportProto::Udp,
+            is_retransmission: false,
         };
 
         let info = msg

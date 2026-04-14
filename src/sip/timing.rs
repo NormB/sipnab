@@ -32,6 +32,10 @@ pub struct DialogTiming {
     pub bye_answered: Option<DateTime<Utc>>,
     /// Retransmission counts keyed by `"CSeq METHOD"` (e.g., `"1 INVITE"`).
     pub retransmit_counts: HashMap<String, u32>,
+    /// Timestamp of the REFER request initiating a transfer.
+    pub refer_sent_at: Option<DateTime<Utc>>,
+    /// Timestamp of the NOTIFY with `Subscription-State: terminated` completing a transfer.
+    pub transfer_completed_at: Option<DateTime<Utc>>,
 }
 
 impl DialogTiming {
@@ -101,6 +105,17 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
             }
             "BYE" if timing.bye_sent.is_none() => {
                 timing.bye_sent = Some(msg.timestamp);
+            }
+            "REFER" if timing.refer_sent_at.is_none() => {
+                timing.refer_sent_at = Some(msg.timestamp);
+            }
+            "NOTIFY" => {
+                if let Some(sub_state) = msg.header("Subscription-State")
+                    && sub_state.starts_with("terminated")
+                    && timing.transfer_completed_at.is_none()
+                {
+                    timing.transfer_completed_at = Some(msg.timestamp);
+                }
             }
             _ => {}
         }
@@ -312,5 +327,53 @@ mod tests {
         update_timing(&mut timing, &ringing2, "INVITE");
 
         assert_eq!(timing.pdd_ms(), Some(1000)); // First ringing, not second
+    }
+
+    #[test]
+    fn transfer_timing_fields_set() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(5);
+
+        // REFER sets refer_sent_at
+        let refer = {
+            let raw = build_sip(
+                "REFER sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: timing-test@example.com",
+                    "CSeq: 3 REFER",
+                    "Refer-To: <sip:carol@example.com>",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+                .expect("should parse REFER")
+        };
+        update_timing(&mut timing, &refer, "INVITE");
+        assert_eq!(timing.refer_sent_at, Some(t0));
+        assert!(timing.transfer_completed_at.is_none());
+
+        // NOTIFY with terminated sets transfer_completed_at
+        let notify = {
+            let raw = build_sip(
+                "NOTIFY sip:alice@example.com SIP/2.0",
+                &[
+                    "From: <sip:bob@example.com>;tag=t2",
+                    "To: <sip:alice@example.com>;tag=t1",
+                    "Call-ID: timing-test@example.com",
+                    "CSeq: 4 NOTIFY",
+                    "Subscription-State: terminated;reason=noresource",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+                .expect("should parse NOTIFY")
+        };
+        update_timing(&mut timing, &notify, "INVITE");
+        assert_eq!(timing.transfer_completed_at, Some(t1));
     }
 }

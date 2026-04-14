@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Dis┌ Save Capture ────────────────────────────────────────────────────────┐
+  # │                                                                      │D
+>  1│  Save to: /tmp/sipnab_20240615_120000.json                           │00ms
+   2│                                                                      │
+   3│  Packet Capture                                                      │
+    │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │
+    │      PCAP-NG Modern format with metadata and annotations             │
+    │                                                                      │
+    │  SIP-Specific                                                        │
+    │      TXT     Plain text SIP messages (sngrep-compatible)             │
+    │      SIPp    Replayable SIPp scenario for QA testing                 │
+    │                                                                      │
+    │  Structured/Analytics                                                │
+    │    ▸ JSON    Full call detail for ELK, ClickHouse, etc.              │
+    │      NDJSON  Streaming-friendly for large captures                   │
+    │      CSV     Summary rows for spreadsheets and BI tools              │
+    │                                                                      │
+    │  Reporting                                                           │
+    │      HTML    Self-contained ladder diagram, zero dependencies        │
+    └──────────────────────────────────────────────────────────────────────┘
+
+Enter Save  Tab Format  Esc Cancel
