@@ -4,31 +4,21 @@ Set FontSize 20
 Set Width 1200
 Set Height 700
 Set Padding 10
-Set TypingSpeed 80ms
+Set TypingSpeed 100ms
 Set Theme { "name": "sipnab", "black": "#0a0e14", "red": "#ff6666", "green": "#bae67e", "yellow": "#ffcc66", "blue": "#73d0ff", "magenta": "#d4bfff", "cyan": "#95e6cb", "white": "#cbccc6", "brightBlack": "#707a8c", "brightRed": "#ff6666", "brightGreen": "#bae67e", "brightYellow": "#ffcc66", "brightBlue": "#73d0ff", "brightMagenta": "#d4bfff", "brightCyan": "#95e6cb", "brightWhite": "#f0f0f0", "background": "#0a0e14", "foreground": "#cbccc6", "selectionBackground": "#1f2430", "cursorColor": "#ffcc66" }
 
-# Start with one pcap
 Type "sipnab -I tests/pcap-samples/sip-rtp-g711.pcap"
-Sleep 5s
+Sleep 2s
 Enter
-Sleep 4s
-
-# Open file dialog
+Sleep 5s
 Type "O"
-Sleep 2.5s
-
-# Type new path
+Sleep 3s
 Type "tests/pcap-samples/b2bua-asterisk.pcapng"
-Sleep 2.5s
-
-# Load it
+Sleep 3s
 Enter
+Sleep 6s
+Down
+Sleep 2s
+Down
+Sleep 2s
 Sleep 5s
-
-# Show the new data loaded
-Down
-Sleep 800ms
-Down
-Sleep 800ms
-
-Sleep 4s
