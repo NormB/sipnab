@@ -400,6 +400,7 @@ img { max-width: 100%; height: auto; }
   border: 1px solid $border;
   border-radius: 10px;
   overflow: hidden;
+  max-width: 100%;
   box-shadow: 0 20px 80px rgba(255, 204, 102, 0.08), 0 0 0 1px rgba(255, 204, 102, 0.1);
   text-align: left;
 }
@@ -843,6 +844,7 @@ img { max-width: 100%; height: auto; }
   flex: 1;
   min-width: 0;
   max-width: $doc-width;
+  overflow: hidden;
 
   // Heading anchors: offset for sticky nav
   h1, h2, h3, h4 {
@@ -944,7 +946,8 @@ img { max-width: 100%; height: auto; }
     border-collapse: collapse;
     margin-bottom: 1.5rem;
     font-size: 0.875rem;
-    display: table;
+    display: block;
+    overflow-x: auto;
 
     th, td {
       padding: 0.6rem 0.75rem;
