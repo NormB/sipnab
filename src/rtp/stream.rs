@@ -67,6 +67,8 @@ pub struct RtpStream {
     pub key: StreamKey,
     /// Codec name derived from SDP rtpmap or the static PT table.
     pub codec: Option<String>,
+    /// RTP clock rate in Hz (from SDP or static PT table, default 8000).
+    pub clock_rate: u32,
     /// RTP payload type number.
     pub payload_type: u8,
     /// Timestamp of the first packet seen for this stream.
@@ -95,7 +97,7 @@ pub struct RtpStream {
     pub quality_intervals: Vec<QualityInterval>,
     /// Sequence numbers of lost packets (capped at 1000 most recent entries).
     /// Used for burst/gap analysis.
-    pub lost_sequences: Vec<u16>,
+    pub lost_sequences: std::collections::VecDeque<u16>,
     /// Count of Comfort Noise (PT=13) frames received.
     pub cn_frames: u32,
     /// Detected silence periods (capped at 100).
@@ -124,9 +126,11 @@ impl RtpStream {
     /// Create a new stream from its first observed RTP packet.
     pub fn new(key: StreamKey, header: &RtpHeader, timestamp: DateTime<Utc>) -> Self {
         let codec = codec_from_pt(header.payload_type).map(String::from);
+        let clock_rate = clock_rate_from_pt(header.payload_type).unwrap_or(8000);
         Self {
             key,
             codec,
+            clock_rate,
             payload_type: header.payload_type,
             first_seen: timestamp,
             last_seen: timestamp,
@@ -140,7 +144,7 @@ impl RtpStream {
             orphaned: false,
             heuristic: false,
             quality_intervals: Vec::new(),
-            lost_sequences: Vec::new(),
+            lost_sequences: std::collections::VecDeque::new(),
             cn_frames: 0,
             silence_periods: Vec::new(),
             prev_arrival: Some(timestamp),
@@ -173,10 +177,10 @@ impl RtpStream {
                 // Record lost sequence numbers for burst/gap analysis (capped at 1000)
                 for offset in 0..gap.min(1000) {
                     if self.lost_sequences.len() >= 1000 {
-                        self.lost_sequences.remove(0);
+                        self.lost_sequences.pop_front();
                     }
                     self.lost_sequences
-                        .push(expected.wrapping_add(offset as u16));
+                        .push_back(expected.wrapping_add(offset as u16));
                 }
             }
         }
@@ -213,11 +217,7 @@ impl RtpStream {
             // Convert RTP timestamp difference to milliseconds.
             // Use wrapping subtraction for RTP timestamp rollover.
             let rtp_diff = header.timestamp.wrapping_sub(prev_rtp_ts) as f64;
-            // Approximate: assume 8kHz clock for common audio codecs.
-            // A proper implementation would use the clock rate from SDP,
-            // but 8kHz is correct for PCMU/PCMA/G729 and close enough
-            // for jitter trending on others.
-            let rtp_diff_ms = rtp_diff / 8.0;
+            let rtp_diff_ms = rtp_diff / (self.clock_rate as f64 / 1000.0);
             let d = (arrival_diff - rtp_diff_ms).abs();
             // J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16
             self.jitter += (d - self.jitter) / 16.0;
@@ -312,6 +312,22 @@ pub fn codec_from_pt(pt: u8) -> Option<&'static str> {
         13 => Some("CN"), // Comfort Noise
         18 => Some("G729"),
         34 => Some("H263"),
+        _ => None,
+    }
+}
+
+/// RTP clock rate in Hz for well-known static payload types (RFC 3551).
+/// Returns `None` for dynamic types (96-127) — caller must derive from SDP.
+pub fn clock_rate_from_pt(pt: u8) -> Option<u32> {
+    match pt {
+        0 => Some(8000),   // PCMU
+        3 => Some(8000),   // GSM
+        4 => Some(8000),   // G723
+        8 => Some(8000),   // PCMA
+        9 => Some(8000),   // G722 (RFC 3551: 8000 Hz clock despite 16kHz audio)
+        13 => Some(8000),  // CN
+        18 => Some(8000),  // G729
+        34 => Some(90000), // H263 (video)
         _ => None,
     }
 }
@@ -455,6 +471,69 @@ mod tests {
     }
 
     #[test]
+    fn clock_rate_from_pt_static_types() {
+        // PCMU and other narrowband audio codecs use 8000 Hz
+        assert_eq!(clock_rate_from_pt(0), Some(8000));
+        assert_eq!(clock_rate_from_pt(3), Some(8000));
+        assert_eq!(clock_rate_from_pt(4), Some(8000));
+        assert_eq!(clock_rate_from_pt(8), Some(8000));
+        assert_eq!(clock_rate_from_pt(9), Some(8000)); // G722: 8000 per RFC 3551
+        assert_eq!(clock_rate_from_pt(13), Some(8000));
+        assert_eq!(clock_rate_from_pt(18), Some(8000));
+        // H263 video uses 90000 Hz
+        assert_eq!(clock_rate_from_pt(34), Some(90000));
+    }
+
+    #[test]
+    fn clock_rate_from_pt_dynamic_returns_none() {
+        assert_eq!(clock_rate_from_pt(96), None);
+        assert_eq!(clock_rate_from_pt(111), None);
+        assert_eq!(clock_rate_from_pt(127), None);
+    }
+
+    #[test]
+    fn new_stream_clock_rate_pcmu() {
+        let key = make_key();
+        let hdr = make_header(100, 0, 0); // PT 0 = PCMU
+        let stream = RtpStream::new(key, &hdr, ts(0));
+        assert_eq!(stream.clock_rate, 8000);
+    }
+
+    #[test]
+    fn new_stream_clock_rate_h263() {
+        let key = make_key();
+        let hdr = make_header(100, 0, 34); // PT 34 = H263 (video)
+        let stream = RtpStream::new(key, &hdr, ts(0));
+        assert_eq!(stream.clock_rate, 90000);
+    }
+
+    #[test]
+    fn new_stream_clock_rate_dynamic_defaults_to_8000() {
+        let key = make_key();
+        let hdr = make_header(100, 0, 96); // PT 96 = dynamic
+        let stream = RtpStream::new(key, &hdr, ts(0));
+        // Dynamic types return None from clock_rate_from_pt; RtpStream::new
+        // falls back to 8000 via unwrap_or(8000).
+        assert_eq!(stream.clock_rate, 8000);
+    }
+
+    #[test]
+    fn jitter_uses_correct_clock_rate() {
+        // Verify jitter calculation uses the stream's clock_rate.
+        // With H263 (90000 Hz), 1 second = 90000 timestamp units.
+        let key = make_key();
+        let hdr = make_header(100, 0, 34); // H263
+        let mut stream = RtpStream::new(key, &hdr, ts(0));
+        assert_eq!(stream.clock_rate, 90000);
+
+        // Send a second packet: 1 second later in wall-clock, 90000 ts units later
+        // (perfect timing for 90 kHz clock -> jitter stays low).
+        let h = make_header(101, 90000, 34);
+        stream.update(&h, ts(1), 1000);
+        assert!(stream.jitter.is_finite());
+    }
+
+    #[test]
     fn sequence_wraparound_no_false_loss() {
         let key = make_key();
         let hdr = make_header(65534, 0, 0);
@@ -474,5 +553,65 @@ mod tests {
         let h = make_header(1, 480, 0);
         stream.update(&h, ts(3), 160);
         assert_eq!(stream.lost_packets, 0);
+    }
+
+    #[test]
+    fn lost_sequences_vecdeque_pop_front_over_1000() {
+        // Fill lost_sequences beyond the 1000-entry cap and verify
+        // pop_front eviction works correctly (no panic, correct count).
+        let key = make_key();
+        let hdr = make_header(0, 0, 0);
+        let mut stream = RtpStream::new(key, &hdr, ts(0));
+
+        // Create a huge gap: jump from seq 0 to seq 2001 (gap of 2000).
+        // The update loop caps recording at 1000 entries per gap.
+        let h = make_header(2001, 2001 * 160, 0);
+        stream.update(&h, ts(1), 160);
+
+        assert_eq!(stream.lost_packets, 2000, "should detect 2000 lost packets");
+        assert_eq!(
+            stream.lost_sequences.len(),
+            1000,
+            "lost_sequences should be capped at 1000"
+        );
+
+        // The oldest entry should be seq 1 (first lost), and the deque should
+        // contain the first 1000 lost seqs: 1..=1000
+        assert_eq!(
+            stream.lost_sequences.front().copied(),
+            Some(1),
+            "first entry should be seq 1"
+        );
+        assert_eq!(
+            stream.lost_sequences.back().copied(),
+            Some(1000),
+            "last entry should be seq 1000"
+        );
+
+        // Now create another gap that forces pop_front evictions.
+        // Jump from 2001 to 2502 (gap of 500). This should evict the
+        // 500 oldest entries and push 500 new ones.
+        let h = make_header(2502, 2502 * 160, 0);
+        stream.update(&h, ts(2), 160);
+
+        assert_eq!(stream.lost_packets, 2500, "total lost should be 2500");
+        assert_eq!(
+            stream.lost_sequences.len(),
+            1000,
+            "still capped at 1000 after second gap"
+        );
+
+        // After evicting 500 oldest (1..=500) and adding 500 new (2002..=2501),
+        // the deque should now span 501..=1000 ++ 2002..=2501
+        assert_eq!(
+            stream.lost_sequences.front().copied(),
+            Some(501),
+            "oldest should now be seq 501"
+        );
+        assert_eq!(
+            stream.lost_sequences.back().copied(),
+            Some(2501),
+            "newest should be seq 2501"
+        );
     }
 }

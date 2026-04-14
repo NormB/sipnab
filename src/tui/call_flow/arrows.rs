@@ -103,15 +103,21 @@ pub fn format_arrow_left(label: &str, width: usize, is_response: bool) -> String
     format!("{arrow_head}{left_str} {label} {right_str}")
 }
 
-/// Truncate a string to a maximum length, appending "..." if truncated.
+/// Truncate a string to a maximum display length, appending "..." if truncated.
+/// Uses char boundaries to avoid panics on multi-byte UTF-8 input.
 pub fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else if max_len > 3 {
-        format!("{}...", &s[..max_len - 3])
-    } else {
-        s[..max_len].to_string()
+        return s.to_string();
     }
+    if max_len <= 3 {
+        return s.chars().take(max_len).collect();
+    }
+    let mut end = max_len - 3;
+    // Walk back to a char boundary
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -168,5 +174,34 @@ mod tests {
         // Very narrow: width = 3
         let (arrow, _) = format_arrow("X", 10, 13, false);
         assert!(arrow.contains('\u{25B6}') || arrow.contains('\u{25C0}'));
+    }
+
+    // ── UTF-8 safe truncation ──────────────────────────────────────────
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_exact_fit() {
+        assert_eq!(truncate("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_multibyte_latin_no_panic() {
+        // "héllo wörld" contains 2-byte UTF-8 chars (é = 0xC3 0xA9, ö = 0xC3 0xB6)
+        let result = truncate("héllo wörld", 8);
+        assert!(result.len() <= 11); // Output bytes may vary due to multibyte
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_cjk_no_panic() {
+        // "日本語テスト" — each char is 3 bytes in UTF-8
+        let result = truncate("日本語テスト", 6);
+        // Should not panic. The result length in bytes may be <= 6 or just the
+        // chars that fit plus "...", depending on boundary walking.
+        assert!(!result.is_empty());
     }
 }

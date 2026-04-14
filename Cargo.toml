@@ -38,16 +38,16 @@ thiserror = "2"
 
 # Phase 3: TUI
 ratatui = { version = "0.30", optional = true }
-crossterm = { version = "0.28", optional = true }
+crossterm = { version = "0.29", optional = true }
 unicode-width = { version = "0.2", optional = true }
 
 # Phase 5: STIR/SHAKEN & analysis
-base64 = "0.22"
+base64 = { version = "0.22", optional = true }
 
 # Phase 5: TLS/Crypto (feature-gated)
 zeroize = { version = "1", features = ["derive"], optional = true }
 ring = { version = "0.17", optional = true }
-rustls = { version = "0.23", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
 aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", features = ["alloc"], optional = true }
 
@@ -66,7 +66,7 @@ console_error_panic_hook = { version = "0.1", optional = true }
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 insta = "1"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 expectrl = "0.8"
@@ -80,9 +80,9 @@ default = ["native", "tui"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
-tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc"]
+tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = []
-api = ["native", "dep:axum", "dep:tokio"]
+api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
 full = ["native", "tui", "tls", "hep", "api"]
 

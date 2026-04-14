@@ -2129,8 +2129,15 @@ fn render_statistics(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
 
-    let ds = app.dialog_store.read();
-    let ss = app.stream_store.read();
+    // Use try_read() to avoid blocking the TUI render loop
+    let ds = match app.dialog_store.try_read() {
+        Some(guard) => guard,
+        None => return,
+    };
+    let ss = match app.stream_store.try_read() {
+        Some(guard) => guard,
+        None => return,
+    };
 
     let dialog_count = ds.len();
     let active_count = ds.active_count();
@@ -3082,16 +3089,32 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Backspace => {
             if app.save_cursor > 0 {
-                app.save_cursor -= 1;
-                app.save_path.remove(app.save_cursor);
+                // Find the previous char boundary
+                let prev = app.save_path[..app.save_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                app.save_path.remove(prev);
+                app.save_cursor = prev;
             }
         }
         KeyCode::Left => {
-            app.save_cursor = app.save_cursor.saturating_sub(1);
+            if app.save_cursor > 0 {
+                app.save_cursor = app.save_path[..app.save_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+            }
         }
         KeyCode::Right => {
             if app.save_cursor < app.save_path.len() {
-                app.save_cursor += 1;
+                app.save_cursor = app.save_path[app.save_cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| app.save_cursor + i)
+                    .unwrap_or(app.save_path.len());
             }
         }
         KeyCode::Home => {
@@ -3102,7 +3125,7 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c) => {
             app.save_path.insert(app.save_cursor, c);
-            app.save_cursor += 1;
+            app.save_cursor += c.len_utf8();
         }
         _ => {}
     }
@@ -3127,16 +3150,31 @@ fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Backspace => {
             if app.open_cursor > 0 {
-                app.open_cursor -= 1;
-                app.open_path.remove(app.open_cursor);
+                let prev = app.open_path[..app.open_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                app.open_path.remove(prev);
+                app.open_cursor = prev;
             }
         }
         KeyCode::Left => {
-            app.open_cursor = app.open_cursor.saturating_sub(1);
+            if app.open_cursor > 0 {
+                app.open_cursor = app.open_path[..app.open_cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+            }
         }
         KeyCode::Right => {
             if app.open_cursor < app.open_path.len() {
-                app.open_cursor += 1;
+                app.open_cursor = app.open_path[app.open_cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| app.open_cursor + i)
+                    .unwrap_or(app.open_path.len());
             }
         }
         KeyCode::Home => {
@@ -3147,7 +3185,7 @@ fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char(c) => {
             app.open_path.insert(app.open_cursor, c);
-            app.open_cursor += 1;
+            app.open_cursor += c.len_utf8();
         }
         _ => {}
     }
@@ -3300,40 +3338,22 @@ fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
         KeyCode::Down => {
             if app.filter_dialog.is_checkbox_focused() {
                 app.filter_dialog.checkbox_down();
-                app.status_error = Some(format!(
-                    "CB_DOWN ff={}", app.filter_dialog.focused_field()
-                ));
             } else {
                 app.filter_dialog.focus_next();
-                app.status_error = Some(format!(
-                    "FOCUS_NEXT ff={}", app.filter_dialog.focused_field()
-                ));
             }
         }
         KeyCode::Up => {
             if app.filter_dialog.is_checkbox_focused() {
                 app.filter_dialog.checkbox_up();
-                app.status_error = Some(format!(
-                    "CB_UP ff={}", app.filter_dialog.focused_field()
-                ));
             } else {
                 app.filter_dialog.focus_prev();
-                app.status_error = Some(format!(
-                    "FOCUS_PREV ff={}", app.filter_dialog.focused_field()
-                ));
             }
         }
         KeyCode::Right if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.checkbox_right();
-            app.status_error = Some(format!(
-                "CB_RIGHT ff={}", app.filter_dialog.focused_field()
-            ));
         }
         KeyCode::Left if app.filter_dialog.is_checkbox_focused() => {
             app.filter_dialog.checkbox_left();
-            app.status_error = Some(format!(
-                "CB_LEFT ff={}", app.filter_dialog.focused_field()
-            ));
         }
         KeyCode::F(9) => {
             // F9 clears all fields and the active filter, closes popup
@@ -3482,8 +3502,9 @@ fn filtered_dialog_count(app: &App) -> usize {
 /// the SipMessage metadata.
 fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packet {
     let payload = &msg.raw;
-    let udp_len: u16 = (8 + payload.len()) as u16;
-    let ip_total_len: u16 = 20 + udp_len;
+    // Saturate instead of silently truncating for large payloads
+    let udp_len: u16 = u16::try_from(8 + payload.len()).unwrap_or(u16::MAX);
+    let ip_total_len: u16 = 20u16.saturating_add(udp_len);
     let mut pkt = Vec::with_capacity(14 + ip_total_len as usize);
 
     // Ethernet header (14 bytes)
@@ -4443,5 +4464,46 @@ mod tests {
             View::CallFlow("abc".to_string()),
             View::CallFlow("def".to_string())
         );
+    }
+
+    #[test]
+    fn build_synthetic_packet_large_payload_no_panic() {
+        // Verify that a SIP message with a raw payload exceeding 65535 bytes
+        // does not panic due to u16 overflow in UDP/IP length fields.
+        // The fix uses u16 saturation (unwrap_or(u16::MAX) / saturating_add).
+        use std::net::{IpAddr, Ipv4Addr};
+        use crate::capture::parse::TransportProto;
+        use crate::sip::SipMessage;
+        use chrono::Utc;
+
+        let large_body = vec![b'X'; 70_000]; // > u16::MAX (65535)
+        let msg = SipMessage {
+            raw: large_body,
+            is_request: true,
+            method: Some("INVITE".to_string()),
+            status_code: None,
+            reason: None,
+            request_uri: Some("sip:test@example.com".to_string()),
+            headers: vec![],
+            body: vec![],
+            parse_error: false,
+            timestamp: Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+            is_retransmission: false,
+        };
+
+        // This must not panic — the u16 fields saturate instead of overflowing.
+        let pkt = build_synthetic_packet(&msg);
+
+        // Sanity: packet should contain the Ethernet + IP + UDP headers plus payload
+        assert!(pkt.data.len() > 42, "packet must contain headers + payload");
+        // IP total length field (bytes 16-17 of the packet, offset 14+2 into Ethernet)
+        let ip_total = u16::from_be_bytes([pkt.data[16], pkt.data[17]]);
+        // With saturation, udp_len = u16::MAX and ip_total_len = 20.saturating_add(u16::MAX) = u16::MAX
+        assert_eq!(ip_total, u16::MAX, "IP total length should saturate to u16::MAX");
     }
 }

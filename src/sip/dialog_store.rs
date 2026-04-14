@@ -5,12 +5,16 @@
 //! dialog creation, state machine updates, timing, SDP tracking,
 //! retransmission detection, and capacity-based eviction.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use super::SipMessage;
 use super::dialog::{DialogState, SipDialog, update_state};
 use super::sdp_timeline::track_sdp;
 use super::timing::update_timing;
+
+/// Maximum messages stored per dialog (D17 defense-in-depth).
+/// Covers normal calls with retransmissions and re-INVITEs.
+const MAX_MESSAGES_PER_DIALOG: usize = 500;
 
 /// Reason a dialog was correlated to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,8 +44,8 @@ pub struct CorrelationResult<'a> {
 /// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
 /// to make room for new ones.
 pub struct DialogStore {
-    /// All tracked dialogs, in insertion order.
-    dialogs: Vec<SipDialog>,
+    /// All tracked dialogs, in insertion order (O(1) front eviction).
+    dialogs: VecDeque<SipDialog>,
     /// Call-ID to index mapping for fast lookup.
     index: HashMap<String, usize>,
     /// Maximum number of dialogs to retain.
@@ -61,7 +65,7 @@ impl DialogStore {
     ///   when at capacity.
     pub fn new(max_dialogs: usize, rotate: bool) -> Self {
         Self {
-            dialogs: Vec::with_capacity(max_dialogs.min(1024)),
+            dialogs: VecDeque::with_capacity(max_dialogs.min(1024)),
             index: HashMap::with_capacity(max_dialogs.min(1024)),
             max_dialogs,
             rotate,
@@ -96,9 +100,11 @@ impl DialogStore {
                 if let Some(key) = cseq_key {
                     *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
                 }
-                // Mark as retransmission but store it for ladder display
+                // Mark as retransmission but store it for ladder display (capped)
                 msg.is_retransmission = true;
-                dialog.messages.push(msg);
+                if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG {
+                    dialog.messages.push(msg);
+                }
                 dialog.updated_at = dialog.messages.last().map(|m| m.timestamp).unwrap_or(dialog.updated_at);
                 return;
             }
@@ -127,9 +133,11 @@ impl DialogStore {
             //     }
             // }
 
-            // Record the message (move instead of clone)
+            // Record the message (move instead of clone, capped per D17)
             let ts = msg.timestamp;
-            dialog.messages.push(msg);
+            if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG {
+                dialog.messages.push(msg);
+            }
             dialog.updated_at = ts;
         } else {
             // New dialog — check capacity
@@ -151,7 +159,7 @@ impl DialogStore {
 
                 let idx = self.dialogs.len();
                 self.index.insert(call_id, idx);
-                self.dialogs.push(dialog);
+                self.dialogs.push_back(dialog);
             }
         }
     }
@@ -196,6 +204,7 @@ impl DialogStore {
         F: Fn(&SipDialog) -> bool,
     {
         self.dialogs.retain(|d| predicate(d));
+        // Rebuild index after removal — indices may have shifted
         self.index.clear();
         for (idx, dialog) in self.dialogs.iter().enumerate() {
             self.index.insert(dialog.call_id.clone(), idx);
@@ -243,7 +252,7 @@ impl DialogStore {
             .collect();
 
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
-        let src_branches: Vec<&str> = dialog
+        let src_branches: std::collections::HashSet<&str> = dialog
             .messages
             .iter()
             .filter(|m| m.is_request && m.method.as_deref() == Some("INVITE"))
@@ -288,9 +297,9 @@ impl DialogStore {
                     .filter_map(|v| extract_via_branch(v))
                     .collect();
 
-                let branch_overlap = src_branches
+                let branch_overlap = candidate_branches
                     .iter()
-                    .any(|b| candidate_branches.contains(b));
+                    .any(|b| src_branches.contains(b));
 
                 if branch_overlap {
                     results.push(CorrelationResult {
@@ -338,22 +347,17 @@ impl DialogStore {
             .collect()
     }
 
-    /// Evict the oldest dialog (first in the vector) to make room.
+    /// Evict the oldest dialog (front of the deque) to make room.
     ///
-    /// Uses `remove(0)` + full index rebuild to preserve FIFO insertion
-    /// order. O(n) but only runs at most once per new dialog at capacity.
+    /// O(1) pop_front + O(n) index decrement. No element shifting or
+    /// string cloning — just subtract 1 from every index value.
     fn evict_oldest(&mut self) {
-        if self.dialogs.is_empty() {
-            return;
-        }
-
-        let removed = self.dialogs.remove(0);
-        self.index.remove(&removed.call_id);
-
-        // Rebuild index — all indices shifted down by 1
-        self.index.clear();
-        for (i, d) in self.dialogs.iter().enumerate() {
-            self.index.insert(d.call_id.clone(), i);
+        if let Some(removed) = self.dialogs.pop_front() {
+            self.index.remove(&removed.call_id);
+            // All remaining indices shifted down by 1
+            for val in self.index.values_mut() {
+                *val -= 1;
+            }
         }
     }
 }
@@ -943,5 +947,135 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].score, 100);
         assert_eq!(results[0].reason, CorrelationReason::XCallId);
+    }
+
+    // ── VecDeque eviction with max_dialogs=3 ───────────────────────────
+
+    #[test]
+    fn vecdeque_eviction_max3_rotate() {
+        let mut store = DialogStore::new(3, true);
+        let t0 = base_ts();
+
+        // Add 4 dialogs — the first should be evicted
+        store.process_message(make_invite_msg("evict-1@test", t0));
+        store.process_message(make_invite_msg("evict-2@test", t0 + TimeDelta::seconds(1)));
+        store.process_message(make_invite_msg("evict-3@test", t0 + TimeDelta::seconds(2)));
+        assert_eq!(store.len(), 3);
+
+        store.process_message(make_invite_msg("evict-4@test", t0 + TimeDelta::seconds(3)));
+        assert_eq!(store.len(), 3);
+
+        // First dialog evicted
+        assert!(store.get("evict-1@test").is_none(), "evict-1 should have been evicted");
+
+        // Remaining 3 accessible by Call-ID
+        assert!(store.get("evict-2@test").is_some(), "evict-2 should still be present");
+        assert!(store.get("evict-3@test").is_some(), "evict-3 should still be present");
+        assert!(store.get("evict-4@test").is_some(), "evict-4 should still be present");
+
+        // Verify index correctness: get_mut also works (proves indices are correct)
+        let d2 = store.get_mut("evict-2@test").expect("evict-2 should be mutable");
+        assert_eq!(d2.call_id, "evict-2@test");
+        let d3 = store.get_mut("evict-3@test").expect("evict-3 should be mutable");
+        assert_eq!(d3.call_id, "evict-3@test");
+        let d4 = store.get_mut("evict-4@test").expect("evict-4 should be mutable");
+        assert_eq!(d4.call_id, "evict-4@test");
+
+        // Verify iteration order: oldest-remaining first
+        let call_ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(call_ids, vec!["evict-2@test", "evict-3@test", "evict-4@test"]);
+    }
+
+    // ── Message cap per dialog ─────────────────────────────────────────
+
+    #[test]
+    fn message_cap_at_max_messages_per_dialog() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Create a dialog with the initial INVITE
+        store.process_message(make_invite_msg("capped@test", t0));
+
+        // Push 600 additional messages (200 OK with incrementing CSeq to avoid
+        // retransmission detection). The first message is the INVITE (CSeq 1),
+        // so start CSeq at 2.
+        for i in 2..602u32 {
+            let raw = build_sip(
+                "SIP/2.0 200 OK",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: capped@test",
+                    &format!("CSeq: {i} INVITE"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = parse_sip(
+                &raw,
+                t0 + TimeDelta::milliseconds(i as i64),
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse");
+            store.process_message(msg);
+        }
+
+        let dialog = store.get("capped@test").expect("dialog should exist");
+        assert_eq!(
+            dialog.messages.len(),
+            MAX_MESSAGES_PER_DIALOG,
+            "messages should be capped at {MAX_MESSAGES_PER_DIALOG}"
+        );
+    }
+
+    // ── Via branch HashSet correlation smoke test ───────────────────────
+
+    #[test]
+    fn via_branch_correlation_smoke_test() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Two dialogs sharing a Via branch
+        store.process_message(make_invite_with_via_branch(
+            "smoke-a@test",
+            "z9hG4bK-smoke-branch",
+            t0,
+        ));
+        store.process_message(make_invite_with_via_branch(
+            "smoke-b@test",
+            "z9hG4bK-smoke-branch",
+            t0 + TimeDelta::seconds(1),
+        ));
+
+        // A third dialog with a DIFFERENT branch — should NOT correlate
+        store.process_message(make_invite_with_via_branch(
+            "smoke-c@test",
+            "z9hG4bK-different-branch",
+            t0 + TimeDelta::seconds(5), // >2s apart to avoid timing heuristic
+        ));
+
+        // smoke-a should correlate with smoke-b (branch overlap) and smoke-b (timing),
+        // but NOT with smoke-c
+        let results = store.find_correlated_scored("smoke-a@test");
+        let correlated_ids: Vec<&str> = results.iter().map(|r| r.dialog.call_id.as_str()).collect();
+        assert!(
+            correlated_ids.contains(&"smoke-b@test"),
+            "smoke-b should be correlated via branch"
+        );
+        assert!(
+            !correlated_ids.contains(&"smoke-c@test"),
+            "smoke-c should NOT be correlated (different branch, >2s apart)"
+        );
+
+        // Verify the branch match produces score=80
+        let branch_result = results.iter().find(|r| r.dialog.call_id == "smoke-b@test");
+        assert!(branch_result.is_some());
+        // Score could be 80 (branch) — timing heuristic is also eligible but branch wins first
+        assert_eq!(branch_result.unwrap().score, 80);
+        assert_eq!(branch_result.unwrap().reason, CorrelationReason::ViaBranch);
     }
 }

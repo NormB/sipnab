@@ -20,6 +20,7 @@ pub mod fail2ban;
 pub mod hexdump;
 pub mod json;
 pub mod prometheus;
+#[cfg(feature = "api")]
 pub mod prometheus_server;
 pub mod wireshark;
 

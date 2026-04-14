@@ -1,6 +1,6 @@
 base_url = "https://www.sipnab.com"
 title = "sipnab"
-description = "SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust."
+description = "SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust."
 default_language = "en"
 compile_sass = true
 build_search_index = true
@@ -25,3 +25,4 @@ theme = "ayu-dark"
 version = "0.3.1"
 github_url = "https://github.com/NormB/sipnab"
 author = "Norm Brandinger"
+linkedin_url = "https://www.linkedin.com/in/nbrandinger"
