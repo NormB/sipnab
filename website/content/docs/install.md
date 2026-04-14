@@ -1,10 +1,7 @@
 +++
 title = "Installation"
-description = "How to install sipnab: pre-built binaries, cargo, package managers, Docker, and building from source."
 weight = 1
-
-[extra]
-weight = 1
+description = "Install sipnab from pre-built binaries, cargo, package managers, or source."
 +++
 
 ## Prerequisites
@@ -118,7 +115,7 @@ Target binary size (musl, stripped): <= 5 MB.
 
 ## Cross-Compilation
 
-sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation. Supported targets are configured in `Cross.toml`:
+sipnab uses [cross](https://github.com/cross-rs/cross) for cross-compilation:
 
 ```bash
 # Install cross
@@ -130,8 +127,6 @@ cross build --release --features full --target aarch64-unknown-linux-gnu
 # Build for x86_64 Linux
 cross build --release --features full --target x86_64-unknown-linux-gnu
 ```
-
-The cross images automatically install the required `libpcap-dev` headers for the target architecture.
 
 ## Docker
 

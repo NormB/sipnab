@@ -1,59 +1,51 @@
 {% extends "base.html" %}
 
-{% block title %}{{ page.title }} -- {{ config.title }}{% endblock %}
-{% block description %}{{ page.description | default(value=config.description) }}{% endblock %}
+{% block title %}{{ page.title }} -- {{ config.title }}{% endblock title %}
+{% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
 
 {% block content %}
-<h1>{{ page.title }}</h1>
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>{{ page.title }}</h1>
+    {{ page.content | safe }}
 
-{% if page.toc %}
-<nav class="toc">
-  <h4>On this page</h4>
-  <ul>
-    {% for h2 in page.toc %}
-    <li><a href="#{{ h2.id }}">{{ h2.title }}</a>
-      {% if h2.children %}
+    <!-- Prev/Next nav -->
+    {% if page.lower or page.higher %}
+    <nav class="doc-prevnext">
+      {% if page.lower %}
+      <a href="{{ page.lower.permalink }}" class="doc-prev">&larr; {{ page.lower.title }}</a>
+      {% else %}
+      <span></span>
+      {% endif %}
+      {% if page.higher %}
+      <a href="{{ page.higher.permalink }}" class="doc-next">{{ page.higher.title }} &rarr;</a>
+      {% else %}
+      <span></span>
+      {% endif %}
+    </nav>
+    {% endif %}
+  </article>
+
+  <!-- Mini TOC -->
+  {% if page.toc | length > 0 %}
+  <aside class="doc-toc">
+    <div class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
       <ul>
-        {% for h3 in h2.children %}
-        <li><a href="#{{ h3.id }}">{{ h3.title }}</a></li>
+        {% for h2 in page.toc %}
+        <li><a href="#{{ h2.id }}">{{ h2.title }}</a>
+          {% if h2.children | length > 0 %}
+          <ul>
+            {% for h3 in h2.children %}
+            <li><a href="#{{ h3.id }}">{{ h3.title }}</a></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </li>
         {% endfor %}
       </ul>
-      {% endif %}
-    </li>
-    {% endfor %}
-  </ul>
-</nav>
-{% endif %}
-
-{{ page.content | safe }}
-
-{% set section = get_section(path="docs/_index.md") %}
-{% set pages = section.pages | sort(attribute="extra.weight") %}
-{% set_global prev_page = false %}
-{% set_global next_page = false %}
-{% set_global found = false %}
-{% for p in pages %}
-  {% if found and not next_page %}
-    {% set_global next_page = p %}
+    </div>
+  </aside>
   {% endif %}
-  {% if p.permalink == page.permalink %}
-    {% set_global found = true %}
-  {% endif %}
-  {% if not found %}
-    {% set_global prev_page = p %}
-  {% endif %}
-{% endfor %}
-
-<nav class="page-nav">
-  {% if prev_page %}
-  <a href="{{ prev_page.permalink }}" class="page-nav-prev">&larr; {{ prev_page.title }}</a>
-  {% else %}
-  <span></span>
-  {% endif %}
-  {% if next_page %}
-  <a href="{{ next_page.permalink }}" class="page-nav-next">{{ next_page.title }} &rarr;</a>
-  {% else %}
-  <span></span>
-  {% endif %}
-</nav>
-{% endblock %}
+</div>
+{% endblock content %}

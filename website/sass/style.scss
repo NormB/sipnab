@@ -1,0 +1,1027 @@
+// =============================================================================
+// sipnab.com -- Ayu Mirage inspired palette
+// =============================================================================
+
+// -- Palette --
+$bg:          #0a0e14;
+$surface:     #1f2430;
+$surface-2:   #242936;
+$text:        #cbccc6;
+$text-dim:    #707a8c;
+$accent:      #ffcc66;
+$accent-glow: rgba(255, 204, 102, 0.12);
+$link:        #73d0ff;
+$code-green:  #bae67e;
+$border:      #2d3640;
+$border-light:#3d4754;
+$error:       #ff6666;
+$good:        #bae67e;
+$warn:        #ffcc66;
+$bad:         #ff6666;
+
+// -- Typography --
+$font-sans:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+$font-mono:  'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Consolas, monospace;
+
+// -- Sizes --
+$nav-height:  60px;
+$max-width:   1200px;
+$doc-width:   820px;
+$toc-width:   220px;
+
+// =============================================================================
+// Reset & Base
+// =============================================================================
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: $font-sans;
+  font-weight: 400;
+  line-height: 1.7;
+  color: $text;
+  background: $bg;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main { flex: 1; }
+
+a {
+  color: $link;
+  text-decoration: none;
+  transition: color 0.15s ease;
+  &:hover { color: lighten($link, 12%); }
+}
+
+img { max-width: 100%; height: auto; }
+
+// =============================================================================
+// Navigation
+// =============================================================================
+
+.topnav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba($bg, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid $border;
+  height: $nav-height;
+}
+
+.nav-inner {
+  max-width: $max-width;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+}
+
+.nav-logo {
+  font-family: $font-mono;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: $accent;
+  letter-spacing: -0.02em;
+  &:hover { color: $accent; }
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex: 1;
+
+  a {
+    color: $text-dim;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.375rem 0.75rem;
+    border-radius: 6px;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+
+    &:hover {
+      color: $text;
+      background: rgba($text, 0.06);
+    }
+
+    &.active {
+      color: $accent;
+      background: $accent-glow;
+    }
+  }
+}
+
+.nav-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.search-trigger {
+  background: none;
+  border: 1px solid $border;
+  border-radius: 6px;
+  color: $text-dim;
+  padding: 0.375rem 0.5rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  transition: border-color 0.15s, color 0.15s;
+  &:hover { border-color: $text-dim; color: $text; }
+}
+
+.nav-github {
+  color: $text-dim;
+  display: flex;
+  align-items: center;
+  &:hover { color: $text; }
+}
+
+.nav-toggle {
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  span {
+    width: 20px;
+    height: 2px;
+    background: $text-dim;
+    border-radius: 1px;
+    transition: background 0.15s;
+  }
+  &:hover span { background: $text; }
+}
+
+// =============================================================================
+// Search overlay
+// =============================================================================
+
+.search-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+
+  &.active { display: flex; }
+}
+
+.search-modal {
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 600px;
+  overflow: hidden;
+  box-shadow: 0 16px 64px rgba(0, 0, 0, 0.5);
+}
+
+.search-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  border-bottom: 1px solid $border;
+  color: $text-dim;
+
+  input {
+    flex: 1;
+    background: none;
+    border: none;
+    color: $text;
+    font-size: 1rem;
+    font-family: $font-sans;
+    outline: none;
+    &::placeholder { color: $text-dim; }
+  }
+
+  kbd {
+    font-family: $font-sans;
+    font-size: 0.7rem;
+    color: $text-dim;
+    background: $bg;
+    border: 1px solid $border;
+    border-radius: 4px;
+    padding: 0.15rem 0.4rem;
+  }
+}
+
+.search-results {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: block;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid $border;
+  transition: background 0.1s;
+  &:last-child { border-bottom: none; }
+  &:hover { background: rgba($accent, 0.06); }
+}
+
+.search-result-title {
+  display: block;
+  font-weight: 600;
+  color: $text;
+  font-size: 0.925rem;
+}
+
+.search-result-body {
+  display: block;
+  color: $text-dim;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  margin-top: 0.15rem;
+}
+
+.search-no-results {
+  padding: 2rem 1.25rem;
+  color: $text-dim;
+  text-align: center;
+}
+
+// =============================================================================
+// Hero
+// =============================================================================
+
+.hero {
+  padding: 6rem 1.5rem 3rem;
+  text-align: center;
+}
+
+.hero-inner {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.hero-title {
+  font-family: $font-mono;
+  font-size: 3.5rem;
+  font-weight: 700;
+  color: $accent;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  margin-bottom: 1rem;
+}
+
+.hero-tagline {
+  font-size: 1.35rem;
+  font-weight: 500;
+  color: $text;
+  line-height: 1.4;
+  margin-bottom: 0.75rem;
+}
+
+.hero-sub {
+  font-size: 1.05rem;
+  color: $text-dim;
+  line-height: 1.6;
+  margin-bottom: 2rem;
+}
+
+.hero-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  font-size: 0.925rem;
+  font-weight: 600;
+  font-family: $font-sans;
+  padding: 0.65rem 1.5rem;
+  border-radius: 8px;
+  transition: transform 0.1s, box-shadow 0.15s, background 0.15s;
+  &:hover { transform: translateY(-1px); }
+}
+
+.btn-primary {
+  background: $accent;
+  color: $bg;
+  &:hover {
+    color: $bg;
+    background: lighten($accent, 5%);
+    box-shadow: 0 4px 16px rgba($accent, 0.3);
+  }
+}
+
+.btn-secondary {
+  background: transparent;
+  color: $text;
+  border: 1px solid $border-light;
+  &:hover {
+    color: $text;
+    border-color: $text-dim;
+    background: rgba($text, 0.04);
+  }
+}
+
+// -- Terminal mockup --
+.terminal-wrap {
+  max-width: 840px;
+  margin: 3rem auto 0;
+  padding: 0 1.5rem;
+}
+
+.terminal {
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+
+.terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.625rem 1rem;
+  background: darken($surface, 3%);
+  border-bottom: 1px solid $border;
+}
+
+.terminal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  &.red { background: #ff5f56; }
+  &.yellow { background: #ffbd2e; }
+  &.green { background: #27c93f; }
+}
+
+.terminal-title {
+  flex: 1;
+  text-align: center;
+  font-family: $font-mono;
+  font-size: 0.75rem;
+  color: $text-dim;
+}
+
+.terminal-body {
+  font-family: $font-mono;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  color: $text;
+
+  // Terminal semantic colors
+  .t-muted   { color: $text-dim; }
+  .t-accent  { color: $accent; }
+  .t-good    { color: $good; }
+  .t-warn    { color: $warn; }
+  .t-bad     { color: $bad; }
+  .t-header  { color: $link; font-weight: 600; }
+  .t-selected { color: $accent; font-weight: 700; }
+}
+
+// =============================================================================
+// Features (3 columns)
+// =============================================================================
+
+.features {
+  padding: 4rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+.features-inner {
+  max-width: $max-width;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2rem;
+}
+
+.feature-card {
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  padding: 2rem;
+  transition: border-color 0.2s, box-shadow 0.2s;
+
+  &:hover {
+    border-color: $border-light;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  }
+
+  h3 {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: $text;
+    margin: 1rem 0 0.5rem;
+  }
+
+  p {
+    font-size: 0.9rem;
+    color: $text-dim;
+    line-height: 1.65;
+  }
+}
+
+.feature-icon {
+  color: $accent;
+}
+
+// =============================================================================
+// Quick Start
+// =============================================================================
+
+.quickstart {
+  padding: 4rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+.quickstart-inner {
+  max-width: $doc-width;
+  margin: 0 auto;
+
+  h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: $text;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+}
+
+.code-block-wrap {
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  overflow: hidden;
+
+  pre {
+    font-family: $font-mono;
+    font-size: 0.85rem;
+    line-height: 1.65;
+    padding: 1.5rem;
+    overflow-x: auto;
+    color: $code-green;
+
+    .t-muted { color: $text-dim; }
+  }
+}
+
+// =============================================================================
+// Comparison table
+// =============================================================================
+
+.comparison {
+  padding: 4rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+.comparison-inner {
+  max-width: $doc-width;
+  margin: 0 auto;
+
+  h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: $text;
+    margin-bottom: 1.5rem;
+    text-align: center;
+  }
+}
+
+.comparison-table-wrap {
+  overflow-x: auto;
+  border: 1px solid $border;
+  border-radius: 10px;
+}
+
+.comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+
+  th, td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid $border;
+    white-space: nowrap;
+  }
+
+  th {
+    font-weight: 600;
+    color: $text;
+    background: darken($surface, 2%);
+  }
+
+  td { color: $text-dim; }
+  td:first-child { color: $text; font-weight: 500; }
+
+  td.yes { color: $good; font-weight: 600; }
+  td.no { color: $text-dim; }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba($text, 0.02); }
+}
+
+// =============================================================================
+// Architecture callout
+// =============================================================================
+
+.arch-callout {
+  padding: 4rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+.arch-inner {
+  max-width: $max-width;
+  margin: 0 auto;
+
+  h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: $text;
+    margin-bottom: 2rem;
+    text-align: center;
+  }
+}
+
+.arch-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1.5rem;
+}
+
+.arch-item {
+  text-align: center;
+  padding: 1.75rem 1rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+}
+
+.arch-stat {
+  display: block;
+  font-family: $font-mono;
+  font-size: 2rem;
+  font-weight: 700;
+  color: $accent;
+  line-height: 1.2;
+}
+
+.arch-label {
+  display: block;
+  font-size: 0.825rem;
+  color: $text-dim;
+  margin-top: 0.5rem;
+  line-height: 1.4;
+}
+
+// =============================================================================
+// Doc layout (single-column + floating TOC)
+// =============================================================================
+
+.doc-layout {
+  max-width: $max-width;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+  display: flex;
+  gap: 3rem;
+}
+
+.doc-content {
+  flex: 1;
+  min-width: 0;
+  max-width: $doc-width;
+
+  h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: $text;
+    margin-bottom: 1.5rem;
+    line-height: 1.2;
+  }
+
+  h2 {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: $text;
+    margin: 2.5rem 0 1rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid $border;
+  }
+
+  h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: $text;
+    margin: 2rem 0 0.75rem;
+  }
+
+  h4 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: $text;
+    margin: 1.5rem 0 0.5rem;
+  }
+
+  p {
+    margin-bottom: 1rem;
+  }
+
+  ul, ol {
+    margin-bottom: 1rem;
+    padding-left: 1.5rem;
+
+    li {
+      margin-bottom: 0.25rem;
+    }
+  }
+
+  // Inline code
+  code {
+    font-family: $font-mono;
+    font-size: 0.85em;
+    background: $surface;
+    color: $code-green;
+    padding: 0.15em 0.4em;
+    border-radius: 4px;
+    border: 1px solid $border;
+  }
+
+  // Code blocks
+  pre {
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    overflow-x: auto;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+    line-height: 1.6;
+
+    code {
+      background: none;
+      border: none;
+      padding: 0;
+      color: $text;
+      font-size: inherit;
+    }
+  }
+
+  // Tables
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 1.5rem;
+    font-size: 0.875rem;
+    display: table;
+
+    th, td {
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      border: 1px solid $border;
+    }
+
+    th {
+      font-weight: 600;
+      color: $text;
+      background: darken($surface, 2%);
+    }
+
+    td {
+      color: $text-dim;
+
+      code {
+        font-size: 0.8em;
+      }
+    }
+  }
+
+  // Overflow wrapper for wide tables
+  .table-wrapper {
+    overflow-x: auto;
+    margin-bottom: 1.5rem;
+    -webkit-overflow-scrolling: touch;
+
+    table {
+      margin-bottom: 0;
+    }
+  }
+
+  // Blockquote
+  blockquote {
+    border-left: 3px solid $accent;
+    padding: 0.5rem 1rem;
+    margin: 1rem 0 1.5rem;
+    background: rgba($accent, 0.04);
+    border-radius: 0 6px 6px 0;
+    color: $text-dim;
+    font-size: 0.925rem;
+
+    p { margin-bottom: 0.5rem; }
+    p:last-child { margin-bottom: 0; }
+    strong { color: $accent; }
+  }
+
+  // Horizontal rule
+  hr {
+    border: none;
+    border-top: 1px solid $border;
+    margin: 2rem 0;
+  }
+
+  // Strong
+  strong { color: lighten($text, 8%); }
+}
+
+// -- Mini TOC --
+.doc-toc {
+  width: $toc-width;
+  flex-shrink: 0;
+  position: sticky;
+  top: calc($nav-height + 2rem);
+  align-self: flex-start;
+  max-height: calc(100vh - $nav-height - 4rem);
+  overflow-y: auto;
+}
+
+.doc-toc-inner {
+  padding-left: 1rem;
+  border-left: 1px solid $border;
+}
+
+.doc-toc-title {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: $text-dim;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.doc-toc ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+
+  li {
+    margin-bottom: 0.125rem;
+  }
+
+  a {
+    display: block;
+    font-size: 0.8rem;
+    color: $text-dim;
+    padding: 0.2rem 0;
+    line-height: 1.4;
+    transition: color 0.1s;
+    &:hover { color: $accent; }
+  }
+
+  ul {
+    padding-left: 0.75rem;
+    a { font-size: 0.75rem; }
+  }
+}
+
+// -- Doc index (section listing) --
+.doc-index {
+  display: grid;
+  gap: 1rem;
+  margin-top: 2rem;
+}
+
+.doc-index-item {
+  display: block;
+  padding: 1.25rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+
+  &:hover {
+    border-color: $accent;
+    box-shadow: 0 2px 12px rgba($accent, 0.08);
+  }
+
+  h3 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: $text;
+    margin-bottom: 0.25rem;
+  }
+
+  p {
+    font-size: 0.85rem;
+    color: $text-dim;
+    margin: 0;
+    line-height: 1.5;
+  }
+}
+
+// -- Prev/Next --
+.doc-prevnext {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 3rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid $border;
+  font-size: 0.9rem;
+
+  a {
+    color: $link;
+    font-weight: 500;
+    &:hover { color: $accent; }
+  }
+
+  .doc-next { margin-left: auto; }
+}
+
+// =============================================================================
+// Footer
+// =============================================================================
+
+.site-footer {
+  border-top: 1px solid $border;
+  padding: 2rem 1.5rem;
+  margin-top: 2rem;
+}
+
+.footer-inner {
+  max-width: $max-width;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+.footer-col {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.footer-logo {
+  font-family: $font-mono;
+  font-weight: 700;
+  color: $accent;
+  font-size: 1rem;
+}
+
+.footer-version {
+  font-family: $font-mono;
+  font-size: 0.75rem;
+  color: $text-dim;
+  background: $surface;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid $border;
+}
+
+.footer-col a {
+  font-size: 0.85rem;
+  color: $text-dim;
+  &:hover { color: $text; }
+}
+
+.footer-credit {
+  font-size: 0.825rem;
+  color: $text-dim;
+}
+
+// =============================================================================
+// 404
+// =============================================================================
+
+.error-page {
+  text-align: center;
+  padding: 8rem 1.5rem;
+
+  h1 {
+    font-family: $font-mono;
+    font-size: 5rem;
+    font-weight: 700;
+    color: $accent;
+    line-height: 1;
+    margin-bottom: 1rem;
+  }
+
+  p {
+    font-size: 1.1rem;
+    color: $text-dim;
+    margin-bottom: 2rem;
+  }
+}
+
+// =============================================================================
+// Print
+// =============================================================================
+
+@media print {
+  .topnav, .search-overlay, .doc-toc, .site-footer, .doc-prevnext { display: none !important; }
+
+  body {
+    background: #fff;
+    color: #111;
+  }
+
+  .doc-content {
+    max-width: 100%;
+    h1, h2, h3, h4 { color: #111; }
+    code { border-color: #ddd; background: #f5f5f5; color: #333; }
+    pre { border-color: #ddd; background: #f5f5f5; }
+    pre code { color: #333; }
+    table th, table td { border-color: #ccc; }
+    table th { background: #eee; }
+    a { color: #111; text-decoration: underline; }
+    blockquote { border-left-color: #ccc; background: #f9f9f9; }
+  }
+}
+
+// =============================================================================
+// Responsive
+// =============================================================================
+
+@media (max-width: 1024px) {
+  .doc-toc { display: none; }
+  .doc-layout { max-width: $doc-width; }
+}
+
+@media (max-width: 768px) {
+  .nav-links {
+    display: none;
+    position: absolute;
+    top: $nav-height;
+    left: 0;
+    right: 0;
+    background: $surface;
+    border-bottom: 1px solid $border;
+    flex-direction: column;
+    padding: 0.5rem 1rem 1rem;
+    gap: 0;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+
+    &.open { display: flex; }
+    a {
+      padding: 0.5rem 0.75rem;
+      font-size: 0.95rem;
+    }
+  }
+
+  .nav-toggle { display: flex; }
+
+  .hero { padding: 3rem 1rem 2rem; }
+  .hero-title { font-size: 2.5rem; }
+  .hero-tagline { font-size: 1.1rem; }
+
+  .features-inner { grid-template-columns: 1fr; gap: 1rem; }
+  .arch-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .doc-layout { padding: 1.5rem 1rem 3rem; }
+  .doc-content {
+    h1 { font-size: 1.5rem; }
+    h2 { font-size: 1.15rem; }
+
+    // Allow tables to scroll
+    table {
+      display: block;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+  }
+
+  .footer-inner { flex-direction: column; text-align: center; }
+  .footer-col { justify-content: center; }
+
+  .terminal-body { font-size: 0.65rem; padding: 0.75rem; }
+}
+
+@media (max-width: 480px) {
+  .hero-title { font-size: 2rem; }
+  .hero-actions { flex-direction: column; align-items: center; }
+  .arch-grid { grid-template-columns: 1fr; }
+}

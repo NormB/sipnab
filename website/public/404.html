@@ -1,3 +1,79 @@
-<!doctype html>
-<title>404 Not Found</title>
-<h1>404 Not Found</h1>
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>404 -- sipnab</title><meta content="SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust." name=description><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=error-page><h1>404</h1><p>This page doesn't exist. Maybe it was a phantom INVITE.</p><a class="btn btn-primary" href=https://www.sipnab.com>Back to Home</a></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class=footer-col><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a></div><div class=footer-col><span class=footer-credit>Built by Norm Brandinger</span></div></div></footer><script>// Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
+  });
+
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
+
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+    }
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
+
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
+
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
+
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();</script>

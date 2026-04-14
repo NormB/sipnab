@@ -1,10 +1,7 @@
 +++
-title = "Configuration"
-description = "sipnab TOML configuration file reference: capture, display, filter, security, limits, privilege, theme, and keybinding settings."
+title = "Config Reference"
 weight = 3
-
-[extra]
-weight = 3
+description = "TOML configuration file format and all configurable sections."
 +++
 
 sipnab reads configuration from a TOML file. CLI flags always override config file values.
@@ -145,7 +142,7 @@ chroot = "/var/lib/sipnab"
 
 ### \[theme\]
 
-TUI color theme with 11 semantic color slots. Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See [Theme Customization](@/docs/theme.md) for a full guide.
+TUI color theme with 11 semantic color slots. See the [Theme Guide](@/docs/theme.md) for a full customization guide.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -160,6 +157,10 @@ TUI color theme with 11 semantic color slots. Each field accepts a color name or
 | `bad` | string | `"red"` | Poor quality, failures, errors |
 | `muted` | string | `"dark_gray"` | Separators, pipes, disabled text, timestamps |
 | `border` | string | `"white"` | Widget borders, panel frames |
+
+Supported color values:
+- Named: `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset`
+- Hex RGB: `"#RRGGBB"` (e.g., `"#ff8800"`)
 
 ```toml
 [theme]
@@ -177,10 +178,9 @@ border = "#444466"
 
 ### \[keybindings\]
 
-TUI key binding overrides. All 11 configurable actions are listed below. Unset fields use built-in defaults.
+TUI key binding overrides. All 11 configurable actions are listed below. See [Keybindings](@/docs/keybindings.md) for the full shortcut reference.
 
 Accepted key formats:
-
 - Single characters: `"q"`, `"/"`, `"A"`
 - Function keys: `"F1"` through `"F12"`
 - Special names: `"Esc"`, `"Space"`, `"Enter"`, `"Tab"`, `"Backspace"`

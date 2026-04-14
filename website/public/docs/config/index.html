@@ -1,475 +1,181 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Configuration -- sipnab</title>
-  <meta name="description" content="sipnab TOML configuration file reference: capture, display, filter, security, limits, privilege, theme, and keybinding settings.">
-  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
-</head>
-<body>
-
-<!-- Header -->
-<header class="site-header">
-  <div style="display:flex;align-items:center;gap:1em;">
-    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
-      <span></span><span></span><span></span>
-    </button>
-    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
-  </div>
-  <div class="header-links">
-    <a href="https://www.sipnab.com/docs/">Docs</a>
-    
-    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-    </a>
-    
-    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
-    </a>
-  </div>
-</header>
-
-<!-- Search overlay -->
-
-<div id="search-overlay" class="search-overlay" style="display:none;">
-  <div class="search-container">
-    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
-    <div id="search-results" class="search-results"></div>
-  </div>
-</div>
-
-
-<!-- Sidebar overlay (mobile) -->
-<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
-
-<!-- Sidebar -->
-<aside class="sidebar">
-  <nav>
-    <div class="nav-section">
-      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Getting Started</div>
-      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Reference</div>
-      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
-      <a href="https://www.sipnab.com/docs/config/" class="indent active">Configuration</a>
-      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
-      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
-      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
-      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
-    </div>
-    <div class="nav-section">
-      <div class="nav-section-title">Project</div>
-      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
-      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
-    </div>
-  </nav>
-</aside>
-
-<!-- Main content -->
-<main class="main">
-  
-<h1>Configuration</h1>
-
-
-<nav class="toc">
-  <h4>On this page</h4>
-  <ul>
-    
-    <li><a href="#file-locations">File Locations</a>
-      
-    </li>
-    
-    <li><a href="#format">Format</a>
-      
-    </li>
-    
-    <li><a href="#sections">Sections</a>
-      
-      <ul>
-        
-        <li><a href="#capture">[capture]</a></li>
-        
-        <li><a href="#display">[display]</a></li>
-        
-        <li><a href="#filter">[filter]</a></li>
-        
-        <li><a href="#security">[security]</a></li>
-        
-        <li><a href="#limits">[limits]</a></li>
-        
-        <li><a href="#privilege">[privilege]</a></li>
-        
-        <li><a href="#theme">[theme]</a></li>
-        
-        <li><a href="#keybindings">[keybindings]</a></li>
-        
-      </ul>
-      
-    </li>
-    
-    <li><a href="#full-example">Full Example</a>
-      
-    </li>
-    
-  </ul>
-</nav>
-
-
-<p>sipnab reads configuration from a TOML file. CLI flags always override config file values.</p>
-<h2 id="file-locations">File Locations</h2>
-<p>Configuration is loaded from the first file found in this order:</p>
-<table><thead><tr><th>Priority</th><th>Source</th></tr></thead><tbody>
-<tr><td>1</td><td><code>--config &lt;FILE&gt;</code> (must exist; errors if missing)</td></tr>
-<tr><td>2</td><td><code>$SIPNAB_CONFIG</code> environment variable</td></tr>
-<tr><td>3</td><td><code>~/.config/sipnab/sipnab.toml</code></td></tr>
-<tr><td>4</td><td><code>~/.sipnabrc</code></td></tr>
-<tr><td>5</td><td><code>/etc/sipnab/sipnab.toml</code></td></tr>
-</tbody></table>
-<p>Use <code>--no-config</code> (<code>-F</code>) to skip all file loading. Use <code>--dump-config</code> (<code>-D</code>) to print the effective merged configuration.</p>
-<p>Unknown keys produce a warning and are ignored, allowing configs to be shared across versions.</p>
-<h2 id="format">Format</h2>
-<p>Standard <a rel="external" href="https://toml.io/">TOML</a>. All sections and keys are optional. Only set values you want to change from defaults.</p>
-<h2 id="sections">Sections</h2>
-<h3 id="capture">[capture]</h3>
-<p>Packet capture defaults.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>device</code></td><td>string</td><td>--</td><td>Default network interface</td></tr>
-<tr><td><code>portrange</code></td><td>string</td><td><code>"5060-5061"</code></td><td>SIP port range</td></tr>
-<tr><td><code>snaplen</code></td><td>integer</td><td>OS default</td><td>Snapshot length in bytes</td></tr>
-<tr><td><code>buffer</code></td><td>integer</td><td>OS default</td><td>Kernel capture buffer size in MiB</td></tr>
-<tr><td><code>no_rtp</code></td><td>boolean</td><td><code>false</code></td><td>Disable RTP capture by default</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">capture</span><span>]</span></span>
-<span class="giallo-l"><span>device</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span></span>
-<span class="giallo-l"><span>portrange</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;5060-5080&quot;</span></span>
-<span class="giallo-l"><span>snaplen</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 65535</span></span>
-<span class="giallo-l"><span>buffer</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 16</span></span>
-<span class="giallo-l"><span>no_rtp</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span></code></pre><h3 id="display">[display]</h3>
-<p>Output and TUI display settings.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>color</code></td><td>string</td><td><code>"auto"</code></td><td>Color mode: <code>"auto"</code>, <code>"always"</code>, <code>"never"</code></td></tr>
-<tr><td><code>payload_limit</code></td><td>integer</td><td>--</td><td>Maximum payload bytes to display</td></tr>
-<tr><td><code>delta_time</code></td><td>boolean</td><td><code>false</code></td><td>Show delta time between messages by default</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
-<span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span></span>
-<span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 4096</span></span>
-<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span></code></pre><h3 id="filter">[filter]</h3>
-<p>Default filter presets applied at startup.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>from</code></td><td>string</td><td>--</td><td>Default From header filter (regex)</td></tr>
-<tr><td><code>to</code></td><td>string</td><td>--</td><td>Default To header filter (regex)</td></tr>
-<tr><td><code>expression</code></td><td>string</td><td>--</td><td>Default filter DSL expression</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">filter</span><span>]</span></span>
-<span class="giallo-l"><span>from</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1001@&quot;</span></span>
-<span class="giallo-l"><span>to</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1002@&quot;</span></span>
-<span class="giallo-l"><span>expression</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39;&quot;</span></span></code></pre><h3 id="security">[security]</h3>
-<p>Security detection defaults.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>kill_scanner</code></td><td>boolean</td><td><code>false</code></td><td>Enable scanner detection</td></tr>
-<tr><td><code>kill_response</code></td><td>integer</td><td><code>200</code></td><td>SIP response code for scanner reports (100-699)</td></tr>
-<tr><td><code>fraud_detect</code></td><td>boolean</td><td><code>false</code></td><td>Enable fraud detection heuristics</td></tr>
-<tr><td><code>alert</code></td><td>array of strings</td><td><code>[]</code></td><td>Alert channels: <code>"syslog"</code>, <code>"json"</code>, <code>"exec"</code></td></tr>
-<tr><td><code>alert_exec</code></td><td>string</td><td>--</td><td>Command to execute on alert</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">security</span><span>]</span></span>
-<span class="giallo-l"><span>kill_scanner</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
-<span class="giallo-l"><span>kill_response</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 403</span></span>
-<span class="giallo-l"><span>fraud_detect</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
-<span class="giallo-l"><span>alert</span><span style="color: #BFBDB6B3;"> =</span><span> [</span><span style="color: #AAD94C;">&quot;syslog&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;json&quot;</span><span>]</span></span>
-<span class="giallo-l"><span>alert_exec</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/usr/local/bin/sipnab-alert.sh&quot;</span></span></code></pre><h3 id="limits">[limits]</h3>
-<p>Resource limits to prevent unbounded memory growth.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>dialog_limit</code></td><td>integer</td><td><code>100000</code></td><td>Maximum tracked dialogs</td></tr>
-<tr><td><code>max_streams</code></td><td>integer</td><td><code>50000</code></td><td>Maximum RTP streams</td></tr>
-<tr><td><code>max_reassembly</code></td><td>integer</td><td><code>10000</code></td><td>Maximum TCP reassembly sessions</td></tr>
-<tr><td><code>hep_rate_limit</code></td><td>integer</td><td><code>50000</code></td><td>Maximum HEP packets per second</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">limits</span><span>]</span></span>
-<span class="giallo-l"><span>dialog_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 50000</span></span>
-<span class="giallo-l"><span>max_streams</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span>
-<span class="giallo-l"><span>max_reassembly</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 5000</span></span>
-<span class="giallo-l"><span>hep_rate_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span></code></pre><h3 id="privilege">[privilege]</h3>
-<p>Privilege separation settings (Linux only).</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>user</code></td><td>string</td><td>--</td><td>User to drop privileges to after opening capture devices</td></tr>
-<tr><td><code>no_priv_drop</code></td><td>boolean</td><td><code>false</code></td><td>Disable privilege dropping</td></tr>
-<tr><td><code>chroot</code></td><td>string</td><td>--</td><td>Chroot directory after initialization</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">privilege</span><span>]</span></span>
-<span class="giallo-l"><span>user</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span></span>
-<span class="giallo-l"><span>no_priv_drop</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span>
-<span class="giallo-l"><span>chroot</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/var/lib/sipnab&quot;</span></span></code></pre><h3 id="theme">[theme]</h3>
-<p>TUI color theme with 11 semantic color slots. Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See <a href="https://www.sipnab.com/docs/theme/">Theme Customization</a> for a full guide.</p>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>background</code></td><td>string</td><td><code>"reset"</code> (terminal default)</td><td>Terminal background</td></tr>
-<tr><td><code>foreground</code></td><td>string</td><td><code>"white"</code></td><td>Default text color</td></tr>
-<tr><td><code>highlight</code></td><td>string</td><td>--</td><td>Legacy alias for <code>selected</code> (backward compat)</td></tr>
-<tr><td><code>header</code></td><td>string</td><td><code>"cyan"</code></td><td>Status bar, column headers, endpoint labels</td></tr>
-<tr><td><code>selected</code></td><td>string</td><td><code>"yellow"</code></td><td>Selected/highlighted row, cursor, focused item</td></tr>
-<tr><td><code>accent</code></td><td>string</td><td><code>"magenta"</code></td><td>Correlation info, PDD, extended flow labels</td></tr>
-<tr><td><code>good</code></td><td>string</td><td><code>"green"</code></td><td>Positive quality, success states (InCall, Registered)</td></tr>
-<tr><td><code>warning</code></td><td>string</td><td><code>"yellow"</code></td><td>Medium quality, caution states (Ringing, CANCEL)</td></tr>
-<tr><td><code>bad</code></td><td>string</td><td><code>"red"</code></td><td>Poor quality, failures, errors</td></tr>
-<tr><td><code>muted</code></td><td>string</td><td><code>"dark_gray"</code></td><td>Separators, pipes, disabled text, timestamps</td></tr>
-<tr><td><code>border</code></td><td>string</td><td><code>"white"</code></td><td>Widget borders, panel frames</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1a1a2e&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e0e0e0&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e94560&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#444466&quot;</span></span></code></pre><h3 id="keybindings">[keybindings]</h3>
-<p>TUI key binding overrides. All 11 configurable actions are listed below. Unset fields use built-in defaults.</p>
-<p>Accepted key formats:</p>
-<ul>
-<li>Single characters: <code>"q"</code>, <code>"/"</code>, <code>"A"</code></li>
-<li>Function keys: <code>"F1"</code> through <code>"F12"</code></li>
-<li>Special names: <code>"Esc"</code>, <code>"Space"</code>, <code>"Enter"</code>, <code>"Tab"</code>, <code>"Backspace"</code></li>
-</ul>
-<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
-<tr><td><code>quit</code></td><td>string</td><td><code>"q"</code></td><td>Quit the application</td></tr>
-<tr><td><code>help</code></td><td>string</td><td><code>"F1"</code></td><td>Show help overlay</td></tr>
-<tr><td><code>filter</code></td><td>string</td><td><code>"F7"</code></td><td>Open filter dialog</td></tr>
-<tr><td><code>save</code></td><td>string</td><td><code>"F2"</code></td><td>Open save capture dialog</td></tr>
-<tr><td><code>search</code></td><td>string</td><td><code>"/"</code></td><td>Activate search</td></tr>
-<tr><td><code>settings</code></td><td>string</td><td><code>"F8"</code></td><td>Open settings popup</td></tr>
-<tr><td><code>pause</code></td><td>string</td><td><code>"p"</code></td><td>Pause/resume capture</td></tr>
-<tr><td><code>autoscroll</code></td><td>string</td><td><code>"A"</code></td><td>Toggle autoscroll</td></tr>
-<tr><td><code>extended_flow</code></td><td>string</td><td><code>"F4"</code></td><td>Toggle extended multi-leg flow</td></tr>
-<tr><td><code>clear_calls</code></td><td>string</td><td><code>"F5"</code></td><td>Clear all calls</td></tr>
-<tr><td><code>column_selector</code></td><td>string</td><td><code>"F10"</code></td><td>Open column selector</td></tr>
-</tbody></table>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">keybindings</span><span>]</span></span>
-<span class="giallo-l"><span>quit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;q&quot;</span></span>
-<span class="giallo-l"><span>help</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F1&quot;</span></span>
-<span class="giallo-l"><span>filter</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F7&quot;</span></span>
-<span class="giallo-l"><span>save</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F2&quot;</span></span>
-<span class="giallo-l"><span>search</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/&quot;</span></span>
-<span class="giallo-l"><span>settings</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F8&quot;</span></span>
-<span class="giallo-l"><span>pause</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;p&quot;</span></span>
-<span class="giallo-l"><span>autoscroll</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;A&quot;</span></span>
-<span class="giallo-l"><span>extended_flow</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F4&quot;</span></span>
-<span class="giallo-l"><span>clear_calls</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F5&quot;</span></span>
-<span class="giallo-l"><span>column_selector</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F10&quot;</span></span></code></pre><h2 id="full-example">Full Example</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">capture</span><span>]</span></span>
-<span class="giallo-l"><span>device</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span></span>
-<span class="giallo-l"><span>portrange</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;5060-5080&quot;</span></span>
-<span class="giallo-l"><span>snaplen</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 65535</span></span>
-<span class="giallo-l"><span>buffer</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 16</span></span>
-<span class="giallo-l"><span>no_rtp</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
-<span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span></span>
-<span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 4096</span></span>
-<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">filter</span><span>]</span></span>
-<span class="giallo-l"><span>from</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1001@&quot;</span></span>
-<span class="giallo-l"><span>to</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1002@&quot;</span></span>
-<span class="giallo-l"><span>expression</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39;&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">security</span><span>]</span></span>
-<span class="giallo-l"><span>kill_scanner</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
-<span class="giallo-l"><span>kill_response</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 403</span></span>
-<span class="giallo-l"><span>fraud_detect</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
-<span class="giallo-l"><span>alert</span><span style="color: #BFBDB6B3;"> =</span><span> [</span><span style="color: #AAD94C;">&quot;syslog&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;json&quot;</span><span>]</span></span>
-<span class="giallo-l"><span>alert_exec</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/usr/local/bin/sipnab-alert.sh&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">limits</span><span>]</span></span>
-<span class="giallo-l"><span>dialog_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 50000</span></span>
-<span class="giallo-l"><span>max_streams</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span>
-<span class="giallo-l"><span>max_reassembly</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 5000</span></span>
-<span class="giallo-l"><span>hep_rate_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">privilege</span><span>]</span></span>
-<span class="giallo-l"><span>user</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span></span>
-<span class="giallo-l"><span>no_priv_drop</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span>
-<span class="giallo-l"><span>chroot</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/var/lib/sipnab&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1a1a2e&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e0e0e0&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e94560&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#444466&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">keybindings</span><span>]</span></span>
-<span class="giallo-l"><span>quit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;q&quot;</span></span>
-<span class="giallo-l"><span>help</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F1&quot;</span></span>
-<span class="giallo-l"><span>filter</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F7&quot;</span></span>
-<span class="giallo-l"><span>save</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F2&quot;</span></span>
-<span class="giallo-l"><span>search</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/&quot;</span></span>
-<span class="giallo-l"><span>settings</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F8&quot;</span></span>
-<span class="giallo-l"><span>pause</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;p&quot;</span></span>
-<span class="giallo-l"><span>autoscroll</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;A&quot;</span></span>
-<span class="giallo-l"><span>extended_flow</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F4&quot;</span></span>
-<span class="giallo-l"><span>clear_calls</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F5&quot;</span></span>
-<span class="giallo-l"><span>column_selector</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F10&quot;</span></span></code></pre>
-
-
-
-
-
-
-
-  
-  
-  
-    
-  
-
-  
-  
-  
-    
-  
-
-  
-  
-    
-  
-  
-
-  
-    
-  
-  
-  
-
-  
-  
-  
-
-  
-  
-  
-
-  
-  
-  
-
-
-<nav class="page-nav">
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;" class="page-nav-prev">&larr; CLI Reference</a>
-  
-  
-  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;keybindings&#x2F;" class="page-nav-next">Keybindings &rarr;</a>
-  
-</nav>
-
-</main>
-
-<script>
-function toggleSidebar() {
-  document.querySelector('.sidebar').classList.toggle('open');
-  document.querySelector('.sidebar-overlay').classList.toggle('visible');
-}
-
-
-function toggleSearch(e) {
-  e.preventDefault();
-  var overlay = document.getElementById('search-overlay');
-  if (overlay.style.display === 'none') {
-    overlay.style.display = 'flex';
-    document.getElementById('search-input').focus();
-  } else {
-    overlay.style.display = 'none';
-  }
-}
-
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') {
-    document.getElementById('search-overlay').style.display = 'none';
-  }
-  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
-    e.preventDefault();
-    document.getElementById('search-overlay').style.display = 'flex';
-    document.getElementById('search-input').focus();
-  }
-});
-
-var searchIndex = null;
-document.getElementById('search-input').addEventListener('input', function() {
-  var query = this.value;
-  var resultsDiv = document.getElementById('search-results');
-  if (query.length < 2) { resultsDiv.textContent = ''; return; }
-  if (!searchIndex) {
-    fetch('https://www.sipnab.com/search_index.en.json')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        searchIndex = elasticlunr.Index.load(data);
-        doSearch(query);
-      });
-  } else {
-    doSearch(query);
-  }
-});
-
-function doSearch(query) {
-  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
-  var resultsDiv = document.getElementById('search-results');
-  resultsDiv.textContent = '';
-  if (results.length === 0) {
-    var noResults = document.createElement('div');
-    noResults.className = 'search-no-results';
-    noResults.textContent = 'No results found.';
-    resultsDiv.appendChild(noResults);
-    return;
-  }
-  results.slice(0, 10).forEach(function(r) {
-    var item = searchIndex.documentStore.getDoc(r.ref);
-    var link = document.createElement('a');
-    link.href = r.ref;
-    link.className = 'search-result-item';
-    var title = document.createElement('div');
-    title.className = 'search-result-title';
-    title.textContent = item.title;
-    link.appendChild(title);
-    if (item.body) {
-      var body = document.createElement('div');
-      body.className = 'search-result-body';
-      body.textContent = item.body.substring(0, 150) + '...';
-      link.appendChild(body);
-    }
-    resultsDiv.appendChild(link);
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Config Reference -- sipnab</title><meta content="TOML configuration file format and all configurable sections." name=description><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a class=active href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Config Reference</h1><p>sipnab reads configuration from a TOML file. CLI flags always override config file values.<h2 id=file-locations>File Locations</h2><p>Configuration is loaded from the first file found in this order:<table><thead><tr><th>Priority<th>Source<tbody><tr><td>1<td><code>--config &lt;FILE></code> (must exist; errors if missing)<tr><td>2<td><code>$SIPNAB_CONFIG</code> environment variable<tr><td>3<td><code>~/.config/sipnab/sipnab.toml</code><tr><td>4<td><code>~/.sipnabrc</code><tr><td>5<td><code>/etc/sipnab/sipnab.toml</code></table><p>Use <code>--no-config</code> (<code>-F</code>) to skip all file loading. Use <code>--dump-config</code> (<code>-D</code>) to print the effective merged configuration.<p>Unknown keys produce a warning and are ignored, allowing configs to be shared across versions.<h2 id=format>Format</h2><p>Standard <a href=https://toml.io/ rel=external>TOML</a>. All sections and keys are optional. Only set values you want to change from defaults.<h2 id=sections>Sections</h2><h3 id=capture>[capture]</h3><p>Packet capture defaults.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>device</code><td>string<td>–<td>Default network interface<tr><td><code>portrange</code><td>string<td><code>"5060-5061"</code><td>SIP port range<tr><td><code>snaplen</code><td>integer<td>OS default<td>Snapshot length in bytes<tr><td><code>buffer</code><td>integer<td>OS default<td>Kernel capture buffer size in MiB<tr><td><code>no_rtp</code><td>boolean<td><code>false</code><td>Disable RTP capture by default</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>capture</span><span>]</span></span>
+<span class=giallo-l><span>device</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "eth0"</span></span>
+<span class=giallo-l><span>portrange</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "5060-5080"</span></span>
+<span class=giallo-l><span>snaplen</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 65535</span></span>
+<span class=giallo-l><span>buffer</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 16</span></span>
+<span class=giallo-l><span>no_rtp</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span></code></pre><h3 id=display>[display]</h3><p>Output and TUI display settings.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>color</code><td>string<td><code>"auto"</code><td>Color mode: <code>"auto"</code>, <code>"always"</code>, <code>"never"</code><tr><td><code>payload_limit</code><td>integer<td>–<td>Maximum payload bytes to display<tr><td><code>delta_time</code><td>boolean<td><code>false</code><td>Show delta time between messages by default</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>display</span><span>]</span></span>
+<span class=giallo-l><span>color</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "always"</span></span>
+<span class=giallo-l><span>payload_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 4096</span></span>
+<span class=giallo-l><span>delta_time</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span></code></pre><h3 id=filter>[filter]</h3><p>Default filter presets applied at startup.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>from</code><td>string<td>–<td>Default From header filter (regex)<tr><td><code>to</code><td>string<td>–<td>Default To header filter (regex)<tr><td><code>expression</code><td>string<td>–<td>Default filter DSL expression</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>filter</span><span>]</span></span>
+<span class=giallo-l><span>from</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1001@"</span></span>
+<span class=giallo-l><span>to</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1002@"</span></span>
+<span class=giallo-l><span>expression</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "method == 'INVITE'"</span></span></code></pre><h3 id=security>[security]</h3><p>Security detection defaults.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>kill_scanner</code><td>boolean<td><code>false</code><td>Enable scanner detection<tr><td><code>kill_response</code><td>integer<td><code>200</code><td>SIP response code for scanner reports (100-699)<tr><td><code>fraud_detect</code><td>boolean<td><code>false</code><td>Enable fraud detection heuristics<tr><td><code>alert</code><td>array of strings<td><code>[]</code><td>Alert channels: <code>"syslog"</code>, <code>"json"</code>, <code>"exec"</code><tr><td><code>alert_exec</code><td>string<td>–<td>Command to execute on alert</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>security</span><span>]</span></span>
+<span class=giallo-l><span>kill_scanner</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
+<span class=giallo-l><span>kill_response</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 403</span></span>
+<span class=giallo-l><span>fraud_detect</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
+<span class=giallo-l><span>alert</span><span style=color:#bfbdb6b3> =</span><span> [</span><span style=color:#aad94c>"syslog"</span><span style=color:#bfbdb6b3>,</span><span style=color:#aad94c> "json"</span><span>]</span></span>
+<span class=giallo-l><span>alert_exec</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/usr/local/bin/sipnab-alert.sh"</span></span></code></pre><h3 id=limits>[limits]</h3><p>Resource limits to prevent unbounded memory growth.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>dialog_limit</code><td>integer<td><code>100000</code><td>Maximum tracked dialogs<tr><td><code>max_streams</code><td>integer<td><code>50000</code><td>Maximum RTP streams<tr><td><code>max_reassembly</code><td>integer<td><code>10000</code><td>Maximum TCP reassembly sessions<tr><td><code>hep_rate_limit</code><td>integer<td><code>50000</code><td>Maximum HEP packets per second</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>limits</span><span>]</span></span>
+<span class=giallo-l><span>dialog_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 50000</span></span>
+<span class=giallo-l><span>max_streams</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span>
+<span class=giallo-l><span>max_reassembly</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 5000</span></span>
+<span class=giallo-l><span>hep_rate_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span></code></pre><h3 id=privilege>[privilege]</h3><p>Privilege separation settings (Linux only).<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>user</code><td>string<td>–<td>User to drop privileges to after opening capture devices<tr><td><code>no_priv_drop</code><td>boolean<td><code>false</code><td>Disable privilege dropping<tr><td><code>chroot</code><td>string<td>–<td>Chroot directory after initialization</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>privilege</span><span>]</span></span>
+<span class=giallo-l><span>user</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "sipnab"</span></span>
+<span class=giallo-l><span>no_priv_drop</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span>
+<span class=giallo-l><span>chroot</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/var/lib/sipnab"</span></span></code></pre><h3 id=theme>[theme]</h3><p>TUI color theme with 11 semantic color slots. See the <a href=https://www.sipnab.com/docs/theme/>Theme Guide</a> for a full customization guide.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>background</code><td>string<td><code>"reset"</code> (terminal default)<td>Terminal background<tr><td><code>foreground</code><td>string<td><code>"white"</code><td>Default text color<tr><td><code>highlight</code><td>string<td>–<td>Legacy alias for <code>selected</code> (backward compat)<tr><td><code>header</code><td>string<td><code>"cyan"</code><td>Status bar, column headers, endpoint labels<tr><td><code>selected</code><td>string<td><code>"yellow"</code><td>Selected/highlighted row, cursor, focused item<tr><td><code>accent</code><td>string<td><code>"magenta"</code><td>Correlation info, PDD, extended flow labels<tr><td><code>good</code><td>string<td><code>"green"</code><td>Positive quality, success states (InCall, Registered)<tr><td><code>warning</code><td>string<td><code>"yellow"</code><td>Medium quality, caution states (Ringing, CANCEL)<tr><td><code>bad</code><td>string<td><code>"red"</code><td>Poor quality, failures, errors<tr><td><code>muted</code><td>string<td><code>"dark_gray"</code><td>Separators, pipes, disabled text, timestamps<tr><td><code>border</code><td>string<td><code>"white"</code><td>Widget borders, panel frames</table><p>Supported color values:<ul><li>Named: <code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code>, <code>dark_gray</code>, <code>reset</code><li>Hex RGB: <code>"#RRGGBB"</code> (e.g., <code>"#ff8800"</code>)</ul><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
+<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1a1a2e"</span></span>
+<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e0e0e0"</span></span>
+<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "cyan"</span></span>
+<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e94560"</span></span>
+<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "magenta"</span></span>
+<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "green"</span></span>
+<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "yellow"</span></span>
+<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "red"</span></span>
+<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "dark_gray"</span></span>
+<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#444466"</span></span></code></pre><h3 id=keybindings>[keybindings]</h3><p>TUI key binding overrides. All 11 configurable actions are listed below. See <a href=https://www.sipnab.com/docs/keybindings/>Keybindings</a> for the full shortcut reference.<p>Accepted key formats:<ul><li>Single characters: <code>"q"</code>, <code>"/"</code>, <code>"A"</code><li>Function keys: <code>"F1"</code> through <code>"F12"</code><li>Special names: <code>"Esc"</code>, <code>"Space"</code>, <code>"Enter"</code>, <code>"Tab"</code>, <code>"Backspace"</code></ul><table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>quit</code><td>string<td><code>"q"</code><td>Quit the application<tr><td><code>help</code><td>string<td><code>"F1"</code><td>Show help overlay<tr><td><code>filter</code><td>string<td><code>"F7"</code><td>Open filter dialog<tr><td><code>save</code><td>string<td><code>"F2"</code><td>Open save capture dialog<tr><td><code>search</code><td>string<td><code>"/"</code><td>Activate search<tr><td><code>settings</code><td>string<td><code>"F8"</code><td>Open settings popup<tr><td><code>pause</code><td>string<td><code>"p"</code><td>Pause/resume capture<tr><td><code>autoscroll</code><td>string<td><code>"A"</code><td>Toggle autoscroll<tr><td><code>extended_flow</code><td>string<td><code>"F4"</code><td>Toggle extended multi-leg flow<tr><td><code>clear_calls</code><td>string<td><code>"F5"</code><td>Clear all calls<tr><td><code>column_selector</code><td>string<td><code>"F10"</code><td>Open column selector</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>keybindings</span><span>]</span></span>
+<span class=giallo-l><span>quit</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "q"</span></span>
+<span class=giallo-l><span>help</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F1"</span></span>
+<span class=giallo-l><span>filter</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F7"</span></span>
+<span class=giallo-l><span>save</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F2"</span></span>
+<span class=giallo-l><span>search</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/"</span></span>
+<span class=giallo-l><span>settings</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F8"</span></span>
+<span class=giallo-l><span>pause</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "p"</span></span>
+<span class=giallo-l><span>autoscroll</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "A"</span></span>
+<span class=giallo-l><span>extended_flow</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F4"</span></span>
+<span class=giallo-l><span>clear_calls</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F5"</span></span>
+<span class=giallo-l><span>column_selector</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F10"</span></span></code></pre><h2 id=full-example>Full Example</h2><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>capture</span><span>]</span></span>
+<span class=giallo-l><span>device</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "eth0"</span></span>
+<span class=giallo-l><span>portrange</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "5060-5080"</span></span>
+<span class=giallo-l><span>snaplen</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 65535</span></span>
+<span class=giallo-l><span>buffer</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 16</span></span>
+<span class=giallo-l><span>no_rtp</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>display</span><span>]</span></span>
+<span class=giallo-l><span>color</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "always"</span></span>
+<span class=giallo-l><span>payload_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 4096</span></span>
+<span class=giallo-l><span>delta_time</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>filter</span><span>]</span></span>
+<span class=giallo-l><span>from</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1001@"</span></span>
+<span class=giallo-l><span>to</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1002@"</span></span>
+<span class=giallo-l><span>expression</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "method == 'INVITE'"</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>security</span><span>]</span></span>
+<span class=giallo-l><span>kill_scanner</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
+<span class=giallo-l><span>kill_response</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 403</span></span>
+<span class=giallo-l><span>fraud_detect</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
+<span class=giallo-l><span>alert</span><span style=color:#bfbdb6b3> =</span><span> [</span><span style=color:#aad94c>"syslog"</span><span style=color:#bfbdb6b3>,</span><span style=color:#aad94c> "json"</span><span>]</span></span>
+<span class=giallo-l><span>alert_exec</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/usr/local/bin/sipnab-alert.sh"</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>limits</span><span>]</span></span>
+<span class=giallo-l><span>dialog_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 50000</span></span>
+<span class=giallo-l><span>max_streams</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span>
+<span class=giallo-l><span>max_reassembly</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 5000</span></span>
+<span class=giallo-l><span>hep_rate_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>privilege</span><span>]</span></span>
+<span class=giallo-l><span>user</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "sipnab"</span></span>
+<span class=giallo-l><span>no_priv_drop</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span>
+<span class=giallo-l><span>chroot</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/var/lib/sipnab"</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
+<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1a1a2e"</span></span>
+<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e0e0e0"</span></span>
+<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "cyan"</span></span>
+<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e94560"</span></span>
+<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "magenta"</span></span>
+<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "green"</span></span>
+<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "yellow"</span></span>
+<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "red"</span></span>
+<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "dark_gray"</span></span>
+<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#444466"</span></span>
+<span class=giallo-l></span>
+<span class=giallo-l><span>[</span><span style=color:#59c2ff>keybindings</span><span>]</span></span>
+<span class=giallo-l><span>quit</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "q"</span></span>
+<span class=giallo-l><span>help</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F1"</span></span>
+<span class=giallo-l><span>filter</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F7"</span></span>
+<span class=giallo-l><span>save</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F2"</span></span>
+<span class=giallo-l><span>search</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/"</span></span>
+<span class=giallo-l><span>settings</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F8"</span></span>
+<span class=giallo-l><span>pause</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "p"</span></span>
+<span class=giallo-l><span>autoscroll</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "A"</span></span>
+<span class=giallo-l><span>extended_flow</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F4"</span></span>
+<span class=giallo-l><span>clear_calls</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F5"</span></span>
+<span class=giallo-l><span>column_selector</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F10"</span></span></code></pre><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/cli/>← CLI Reference</a><a class=doc-next href=https://www.sipnab.com/docs/keybindings/>Keybindings →</a></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#file-locations>File Locations</a><li><a href=#format>Format</a><li><a href=#sections>Sections</a> <ul><li><a href=#capture>[capture]</a><li><a href=#display>[display]</a><li><a href=#filter>[filter]</a><li><a href=#security>[security]</a><li><a href=#limits>[limits]</a><li><a href=#privilege>[privilege]</a><li><a href=#theme>[theme]</a><li><a href=#keybindings>[keybindings]</a></ul><li><a href=#full-example>Full Example</a></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class=footer-col><a href=https://www.sipnab.com/docs/>Docs</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a></div><div class=footer-col><span class=footer-credit>Built by Norm Brandinger</span></div></div></footer><script>// Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
   });
-}
 
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
 
-document.querySelectorAll('pre').forEach(function(block) {
-  block.addEventListener('click', function() {
-    var code = block.querySelector('code');
-    if (code) {
-      navigator.clipboard.writeText(code.textContent).then(function() {
-        block.classList.add('copied');
-        setTimeout(function() { block.classList.remove('copied'); }, 1500);
-      });
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
     }
-  });
-});
-</script>
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
 
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
 
-<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
 
-
-</body>
-</html>
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();</script>

@@ -1,10 +1,7 @@
 +++
 title = "Filter DSL"
-description = "sipnab filter DSL reference: grammar, fields, operators, named aliases, and example queries."
 weight = 5
-
-[extra]
-weight = 5
+description = "Declarative filter language for matching SIP dialogs and RTP streams."
 +++
 
 sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the `--filter` CLI flag or the `expression` key in the `[filter]` config section.
@@ -81,7 +78,6 @@ All 24 addressable fields, organized by type.
 | `=~` | string | Regex match (Rust regex syntax) |
 
 Notes:
-
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
 - Numeric equality uses epsilon comparison for floating-point precision.
