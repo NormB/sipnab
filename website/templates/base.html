@@ -40,6 +40,7 @@
       </button>
 
       <div class="nav-links" id="nav-links">
+        <a href="{{ get_url(path='@/analyze/_index.md') }}" {% if current_path is defined and current_path is starting_with("/analyze") %}class="active"{% endif %}>Analyze</a>
         <a href="{{ get_url(path='@/docs/_index.md') }}" {% if current_path is defined and current_path is starting_with("/docs") %}class="active"{% endif %}>Docs</a>
         <a href="{{ get_url(path='@/docs/install.md') }}" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
         <a href="{{ get_url(path='@/docs/cli.md') }}" {% if current_path is defined and current_path == "/docs/cli/" %}class="active"{% endif %}>CLI</a>
