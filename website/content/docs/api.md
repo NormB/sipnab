@@ -263,7 +263,76 @@ const dialog = await resp.json();
 console.log(`State: ${dialog.state}`);
 ```
 
-**Response:** Full dialog JSON including all SIP messages, SDP timeline, transaction timing, associated RTP streams, and media diagnosis. Returns `404` if the Call-ID is not found.
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "call_id": "12013223@200.57.7.195",
+  "from": "alice",
+  "to": "bob",
+  "from_display": "Alice Smith",
+  "to_display": "Bob Jones",
+  "state": "Completed",
+  "method": "INVITE",
+  "msg_count": 8,
+  "duration_sec": 45.2,
+  "tags": [],
+  "timing": {
+    "pdd_ms": 847,
+    "setup_ms": 2134,
+    "ring_ms": 1287,
+    "trying_delay_ms": 12,
+    "teardown_ms": 45,
+    "retransmits": 0
+  },
+  "sdp_timeline": [
+    {
+      "timestamp": "2026-04-13T10:30:00Z",
+      "direction": "offer",
+      "codecs": ["PCMU", "PCMA", "telephone-event"],
+      "media_addr": "10.0.0.1",
+      "media_port": 10000,
+      "mode": "sendrecv"
+    },
+    {
+      "timestamp": "2026-04-13T10:30:02Z",
+      "direction": "answer",
+      "codecs": ["PCMU", "telephone-event"],
+      "media_addr": "10.0.0.2",
+      "media_port": 20000,
+      "mode": "sendrecv"
+    }
+  ],
+  "diagnosis": {
+    "one_way_audio": false,
+    "nat_mismatch": false,
+    "no_media": false,
+    "hints": []
+  },
+  "streams": [
+    {
+      "schema_version": 1,
+      "ssrc": "0x1a2b3c4d",
+      "codec": "PCMU",
+      "payload_type": 0,
+      "src": "10.0.0.1:10000",
+      "dst": "10.0.0.2:20000",
+      "packets": 4820,
+      "octets": 771200,
+      "jitter_ms": 2.1,
+      "loss_pct": 0.0,
+      "orphaned": false,
+      "associated_dialog": "12013223@200.57.7.195",
+      "first_seen": "2026-04-13T10:30:02Z",
+      "last_seen": "2026-04-13T10:30:47Z",
+      "quality_intervals": []
+    }
+  ]
+}
+```
+
+Returns `404` if the Call-ID is not found.
 
 ---
 
@@ -739,7 +808,7 @@ sipnab -d eth0 -H 10.0.0.50:9060
 
 ## Event Execution
 
-sipnab can execute external commands on dialog state changes or quality drops. The command receives event data as JSON on stdin.
+sipnab can execute external commands on dialog state changes or quality drops. The command receives event data as JSON on stdin. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
 
 ```bash
 # Run a script when any dialog changes state

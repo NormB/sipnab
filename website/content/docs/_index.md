@@ -5,4 +5,29 @@ template = "section.html"
 page_template = "page.html"
 +++
 
-sipnab is a SIP & RTP capture, analysis, and security tool. One Rust binary providing interactive TUI, CLI batch mode, REST API, and browser-based analysis. Features include RTP quality monitoring, VoIP diagnostics, filter DSL, and security analysis.
+## What is sipnab?
+
+sipnab is a network analysis tool for Voice over IP. It captures and decodes SIP signaling (the protocol that sets up, modifies, and tears down phone calls) alongside the RTP media streams that carry the actual audio. Whether you are debugging call quality problems, auditing a VoIP platform for security issues, or simply trying to understand what is happening on the wire, sipnab gives you one Rust binary that covers interactive TUI, CLI batch mode, REST API, and browser-based analysis.
+
+## Documentation Overview
+
+- [**Install**](@/docs/install.md) -- Build from source, binary downloads, Docker, feature flags
+- [**CLI Reference**](@/docs/cli.md) -- Complete flag reference organized by functional group
+- [**Filter DSL**](@/docs/filter-dsl.md) -- Query language for filtering calls and streams
+- [**Configuration**](@/docs/config.md) -- TOML config file reference with all settings
+- [**Keybindings**](@/docs/keybindings.md) -- TUI keyboard shortcuts and navigation
+- [**Theme**](@/docs/theme.md) -- Color customization with preset themes
+- [**REST API**](@/docs/api.md) -- HTTP API, Prometheus metrics, HEP integration
+
+## Quick Start
+
+```bash
+# Analyze a pcap file
+sipnab -I capture.pcap
+
+# Live capture on eth0
+sudo sipnab -d eth0
+
+# Find problematic calls
+sipnab -N -I capture.pcap --problems --json
+```
