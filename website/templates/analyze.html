@@ -4,7 +4,7 @@
 {% block description %}{{ section.description }}{% endblock description %}
 
 {% block head_extra %}
-<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=5">
+<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=6">
 {% endblock head_extra %}
 
 {% block content %}
@@ -114,9 +114,9 @@
 
   <!-- F-key bar at bottom -- always visible -->
   <div class="fkey-bar" id="fkey-bar">
-    <span class="fkey"><b>h</b> Help</span>
+    <span class="fkey"><b>h/?</b> Help</span>
     <span class="fkey"><b>j/k</b> Nav</span>
-    <span class="fkey"><b>F2</b> Export</span>
+    <span class="fkey"><b>e</b> Export</span>
     <span class="fkey"><b>/</b> Search</span>
     <span class="fkey"><b>O</b> Open</span>
     <span class="fkey"><b>q</b> Clear</span>
@@ -135,9 +135,9 @@
         <tr><td><kbd>Enter</kbd></td><td>Select dialog / open call flow</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Step back (deselect message &#x2192; dialog &#x2192; blur)</td></tr>
         <tr><th colspan="2">Actions</th></tr>
-        <tr><td><kbd>h</kbd> / <kbd>F1</kbd></td><td>Toggle this help popup</td></tr>
-        <tr><td><kbd>F2</kbd></td><td>Open export menu (JSON / CSV / Mermaid)</td></tr>
-        <tr><td><kbd>/</kbd> / <kbd>F3</kbd> / <kbd>F7</kbd></td><td>Focus search / filter input</td></tr>
+        <tr><td><kbd>h</kbd> / <kbd>?</kbd> / <kbd>F1</kbd></td><td>Toggle this help popup</td></tr>
+        <tr><td><kbd>e</kbd> / <kbd>F2</kbd></td><td>Open export menu (JSON / CSV / Mermaid)</td></tr>
+        <tr><td><kbd>/</kbd> / <kbd>f</kbd> / <kbd>F3</kbd></td><td>Focus search / filter input</td></tr>
         <tr><td><kbd>O</kbd></td><td>Open a new pcap file</td></tr>
         <tr><td><kbd>q</kbd></td><td>Clear data and return to drop zone</td></tr>
         <tr><th colspan="2">Search</th></tr>
@@ -150,7 +150,7 @@
 
 </div>
 
-<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=5"></script>
+<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=6"></script>
 {% endblock content %}
 
 {% block footer %}{% endblock footer %}
