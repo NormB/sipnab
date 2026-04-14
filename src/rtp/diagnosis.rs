@@ -69,12 +69,32 @@ pub fn diagnose_media(
         .any(|(src, dst)| directions.iter().any(|(s2, d2)| s2 == dst && d2 == src));
 
     if !has_bidirectional && !dialog_streams.is_empty() {
-        diag.one_way_audio = true;
-        if let Some(dir) = directions.first() {
-            diag.hints.push(format!(
-                "RTP from {} -> {} only. No reverse media flow detected.",
-                dir.0, dir.1
-            ));
+        // Check if comfort noise explains the asymmetry before flagging one-way audio
+        let total_cn: u32 = dialog_streams.iter().map(|s| s.cn_frames).sum();
+        let total_packets: u64 = dialog_streams.iter().map(|s| s.packet_count).sum();
+        let cn_suppressed = if total_cn > 0 && total_packets > 0 {
+            let cn_ratio = total_cn as f64 / total_packets as f64;
+            if cn_ratio > 0.3 {
+                diag.hints.push(format!(
+                    "Asymmetric media may be due to comfort noise ({:.0}% CN frames).",
+                    cn_ratio * 100.0
+                ));
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !cn_suppressed {
+            diag.one_way_audio = true;
+            if let Some(dir) = directions.first() {
+                diag.hints.push(format!(
+                    "RTP from {} -> {} only. No reverse media flow detected.",
+                    dir.0, dir.1
+                ));
+            }
         }
     }
 

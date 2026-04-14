@@ -1,0 +1,24 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ Statistics ──────────────────────────────────────────────┐
+│sipnab Statistics                                         │
+│                                                          │
+│Dialogs:           0                                      │
+│Active Calls:      0                                      │
+│Total Messages:    0                                      │
+│RTP Streams:       0                                      │
+│Orphaned Streams:  0                                      │
+│                                                          │
+│Press Esc to return.                                      │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+Esc Back

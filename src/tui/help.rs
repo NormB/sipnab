@@ -5,7 +5,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -33,6 +33,7 @@ CALL LIST:
   F5               Clear calls
   F6               Show raw SIP message
   F7               Filter dialog
+  t                Cycle timestamps (absolute / delta-prev / delta-first)
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams
@@ -72,8 +73,8 @@ RTP STREAMS (Tab):
 Press Esc or F1 to close this help.";
 
 /// Render the help view.
-pub fn render_help(frame: &mut Frame, area: Rect) {
-    let lines = build_help_lines();
+pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme) {
+    let lines = build_help_lines(theme);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -87,7 +88,7 @@ pub fn render_help(frame: &mut Frame, area: Rect) {
 }
 
 /// Build styled help lines from the help text.
-fn build_help_lines() -> Vec<Line<'static>> {
+fn build_help_lines(theme: &super::Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for text_line in HELP_TEXT.lines() {
@@ -96,7 +97,7 @@ fn build_help_lines() -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(
                 text_line.to_string(),
                 Style::default()
-                    .fg(Color::Cyan)
+                    .fg(theme.header)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if !text_line.starts_with(' ') && text_line.ends_with(':') {
@@ -104,7 +105,7 @@ fn build_help_lines() -> Vec<Line<'static>> {
             lines.push(Line::from(Span::styled(
                 text_line.to_string(),
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD),
             )));
         } else if text_line.starts_with("  ") && text_line.contains("  ") {
@@ -117,7 +118,7 @@ fn build_help_lines() -> Vec<Line<'static>> {
                     Span::raw("  "),
                     Span::styled(
                         format!("{:<18}", key_part),
-                        Style::default().fg(Color::Green),
+                        Style::default().fg(theme.good),
                     ),
                     Span::raw(desc_part.to_string()),
                 ]));
@@ -129,7 +130,7 @@ fn build_help_lines() -> Vec<Line<'static>> {
         } else {
             lines.push(Line::from(Span::styled(
                 text_line.to_string(),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.muted),
             )));
         }
     }
@@ -214,7 +215,8 @@ mod tests {
 
     #[test]
     fn build_help_lines_non_empty() {
-        let lines = build_help_lines();
+        let theme = crate::tui::Theme::default();
+        let lines = build_help_lines(&theme);
         assert!(!lines.is_empty());
         assert!(lines.len() > 10);
     }

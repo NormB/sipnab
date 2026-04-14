@@ -5,8 +5,8 @@
 //! secrets (the keylog already provides derived per-direction secrets,
 //! so only HKDF-Expand-Label is needed to derive key + IV).
 //!
-//! TLS 1.2 with `CLIENT_RANDOM` requires the full TLS PRF key derivation,
-//! which is planned but not yet implemented.
+//! TLS 1.2 with `CLIENT_RANDOM` is supported via `tls12_prf()` and
+//! `derive_tls12_keys()` — requires observing the ServerHello on the wire.
 
 use std::collections::HashMap;
 use std::net::IpAddr;

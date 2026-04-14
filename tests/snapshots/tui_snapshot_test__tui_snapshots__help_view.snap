@@ -28,6 +28,7 @@ expression: output
 │  F5                Clear calls                                               │
 │  F6                Show raw SIP message                                      │
 │  F7                Filter dialog                                             │
+│  t                 Cycle timestamps (absolute / delta-prev / delta-first)    │
 │  F9                Clear active filter                                       │
 │  F10               Column selector                                           │
 │  Tab               Switch to RTP Streams                                     │
@@ -39,6 +40,5 @@ expression: output
 │  Enter             Full-screen raw message                                   │
 │  Space             Select message for diff (press twice to compare)          │
 │  Esc               Back to call list                                         │
-│  d                 Cycle SDP display (none / summary / full)                 │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

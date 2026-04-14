@@ -59,6 +59,8 @@ pub struct SipMessage {
     pub dst_port: u16,
     /// Transport protocol used to carry this message.
     pub transport: TransportProto,
+    /// Whether this message is a retransmission of a previously seen message.
+    pub is_retransmission: bool,
 }
 
 impl SipMessage {

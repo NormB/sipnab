@@ -1,0 +1,34 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 1 (1 displayed)  [A]
+ Match Expression:     BPF Filter:
+ SDP: Summary
+             10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE ────────────────────────┐
+             │                                            │ │INVITE sip:2002@10.0.0.2 SIP/2.0      │
+▎     +0.000s│────────────── INVITE (SDP) ───────────────▶│ │Via: SIP/2.0/UDP                      │
+               Codecs: PCMU, PCMA                           │10.0.0.1:5060;branch=z9hG4bK-sdp-call@│
+     +2.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │test                                  │
+                                                            │From: <sip:2001@10.0.0.1>;tag=t1      │
+                                                            │To: <sip:2002@10.0.0.2>               │
+                                                            │Call-ID: sdp-call@test                │
+                                                            │CSeq: 1 INVITE                        │
+                                                            │Content-Type: application/sdp         │
+                                                            │Content-Length: 142                   │
+                                                            │                                      │
+                                                            │v=0                                   │
+                                                            │o=- 123456 654321 IN IP4 10.0.0.1     │
+                                                            │s=-                                   │
+                                                            │c=IN IP4 10.0.0.1                     │
+                                                            │t=0 0                                 │
+                                                            │m=audio 20000 RTP/AVP 0 8             │
+                                                            │a=rtpmap:0 PCMU/8000                  │
+                                                            │a=rtpmap:8 PCMA/8000                  │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+                                                            │                                      │
+             │                                            │ │                                      │
+             10.0.0.1:5060                    10.0.0.2:5060 └──────────────────────────────────────┘
+Esc Back  ↑↓ Nav  Enter Raw  Space Diff  d SDP  t Time  c Color  R Split

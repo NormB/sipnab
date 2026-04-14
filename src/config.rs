@@ -61,9 +61,38 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
     m.insert(
         "theme",
-        ["background", "foreground", "highlight"].as_slice(),
+        [
+            "background",
+            "foreground",
+            "highlight",
+            "header",
+            "selected",
+            "accent",
+            "good",
+            "warning",
+            "bad",
+            "muted",
+            "border",
+        ]
+        .as_slice(),
     );
-    m.insert("keybindings", ["quit", "help", "filter"].as_slice());
+    m.insert(
+        "keybindings",
+        [
+            "quit",
+            "help",
+            "filter",
+            "save",
+            "search",
+            "settings",
+            "pause",
+            "autoscroll",
+            "extended_flow",
+            "clear_calls",
+            "column_selector",
+        ]
+        .as_slice(),
+    );
     m
 }
 
@@ -207,28 +236,127 @@ pub struct PrivilegeConfig {
     pub chroot: Option<String>,
 }
 
-/// TUI theme configuration.
+/// TUI theme configuration — semantic color slots.
+///
+/// Each field accepts a color name (`"red"`, `"cyan"`, `"dark_gray"`) or
+/// a hex RGB value (`"#ff8800"`). Unset fields use built-in defaults.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Background color.
+    /// Terminal background (`Reset` = inherit terminal default).
     pub background: Option<String>,
-    /// Foreground color.
+    /// Default text color.
     pub foreground: Option<String>,
-    /// Highlight color.
+    /// Legacy alias for `selected` (kept for backward compat).
     pub highlight: Option<String>,
+    /// Status bar, column headers, endpoint labels.
+    pub header: Option<String>,
+    /// Selected/highlighted row, cursor, focused item.
+    pub selected: Option<String>,
+    /// Correlation info, PDD, extended flow labels.
+    pub accent: Option<String>,
+    /// Positive quality, success states (InCall, Registered).
+    pub good: Option<String>,
+    /// Medium quality, caution states (Ringing, CANCEL).
+    pub warning: Option<String>,
+    /// Poor quality, failures, errors.
+    pub bad: Option<String>,
+    /// Separators, pipes, disabled text, timestamps.
+    pub muted: Option<String>,
+    /// Widget borders, panel frames.
+    pub border: Option<String>,
 }
 
 /// TUI keybinding overrides.
+///
+/// Each field accepts a key name: single characters (`"q"`, `"/"`),
+/// function keys (`"F1"`–`"F12"`), or special names (`"Esc"`, `"Space"`).
+/// Unset fields use built-in defaults.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
 pub struct KeybindingsConfig {
-    /// Key to quit.
+    /// Quit the application (default: `"q"`).
     pub quit: Option<String>,
-    /// Key to show help.
+    /// Show help overlay (default: `"F1"`).
     pub help: Option<String>,
-    /// Key to toggle filter.
+    /// Open filter dialog (default: `"F7"`).
     pub filter: Option<String>,
+    /// Save capture (default: `"F2"`).
+    pub save: Option<String>,
+    /// Activate search (default: `"/"`).
+    pub search: Option<String>,
+    /// Open settings popup (default: `"F8"`).
+    pub settings: Option<String>,
+    /// Pause/resume capture (default: `"p"`).
+    pub pause: Option<String>,
+    /// Toggle autoscroll (default: `"A"`).
+    pub autoscroll: Option<String>,
+    /// Toggle extended multi-leg flow (default: `"F4"`).
+    pub extended_flow: Option<String>,
+    /// Clear all calls (default: `"F5"`).
+    pub clear_calls: Option<String>,
+    /// Open column selector (default: `"F10"`).
+    pub column_selector: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Parse helpers for color and key config values (TUI feature only)
+// ---------------------------------------------------------------------------
+
+/// Parse a color name or hex RGB string into a ratatui Color.
+///
+/// Accepts: `"black"`, `"white"`, `"red"`, `"green"`, `"yellow"`, `"blue"`,
+/// `"magenta"`, `"cyan"`, `"gray"`, `"dark_gray"`, `"reset"`, or `"#RRGGBB"`.
+#[cfg(feature = "tui")]
+pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    match s.to_ascii_lowercase().as_str() {
+        "black" => Some(Color::Black),
+        "white" => Some(Color::White),
+        "red" => Some(Color::Red),
+        "green" => Some(Color::Green),
+        "yellow" => Some(Color::Yellow),
+        "blue" => Some(Color::Blue),
+        "magenta" => Some(Color::Magenta),
+        "cyan" => Some(Color::Cyan),
+        "gray" | "grey" => Some(Color::Gray),
+        "dark_gray" | "dark_grey" | "darkgray" | "darkgrey" => Some(Color::DarkGray),
+        "reset" | "default" => Some(Color::Reset),
+        hex if hex.starts_with('#') && hex.len() == 7 => {
+            let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
+            let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
+            let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
+            Some(Color::Rgb(r, g, b))
+        }
+        _ => {
+            log::warn!("Unknown color value: {s:?}");
+            None
+        }
+    }
+}
+
+/// Parse a key name into a crossterm KeyCode.
+///
+/// Accepts: single characters (`"q"`, `"/"`), function keys (`"F1"`–`"F12"`),
+/// or special names (`"Esc"`, `"Space"`, `"Enter"`, `"Tab"`).
+#[cfg(feature = "tui")]
+pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
+    use crossterm::event::KeyCode;
+    match s {
+        "Esc" | "esc" | "Escape" | "escape" => Some(KeyCode::Esc),
+        "Space" | "space" => Some(KeyCode::Char(' ')),
+        "Enter" | "enter" | "Return" | "return" => Some(KeyCode::Enter),
+        "Tab" | "tab" => Some(KeyCode::Tab),
+        "Backspace" | "backspace" => Some(KeyCode::Backspace),
+        _ if s.len() == 1 => Some(KeyCode::Char(s.chars().next().unwrap())),
+        _ if s.starts_with('F') || s.starts_with('f') => {
+            s[1..].parse::<u8>().ok().filter(|&n| (1..=12).contains(&n)).map(KeyCode::F)
+        }
+        _ => {
+            log::warn!("Unknown keybinding value: {s:?}");
+            None
+        }
+    }
 }
 
 /// The path from which a config was loaded.
@@ -450,7 +578,9 @@ filter = "/"
         assert_eq!(config.limits.dialog_limit, Some(50000));
         assert_eq!(config.privilege.user.as_deref(), Some("sipnab"));
         assert_eq!(config.theme.background.as_deref(), Some("#000000"));
+        assert_eq!(config.theme.highlight.as_deref(), Some("#ff0000"));
         assert_eq!(config.keybindings.quit.as_deref(), Some("q"));
+        assert_eq!(config.keybindings.help.as_deref(), Some("?"));
     }
 
     #[test]
@@ -495,5 +625,68 @@ filter = "/"
 
         let loaded = Config::load(Some(path.to_str().unwrap()), false).unwrap();
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
+    }
+
+    #[test]
+    fn parse_color_names() {
+        use ratatui::style::Color;
+        assert_eq!(parse_color("red"), Some(Color::Red));
+        assert_eq!(parse_color("cyan"), Some(Color::Cyan));
+        assert_eq!(parse_color("dark_gray"), Some(Color::DarkGray));
+        assert_eq!(parse_color("darkgrey"), Some(Color::DarkGray));
+        assert_eq!(parse_color("reset"), Some(Color::Reset));
+        assert_eq!(parse_color("#ff8800"), Some(Color::Rgb(255, 136, 0)));
+        assert_eq!(parse_color("bogus"), None);
+    }
+
+    #[test]
+    fn parse_keycode_values() {
+        use crossterm::event::KeyCode;
+        assert_eq!(parse_keycode("q"), Some(KeyCode::Char('q')));
+        assert_eq!(parse_keycode("/"), Some(KeyCode::Char('/')));
+        assert_eq!(parse_keycode("F1"), Some(KeyCode::F(1)));
+        assert_eq!(parse_keycode("F12"), Some(KeyCode::F(12)));
+        assert_eq!(parse_keycode("Esc"), Some(KeyCode::Esc));
+        assert_eq!(parse_keycode("Space"), Some(KeyCode::Char(' ')));
+        assert_eq!(parse_keycode("bogus_key"), None);
+    }
+
+    #[test]
+    fn parse_theme_with_new_fields() {
+        let toml_str = r##"
+[theme]
+header = "green"
+selected = "#ffaa00"
+accent = "magenta"
+good = "green"
+warning = "yellow"
+bad = "red"
+muted = "dark_gray"
+border = "white"
+"##;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.theme.header.as_deref(), Some("green"));
+        assert_eq!(config.theme.selected.as_deref(), Some("#ffaa00"));
+        assert_eq!(config.theme.muted.as_deref(), Some("dark_gray"));
+    }
+
+    #[test]
+    fn parse_keybindings_with_new_fields() {
+        let toml_str = r#"
+[keybindings]
+quit = "x"
+save = "F2"
+search = "/"
+settings = "F8"
+pause = "p"
+autoscroll = "A"
+extended_flow = "F4"
+clear_calls = "F5"
+column_selector = "F10"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.keybindings.quit.as_deref(), Some("x"));
+        assert_eq!(config.keybindings.save.as_deref(), Some("F2"));
+        assert_eq!(config.keybindings.settings.as_deref(), Some("F8"));
     }
 }

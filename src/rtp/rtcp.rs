@@ -15,6 +15,8 @@ const RTCP_PT_SR: u8 = 200;
 const RTCP_PT_RR: u8 = 201;
 /// RTCP packet type: BYE.
 const RTCP_PT_BYE: u8 = 203;
+/// RTCP Extended Report (RFC 3611).
+const RTCP_PT_XR: u8 = 207;
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -27,6 +29,8 @@ pub enum RtcpPacket {
     ReceiverReport(ReceiverReport),
     /// BYE (PT=203).
     Bye(RtcpBye),
+    /// Extended Report (PT=207, RFC 3611).
+    ExtendedReport(ExtendedReport),
     /// Unrecognized RTCP packet type, preserved for completeness.
     Unknown {
         /// The unrecognized packet type value.
@@ -86,6 +90,91 @@ pub struct RtcpBye {
     pub ssrc_list: Vec<u32>,
 }
 
+/// RTCP Extended Report (RFC 3611).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedReport {
+    /// SSRC of the XR originator.
+    pub ssrc: u32,
+    /// Report blocks.
+    pub blocks: Vec<XrBlock>,
+}
+
+/// RTCP XR report block types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum XrBlock {
+    /// VoIP Metrics Report Block (BT=7, RFC 3611 Section 4.7).
+    VoipMetrics(VoipMetrics),
+    /// Receiver Reference Time (BT=4).
+    ReceiverReferenceTime {
+        /// NTP timestamp (64-bit).
+        ntp_timestamp: u64,
+    },
+    /// Loss RLE (BT=1).
+    LossRle {
+        /// SSRC of the source being reported.
+        ssrc: u32,
+        /// Raw RLE data.
+        data: Vec<u8>,
+    },
+    /// Duplicate RLE (BT=2).
+    DuplicateRle {
+        /// SSRC of the source being reported.
+        ssrc: u32,
+        /// Raw RLE data.
+        data: Vec<u8>,
+    },
+    /// Unknown block type.
+    Unknown {
+        /// The unrecognized block type value.
+        block_type: u8,
+    },
+}
+
+/// VoIP Metrics Report Block (RFC 3611 Section 4.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoipMetrics {
+    /// SSRC of the source being reported.
+    pub ssrc: u32,
+    /// Fraction of RTP data packets lost (0-255).
+    pub loss_rate: u8,
+    /// Fraction of RTP data packets discarded (0-255).
+    pub discard_rate: u8,
+    /// Fraction of RTP data packets within burst periods (0-255).
+    pub burst_density: u8,
+    /// Fraction of RTP data packets within gap periods (0-255).
+    pub gap_density: u8,
+    /// Mean duration of burst periods (ms).
+    pub burst_duration: u16,
+    /// Mean duration of gap periods (ms).
+    pub gap_duration: u16,
+    /// Round trip delay (ms).
+    pub round_trip_delay: u16,
+    /// End system delay (ms).
+    pub end_system_delay: u16,
+    /// Voice signal relative level (dBm0).
+    pub signal_level: u8,
+    /// Noise level (dBm0).
+    pub noise_level: u8,
+    /// Residual echo return loss (dB).
+    pub rerl: u8,
+    /// Gap threshold.
+    pub gmin: u8,
+    /// Voice quality R factor.
+    pub r_factor: u8,
+    /// External R factor.
+    pub ext_r_factor: u8,
+    /// MOS for listening quality (x10).
+    pub mos_lq: u8,
+    /// MOS for conversational quality (x10).
+    pub mos_cq: u8,
+    /// Nominal jitter buffer delay (ms).
+    pub jb_nominal: u16,
+    /// Maximum jitter buffer delay (ms).
+    pub jb_maximum: u16,
+    /// Absolute maximum jitter buffer delay (ms).
+    pub jb_abs_max: u16,
+}
+
 // ── Parser ───────────────────────────────────────────────────────────
 
 /// Minimum RTCP packet header: version/padding/count(1) + PT(1) + length(2).
@@ -134,6 +223,11 @@ pub fn parse_rtcp(data: &[u8]) -> Vec<RtcpPacket> {
             RTCP_PT_BYE => {
                 if let Ok(bye) = parse_bye(pkt_data, count) {
                     packets.push(RtcpPacket::Bye(bye));
+                }
+            }
+            RTCP_PT_XR => {
+                if let Ok(xr) = parse_extended_report(pkt_data) {
+                    packets.push(RtcpPacket::ExtendedReport(xr));
                 }
             }
             _ => {
@@ -262,6 +356,109 @@ fn parse_bye(data: &[u8], ssrc_count: usize) -> Result<RtcpBye> {
     }
 
     Ok(RtcpBye { ssrc_list })
+}
+
+/// Parse Extended Report body (RFC 3611).
+fn parse_extended_report(data: &[u8]) -> Result<ExtendedReport> {
+    ensure!(data.len() >= 8, "XR too short: {} bytes", data.len());
+
+    let ssrc = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    let mut blocks = Vec::new();
+    let mut pos = 8;
+
+    while pos + 4 <= data.len() {
+        let block_type = data[pos];
+        let block_length = u16::from_be_bytes([data[pos + 2], data[pos + 3]]) as usize * 4;
+
+        if pos + 4 + block_length > data.len() {
+            break;
+        }
+
+        let block_data = &data[pos + 4..pos + 4 + block_length];
+
+        let block = match block_type {
+            7 if block_length >= 32 => match parse_voip_metrics(block_data) {
+                Ok(vm) => XrBlock::VoipMetrics(vm),
+                Err(_) => XrBlock::Unknown { block_type },
+            },
+            4 if block_length >= 8 => {
+                let ntp = u64::from_be_bytes([
+                    block_data[0],
+                    block_data[1],
+                    block_data[2],
+                    block_data[3],
+                    block_data[4],
+                    block_data[5],
+                    block_data[6],
+                    block_data[7],
+                ]);
+                XrBlock::ReceiverReferenceTime {
+                    ntp_timestamp: ntp,
+                }
+            }
+            1 if block_length >= 4 => {
+                let rle_ssrc = u32::from_be_bytes([
+                    block_data[0],
+                    block_data[1],
+                    block_data[2],
+                    block_data[3],
+                ]);
+                XrBlock::LossRle {
+                    ssrc: rle_ssrc,
+                    data: block_data[4..].to_vec(),
+                }
+            }
+            2 if block_length >= 4 => {
+                let rle_ssrc = u32::from_be_bytes([
+                    block_data[0],
+                    block_data[1],
+                    block_data[2],
+                    block_data[3],
+                ]);
+                XrBlock::DuplicateRle {
+                    ssrc: rle_ssrc,
+                    data: block_data[4..].to_vec(),
+                }
+            }
+            _ => XrBlock::Unknown { block_type },
+        };
+
+        blocks.push(block);
+        pos += 4 + block_length;
+    }
+
+    Ok(ExtendedReport { ssrc, blocks })
+}
+
+/// Parse VoIP Metrics report block data (RFC 3611 Section 4.7).
+fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
+    ensure!(
+        data.len() >= 32,
+        "VoIP Metrics block too short: {} bytes",
+        data.len()
+    );
+    Ok(VoipMetrics {
+        ssrc: u32::from_be_bytes([data[0], data[1], data[2], data[3]]),
+        loss_rate: data[4],
+        discard_rate: data[5],
+        burst_density: data[6],
+        gap_density: data[7],
+        burst_duration: u16::from_be_bytes([data[8], data[9]]),
+        gap_duration: u16::from_be_bytes([data[10], data[11]]),
+        round_trip_delay: u16::from_be_bytes([data[12], data[13]]),
+        end_system_delay: u16::from_be_bytes([data[14], data[15]]),
+        signal_level: data[16],
+        noise_level: data[17],
+        rerl: data[18],
+        gmin: data[19],
+        r_factor: data[20],
+        ext_r_factor: data[21],
+        mos_lq: data[22],
+        mos_cq: data[23],
+        jb_nominal: u16::from_be_bytes([data[24], data[25]]),
+        jb_maximum: u16::from_be_bytes([data[26], data[27]]),
+        jb_abs_max: u16::from_be_bytes([data[28], data[29]]),
+    })
 }
 
 #[cfg(test)]
@@ -415,5 +612,79 @@ mod tests {
             &packets[0],
             RtcpPacket::Unknown { packet_type: 210 }
         ));
+    }
+
+    #[test]
+    fn parse_xr_voip_metrics() {
+        // Build a minimal XR packet with VoIP Metrics block
+        let mut data = Vec::new();
+        // RTCP header: V=2, P=0, reserved=0, PT=207, length=10 (44 bytes total)
+        data.push(0x80); // V=2, P=0, count=0
+        data.push(207); // PT=XR
+        data.extend_from_slice(&10u16.to_be_bytes()); // length in 32-bit words minus 1
+        data.extend_from_slice(&0x12345678u32.to_be_bytes()); // SSRC
+
+        // XR block: BT=7 (VoIP Metrics), type-specific=0, length=8 (32 bytes)
+        data.push(7); // block type
+        data.push(0); // type-specific
+        data.extend_from_slice(&8u16.to_be_bytes()); // block length in 32-bit words
+
+        // VoIP Metrics data (32 bytes)
+        data.extend_from_slice(&0xAABBCCDDu32.to_be_bytes()); // SSRC
+        data.push(10); // loss_rate
+        data.push(5); // discard_rate
+        data.push(20); // burst_density
+        data.push(15); // gap_density
+        data.extend_from_slice(&100u16.to_be_bytes()); // burst_duration
+        data.extend_from_slice(&200u16.to_be_bytes()); // gap_duration
+        data.extend_from_slice(&50u16.to_be_bytes()); // round_trip_delay
+        data.extend_from_slice(&25u16.to_be_bytes()); // end_system_delay
+        data.push(128); // signal_level
+        data.push(64); // noise_level
+        data.push(32); // rerl
+        data.push(16); // gmin
+        data.push(80); // r_factor
+        data.push(70); // ext_r_factor
+        data.push(35); // mos_lq
+        data.push(40); // mos_cq
+        data.extend_from_slice(&60u16.to_be_bytes()); // jb_nominal
+        data.extend_from_slice(&80u16.to_be_bytes()); // jb_maximum
+        data.extend_from_slice(&120u16.to_be_bytes()); // jb_abs_max
+        // Pad to full block (30 bytes of metrics data + 2 padding = 32)
+        data.extend_from_slice(&[0, 0]);
+
+        let packets = parse_rtcp(&data);
+        assert_eq!(packets.len(), 1);
+        match &packets[0] {
+            RtcpPacket::ExtendedReport(xr) => {
+                assert_eq!(xr.ssrc, 0x12345678);
+                assert_eq!(xr.blocks.len(), 1);
+                match &xr.blocks[0] {
+                    XrBlock::VoipMetrics(vm) => {
+                        assert_eq!(vm.ssrc, 0xAABBCCDD);
+                        assert_eq!(vm.loss_rate, 10);
+                        assert_eq!(vm.r_factor, 80);
+                        assert_eq!(vm.mos_lq, 35);
+                    }
+                    other => panic!("Expected VoipMetrics, got {:?}", other),
+                }
+            }
+            other => panic!("Expected ExtendedReport, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_xr_truncated() {
+        // XR with header but SSRC field would be at bytes 4..8, which is missing
+        // Length=0 means total packet = 4 bytes (just the header)
+        let data = vec![0x80, 207, 0, 0];
+        let packets = parse_rtcp(&data);
+        // parse_extended_report requires >= 8 bytes, so this should fail silently
+        assert!(
+            packets.is_empty()
+                || packets
+                    .iter()
+                    .all(|p| !matches!(p, RtcpPacket::ExtendedReport(_)))
+        );
     }
 }
