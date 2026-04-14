@@ -2756,15 +2756,15 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 "Raw preview: OFF".to_string()
             });
         }
-        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Right => {
-            // Increase detail panel size (make right panel wider)
+        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Left => {
+            // Increase detail panel size (Left = push split leftward = detail wider)
             if app.raw_preview && app.raw_preview_pct < 80 {
                 app.raw_preview_pct = (app.raw_preview_pct + 5).min(80);
                 app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
             }
         }
-        KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Left => {
-            // Decrease detail panel size (make left panel wider)
+        KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Right => {
+            // Decrease detail panel size (Right = push split rightward = ladder wider)
             if app.raw_preview && app.raw_preview_pct > 10 {
                 app.raw_preview_pct = app.raw_preview_pct.saturating_sub(5).max(10);
                 app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));

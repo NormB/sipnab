@@ -739,6 +739,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
+    use crate::capture::parse::TransportProto;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
