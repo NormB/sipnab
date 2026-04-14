@@ -77,7 +77,7 @@ The `--api-max-conn` flag (default: 100) limits concurrent API connections to pr
 
 ## Endpoint Reference
 
-All API endpoints are prefixed with `/v1/` (no `/api` prefix). The base URL is whatever you pass to `--api`.
+The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
 
 ### GET /health
 
