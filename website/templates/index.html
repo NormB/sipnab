@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+
+{% block title %}{{ config.title }} -- {{ config.description }}{% endblock %}
+{% block description %}{{ config.description }}. The modern replacement for sngrep + sipgrep, written in Rust.{% endblock %}
+
+{% block content %}
+{{ section.content | safe }}
+{% endblock %}

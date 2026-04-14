@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Installation -- sipnab</title>
+  <meta name="description" content="How to install sipnab: pre-built binaries, cargo, package managers, Docker, and building from source.">
+  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="https://www.sipnab.com/docs/">Docs</a>
+    
+    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </a>
+    
+    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<!-- Search overlay -->
+
+<div id="search-overlay" class="search-overlay" style="display:none;">
+  <div class="search-container">
+    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
+    <div id="search-results" class="search-results"></div>
+  </div>
+</div>
+
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="https://www.sipnab.com/docs/install/" class="indent active">Installation</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
+      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
+      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
+      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
+      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
+      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Project</div>
+      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
+      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<main class="main">
+  
+<h1>Installation</h1>
+
+
+<nav class="toc">
+  <h4>On this page</h4>
+  <ul>
+    
+    <li><a href="#prerequisites">Prerequisites</a>
+      
+    </li>
+    
+    <li><a href="#pre-built-binaries">Pre-built Binaries</a>
+      
+    </li>
+    
+    <li><a href="#cargo-from-source">Cargo (from source)</a>
+      
+    </li>
+    
+    <li><a href="#package-managers">Package Managers</a>
+      
+      <ul>
+        
+        <li><a href="#debian-ubuntu-deb">Debian&#x2F;Ubuntu (.deb)</a></li>
+        
+        <li><a href="#rhel-fedora-rpm">RHEL&#x2F;Fedora (.rpm)</a></li>
+        
+        <li><a href="#homebrew-macos">Homebrew (macOS)</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#building-from-source">Building from Source</a>
+      
+      <ul>
+        
+        <li><a href="#basic-build-tui-only-default-features">Basic build (TUI only, default features)</a></li>
+        
+        <li><a href="#full-features-build">Full-features build</a></li>
+        
+        <li><a href="#debug-build-with-logging">Debug build with logging</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#feature-flags">Feature Flags</a>
+      
+    </li>
+    
+    <li><a href="#release-profile">Release Profile</a>
+      
+    </li>
+    
+    <li><a href="#cross-compilation">Cross-Compilation</a>
+      
+    </li>
+    
+    <li><a href="#docker">Docker</a>
+      
+      <ul>
+        
+        <li><a href="#run-from-pre-built-image">Run from pre-built image</a></li>
+        
+        <li><a href="#build-the-docker-image-locally">Build the Docker image locally</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#platform-notes">Platform Notes</a>
+      
+      <ul>
+        
+        <li><a href="#linux">Linux</a></li>
+        
+        <li><a href="#macos">macOS</a></li>
+        
+        <li><a href="#freebsd-other">FreeBSD &#x2F; Other</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#verify-installation">Verify Installation</a>
+      
+    </li>
+    
+  </ul>
+</nav>
+
+
+<h2 id="prerequisites">Prerequisites</h2>
+<ul>
+<li><strong>Rust 1.92+</strong> (for building from source)</li>
+<li><strong>libpcap headers</strong> (<code>libpcap-dev</code> on Debian/Ubuntu, <code>libpcap-devel</code> on RHEL/Fedora)</li>
+<li><strong>pkg-config</strong> (for libpcap detection during build)</li>
+</ul>
+<h2 id="pre-built-binaries">Pre-built Binaries</h2>
+<p>Download from <a rel="external" href="https://github.com/NormB/sipnab/releases">GitHub Releases</a>:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Linux x86_64 (static musl)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -LO</span><span style="color: #AAD94C;"> https://github.com/NormB/sipnab/releases/latest/download/sipnab-x86_64-unknown-linux-musl</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">chmod</span><span style="color: #AAD94C;"> +x sipnab-x86_64-unknown-linux-musl</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> mv sipnab-x86_64-unknown-linux-musl /usr/local/bin/sipnab</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Linux aarch64 (static musl)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -LO</span><span style="color: #AAD94C;"> https://github.com/NormB/sipnab/releases/latest/download/sipnab-aarch64-unknown-linux-musl</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">chmod</span><span style="color: #AAD94C;"> +x sipnab-aarch64-unknown-linux-musl</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> mv sipnab-aarch64-unknown-linux-musl /usr/local/bin/sipnab</span></span></code></pre><h2 id="cargo-from-source">Cargo (from source)</h2>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> install sipnab</span><span style="color: #95E6CB;"> --features</span><span style="color: #AAD94C;"> full</span></span></code></pre><h2 id="package-managers">Package Managers</h2>
+<h3 id="debian-ubuntu-deb">Debian/Ubuntu (.deb)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> dpkg</span><span style="color: #95E6CB;"> -i</span><span style="color: #AAD94C;"> sipnab_0.3.1_amd64.deb</span></span></code></pre><h3 id="rhel-fedora-rpm">RHEL/Fedora (.rpm)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> rpm</span><span style="color: #95E6CB;"> -i</span><span style="color: #AAD94C;"> sipnab-0.3.1-1.x86_64.rpm</span></span></code></pre><h3 id="homebrew-macos">Homebrew (macOS)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">brew</span><span style="color: #AAD94C;"> install sipnab</span></span></code></pre><h2 id="building-from-source">Building from Source</h2>
+<h3 id="basic-build-tui-only-default-features">Basic build (TUI only, default features)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">git</span><span style="color: #AAD94C;"> clone https://github.com/NormB/sipnab.git</span></span>
+<span class="giallo-l"><span style="color: #F07178;">cd</span><span style="color: #AAD94C;"> sipnab</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> cp target/release/sipnab /usr/local/bin/</span></span></code></pre><h3 id="full-features-build">Full-features build</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span></span></code></pre><h3 id="debug-build-with-logging">Debug build with logging</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>SIPNAB_LOG</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">trace</span><span style="color: #59C2FF;"> cargo</span><span style="color: #AAD94C;"> run</span><span style="color: #95E6CB;"> -- -N -I</span><span style="color: #AAD94C;"> test.pcap</span></span></code></pre><h2 id="feature-flags">Feature Flags</h2>
+<p>sipnab uses Cargo feature flags to control optional functionality. The <code>default</code> feature includes <code>tui</code> only.</p>
+<table><thead><tr><th>Feature</th><th>Description</th><th>Dependencies</th></tr></thead><tbody>
+<tr><td><code>tui</code></td><td>Interactive terminal UI (ratatui + crossterm). <strong>Included by default.</strong></td><td><code>ratatui</code>, <code>crossterm</code>, <code>unicode-width</code></td></tr>
+<tr><td><code>tls</code></td><td>TLS/DTLS decryption and SRTP key extraction (pure Rust)</td><td><code>ring</code>, <code>rustls</code>, <code>aes</code>, <code>cbc</code>, <code>zeroize</code></td></tr>
+<tr><td><code>hep</code></td><td>HEP v2/v3 support (Homer Encapsulation Protocol)</td><td>-- (no extra deps)</td></tr>
+<tr><td><code>api</code></td><td>REST API + Prometheus metrics endpoint (runs in isolated child process)</td><td><code>axum</code>, <code>tokio</code></td></tr>
+<tr><td><code>full</code></td><td>All of the above: <code>tui</code> + <code>tls</code> + <code>hep</code> + <code>api</code></td><td>all</td></tr>
+</tbody></table>
+<p>Build with specific features:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># TUI + TLS only</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> tui,tls</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Headless with HEP (no TUI)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features --features</span><span style="color: #AAD94C;"> hep</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Everything</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span></span></code></pre><h2 id="release-profile">Release Profile</h2>
+<p>The release build uses LTO, single codegen unit, and symbol stripping for a small binary:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">profile</span><span>.</span><span style="color: #59C2FF;">release</span><span>]</span></span>
+<span class="giallo-l"><span>lto</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
+<span class="giallo-l"><span>codegen-units</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 1</span></span>
+<span class="giallo-l"><span>strip</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span></code></pre>
+<p>Target binary size (musl, stripped): &lt;= 5 MB.</p>
+<h2 id="cross-compilation">Cross-Compilation</h2>
+<p>sipnab uses <a rel="external" href="https://github.com/cross-rs/cross">cross</a> for cross-compilation. Supported targets are configured in <code>Cross.toml</code>:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Install cross</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> install cross</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Build for aarch64 Linux</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cross</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span><span style="color: #95E6CB;"> --target</span><span style="color: #AAD94C;"> aarch64-unknown-linux-gnu</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Build for x86_64 Linux</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cross</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span><span style="color: #95E6CB;"> --target</span><span style="color: #AAD94C;"> x86_64-unknown-linux-gnu</span></span></code></pre>
+<p>The cross images automatically install the required <code>libpcap-dev</code> headers for the target architecture.</p>
+<h2 id="docker">Docker</h2>
+<h3 id="run-from-pre-built-image">Run from pre-built image</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">docker</span><span style="color: #AAD94C;"> run</span><span style="color: #95E6CB;"> --rm --net=host</span><span style="color: #AAD94C;"> ghcr.io/normb/sipnab:latest</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span></span></code></pre>
+<p><code>--net=host</code> is required for live capture. For reading pcap files, mount the file into the container:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">docker</span><span style="color: #AAD94C;"> run</span><span style="color: #95E6CB;"> --rm -v</span><span style="color: #AAD94C;"> /path/to/capture.pcap:/data/capture.pcap</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">  ghcr.io/normb/sipnab:latest</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> /data/capture.pcap</span></span></code></pre><h3 id="build-the-docker-image-locally">Build the Docker image locally</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">docker</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> -t</span><span style="color: #AAD94C;"> sipnab .</span></span></code></pre>
+<p>The multi-stage Dockerfile uses <code>rust:1.92-slim-bookworm</code> for the build stage and <code>debian:bookworm-slim</code> for the runtime image. The runtime image includes only <code>libpcap0.8</code> and runs as a non-root <code>sipnab</code> user.</p>
+<h2 id="platform-notes">Platform Notes</h2>
+<h3 id="linux">Linux</h3>
+<p>Full functionality. Live capture requires <code>CAP_NET_RAW</code> capability or root. Privilege dropping (<code>--user</code>) uses <code>setuid</code>/<code>setgid</code> after opening capture devices.</p>
+<h3 id="macos">macOS</h3>
+<p>TUI and pcap file analysis work fully. Live capture requires root or BPF device access. Install libpcap headers via Xcode Command Line Tools (included by default) or Homebrew.</p>
+<h3 id="freebsd-other">FreeBSD / Other</h3>
+<p>Should build and run. Live capture support depends on platform pcap implementation. Not regularly tested.</p>
+<h2 id="verify-installation">Verify Installation</h2>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --version</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --help</span></span></code></pre>
+
+
+
+
+
+
+
+  
+  
+    
+  
+  
+
+  
+    
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+
+<nav class="page-nav">
+  
+  <span></span>
+  
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;" class="page-nav-next">CLI Reference &rarr;</a>
+  
+</nav>
+
+</main>
+
+<script>
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.querySelector('.sidebar-overlay').classList.toggle('visible');
+}
+
+
+function toggleSearch(e) {
+  e.preventDefault();
+  var overlay = document.getElementById('search-overlay');
+  if (overlay.style.display === 'none') {
+    overlay.style.display = 'flex';
+    document.getElementById('search-input').focus();
+  } else {
+    overlay.style.display = 'none';
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.getElementById('search-overlay').style.display = 'none';
+  }
+  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    document.getElementById('search-overlay').style.display = 'flex';
+    document.getElementById('search-input').focus();
+  }
+});
+
+var searchIndex = null;
+document.getElementById('search-input').addEventListener('input', function() {
+  var query = this.value;
+  var resultsDiv = document.getElementById('search-results');
+  if (query.length < 2) { resultsDiv.textContent = ''; return; }
+  if (!searchIndex) {
+    fetch('https://www.sipnab.com/search_index.en.json')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        searchIndex = elasticlunr.Index.load(data);
+        doSearch(query);
+      });
+  } else {
+    doSearch(query);
+  }
+});
+
+function doSearch(query) {
+  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
+  var resultsDiv = document.getElementById('search-results');
+  resultsDiv.textContent = '';
+  if (results.length === 0) {
+    var noResults = document.createElement('div');
+    noResults.className = 'search-no-results';
+    noResults.textContent = 'No results found.';
+    resultsDiv.appendChild(noResults);
+    return;
+  }
+  results.slice(0, 10).forEach(function(r) {
+    var item = searchIndex.documentStore.getDoc(r.ref);
+    var link = document.createElement('a');
+    link.href = r.ref;
+    link.className = 'search-result-item';
+    var title = document.createElement('div');
+    title.className = 'search-result-title';
+    title.textContent = item.title;
+    link.appendChild(title);
+    if (item.body) {
+      var body = document.createElement('div');
+      body.className = 'search-result-body';
+      body.textContent = item.body.substring(0, 150) + '...';
+      link.appendChild(body);
+    }
+    resultsDiv.appendChild(link);
+  });
+}
+
+
+document.querySelectorAll('pre').forEach(function(block) {
+  block.addEventListener('click', function() {
+    var code = block.querySelector('code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(function() {
+        block.classList.add('copied');
+        setTimeout(function() { block.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
+});
+</script>
+
+
+<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+
+
+</body>
+</html>

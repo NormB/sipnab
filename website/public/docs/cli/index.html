@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CLI Reference -- sipnab</title>
+  <meta name="description" content="Complete reference for all sipnab command-line flags, organized by functional group.">
+  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="https://www.sipnab.com/docs/">Docs</a>
+    
+    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </a>
+    
+    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<!-- Search overlay -->
+
+<div id="search-overlay" class="search-overlay" style="display:none;">
+  <div class="search-container">
+    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
+    <div id="search-results" class="search-results"></div>
+  </div>
+</div>
+
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="https://www.sipnab.com/docs/cli/" class="indent active">CLI Flags</a>
+      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
+      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
+      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
+      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
+      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Project</div>
+      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
+      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<main class="main">
+  
+<h1>CLI Reference</h1>
+
+
+<nav class="toc">
+  <h4>On this page</h4>
+  <ul>
+    
+    <li><a href="#capture">Capture</a>
+      
+    </li>
+    
+    <li><a href="#mode">Mode</a>
+      
+    </li>
+    
+    <li><a href="#matching">Matching</a>
+      
+    </li>
+    
+    <li><a href="#diagnostic-aliases">Diagnostic Aliases</a>
+      
+    </li>
+    
+    <li><a href="#output">Output</a>
+      
+    </li>
+    
+    <li><a href="#dialog">Dialog</a>
+      
+    </li>
+    
+    <li><a href="#rtp">RTP</a>
+      
+    </li>
+    
+    <li><a href="#security">Security</a>
+      
+    </li>
+    
+    <li><a href="#event-execution">Event Execution</a>
+      
+    </li>
+    
+    <li><a href="#network-listeners">Network Listeners</a>
+      
+    </li>
+    
+    <li><a href="#tls-decryption">TLS &#x2F; Decryption</a>
+      
+    </li>
+    
+    <li><a href="#privilege">Privilege</a>
+      
+    </li>
+    
+    <li><a href="#resource-limits">Resource Limits</a>
+      
+    </li>
+    
+    <li><a href="#config">Config</a>
+      
+    </li>
+    
+    <li><a href="#validation-rules">Validation Rules</a>
+      
+    </li>
+    
+    <li><a href="#examples">Examples</a>
+      
+    </li>
+    
+  </ul>
+</nav>
+
+
+<p>Complete flag reference for sipnab. Flags are organized by functional group.</p>
+<p>CLI flags always override config file values. Boolean flags default to <code>off</code> (false) unless otherwise noted.</p>
+<h2 id="capture">Capture</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-d</code>, <code>--device</code></td><td><code>&lt;IFACE&gt;</code></td><td>--</td><td>Network interface to capture on</td></tr>
+<tr><td><code>-I</code>, <code>--input</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>Read packets from a pcap file instead of live capture</td></tr>
+<tr><td><code>-O</code>, <code>--output</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>Write captured packets to a pcap file</td></tr>
+<tr><td><code>-B</code>, <code>--buffer</code></td><td><code>&lt;MIB&gt;</code></td><td>OS default</td><td>Kernel capture buffer size in MiB</td></tr>
+<tr><td><code>--snaplen</code></td><td><code>&lt;BYTES&gt;</code></td><td>OS default</td><td>Snapshot length for packet capture (bytes)</td></tr>
+<tr><td><code>--portrange</code></td><td><code>&lt;RANGE&gt;</code></td><td><code>5060-5061</code></td><td>SIP port range to capture</td></tr>
+<tr><td><code>--multi-device</code></td><td>--</td><td>off</td><td>Capture on all available interfaces</td></tr>
+<tr><td><code>--no-rtp</code></td><td>--</td><td>off</td><td>Disable RTP capture and analysis</td></tr>
+<tr><td><code>--bpf-file</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>Read BPF filter from a file</td></tr>
+<tr><td><code>-n</code>, <code>--count</code></td><td><code>&lt;N&gt;</code></td><td>--</td><td>Stop after capturing N packets</td></tr>
+<tr><td><code>--duration</code></td><td><code>&lt;DURATION&gt;</code></td><td>--</td><td>Stop after duration (e.g., <code>30s</code>, <code>5m</code>, <code>1h</code>)</td></tr>
+<tr><td><code>--autostop</code></td><td><code>&lt;CONDITION&gt;</code></td><td>--</td><td>Autostop condition (e.g., <code>filesize:100</code>, <code>duration:60</code>)</td></tr>
+<tr><td><code>--split</code></td><td><code>&lt;CONDITION&gt;</code></td><td>--</td><td>Split output files (e.g., <code>filesize:50</code> for 50 MiB chunks)</td></tr>
+<tr><td><code>--replay</code></td><td>--</td><td>off</td><td>Replay packets from a pcap file at original timing</td></tr>
+<tr><td><code>--pcapng</code></td><td>--</td><td>off</td><td>Use pcapng format for output files</td></tr>
+<tr><td><code>&lt;BPF_FILTER&gt;...</code></td><td>positional</td><td>--</td><td>BPF display filter expression (trailing positional args)</td></tr>
+</tbody></table>
+<h2 id="mode">Mode</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-N</code>, <code>--no-tui</code></td><td>--</td><td>off</td><td>Non-interactive mode (no TUI). Required for batch/output flags</td></tr>
+<tr><td><code>-c</code>, <code>--calls-only</code></td><td>--</td><td>off</td><td>Show only SIP dialogs (calls), not standalone messages</td></tr>
+<tr><td><code>-t</code>, <code>--telephone-event</code></td><td>--</td><td>off</td><td>Capture and display telephone-event (DTMF) RTP payloads</td></tr>
+<tr><td><code>-q</code>, <code>--quiet</code></td><td>--</td><td>off</td><td>Suppress informational output; only show results</td></tr>
+</tbody></table>
+<h2 id="matching">Matching</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-i</code>, <code>--ignore-case</code></td><td>--</td><td>off</td><td>Case-insensitive matching for header filters and patterns</td></tr>
+<tr><td><code>-v</code>, <code>--invert</code></td><td>--</td><td>off</td><td>Invert the match: show messages that do NOT match</td></tr>
+<tr><td><code>-w</code>, <code>--word</code></td><td>--</td><td>off</td><td>Match whole words only</td></tr>
+<tr><td><code>--single-line</code></td><td>--</td><td>off</td><td>Treat multi-line SIP headers as a single line for matching</td></tr>
+<tr><td><code>--from</code></td><td><code>&lt;PATTERN&gt;</code></td><td>--</td><td>Filter by SIP From header (regex pattern)</td></tr>
+<tr><td><code>--to</code></td><td><code>&lt;PATTERN&gt;</code></td><td>--</td><td>Filter by SIP To header (regex pattern)</td></tr>
+<tr><td><code>--contact</code></td><td><code>&lt;PATTERN&gt;</code></td><td>--</td><td>Filter by SIP Contact header (regex pattern)</td></tr>
+<tr><td><code>--ua</code></td><td><code>&lt;PATTERN&gt;</code></td><td>--</td><td>Filter by User-Agent header (regex pattern)</td></tr>
+<tr><td><code>--filter</code></td><td><code>&lt;EXPR&gt;</code></td><td>--</td><td>Advanced filter DSL expression (see <a href="https://www.sipnab.com/docs/filter-dsl/">Filter DSL</a>)</td></tr>
+</tbody></table>
+<h2 id="diagnostic-aliases">Diagnostic Aliases</h2>
+<p>Shortcut flags that expand to predefined filter DSL expressions. See <a href="https://www.sipnab.com/docs/filter-dsl/">Filter DSL</a> for the exact expansion of each alias.</p>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--problems</code></td><td>--</td><td>off</td><td>Show calls with retransmits, timeouts, errors, quality issues, or NAT mismatch</td></tr>
+<tr><td><code>--slow-setup</code></td><td>--</td><td>off</td><td>Show calls with post-dial delay &gt; 3 seconds</td></tr>
+<tr><td><code>--short-calls</code></td><td>--</td><td>off</td><td>Show completed calls shorter than 5 seconds</td></tr>
+<tr><td><code>--one-way</code></td><td>--</td><td>off</td><td>Show calls with potential one-way audio issues</td></tr>
+<tr><td><code>--nat-issues</code></td><td>--</td><td>off</td><td>Show calls with Contact/Via NAT mismatch</td></tr>
+</tbody></table>
+<h2 id="output">Output</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--json</code></td><td>--</td><td>off</td><td>Output as NDJSON (one JSON object per line). Requires <code>-N</code></td></tr>
+<tr><td><code>--json-pretty</code></td><td>--</td><td>off</td><td>Output as pretty-printed JSON. Requires <code>-N</code></td></tr>
+<tr><td><code>--report</code></td><td>--</td><td>off</td><td>Generate summary report after capture completes. Requires <code>-N</code></td></tr>
+<tr><td><code>--call-report</code></td><td><code>&lt;CALL-ID&gt;</code></td><td>--</td><td>Generate a detailed report for a specific Call-ID. Implies non-interactive</td></tr>
+<tr><td><code>--markdown</code></td><td>--</td><td>off</td><td>Format report output as Markdown</td></tr>
+<tr><td><code>--hexdump</code></td><td>--</td><td>off</td><td>Include hex dump of SIP payloads. Requires <code>-N</code></td></tr>
+<tr><td><code>--delta-time</code></td><td>--</td><td>off</td><td>Show delta time between consecutive messages</td></tr>
+<tr><td><code>-A</code>, <code>--after</code></td><td><code>&lt;N&gt;</code></td><td>--</td><td>Show N messages after each match (like <code>grep -A</code>)</td></tr>
+<tr><td><code>--show-empty</code></td><td>--</td><td>off</td><td>Show messages with empty bodies</td></tr>
+<tr><td><code>--line-buffer</code></td><td>--</td><td>off</td><td>Flush output after each line (useful for piping)</td></tr>
+<tr><td><code>--color</code></td><td><code>&lt;WHEN&gt;</code></td><td><code>auto</code></td><td>Color output mode: <code>auto</code>, <code>always</code>, <code>never</code></td></tr>
+<tr><td><code>--payload-limit</code></td><td><code>&lt;BYTES&gt;</code></td><td>--</td><td>Maximum payload bytes to display</td></tr>
+<tr><td><code>-T</code>, <code>--text-dump</code></td><td>--</td><td>off</td><td>Dump raw SIP message text (like sipgrep <code>-T</code>)</td></tr>
+<tr><td><code>--wireshark</code></td><td>--</td><td>off</td><td>Launch Wireshark with a display filter for the current capture</td></tr>
+<tr><td><code>--tshark-filter</code></td><td><code>&lt;EXPR&gt;</code></td><td>--</td><td>Generate a tshark-compatible display filter string</td></tr>
+<tr><td><code>--fail2ban</code></td><td>--</td><td>off</td><td>Output in fail2ban-compatible format for SIP security events. Requires <code>-N</code></td></tr>
+<tr><td><code>--group-by</code></td><td><code>&lt;FIELD&gt;</code></td><td>--</td><td>Group output by field (e.g., <code>call-id</code>, <code>from</code>, <code>method</code>)</td></tr>
+</tbody></table>
+<h2 id="dialog">Dialog</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-l</code>, <code>--limit</code></td><td><code>&lt;N&gt;</code></td><td><code>100000</code></td><td>Maximum number of dialogs to track simultaneously</td></tr>
+<tr><td><code>-R</code>, <code>--rotate</code></td><td>--</td><td>off</td><td>Rotate dialog storage when limit is reached (discard oldest)</td></tr>
+<tr><td><code>--dialog-track</code></td><td><code>&lt;METHOD&gt;</code></td><td>--</td><td>Dialog tracking method: <code>call-id</code> or <code>branch</code></td></tr>
+<tr><td><code>--no-dialog</code></td><td>--</td><td>off</td><td>Disable dialog tracking entirely (message-only mode)</td></tr>
+<tr><td><code>--tag</code></td><td><code>&lt;TAG&gt;</code></td><td>--</td><td>Filter dialogs by tag value</td></tr>
+</tbody></table>
+<h2 id="rtp">RTP</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--rtp-interval</code></td><td><code>&lt;SECS&gt;</code></td><td><code>1</code></td><td>RTP statistics reporting interval in seconds</td></tr>
+<tr><td><code>--max-streams</code></td><td><code>&lt;N&gt;</code></td><td><code>50000</code></td><td>Maximum number of RTP streams to track simultaneously</td></tr>
+<tr><td><code>--quality-threshold</code></td><td><code>&lt;MOS&gt;</code></td><td><code>3.0</code></td><td>MOS quality threshold for alerts (1.0-5.0 scale)</td></tr>
+</tbody></table>
+<h2 id="security">Security</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--kill-scanner</code></td><td>--</td><td>off</td><td>Detect and report SIP scanning activity</td></tr>
+<tr><td><code>--kill-ua</code></td><td><code>&lt;PATTERN&gt;</code></td><td>--</td><td>Detect scanners by User-Agent pattern (regex)</td></tr>
+<tr><td><code>--kill-response</code></td><td><code>&lt;CODE&gt;</code></td><td><code>200</code></td><td>SIP response code for scanner kill reports (100-699)</td></tr>
+<tr><td><code>--fraud-detect</code></td><td>--</td><td>off</td><td>Enable fraud detection heuristics</td></tr>
+<tr><td><code>--reg-flood</code></td><td>--</td><td>off</td><td>Detect registration flood attacks</td></tr>
+<tr><td><code>--digest-leak</code></td><td>--</td><td>off</td><td>Detect digest credential leaks in SIP messages</td></tr>
+<tr><td><code>--alert</code></td><td><code>&lt;CHANNEL&gt;</code></td><td>--</td><td>Alert channels (repeatable): <code>syslog</code>, <code>json</code>, <code>exec</code></td></tr>
+<tr><td><code>--alert-exec</code></td><td><code>&lt;CMD&gt;</code></td><td>--</td><td>Execute this command when an alert fires</td></tr>
+<tr><td><code>--stir-shaken</code></td><td>--</td><td>off</td><td>Validate STIR/SHAKEN identity headers</td></tr>
+</tbody></table>
+<h2 id="event-execution">Event Execution</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--on-dialog-exec</code></td><td><code>&lt;CMD&gt;</code></td><td>--</td><td>Execute command when a dialog state changes</td></tr>
+<tr><td><code>--on-quality-exec</code></td><td><code>&lt;CMD&gt;</code></td><td>--</td><td>Execute command when RTP quality drops below threshold</td></tr>
+<tr><td><code>--exec-rate-limit</code></td><td><code>&lt;N&gt;</code></td><td><code>10</code></td><td>Maximum exec invocations per second</td></tr>
+</tbody></table>
+<h2 id="network-listeners">Network Listeners</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--metrics</code></td><td><code>&lt;ADDR&gt;</code></td><td>--</td><td>Prometheus metrics endpoint (e.g., <code>0.0.0.0:9090</code>). Feature: <code>api</code></td></tr>
+<tr><td><code>--metrics-auth</code></td><td><code>&lt;TOKEN&gt;</code></td><td>--</td><td>Bearer token for metrics endpoint authentication</td></tr>
+<tr><td><code>--api</code></td><td><code>&lt;ADDR&gt;</code></td><td>--</td><td>REST API endpoint (e.g., <code>0.0.0.0:8080</code>). Feature: <code>api</code></td></tr>
+<tr><td><code>--api-key</code></td><td><code>&lt;KEY&gt;</code></td><td>--</td><td>API key for REST API authentication. Also reads <code>$SIPNAB_API_KEY</code></td></tr>
+<tr><td><code>--api-tls-cert</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>TLS certificate file for API endpoint</td></tr>
+<tr><td><code>--api-tls-key</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>TLS private key file for API endpoint</td></tr>
+<tr><td><code>--api-max-conn</code></td><td><code>&lt;N&gt;</code></td><td><code>100</code></td><td>Maximum concurrent API connections</td></tr>
+<tr><td><code>-L</code>, <code>--hep-listen</code></td><td><code>&lt;ADDR&gt;</code></td><td>--</td><td>Listen for HEP (Homer Encapsulation Protocol) packets. Feature: <code>hep</code></td></tr>
+<tr><td><code>-H</code>, <code>--hep-send</code></td><td><code>&lt;ADDR&gt;</code></td><td>--</td><td>Send captured packets via HEP to a remote collector. Feature: <code>hep</code></td></tr>
+<tr><td><code>-E</code>, <code>--hep-parse</code></td><td>--</td><td>off</td><td>Parse incoming HEP packets (enable HEP decoding). Feature: <code>hep</code></td></tr>
+<tr><td><code>--hep-allow</code></td><td><code>&lt;ADDR&gt;</code></td><td>--</td><td>Allowed source addresses for HEP input (repeatable)</td></tr>
+<tr><td><code>--hep-rate-limit</code></td><td><code>&lt;N&gt;</code></td><td><code>50000</code></td><td>Maximum HEP packets per second</td></tr>
+<tr><td><code>--syslog</code></td><td>--</td><td>off</td><td>Send alerts to syslog</td></tr>
+</tbody></table>
+<h2 id="tls-decryption">TLS / Decryption</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-k</code>, <code>--tls-key</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>TLS private key file for SIP-TLS decryption. Feature: <code>tls</code></td></tr>
+<tr><td><code>--keylog</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>TLS key log file (NSS <code>SSLKEYLOGFILE</code> format). Feature: <code>tls</code></td></tr>
+<tr><td><code>--keylog-watch</code></td><td>--</td><td>off</td><td>Watch key log file for new entries (live decryption). Feature: <code>tls</code></td></tr>
+<tr><td><code>--dtls-keylog</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>DTLS key log file for SRTP key extraction. Feature: <code>tls</code></td></tr>
+<tr><td><code>--srtp-keys</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>SRTP master keys file for RTP decryption. Feature: <code>tls</code></td></tr>
+<tr><td><code>--pcap-export-mode</code></td><td><code>&lt;MODE&gt;</code></td><td><code>decrypted</code></td><td>Pcap export mode for encrypted traffic</td></tr>
+<tr><td><code>--allow-coredump</code></td><td>--</td><td>off</td><td>Allow core dumps (do not call <code>prctl</code> to disable them)</td></tr>
+</tbody></table>
+<h2 id="privilege">Privilege</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--user</code></td><td><code>&lt;USER&gt;</code></td><td>--</td><td>Drop privileges to this user after opening capture devices</td></tr>
+<tr><td><code>--no-priv-drop</code></td><td>--</td><td>off</td><td>Do not drop privileges after opening capture devices</td></tr>
+<tr><td><code>--chroot</code></td><td><code>&lt;DIR&gt;</code></td><td>--</td><td>Chroot to this directory after initialization</td></tr>
+</tbody></table>
+<h2 id="resource-limits">Resource Limits</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--max-reassembly</code></td><td><code>&lt;N&gt;</code></td><td><code>10000</code></td><td>Maximum concurrent TCP/TLS reassembly sessions</td></tr>
+</tbody></table>
+<h2 id="config">Config</h2>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>-f</code>, <code>--config</code></td><td><code>&lt;FILE&gt;</code></td><td>--</td><td>Path to configuration file (must exist)</td></tr>
+<tr><td><code>-F</code>, <code>--no-config</code></td><td>--</td><td>off</td><td>Skip loading any configuration file</td></tr>
+<tr><td><code>-D</code>, <code>--dump-config</code></td><td>--</td><td>off</td><td>Dump effective configuration and exit</td></tr>
+</tbody></table>
+<h2 id="validation-rules">Validation Rules</h2>
+<ul>
+<li>Output flags (<code>--json</code>, <code>--json-pretty</code>, <code>--report</code>, <code>--hexdump</code>, <code>--fail2ban</code>) require <code>-N</code> / <code>--no-tui</code> mode, unless <code>--call-report</code> is also specified.</li>
+<li><code>--kill-response</code> accepts values 100-699 only.</li>
+<li>Feature-gated flags (<code>tls</code>, <code>hep</code>, <code>api</code>) produce startup errors when the required feature is not compiled in.</li>
+</ul>
+<h2 id="examples">Examples</h2>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture on eth0</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Read from pcap file</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Non-interactive JSON output</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N --json -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Show problematic calls</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --problems</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect SIP scanners</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --kill-scanner -d</span><span style="color: #AAD94C;"> eth0</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by From/To headers</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --from</span><span style="color: #AAD94C;"> alice</span><span style="color: #95E6CB;"> --to</span><span style="color: #AAD94C;"> bob</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># BPF display filter</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #AAD94C;"> &#39;host 10.0.0.1 and port 5060&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Advanced filter DSL</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39; AND rtp.mos &lt; 3.0&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate detailed report for a call</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span><span style="color: #95E6CB;"> --markdown</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture with HEP mirror</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> 10.0.0.50:9060</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live TLS decryption</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sslkeys.log</span><span style="color: #95E6CB;"> --keylog-watch</span></span></code></pre>
+
+
+
+
+
+
+
+  
+  
+  
+    
+  
+
+  
+  
+    
+  
+  
+
+  
+    
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+
+<nav class="page-nav">
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;install&#x2F;" class="page-nav-prev">&larr; Installation</a>
+  
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;config&#x2F;" class="page-nav-next">Configuration &rarr;</a>
+  
+</nav>
+
+</main>
+
+<script>
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.querySelector('.sidebar-overlay').classList.toggle('visible');
+}
+
+
+function toggleSearch(e) {
+  e.preventDefault();
+  var overlay = document.getElementById('search-overlay');
+  if (overlay.style.display === 'none') {
+    overlay.style.display = 'flex';
+    document.getElementById('search-input').focus();
+  } else {
+    overlay.style.display = 'none';
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.getElementById('search-overlay').style.display = 'none';
+  }
+  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    document.getElementById('search-overlay').style.display = 'flex';
+    document.getElementById('search-input').focus();
+  }
+});
+
+var searchIndex = null;
+document.getElementById('search-input').addEventListener('input', function() {
+  var query = this.value;
+  var resultsDiv = document.getElementById('search-results');
+  if (query.length < 2) { resultsDiv.textContent = ''; return; }
+  if (!searchIndex) {
+    fetch('https://www.sipnab.com/search_index.en.json')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        searchIndex = elasticlunr.Index.load(data);
+        doSearch(query);
+      });
+  } else {
+    doSearch(query);
+  }
+});
+
+function doSearch(query) {
+  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
+  var resultsDiv = document.getElementById('search-results');
+  resultsDiv.textContent = '';
+  if (results.length === 0) {
+    var noResults = document.createElement('div');
+    noResults.className = 'search-no-results';
+    noResults.textContent = 'No results found.';
+    resultsDiv.appendChild(noResults);
+    return;
+  }
+  results.slice(0, 10).forEach(function(r) {
+    var item = searchIndex.documentStore.getDoc(r.ref);
+    var link = document.createElement('a');
+    link.href = r.ref;
+    link.className = 'search-result-item';
+    var title = document.createElement('div');
+    title.className = 'search-result-title';
+    title.textContent = item.title;
+    link.appendChild(title);
+    if (item.body) {
+      var body = document.createElement('div');
+      body.className = 'search-result-body';
+      body.textContent = item.body.substring(0, 150) + '...';
+      link.appendChild(body);
+    }
+    resultsDiv.appendChild(link);
+  });
+}
+
+
+document.querySelectorAll('pre').forEach(function(block) {
+  block.addEventListener('click', function() {
+    var code = block.querySelector('code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(function() {
+        block.classList.add('copied');
+        setTimeout(function() { block.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
+});
+</script>
+
+
+<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+
+
+</body>
+</html>

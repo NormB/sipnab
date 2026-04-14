@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Theme Customization -- sipnab</title>
+  <meta name="description" content="Customize sipnab&#x27;s TUI colors with 11 semantic color slots. Includes Catppuccin, Nord, Solarized, and high-contrast presets.">
+  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="https://www.sipnab.com/docs/">Docs</a>
+    
+    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </a>
+    
+    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<!-- Search overlay -->
+
+<div id="search-overlay" class="search-overlay" style="display:none;">
+  <div class="search-container">
+    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
+    <div id="search-results" class="search-results"></div>
+  </div>
+</div>
+
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
+      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
+      <a href="https://www.sipnab.com/docs/keybindings/" class="indent">Keybindings</a>
+      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
+      <a href="https://www.sipnab.com/docs/theme/" class="indent active">Theme</a>
+      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Project</div>
+      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
+      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<main class="main">
+  
+<h1>Theme Customization</h1>
+
+
+<nav class="toc">
+  <h4>On this page</h4>
+  <ul>
+    
+    <li><a href="#color-slots">Color Slots</a>
+      
+    </li>
+    
+    <li><a href="#supported-color-syntax">Supported Color Syntax</a>
+      
+      <ul>
+        
+        <li><a href="#named-colors">Named Colors</a></li>
+        
+        <li><a href="#hex-rgb">Hex RGB</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#how-to-apply">How to Apply</a>
+      
+    </li>
+    
+    <li><a href="#example-themes">Example Themes</a>
+      
+      <ul>
+        
+        <li><a href="#dark-built-in-default">Dark (built-in default)</a></li>
+        
+        <li><a href="#light-terminal">Light Terminal</a></li>
+        
+        <li><a href="#catppuccin-mocha">Catppuccin Mocha</a></li>
+        
+        <li><a href="#nord">Nord</a></li>
+        
+        <li><a href="#solarized-dark">Solarized Dark</a></li>
+        
+        <li><a href="#high-contrast">High Contrast</a></li>
+        
+      </ul>
+      
+    </li>
+    
+    <li><a href="#tips">Tips</a>
+      
+    </li>
+    
+  </ul>
+</nav>
+
+
+<p>sipnab's TUI uses 11 semantic color slots that control every visual element. Customize them via the <code>[theme]</code> section in your config file.</p>
+<h2 id="color-slots">Color Slots</h2>
+<table><thead><tr><th>Slot</th><th>Default</th><th>What It Affects</th></tr></thead><tbody>
+<tr><td><code>background</code></td><td><code>reset</code> (terminal default)</td><td>Terminal background color</td></tr>
+<tr><td><code>foreground</code></td><td><code>white</code></td><td>Default text color</td></tr>
+<tr><td><code>header</code></td><td><code>cyan</code></td><td>Status bar, column headers, endpoint labels in call flow</td></tr>
+<tr><td><code>selected</code></td><td><code>yellow</code></td><td>Selected/highlighted row, cursor position, focused item</td></tr>
+<tr><td><code>accent</code></td><td><code>magenta</code></td><td>Correlation info, PDD annotations, extended flow labels</td></tr>
+<tr><td><code>good</code></td><td><code>green</code></td><td>Positive quality (MOS &gt; threshold), success states (InCall, Registered)</td></tr>
+<tr><td><code>warning</code></td><td><code>yellow</code></td><td>Medium quality, caution states (Ringing, CANCEL)</td></tr>
+<tr><td><code>bad</code></td><td><code>red</code></td><td>Poor quality, failures, errors, high loss/jitter</td></tr>
+<tr><td><code>muted</code></td><td><code>dark_gray</code></td><td>Separators, pipe characters, disabled text, timestamps</td></tr>
+<tr><td><code>border</code></td><td><code>white</code></td><td>Widget borders, panel frames</td></tr>
+<tr><td><code>highlight</code></td><td>--</td><td>Legacy alias for <code>selected</code> (backward compatibility only)</td></tr>
+</tbody></table>
+<p>The internal <code>status_bg</code> color (dark blue-gray <code>#303040</code>) is not configurable and is used for the status bar background.</p>
+<h2 id="supported-color-syntax">Supported Color Syntax</h2>
+<h3 id="named-colors">Named Colors</h3>
+<p><code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code> (or <code>grey</code>), <code>dark_gray</code> (or <code>dark_grey</code>, <code>darkgray</code>, <code>darkgrey</code>), <code>reset</code> (or <code>default</code>)</p>
+<h3 id="hex-rgb">Hex RGB</h3>
+<p><code>"#RRGGBB"</code> format, e.g., <code>"#ff8800"</code>, <code>"#1a1a2e"</code>. Requires a terminal with true-color (24-bit) support.</p>
+<h2 id="how-to-apply">How to Apply</h2>
+<p>Create or edit your config file at one of these locations (searched in order):</p>
+<ol>
+<li>Path specified via <code>--config &lt;FILE&gt;</code></li>
+<li><code>$SIPNAB_CONFIG</code> environment variable</li>
+<li><code>~/.config/sipnab/sipnab.toml</code></li>
+<li><code>~/.sipnabrc</code></li>
+<li><code>/etc/sipnab/sipnab.toml</code></li>
+</ol>
+<p>Add a <code>[theme]</code> section with the color values you want to override. Omitted fields use the built-in defaults.</p>
+<h2 id="example-themes">Example Themes</h2>
+<h3 id="dark-built-in-default">Dark (built-in default)</h3>
+<p>The built-in theme works on dark terminal backgrounds without any configuration.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><h3 id="light-terminal">Light Terminal</h3>
+<p>For light terminal backgrounds (white/cream). Uses darker colors for readability.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;blue&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b35900&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#8b008b&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#006400&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b8860b&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cc0000&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span></code></pre><h3 id="catppuccin-mocha">Catppuccin Mocha</h3>
+<p>Pastel palette inspired by the Catppuccin color scheme.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1e1e2e&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cdd6f4&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#89b4fa&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f9e2af&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cba6f7&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a6e3a1&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fab387&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f38ba8&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#585b70&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#6c7086&quot;</span></span></code></pre><h3 id="nord">Nord</h3>
+<p>Low-contrast theme based on the Nord palette.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#2e3440&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d8dee9&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#88c0d0&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b48ead&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a3be8c&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#bf616a&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#4c566a&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#616e88&quot;</span></span></code></pre><h3 id="solarized-dark">Solarized Dark</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#002b36&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#839496&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#268bd2&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b58900&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d33682&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#859900&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cb4b16&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#dc322f&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#586e75&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#657b83&quot;</span></span></code></pre><h3 id="high-contrast">High Contrast</h3>
+<p>Maximum readability for accessibility or bright environments.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffff00&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff00ff&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#00ff00&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffaa00&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff0000&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><h2 id="tips">Tips</h2>
+<ul>
+<li>Use <code>reset</code> for <code>background</code> to inherit your terminal's background color. This is usually the best choice.</li>
+<li>Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).</li>
+<li>Use <code>sipnab --dump-config</code> to verify your theme is being loaded.</li>
+<li>The <code>highlight</code> key is a legacy alias for <code>selected</code>. If both are set, <code>selected</code> takes precedence.</li>
+</ul>
+
+
+
+
+
+
+
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+    
+  
+  
+
+  
+    
+  
+  
+  
+
+
+<nav class="page-nav">
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;" class="page-nav-prev">&larr; Filter DSL</a>
+  
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;api&#x2F;" class="page-nav-next">REST API &rarr;</a>
+  
+</nav>
+
+</main>
+
+<script>
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.querySelector('.sidebar-overlay').classList.toggle('visible');
+}
+
+
+function toggleSearch(e) {
+  e.preventDefault();
+  var overlay = document.getElementById('search-overlay');
+  if (overlay.style.display === 'none') {
+    overlay.style.display = 'flex';
+    document.getElementById('search-input').focus();
+  } else {
+    overlay.style.display = 'none';
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.getElementById('search-overlay').style.display = 'none';
+  }
+  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    document.getElementById('search-overlay').style.display = 'flex';
+    document.getElementById('search-input').focus();
+  }
+});
+
+var searchIndex = null;
+document.getElementById('search-input').addEventListener('input', function() {
+  var query = this.value;
+  var resultsDiv = document.getElementById('search-results');
+  if (query.length < 2) { resultsDiv.textContent = ''; return; }
+  if (!searchIndex) {
+    fetch('https://www.sipnab.com/search_index.en.json')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        searchIndex = elasticlunr.Index.load(data);
+        doSearch(query);
+      });
+  } else {
+    doSearch(query);
+  }
+});
+
+function doSearch(query) {
+  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
+  var resultsDiv = document.getElementById('search-results');
+  resultsDiv.textContent = '';
+  if (results.length === 0) {
+    var noResults = document.createElement('div');
+    noResults.className = 'search-no-results';
+    noResults.textContent = 'No results found.';
+    resultsDiv.appendChild(noResults);
+    return;
+  }
+  results.slice(0, 10).forEach(function(r) {
+    var item = searchIndex.documentStore.getDoc(r.ref);
+    var link = document.createElement('a');
+    link.href = r.ref;
+    link.className = 'search-result-item';
+    var title = document.createElement('div');
+    title.className = 'search-result-title';
+    title.textContent = item.title;
+    link.appendChild(title);
+    if (item.body) {
+      var body = document.createElement('div');
+      body.className = 'search-result-body';
+      body.textContent = item.body.substring(0, 150) + '...';
+      link.appendChild(body);
+    }
+    resultsDiv.appendChild(link);
+  });
+}
+
+
+document.querySelectorAll('pre').forEach(function(block) {
+  block.addEventListener('click', function() {
+    var code = block.querySelector('code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(function() {
+        block.classList.add('copied');
+        setTimeout(function() { block.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
+});
+</script>
+
+
+<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+
+
+</body>
+</html>

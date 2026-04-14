@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://www.sipnab.com/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/changelog/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/api/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/cli/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/config/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/filter-dsl/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/install/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/keybindings/</loc>
+    </url>
+    <url>
+        <loc>https://www.sipnab.com/docs/theme/</loc>
+    </url>
+</urlset>
