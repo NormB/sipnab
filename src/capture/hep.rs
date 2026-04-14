@@ -716,11 +716,12 @@ pub fn capture_hep(
         // HEP already provides parsed metadata, so we pass the *payload*
         // (the inner SIP/RTP message) as the packet data. We use DLT_RAW
         // because there's no Ethernet framing.
+        let payload_len = hep.payload.len();
         let packet = Packet::new(
             hep.timestamp,
             hep.payload,
-            n,
-            n,
+            payload_len,
+            payload_len,
             Some(format!("hep:{bind_addr}")),
             DLT_RAW,
         );

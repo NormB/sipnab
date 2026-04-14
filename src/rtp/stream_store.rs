@@ -162,15 +162,14 @@ impl StreamStore {
     fn ensure_capacity(&mut self) {
         if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
             // Find the stream with the oldest last_seen
-            let oldest_idx = self
+            if let Some((oldest_idx, _)) = self
                 .streams
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, s)| s.last_seen)
-                .map(|(i, _)| i)
-                .expect("streams is non-empty");
-
-            self.evict(oldest_idx);
+            {
+                self.evict(oldest_idx);
+            }
         }
     }
 

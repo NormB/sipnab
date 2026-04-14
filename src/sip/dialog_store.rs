@@ -127,9 +127,10 @@ impl DialogStore {
             //     }
             // }
 
-            // Record the message
-            dialog.messages.push(msg.clone());
-            dialog.updated_at = msg.timestamp;
+            // Record the message (move instead of clone)
+            let ts = msg.timestamp;
+            dialog.messages.push(msg);
+            dialog.updated_at = ts;
         } else {
             // New dialog — check capacity
             if self.dialogs.len() >= self.max_dialogs {
@@ -339,19 +340,20 @@ impl DialogStore {
 
     /// Evict the oldest dialog (first in the vector) to make room.
     ///
-    /// Uses swap_remove for O(1) deletion instead of O(n) shift + full
-    /// index rebuild.
+    /// Uses `remove(0)` + full index rebuild to preserve FIFO insertion
+    /// order. O(n) but only runs at most once per new dialog at capacity.
     fn evict_oldest(&mut self) {
         if self.dialogs.is_empty() {
             return;
         }
 
-        self.index.remove(&self.dialogs[0].call_id);
-        self.dialogs.swap_remove(0);
+        let removed = self.dialogs.remove(0);
+        self.index.remove(&removed.call_id);
 
-        // If we swapped an element into index 0, update its index entry
-        if !self.dialogs.is_empty() {
-            self.index.insert(self.dialogs[0].call_id.clone(), 0);
+        // Rebuild index — all indices shifted down by 1
+        self.index.clear();
+        for (i, d) in self.dialogs.iter().enumerate() {
+            self.index.insert(d.call_id.clone(), i);
         }
     }
 }

@@ -185,7 +185,7 @@ fn should_use_color(mode: ColorMode) -> bool {
         ColorMode::Always => true,
         ColorMode::Never => false,
         ColorMode::Auto => {
-            // Check if stdout is a TTY
+            // SAFETY: isatty() with STDOUT_FILENO only reads kernel fd state; cannot cause UB.
             unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
         }
     }

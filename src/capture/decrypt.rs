@@ -535,8 +535,8 @@ impl TlsDecryptor {
         // Lazily populate sessions from keylog entries
         self.ensure_sessions_populated();
 
-        // Try each session — in practice, the right session is found quickly
-        // because captures typically have very few concurrent TLS sessions.
+        // NOTE: Collects session keys to avoid borrow conflict with try_decrypt_with_session's &mut self.
+        // In practice, session count is 1-3 per capture, making this negligible.
         let session_keys: Vec<TlsSessionKey> = self.sessions.keys().cloned().collect();
         for key in &session_keys {
             // Read cipher suite before mutable borrow in try_decrypt_with_session
