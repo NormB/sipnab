@@ -1069,26 +1069,19 @@ function setupKeyboard() {
     // Only handle keys when workspace is visible
     var wsVisible = $("#workspace") && $("#workspace").style.display !== "none";
 
-    // h or F1 — toggle help popup
-    if (e.key === "F1" || (e.key === "h" && wsVisible)) {
+    // h or F1 — toggle help popup (works everywhere, not just workspace)
+    if (e.key === "F1" || e.key === "h" || e.key === "?") {
       e.preventDefault();
       toggleHelpPopup();
       return;
     }
-    if (e.key === "F2" && wsVisible) {
+    if ((e.key === "F2" || e.key === "e") && wsVisible) {
       e.preventDefault();
-      // Trigger export dropdown
-      var btn = $("#export-btn");
-      if (btn) btn.click();
+      var dropdown = $("#export-dropdown");
+      if (dropdown) dropdown.classList.toggle("open");
       return;
     }
-    if ((e.key === "F3" || e.key === "f" || e.key === "/") && wsVisible) {
-      e.preventDefault();
-      var filterInput = $("#filter-input");
-      if (filterInput) filterInput.focus();
-      return;
-    }
-    if (e.key === "F7" && wsVisible) {
+    if ((e.key === "F3" || e.key === "F7" || e.key === "f" || e.key === "/") && wsVisible) {
       e.preventDefault();
       var filterInput = $("#filter-input");
       if (filterInput) filterInput.focus();
