@@ -246,7 +246,9 @@ impl<'a> PcapReader<'a> {
                 })
             }
 
-            _ => bail!("Not a pcap/pcapng file (magic: 0x{:08x})", magic),
+            // Microsoft Network Monitor format
+            0x55424d47 => bail!("Microsoft Network Monitor (.cap) format is not supported. Convert to pcap with: editcap -F pcap input.cap output.pcap"),
+            _ => bail!("Not a pcap/pcapng file (magic: 0x{:08x}). Supported formats: .pcap, .pcapng, .cap (pcap format)", magic),
         }
     }
 }
@@ -318,5 +320,22 @@ mod tests {
         let result = PcapReader::new(&[0xFF; 24]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Not a pcap"));
+    }
+
+    #[test]
+    fn cap_file_pcap_format() {
+        // .cap files that are pcap format should work
+        let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap").unwrap();
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert!(packets.len() > 0, "pcap-format .cap file should parse");
+    }
+
+    #[test]
+    fn cap_file_netmon_format_error() {
+        let data = std::fs::read("tests/pcap-samples/rtsp-packets.cap").unwrap();
+        let result = PcapReader::new(&data);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Network Monitor"));
     }
 }
