@@ -374,7 +374,12 @@ img { max-width: 100%; height: auto; }
   }
 }
 
-// -- Terminal mockup --
+// -- Terminal mockup: ensure monospace works even if CDN fails --
+.terminal-body, .terminal-body * {
+  font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', 'Monaco', 'Inconsolata', 'Source Code Pro', 'Menlo', 'Consolas', 'DejaVu Sans Mono', monospace !important;
+  font-variant-ligatures: none;
+}
+
 .terminal-wrap {
   max-width: 840px;
   margin: 3rem auto 0;

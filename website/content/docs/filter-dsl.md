@@ -4,6 +4,8 @@ weight = 5
 description = "Declarative filter language for matching SIP dialogs and RTP streams."
 +++
 
+> **Quick start:** `sipnab --filter "state == 'Failed'"` to find all failed calls, or `sipnab --problems` for a one-flag diagnostic sweep.
+
 sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the `--filter` CLI flag or the `expression` key in the `[filter]` config section.
 
 ## Grammar

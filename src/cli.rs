@@ -179,7 +179,7 @@ pub struct Cli {
     #[arg(long)]
     pub slow_setup: bool,
 
-    /// Show calls shorter than 10 seconds.
+    /// Show calls shorter than 5 seconds.
     #[arg(long)]
     pub short_calls: bool,
 

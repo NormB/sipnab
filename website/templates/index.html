@@ -10,7 +10,7 @@
   <div class="hero-inner">
     <h1 class="hero-title">sipnab <span class="version-badge">v{{ config.extra.version }}</span></h1>
     <p class="hero-tagline">The SIP &amp; RTP analysis tool for people who ship voice infrastructure.</p>
-    <p class="hero-sub">One binary. Zero dependencies. Replaces sngrep + sipgrep.<br>Built in Rust for speed, safety, and correctness.</p>
+    <p class="hero-sub">One binary. One dependency (libpcap). Replaces sngrep + sipgrep.<br>Built in Rust for speed, safety, and correctness.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
       <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
@@ -27,7 +27,7 @@
         <span class="terminal-title">sipnab -I voip-debug.pcap</span>
       </div>
       <pre class="terminal-body"><span class="t-muted">  Call-ID                         From         To           State     Duration  MOS</span>
-<span class="t-selected">&#9654;</span> <span class="t-accent">abc123@pbx.example.com</span>          alice        bob          <span class="t-good">InCall</span>    00:02:34  <span class="t-good">4.2</span>
+<span class="t-selected">▶</span> <span class="t-accent">abc123@pbx.example.com</span>          alice        bob          <span class="t-good">InCall</span>    00:02:34  <span class="t-good">4.2</span>
   <span class="t-accent">def456@pbx.example.com</span>          1003         1004         <span class="t-warn">Ringing</span>   00:00:03  <span class="t-muted">--</span>
   <span class="t-accent">ghi789@trunk.carrier.net</span>        +15551234    +15559876    <span class="t-bad">Failed</span>    00:00:00  <span class="t-muted">--</span>
   <span class="t-accent">jkl012@pbx.example.com</span>          1005         1006         <span class="t-good">Completed</span> 00:05:12  <span class="t-bad">2.1</span>
@@ -48,26 +48,26 @@
 
   <span class="t-header">alice (10.0.0.1)</span>          <span class="t-header">proxy (10.0.0.10)</span>           <span class="t-header">bob (10.0.0.2)</span>
        <span class="t-muted">│</span>                          <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span> <span class="t-good">──── INVITE ────&#9654;</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span> <span class="t-good">──── INVITE ────▶</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
        <span class="t-muted">│</span>    <span class="t-accent">+0.000s</span>                <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span> <span class="t-warn">&#9664;─── 100 Trying ──</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span>    <span class="t-accent">+0.002s</span> <span class="t-badge-delta">&#916;2ms</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">──── INVITE ────&#9654;</span>          <span class="t-muted">│</span>
+       <span class="t-muted">│</span> <span class="t-warn">◀─── 100 Trying ──</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span>    <span class="t-accent">+0.002s</span> <span class="t-badge-delta">Δ2ms</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">──── INVITE ────▶</span>          <span class="t-muted">│</span>
        <span class="t-muted">│</span>                          <span class="t-muted">│</span>    <span class="t-accent">+0.003s</span>                 <span class="t-muted">│</span>
-       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-warn">&#9664;─── 180 Ringing ──</span>         <span class="t-muted">│</span>
+       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-warn">◀─── 180 Ringing ──</span>         <span class="t-muted">│</span>
        <span class="t-muted">│</span>                          <span class="t-muted">│</span>    <span class="t-accent">+0.847s</span>                 <span class="t-muted">│</span>
-       <span class="t-muted">│</span> <span class="t-warn">&#9664;─── 180 Ringing ──</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span> <span class="t-warn">◀─── 180 Ringing ──</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
        <span class="t-muted">│</span>    <span class="t-accent">+0.849s</span>   <span class="t-accent">PDD: 0.849s</span>                            <span class="t-muted">│</span>
-       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">&#9664;─── 200 OK ───────</span>         <span class="t-muted">│</span>
+       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">◀─── 200 OK ───────</span>         <span class="t-muted">│</span>
        <span class="t-muted">│</span>                          <span class="t-muted">│</span>    <span class="t-accent">+2.134s</span>                 <span class="t-muted">│</span>
-       <span class="t-muted">│</span> <span class="t-good">&#9664;─── 200 OK ───────</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span>    <span class="t-accent">+2.136s</span> <span class="t-badge-delta">&#916;2ms</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span> <span class="t-good">──── ACK ───────&#9654;</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span> <span class="t-good">◀─── 200 OK ───────</span>        <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span>    <span class="t-accent">+2.136s</span> <span class="t-badge-delta">Δ2ms</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
+       <span class="t-muted">│</span> <span class="t-good">──── ACK ───────▶</span>         <span class="t-muted">│</span>                           <span class="t-muted">│</span>
        <span class="t-muted">│</span>    <span class="t-accent">+2.137s</span>                <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">──── ACK ───────&#9654;</span>          <span class="t-muted">│</span>
-       <span class="t-muted">│</span>                          <span class="t-muted">│</span>    <span class="t-accent">+2.138s</span> <span class="t-badge-delta">&#916;1ms</span>          <span class="t-muted">│</span>
+       <span class="t-muted">│</span>                          <span class="t-muted">│</span> <span class="t-good">──── ACK ───────▶</span>          <span class="t-muted">│</span>
+       <span class="t-muted">│</span>                          <span class="t-muted">│</span>    <span class="t-accent">+2.138s</span> <span class="t-badge-delta">Δ1ms</span>          <span class="t-muted">│</span>
        <span class="t-muted">│</span>                          <span class="t-muted">│</span>                           <span class="t-muted">│</span>
-  <span class="t-muted">  ─── Auth: 407 &#8594; ACK &#8594; re-INVITE (collapsed) ─────────────────────────</span></pre>
+  <span class="t-muted">  ─── Auth: 407 → ACK → re-INVITE (collapsed) ─────────────────────────</span></pre>
     </div>
   </div>
 </section>
@@ -108,8 +108,9 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
         <span>Copy</span>
       </button>
-      <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Install</span>
-cargo install sipnab
+      <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Build from source</span>
+git clone https://github.com/NormB/sipnab.git
+cd sipnab && cargo build --release
 
 <span class="t-comment"># Capture live SIP traffic</span>
 sudo sipnab -d eth0
@@ -178,7 +179,7 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
             <td class="no"><span aria-label="No">&#10007;</span></td>
           </tr>
           <tr>
-            <td>Filter DSL (27 fields, 7 operators)</td>
+            <td>Filter DSL (24 fields, 7 operators)</td>
             <td class="col-sipnab yes"><span aria-label="Yes">&#10003;</span></td>
             <td class="no"><span aria-label="No">&#10007;</span></td>
             <td class="no"><span aria-label="No">&#10007;</span></td>
@@ -241,7 +242,7 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
         <span class="arch-label">Idle CPU utilization</span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="898" data-suffix="">898</span>
+        <span class="arch-stat" data-count="976" data-suffix="">976</span>
         <span class="arch-label">Automated test coverage</span>
       </div>
     </div>
