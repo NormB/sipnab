@@ -384,4 +384,18 @@ mod tests {
     #[test] fn load_sip_auth_pcapng() { assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1); }
     #[test] fn load_sip_routing_pcapng() { assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1); }
     #[test] fn load_sipp_branch_pcapng() { assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100); }
+
+    // -- .cap files (mixed formats) --
+
+    #[test] fn load_http_cap_pcap_format() { assert_loads("tests/pcap-samples/http-example.cap", 1); }
+
+    #[test]
+    fn load_c07_sip_r2_netmon() {
+        let data = std::fs::read("tests/pcap-samples/c07-sip-r2.cap").unwrap();
+        let result = PcapReader::new(&data);
+        assert!(result.is_err(), "NetMon format should error");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Network Monitor"), "Error should mention Network Monitor: {err}");
+        assert!(err.contains("editcap"), "Error should suggest editcap conversion: {err}");
+    }
 }
