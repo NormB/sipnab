@@ -11,6 +11,7 @@ sipnab is a network analysis tool for Voice over IP. It captures and decodes SIP
 
 ## Documentation Overview
 
+- [**Troubleshooting**](@/docs/troubleshooting.md) -- Real-world VoIP diagnostic workflows with exact commands
 - [**Install**](@/docs/install.md) -- Build from source, binary downloads, Docker, feature flags
 - [**CLI Reference**](@/docs/cli.md) -- Complete flag reference organized by functional group
 - [**Filter DSL**](@/docs/filter-dsl.md) -- Query language for filtering calls and streams
