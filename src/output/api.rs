@@ -32,7 +32,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::Router;
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json};
 use axum::routing::get;
@@ -74,6 +74,8 @@ pub struct RateLimiter {
     buckets: HashMap<IpAddr, (Instant, u32)>,
     /// Maximum requests per second per IP.
     max_rps: u32,
+    /// Monotonic call counter for periodic cleanup.
+    call_count: u64,
 }
 
 impl RateLimiter {
@@ -82,6 +84,7 @@ impl RateLimiter {
         Self {
             buckets: HashMap::new(),
             max_rps,
+            call_count: 0,
         }
     }
 
@@ -91,10 +94,10 @@ impl RateLimiter {
     /// unbounded memory growth from unique source IPs.
     pub fn check(&mut self, ip: IpAddr) -> bool {
         let now = Instant::now();
+        self.call_count += 1;
 
         // Periodic cleanup: remove entries older than 2 seconds
-        let total_checks = self.buckets.values().map(|(_, c)| *c as u64).sum::<u64>();
-        if total_checks % 100 == 0 {
+        if self.call_count.is_multiple_of(100) {
             self.buckets
                 .retain(|_, (start, _)| now.duration_since(*start).as_secs() < 2);
         }
@@ -272,19 +275,6 @@ pub async fn run_server(
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
 
-/// Extract the source IP for rate limiting.
-///
-/// Uses only the direct connection address (127.0.0.1 as fallback in test
-/// contexts where `ConnectInfo` is not available). X-Forwarded-For and
-/// X-Real-IP headers are NOT trusted, as they are attacker-controlled
-/// and could be used to bypass rate limiting or spoof source IPs.
-fn extract_client_ip(_headers: &HeaderMap) -> IpAddr {
-    // Only trust the direct connection address. In production, axum's
-    // ConnectInfo<SocketAddr> provides the real client IP via
-    // into_make_service_with_connect_info(). For the rate limiter
-    // fallback (test contexts), use localhost.
-    IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-}
 
 /// Check authentication. Returns `Err(StatusCode)` if auth fails.
 fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -335,10 +325,13 @@ fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
 }
 
 /// Combined auth + rate-limit guard for protected endpoints.
-fn guard(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
+///
+/// Uses the real client IP from `ConnectInfo<SocketAddr>` (provided by
+/// `into_make_service_with_connect_info`) for rate limiting. X-Forwarded-For
+/// and X-Real-IP headers are NOT trusted, as they are attacker-controlled.
+fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), StatusCode> {
     check_auth(state, headers)?;
-    let ip = extract_client_ip(headers);
-    check_rate_limit(state, ip)
+    check_rate_limit(state, client_ip)
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -351,15 +344,18 @@ async fn health_check() -> &'static str {
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
 async fn list_dialogs(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<DialogListParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(50).min(1000);
 
     let state_filter = params.state.as_deref();
+    // NOTE: Regex is compiled per-request. Under the 100 RPS rate limit this
+    // is acceptable (~1ms compile time). For higher throughput, consider caching.
     let from_regex = params.from.as_deref().and_then(|pat| {
         regex::RegexBuilder::new(pat)
             .size_limit(1_000_000)
@@ -405,10 +401,11 @@ async fn list_dialogs(
 /// `GET /v1/dialogs/:call_id` — get a single dialog with full detail.
 async fn get_dialog(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
     let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
@@ -432,10 +429,11 @@ async fn get_dialog(
 /// `GET /v1/dialogs/:call_id/report` — get a call report in JSON format.
 async fn get_dialog_report(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(call_id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
     let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
@@ -460,10 +458,11 @@ async fn get_dialog_report(
 /// `GET /v1/streams` — list RTP streams with optional filtering and pagination.
 async fn list_streams(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Query(params): Query<StreamListParams>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let offset = params.offset.unwrap_or(0);
     let limit = params.limit.unwrap_or(50).min(1000);
@@ -507,10 +506,11 @@ async fn list_streams(
 /// `GET /v1/streams/:id` — get a single RTP stream by SSRC hex string.
 async fn get_stream(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let ss = state.stream_store.read();
     // Find stream by SSRC hex string (e.g., "0x12345678" or "12345678")
@@ -533,9 +533,10 @@ async fn get_stream(
 /// `GET /v1/stats` — aggregate statistics across dialogs and streams.
 async fn get_stats(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let ds = state.dialog_store.read();
     let total_dialogs = ds.len();
@@ -595,9 +596,10 @@ async fn get_stats(
 /// via `prometheus::format_metrics` for full metric coverage.
 async fn get_metrics(
     State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, StatusCode> {
-    guard(&state, &headers)?;
+    guard(&state, &headers, addr.ip())?;
 
     let mut metrics = PrometheusMetrics::default();
 
@@ -784,6 +786,35 @@ mod tests {
         }
     }
 
+    /// Build a test request with the ConnectInfo extension set to localhost.
+    fn test_request(uri: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .uri(uri)
+            .body(Body::empty())
+            .expect("build request");
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                12345,
+            )));
+        req
+    }
+
+    /// Build a test request with custom headers and ConnectInfo.
+    fn test_request_with_header(uri: &str, header_name: &str, header_value: &str) -> Request<Body> {
+        let mut req = Request::builder()
+            .uri(uri)
+            .header(header_name, header_value)
+            .body(Body::empty())
+            .expect("build request");
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                12345,
+            )));
+        req
+    }
+
     async fn body_to_string(body: Body) -> String {
         let bytes = body.collect().await.expect("collect body").to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
@@ -794,10 +825,7 @@ mod tests {
         let state = make_state();
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/health")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/health");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -812,10 +840,7 @@ mod tests {
         populate_dialogs(&state);
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/dialogs");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -834,10 +859,7 @@ mod tests {
         populate_dialogs(&state);
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs/call-1@test")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/dialogs/call-1@test");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -853,10 +875,7 @@ mod tests {
         let state = make_state();
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs/does-not-exist")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/dialogs/does-not-exist");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -868,10 +887,7 @@ mod tests {
         populate_dialogs(&state);
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/stats")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/stats");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -892,10 +908,7 @@ mod tests {
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/dialogs");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
@@ -907,11 +920,7 @@ mod tests {
         populate_dialogs(&state);
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs")
-            .header("Authorization", "Bearer secret-key")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer secret-key");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
@@ -923,10 +932,7 @@ mod tests {
         populate_dialogs(&state); // 3 dialogs
         let app = build_router(state);
 
-        let req = Request::builder()
-            .uri("/v1/dialogs?offset=1&limit=1")
-            .body(Body::empty())
-            .expect("build request");
+        let req = test_request("/v1/dialogs?offset=1&limit=1");
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);

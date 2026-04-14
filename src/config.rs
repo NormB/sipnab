@@ -105,7 +105,7 @@ fn warn_unknown_keys(value: &toml::Value) {
         None => return,
     };
 
-    let root_keys = known.get("").unwrap();
+    let root_keys = known.get("").expect("known_keys() always inserts the root key");
     for key in table.keys() {
         if !root_keys.contains(&key.as_str()) {
             log::warn!("Unknown config key: {key}");
@@ -348,7 +348,7 @@ pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
         "Enter" | "enter" | "Return" | "return" => Some(KeyCode::Enter),
         "Tab" | "tab" => Some(KeyCode::Tab),
         "Backspace" | "backspace" => Some(KeyCode::Backspace),
-        _ if s.len() == 1 => Some(KeyCode::Char(s.chars().next().unwrap())),
+        _ if s.len() == 1 => s.chars().next().map(KeyCode::Char),
         _ if s.starts_with('F') || s.starts_with('f') => {
             s[1..].parse::<u8>().ok().filter(|&n| (1..=12).contains(&n)).map(KeyCode::F)
         }
