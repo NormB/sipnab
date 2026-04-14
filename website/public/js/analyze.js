@@ -1020,10 +1020,25 @@ function setupResizeHandle(handle, direction) {
 // Keyboard shortcuts
 // ---------------------------------------------------------------------------
 
+function toggleHelpPopup() {
+  var popup = $("#help-popup");
+  if (!popup) return;
+  if (popup.style.display === "none" || !popup.style.display) {
+    popup.style.display = "flex";
+  } else {
+    popup.style.display = "none";
+  }
+}
+
 function setupKeyboard() {
   document.addEventListener("keydown", function(e) {
-    // Let Escape blur filter input and go back
+    // Let Escape close help popup first, then blur/go back
     if (e.key === "Escape") {
+      var helpPopup = $("#help-popup");
+      if (helpPopup && helpPopup.style.display !== "none" && helpPopup.style.display) {
+        helpPopup.style.display = "none";
+        return;
+      }
       if (e.target.tagName === "INPUT") {
         e.target.blur();
         return;
@@ -1054,10 +1069,10 @@ function setupKeyboard() {
     // Only handle keys when workspace is visible
     var wsVisible = $("#workspace") && $("#workspace").style.display !== "none";
 
-    // F-keys (matching native TUI)
-    if (e.key === "F1") {
+    // h or F1 — toggle help popup
+    if (e.key === "F1" || (e.key === "h" && wsVisible)) {
       e.preventDefault();
-      window.open("/docs/keybindings/", "_blank");
+      toggleHelpPopup();
       return;
     }
     if (e.key === "F2" && wsVisible) {

@@ -114,14 +114,38 @@
 
   <!-- F-key bar at bottom -- always visible -->
   <div class="fkey-bar" id="fkey-bar">
-    <span class="fkey"><b>Esc</b> Back</span>
-    <span class="fkey"><b>j/k</b> Navigate</span>
-    <span class="fkey"><b>F1</b> Help</span>
+    <span class="fkey"><b>h</b> Help</span>
+    <span class="fkey"><b>j/k</b> Nav</span>
     <span class="fkey"><b>F2</b> Export</span>
-    <span class="fkey"><b>F3</b>/<b>/</b> Search</span>
-    <span class="fkey"><b>F7</b> Filter</span>
-    <span class="fkey"><b>O</b> Open File</span>
+    <span class="fkey"><b>/</b> Search</span>
+    <span class="fkey"><b>O</b> Open</span>
     <span class="fkey"><b>q</b> Clear</span>
+    <span class="fkey"><b>Esc</b> Back</span>
+  </div>
+
+  <!-- Help popup (toggle with h or F1) -->
+  <div class="help-popup" id="help-popup" style="display: none;" onclick="this.style.display='none'">
+    <div class="help-popup-inner" onclick="event.stopPropagation()">
+      <div class="help-popup-title">Keyboard Shortcuts</div>
+      <div class="help-popup-close" onclick="this.parentElement.parentElement.style.display='none'">&times;</div>
+      <table class="help-popup-table">
+        <tr><th colspan="2">Navigation</th></tr>
+        <tr><td><kbd>j</kbd> / <kbd>&#x2193;</kbd></td><td>Move down in call list</td></tr>
+        <tr><td><kbd>k</kbd> / <kbd>&#x2191;</kbd></td><td>Move up in call list</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>Select dialog / open call flow</td></tr>
+        <tr><td><kbd>Esc</kbd></td><td>Step back (deselect message &#x2192; dialog &#x2192; blur)</td></tr>
+        <tr><th colspan="2">Actions</th></tr>
+        <tr><td><kbd>h</kbd> / <kbd>F1</kbd></td><td>Toggle this help popup</td></tr>
+        <tr><td><kbd>F2</kbd></td><td>Open export menu (JSON / CSV / Mermaid)</td></tr>
+        <tr><td><kbd>/</kbd> / <kbd>F3</kbd> / <kbd>F7</kbd></td><td>Focus search / filter input</td></tr>
+        <tr><td><kbd>O</kbd></td><td>Open a new pcap file</td></tr>
+        <tr><td><kbd>q</kbd></td><td>Clear data and return to drop zone</td></tr>
+        <tr><th colspan="2">Search</th></tr>
+        <tr><td colspan="2">Type any text to search across all columns (case-insensitive).<br>
+            Use DSL syntax for precise filters: <code>method == 'INVITE'</code></td></tr>
+      </table>
+      <div class="help-popup-footer">Press <kbd>h</kbd> or <kbd>Esc</kbd> to close</div>
+    </div>
   </div>
 
 </div>
