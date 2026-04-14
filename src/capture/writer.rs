@@ -151,8 +151,11 @@ impl PcapWriter {
             WriterBackend::PcapNg(writer) => {
                 let ts = packet.timestamp;
                 // PCAP-NG timestamps are in nanoseconds since epoch
-                let nanos = ts.timestamp_nanos_opt().unwrap_or(0) as u128;
-                let timestamp = Duration::from_nanos(nanos as u64);
+                let nanos: u64 = ts
+                    .timestamp_nanos_opt()
+                    .and_then(|n| u64::try_from(n).ok())
+                    .unwrap_or(0);
+                let timestamp = Duration::from_nanos(nanos);
 
                 let epb = EnhancedPacketBlock {
                     interface_id: 0,
@@ -407,5 +410,52 @@ mod tests {
         assert_eq!(&body[4..8], &(keylog.len() as u32).to_le_bytes());
         // Verify data
         assert_eq!(&body[8..8 + keylog.len()], keylog);
+    }
+
+    #[test]
+    fn pcapng_timestamp_nanos_overflow_no_panic() {
+        // Verify the nanos conversion used in PcapNg write path handles
+        // timestamps where timestamp_nanos_opt() returns None (i64 overflow)
+        // or values that don't fit in u64 (negative). The fix uses
+        // .and_then(|n| u64::try_from(n).ok()).unwrap_or(0).
+        use chrono::DateTime;
+
+        // Year 2554+: timestamp_nanos_opt() returns None because nanoseconds
+        // exceed i64::MAX (~292 years from epoch = ~year 2262).
+        let far_future = DateTime::from_timestamp(20_000_000_000, 999_999_999)
+            .expect("valid far-future timestamp");
+
+        // Replicate the exact conversion from PcapWriter::write
+        let nanos: u64 = far_future
+            .timestamp_nanos_opt()
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+
+        // timestamp_nanos_opt returns None for dates past ~2262, so fallback to 0
+        assert_eq!(nanos, 0, "far-future timestamp should fall back to 0 nanos");
+
+        // Also verify a normal timestamp works correctly
+        let normal = DateTime::from_timestamp(1_700_000_000, 500_000_000)
+            .expect("valid normal timestamp");
+        let normal_nanos: u64 = normal
+            .timestamp_nanos_opt()
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        assert_eq!(
+            normal_nanos,
+            1_700_000_000_500_000_000u64,
+            "normal timestamp nanos should be exact"
+        );
+
+        // Pre-epoch timestamp: nanos would be negative (fails u64::try_from)
+        let pre_epoch = DateTime::from_timestamp(-1, 0).expect("valid pre-epoch timestamp");
+        let pre_nanos: u64 = pre_epoch
+            .timestamp_nanos_opt()
+            .and_then(|n| u64::try_from(n).ok())
+            .unwrap_or(0);
+        assert_eq!(
+            pre_nanos, 0,
+            "pre-epoch timestamp should fall back to 0 nanos"
+        );
     }
 }

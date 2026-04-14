@@ -189,14 +189,18 @@ impl SipMessage {
 
 /// Extract the user part from a SIP URI inside a header value.
 ///
-/// Handles both `<sip:user@host>` and bare `sip:user@host` forms.
+/// Handles both `<sip:user@host>` and bare `sip:user@host` forms (RFC 3261 § 20.20).
 fn extract_uri_user(header_value: &str) -> Option<String> {
-    // Look for "sip:" or "sips:" within angle brackets first, then bare
-    let uri_start = header_value
+    // Try angle-bracket form first: <sip:user@host> or <sips:user@host>
+    // Fall back to bare form: sip:user@host or sips:user@host
+    let scheme_pos = header_value
         .find("<sip:")
-        .or_else(|| header_value.find("<sips:"))?;
+        .or_else(|| header_value.find("<sips:"))
+        .or_else(|| header_value.find("sip:"))
+        .or_else(|| header_value.find("sips:"))?;
 
-    let after_scheme = &header_value[uri_start + 1..]; // skip '<'
+    let after_scheme = &header_value[scheme_pos..];
+    // Skip past the scheme (find ':' after sip/sips)
     let colon_pos = after_scheme.find(':')?;
     let after_colon = &after_scheme[colon_pos + 1..];
 
@@ -312,5 +316,39 @@ mod tests {
     #[test]
     fn extract_tag_absent() {
         assert_eq!(extract_tag("<sip:1001@example.com>"), None);
+    }
+
+    // ── Bare URI extraction (no angle brackets) ────────────────────────
+
+    #[test]
+    fn extract_user_bare_sip_uri() {
+        assert_eq!(
+            extract_uri_user("sip:alice@example.com"),
+            Some("alice".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_bare_sips_uri() {
+        assert_eq!(
+            extract_uri_user("sips:bob@example.com"),
+            Some("bob".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_angle_bracket_still_works() {
+        assert_eq!(
+            extract_uri_user("<sip:charlie@host>"),
+            Some("charlie".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_user_display_name_with_uri() {
+        assert_eq!(
+            extract_uri_user("Alice <sip:alice@host>"),
+            Some("alice".to_string())
+        );
     }
 }

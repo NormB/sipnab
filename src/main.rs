@@ -440,8 +440,8 @@ fn main() {
     }
 
     // 17a. Start standalone metrics server if --metrics is set (without --api)
-    let _metrics_handle = if cli.metrics.is_some() {
-        let metrics_addr_str = cli.metrics.as_deref().unwrap();
+    #[cfg(feature = "api")]
+    let _metrics_handle = if let Some(metrics_addr_str) = cli.metrics.as_deref() {
         let bind_addr =
             match sipnab::output::prometheus_server::parse_metrics_addr(metrics_addr_str) {
                 Ok(a) => a,
@@ -1478,6 +1478,7 @@ fn process_parsed_packet(
                 }
 
                 // STIR/SHAKEN extraction (I1)
+                #[cfg(feature = "tls")]
                 if cli.stir_shaken
                     && let Some(result) = sip_msg.stir_shaken()
                 {

@@ -196,21 +196,30 @@ fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> L
         .fg(Color::Black)
         .add_modifier(Modifier::BOLD);
 
+    // to_ascii_lowercase preserves byte length (1:1 mapping), so byte
+    // offsets from match_indices on the lowered string are valid for the
+    // original. This is safe because ASCII lowercasing never changes byte count.
     let lower_line = line.to_ascii_lowercase();
     let lower_query = query.to_ascii_lowercase();
+    let qlen = lower_query.len();
 
     let mut spans: Vec<Span<'a>> = Vec::new();
     let mut last_end = 0;
 
     for (start, _) in lower_line.match_indices(&lower_query) {
+        let end = start + qlen;
+        // Verify byte offsets land on char boundaries in the original string
+        if !line.is_char_boundary(start) || !line.is_char_boundary(end) {
+            continue;
+        }
         if start > last_end {
             spans.push(Span::styled(line[last_end..start].to_string(), base_style));
         }
         spans.push(Span::styled(
-            line[start..start + query.len()].to_string(),
+            line[start..end].to_string(),
             highlight_style,
         ));
-        last_end = start + query.len();
+        last_end = end;
     }
 
     if last_end < line.len() {

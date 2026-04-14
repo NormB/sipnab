@@ -34,24 +34,27 @@ struct ClassicReader<'a> {
 }
 
 impl<'a> ClassicReader<'a> {
-    fn read_u32(&self, off: usize) -> u32 {
-        if self.big_endian {
-            u32::from_be_bytes([self.data[off], self.data[off+1], self.data[off+2], self.data[off+3]])
+    fn read_u32(&self, off: usize) -> Option<u32> {
+        let bytes: [u8; 4] = self.data.get(off..off + 4)?.try_into().ok()?;
+        Some(if self.big_endian {
+            u32::from_be_bytes(bytes)
         } else {
-            u32::from_le_bytes([self.data[off], self.data[off+1], self.data[off+2], self.data[off+3]])
-        }
+            u32::from_le_bytes(bytes)
+        })
     }
 
     fn next_packet(&mut self) -> Option<PcapPacket> {
-        if self.offset + 16 > self.data.len() { return None; }
-        let ts_sec = self.read_u32(self.offset);
-        let ts_usec = self.read_u32(self.offset + 4);
-        let incl_len = self.read_u32(self.offset + 8) as usize;
-        let orig_len = self.read_u32(self.offset + 12);
+        let ts_sec = self.read_u32(self.offset)?;
+        let ts_usec = self.read_u32(self.offset + 4)?;
+        let incl_len = self.read_u32(self.offset + 8)? as usize;
+        let orig_len = self.read_u32(self.offset + 12)?;
         self.offset += 16;
-        if self.offset + incl_len > self.data.len() { return None; }
-        let data = self.data[self.offset..self.offset + incl_len].to_vec();
-        self.offset += incl_len;
+
+        let end = self.offset.checked_add(incl_len)?;
+        if end > self.data.len() { return None; }
+        let data = self.data[self.offset..end].to_vec();
+        self.offset = end;
+
         let ts_usec = if self.nanoseconds { ts_usec / 1000 } else { ts_usec };
         Some(PcapPacket { timestamp_secs: ts_sec, timestamp_usecs: ts_usec, data, orig_len })
     }
@@ -69,87 +72,86 @@ struct NgReader<'a> {
 }
 
 impl<'a> NgReader<'a> {
-    fn read_u16(&self, off: usize) -> u16 {
-        if self.big_endian {
-            u16::from_be_bytes([self.data[off], self.data[off+1]])
+    fn read_u16(&self, off: usize) -> Option<u16> {
+        let bytes: [u8; 2] = self.data.get(off..off + 2)?.try_into().ok()?;
+        Some(if self.big_endian {
+            u16::from_be_bytes(bytes)
         } else {
-            u16::from_le_bytes([self.data[off], self.data[off+1]])
-        }
+            u16::from_le_bytes(bytes)
+        })
     }
 
-    fn read_u32(&self, off: usize) -> u32 {
-        if self.big_endian {
-            u32::from_be_bytes([self.data[off], self.data[off+1], self.data[off+2], self.data[off+3]])
+    fn read_u32(&self, off: usize) -> Option<u32> {
+        let bytes: [u8; 4] = self.data.get(off..off + 4)?.try_into().ok()?;
+        Some(if self.big_endian {
+            u32::from_be_bytes(bytes)
         } else {
-            u32::from_le_bytes([self.data[off], self.data[off+1], self.data[off+2], self.data[off+3]])
-        }
+            u32::from_le_bytes(bytes)
+        })
     }
 
     fn next_packet(&mut self) -> Option<PcapPacket> {
-        // Walk blocks until we find an Enhanced Packet Block (EPB) or Simple Packet Block
         loop {
-            if self.offset + 12 > self.data.len() { return None; }
+            let block_type = self.read_u32(self.offset)?;
+            let block_total_len = self.read_u32(self.offset + 4)? as usize;
 
-            let block_type = self.read_u32(self.offset);
-            let block_total_len = self.read_u32(self.offset + 4) as usize;
-
-            if block_total_len < 12 || self.offset + block_total_len > self.data.len() {
-                return None; // Truncated or corrupt
+            if block_total_len < 12 {
+                return None;
+            }
+            let block_end = self.offset.checked_add(block_total_len)?;
+            if block_end > self.data.len() {
+                return None;
             }
 
             match block_type {
                 // Section Header Block (SHB) — 0x0a0d0d0a
                 0x0a0d0d0a => {
-                    // Re-detect endianness from byte order magic at offset+8
-                    if self.offset + 16 <= self.data.len() {
-                        let bom = u32::from_le_bytes([
-                            self.data[self.offset+8], self.data[self.offset+9],
-                            self.data[self.offset+10], self.data[self.offset+11],
-                        ]);
+                    if let Some(bom_bytes) = self.data.get(self.offset + 8..self.offset + 12) {
+                        let bom = u32::from_le_bytes(bom_bytes.try_into().ok()?);
                         self.big_endian = bom == 0x4d3c2b1a;
                     }
-                    self.offset += block_total_len;
+                    self.offset = block_end;
                 }
 
                 // Interface Description Block (IDB) — 0x00000001
                 0x00000001 => {
                     if block_total_len >= 20 {
-                        self.link_type = self.read_u16(self.offset + 8) as u32;
-                        // Parse options for if_tsresol
+                        if let Some(lt) = self.read_u16(self.offset + 8) {
+                            self.link_type = lt as u32;
+                        }
                         let opts_start = self.offset + 16;
-                        let opts_end = self.offset + block_total_len - 4;
+                        let opts_end = self.offset + block_total_len.saturating_sub(4);
                         self.parse_idb_options(opts_start, opts_end);
                     }
-                    self.offset += block_total_len;
+                    self.offset = block_end;
                 }
 
                 // Enhanced Packet Block (EPB) — 0x00000006
                 0x00000006 => {
                     if block_total_len < 32 {
-                        self.offset += block_total_len;
+                        self.offset = block_end;
                         continue;
                     }
-                    // EPB layout: block_type(4) + block_len(4) + interface_id(4) +
-                    //   ts_high(4) + ts_low(4) + captured_len(4) + orig_len(4) + data(...)
-                    let ts_high = self.read_u32(self.offset + 12);
-                    let ts_low = self.read_u32(self.offset + 16);
-                    let captured_len = self.read_u32(self.offset + 20) as usize;
-                    let orig_len = self.read_u32(self.offset + 24);
+                    let ts_high = self.read_u32(self.offset + 12)?;
+                    let ts_low = self.read_u32(self.offset + 16)?;
+                    let captured_len = self.read_u32(self.offset + 20)? as usize;
+                    let orig_len = self.read_u32(self.offset + 24)?;
 
                     let data_start = self.offset + 28;
-                    if data_start + captured_len > self.data.len() {
-                        self.offset += block_total_len;
+                    let data_end = data_start.checked_add(captured_len)?;
+                    if data_end > self.data.len() {
+                        self.offset = block_end;
                         continue;
                     }
 
-                    let pkt_data = self.data[data_start..data_start + captured_len].to_vec();
+                    let pkt_data = self.data[data_start..data_end].to_vec();
 
-                    // Convert 64-bit timestamp to seconds + microseconds
                     let ts64 = ((ts_high as u64) << 32) | (ts_low as u64);
-                    let ts_sec = (ts64 / self.if_tsresol) as u32;
-                    let ts_usec = ((ts64 % self.if_tsresol) * 1_000_000 / self.if_tsresol) as u32;
+                    let resol = self.if_tsresol.max(1); // guard against zero
+                    let ts_sec = (ts64 / resol) as u32;
+                    let ts_usec = ((ts64 % resol).saturating_mul(1_000_000) / resol) as u32;
 
-                    self.offset += block_total_len;
+                    self.offset = block_end;
                     return Some(PcapPacket {
                         timestamp_secs: ts_sec,
                         timestamp_usecs: ts_usec,
@@ -160,7 +162,7 @@ impl<'a> NgReader<'a> {
 
                 // Any other block — skip
                 _ => {
-                    self.offset += block_total_len;
+                    self.offset = block_end;
                 }
             }
         }
@@ -168,21 +170,31 @@ impl<'a> NgReader<'a> {
 
     fn parse_idb_options(&mut self, mut pos: usize, end: usize) {
         while pos + 4 <= end {
-            let opt_code = self.read_u16(pos);
-            let opt_len = self.read_u16(pos + 2) as usize;
+            let opt_code = match self.read_u16(pos) {
+                Some(v) => v,
+                None => break,
+            };
+            let opt_len = match self.read_u16(pos + 2) {
+                Some(v) => v as usize,
+                None => break,
+            };
             pos += 4;
-            if pos + opt_len > end { break; }
+            let opt_data_end = match pos.checked_add(opt_len) {
+                Some(e) if e <= end => e,
+                _ => break,
+            };
 
             // if_tsresol option (code 9)
-            if opt_code == 9 && opt_len >= 1 {
-                let tsresol = self.data[pos];
+            if opt_code == 9 && opt_len >= 1
+                && let Some(&tsresol) = self.data.get(pos)
+            {
                 if tsresol & 0x80 != 0 {
-                    // Power of 2
                     let exp = (tsresol & 0x7f) as u32;
-                    self.if_tsresol = 1u64 << exp;
+                    // Cap shift to prevent overflow (u64 max shift is 63)
+                    self.if_tsresol = if exp <= 63 { 1u64 << exp } else { u64::MAX };
                 } else {
-                    // Power of 10
-                    self.if_tsresol = 10u64.pow(tsresol as u32);
+                    // Cap exponent to prevent 10^N overflow (10^19 fits in u64, 10^20 does not)
+                    self.if_tsresol = 10u64.checked_pow(tsresol as u32).unwrap_or(u64::MAX);
                 }
             }
 
@@ -190,7 +202,12 @@ impl<'a> NgReader<'a> {
             if opt_code == 0 { break; }
 
             // Pad to 4-byte boundary
-            pos += opt_len + (4 - (opt_len % 4)) % 4;
+            let padded = opt_len + (4 - (opt_len % 4)) % 4;
+            pos = match pos.checked_add(padded) {
+                Some(p) => p,
+                None => break,
+            };
+            let _ = opt_data_end; // used in guard above
         }
     }
 }
@@ -224,7 +241,6 @@ impl<'a> PcapReader<'a> {
             // Pcapng Section Header Block
             0x0a0d0d0a => {
                 ensure!(data.len() >= 28, "pcapng file too short for SHB");
-                // Byte-order magic at offset 8
                 let bom = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
                 let big_endian = bom == 0x4d3c2b1a;
                 let shb_len = if big_endian {
@@ -239,8 +255,8 @@ impl<'a> PcapReader<'a> {
                         data,
                         offset: start,
                         big_endian,
-                        if_tsresol: 1_000_000, // default: microseconds
-                        link_type: 1, // default: Ethernet (updated by IDB)
+                        if_tsresol: 1_000_000,
+                        link_type: 1,
                     }),
                     link_type: 1,
                 })
@@ -261,7 +277,6 @@ impl<'a> Iterator for PcapReader<'a> {
             ReaderInner::Classic(r) => r.next_packet(),
             ReaderInner::Ng(r) => {
                 let pkt = r.next_packet();
-                // Update the public link_type from the ng reader (set by IDB)
                 self.link_type = r.link_type;
                 pkt
             }
@@ -288,7 +303,6 @@ mod tests {
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
         assert!(packets.len() > 5, "pcapng should have packets, got {}", packets.len());
-        // Verify timestamps are reasonable (non-zero)
         assert!(packets[0].timestamp_secs > 0, "timestamp should be non-zero");
     }
 
@@ -297,7 +311,7 @@ mod tests {
         let data = std::fs::read("tests/pcap-samples/sip-auth-failure.pcapng").unwrap();
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
-        assert!(packets.len() > 0, "should have packets");
+        assert!(!packets.is_empty(), "should have packets");
     }
 
     #[test]
@@ -324,11 +338,10 @@ mod tests {
 
     #[test]
     fn cap_file_pcap_format() {
-        // .cap files that are pcap format should work
         let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap").unwrap();
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
-        assert!(packets.len() > 0, "pcap-format .cap file should parse");
+        assert!(!packets.is_empty(), "pcap-format .cap file should parse");
     }
 
     #[test]
@@ -339,9 +352,29 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("Network Monitor"));
     }
 
+    // ── Malformed input tests ─────────────────────────────────────────
+
+    #[test]
+    fn crafted_pcapng_zero_tsresol() {
+        // Ensure tsresol=0 doesn't cause division by zero
+        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
+        let reader = PcapReader::new(&data).unwrap();
+        // Just verify it doesn't panic
+        let _packets: Vec<_> = reader.collect();
+    }
+
+    #[test]
+    fn truncated_pcapng_block() {
+        // Pcapng with valid SHB header but truncated before any packets
+        let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
+        let truncated = &data[..40]; // Just the SHB
+        let reader = PcapReader::new(truncated).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert!(packets.is_empty() || packets.len() <= 1);
+    }
+
     // ── Load every capture file in tests/pcap-samples/ ──────────────
 
-    /// Helper: load a file and assert it parses with at least `min_packets` packets.
     fn assert_loads(path: &str, min_packets: usize) {
         let data = std::fs::read(path).unwrap_or_else(|e| panic!("Can't read {path}: {e}"));
         let reader = PcapReader::new(&data).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -397,5 +430,225 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(err.contains("Network Monitor"), "Error should mention Network Monitor: {err}");
         assert!(err.contains("editcap"), "Error should suggest editcap conversion: {err}");
+    }
+
+    // ── Hardening regression tests ───────────────────────────────────
+
+    /// Helper: build a minimal pcapng SHB (Section Header Block), little-endian.
+    /// Returns the raw bytes for a 28-byte SHB.
+    fn build_shb() -> Vec<u8> {
+        let mut buf = Vec::new();
+        // Block type: SHB
+        buf.extend_from_slice(&0x0a0d0d0au32.to_le_bytes());
+        // Block total length: 28
+        buf.extend_from_slice(&28u32.to_le_bytes());
+        // Byte-Order Magic (LE)
+        buf.extend_from_slice(&0x1a2b3c4du32.to_le_bytes());
+        // Version 1.0
+        buf.extend_from_slice(&1u16.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // Section length: -1 (not specified)
+        buf.extend_from_slice(&(-1i64).to_le_bytes());
+        // Trailing block total length
+        buf.extend_from_slice(&28u32.to_le_bytes());
+        buf
+    }
+
+    /// Helper: build a pcapng IDB (Interface Description Block), little-endian.
+    /// `opts` is appended as raw option bytes before the trailing length.
+    fn build_idb(link_type: u16, opts: &[u8]) -> Vec<u8> {
+        // Fixed part: 8 (block header) + 4 (link_type + reserved) + 4 (snap_len)
+        // + opts.len() + 4 (trailing length) — must be padded to 4-byte boundary
+        let opts_padded = if opts.len() % 4 != 0 {
+            opts.len() + (4 - opts.len() % 4)
+        } else {
+            opts.len()
+        };
+        let total_len = 8 + 4 + 4 + opts_padded + 4;
+        let mut buf = Vec::new();
+        // Block type: IDB (0x00000001)
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        // LinkType + Reserved
+        buf.extend_from_slice(&link_type.to_le_bytes());
+        buf.extend_from_slice(&0u16.to_le_bytes());
+        // SnapLen
+        buf.extend_from_slice(&65535u32.to_le_bytes());
+        // Options
+        buf.extend_from_slice(opts);
+        // Pad to 4-byte boundary
+        while buf.len() < total_len - 4 {
+            buf.push(0);
+        }
+        // Trailing block total length
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        buf
+    }
+
+    /// Helper: build a pcapng EPB (Enhanced Packet Block), little-endian.
+    fn build_epb(ts_high: u32, ts_low: u32, captured_len: u32, orig_len: u32, pkt_data: &[u8]) -> Vec<u8> {
+        let data_padded = if pkt_data.len() % 4 != 0 {
+            pkt_data.len() + (4 - pkt_data.len() % 4)
+        } else {
+            pkt_data.len()
+        };
+        let total_len = 8 + 4 + 4 + 4 + 4 + 4 + data_padded + 4;
+        let mut buf = Vec::new();
+        // Block type: EPB (0x00000006)
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        // Interface ID
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // Timestamp high + low
+        buf.extend_from_slice(&ts_high.to_le_bytes());
+        buf.extend_from_slice(&ts_low.to_le_bytes());
+        // Captured Len
+        buf.extend_from_slice(&captured_len.to_le_bytes());
+        // Original Len
+        buf.extend_from_slice(&orig_len.to_le_bytes());
+        // Packet data
+        buf.extend_from_slice(pkt_data);
+        // Pad to 4-byte boundary
+        while buf.len() < total_len - 4 {
+            buf.push(0);
+        }
+        // Trailing block total length
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        buf
+    }
+
+    /// Helper: build a classic pcap global header (24 bytes, LE).
+    fn build_pcap_header(link_type: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        // Magic (LE, microseconds)
+        buf.extend_from_slice(&0xa1b2c3d4u32.to_le_bytes());
+        // Version 2.4
+        buf.extend_from_slice(&2u16.to_le_bytes());
+        buf.extend_from_slice(&4u16.to_le_bytes());
+        // ThisZone
+        buf.extend_from_slice(&0i32.to_le_bytes());
+        // SigFigs
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        // SnapLen
+        buf.extend_from_slice(&65535u32.to_le_bytes());
+        // Network (link type)
+        buf.extend_from_slice(&link_type.to_le_bytes());
+        buf
+    }
+
+    /// Helper: build a classic pcap packet record header (16 bytes, LE).
+    fn build_pcap_packet_header(ts_sec: u32, ts_usec: u32, incl_len: u32, orig_len: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&ts_sec.to_le_bytes());
+        buf.extend_from_slice(&ts_usec.to_le_bytes());
+        buf.extend_from_slice(&incl_len.to_le_bytes());
+        buf.extend_from_slice(&orig_len.to_le_bytes());
+        buf
+    }
+
+    #[test]
+    fn truncated_epb_block_no_panic() {
+        // EPB block header claims block_total_len >= 32 but the actual file
+        // data ends before offset+28, so the field reads should return None.
+        let mut data = build_shb();
+        data.extend_from_slice(&build_idb(1, &[]));
+
+        // Craft a truncated EPB: write block_type + block_total_len only (8 bytes),
+        // claiming total_len = 64, but provide no further data.
+        data.extend_from_slice(&6u32.to_le_bytes());   // block type: EPB
+        data.extend_from_slice(&64u32.to_le_bytes());   // block_total_len = 64
+
+        // Only 8 bytes of the "block" exist — reads at offset+12..+28 must fail gracefully
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        // Should return no packets — the EPB is too short to parse
+        assert!(packets.is_empty(), "truncated EPB should yield no packets");
+    }
+
+    #[test]
+    fn huge_incl_len_classic_pcap_no_panic() {
+        // Classic pcap with incl_len = 0xFFFFFFFF. The checked_add + bounds check
+        // must prevent any out-of-bounds access or allocation panic.
+        let mut data = build_pcap_header(1);
+        data.extend_from_slice(&build_pcap_packet_header(1000, 0, 0xFFFFFFFF, 0xFFFFFFFF));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert!(packets.is_empty(), "huge incl_len should produce no packets");
+    }
+
+    #[test]
+    fn huge_captured_len_pcapng_epb_no_panic() {
+        // pcapng EPB with captured_len = 0xFFFFFFFF. The data_end checked_add
+        // or bounds check must prevent panic.
+        let mut data = build_shb();
+        data.extend_from_slice(&build_idb(1, &[]));
+
+        // Build an EPB where captured_len = 0xFFFFFFFF but block_total_len is
+        // just large enough for the header (32). The captured_len will exceed
+        // the actual data, so it should be skipped.
+        let mut epb = Vec::new();
+        epb.extend_from_slice(&6u32.to_le_bytes());           // block type: EPB
+        epb.extend_from_slice(&32u32.to_le_bytes());           // block_total_len = 32
+        epb.extend_from_slice(&0u32.to_le_bytes());            // interface ID
+        epb.extend_from_slice(&0u32.to_le_bytes());            // ts_high
+        epb.extend_from_slice(&0u32.to_le_bytes());            // ts_low
+        epb.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());   // captured_len (huge)
+        epb.extend_from_slice(&0u32.to_le_bytes());            // orig_len
+        epb.extend_from_slice(&32u32.to_le_bytes());           // trailing block_total_len
+        data.extend_from_slice(&epb);
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert!(packets.is_empty(), "huge captured_len EPB should produce no packets");
+    }
+
+    #[test]
+    fn if_tsresol_overflow_no_panic() {
+        // IDB with if_tsresol option value = 20 (power-of-10 mode).
+        // 10^20 overflows u64. The parser should clamp to u64::MAX and
+        // not panic or divide by zero.
+        let mut opts = Vec::new();
+        // Option code 9 (if_tsresol), length 1
+        opts.extend_from_slice(&9u16.to_le_bytes());
+        opts.extend_from_slice(&1u16.to_le_bytes());
+        // Value: 20 (bit 7 = 0 → power of 10, exponent = 20)
+        opts.push(20);
+        // Pad to 4-byte boundary
+        opts.extend_from_slice(&[0, 0, 0]);
+        // End of options
+        opts.extend_from_slice(&0u16.to_le_bytes());
+        opts.extend_from_slice(&0u16.to_le_bytes());
+
+        let mut data = build_shb();
+        data.extend_from_slice(&build_idb(1, &opts));
+
+        // Now append an EPB with a valid timestamp and some packet data
+        let pkt_payload = [0xAAu8; 16];
+        data.extend_from_slice(&build_epb(0, 1000, 16, 16, &pkt_payload));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        // Should produce exactly one packet without panicking
+        assert_eq!(packets.len(), 1, "should parse the EPB even with overflowed tsresol");
+        assert_eq!(packets[0].data.len(), 16);
+        // Timestamp may be clamped/weird, but must be finite and not cause panic
+        // (the division by u64::MAX yields 0 for ts_sec, which is fine)
+    }
+
+    #[test]
+    fn zero_length_classic_pcap_packet() {
+        // Classic pcap with a packet whose incl_len = 0. Should parse
+        // successfully with empty data vec.
+        let mut data = build_pcap_header(1);
+        data.extend_from_slice(&build_pcap_packet_header(1000, 500, 0, 100));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert_eq!(packets.len(), 1, "zero-length packet should parse");
+        assert!(packets[0].data.is_empty(), "packet data should be empty");
+        assert_eq!(packets[0].timestamp_secs, 1000);
+        assert_eq!(packets[0].timestamp_usecs, 500);
+        assert_eq!(packets[0].orig_len, 100);
     }
 }

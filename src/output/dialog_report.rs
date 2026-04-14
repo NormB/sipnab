@@ -166,14 +166,19 @@ fn format_seconds(secs: i64) -> String {
 }
 
 /// Truncate a string to a maximum length, appending "..." if needed.
+/// Uses char boundaries to avoid panics on multi-byte UTF-8 input.
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
-        s.to_string()
-    } else if max_len > 3 {
-        format!("{}...", &s[..max_len - 3])
-    } else {
-        s[..max_len].to_string()
+        return s.to_string();
     }
+    if max_len <= 3 {
+        return s.chars().take(max_len).collect();
+    }
+    let mut end = max_len - 3;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -276,5 +281,31 @@ mod tests {
         assert_eq!(format_seconds(45), "45s");
         assert_eq!(format_seconds(153), "2m 33s");
         assert_eq!(format_seconds(3661), "1h 1m 1s");
+    }
+
+    // ── UTF-8 safe truncate_str ────────────────────────────────────────
+
+    #[test]
+    fn truncate_str_short_string_unchanged() {
+        assert_eq!(truncate_str("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_str_exact_ellipsis() {
+        assert_eq!(truncate_str("hello world", 8), "hello...");
+    }
+
+    #[test]
+    fn truncate_str_multibyte_latin_no_panic() {
+        // "héllo wörld" contains 2-byte UTF-8 chars
+        let result = truncate_str("héllo wörld", 8);
+        assert!(result.ends_with("..."));
+    }
+
+    #[test]
+    fn truncate_str_cjk_no_panic() {
+        // "日本語テスト" — each char is 3 bytes in UTF-8
+        let result = truncate_str("日本語テスト", 6);
+        assert!(!result.is_empty());
     }
 }

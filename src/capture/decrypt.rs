@@ -369,6 +369,9 @@ pub struct TlsDecryptor {
     /// the server_random's first 8 bytes + cipher code as a quick hash,
     /// but in practice we just store all observed ServerHellos).
     observed_handshakes: Vec<HandshakeInfo>,
+    /// Number of keylog entries already processed into sessions.
+    /// Avoids rebuilding the group map on every ApplicationData record.
+    keylog_processed_count: usize,
 }
 
 impl TlsDecryptor {
@@ -402,6 +405,7 @@ impl TlsDecryptor {
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
             last_keylog_size,
             observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
         })
     }
 
@@ -558,11 +562,15 @@ impl TlsDecryptor {
         None
     }
 
-    /// Populate sessions from keylog entries (idempotent).
+    /// Populate sessions from keylog entries.
+    /// Skips work when no new entries have been added since last call.
     fn ensure_sessions_populated(&mut self) {
-        if self.keylog_entries.is_empty() {
+        if self.keylog_entries.is_empty()
+            || self.keylog_entries.len() == self.keylog_processed_count
+        {
             return;
         }
+        self.keylog_processed_count = self.keylog_entries.len();
 
         // Group entries by client_random
         let mut grouped: HashMap<[u8; 32], Vec<&KeyLogEntry>> = HashMap::new();
@@ -958,6 +966,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
         };
 
         d.ensure_sessions_populated();
@@ -982,6 +991,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
         };
 
         let record = TlsRecord {
@@ -1015,6 +1025,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
         };
 
         let record = TlsRecord {
@@ -1047,6 +1058,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
         };
 
         let record = TlsRecord {
@@ -1107,5 +1119,91 @@ mod tests {
         assert_eq!(&info[3..12], b"tls13 key");
         // Context length: 0
         assert_eq!(info[12], 0);
+    }
+
+    #[test]
+    fn ensure_sessions_populated_idempotent() {
+        // First call should process all entries; second call should be a no-op.
+        let mut d = TlsDecryptor {
+            keylog_entries: make_keylog_entries(),
+            sessions: HashMap::new(),
+            crypto: Box::new(MockCrypto {
+                decrypt_result: None,
+            }),
+            decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
+            observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
+        };
+
+        // First call: should create sessions
+        d.ensure_sessions_populated();
+        assert_eq!(d.sessions.len(), 1);
+        assert_eq!(
+            d.keylog_processed_count,
+            d.keylog_entries.len(),
+            "processed count must match entry count after first call"
+        );
+
+        let sessions_after_first = d.sessions.len();
+        let processed_after_first = d.keylog_processed_count;
+
+        // Second call: should be a no-op (early return because
+        // keylog_entries.len() == keylog_processed_count)
+        d.ensure_sessions_populated();
+        assert_eq!(
+            d.sessions.len(),
+            sessions_after_first,
+            "session count must not change on second call"
+        );
+        assert_eq!(
+            d.keylog_processed_count, processed_after_first,
+            "processed count must not change on second call"
+        );
+    }
+
+    #[test]
+    fn ensure_sessions_populated_processes_incremental_entries() {
+        // Verify that adding new keylog entries after the first populate
+        // causes a second call to process only the new entries.
+        let mut d = TlsDecryptor {
+            keylog_entries: make_keylog_entries(), // 2 entries, same client_random
+            sessions: HashMap::new(),
+            crypto: Box::new(MockCrypto {
+                decrypt_result: None,
+            }),
+            decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
+            observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
+        };
+
+        d.ensure_sessions_populated();
+        assert_eq!(d.sessions.len(), 1);
+        assert_eq!(d.keylog_processed_count, 2);
+
+        // Add entries with a different client_random
+        let cr2 = [0xBBu8; 32];
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_TRAFFIC_SECRET_0".to_string(),
+            client_random: cr2.to_vec(),
+            secret: vec![0x33u8; 32],
+        });
+        d.keylog_entries.push(KeyLogEntry {
+            label: "SERVER_TRAFFIC_SECRET_0".to_string(),
+            client_random: cr2.to_vec(),
+            secret: vec![0x44u8; 32],
+        });
+
+        // Now keylog_entries.len() (4) != keylog_processed_count (2),
+        // so ensure_sessions_populated should process the new entries.
+        d.ensure_sessions_populated();
+        assert_eq!(d.sessions.len(), 2, "should now have 2 sessions");
+        assert_eq!(
+            d.keylog_processed_count, 4,
+            "processed count should reflect all entries"
+        );
     }
 }
