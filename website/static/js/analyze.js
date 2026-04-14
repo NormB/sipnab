@@ -510,7 +510,13 @@ function selectDialog(callId) {
   var flowStr = session.get_call_flow(callId);
   currentFlow = JSON.parse(flowStr);
   renderCallFlow();
-  clearRawMessage();
+
+  // Auto-select first message so raw SIP is always visible
+  if (currentFlow.length > 0) {
+    selectMessage(0);
+  } else {
+    clearRawMessage();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,20 +1076,20 @@ function setupKeyboard() {
     var wsVisible = $("#workspace") && $("#workspace").style.display !== "none";
 
     // Help popup
-    if (e.key === "h" || e.key === "?") {
+    if (e.key === "h" || e.key === "H" || e.key === "?") {
       e.preventDefault();
       toggleHelpPopup();
       return;
     }
     // Export dropdown
-    if (e.key === "e" && wsVisible) {
+    if ((e.key === "e" || e.key === "E") && wsVisible) {
       e.preventDefault();
       var dropdown = $("#export-dropdown");
       if (dropdown) dropdown.classList.toggle("open");
       return;
     }
     // Search / filter
-    if ((e.key === "f" || e.key === "/") && wsVisible) {
+    if ((e.key === "f" || e.key === "F") && wsVisible) {
       e.preventDefault();
       var filterInput = $("#filter-input");
       if (filterInput) filterInput.focus();
@@ -1092,50 +1098,70 @@ function setupKeyboard() {
 
     if (!wsVisible) return;
 
-    // j/k navigation in call list (vim-style, matching native TUI)
-    var trs = $$("#call-list-body tr");
-    if (trs.length === 0) return;
-
-    if (e.key === "j" || e.key === "ArrowDown") {
+    // j/k/arrows — navigate flow messages if a dialog is selected, else call list
+    if (e.key === "j" || e.key === "J" || e.key === "ArrowDown") {
       e.preventDefault();
-      var currentIdx = -1;
-      for (var i = 0; i < trs.length; i++) {
-        if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+      if (selectedCallId && currentFlow.length > 0) {
+        // Navigate flow messages
+        var newIdx = (selectedMsgIndex === null) ? 0 : Math.min(selectedMsgIndex + 1, currentFlow.length - 1);
+        selectMessage(newIdx);
+        var flowRows = $$("#flow-messages .flow-msg");
+        if (flowRows[newIdx]) flowRows[newIdx].scrollIntoView({ block: "nearest" });
+      } else {
+        // Navigate call list
+        var trs = $$("#call-list-body tr");
+        if (trs.length === 0) return;
+        var currentIdx = -1;
+        for (var i = 0; i < trs.length; i++) {
+          if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+        }
+        var nextIdx = Math.min(currentIdx + 1, trs.length - 1);
+        if (nextIdx >= 0) trs[nextIdx].click();
+        trs[nextIdx].scrollIntoView({ block: "nearest" });
       }
-      var nextIdx = Math.min(currentIdx + 1, trs.length - 1);
-      if (nextIdx >= 0) trs[nextIdx].click();
-      trs[nextIdx].scrollIntoView({ block: "nearest" });
       return;
     }
-    if (e.key === "k" || e.key === "ArrowUp") {
+    if (e.key === "k" || e.key === "K" || e.key === "ArrowUp") {
       e.preventDefault();
-      var currentIdx = -1;
-      for (var i = 0; i < trs.length; i++) {
-        if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+      if (selectedCallId && currentFlow.length > 0) {
+        // Navigate flow messages
+        var newIdx = (selectedMsgIndex === null) ? 0 : Math.max(selectedMsgIndex - 1, 0);
+        selectMessage(newIdx);
+        var flowRows = $$("#flow-messages .flow-msg");
+        if (flowRows[newIdx]) flowRows[newIdx].scrollIntoView({ block: "nearest" });
+      } else {
+        // Navigate call list
+        var trs = $$("#call-list-body tr");
+        if (trs.length === 0) return;
+        var currentIdx = -1;
+        for (var i = 0; i < trs.length; i++) {
+          if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+        }
+        var prevIdx = Math.max(currentIdx - 1, 0);
+        trs[prevIdx].click();
+        trs[prevIdx].scrollIntoView({ block: "nearest" });
       }
-      var prevIdx = Math.max(currentIdx - 1, 0);
-      trs[prevIdx].click();
-      trs[prevIdx].scrollIntoView({ block: "nearest" });
       return;
     }
 
-    // Enter — open call flow for selected dialog (if in call list)
+    // Enter — if dialog selected with no message, select first message
     if (e.key === "Enter" && selectedCallId && selectedMsgIndex === null) {
       e.preventDefault();
+      if (currentFlow.length > 0) selectMessage(0);
       // Already showing flow when dialog is selected
       return;
     }
 
     // q — back to drop zone (quit)
-    if (e.key === "q") {
+    if (e.key === "q" || e.key === "Q") {
       e.preventDefault();
       var clearBtn = $("#clear-btn");
       if (clearBtn) clearBtn.click();
       return;
     }
 
-    // O — open new file
-    if (e.key === "O") {
+    // o — open new file
+    if (e.key === "o" || e.key === "O") {
       e.preventDefault();
       var fileInput = $("#file-input");
       if (fileInput) fileInput.click();
