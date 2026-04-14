@@ -4,9 +4,11 @@
 //! analysis, and security monitoring. The binary entry point is in `main.rs`.
 
 pub mod capture;
+#[cfg(feature = "native")]
 pub mod cli;
 pub mod config;
 pub mod crypto;
+#[cfg(feature = "native")]
 pub mod output;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod privilege;

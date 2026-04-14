@@ -225,7 +225,7 @@ var session;
 
 async function initSession() {
   try {
-    var wasm = await import("/wasm/sipnab_wasm.js");
+    var wasm = await import("/wasm/sipnab.js");
     await wasm.default();
     session = new wasm.SipnabSession();
     console.log("sipnab WASM module loaded");
