@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Keybindings -- sipnab</title>
+  <meta name="description" content="Complete keyboard shortcut reference for sipnab&#x27;s interactive TUI.">
+  <link rel="stylesheet" href="https://www.sipnab.com/css/style.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="site-header">
+  <div style="display:flex;align-items:center;gap:1em;">
+    <button class="hamburger" aria-label="Toggle navigation" onclick="toggleSidebar()">
+      <span></span><span></span><span></span>
+    </button>
+    <a href="https:&#x2F;&#x2F;www.sipnab.com" class="logo">sip<span class="accent">nab</span></a>
+  </div>
+  <div class="header-links">
+    <a href="https://www.sipnab.com/docs/">Docs</a>
+    
+    <a href="#" class="search-toggle" onclick="toggleSearch(event)" aria-label="Search">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    </a>
+    
+    <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="github-link" aria-label="GitHub">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"></path></svg>
+    </a>
+  </div>
+</header>
+
+<!-- Search overlay -->
+
+<div id="search-overlay" class="search-overlay" style="display:none;">
+  <div class="search-container">
+    <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off">
+    <div id="search-results" class="search-results"></div>
+  </div>
+</div>
+
+
+<!-- Sidebar overlay (mobile) -->
+<div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <nav>
+    <div class="nav-section">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com">Home</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Getting Started</div>
+      <a href="https://www.sipnab.com/docs/install/" class="indent">Installation</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Reference</div>
+      <a href="https://www.sipnab.com/docs/cli/" class="indent">CLI Flags</a>
+      <a href="https://www.sipnab.com/docs/config/" class="indent">Configuration</a>
+      <a href="https://www.sipnab.com/docs/keybindings/" class="indent active">Keybindings</a>
+      <a href="https://www.sipnab.com/docs/filter-dsl/" class="indent">Filter DSL</a>
+      <a href="https://www.sipnab.com/docs/theme/" class="indent">Theme</a>
+      <a href="https://www.sipnab.com/docs/api/" class="indent">REST API</a>
+    </div>
+    <div class="nav-section">
+      <div class="nav-section-title">Project</div>
+      <a href="https://www.sipnab.com/changelog/" class="indent">Changelog</a>
+      <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="indent">GitHub</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- Main content -->
+<main class="main">
+  
+<h1>Keybindings</h1>
+
+
+<nav class="toc">
+  <h4>On this page</h4>
+  <ul>
+    
+    <li><a href="#global">Global</a>
+      
+    </li>
+    
+    <li><a href="#call-list">Call List</a>
+      
+    </li>
+    
+    <li><a href="#call-flow">Call Flow</a>
+      
+    </li>
+    
+    <li><a href="#raw-message">Raw Message</a>
+      
+    </li>
+    
+    <li><a href="#message-diff">Message Diff</a>
+      
+    </li>
+    
+    <li><a href="#rtp-streams">RTP Streams</a>
+      
+    </li>
+    
+    <li><a href="#statistics">Statistics</a>
+      
+    </li>
+    
+    <li><a href="#help">Help</a>
+      
+    </li>
+    
+    <li><a href="#save-popup">Save Popup</a>
+      
+    </li>
+    
+    <li><a href="#filter-popup">Filter Popup</a>
+      
+    </li>
+    
+    <li><a href="#settings-popup">Settings Popup</a>
+      
+    </li>
+    
+    <li><a href="#file-open-popup">File Open Popup</a>
+      
+    </li>
+    
+    <li><a href="#column-selector">Column Selector</a>
+      
+    </li>
+    
+    <li><a href="#timestamp-modes">Timestamp Modes</a>
+      
+    </li>
+    
+  </ul>
+</nav>
+
+
+<p>Complete keyboard shortcut reference for sipnab's interactive TUI.</p>
+<p>Keys marked with <strong>(configurable)</strong> can be remapped via the <code>[keybindings]</code> config section. See <a href="https://www.sipnab.com/docs/config/">Configuration</a> for details. All other keys are hardcoded.</p>
+<h2 id="global">Global</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Ctrl+C</td><td>Force quit</td></tr>
+<tr><td>Ctrl+L</td><td>Redraw screen</td></tr>
+</tbody></table>
+<h2 id="call-list">Call List</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Navigate up</td></tr>
+<tr><td>Down / j</td><td>Navigate down</td></tr>
+<tr><td>PgUp</td><td>Page up</td></tr>
+<tr><td>PgDn</td><td>Page down</td></tr>
+<tr><td>Home</td><td>Jump to first dialog</td></tr>
+<tr><td>End</td><td>Jump to last dialog</td></tr>
+<tr><td>Enter</td><td>Open call flow for selected dialog</td></tr>
+<tr><td>Space</td><td>Select/deselect dialog (for multi-select save)</td></tr>
+<tr><td>Esc / q</td><td>Quit <strong>(configurable: <code>quit</code>)</strong></td></tr>
+<tr><td>&lt;</td><td>Sort by previous column</td></tr>
+<tr><td>&gt;</td><td>Sort by next column</td></tr>
+<tr><td>Z</td><td>Reverse sort direction</td></tr>
+<tr><td>A</td><td>Toggle autoscroll <strong>(configurable: <code>autoscroll</code>)</strong></td></tr>
+<tr><td>p</td><td>Pause/resume capture <strong>(configurable: <code>pause</code>)</strong></td></tr>
+<tr><td>/</td><td>Activate search <strong>(configurable: <code>search</code>)</strong></td></tr>
+<tr><td>i</td><td>Clear non-matching dialogs</td></tr>
+<tr><td>I</td><td>Clear matching dialogs</td></tr>
+<tr><td>t</td><td>Cycle timestamp mode (absolute / delta-prev / delta-first)</td></tr>
+<tr><td>r / F6</td><td>Show raw SIP message for selected dialog</td></tr>
+<tr><td>s</td><td>Switch to Statistics view</td></tr>
+<tr><td>O</td><td>Open pcap file (File Open dialog)</td></tr>
+<tr><td>Tab</td><td>Switch to RTP Streams view</td></tr>
+<tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
+<tr><td>F2</td><td>Save capture <strong>(configurable: <code>save</code>)</strong></td></tr>
+<tr><td>F3</td><td>Search (same as <code>/</code>)</td></tr>
+<tr><td>F5</td><td>Clear all calls <strong>(configurable: <code>clear_calls</code>)</strong></td></tr>
+<tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
+<tr><td>F9</td><td>Clear active filter</td></tr>
+<tr><td>F10</td><td>Column selector <strong>(configurable: <code>column_selector</code>)</strong></td></tr>
+</tbody></table>
+<h2 id="call-flow">Call Flow</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Navigate to previous message (detail panel updates)</td></tr>
+<tr><td>Down / j</td><td>Navigate to next message</td></tr>
+<tr><td>PgUp</td><td>Page up through messages</td></tr>
+<tr><td>PgDn</td><td>Page down through messages</td></tr>
+<tr><td>Home</td><td>Jump to first message</td></tr>
+<tr><td>End</td><td>Jump to last message</td></tr>
+<tr><td>Enter</td><td>Open full-screen raw message view</td></tr>
+<tr><td>Space</td><td>Select message for diff (press on two messages to compare)</td></tr>
+<tr><td>Esc</td><td>Back to call list</td></tr>
+<tr><td>d</td><td>Cycle SDP display mode (none / summary / full)</td></tr>
+<tr><td>t</td><td>Cycle timestamp mode (absolute / delta-prev / delta-first)</td></tr>
+<tr><td>c</td><td>Cycle color scheme (method / call-id / cseq)</td></tr>
+<tr><td>R</td><td>Toggle detail panel visibility</td></tr>
+<tr><td>0 / + / = / Right</td><td>Increase ladder panel width</td></tr>
+<tr><td>9 / - / Left</td><td>Decrease ladder panel width</td></tr>
+<tr><td>[</td><td>Scroll detail panel up</td></tr>
+<tr><td>]</td><td>Scroll detail panel down</td></tr>
+<tr><td>e</td><td>Toggle fold/expand for selected message</td></tr>
+<tr><td>m</td><td>Set mark at current message</td></tr>
+<tr><td>M</td><td>Clear mark</td></tr>
+<tr><td>E</td><td>Export Mermaid sequence diagram to clipboard</td></tr>
+<tr><td>x / F4</td><td>Toggle extended multi-leg flow <strong>(configurable: <code>extended_flow</code>)</strong></td></tr>
+<tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
+<tr><td>F2</td><td>Save <strong>(configurable: <code>save</code>)</strong></td></tr>
+<tr><td>F5</td><td>Start compare mode <strong>(configurable: <code>clear_calls</code>)</strong></td></tr>
+<tr><td>F6</td><td>Toggle RTP display in flow</td></tr>
+<tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
+<tr><td>F9</td><td>Clear active filter</td></tr>
+</tbody></table>
+<h2 id="raw-message">Raw Message</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Scroll up</td></tr>
+<tr><td>Down / j</td><td>Scroll down</td></tr>
+<tr><td>PgUp</td><td>Page up</td></tr>
+<tr><td>PgDn</td><td>Page down</td></tr>
+<tr><td>Home</td><td>Scroll to top</td></tr>
+<tr><td>/</td><td>Search within message</td></tr>
+<tr><td>s</td><td>Toggle syntax highlighting</td></tr>
+<tr><td>c</td><td>Cycle color scheme</td></tr>
+<tr><td>Esc</td><td>Back to call flow</td></tr>
+</tbody></table>
+<h2 id="message-diff">Message Diff</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>q</td><td>Quit</td></tr>
+<tr><td>Esc</td><td>Back to call flow</td></tr>
+<tr><td>F1</td><td>Help</td></tr>
+</tbody></table>
+<h2 id="rtp-streams">RTP Streams</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Navigate up</td></tr>
+<tr><td>Down / j</td><td>Navigate down</td></tr>
+<tr><td>Home</td><td>Jump to first stream</td></tr>
+<tr><td>End</td><td>Jump to last stream</td></tr>
+<tr><td>Tab</td><td>Switch to Call List</td></tr>
+<tr><td>Esc</td><td>Back to Call List</td></tr>
+<tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
+<tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
+</tbody></table>
+<h2 id="statistics">Statistics</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc / q / s</td><td>Back to Call List</td></tr>
+</tbody></table>
+<h2 id="help">Help</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc / F1 / q</td><td>Close help</td></tr>
+</tbody></table>
+<h2 id="save-popup">Save Popup</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc</td><td>Cancel and close</td></tr>
+<tr><td>Enter</td><td>Save to the specified path</td></tr>
+<tr><td>Tab</td><td>Cycle format forward (PCAP -&gt; PCAP-NG -&gt; TXT -&gt; Mermaid)</td></tr>
+<tr><td>Shift+Tab</td><td>Cycle format backward</td></tr>
+<tr><td>Left / Right</td><td>Move cursor in filename</td></tr>
+<tr><td>Home / End</td><td>Jump to start/end of filename</td></tr>
+<tr><td>Backspace</td><td>Delete character before cursor</td></tr>
+<tr><td>(any char)</td><td>Insert character</td></tr>
+</tbody></table>
+<p>Save formats: <strong>PCAP</strong>, <strong>PCAP-NG</strong>, <strong>TXT</strong>, <strong>Mermaid</strong></p>
+<h2 id="filter-popup">Filter Popup</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc</td><td>Cancel without applying</td></tr>
+<tr><td>Enter</td><td>Apply filter (or cancel if Cancel button focused)</td></tr>
+<tr><td>Tab</td><td>Focus next field</td></tr>
+<tr><td>Shift+Tab / BackTab</td><td>Focus previous field</td></tr>
+<tr><td>Down</td><td>Next field (or checkbox down)</td></tr>
+<tr><td>Up</td><td>Previous field (or checkbox up)</td></tr>
+<tr><td>Left / Right</td><td>Move within checkboxes or text cursor</td></tr>
+<tr><td>Space</td><td>Toggle checkbox / activate button</td></tr>
+<tr><td>F9</td><td>Clear all fields and active filter, close popup</td></tr>
+<tr><td>Backspace / Delete</td><td>Text editing in focused text field</td></tr>
+<tr><td>Home / End</td><td>Jump to start/end of text field</td></tr>
+<tr><td>(any char)</td><td>Insert character in focused text field</td></tr>
+</tbody></table>
+<h2 id="settings-popup">Settings Popup</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc</td><td>Close settings</td></tr>
+<tr><td>Up / k</td><td>Previous setting</td></tr>
+<tr><td>Down / j</td><td>Next setting</td></tr>
+<tr><td>Enter / Space</td><td>Toggle or cycle the focused setting</td></tr>
+</tbody></table>
+<p>Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting</p>
+<h2 id="file-open-popup">File Open Popup</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Esc</td><td>Cancel and close</td></tr>
+<tr><td>Enter</td><td>Open the specified pcap file</td></tr>
+<tr><td>Left / Right</td><td>Move cursor</td></tr>
+<tr><td>Home / End</td><td>Jump to start/end of path</td></tr>
+<tr><td>Backspace</td><td>Delete character before cursor</td></tr>
+<tr><td>(any char)</td><td>Insert character</td></tr>
+</tbody></table>
+<h2 id="column-selector">Column Selector</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Move selection up</td></tr>
+<tr><td>Down / j</td><td>Move selection down</td></tr>
+<tr><td>Space</td><td>Toggle column visibility</td></tr>
+<tr><td>Enter / Esc</td><td>Close selector</td></tr>
+</tbody></table>
+<h2 id="timestamp-modes">Timestamp Modes</h2>
+<p>Press <code>t</code> in the Call List or Call Flow to cycle through three timestamp modes (the mode is shared across both views):</p>
+<ol>
+<li><strong>Absolute</strong> (default) -- <code>HH:MM:SS.mmm</code> wall-clock time</li>
+<li><strong>Delta-prev</strong> -- <code>+N.NNNs</code> time since previous entry. Color-coded in call flow:
+<ul>
+<li>Green: &lt; 100 ms</li>
+<li>Yellow: 100 ms - 1 s</li>
+<li>Red: 1 s - 5 s</li>
+<li>Bold red: &gt; 5 s</li>
+</ul>
+</li>
+<li><strong>Delta-first</strong> -- <code>+N.NNNs</code> cumulative time from first entry</li>
+</ol>
+
+
+
+
+
+
+
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+  
+    
+  
+
+  
+  
+    
+  
+  
+
+  
+    
+  
+  
+  
+
+  
+  
+  
+
+  
+  
+  
+
+
+<nav class="page-nav">
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;config&#x2F;" class="page-nav-prev">&larr; Configuration</a>
+  
+  
+  <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;" class="page-nav-next">Filter DSL &rarr;</a>
+  
+</nav>
+
+</main>
+
+<script>
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('open');
+  document.querySelector('.sidebar-overlay').classList.toggle('visible');
+}
+
+
+function toggleSearch(e) {
+  e.preventDefault();
+  var overlay = document.getElementById('search-overlay');
+  if (overlay.style.display === 'none') {
+    overlay.style.display = 'flex';
+    document.getElementById('search-input').focus();
+  } else {
+    overlay.style.display = 'none';
+  }
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    document.getElementById('search-overlay').style.display = 'none';
+  }
+  if (e.key === '/' && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) {
+    e.preventDefault();
+    document.getElementById('search-overlay').style.display = 'flex';
+    document.getElementById('search-input').focus();
+  }
+});
+
+var searchIndex = null;
+document.getElementById('search-input').addEventListener('input', function() {
+  var query = this.value;
+  var resultsDiv = document.getElementById('search-results');
+  if (query.length < 2) { resultsDiv.textContent = ''; return; }
+  if (!searchIndex) {
+    fetch('https://www.sipnab.com/search_index.en.json')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        searchIndex = elasticlunr.Index.load(data);
+        doSearch(query);
+      });
+  } else {
+    doSearch(query);
+  }
+});
+
+function doSearch(query) {
+  var results = searchIndex.search(query, { expand: true, fields: { title: {boost: 2}, body: {boost: 1} } });
+  var resultsDiv = document.getElementById('search-results');
+  resultsDiv.textContent = '';
+  if (results.length === 0) {
+    var noResults = document.createElement('div');
+    noResults.className = 'search-no-results';
+    noResults.textContent = 'No results found.';
+    resultsDiv.appendChild(noResults);
+    return;
+  }
+  results.slice(0, 10).forEach(function(r) {
+    var item = searchIndex.documentStore.getDoc(r.ref);
+    var link = document.createElement('a');
+    link.href = r.ref;
+    link.className = 'search-result-item';
+    var title = document.createElement('div');
+    title.className = 'search-result-title';
+    title.textContent = item.title;
+    link.appendChild(title);
+    if (item.body) {
+      var body = document.createElement('div');
+      body.className = 'search-result-body';
+      body.textContent = item.body.substring(0, 150) + '...';
+      link.appendChild(body);
+    }
+    resultsDiv.appendChild(link);
+  });
+}
+
+
+document.querySelectorAll('pre').forEach(function(block) {
+  block.addEventListener('click', function() {
+    var code = block.querySelector('code');
+    if (code) {
+      navigator.clipboard.writeText(code.textContent).then(function() {
+        block.classList.add('copied');
+        setTimeout(function() { block.classList.remove('copied'); }, 1500);
+      });
+    }
+  });
+});
+</script>
+
+
+<script src="https://www.sipnab.com/elasticlunr.min.js"></script>
+
+
+</body>
+</html>

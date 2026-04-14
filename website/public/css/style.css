@@ -1,6 +1,6 @@
-/* sipnab documentation — style.css */
+/* sipnab documentation -- style.css */
 
-/* ── Reset & Base ─────────────────────────────────────────────────── */
+/* -- Reset & Base --------------------------------------------------------- */
 
 *, *::before, *::after {
   box-sizing: border-box;
@@ -22,7 +22,7 @@ body {
   min-height: 100vh;
 }
 
-/* ── Typography ───────────────────────────────────────────────────── */
+/* -- Typography ----------------------------------------------------------- */
 
 h1, h2, h3, h4, h5, h6 {
   color: #e6edf3;
@@ -59,7 +59,25 @@ hr {
   margin: 2em 0;
 }
 
-/* ── Code ─────────────────────────────────────────────────────────── */
+ul, ol {
+  margin-bottom: 1em;
+  padding-left: 2em;
+}
+
+li {
+  margin-bottom: 0.25em;
+}
+
+blockquote {
+  border-left: 3px solid #30363d;
+  padding: 0.5em 1em;
+  margin: 1em 0;
+  color: #8b949e;
+  background: #161b22;
+  border-radius: 0 6px 6px 0;
+}
+
+/* -- Code ----------------------------------------------------------------- */
 
 code, pre {
   font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "SF Mono", "Menlo", "Monaco", "Consolas", monospace;
@@ -108,14 +126,7 @@ pre.copied::after {
   color: #3fb950;
 }
 
-/* ── Comment highlighting in code blocks ──────────────────────────── */
-
-pre code .comment { color: #8b949e; }
-pre code .string { color: #a5d6ff; }
-pre code .keyword { color: #ff7b72; }
-pre code .flag { color: #d2a8ff; }
-
-/* ── Tables ───────────────────────────────────────────────────────── */
+/* -- Tables --------------------------------------------------------------- */
 
 table {
   width: 100%;
@@ -143,7 +154,7 @@ tr:nth-child(odd) td {
   background: #0d1117;
 }
 
-/* ── Keyboard keys ────────────────────────────────────────────────── */
+/* -- Keyboard keys -------------------------------------------------------- */
 
 kbd {
   display: inline-block;
@@ -160,46 +171,7 @@ kbd {
   vertical-align: baseline;
 }
 
-/* ── Details / collapsible ────────────────────────────────────────── */
-
-details {
-  margin-bottom: 1em;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  background: #161b22;
-}
-
-details > summary {
-  padding: 0.75em 1em;
-  cursor: pointer;
-  font-weight: 600;
-  color: #e6edf3;
-  list-style: none;
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-}
-
-details > summary::before {
-  content: "\25B6";
-  font-size: 0.7em;
-  transition: transform 0.15s;
-  flex-shrink: 0;
-}
-
-details[open] > summary::before {
-  transform: rotate(90deg);
-}
-
-details > summary::-webkit-details-marker {
-  display: none;
-}
-
-details > .detail-content {
-  padding: 0 1em 1em;
-}
-
-/* ── Layout ───────────────────────────────────────────────────────── */
+/* -- Layout --------------------------------------------------------------- */
 
 .site-header {
   position: fixed;
@@ -246,6 +218,7 @@ details > .detail-content {
 
 .header-links a:hover {
   color: #e6edf3;
+  text-decoration: none;
 }
 
 .github-link svg {
@@ -260,7 +233,98 @@ details > .detail-content {
   fill: #e6edf3;
 }
 
-/* ── Sidebar ──────────────────────────────────────────────────────── */
+.search-toggle {
+  display: flex;
+  align-items: center;
+}
+
+.search-toggle svg {
+  color: #8b949e;
+  transition: color 0.15s;
+}
+
+.search-toggle:hover svg {
+  color: #e6edf3;
+}
+
+/* -- Search --------------------------------------------------------------- */
+
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  z-index: 200;
+  display: flex;
+  justify-content: center;
+  padding-top: 15vh;
+}
+
+.search-container {
+  width: 100%;
+  max-width: 600px;
+  padding: 0 1em;
+}
+
+.search-container input {
+  width: 100%;
+  padding: 0.75em 1em;
+  font-size: 1.1rem;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #e6edf3;
+  outline: none;
+  font-family: inherit;
+}
+
+.search-container input:focus {
+  border-color: #58a6ff;
+}
+
+.search-results {
+  margin-top: 0.5em;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: #161b22;
+  border-radius: 8px;
+  border: 1px solid #30363d;
+}
+
+.search-results:empty {
+  display: none;
+}
+
+.search-result-item {
+  display: block;
+  padding: 0.75em 1em;
+  border-bottom: 1px solid #21262d;
+  color: #c9d1d9;
+  text-decoration: none;
+}
+
+.search-result-item:hover {
+  background: #21262d;
+  text-decoration: none;
+}
+
+.search-result-title {
+  color: #58a6ff;
+  font-weight: 600;
+  margin-bottom: 0.2em;
+}
+
+.search-result-body {
+  font-size: 0.8125rem;
+  color: #8b949e;
+}
+
+.search-no-results {
+  padding: 1em;
+  color: #8b949e;
+  text-align: center;
+}
+
+/* -- Sidebar -------------------------------------------------------------- */
 
 .sidebar {
   position: fixed;
@@ -318,7 +382,7 @@ details > .detail-content {
   font-size: 0.8125rem;
 }
 
-/* ── Main content ─────────────────────────────────────────────────── */
+/* -- Main content --------------------------------------------------------- */
 
 .main {
   margin-left: 260px;
@@ -327,7 +391,7 @@ details > .detail-content {
   max-width: 960px;
 }
 
-/* ── Hamburger ────────────────────────────────────────────────────── */
+/* -- Hamburger ------------------------------------------------------------ */
 
 .hamburger {
   display: none;
@@ -347,7 +411,7 @@ details > .detail-content {
   transition: all 0.2s;
 }
 
-/* ── Sidebar overlay for mobile ───────────────────────────────────── */
+/* -- Sidebar overlay for mobile ------------------------------------------- */
 
 .sidebar-overlay {
   display: none;
@@ -361,7 +425,7 @@ details > .detail-content {
   display: block;
 }
 
-/* ── Hero (landing page) ──────────────────────────────────────────── */
+/* -- Hero (landing page) -------------------------------------------------- */
 
 .hero {
   text-align: center;
@@ -406,7 +470,7 @@ details > .detail-content {
   text-align: center;
 }
 
-/* ── Feature highlights ───────────────────────────────────────────── */
+/* -- Feature highlights --------------------------------------------------- */
 
 .feature-highlights {
   display: grid;
@@ -436,7 +500,7 @@ details > .detail-content {
   margin-bottom: 0;
 }
 
-/* ── Feature grid ─────────────────────────────────────────────────── */
+/* -- Feature grid --------------------------------------------------------- */
 
 .feature-grid {
   display: grid;
@@ -461,189 +525,123 @@ details > .detail-content {
   flex-shrink: 0;
 }
 
-/* ── Color swatches (theme page) ──────────────────────────────────── */
+/* -- Table of contents ---------------------------------------------------- */
 
-.swatch-row {
-  display: flex;
-  align-items: center;
-  gap: 0.75em;
-  margin-bottom: 0.5em;
-}
-
-.swatch {
-  display: inline-block;
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  border: 1px solid #30363d;
-  flex-shrink: 0;
-}
-
-.swatch-name {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  color: #e6edf3;
-  min-width: 100px;
-}
-
-.swatch-value {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  color: #8b949e;
-}
-
-/* ── Keybinding rows ──────────────────────────────────────────────── */
-
-.kb-table {
-  width: 100%;
-}
-
-.kb-table td:first-child {
-  width: 200px;
-  white-space: nowrap;
-}
-
-/* ── Badges ───────────────────────────────────────────────────────── */
-
-.badge {
-  display: inline-block;
-  font-size: 0.7rem;
-  padding: 0.15em 0.5em;
-  border-radius: 10px;
-  font-weight: 600;
-  vertical-align: middle;
-  margin-left: 0.5em;
-}
-
-.badge-configurable {
-  background: #1f3d2b;
-  color: #3fb950;
-  border: 1px solid #238636;
-}
-
-.badge-hardcoded {
-  background: #2d1f3d;
-  color: #d2a8ff;
-  border: 1px solid #6e40c9;
-}
-
-.badge-get {
-  background: #0d2d1f;
-  color: #3fb950;
-  border: 1px solid #238636;
-}
-
-.badge-default {
-  background: #1f2937;
-  color: #8b949e;
-  border: 1px solid #30363d;
-}
-
-/* ── HTTP method badges ───────────────────────────────────────────── */
-
-.method-get {
-  display: inline-block;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.75rem;
-  font-weight: 700;
-  background: #0d2d1f;
-  color: #3fb950;
-  padding: 0.15em 0.5em;
-  border-radius: 4px;
-  margin-right: 0.5em;
-}
-
-/* ── API endpoint cards ───────────────────────────────────────────── */
-
-.endpoint {
+.toc {
   background: #161b22;
   border: 1px solid #30363d;
-  border-radius: 6px;
-  margin-bottom: 1.5em;
-  overflow: hidden;
+  border-radius: 8px;
+  padding: 1em 1.5em;
+  margin-bottom: 2em;
 }
 
-.endpoint-header {
-  padding: 0.75em 1em;
-  border-bottom: 1px solid #30363d;
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
+.toc h4 {
+  margin-top: 0;
+  margin-bottom: 0.5em;
+  font-size: 0.875rem;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
-.endpoint-path {
-  font-family: "JetBrains Mono", monospace;
-  color: #e6edf3;
-  font-size: 0.9rem;
-}
-
-.endpoint-body {
-  padding: 1em;
-}
-
-.endpoint-body p:last-child {
+.toc ul {
+  list-style: none;
+  padding-left: 0;
   margin-bottom: 0;
 }
 
-/* ── Filter field type tags ───────────────────────────────────────── */
-
-.type-string {
-  display: inline-block;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
-  background: #1f2937;
-  color: #a5d6ff;
-  padding: 0.1em 0.4em;
-  border-radius: 3px;
+.toc > ul > li {
+  margin-bottom: 0.25em;
 }
 
-.type-number {
-  display: inline-block;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
-  background: #1f2937;
-  color: #ffa657;
-  padding: 0.1em 0.4em;
-  border-radius: 3px;
+.toc ul ul {
+  padding-left: 1.25em;
+  margin-bottom: 0;
 }
 
-.type-bool {
-  display: inline-block;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.7rem;
-  background: #1f2937;
-  color: #d2a8ff;
-  padding: 0.1em 0.4em;
-  border-radius: 3px;
+.toc a {
+  color: #c9d1d9;
+  font-size: 0.875rem;
 }
 
-/* ── DSL grammar visualization ────────────────────────────────────── */
+.toc a:hover {
+  color: #58a6ff;
+  text-decoration: none;
+}
 
-.grammar {
-  background: #161b22;
+/* -- Page navigation ------------------------------------------------------ */
+
+.page-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 3em;
+  padding-top: 1.5em;
+  border-top: 1px solid #30363d;
+}
+
+.page-nav a {
+  padding: 0.5em 1em;
   border: 1px solid #30363d;
   border-radius: 6px;
-  padding: 1.25em;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  line-height: 1.8;
-  margin-bottom: 1.5em;
-  overflow-x: auto;
+  font-size: 0.875rem;
+  transition: border-color 0.15s;
 }
 
-.grammar .rule {
+.page-nav a:hover {
+  border-color: #58a6ff;
+  text-decoration: none;
+}
+
+/* -- Section listing ------------------------------------------------------ */
+
+.section-listing {
+  display: grid;
+  gap: 1em;
+  margin-top: 1.5em;
+}
+
+.section-listing-item {
+  display: block;
+  padding: 1.25em;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  color: #c9d1d9;
+  transition: border-color 0.15s;
+}
+
+.section-listing-item:hover {
+  border-color: #58a6ff;
+  text-decoration: none;
+}
+
+.section-listing-item h3 {
+  color: #58a6ff;
+  margin-top: 0;
+  margin-bottom: 0.25em;
+  font-size: 1.1rem;
+}
+
+.section-listing-item p {
+  color: #8b949e;
+  font-size: 0.875rem;
+  margin-bottom: 0;
+}
+
+/* -- Performance table ---------------------------------------------------- */
+
+.perf-table td:last-child {
+  font-family: "JetBrains Mono", monospace;
+  color: #3fb950;
+}
+
+/* -- Architecture block --------------------------------------------------- */
+
+.arch-modes code {
   color: #58a6ff;
 }
 
-.grammar .literal {
-  color: #a5d6ff;
-}
-
-.grammar .meta {
-  color: #8b949e;
-}
-
-/* ── Responsive ───────────────────────────────────────────────────── */
+/* -- Responsive ----------------------------------------------------------- */
 
 @media (max-width: 768px) {
   .hamburger {
@@ -694,13 +692,14 @@ details > .detail-content {
   }
 }
 
-/* ── Print ────────────────────────────────────────────────────────── */
+/* -- Print ---------------------------------------------------------------- */
 
 @media print {
   .sidebar,
   .site-header,
   .hamburger,
-  .sidebar-overlay {
+  .sidebar-overlay,
+  .search-overlay {
     display: none !important;
   }
 
