@@ -1247,6 +1247,14 @@ fn run_batch_mode(
             eprintln!("Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.");
         }
     }
+
+    // If the API server is running, keep the process alive so clients can
+    // query the captured data. The API thread serves until interrupted.
+    #[cfg(feature = "api")]
+    if let Some(thread) = _api_thread {
+        log::info!("API server active — press Ctrl-C to stop");
+        let _ = thread.join();
+    }
 }
 
 // ── Packet processing ─────────────────────────────────────────────────
