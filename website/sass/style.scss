@@ -460,66 +460,88 @@ img { max-width: 100%; height: auto; }
 // Features (3 columns)
 // =============================================================================
 
-// -- Demo videos --
+// -- Demo video (single panel with tabs) --
 .demos {
   padding: 4rem 1.5rem;
   border-top: 1px solid $border;
 }
 
 .demos-inner {
-  max-width: $max-width;
+  max-width: 960px;
   margin: 0 auto;
 
   h2 {
     font-size: 1.75rem;
     font-weight: 700;
     color: $text;
-    margin-bottom: 2rem;
+    margin-bottom: 1.5rem;
     text-align: center;
   }
 }
 
-.demo-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 2rem;
+.demo-tabs {
+  display: flex;
+  gap: 0.25rem;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
 }
 
-.demo-item {
-  h3 {
-    font-size: 1rem;
-    font-weight: 600;
+.demo-tab {
+  background: none;
+  border: 1px solid $border;
+  border-radius: 6px;
+  color: $text-dim;
+  font-family: $font-sans;
+  font-size: 0.875rem;
+  font-weight: 500;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+
+  &:hover {
     color: $text;
-    margin-bottom: 0.25rem;
+    border-color: $text-dim;
   }
 
-  p {
-    font-size: 0.85rem;
-    color: $text-dim;
-    margin-bottom: 0.75rem;
-    line-height: 1.5;
-
-    kbd {
-      font-family: $font-mono;
-      font-size: 0.8em;
-      background: $surface;
-      border: 1px solid $border;
-      border-bottom-width: 2px;
-      border-radius: 4px;
-      padding: 0.1em 0.4em;
-    }
-  }
-
-  img {
-    width: 100%;
-    border-radius: 8px;
-    border: 1px solid $border;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  &.active {
+    color: $accent;
+    border-color: $accent;
+    background: $accent-glow;
   }
 }
 
-@media (max-width: 768px) {
-  .demo-grid { grid-template-columns: 1fr; }
+.demo-panel {
+  display: none;
+
+  &.active { display: block; }
+}
+
+.demo-desc {
+  font-size: 0.95rem;
+  color: $text-dim;
+  margin-bottom: 1rem;
+  text-align: center;
+  line-height: 1.5;
+
+  kbd {
+    font-family: $font-mono;
+    font-size: 0.85em;
+    background: $surface;
+    border: 1px solid $border;
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 0.1em 0.4em;
+  }
+
+  strong { color: $accent; }
+}
+
+.demo-panel img {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid $border;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 204, 102, 0.06);
 }
 
 // =============================================================================

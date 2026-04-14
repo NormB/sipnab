@@ -1,6 +1,6 @@
 Output website/static/demos/05-file-open.gif
 Set Shell bash
-Set FontSize 14
+Set FontSize 20
 Set Width 1200
 Set Height 700
 Set Padding 10
