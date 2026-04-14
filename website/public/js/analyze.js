@@ -1051,10 +1051,85 @@ function setupKeyboard() {
 
     if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
 
-    if (e.key === "f" || e.key === "/") {
+    // Only handle keys when workspace is visible
+    var wsVisible = $("#workspace") && $("#workspace").style.display !== "none";
+
+    // F-keys (matching native TUI)
+    if (e.key === "F1") {
+      e.preventDefault();
+      window.open("/docs/keybindings/", "_blank");
+      return;
+    }
+    if (e.key === "F2" && wsVisible) {
+      e.preventDefault();
+      // Trigger export dropdown
+      var btn = $("#export-btn");
+      if (btn) btn.click();
+      return;
+    }
+    if ((e.key === "F3" || e.key === "f" || e.key === "/") && wsVisible) {
       e.preventDefault();
       var filterInput = $("#filter-input");
       if (filterInput) filterInput.focus();
+      return;
+    }
+    if (e.key === "F7" && wsVisible) {
+      e.preventDefault();
+      var filterInput = $("#filter-input");
+      if (filterInput) filterInput.focus();
+      return;
+    }
+
+    if (!wsVisible) return;
+
+    // j/k navigation in call list (vim-style, matching native TUI)
+    var trs = $$("#call-list-body tr");
+    if (trs.length === 0) return;
+
+    if (e.key === "j" || e.key === "ArrowDown") {
+      e.preventDefault();
+      var currentIdx = -1;
+      for (var i = 0; i < trs.length; i++) {
+        if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+      }
+      var nextIdx = Math.min(currentIdx + 1, trs.length - 1);
+      if (nextIdx >= 0) trs[nextIdx].click();
+      trs[nextIdx].scrollIntoView({ block: "nearest" });
+      return;
+    }
+    if (e.key === "k" || e.key === "ArrowUp") {
+      e.preventDefault();
+      var currentIdx = -1;
+      for (var i = 0; i < trs.length; i++) {
+        if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+      }
+      var prevIdx = Math.max(currentIdx - 1, 0);
+      trs[prevIdx].click();
+      trs[prevIdx].scrollIntoView({ block: "nearest" });
+      return;
+    }
+
+    // Enter — open call flow for selected dialog (if in call list)
+    if (e.key === "Enter" && selectedCallId && selectedMsgIndex === null) {
+      e.preventDefault();
+      // Already showing flow when dialog is selected
+      return;
+    }
+
+    // q — back to drop zone (quit)
+    if (e.key === "q") {
+      e.preventDefault();
+      var clearBtn = $("#clear-btn");
+      if (clearBtn) clearBtn.click();
+      return;
+    }
+
+    // O — open new file
+    if (e.key === "O") {
+      e.preventDefault();
+      var fileInput = $("#file-input");
+      if (fileInput) fileInput.click();
+      return;
     }
   });
 }
