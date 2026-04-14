@@ -4,6 +4,8 @@ weight = 4
 description = "Complete TUI keyboard shortcut reference for all views."
 +++
 
+> **Quick start:** `j`/`k` for vim-style up/down, `Enter` to drill into a call, `Esc` to go back, `Tab` to switch between Call List and RTP Streams.
+
 Complete keyboard shortcut reference for sipnab's interactive TUI.
 
 Keys marked with **(configurable)** can be remapped via the `[keybindings]` config section. See [Config Reference](@/docs/config.md) for details. All other keys are hardcoded.
@@ -23,7 +25,7 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="t-muted"> Match Expression:             BPF Filter: port 5060</span>
 <span class="t-muted"> Time: Delta-prev</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  Date        PDD</span>
-<span class="t-selected">&#9656;</span><span class="t-accent"> 1  INVITE     alice          bob            10.0.0.1       10.0.0.2       </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
+<span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            10.0.0.1       10.0.0.2       </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
   <span class="t-accent">2  INVITE     charlie        dave           10.0.0.3       10.0.0.4       </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
   <span class="t-accent">3  REGISTER   admin          --             10.0.0.5       10.0.0.1       </span><span class="t-good">Registered</span><span class="t-accent">      4  +0.012s     --</span>
   <span class="t-accent">4  INVITE     +15551234      +15559876      10.0.0.6       10.0.0.7       </span><span class="t-bad">Failed</span><span class="t-accent">          8  +3.456s     --</span>
@@ -33,7 +35,7 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="t-muted">  Esc Quit  Enter Show  F2 Save  F7 Filter  F8 Settings  F10 Columns  Tab Streams</span></pre>
 </div>
 
-> **Tip:** Press `Space` to multi-select dialogs (shown with `&#9656;`). Press `F2` to save only the selected dialogs. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
+> **Tip:** Press `Space` to multi-select dialogs (shown with `▸`). Press `F2` to save only the selected dialogs. Use `<` / `>` to sort by different columns and `Z` to reverse sort direction.
 
 ### Call Flow View
 
@@ -46,23 +48,23 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 </div>
 <pre class="terminal-body"><span class="t-header">      10.0.0.1:5060          10.0.0.40:5060         10.0.0.2:5060</span>
 <span class="t-header">      (alice UAC)             (OpenSIPS proxy)       (bob UAS)</span>
-<span class="t-muted">          &#9474;                        &#9474;                        &#9474;</span>
-<span class="t-accent"> +0.000s</span>  <span class="t-good">&#9474;------- INVITE -------->&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent"> +0.003s</span>  <span class="t-muted">&#9474;</span>  <span class="t-warn">&#9474;<------- 100 ---------&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent"> +0.005s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-good">&#9474;------- INVITE -------->&#9474;</span>
-<span class="t-accent"> +0.008s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-warn">&#9474;<------- 100 ---------&#9474;</span>
-<span class="t-accent"> +0.847s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-warn">&#9474;<------- 180 ---------&#9474;</span>  <span class="t-badge-delta">+839ms</span>
-<span class="t-accent"> +0.850s</span>  <span class="t-warn">&#9474;<------- 180 ---------&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent"> +2.134s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-good">&#9474;<------- 200 ---------&#9474;</span>  <span class="t-badge-delta">+1.28s</span>
-<span class="t-accent"> +2.137s</span>  <span class="t-good">&#9474;<------- 200 ---------&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent"> +2.140s</span>  <span class="t-good">&#9474;-------- ACK --------->&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent"> +2.143s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-good">&#9474;-------- ACK --------->&#9474;</span>
-<span class="t-muted">          &#9474;</span>    <span class="t-good">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608; RTP (PCMU, MOS 4.2)</span>          <span class="t-muted">&#9474;</span>
-<span class="t-muted">          &#9474;</span>    <span class="t-good">&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608;&#9608; RTP (PCMU, MOS 4.1)</span>          <span class="t-muted">&#9474;</span>
-<span class="t-accent">+65.320s</span>  <span class="t-muted">&#9474;</span>                        <span class="t-bad">&#9474;<------- BYE ---------&#9474;</span>
-<span class="t-accent">+65.323s</span>  <span class="t-bad">&#9474;<------- BYE ---------&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-accent">+65.326s</span>  <span class="t-good">&#9474;------- 200 OK ------->&#9474;</span>                        <span class="t-muted">&#9474;</span>
-<span class="t-muted">          &#9474;                        &#9474;                        &#9474;</span>
+<span class="t-muted">          │                        │                        │</span>
+<span class="t-accent"> +0.000s</span>  <span class="t-good">│------- INVITE -------->│</span>                        <span class="t-muted">│</span>
+<span class="t-accent"> +0.003s</span>  <span class="t-muted">│</span>  <span class="t-warn">│<------- 100 ---------│</span>                        <span class="t-muted">│</span>
+<span class="t-accent"> +0.005s</span>  <span class="t-muted">│</span>                        <span class="t-good">│------- INVITE -------->│</span>
+<span class="t-accent"> +0.008s</span>  <span class="t-muted">│</span>                        <span class="t-warn">│<------- 100 ---------│</span>
+<span class="t-accent"> +0.847s</span>  <span class="t-muted">│</span>                        <span class="t-warn">│<------- 180 ---------│</span>  <span class="t-badge-delta">+839ms</span>
+<span class="t-accent"> +0.850s</span>  <span class="t-warn">│<------- 180 ---------│</span>                        <span class="t-muted">│</span>
+<span class="t-accent"> +2.134s</span>  <span class="t-muted">│</span>                        <span class="t-good">│<------- 200 ---------│</span>  <span class="t-badge-delta">+1.28s</span>
+<span class="t-accent"> +2.137s</span>  <span class="t-good">│<------- 200 ---------│</span>                        <span class="t-muted">│</span>
+<span class="t-accent"> +2.140s</span>  <span class="t-good">│-------- ACK --------->│</span>                        <span class="t-muted">│</span>
+<span class="t-accent"> +2.143s</span>  <span class="t-muted">│</span>                        <span class="t-good">│-------- ACK --------->│</span>
+<span class="t-muted">          │</span>    <span class="t-good">██████████ RTP (PCMU, MOS 4.2)</span>          <span class="t-muted">│</span>
+<span class="t-muted">          │</span>    <span class="t-good">██████████ RTP (PCMU, MOS 4.1)</span>          <span class="t-muted">│</span>
+<span class="t-accent">+65.320s</span>  <span class="t-muted">│</span>                        <span class="t-bad">│<------- BYE ---------│</span>
+<span class="t-accent">+65.323s</span>  <span class="t-bad">│<------- BYE ---------│</span>                        <span class="t-muted">│</span>
+<span class="t-accent">+65.326s</span>  <span class="t-good">│------- 200 OK ------->│</span>                        <span class="t-muted">│</span>
+<span class="t-muted">          │                        │                        │</span>
 <span class="t-muted">  Esc Back  Enter Raw  Space Diff  d SDP  t Time  m Mark  x Extended  F6 RTP</span></pre>
 </div>
 
@@ -113,7 +115,7 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
 </div>
 <pre class="terminal-body"><span class="t-header"> RTP Streams: 14 tracked                                                         </span>
 <span class="t-muted">  #  SSRC        Src IP:Port          Dst IP:Port          Codec   Pkts    Jitter  Loss%   MOS</span>
-<span class="t-selected">&#9656;</span><span class="t-accent"> 1  0x1a2b3c4d  10.0.0.1:10000       10.0.0.2:20000       PCMU    4820    </span><span class="t-good">2.1ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
+<span class="t-selected">▸</span><span class="t-accent"> 1  0x1a2b3c4d  10.0.0.1:10000       10.0.0.2:20000       PCMU    4820    </span><span class="t-good">2.1ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
   <span class="t-accent">2  0x5e6f7a8b  10.0.0.2:20000       10.0.0.1:10000       PCMU    4815    </span><span class="t-good">1.8ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.3</span>
   <span class="t-accent">3  0x9c0d1e2f  10.0.0.6:12000       10.0.0.7:22000       PCMA    1205    </span><span class="t-warn">18.3ms</span><span class="t-accent">  </span><span class="t-warn">1.2%</span><span class="t-accent">    </span><span class="t-warn">3.4</span>
   <span class="t-accent">4  0xa1b2c3d4  10.0.0.7:22000       10.0.0.6:12000       PCMA    1198    </span><span class="t-bad">45.7ms</span><span class="t-accent">  </span><span class="t-bad">3.8%</span><span class="t-accent">    </span><span class="t-bad">2.1</span>
@@ -134,19 +136,19 @@ The filter popup lets you build filter expressions with text fields and checkbox
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Filter Dialog</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472; Filter &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-header">To:</span>       [                            ]  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-header">Filter:</span>   [method == 'INVITE'          ]  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-good">[x]</span> Case insensitive                         <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-muted">[ ]</span> Calls only                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>     <span class="t-good">[ Apply ]</span>          <span class="t-muted">[ Cancel ]</span>           <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span>
+<pre class="terminal-body"><span class="t-muted"> ┌──────────────────── Filter ────────────────────┐</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">From:</span>     <span class="t-selected">[alice                       ]</span>  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">To:</span>       [                            ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Filter:</span>   [method == 'INVITE'          ]  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-good">[x]</span> Case insensitive                         <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Invert match                              <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">[ ]</span> Calls only                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Apply ]</span>          <span class="t-muted">[ Cancel ]</span>           <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> └────────────────────────────────────────────────┘</span>
 <span class="t-muted"> Tab: next field  Enter: apply  Esc: cancel  F9: clear all</span></pre>
 </div>
 
@@ -161,18 +163,18 @@ Save captured data in multiple formats. Use `Tab` to cycle through formats.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Save Capture</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472; Save Capture &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
-<span class="t-muted"> &#9474;</span>                                                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-header">Format:</span>  <span class="t-good">PCAP</span> <span class="t-muted">&#9474; PCAP-NG &#9474; TXT &#9474; Mermaid</span>     <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-header">File:</span>    <span class="t-selected">[/tmp/capture.pcap           ]</span>    <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-muted">Saving: All 47 dialogs</span>                         <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-accent">(3 selected -- will save selected only)</span>        <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>     <span class="t-good">[ Save ]</span>           <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span>
+<pre class="terminal-body"><span class="t-muted"> ┌─────────────────── Save Capture ──────────────────┐</span>
+<span class="t-muted"> │</span>                                                  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">Format:</span>  <span class="t-good">PCAP</span> <span class="t-muted">│ PCAP-NG │ TXT │ Mermaid</span>     <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-header">File:</span>    <span class="t-selected">[/tmp/capture.pcap           ]</span>    <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-muted">Saving: All 47 dialogs</span>                         <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-accent">(3 selected -- will save selected only)</span>        <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>     <span class="t-good">[ Save ]</span>           <span class="t-muted">[ Cancel ]</span>            <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                  <span class="t-muted">│</span>
+<span class="t-muted"> └──────────────────────────────────────────────────┘</span>
 <span class="t-muted"> Tab: cycle format  Enter: save  Esc: cancel</span></pre>
 </div>
 
@@ -187,16 +189,16 @@ Toggle display options without leaving the TUI.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Settings</span>
 </div>
-<pre class="terminal-body"><span class="t-muted"> &#9484;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472; Settings &#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9488;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>  <span class="t-selected">&#9656; Color mode         </span><span class="t-good">always</span>                  <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>    Timestamp mode     <span class="t-accent">delta-prev</span>              <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>    Autoscroll         <span class="t-good">on</span>                      <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>    Raw preview         <span class="t-bad">off</span>                     <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>    SDP display         <span class="t-accent">summary</span>                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>    Syntax highlighting <span class="t-good">on</span>                      <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9474;</span>                                                <span class="t-muted">&#9474;</span>
-<span class="t-muted"> &#9492;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9496;</span>
+<pre class="terminal-body"><span class="t-muted"> ┌──────────────────── Settings ───────────────────┐</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>  <span class="t-selected">▸ Color mode         </span><span class="t-good">always</span>                  <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    Timestamp mode     <span class="t-accent">delta-prev</span>              <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    Autoscroll         <span class="t-good">on</span>                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    Raw preview         <span class="t-bad">off</span>                     <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    SDP display         <span class="t-accent">summary</span>                <span class="t-muted">│</span>
+<span class="t-muted"> │</span>    Syntax highlighting <span class="t-good">on</span>                      <span class="t-muted">│</span>
+<span class="t-muted"> │</span>                                                <span class="t-muted">│</span>
+<span class="t-muted"> └────────────────────────────────────────────────┘</span>
 <span class="t-muted"> Up/Down: navigate  Enter/Space: toggle  Esc: close</span></pre>
 </div>
 

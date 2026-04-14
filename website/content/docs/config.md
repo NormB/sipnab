@@ -4,6 +4,8 @@ weight = 3
 description = "TOML configuration file format and all configurable sections."
 +++
 
+> **Quick start:** Config is optional. sipnab works with zero configuration out of the box. Use a config file to set persistent defaults for your environment.
+
 sipnab reads configuration from a TOML file. CLI flags always override config file values.
 
 ## File Locations

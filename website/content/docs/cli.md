@@ -4,6 +4,8 @@ weight = 2
 description = "Complete flag reference for sipnab, organized by functional group."
 +++
 
+> **Quick start:** `sipnab -I capture.pcap` to analyze a file, or `sudo sipnab` for live capture on the default interface. Add `-N` for non-interactive output.
+
 Complete flag reference for sipnab. Flags are organized by functional group.
 
 CLI flags always override config file values. Boolean flags default to `off` (false) unless otherwise noted.

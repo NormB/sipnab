@@ -4,6 +4,8 @@ weight = 7
 description = "REST API endpoints, Prometheus metrics, and HEP protocol integration."
 +++
 
+> **Quick start:** `sipnab --api 127.0.0.1:8080 --api-key mysecret -I capture.pcap` to start the REST API. Query it with `curl -H "Authorization: Bearer mysecret" http://127.0.0.1:8080/api/v1/dialogs`.
+
 sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.
 
 ## Enabling the API
