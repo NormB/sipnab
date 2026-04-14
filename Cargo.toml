@@ -55,6 +55,13 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 
+# WASM browser integration (feature-gated)
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "0.2", optional = true }
+js-sys = { version = "0.3", optional = true }
+web-sys = { version = "0.3", features = ["console"], optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
@@ -74,6 +81,7 @@ tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc"]
 hep = []
 api = ["dep:axum", "dep:tokio"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
 full = ["tui", "tls", "hep", "api"]
 
 [lib]

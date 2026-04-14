@@ -8,15 +8,21 @@ pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod output;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod privilege;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod process_isolation;
 pub mod rtp;
 pub mod security;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod signals;
 pub mod sip;
 
 #[cfg(feature = "tui")]
 pub mod tui;
+
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
 
 #[cfg(test)]
 pub mod test_utils;
