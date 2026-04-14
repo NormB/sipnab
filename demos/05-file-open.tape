@@ -15,10 +15,12 @@ Show
 Sleep 3s
 Type "O"
 Sleep 2s
-Type "tests/pcap-samples/sip-rtp-g722.pcap"
+Type "tests/pcap-samples/voipshark-normal-call.pcap"
 Sleep 2s
 Enter
 Sleep 6s
 Down
-Sleep 2s
+Sleep 1.5s
+Down
+Sleep 1.5s
 Sleep 4s
