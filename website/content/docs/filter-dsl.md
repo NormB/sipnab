@@ -180,6 +180,84 @@ one_way == true OR no_media == true OR rtp.jitter > 100.0
 ua =~ 'sipvicious|friendly-scanner|sipcli'
 ```
 
+## Real-World Scenarios
+
+Scenario-based examples showing how to combine filter expressions with CLI flags for common operational tasks.
+
+### Find calls with poor audio quality
+
+```
+rtp.mos < 3.0 AND state == 'Completed'
+```
+
+Only completed calls -- in-progress calls may not have enough RTP data for an accurate MOS calculation.
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND state == 'Completed'" --json
+```
+
+### Find all failed international calls
+
+```
+from.user =~ '^\+' AND (state == 'Failed' OR state == 'Cancelled')
+```
+
+The `^\+` regex matches E.164 formatted numbers (international prefix).
+
+### Find registration storms
+
+```
+method == 'REGISTER' AND retransmits > 5
+```
+
+High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Combine with source IP filtering to isolate a specific endpoint:
+
+```
+method == 'REGISTER' AND retransmits > 5 AND src.ip == '10.0.0.50'
+```
+
+### Find calls with NAT issues
+
+```
+nat_mismatch == true AND method == 'INVITE'
+```
+
+NAT mismatch means the Contact header IP/port doesn't match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT.
+
+### Find one-way audio after call establishment
+
+```
+one_way == true AND duration > 10.0
+```
+
+The duration check avoids false positives during early call setup when RTP hasn't started flowing yet.
+
+### Complex B2BUA debugging
+
+```
+(from.user == '1001' OR to.user == '1001') AND rtp.loss > 1.0
+```
+
+Track a specific user's calls that have packet loss, regardless of call direction.
+
+### Find chatty dialogs (debugging retransmissions)
+
+```
+msg_count > 20 AND method == 'INVITE'
+```
+
+Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).
+
+### Monitor for SIP trunk failures
+
+```
+dst.ip == '192.168.1.100' AND state == 'Failed' AND method == 'INVITE'
+```
+
+Filter for failures targeting a specific SIP trunk IP.
+
+> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
+
 ## Parser Constraints
 
 - Maximum parenthesis nesting depth: **50 levels**

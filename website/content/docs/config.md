@@ -216,54 +216,62 @@ column_selector = "F10"
 
 ## Full Example
 
+A production-ready configuration for a SIP monitoring server:
+
 ```toml
+# /etc/sipnab/sipnab.toml
+# Production SIP monitoring configuration
+
+# -- Packet capture --
 [capture]
-device = "eth0"
-portrange = "5060-5080"
-snaplen = 65535
-buffer = 16
-no_rtp = false
+device = "eth0"                    # Primary SIP-facing interface
+portrange = "5060-5080"            # Cover SIP, SIP-TLS, and alternate ports
+snaplen = 65535                    # Full packet capture (no truncation)
+buffer = 32                        # 32 MiB kernel buffer for burst tolerance
+no_rtp = false                     # RTP analysis enabled
 
+# -- Display settings --
 [display]
-color = "always"
-payload_limit = 4096
-delta_time = true
+color = "always"                   # Force color even when piped
+payload_limit = 8192               # Show up to 8K of SIP body (large SDP)
+delta_time = true                  # Show timing between messages by default
 
+# -- Default filter (optional) --
 [filter]
-from = "^1001@"
-to = "^1002@"
-expression = "method == 'INVITE'"
+expression = "method == 'INVITE' OR method == 'REGISTER'"
 
+# -- Security detection --
 [security]
-kill_scanner = true
-kill_response = 403
-fraud_detect = true
-alert = ["syslog", "json"]
-alert_exec = "/usr/local/bin/sipnab-alert.sh"
+kill_scanner = true                # Detect SIP scanners (sipvicious, etc.)
+fraud_detect = true                # Heuristic fraud detection
+alert = ["syslog", "json"]        # Send alerts to syslog and JSON log
+alert_exec = "/usr/local/bin/sipnab-alert.sh"  # Custom alert handler
 
+# -- Resource limits --
 [limits]
-dialog_limit = 50000
-max_streams = 25000
-max_reassembly = 5000
-hep_rate_limit = 25000
+dialog_limit = 50000               # Max tracked dialogs (tune for RAM)
+max_streams = 25000                # Max RTP streams
+max_reassembly = 5000              # Max TCP reassembly sessions
+hep_rate_limit = 25000             # Max HEP packets/sec
 
+# -- Privilege separation (Linux) --
 [privilege]
-user = "sipnab"
-no_priv_drop = false
-chroot = "/var/lib/sipnab"
+user = "sipnab"                    # Drop to unprivileged user after device open
 
+# -- Theme: Catppuccin Mocha --
 [theme]
-background = "#1a1a2e"
-foreground = "#e0e0e0"
-header = "cyan"
-selected = "#e94560"
-accent = "magenta"
-good = "green"
-warning = "yellow"
-bad = "red"
-muted = "dark_gray"
-border = "#444466"
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+header = "#89b4fa"
+selected = "#f9e2af"
+accent = "#cba6f7"
+good = "#a6e3a1"
+warning = "#fab387"
+bad = "#f38ba8"
+muted = "#585b70"
+border = "#6c7086"
 
+# -- Keybindings (defaults shown) --
 [keybindings]
 quit = "q"
 help = "F1"
@@ -277,3 +285,24 @@ extended_flow = "F4"
 clear_calls = "F5"
 column_selector = "F10"
 ```
+
+> **Tip:** Use `sipnab --dump-config` to see the effective configuration after merging CLI flags, environment variables, and config file values. This is useful for debugging precedence issues.
+
+### Minimal Config
+
+If you only need to override a few defaults, keep it short:
+
+```toml
+# ~/.config/sipnab/sipnab.toml
+[capture]
+device = "eth0"
+
+[display]
+delta_time = true
+
+[theme]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+```
+
+> **Note:** Unknown keys produce a warning and are ignored. This means configs can be shared across sipnab versions without breaking older installs.

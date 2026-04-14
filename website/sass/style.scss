@@ -417,12 +417,17 @@ img { max-width: 100%; height: auto; }
 }
 
 .terminal-body {
-  font-family: $font-mono;
+  font-family: $font-mono !important;
   font-size: 0.78rem;
   line-height: 1.55;
   padding: 1rem 1.25rem;
   overflow-x: auto;
   color: $text;
+  white-space: pre;
+  letter-spacing: 0;
+
+  // Override any parent .doc-content styles
+  &, * { font-family: $font-mono !important; }
 
   // Terminal semantic colors
   .t-muted   { color: $text-dim; }
