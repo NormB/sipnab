@@ -286,12 +286,14 @@ impl Default for CallListState {
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
 /// selected row, full-width layout. No title line -- status is rendered
 /// separately at the top of the screen.
+#[allow(clippy::too_many_arguments)]
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut CallListState,
     store: &DialogStore,
     filter: Option<&FilterExpr>,
+    search_query: &str,
     timestamp_mode: TimestampMode,
     theme: &super::Theme,
 ) {
@@ -356,6 +358,20 @@ pub fn render_call_list(
     } else {
         store.iter().collect()
     };
+
+    // Text search: filter across all visible fields (case-insensitive)
+    if !search_query.is_empty() {
+        let q = search_query.to_ascii_lowercase();
+        dialogs.retain(|d| {
+            d.call_id.to_ascii_lowercase().contains(&q)
+                || d.method.to_ascii_lowercase().contains(&q)
+                || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                || d.src_addr.to_string().contains(&q)
+                || d.dst_addr.to_string().contains(&q)
+                || format!("{:?}", d.state).to_ascii_lowercase().contains(&q)
+        });
+    }
 
     // Sort dialogs by the selected column
     sort_dialogs(&mut dialogs, state.sort_column(), state.sort_ascending());

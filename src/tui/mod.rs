@@ -1028,13 +1028,33 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     // Update cached counts when the lock is available (non-blocking)
     if let Some(store) = app.dialog_store.try_read() {
         app.cached_dialog_count = store.len();
-        app.cached_displayed_count = if let Some(ref filter) = app.active_filter {
-            store
-                .iter()
-                .filter(|d| filter.matches_dialog(d, &[]))
-                .count()
-        } else {
-            store.len()
+        app.cached_displayed_count = {
+            let mut count = if let Some(ref filter) = app.active_filter {
+                store.iter().filter(|d| filter.matches_dialog(d, &[])).count()
+            } else {
+                store.len()
+            };
+            // Apply text search filter to the count
+            if !app.search_query.is_empty() {
+                let q = app.search_query.to_ascii_lowercase();
+                count = store.iter()
+                    .filter(|d| {
+                        if let Some(ref filter) = app.active_filter
+                            && !filter.matches_dialog(d, &[])
+                        {
+                            return false;
+                        }
+                        d.call_id.to_ascii_lowercase().contains(&q)
+                            || d.method.to_ascii_lowercase().contains(&q)
+                            || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                            || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                            || d.src_addr.to_string().contains(&q)
+                            || d.dst_addr.to_string().contains(&q)
+                            || format!("{:?}", d.state).to_ascii_lowercase().contains(&q)
+                    })
+                    .count();
+            }
+            count
         };
     }
 
@@ -1055,6 +1075,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &mut app.call_list,
                     &store,
                     app.active_filter.as_ref(),
+                    &app.search_query,
                     app.timestamp_mode,
                     &app.theme,
                 );
