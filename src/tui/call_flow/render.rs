@@ -381,8 +381,10 @@ pub fn render_call_flow_direct(
         let badge_x = (area.x + width).saturating_sub(badge_len + 1);
         let badge_style = Style::default()
             .fg(theme.accent)
+            .bg(Color::Rgb(40, 35, 20))
             .add_modifier(Modifier::BOLD);
-        buf.set_string(badge_x, area.y, &badge, badge_style);
+        // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
+        buf.set_string(badge_x, area.y + 1, &badge, badge_style);
     }
 
     // Message rows: we expand each FormattedMessage into 1 + extra_lines rows
