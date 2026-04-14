@@ -122,6 +122,7 @@ class MockSipnabSession {
   }
 
   load_pcap(_data) {
+    console.warn("Using MOCK session — WASM module not loaded. Showing sample data.");
     return JSON.stringify({
       packets: 4269,
       sip_messages: 20,
@@ -229,8 +230,8 @@ async function initSession() {
     await wasm.default();
     session = new wasm.SipnabSession();
     console.log("sipnab WASM module loaded");
-  } catch (_e) {
-    console.log("WASM not available, using mock data");
+  } catch (e) {
+    console.warn("WASM load failed:", e.message || e, "— using sample data");
     session = new MockSipnabSession();
   }
 }
@@ -385,7 +386,10 @@ async function handleFile(file) {
     var resultStr = session.load_pcap(data);
     var result = JSON.parse(resultStr);
 
-    $("#topbar-filename").textContent = file.name;
+    var isMock = session instanceof MockSipnabSession;
+    $("#topbar-filename").textContent = isMock
+      ? file.name + " (demo mode — WASM loading failed, showing sample data)"
+      : file.name;
     updateStat("topbar-packets", result.packets, "packets");
     updateStat("topbar-sip", result.sip_messages, "SIP messages");
     updateStat("topbar-dialogs", result.dialogs, "dialogs");
