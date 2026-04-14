@@ -26,6 +26,29 @@ chmod +x sipnab-aarch64-unknown-linux-musl
 sudo mv sipnab-aarch64-unknown-linux-musl /usr/local/bin/sipnab
 ```
 
+## Docker
+
+### Run from pre-built image
+
+```bash
+docker run --rm --net=host ghcr.io/normb/sipnab:latest -N -d eth0
+```
+
+`--net=host` is required for live capture. For reading pcap files, mount the file into the container:
+
+```bash
+docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
+  ghcr.io/normb/sipnab:latest -N -I /data/capture.pcap
+```
+
+### Build the Docker image locally
+
+```bash
+docker build -t sipnab .
+```
+
+The multi-stage Dockerfile uses `rust:1.92-slim-bookworm` for the build stage and `debian:bookworm-slim` for the runtime image. The runtime image includes only `libpcap0.8` and runs as a non-root `sipnab` user.
+
 ## Cargo (from source)
 
 ```bash
@@ -134,29 +157,6 @@ cross build --release --features full --target aarch64-unknown-linux-gnu
 # Build for x86_64 Linux
 cross build --release --features full --target x86_64-unknown-linux-gnu
 ```
-
-## Docker
-
-### Run from pre-built image
-
-```bash
-docker run --rm --net=host ghcr.io/normb/sipnab:latest -N -d eth0
-```
-
-`--net=host` is required for live capture. For reading pcap files, mount the file into the container:
-
-```bash
-docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
-  ghcr.io/normb/sipnab:latest -N -I /data/capture.pcap
-```
-
-### Build the Docker image locally
-
-```bash
-docker build -t sipnab .
-```
-
-The multi-stage Dockerfile uses `rust:1.92-slim-bookworm` for the build stage and `debian:bookworm-slim` for the runtime image. The runtime image includes only `libpcap0.8` and runs as a non-root `sipnab` user.
 
 ## Platform Notes
 
