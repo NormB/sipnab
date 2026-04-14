@@ -144,6 +144,11 @@ cargo build --release --features full
 
 ## License
 
-[GPL-3.0-only](https://www.gnu.org/licenses/gpl-3.0.html)
+Licensed under either of
+
+- [Apache License, Version 2.0](LICENSE-APACHE)
+- [MIT License](LICENSE-MIT)
+
+at your option.
 
 Copyright 2024-2026 Norm Brandinger

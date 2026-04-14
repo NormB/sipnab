@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-sipnab is a Rust binary that unifies **sngrep** (interactive SIP TUI) and **sipgrep** (CLI SIP regex matcher) into one tool, with first-class RTP support, security analysis, VoIP diagnosis, and extensibility. Licensed GPLv3, authored by Norm Brandinger.
+sipnab is a Rust binary that unifies **sngrep** (interactive SIP TUI) and **sipgrep** (CLI SIP regex matcher) into one tool, with first-class RTP support, security analysis, VoIP diagnosis, and extensibility. Licensed MIT OR Apache-2.0, authored by Norm Brandinger.
 
 The canonical design reference is `implementation-plan-v6.md` — consult it for design decisions (D1–D21), CLI flags, module responsibilities, threat model, risk register, and phase-by-phase scope with per-subtask gates and documentation deliverables.
 
