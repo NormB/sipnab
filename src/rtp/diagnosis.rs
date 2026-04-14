@@ -270,6 +270,24 @@ mod tests {
     }
 
     #[test]
+    fn comfort_noise_suppresses_one_way_audio() {
+        // Create a unidirectional stream with high CN ratio (>30%)
+        let mut s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+        // packet_count is 10 (initial + 9 updates), set cn_frames > 30%
+        s1.cn_frames = 5; // 5/10 = 50% CN
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let diag = diagnose_media(&streams, None);
+        // With high CN ratio, one_way_audio should NOT be flagged
+        assert!(!diag.one_way_audio, "one_way_audio should be suppressed by comfort noise");
+        assert!(
+            diag.hints.iter().any(|h| h.contains("comfort noise")),
+            "hints should mention comfort noise: {:?}",
+            diag.hints
+        );
+    }
+
+    #[test]
     fn one_way_plus_nat_gives_combined_hint() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
         let streams: Vec<&RtpStream> = vec![&s1];

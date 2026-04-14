@@ -989,6 +989,107 @@ mod tests {
         assert!(!limiter.check(ip));
     }
 
+    #[tokio::test]
+    async fn get_dialog_report_returns_report() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let req = test_request("/v1/dialogs/call-1@test/report");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(
+            body.contains("call_id") || body.contains("call-1@test"),
+            "report should contain call_id, got: {body}"
+        );
+        assert!(parsed.is_object(), "report should be a JSON object");
+    }
+
+    #[tokio::test]
+    async fn list_streams_returns_empty() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let req = test_request("/v1/streams");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(parsed["streams"].is_array());
+        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+        assert_eq!(parsed["total"], 0);
+    }
+
+    #[tokio::test]
+    async fn get_stream_not_found() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let req = test_request("/v1/streams/0x12345678");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn get_metrics_returns_prometheus_format() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let req = test_request("/metrics");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        assert!(
+            body.contains("sipnab_"),
+            "metrics should contain sipnab_ prefix, got: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_wrong_key_returns_401() {
+        let state = make_state_with_key("correct-key");
+        let app = build_router(state);
+
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer wrong-key");
+
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_exceeded_returns_503() {
+        // Create state with rate_limiter max_rps = 1
+        let state = ApiState {
+            dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
+            stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
+            api_key: None,
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
+        };
+        populate_dialogs(&state);
+
+        // First request should succeed
+        let app = build_router(state.clone());
+        let req1 = test_request("/v1/dialogs");
+        let resp1 = app.oneshot(req1).await.expect("oneshot");
+        assert_eq!(resp1.status(), StatusCode::OK);
+
+        // Second request from same IP should be rate-limited (503)
+        let app2 = build_router(state);
+        let req2 = test_request("/v1/dialogs");
+        let resp2 = app2.oneshot(req2).await.expect("oneshot");
+        assert_eq!(resp2.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
     #[test]
     fn percentile_computation() {
         let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
