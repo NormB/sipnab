@@ -1,4 +1,477 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Keybindings -- sipnab</title><meta content="Complete TUI keyboard shortcut reference for all views." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/keybindings/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a class=active href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Keybindings</h1><p>Complete keyboard shortcut reference for sipnab’s interactive TUI.<p>Keys marked with <strong>(configurable)</strong> can be remapped via the <code>[keybindings]</code> config section. See <a href=https://www.sipnab.com/docs/config/>Config Reference</a> for details. All other keys are hardcoded.<h2 id=global>Global</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Ctrl+C<td>Force quit<tr><td>Ctrl+L<td>Redraw screen</table><h2 id=call-list>Call List</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Up / k<td>Navigate up<tr><td>Down / j<td>Navigate down<tr><td>PgUp<td>Page up<tr><td>PgDn<td>Page down<tr><td>Home<td>Jump to first dialog<tr><td>End<td>Jump to last dialog<tr><td>Enter<td>Open call flow for selected dialog<tr><td>Space<td>Select/deselect dialog (for multi-select save)<tr><td>Esc / q<td>Quit <strong>(configurable: <code>quit</code>)</strong><tr><td>&lt;<td>Sort by previous column<tr><td>><td>Sort by next column<tr><td>Z<td>Reverse sort direction<tr><td>A<td>Toggle autoscroll <strong>(configurable: <code>autoscroll</code>)</strong><tr><td>p<td>Pause/resume capture <strong>(configurable: <code>pause</code>)</strong><tr><td>/<td>Activate search <strong>(configurable: <code>search</code>)</strong><tr><td>i<td>Clear non-matching dialogs<tr><td>I<td>Clear matching dialogs<tr><td>t<td>Cycle timestamp mode (absolute / delta-prev / delta-first)<tr><td>r / F6<td>Show raw SIP message for selected dialog<tr><td>s<td>Switch to Statistics view<tr><td>O<td>Open pcap file (File Open dialog)<tr><td>Tab<td>Switch to RTP Streams view<tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong><tr><td>F2<td>Save capture <strong>(configurable: <code>save</code>)</strong><tr><td>F3<td>Search (same as <code>/</code>)<tr><td>F5<td>Clear all calls <strong>(configurable: <code>clear_calls</code>)</strong><tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong><tr><td>F9<td>Clear active filter<tr><td>F10<td>Column selector <strong>(configurable: <code>column_selector</code>)</strong></table><h2 id=call-flow>Call Flow</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Up / k<td>Navigate to previous message (detail panel updates)<tr><td>Down / j<td>Navigate to next message<tr><td>PgUp<td>Page up through messages<tr><td>PgDn<td>Page down through messages<tr><td>Home<td>Jump to first message<tr><td>End<td>Jump to last message<tr><td>Enter<td>Open full-screen raw message view<tr><td>Space<td>Select message for diff (press on two messages to compare)<tr><td>Esc<td>Back to call list<tr><td>d<td>Cycle SDP display mode (none / summary / full)<tr><td>t<td>Cycle timestamp mode (absolute / delta-prev / delta-first)<tr><td>c<td>Cycle color scheme (method / call-id / cseq)<tr><td>R<td>Toggle detail panel visibility<tr><td>0 / + / = / Right<td>Increase ladder panel width<tr><td>9 / - / Left<td>Decrease ladder panel width<tr><td>[<td>Scroll detail panel up<tr><td>]<td>Scroll detail panel down<tr><td>e<td>Toggle fold/expand for selected message<tr><td>m<td>Set mark at current message<tr><td>M<td>Clear mark<tr><td>E<td>Export Mermaid sequence diagram to clipboard<tr><td>x / F4<td>Toggle extended multi-leg flow <strong>(configurable: <code>extended_flow</code>)</strong><tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong><tr><td>F2<td>Save <strong>(configurable: <code>save</code>)</strong><tr><td>F5<td>Start compare mode <strong>(configurable: <code>clear_calls</code>)</strong><tr><td>F6<td>Toggle RTP display in flow<tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong><tr><td>F9<td>Clear active filter</table><h2 id=raw-message>Raw Message</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Up / k<td>Scroll up<tr><td>Down / j<td>Scroll down<tr><td>PgUp<td>Page up<tr><td>PgDn<td>Page down<tr><td>Home<td>Scroll to top<tr><td>/<td>Search within message<tr><td>s<td>Toggle syntax highlighting<tr><td>c<td>Cycle color scheme<tr><td>Esc<td>Back to call flow</table><h2 id=message-diff>Message Diff</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>q<td>Quit<tr><td>Esc<td>Back to call flow<tr><td>F1<td>Help</table><h2 id=rtp-streams>RTP Streams</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Up / k<td>Navigate up<tr><td>Down / j<td>Navigate down<tr><td>Home<td>Jump to first stream<tr><td>End<td>Jump to last stream<tr><td>Tab<td>Switch to Call List<tr><td>Esc<td>Back to Call List<tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong><tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></table><h2 id=statistics>Statistics</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc / q / s<td>Back to Call List</table><h2 id=help>Help</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc / F1 / q<td>Close help</table><h2 id=save-popup>Save Popup</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc<td>Cancel and close<tr><td>Enter<td>Save to the specified path<tr><td>Tab<td>Cycle format forward (PCAP -> PCAP-NG -> TXT -> Mermaid)<tr><td>Shift+Tab<td>Cycle format backward<tr><td>Left / Right<td>Move cursor in filename<tr><td>Home / End<td>Jump to start/end of filename<tr><td>Backspace<td>Delete character before cursor<tr><td>(any char)<td>Insert character</table><p>Save formats: <strong>PCAP</strong>, <strong>PCAP-NG</strong>, <strong>TXT</strong>, <strong>Mermaid</strong><h2 id=filter-popup>Filter Popup</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc<td>Cancel without applying<tr><td>Enter<td>Apply filter (or cancel if Cancel button focused)<tr><td>Tab<td>Focus next field<tr><td>Shift+Tab / BackTab<td>Focus previous field<tr><td>Down<td>Next field (or checkbox down)<tr><td>Up<td>Previous field (or checkbox up)<tr><td>Left / Right<td>Move within checkboxes or text cursor<tr><td>Space<td>Toggle checkbox / activate button<tr><td>F9<td>Clear all fields and active filter, close popup<tr><td>Backspace / Delete<td>Text editing in focused text field<tr><td>Home / End<td>Jump to start/end of text field<tr><td>(any char)<td>Insert character in focused text field</table><h2 id=settings-popup>Settings Popup</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc<td>Close settings<tr><td>Up / k<td>Previous setting<tr><td>Down / j<td>Next setting<tr><td>Enter / Space<td>Toggle or cycle the focused setting</table><p>Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting<h2 id=file-open-popup>File Open Popup</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Esc<td>Cancel and close<tr><td>Enter<td>Open the specified pcap file<tr><td>Left / Right<td>Move cursor<tr><td>Home / End<td>Jump to start/end of path<tr><td>Backspace<td>Delete character before cursor<tr><td>(any char)<td>Insert character</table><h2 id=column-selector>Column Selector</h2><table><thead><tr><th>Key<th>Action<tbody><tr><td>Up / k<td>Move selection up<tr><td>Down / j<td>Move selection down<tr><td>Space<td>Toggle column visibility<tr><td>Enter / Esc<td>Close selector</table><h2 id=timestamp-modes>Timestamp Modes</h2><p>Press <code>t</code> in the Call List or Call Flow to cycle through three timestamp modes (the mode is shared across both views):<ol><li><strong>Absolute</strong> (default) – <code>HH:MM:SS.mmm</code> wall-clock time<li><strong>Delta-prev</strong> – <code>+N.NNNs</code> time since previous entry. Color-coded in call flow: <ul><li>Green: &lt; 100 ms<li>Yellow: 100 ms - 1 s<li>Red: 1 s - 5 s<li>Bold red: > 5 s</ul><li><strong>Delta-first</strong> – <code>+N.NNNs</code> cumulative time from first entry</ol><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/config/>← Config Reference</a><a class=doc-next href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL →</a></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#global>Global</a><li><a href=#call-list>Call List</a><li><a href=#call-flow>Call Flow</a><li><a href=#raw-message>Raw Message</a><li><a href=#message-diff>Message Diff</a><li><a href=#rtp-streams>RTP Streams</a><li><a href=#statistics>Statistics</a><li><a href=#help>Help</a><li><a href=#save-popup>Save Popup</a><li><a href=#filter-popup>Filter Popup</a><li><a href=#settings-popup>Settings Popup</a><li><a href=#file-open-popup>File Open Popup</a><li><a href=#column-selector>Column Selector</a><li><a href=#timestamp-modes>Timestamp Modes</a></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class="footer-col footer-links"><a href=https://www.sipnab.com/docs/>Documentation</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a><a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a></div><div class="footer-col footer-meta"><span class=footer-credit>Built with Rust + <a href=https://ratatui.rs>ratatui</a></span><span class=footer-sep>·</span><span class=footer-credit>Norm Brandinger</span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span></div></div></footer><script>// Mobile nav toggle
+<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Keybindings -- sipnab</title><meta content="Complete TUI keyboard shortcut reference for all views." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. Zero dependencies. Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/keybindings/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a class=active href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Keybindings</h1><p>Complete keyboard shortcut reference for sipnab’s interactive TUI.<p>Keys marked with <strong>(configurable)</strong> can be remapped via the <code>[keybindings]</code> config section. See <a href=https://www.sipnab.com/docs/config/>Config Reference</a> for details. All other keys are hardcoded.<h2 id=tui-views>TUI Views</h2><h3 id=call-list-view>Call List View</h3><p>The call list is the main view when sipnab starts. It shows all tracked SIP dialogs with their state, timing, and quality metrics.<div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>sipnab -- Call List</span></div><pre class=terminal-body><span class=t-header> Current Mode: Online (eth0)   Dialogs: 47 (47 displayed)  [A]</span>
+<span class=t-muted> Match Expression:             BPF Filter: port 5060</span>
+<span class=t-muted> Time: Delta-prev</span>
+<span class=t-muted>  #  Method     From           To             Src IP         Dst IP         State        Msgs  Date        PDD</span>
+<span class=t-selected>▸</span><span class=t-accent> 1  INVITE     alice          bob            10.0.0.1       10.0.0.2       </span><span class=t-good>InCall</span><span class=t-accent>         12  +0.000s     847ms</span>
+  <span class=t-accent>2  INVITE     charlie        dave           10.0.0.3       10.0.0.4       </span><span class=t-warn>Ringing</span><span class=t-accent>         6  +1.234s     --</span>
+  <span class=t-accent>3  REGISTER   admin          --             10.0.0.5       10.0.0.1       </span><span class=t-good>Registered</span><span class=t-accent>      4  +0.012s     --</span>
+  <span class=t-accent>4  INVITE     +15551234      +15559876      10.0.0.6       10.0.0.7       </span><span class=t-bad>Failed</span><span class=t-accent>          8  +3.456s     --</span>
+  <span class=t-accent>5  INVITE     1005           1006           10.0.0.1       10.0.0.2       </span><span class=t-good>Completed</span><span class=t-accent>      14  +0.003s     923ms</span>
+  <span class=t-accent>6  OPTIONS    monitor        --             10.0.0.8       10.0.0.1       </span><span class=t-good>Completed</span><span class=t-accent>       2  +0.001s     --</span>
+  <span class=t-accent>7  INVITE     1010           +441234567     10.0.0.9       10.0.0.7       </span><span class=t-good>InCall</span><span class=t-accent>         10  +0.215s     1.2s</span>
+<span class=t-muted>  Esc Quit  Enter Show  F2 Save  F7 Filter  F8 Settings  F10 Columns  Tab Streams</span></pre></div><blockquote><p><strong>Tip:</strong> Press <code>Space</code> to multi-select dialogs (shown with <code>&amp;#9656;</code>). Press <code>F2</code> to save only the selected dialogs. Use <code>&lt;</code> / <code>></code> to sort by different columns and <code>Z</code> to reverse sort direction.</blockquote><h3 id=call-flow-view>Call Flow View</h3><p>The call flow shows a ladder diagram for a selected dialog, with timing, SDP, and RTP quality indicators.<div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>sipnab -- Call Flow</span></div><pre class=terminal-body><span class=t-header>      10.0.0.1:5060          10.0.0.40:5060         10.0.0.2:5060</span>
+<span class=t-header>      (alice UAC)             (OpenSIPS proxy)       (bob UAS)</span>
+<span class=t-muted>          │                        │                        │</span>
+<span class=t-accent> +0.000s</span>  <span class=t-good>│------- INVITE -------->│</span>                        <span class=t-muted>│</span>
+<span class=t-accent> +0.003s</span>  <span class=t-muted>│</span>  <span class=t-warn>│<------- ---------&#9474;< 100 span>                        <span class=t-muted>│</span>
+<span class=t-accent> +0.005s</span>  <span class=t-muted>│</span>                        <span class=t-good>│------- INVITE -------->│</span>
+<span class=t-accent> +0.008s</span>  <span class=t-muted>│</span>                        <span class=t-warn>│<------- ---------&#9474;< 100 span>
+<span class=t-accent> +0.847s</span>  <span class=t-muted>│</span>                        <span class=t-warn>│<------- ---------&#9474;< 180 span>  <span class=t-badge-delta>+839ms</span>
+<span class=t-accent> +0.850s</span>  <span class=t-warn>│<------- ---------&#9474;< 180 span>                        <span class=t-muted>│</span>
+<span class=t-accent> +2.134s</span>  <span class=t-muted>│</span>                        <span class=t-good>│<------- ---------&#9474;< 200 span>  <span class=t-badge-delta>+1.28s</span>
+<span class=t-accent> +2.137s</span>  <span class=t-good>│<------- ---------&#9474;< 200 span>                        <span class=t-muted>│</span>
+<span class=t-accent> +2.140s</span>  <span class=t-good>│-------- ACK --------->│</span>                        <span class=t-muted>│</span>
+<span class=t-accent> +2.143s</span>  <span class=t-muted>│</span>                        <span class=t-good>│-------- ACK --------->│</span>
+<span class=t-muted>          │</span>    <span class=t-good>██████████ RTP (PCMU, MOS 4.2)</span>          <span class=t-muted>│</span>
+<span class=t-muted>          │</span>    <span class=t-good>██████████ RTP (PCMU, MOS 4.1)</span>          <span class=t-muted>│</span>
+<span class=t-accent>+65.320s</span>  <span class=t-muted>│</span>                        <span class=t-bad>│<------- ---------&#9474;< bye span>
+<span class=t-accent>+65.323s</span>  <span class=t-bad>│<------- ---------&#9474;< bye span>                        <span class=t-muted>│</span>
+<span class=t-accent>+65.326s</span>  <span class=t-good>│------- 200 OK ------->│</span>                        <span class=t-muted>│</span>
+<span class=t-muted>          │                        │                        │</span>
+<span class=t-muted>  Esc Back  Enter Raw  Space Diff  d SDP  t Time  m Mark  x Extended  F6 RTP</span>
+
+<blockquote>
+<p><strong>Tip:</strong> Press <code>m</code> to set a mark at any message, then navigate to another message to see the delta badge showing elapsed time between them. Press <code>M</code> to clear the mark. Use <code>d</code> to cycle through SDP display modes (none / summary / full).</p>
+</blockquote>
+<h3 id=raw-message-view>Raw Message View</h3>
+<p>Full SIP message with optional syntax highlighting, searchable.</p>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>sipnab -- Raw Message</span>
+</div>
+<pre class=terminal-body><span class=t-good>INVITE</span> sip:bob@10.0.0.2:5060 SIP/2.0
+<span class=t-header>Via:</span> SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-524287-1
+<span class=t-header>Max-Forwards:</span> 70
+<span class=t-header>From:</span> "alice" &lt;sip:alice@10.0.0.1>;tag=as6e4f2c8b
+<span class=t-header>To:</span> &lt;sip:bob@10.0.0.2>
+<span class=t-header>Contact:</span> &lt;sip:alice@10.0.0.1:5060>
+<span class=t-header>Call-ID:</span> 3c9a82f1e7b4@10.0.0.1
+<span class=t-header>CSeq:</span> 102 INVITE
+<span class=t-header>User-Agent:</span> Olle/1.0
+<span class=t-header>Content-Type:</span> application/sdp
+<span class=t-header>Content-Length:</span> 263
+<p><span class=t-accent>v=</span>0
+<span class=t-accent>o=</span>alice 2890844526 2890844526 IN IP4 10.0.0.1
+<span class=t-accent>s=</span>-
+<span class=t-accent>c=</span>IN IP4 10.0.0.1
+<span class=t-accent>t=</span>0 0
+<span class=t-accent>m=</span>audio 10000 RTP/AVP 0 8 101
+<span class=t-accent>a=</span>rtpmap:0 PCMU/8000
+<span class=t-accent>a=</span>rtpmap:8 PCMA/8000
+<span class=t-accent>a=</span>rtpmap:101 telephone-event/8000
+<span class=t-accent>a=</span>fmtp:101 0-16
+<span class=t-muted>  Esc Back  / Search  s Highlight  c Color</span></pre>
+</div>
+<h3 id=rtp-streams-view>RTP Streams View</h3>
+<p>Shows all tracked RTP streams with quality metrics. Switch here from the Call List with <code>Tab</code>.</p>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>sipnab -- RTP Streams</span>
+</div>
+<pre class=terminal-body><span class=t-header> RTP Streams: 14 tracked                                                         </span>
+<span class=t-muted>  #  SSRC        Src IP:Port          Dst IP:Port          Codec   Pkts    Jitter  Loss%   MOS</span>
+<span class=t-selected>▸</span><span class=t-accent> 1  0x1a2b3c4d  10.0.0.1:10000       10.0.0.2:20000       PCMU    4820    </span><span class=t-good>2.1ms</span><span class=t-accent>   </span><span class=t-good>0.0%</span><span class=t-accent>    </span><span class=t-good>4.2</span>
+  <span class=t-accent>2  0x5e6f7a8b  10.0.0.2:20000       10.0.0.1:10000       PCMU    4815    </span><span class=t-good>1.8ms</span><span class=t-accent>   </span><span class=t-good>0.0%</span><span class=t-accent>    </span><span class=t-good>4.3</span>
+  <span class=t-accent>3  0x9c0d1e2f  10.0.0.6:12000       10.0.0.7:22000       PCMA    1205    </span><span class=t-warn>18.3ms</span><span class=t-accent>  </span><span class=t-warn>1.2%</span><span class=t-accent>    </span><span class=t-warn>3.4</span>
+  <span class=t-accent>4  0xa1b2c3d4  10.0.0.7:22000       10.0.0.6:12000       PCMA    1198    </span><span class=t-bad>45.7ms</span><span class=t-accent>  </span><span class=t-bad>3.8%</span><span class=t-accent>    </span><span class=t-bad>2.1</span>
+  <span class=t-accent>5  0xe5f60718  10.0.0.9:14000       10.0.0.7:24000       opus    9612    </span><span class=t-good>3.2ms</span><span class=t-accent>   </span><span class=t-good>0.1%</span><span class=t-accent>    </span><span class=t-good>4.1</span>
+  <span class=t-accent>6  0x29304150  10.0.0.7:24000       10.0.0.9:14000       opus    9608    </span><span class=t-good>2.9ms</span><span class=t-accent>   </span><span class=t-good>0.0%</span><span class=t-accent>    </span><span class=t-good>4.2</span>
+  <span class=t-muted>7  0xdeadbeef  10.0.0.3:16000       --                   PCMU    340     </span><span class=t-bad>--</span><span class=t-muted>      </span><span class=t-bad>--</span><span class=t-muted>      </span><span class=t-bad>orphan</span>
+<span class=t-muted>  Tab Call List  Esc Back  F7 Filter</span></pre>
+</div>
+<blockquote>
+<p><strong>Tip:</strong> Streams marked <code>orphan</code> have no matching SIP dialog. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.</p>
+</blockquote>
+<h3 id=filter-dialog-f7>Filter Dialog (F7)</h3>
+<p>The filter popup lets you build filter expressions with text fields and checkboxes for common options.</p>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>sipnab -- Filter Dialog</span>
+</div>
+<pre class=terminal-body><span class=t-muted> ┌──────────────────── Filter ────────────────────┐</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>From:</span>     <span class=t-selected>[alice                       ]</span>  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>To:</span>       [                            ]  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>Filter:</span>   [method == 'INVITE'          ]  <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-good>[x]</span> Case insensitive                         <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-muted>[ ]</span> Invert match                              <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-muted>[ ]</span> Calls only                                <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> │</span>     <span class=t-good>[ Apply ]</span>          <span class=t-muted>[ Cancel ]</span>           <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> └────────────────────────────────────────────────┘</span>
+<span class=t-muted> Tab: next field  Enter: apply  Esc: cancel  F9: clear all</span></pre>
+</div>
+<blockquote>
+<p><strong>Tip:</strong> The Filter field accepts the full <a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a> syntax. Combine it with the From/To text fields for powerful multi-criteria matching. Press <code>F9</code> to clear all filters at once.</p>
+</blockquote>
+<h3 id=save-dialog-f2>Save Dialog (F2)</h3>
+<p>Save captured data in multiple formats. Use <code>Tab</code> to cycle through formats.</p>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>sipnab -- Save Capture</span>
+</div>
+<pre class=terminal-body><span class=t-muted> ┌─────────────────── Save Capture ──────────────────┐</span>
+<span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>Format:</span>  <span class=t-good>PCAP</span> <span class=t-muted>│ PCAP-NG │ TXT │ Mermaid</span>     <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-header>File:</span>    <span class=t-selected>[/tmp/capture.pcap           ]</span>    <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-muted>Saving: All 47 dialogs</span>                         <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-accent>(3 selected -- will save selected only)</span>        <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
+<span class=t-muted> │</span>     <span class=t-good>[ Save ]</span>           <span class=t-muted>[ Cancel ]</span>            <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                  <span class=t-muted>│</span>
+<span class=t-muted> └──────────────────────────────────────────────────┘</span>
+<span class=t-muted> Tab: cycle format  Enter: save  Esc: cancel</span></pre>
+</div>
+<blockquote>
+<p><strong>Tip:</strong> Select specific dialogs in the Call List with <code>Space</code> before pressing <code>F2</code>. The save dialog will show how many are selected and save only those. <strong>Mermaid</strong> format exports a sequence diagram you can paste into documentation.</p>
+</blockquote>
+<h3 id=settings-dialog-f8>Settings Dialog (F8)</h3>
+<p>Toggle display options without leaving the TUI.</p>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>sipnab -- Settings</span>
+</div>
+<pre class=terminal-body><span class=t-muted> ┌──────────────────── Settings ───────────────────┐</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> │</span>  <span class=t-selected>▸ Color mode         </span><span class=t-good>always</span>                  <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Timestamp mode     <span class=t-accent>delta-prev</span>              <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Autoscroll         <span class=t-good>on</span>                      <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Raw preview         <span class=t-bad>off</span>                     <span class=t-muted>│</span>
+<span class=t-muted> │</span>    SDP display         <span class=t-accent>summary</span>                <span class=t-muted>│</span>
+<span class=t-muted> │</span>    Syntax highlighting <span class=t-good>on</span>                      <span class=t-muted>│</span>
+<span class=t-muted> │</span>                                                <span class=t-muted>│</span>
+<span class=t-muted> └────────────────────────────────────────────────┘</span>
+<span class=t-muted> Up/Down: navigate  Enter/Space: toggle  Esc: close</span></pre>
+</div>
+<hr>
+<h2 id=global>Global</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Ctrl+C<td>Force quit</tr>
+<tr><td>Ctrl+L<td>Redraw screen</tr>
+</table>
+<h2 id=call-list>Call List</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Up / k<td>Navigate up</tr>
+<tr><td>Down / j<td>Navigate down</tr>
+<tr><td>PgUp<td>Page up</tr>
+<tr><td>PgDn<td>Page down</tr>
+<tr><td>Home<td>Jump to first dialog</tr>
+<tr><td>End<td>Jump to last dialog</tr>
+<tr><td>Enter<td>Open call flow for selected dialog</tr>
+<tr><td>Space<td>Select/deselect dialog (for multi-select save)</tr>
+<tr><td>Esc / q<td>Quit <strong>(configurable: <code>quit</code>)</strong></tr>
+<tr><td>&lt;<td>Sort by previous column</tr>
+<tr><td>><td>Sort by next column</tr>
+<tr><td>Z<td>Reverse sort direction</tr>
+<tr><td>A<td>Toggle autoscroll <strong>(configurable: <code>autoscroll</code>)</strong></tr>
+<tr><td>p<td>Pause/resume capture <strong>(configurable: <code>pause</code>)</strong></tr>
+<tr><td>/<td>Activate search <strong>(configurable: <code>search</code>)</strong></tr>
+<tr><td>i<td>Clear non-matching dialogs</tr>
+<tr><td>I<td>Clear matching dialogs</tr>
+<tr><td>t<td>Cycle timestamp mode (absolute / delta-prev / delta-first)</tr>
+<tr><td>r / F6<td>Show raw SIP message for selected dialog</tr>
+<tr><td>s<td>Switch to Statistics view</tr>
+<tr><td>O<td>Open pcap file (File Open dialog)</tr>
+<tr><td>Tab<td>Switch to RTP Streams view</tr>
+<tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong></tr>
+<tr><td>F2<td>Save capture <strong>(configurable: <code>save</code>)</strong></tr>
+<tr><td>F3<td>Search (same as <code>/</code>)</tr>
+<tr><td>F5<td>Clear all calls <strong>(configurable: <code>clear_calls</code>)</strong></tr>
+<tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></tr>
+<tr><td>F9<td>Clear active filter</tr>
+<tr><td>F10<td>Column selector <strong>(configurable: <code>column_selector</code>)</strong></tr>
+</table>
+<h2 id=call-flow>Call Flow</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Up / k<td>Navigate to previous message (detail panel updates)</tr>
+<tr><td>Down / j<td>Navigate to next message</tr>
+<tr><td>PgUp<td>Page up through messages</tr>
+<tr><td>PgDn<td>Page down through messages</tr>
+<tr><td>Home<td>Jump to first message</tr>
+<tr><td>End<td>Jump to last message</tr>
+<tr><td>Enter<td>Open full-screen raw message view</tr>
+<tr><td>Space<td>Select message for diff (press on two messages to compare)</tr>
+<tr><td>Esc<td>Back to call list</tr>
+<tr><td>d<td>Cycle SDP display mode (none / summary / full)</tr>
+<tr><td>t<td>Cycle timestamp mode (absolute / delta-prev / delta-first)</tr>
+<tr><td>c<td>Cycle color scheme (method / call-id / cseq)</tr>
+<tr><td>R<td>Toggle detail panel visibility</tr>
+<tr><td>0 / + / = / Right<td>Increase ladder panel width</tr>
+<tr><td>9 / - / Left<td>Decrease ladder panel width</tr>
+<tr><td>[<td>Scroll detail panel up</tr>
+<tr><td>]<td>Scroll detail panel down</tr>
+<tr><td>e<td>Toggle fold/expand for selected message</tr>
+<tr><td>m<td>Set mark at current message</tr>
+<tr><td>M<td>Clear mark</tr>
+<tr><td>E<td>Export Mermaid sequence diagram to clipboard</tr>
+<tr><td>x / F4<td>Toggle extended multi-leg flow <strong>(configurable: <code>extended_flow</code>)</strong></tr>
+<tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong></tr>
+<tr><td>F2<td>Save <strong>(configurable: <code>save</code>)</strong></tr>
+<tr><td>F5<td>Start compare mode <strong>(configurable: <code>clear_calls</code>)</strong></tr>
+<tr><td>F6<td>Toggle RTP display in flow</tr>
+<tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></tr>
+<tr><td>F9<td>Clear active filter</tr>
+</table>
+<h2 id=raw-message>Raw Message</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Up / k<td>Scroll up</tr>
+<tr><td>Down / j<td>Scroll down</tr>
+<tr><td>PgUp<td>Page up</tr>
+<tr><td>PgDn<td>Page down</tr>
+<tr><td>Home<td>Scroll to top</tr>
+<tr><td>/<td>Search within message</tr>
+<tr><td>s<td>Toggle syntax highlighting</tr>
+<tr><td>c<td>Cycle color scheme</tr>
+<tr><td>Esc<td>Back to call flow</tr>
+</table>
+<h2 id=message-diff>Message Diff</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>q<td>Quit</tr>
+<tr><td>Esc<td>Back to call flow</tr>
+<tr><td>F1<td>Help</tr>
+</table>
+<h2 id=rtp-streams>RTP Streams</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Up / k<td>Navigate up</tr>
+<tr><td>Down / j<td>Navigate down</tr>
+<tr><td>Home<td>Jump to first stream</tr>
+<tr><td>End<td>Jump to last stream</tr>
+<tr><td>Tab<td>Switch to Call List</tr>
+<tr><td>Esc<td>Back to Call List</tr>
+<tr><td>F1<td>Help <strong>(configurable: <code>help</code>)</strong></tr>
+<tr><td>F7<td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></tr>
+</table>
+<h2 id=statistics>Statistics</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc / q / s<td>Back to Call List</tr>
+</table>
+<h2 id=help>Help</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc / F1 / q<td>Close help</tr>
+</table>
+<h2 id=save-popup>Save Popup</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc<td>Cancel and close</tr>
+<tr><td>Enter<td>Save to the specified path</tr>
+<tr><td>Tab<td>Cycle format forward (PCAP -> PCAP-NG -> TXT -> Mermaid)</tr>
+<tr><td>Shift+Tab<td>Cycle format backward</tr>
+<tr><td>Left / Right<td>Move cursor in filename</tr>
+<tr><td>Home / End<td>Jump to start/end of filename</tr>
+<tr><td>Backspace<td>Delete character before cursor</tr>
+<tr><td>(any char)<td>Insert character</tr>
+</table>
+<p>Save formats: <strong>PCAP</strong>, <strong>PCAP-NG</strong>, <strong>TXT</strong>, <strong>Mermaid</strong></p>
+<h2 id=filter-popup>Filter Popup</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc<td>Cancel without applying</tr>
+<tr><td>Enter<td>Apply filter (or cancel if Cancel button focused)</tr>
+<tr><td>Tab<td>Focus next field</tr>
+<tr><td>Shift+Tab / BackTab<td>Focus previous field</tr>
+<tr><td>Down<td>Next field (or checkbox down)</tr>
+<tr><td>Up<td>Previous field (or checkbox up)</tr>
+<tr><td>Left / Right<td>Move within checkboxes or text cursor</tr>
+<tr><td>Space<td>Toggle checkbox / activate button</tr>
+<tr><td>F9<td>Clear all fields and active filter, close popup</tr>
+<tr><td>Backspace / Delete<td>Text editing in focused text field</tr>
+<tr><td>Home / End<td>Jump to start/end of text field</tr>
+<tr><td>(any char)<td>Insert character in focused text field</tr>
+</table>
+<h2 id=settings-popup>Settings Popup</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc<td>Close settings</tr>
+<tr><td>Up / k<td>Previous setting</tr>
+<tr><td>Down / j<td>Next setting</tr>
+<tr><td>Enter / Space<td>Toggle or cycle the focused setting</tr>
+</table>
+<p>Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display mode, Syntax highlighting</p>
+<h2 id=file-open-popup>File Open Popup</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Esc<td>Cancel and close</tr>
+<tr><td>Enter<td>Open the specified pcap file</tr>
+<tr><td>Left / Right<td>Move cursor</tr>
+<tr><td>Home / End<td>Jump to start/end of path</tr>
+<tr><td>Backspace<td>Delete character before cursor</tr>
+<tr><td>(any char)<td>Insert character</tr>
+</table>
+<h2 id=column-selector>Column Selector</h2>
+<table><thead><tr><th>Key<th>Action<tbody>
+<tr><td>Up / k<td>Move selection up</tr>
+<tr><td>Down / j<td>Move selection down</tr>
+<tr><td>Space<td>Toggle column visibility</tr>
+<tr><td>Enter / Esc<td>Close selector</tr>
+</table>
+<h2 id=timestamp-modes>Timestamp Modes</h2>
+<p>Press <code>t</code> in the Call List or Call Flow to cycle through three timestamp modes (the mode is shared across both views):</p>
+<ol>
+<li><strong>Absolute</strong> (default) – <code>HH:MM:SS.mmm</code> wall-clock time</li>
+<li><strong>Delta-prev</strong> – <code>+N.NNNs</code> time since previous entry. Color-coded in call flow:
+<ul>
+<li>Green: &lt; 100 ms</li>
+<li>Yellow: 100 ms - 1 s</li>
+<li>Red: 1 s - 5 s</li>
+<li>Bold red: > 5 s</li>
+</ul>
+</li>
+<li><strong>Delta-first</strong> – <code>+N.NNNs</code> cumulative time from first entry</li>
+</ol>
+<div class=terminal>
+<div class=terminal-bar>
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class=terminal-title>Timestamp Modes Comparison</span>
+</div>
+<pre class=terminal-body><span class=t-header>Absolute:</span>           <span class=t-header>Delta-prev:</span>          <span class=t-header>Delta-first:</span>
+14:23:01.000  INVITE  +0.000s  INVITE      +0.000s  INVITE
+14:23:01.003  100     <span class=t-good>+0.003s</span>  100         +0.003s  100
+14:23:01.847  180     <span class=t-warn>+0.844s</span>  180         +0.847s  180
+14:23:03.134  200     <span class=t-bad>+1.287s</span>  200         +2.134s  200
+14:23:03.137  ACK     <span class=t-good>+0.003s</span>  ACK         +2.137s  ACK
+14:24:08.320  BYE     <span class=t-bad>+65.18s</span>  BYE         +67.32s  BYE</pre>
+</div>
+<blockquote>
+<p><strong>Tip:</strong> Delta-prev mode is ideal for spotting latency spikes in call setup. Delta-first mode is useful for measuring total elapsed time from the first message.</p>
+</blockquote>
+
+
+    
+    
+    <nav class=doc-prevnext>
+      
+      <a class=doc-prev href=https://www.sipnab.com/docs/config/>← Config Reference</a>
+      
+      
+      <a class=doc-next href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL →</a>
+      
+    </nav>
+    
+  
+
+  
+  
+  <aside class=doc-toc>
+    <div class=doc-toc-inner>
+      <span class=doc-toc-title>On this page</span>
+      <ul>
+        
+        <li><a href=#tui-views>TUI Views</a>
+          
+          <ul>
+            
+            <li><a href=#call-list-view>Call List View</a></li>
+            
+            <li><a href=#call-flow-view>Call Flow View</a></li>
+            
+            <li><a href=#raw-message-view>Raw Message View</a></li>
+            
+            <li><a href=#rtp-streams-view>RTP Streams View</a></li>
+            
+            <li><a href=#filter-dialog-f7>Filter Dialog (F7)</a></li>
+            
+            <li><a href=#save-dialog-f2>Save Dialog (F2)</a></li>
+            
+            <li><a href=#settings-dialog-f8>Settings Dialog (F8)</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href=#global>Global</a>
+          
+        </li>
+        
+        <li><a href=#call-list>Call List</a>
+          
+        </li>
+        
+        <li><a href=#call-flow>Call Flow</a>
+          
+        </li>
+        
+        <li><a href=#raw-message>Raw Message</a>
+          
+        </li>
+        
+        <li><a href=#message-diff>Message Diff</a>
+          
+        </li>
+        
+        <li><a href=#rtp-streams>RTP Streams</a>
+          
+        </li>
+        
+        <li><a href=#statistics>Statistics</a>
+          
+        </li>
+        
+        <li><a href=#help>Help</a>
+          
+        </li>
+        
+        <li><a href=#save-popup>Save Popup</a>
+          
+        </li>
+        
+        <li><a href=#filter-popup>Filter Popup</a>
+          
+        </li>
+        
+        <li><a href=#settings-popup>Settings Popup</a>
+          
+        </li>
+        
+        <li><a href=#file-open-popup>File Open Popup</a>
+          
+        </li>
+        
+        <li><a href=#column-selector>Column Selector</a>
+          
+        </li>
+        
+        <li><a href=#timestamp-modes>Timestamp Modes</a>
+          
+        </li>
+        
+      </ul>
+    </div>
+  </aside>
+  
+
+
+  
+
+  
+  <footer class=site-footer>
+    <div class=footer-inner>
+      <div class=footer-col>
+        <span class=footer-logo>sipnab</span>
+        <span class=footer-version>v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href=https://www.sipnab.com/docs/>Documentation</a>
+        <a href=https://github.com/NormB/sipnab>GitHub</a>
+        <a href=https://www.gnu.org/licenses/gpl-3.0.html>License (GPLv3)</a>
+        <a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class=footer-credit>Built with Rust + <a href=https://ratatui.rs>ratatui</a></span>
+        <span class=footer-sep>·</span>
+        <span class=footer-credit>Norm Brandinger</span>
+        <span class=footer-sep>·</span>
+        <span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>// Mobile nav toggle
   document.getElementById('nav-toggle').addEventListener('click', function() {
     document.getElementById('nav-links').classList.toggle('open');
   });
@@ -77,3 +550,5 @@
       }
     });
   })();</script>
+
+

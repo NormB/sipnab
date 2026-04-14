@@ -167,7 +167,40 @@ Should build and run. Live capture support depends on platform pcap implementati
 
 ## Verify Installation
 
+After installing, confirm sipnab is working:
+
 ```bash
+# Check version
 sipnab --version
+
+# Display full help
 sipnab --help
+
+# Quick test with a pcap file
+sipnab -I /path/to/capture.pcap
+
+# CLI mode test (non-interactive, first 5 dialogs)
+sipnab -N -I /path/to/capture.pcap | head -5
+
+# Dump effective config to confirm feature flags
+sipnab -D
 ```
+
+<div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Verify Installation</span>
+</div>
+<pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
+sipnab 0.3.1 (features: tui,tls,hep,api)
+
+<span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
+<span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms
+<span class="t-accent">REGISTER</span> admin -> --  10.0.0.5:5060 -> 10.0.0.1:5060  <span class="t-good">Registered</span>
+<span class="t-accent">INVITE</span> +15551234 -> +15559876  10.0.0.6:5060 -> 10.0.0.7:5060  <span class="t-bad">Failed</span>  408 Request Timeout</pre>
+</div>
+
+> **Tip:** sipnab requires libpcap for live capture. For pcap file analysis, no special permissions are needed. For live capture, run with `sudo` or set capabilities:
+> ```bash
+> sudo setcap cap_net_raw,cap_net_admin=eip $(which sipnab)
+> ```

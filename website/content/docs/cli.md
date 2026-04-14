@@ -8,6 +8,87 @@ Complete flag reference for sipnab. Flags are organized by functional group.
 
 CLI flags always override config file values. Boolean flags default to `off` (false) unless otherwise noted.
 
+## Common Recipes
+
+Real-world examples to get productive fast. Each recipe combines flags that work well together.
+
+### Debug a failed call
+
+```bash
+# Find all failed calls in a pcap
+sipnab -N -I capture.pcap --filter "state == 'Failed'"
+
+# Show just the call flow for a specific Call-ID
+sipnab -I capture.pcap --call-report "abc123@host"
+
+# Get a Markdown-formatted report for a ticket
+sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+```
+
+### Monitor live SIP quality
+
+```bash
+# Watch for poor quality calls in real-time
+sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR one_way == true"
+
+# Export problems as NDJSON for your monitoring pipeline
+sudo sipnab -N -d eth0 --problems --json | tee /var/log/sipnab/problems.ndjson
+
+# Alert when quality drops below threshold
+sudo sipnab -d eth0 --on-quality-exec "/usr/local/bin/pagerduty-alert.sh" \
+  --quality-threshold 3.0 --exec-rate-limit 5
+```
+
+### Measure post-dial delay across calls
+
+```bash
+# Find calls with slow setup (PDD > 3 seconds)
+sipnab -N -I capture.pcap --filter "pdd > 3.0" --json
+
+# Use the built-in alias for quick PDD checks
+sipnab -N -I capture.pcap --slow-setup --report
+```
+
+### Security monitoring
+
+```bash
+# Detect SIP scanners and log for fail2ban
+sudo sipnab -N -d eth0 --kill-scanner --fail2ban >> /var/log/sipnab/scanners.log
+
+# Find digest authentication leaks
+sipnab -N -I capture.pcap --digest-leak
+
+# Full security sweep: scanners + fraud + registration floods
+sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood \
+  --alert syslog --alert json --syslog
+```
+
+### Export for Wireshark analysis
+
+```bash
+# Generate a Wireshark display filter for a specific user
+sipnab -I capture.pcap --wireshark
+
+# Generate a tshark command filtered by caller
+sipnab -I capture.pcap --tshark-filter "from.user == '1001'"
+```
+
+### Pipe through jq for custom analysis
+
+```bash
+# Count failures by response code
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+  | jq -r '.status' | sort | uniq -c | sort -rn
+
+# Find all unique User-Agents
+sipnab -N -I capture.pcap --json \
+  | jq -r '.user_agent // empty' | sort -u
+```
+
+> **Tip:** The `-N` flag is required for any output flag (`--json`, `--report`, `--fail2ban`, etc.). Think of it as "non-interactive mode" -- it disables the TUI and writes to stdout instead.
+
+---
+
 ## Capture
 
 | Flag | Value | Default | Description |
@@ -184,7 +265,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 - `--kill-response` accepts values 100-699 only.
 - Feature-gated flags (`tls`, `hep`, `api`) produce startup errors when the required feature is not compiled in.
 
-## Examples
+## Quick Reference Examples
 
 ```bash
 # Capture on eth0
@@ -219,4 +300,15 @@ sipnab -d eth0 -H 10.0.0.50:9060
 
 # Live TLS decryption
 sipnab -d eth0 --keylog /tmp/sslkeys.log --keylog-watch
+
+# Capture first 1000 packets, then generate a report
+sipnab -N -d eth0 -n 1000 --report
+
+# Split capture files at 50 MiB and write as pcapng
+sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
+
+# Monitor all interfaces with delta timestamps
+sipnab -d any --multi-device --delta-time
 ```
+
+> **Note:** Output flags (`--json`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui`. Feature-gated flags (`--tls-key`, `--hep-listen`, `--api`) require the corresponding feature to be compiled in.
