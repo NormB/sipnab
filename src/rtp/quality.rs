@@ -458,6 +458,27 @@ mod tests {
     }
 
     #[test]
+    fn all_lost_below_threshold_not_bursty() {
+        let received = vec![false, false]; // Only 2 lost = below burst threshold of 3
+        let result = analyze_burst_gap(&received, 20.0);
+        assert_eq!(result.burst_count, 0);
+        assert!(!result.is_bursty);
+    }
+
+    #[test]
+    fn all_lost_single_burst() {
+        let received = vec![false; 100]; // 100 consecutive lost
+        let result = analyze_burst_gap(&received, 20.0);
+        assert_eq!(result.burst_count, 1);
+        assert!(result.is_bursty);
+        assert!(
+            result.burst_loss_rate > 0.99,
+            "burst_loss_rate should be ~1.0, got {}",
+            result.burst_loss_rate
+        );
+    }
+
+    #[test]
     fn burst_duration_reflects_ptime() {
         let mut received = vec![true; 50];
         for i in 10..16 {

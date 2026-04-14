@@ -159,6 +159,60 @@ mod tests {
     }
 
     #[test]
+    fn mermaid_three_participants() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "proxy".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.3:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let messages = vec![
+            test_msg(0, 1, "INVITE", false),
+            test_msg(1, 2, "INVITE", false),
+            test_msg(2, 1, "200 OK", true),
+            test_msg(1, 0, "200 OK", true),
+        ];
+        let out = export_mermaid(&participants, &messages);
+        assert!(out.contains("participant 10_0_0_1_5060 as alice"));
+        assert!(out.contains("participant 10_0_0_2_5060 as proxy"));
+        assert!(out.contains("participant 10_0_0_3_5060 as bob"));
+        // 2 requests use ->>, 2 responses use -->>
+        let arrow_count = out.matches("->>").count();
+        assert_eq!(arrow_count, 4, "expected 4 arrows (->>/-->>), got {arrow_count}");
+    }
+
+    #[test]
+    fn mermaid_fold_label_included() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut msg = test_msg(0, 1, "INVITE (auth retry)", false);
+        msg.folded_count = 3;
+        msg.fold_label = Some("3 msgs folded".to_string());
+        let messages = vec![msg];
+        let out = export_mermaid(&participants, &messages);
+        assert!(
+            out.contains("INVITE (auth retry)"),
+            "mermaid output should contain fold label: {out}"
+        );
+    }
+
+    #[test]
     fn sanitize_addresses() {
         assert_eq!(sanitize_id("10.0.0.1:5060"), "10_0_0_1_5060");
     }

@@ -4371,6 +4371,46 @@ mod tests {
     }
 
     #[test]
+    fn theme_from_config_selected_overrides_highlight() {
+        let config = ThemeConfig {
+            highlight: Some("red".to_string()),
+            selected: Some("blue".to_string()),
+            ..Default::default()
+        };
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.selected, Color::Blue); // selected wins over highlight
+    }
+
+    #[test]
+    fn theme_from_config_highlight_fallback() {
+        let config = ThemeConfig {
+            highlight: Some("red".to_string()),
+            ..Default::default()
+        };
+        let theme = Theme::from_config(&config);
+        assert_eq!(theme.selected, Color::Red); // highlight applies when selected is None
+    }
+
+    #[test]
+    fn keymap_from_config_overrides_default() {
+        let config = KeybindingsConfig {
+            quit: Some("x".to_string()),
+            ..Default::default()
+        };
+        let keymap = Keymap::from_config(&config);
+        assert_eq!(keymap.quit, KeyCode::Char('x'));
+        assert_eq!(keymap.help, KeyCode::F(1)); // unchanged default
+    }
+
+    #[test]
+    fn csv_escape_quotes_commas() {
+        assert_eq!(csv_escape("hello"), "hello");
+        assert_eq!(csv_escape("hello,world"), "\"hello,world\"");
+        assert_eq!(csv_escape("say \"hi\""), "\"say \"\"hi\"\"\"");
+        assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
+    }
+
+    #[test]
     fn view_equality() {
         assert_eq!(View::CallList, View::CallList);
         assert_ne!(View::CallList, View::StreamList);

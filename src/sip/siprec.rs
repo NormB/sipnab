@@ -259,6 +259,18 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     }
 
     #[test]
+    fn test_truncated_body_no_final_boundary() {
+        let ct = "multipart/mixed; boundary=b1";
+        let body = b"--b1\r\nContent-Type: application/rs-metadata+xml\r\n\r\n\
+<recording><session session_id=\"abc\"></session></recording>";
+        // No --b1-- terminator
+        let result = parse_siprec_body(ct, body);
+        // Should succeed (graceful handling of missing terminator)
+        assert!(result.is_ok(), "truncated body should parse gracefully: {:?}", result.err());
+        assert_eq!(result.unwrap().session_id.as_deref(), Some("abc"));
+    }
+
+    #[test]
     fn test_malformed_xml() {
         let ct = "multipart/mixed; boundary=b1";
         let body = b"--b1\r\nContent-Type: application/rs-metadata+xml\r\n\r\n\

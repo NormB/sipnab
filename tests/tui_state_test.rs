@@ -1640,19 +1640,21 @@ mod tui_state {
     // ── Call flow: Right key resizes split ────────────────────────────
 
     #[test]
-    fn call_flow_right_increases_pct() {
+    fn call_flow_right_decreases_pct() {
+        // Right = push split right = ladder wider = detail pct decreases
         let mut app = app_with_call_flow_open();
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Right);
-        assert_eq!(app.raw_preview_pct(), before + 5);
+        assert_eq!(app.raw_preview_pct(), before - 5);
     }
 
     #[test]
-    fn call_flow_left_decreases_pct() {
+    fn call_flow_left_increases_pct() {
+        // Left = push split left = detail wider = detail pct increases
         let mut app = app_with_call_flow_open();
         let before = app.raw_preview_pct();
         app.handle_key(KeyCode::Left);
-        assert_eq!(app.raw_preview_pct(), before - 5);
+        assert_eq!(app.raw_preview_pct(), before + 5);
     }
 
     // ── Call flow: End resets detail_scroll ───────────────────────────
@@ -2355,6 +2357,190 @@ mod tui_state {
             status.contains("No RTP streams") || status.contains("rtp"),
             "Expected no-streams message, got: {status}"
         );
+    }
+
+    // ── Save format correctness tests ──────────────────────────────────
+
+    #[test]
+    fn save_txt_format_correct() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.txt");
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(2));
+        app.set_save_path(path.to_str().unwrap());
+        // Cycle to Txt: Pcap -> PcapNg -> Txt = 2 tabs
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(app.save_format(), SaveFormat::Txt);
+        app.handle_key(KeyCode::Enter);
+        assert!(path.exists(), "Txt file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("# Message"), "Txt should have message headers");
+        assert!(content.contains("---"), "Txt should have separators");
+        assert!(content.contains("SIP/2.0"), "Txt should contain raw SIP");
+    }
+
+    #[test]
+    fn save_csv_has_correct_header() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.csv");
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(2));
+        app.set_save_path(path.to_str().unwrap());
+        // Cycle to Csv: 5 tabs
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        assert_eq!(app.save_format(), SaveFormat::Csv);
+        app.handle_key(KeyCode::Enter);
+        assert!(path.exists(), "CSV file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        let first_line = content.lines().next().unwrap();
+        assert!(first_line.contains("call_id"), "CSV header should contain call_id");
+        assert!(first_line.contains("method"), "CSV header should contain method");
+        // Verify there are data rows (at least header + 1 row = 2 lines)
+        assert!(content.lines().count() >= 2, "CSV should have header + data rows");
+    }
+
+    #[test]
+    fn save_markdown_has_headings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.md");
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(2));
+        app.set_save_path(path.to_str().unwrap());
+        // Cycle to Markdown: 7 tabs
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab);
+        }
+        assert_eq!(app.save_format(), SaveFormat::Markdown);
+        app.handle_key(KeyCode::Enter);
+        assert!(path.exists(), "Markdown file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            content.contains("# Call Summary") || content.contains("## Dialog"),
+            "MD should have headings"
+        );
+        assert!(content.contains("|"), "MD should have table pipes");
+    }
+
+    #[test]
+    fn save_sipp_xml_has_scenario_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.xml");
+        let mut app = app_with_three_dialogs();
+        // Open call flow first since SIPp exports current dialog
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view(), View::CallFlow(_)));
+        app.handle_key(KeyCode::F(2));
+        app.set_save_path(path.to_str().unwrap());
+        // Cycle to SippXml: 9 tabs
+        for _ in 0..9 {
+            app.handle_key(KeyCode::Tab);
+        }
+        assert_eq!(app.save_format(), SaveFormat::SippXml);
+        app.handle_key(KeyCode::Enter);
+        assert!(path.exists(), "SIPp XML file should exist");
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("<scenario"), "SIPp should have <scenario> tag");
+        assert!(content.contains("</scenario>"), "SIPp should close </scenario>");
+        assert!(
+            content.contains("<send>") || content.contains("<recv"),
+            "SIPp should have send/recv"
+        );
+    }
+
+    // ── 3-participant prepare_messages test ──────────────────────────
+
+    #[test]
+    fn prepare_messages_three_participants() {
+        use std::collections::HashSet;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use sipnab::tui::call_flow::prepare::prepare_messages;
+
+        let t0 = base_ts();
+        let la = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let lb = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let lc = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
+
+        // Build messages with 3 distinct endpoints: A -> B, B -> C, C -> B, B -> A
+        let msg1 = {
+            let raw = build_sip(
+                "INVITE sip:proxy@10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.3>",
+                    "Call-ID: three-party@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+            );
+            parse_sip(&raw, t0, la, lb, 5060, 5060, TransportProto::Udp).unwrap()
+        };
+        let msg2 = {
+            let raw = build_sip(
+                "INVITE sip:bob@10.0.0.3 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.3>",
+                    "Call-ID: three-party@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+            );
+            parse_sip(&raw, t0 + TimeDelta::milliseconds(100), lb, lc, 5060, 5060, TransportProto::Udp).unwrap()
+        };
+        let msg3 = {
+            let raw = build_sip(
+                "SIP/2.0 200 OK",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.3>;tag=t2",
+                    "Call-ID: three-party@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+            );
+            parse_sip(&raw, t0 + TimeDelta::milliseconds(200), lc, lb, 5060, 5060, TransportProto::Udp).unwrap()
+        };
+        let msg4 = {
+            let raw = build_sip(
+                "SIP/2.0 200 OK",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.3>;tag=t2",
+                    "Call-ID: three-party@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+            );
+            parse_sip(&raw, t0 + TimeDelta::milliseconds(300), lb, la, 5060, 5060, TransportProto::Udp).unwrap()
+        };
+
+        let messages = vec![msg1, msg2, msg3, msg4];
+        let theme = Theme::default();
+        let fold_expanded = HashSet::new();
+
+        let (participants, formatted) = prepare_messages(
+            &messages,
+            t0,
+            None,
+            SdpDisplayMode::None,
+            TimestampMode::DeltaPrev,
+            ColorMode::Method,
+            false,
+            None,
+            &theme,
+            &fold_expanded,
+        );
+
+        assert_eq!(participants.len(), 3, "should have 3 participants, got {}", participants.len());
+        assert!(formatted.len() >= 4, "should have at least 4 messages, got {}", formatted.len());
+        // Verify src_col and dst_col use different columns for different endpoints
+        let cols_used: HashSet<usize> = formatted.iter()
+            .flat_map(|m| [m.src_col, m.dst_col])
+            .collect();
+        assert_eq!(cols_used.len(), 3, "all 3 participant columns should be used");
     }
 
     // ── Settings popup timestamp mode cycle with Scaled ──────────────
