@@ -6,10 +6,13 @@
 
 #[cfg(feature = "tls")]
 pub mod decrypt;
+#[cfg(feature = "native")]
 pub mod device;
+#[cfg(feature = "native")]
 pub mod file;
 #[cfg(feature = "hep")]
 pub mod hep;
+#[cfg(feature = "native")]
 pub mod live;
 pub mod packet;
 pub mod parse;
@@ -18,23 +21,27 @@ pub mod reassembly;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod websocket;
+#[cfg(feature = "native")]
 pub mod writer;
 
-use std::path::PathBuf;
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+#[cfg(feature = "native")]
 use crossbeam_channel::Sender;
+#[cfg(feature = "native")]
+use std::thread;
 
 pub use packet::Packet;
 pub use parse::ParsedPacket;
+#[cfg(feature = "native")]
 pub use writer::PcapWriter;
 
 use parse::parse_packet;
 use reassembly::{FragmentReassembler, TcpReassembler};
 
 /// Describes where packets come from.
+#[cfg(feature = "native")]
 #[derive(Debug, Clone)]
 pub enum CaptureSource {
     /// Live capture from a network interface.
@@ -45,7 +52,7 @@ pub enum CaptureSource {
     /// Read packets from a pcap file.
     File {
         /// Path to the pcap file.
-        path: PathBuf,
+        path: std::path::PathBuf,
     },
     /// Receive packets via HEP (Homer Encapsulation Protocol).
     Hep {
@@ -63,6 +70,7 @@ pub enum CaptureSource {
 ///
 /// Combines CLI flags and config file values into a single struct consumed
 /// by the capture thread.
+#[cfg(feature = "native")]
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     /// Packet snapshot length in bytes.
@@ -79,6 +87,7 @@ pub struct CaptureConfig {
     pub replay: bool,
 }
 
+#[cfg(feature = "native")]
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
@@ -96,9 +105,10 @@ impl Default for CaptureConfig {
 ///
 /// Provides the [`JoinHandle`](thread::JoinHandle) for waiting on the capture
 /// thread and the capture source metadata.
+#[cfg(feature = "native")]
 pub struct CaptureHandle {
     /// The spawned capture thread.
-    pub thread: thread::JoinHandle<Result<()>>,
+    pub thread: std::thread::JoinHandle<Result<()>>,
     /// Which source this handle is capturing from.
     pub source: CaptureSource,
 }
@@ -119,6 +129,7 @@ pub struct CaptureHandle {
 /// Returns an error if the source configuration is invalid (e.g., HEP
 /// without the `hep` feature). Capture-thread errors are returned when
 /// joining the handle.
+#[cfg(feature = "native")]
 pub fn start_capture(
     source: CaptureSource,
     config: CaptureConfig,
@@ -182,6 +193,7 @@ pub fn start_capture(
 /// If `ready_tx` is provided, it signals `Ok(())` once **all** per-device
 /// capture threads have successfully opened their devices, or `Err(msg)` if
 /// any device fails to open.
+#[cfg(feature = "native")]
 pub fn start_multi_capture(
     devices: &str,
     config: CaptureConfig,
@@ -460,6 +472,7 @@ mod tests {
         assert!(parse_duration("5x").is_err());
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn default_capture_config() {
         let config = CaptureConfig::default();
@@ -470,8 +483,10 @@ mod tests {
         assert!(config.duration.is_none());
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn capture_source_debug() {
+        use std::path::PathBuf;
         // Ensure CaptureSource variants can be debug-printed
         let live = CaptureSource::Live {
             device: "eth0".to_string(),
@@ -483,8 +498,10 @@ mod tests {
         assert!(format!("{file:?}").contains("test.pcap"));
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn ready_signal_sent_on_file_capture() {
+        use std::path::PathBuf;
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests")
             .join("fixtures")

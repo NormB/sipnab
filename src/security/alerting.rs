@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "native")]
 use log::warn;
 
 /// A single alerting rule with threshold, window, and cooldown.
@@ -124,6 +124,7 @@ pub struct AlertEngine {
     /// After construction, legacy `%variable` placeholders are rewritten to
     /// `$SIPNAB_*` env var references. Values are passed via environment
     /// variables, never interpolated into the command string.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     exec_cmd: Option<String>,
     /// Whether to send alerts to syslog via `libc::syslog()`.
     syslog_enabled: bool,
@@ -203,7 +204,8 @@ impl AlertEngine {
         // Output to stderr
         eprintln!("[ALERT] {alert_type} src={src_ip} {sanitized_detail}");
 
-        // Send to syslog if enabled
+        // Send to syslog if enabled (native only — requires libc)
+        #[cfg(feature = "native")]
         if self.syslog_enabled {
             send_to_syslog(&format!(
                 "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
@@ -211,7 +213,9 @@ impl AlertEngine {
         }
 
         // Execute command if configured — pass data via env vars, never interpolated
+        #[cfg(feature = "native")]
         if let Some(cmd) = &self.exec_cmd {
+            use std::process::Command;
             let mut command = Command::new("sh");
             command.arg("-c").arg(cmd);
             command.env("SIPNAB_SRC", src_ip.to_string());
@@ -247,12 +251,13 @@ pub fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
 }
 
-// ── Syslog support ──────────────────────────────────────────────────
+// ── Syslog support (native only — requires libc) ────────────────────
 
 /// Initialize syslog with the "sipnab" ident.
 ///
 /// Must be called once at startup before any `send_to_syslog()` calls.
 /// Uses `LOG_LOCAL0` facility and `LOG_NDELAY | LOG_PID` options.
+#[cfg(feature = "native")]
 pub fn init_syslog() {
     // SAFETY: openlog with a static string is safe. We use a string literal
     // that lives for the entire program lifetime.
@@ -269,6 +274,7 @@ pub fn init_syslog() {
 /// Send a message to syslog at LOG_WARNING priority.
 ///
 /// The message is sanitized to remove null bytes before sending.
+#[cfg(feature = "native")]
 pub fn send_to_syslog(message: &str) {
     // Remove null bytes from message to prevent truncation
     let clean = message.replace('\0', "");

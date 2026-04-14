@@ -14,22 +14,22 @@ categories = ["command-line-utilities", "network-programming"]
 
 [dependencies]
 # Phase 1: Capture & core
-pcap = "2"
+pcap = { version = "2", optional = true }
 etherparse = "0.16"
-clap = { version = "4", features = ["derive", "env", "string"] }
+clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 log = "0.4"
-env_logger = "0.11"
+env_logger = { version = "0.11", optional = true }
 parking_lot = "0.12"
-crossbeam-channel = "0.5"
-libc = "0.2"
+crossbeam-channel = { version = "0.5", optional = true }
+libc = { version = "0.2", optional = true }
 
 # Phase 2: SIP parsing & output
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
-pcap-file = "2"
+pcap-file = { version = "2", optional = true }
 nom = "7"
 
 # Phase 2: Error handling
@@ -76,17 +76,23 @@ name = "parser_bench"
 harness = false
 
 [features]
-default = ["tui"]
-tui = ["dep:ratatui", "dep:crossterm", "dep:unicode-width"]
+default = ["native", "tui"]
+# Native platform deps (not available in WASM)
+native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file"]
+tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc"]
 hep = []
-api = ["dep:axum", "dep:tokio"]
+api = ["native", "dep:axum", "dep:tokio"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["tui", "tls", "hep", "api"]
+full = ["native", "tui", "tls", "hep", "api"]
 
 [lib]
 name = "sipnab"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
 
 [profile.release]
 lto = true

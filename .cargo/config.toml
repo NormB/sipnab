@@ -1,0 +1,6 @@
+# Enable bulk-memory and mutable-globals for wasm32 targets.
+# Modern browsers (2019+) and Node.js 12+ all support these.
+# Without this, Rust 1.82+ emits memory.copy/memory.fill that
+# wasm-bindgen's validator rejects under the baseline spec.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+bulk-memory,+mutable-globals"]
