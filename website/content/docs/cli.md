@@ -163,7 +163,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--payload-limit` | `<BYTES>` | -- | Maximum payload bytes to display |
-| `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like sipgrep `-T`) |
+| `-T`, `--text-dump` | -- | off | Dump raw SIP message text |
 | `--wireshark` | -- | off | Launch Wireshark with a display filter for the current capture |
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | Output in fail2ban-compatible format for SIP security events. Requires `-N` |
