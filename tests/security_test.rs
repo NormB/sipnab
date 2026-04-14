@@ -906,11 +906,14 @@ fn constant_time_eq_matching_strings() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // Correct key should succeed
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/v1/stats")
             .header("authorization", "Bearer secret_key_123")
             .body(axum::body::Body::empty())
             .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+        ));
         let resp = app.clone().oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
@@ -945,11 +948,14 @@ fn constant_time_eq_different_strings_same_length() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // Wrong key of same length should be rejected
-        let req = Request::builder()
+        let mut req = Request::builder()
             .uri("/v1/stats")
             .header("authorization", "Bearer secret_key_456")
             .body(axum::body::Body::empty())
             .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            std::net::SocketAddr::from(([127, 0, 0, 1], 12345)),
+        ));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(
             resp.status(),
