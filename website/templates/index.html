@@ -17,9 +17,9 @@
     </div>
   </div>
 
-  <!-- Hero GIF — real TUI recording -->
+  <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
-    <img src="{{ get_url(path='demos/01-intro.gif') }}" alt="sipnab interactive TUI" style="width:100%; border-radius:10px; border:1px solid #2d3640; box-shadow: 0 20px 80px rgba(255,204,102,0.08), 0 0 0 1px rgba(255,204,102,0.1);">
+    <img src="{{ get_url(path='demos/hero-static.png') }}" alt="sipnab interactive TUI" class="hero-screenshot">
   </div>
 </section>
 
@@ -239,6 +239,39 @@ function showDemo(idx, btn) {
   btn.classList.add('active');
   document.querySelector('.demo-panel[data-demo="' + idx + '"]').classList.add('active');
 }
+
+// Click-to-pause/resume GIF demos
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.demo-panel img').forEach(function(img) {
+    var src = '';
+    var canvas = null;
+    var paused = false;
+    img.style.cursor = 'pointer';
+    img.title = 'Click to pause/resume';
+    img.addEventListener('click', function() {
+      if (!paused) {
+        // Pause: replace GIF with static canvas snapshot
+        if (!canvas) {
+          canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+        }
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        src = img.src;
+        img.src = canvas.toDataURL();
+        paused = true;
+        img.style.outline = '2px solid #ffcc66';
+        img.title = 'Click to resume';
+      } else {
+        // Resume: restore original GIF src
+        img.src = src;
+        paused = false;
+        img.style.outline = 'none';
+        img.title = 'Click to pause';
+      }
+    });
+  });
+});
 
 // Copy code button
 function copyCode(btn) {
