@@ -28,7 +28,7 @@
   
 
   
-<link rel="stylesheet" href="https://www.sipnab.com/css/analyze.css?v=8">
+<link rel="stylesheet" href="https://www.sipnab.com/css/analyze.css?v=9">
 
 </head>
 <body>
@@ -111,6 +111,10 @@
         <span class="topbar-stat" id="topbar-sip"><strong>0</strong> SIP</span>
         <span class="tui-sep">|</span>
         <span class="topbar-stat" id="topbar-packets"><strong>0</strong> packets</span>
+        <span class="tui-sep">|</span>
+        <span class="topbar-stat" id="topbar-streams"><strong>0</strong> streams</span>
+        <span class="tui-sep">|</span>
+        <span class="topbar-stat" id="topbar-rtp"><strong>0</strong> RTP</span>
         <div class="topbar-actions">
           <div class="topbar-export-wrap">
             <button class="topbar-btn" id="export-btn">Export</button>
@@ -132,51 +136,89 @@
     <!-- Main panels -->
     <div class="analyze-panels" id="panels">
 
-      <!-- Left: Call list -->
+      <!-- Left: Call list / Stream list (tabbed) -->
       <div class="panel panel-left" id="panel-left">
-        <div class="panel-header">Dialogs</div>
-        <div class="call-list-wrap">
-          <table class="call-list" id="call-list">
-            <thead>
-              <tr>
-                <th data-sort="index" class="sortable sort-active sort-asc">#</th>
-                <th data-sort="method" class="sortable">Method</th>
-                <th data-sort="from_user" class="sortable">From</th>
-                <th data-sort="to_user" class="sortable">To</th>
-                <th data-sort="src_addr" class="sortable">Source</th>
-                <th data-sort="dst_addr" class="sortable">Dest</th>
-                <th data-sort="state" class="sortable">State</th>
-                <th data-sort="message_count" class="sortable">Msgs</th>
-                <th data-sort="pdd_ms" class="sortable">PDD</th>
-              </tr>
-            </thead>
-            <tbody id="call-list-body"></tbody>
-          </table>
+        <div class="panel-tabs">
+          <button class="panel-tab active" id="tab-dialogs" data-tab="dialogs">Dialogs</button>
+          <button class="panel-tab" id="tab-streams" data-tab="streams">RTP Streams</button>
+        </div>
+
+        <!-- Dialogs tab -->
+        <div class="tab-content active" id="tab-content-dialogs">
+          <div class="call-list-wrap">
+            <table class="call-list" id="call-list">
+              <thead>
+                <tr>
+                  <th data-sort="index" class="sortable sort-active sort-asc">#</th>
+                  <th data-sort="method" class="sortable">Method</th>
+                  <th data-sort="from_user" class="sortable">From</th>
+                  <th data-sort="to_user" class="sortable">To</th>
+                  <th data-sort="src_addr" class="sortable">Source</th>
+                  <th data-sort="dst_addr" class="sortable">Dest</th>
+                  <th data-sort="state" class="sortable">State</th>
+                  <th data-sort="message_count" class="sortable">Msgs</th>
+                  <th data-sort="pdd_ms" class="sortable">PDD</th>
+                </tr>
+              </thead>
+              <tbody id="call-list-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- RTP Streams tab -->
+        <div class="tab-content" id="tab-content-streams">
+          <div class="call-list-wrap">
+            <table class="call-list" id="stream-list">
+              <thead>
+                <tr>
+                  <th data-sort="ssrc" class="stream-sortable sort-active sort-asc">SSRC</th>
+                  <th data-sort="codec" class="stream-sortable">Codec</th>
+                  <th data-sort="src" class="stream-sortable">Source</th>
+                  <th data-sort="dst" class="stream-sortable">Dest</th>
+                  <th data-sort="packets" class="stream-sortable">Pkts</th>
+                  <th data-sort="jitter_ms" class="stream-sortable">Jitter</th>
+                  <th data-sort="loss_pct" class="stream-sortable">Loss%</th>
+                  <th data-sort="mos" class="stream-sortable">MOS</th>
+                  <th data-sort="duration_secs" class="stream-sortable">Dur</th>
+                </tr>
+              </thead>
+              <tbody id="stream-list-body"></tbody>
+            </table>
+          </div>
+          <div class="stream-empty" id="stream-empty" style="display: none;">
+            No RTP streams detected in this capture.
+          </div>
         </div>
       </div>
 
       <!-- Resize handle -->
       <div class="panel-resize" id="resize-h" data-direction="horizontal"></div>
 
-      <!-- Right: Call flow + Raw message -->
+      <!-- Right: Call flow + Raw message / Stream detail -->
       <div class="panel panel-right" id="panel-right">
         <div class="panel-right-top" id="panel-flow">
-          <div class="panel-header">Call Flow</div>
+          <div class="panel-header" id="panel-flow-header">Call Flow</div>
           <div class="flow-placeholder" id="flow-placeholder">Select a dialog to view its call flow</div>
           <div class="flow-container" id="flow-container" style="display: none;">
             <div class="flow-endpoints" id="flow-endpoints"></div>
             <div class="flow-messages" id="flow-messages"></div>
+          </div>
+          <!-- Stream detail view (shown when a stream row is clicked) -->
+          <div class="stream-detail" id="stream-detail" style="display: none;">
+            <div class="stream-detail-summary" id="stream-detail-summary"></div>
+            <div class="stream-detail-intervals" id="stream-detail-intervals"></div>
           </div>
         </div>
 
         <!-- Vertical resize handle -->
         <div class="panel-resize" id="resize-v" data-direction="vertical"></div>
 
-        <!-- Bottom: Raw SIP message -->
+        <!-- Bottom: Raw SIP message / Stream burst-gap -->
         <div class="panel-right-bottom" id="panel-raw">
-          <div class="panel-header">Raw Message</div>
+          <div class="panel-header" id="panel-raw-header">Raw Message</div>
           <div class="raw-placeholder" id="raw-placeholder">Click a message in the call flow to view raw SIP</div>
           <pre class="raw-message" id="raw-message" style="display: none;"></pre>
+          <div class="stream-burst-gap" id="stream-burst-gap" style="display: none;"></div>
         </div>
       </div>
 
@@ -186,6 +228,7 @@
   <!-- F-key bar at bottom -- always visible -->
   <div class="fkey-bar" id="fkey-bar">
     <span class="fkey"><b>h</b> Help</span>
+    <span class="fkey"><b>1/2</b> Tab</span>
     <span class="fkey"><b>j/k</b> Nav</span>
     <span class="fkey"><b>e</b> Export</span>
     <span class="fkey"><b>f</b> Search</span>
@@ -205,6 +248,8 @@
         <tr><td><kbd>k</kbd> / <kbd>&#x2191;</kbd></td><td>Move up in call list</td></tr>
         <tr><td><kbd>Enter</kbd></td><td>Select dialog / open call flow</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Step back (deselect message &#x2192; dialog &#x2192; blur)</td></tr>
+        <tr><td><kbd>1</kbd></td><td>Switch to Dialogs tab</td></tr>
+        <tr><td><kbd>2</kbd></td><td>Switch to RTP Streams tab</td></tr>
         <tr><th colspan="2">Actions</th></tr>
         <tr><td><kbd>h</kbd> / <kbd>?</kbd></td><td>Toggle this help popup</td></tr>
         <tr><td><kbd>e</kbd></td><td>Open export menu (JSON / CSV / Mermaid)</td></tr>
@@ -221,7 +266,7 @@
 
 </div>
 
-<script type="module" src="https://www.sipnab.com/js/analyze.js?v=8"></script>
+<script type="module" src="https://www.sipnab.com/js/analyze.js?v=9"></script>
 
   </main>
 

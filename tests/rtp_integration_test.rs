@@ -1398,3 +1398,110 @@ fn sequence_wraparound_no_false_loss_in_store() {
     );
     assert_eq!(stream.packet_count, 4);
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// TEST: stream_detail render does not panic
+//
+// Creates a StreamStore with a real stream, then calls
+// render_stream_detail() with a TestBackend to verify it produces
+// output without panicking and contains expected text.
+// ═══════════════════════════════════════════════════════════════════════
+
+#[cfg(feature = "tui")]
+#[test]
+fn stream_detail_render_does_not_panic() {
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+    use sipnab::tui::Theme;
+    use sipnab::tui::stream_detail::render_stream_detail;
+
+    let mut store = StreamStore::new(100);
+
+    let ssrc = 0xAABBCCDD;
+    // Feed 50 RTP packets to get meaningful quality metrics
+    for i in 0u16..50 {
+        let parsed = make_rtp_parsed(
+            [10, 0, 0, 1],
+            [10, 0, 0, 2],
+            20000,
+            30000,
+            ssrc,
+            100 + i,
+            i as u32 * 160,
+            0, // PCMU
+        );
+        let rtp = parse_rtp_header(&parsed.payload).expect("valid synthetic RTP");
+        store.process_rtp(&parsed, &rtp, ts(i as i64));
+    }
+
+    let key = StreamKey {
+        ssrc,
+        src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+        dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+    };
+
+    // Render to a test terminal — this should not panic
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    let theme = Theme::default();
+
+    terminal
+        .draw(|frame| {
+            let area = Rect::new(0, 0, 120, 40);
+            render_stream_detail(frame, area, &key, &store, 0, &theme);
+        })
+        .expect("render should not panic");
+
+    // Extract rendered text from the buffer
+    let buffer = terminal.backend().buffer();
+    let mut text = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            text.push_str(buffer.cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+        }
+        text.push('\n');
+    }
+
+    // Verify expected content appears in the rendered output
+    assert!(
+        text.contains("MOS"),
+        "Stream detail should contain 'MOS' quality metric, rendered text:\n{text}"
+    );
+    assert!(
+        text.contains("Jitter"),
+        "Stream detail should contain 'Jitter' metric, rendered text:\n{text}"
+    );
+    assert!(
+        text.contains("Quality"),
+        "Stream detail should contain 'Quality' section header"
+    );
+    assert!(
+        text.contains("PCMU"),
+        "Stream detail should show PCMU codec"
+    );
+    assert!(
+        text.contains("SSRC"),
+        "Stream detail should display the SSRC"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TEST: WASM get_streams / get_stream_detail
+//
+// The WASM module is gated behind `cfg(target_arch = "wasm32")`, so
+// these functions cannot be tested on the native host target. The
+// SipnabSession struct and its methods (get_streams, get_stream_detail)
+// are only compiled for wasm32. This is by design — the wasm_bindgen
+// attribute and JsError types require the wasm32 target.
+//
+// The underlying logic (StreamStore, estimate_mos, etc.) IS tested
+// extensively in the native tests above. The WASM layer is a thin
+// JSON serialization wrapper over those same types.
+//
+// To test the WASM entry points directly, run:
+//   wasm-pack test --headless --chrome
+// ═══════════════════════════════════════════════════════════════════════
+
+// Intentionally left as documentation — no #[test] here because the
+// wasm module is not available on the native target.

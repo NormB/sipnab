@@ -4458,6 +4458,11 @@ impl App {
         self.open_cursor
     }
 
+    /// Return the stream detail scroll offset.
+    pub fn stream_detail_scroll(&self) -> usize {
+        self.stream_detail_scroll
+    }
+
     /// Override the save dialog path (for deterministic snapshot tests).
     pub fn set_save_path(&mut self, path: &str) {
         self.save_path = path.to_string();

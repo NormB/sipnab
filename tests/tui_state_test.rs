@@ -2560,4 +2560,455 @@ mod tui_state {
         app.handle_key(KeyCode::Enter); // Absolute -> DeltaPrev
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // RTP drill-down from call flow + stream detail navigation tests
+    // ═══════════════════════════════════════════════════════════════════
+
+    // ── Helper: SIP message with SDP body ────────────────────────────
+
+    fn build_sip_with_body(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg.extend_from_slice(body);
+        msg
+    }
+
+    fn make_invite_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let sdp = "v=0\r\n\
+                   o=- 123 456 IN IP4 10.0.0.1\r\n\
+                   s=-\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 20000 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+        let raw = build_sip_with_body(
+            "INVITE sip:1002@10.0.0.2 SIP/2.0",
+            &[
+                "From: <sip:1001@10.0.0.1>;tag=t1",
+                "To: <sip:1002@10.0.0.2>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", sdp.len()),
+            ],
+            sdp.as_bytes(),
+        );
+        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).unwrap()
+    }
+
+    fn make_100_trying(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 100 Trying",
+            &[
+                "From: <sip:1001@10.0.0.1>;tag=t1",
+                "To: <sip:1002@10.0.0.2>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+    }
+
+    fn make_180_ringing(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 180 Ringing",
+            &[
+                "From: <sip:1001@10.0.0.1>;tag=t1",
+                "To: <sip:1002@10.0.0.2>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+    }
+
+    fn make_200_ok_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let sdp = "v=0\r\n\
+                   o=- 789 101 IN IP4 10.0.0.2\r\n\
+                   s=-\r\n\
+                   c=IN IP4 10.0.0.2\r\n\
+                   t=0 0\r\n\
+                   m=audio 30000 RTP/AVP 0\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n";
+        let raw = build_sip_with_body(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:1001@10.0.0.1>;tag=t1",
+                "To: <sip:1002@10.0.0.2>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", sdp.len()),
+            ],
+            sdp.as_bytes(),
+        );
+        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+    }
+
+    fn make_ack(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "ACK sip:1002@10.0.0.2 SIP/2.0",
+            &[
+                "From: <sip:1001@10.0.0.1>;tag=t1",
+                "To: <sip:1002@10.0.0.2>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 ACK",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).unwrap()
+    }
+
+    /// Build a full INVITE dialog: INVITE(SDP) -> 100 -> 180 -> 200 OK(SDP) -> ACK
+    fn make_full_dialog_messages(call_id: &str) -> Vec<SipMessage> {
+        let t0 = base_ts();
+        vec![
+            make_invite_sdp(call_id, t0),
+            make_100_trying(call_id, t0 + TimeDelta::milliseconds(50)),
+            make_180_ringing(call_id, t0 + TimeDelta::milliseconds(500)),
+            make_200_ok_with_sdp(call_id, t0 + TimeDelta::seconds(2)),
+            make_ack(call_id, t0 + TimeDelta::seconds(2) + TimeDelta::milliseconds(10)),
+        ]
+    }
+
+    // ── Test 1: stream_detail_enter_from_stream_list ─────────────────
+
+    #[test]
+    fn stream_detail_enter_from_stream_list() {
+        use sipnab::rtp::stream::StreamKey;
+        use sipnab::rtp::stream_store::StreamStore;
+        use sipnab::rtp::parser::parse_rtp_header;
+        use sipnab::capture::parse::ParsedPacket;
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        // Create an App with a stream in its store
+        let ds = std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::sip::dialog_store::DialogStore::new(100, false),
+        ));
+        let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
+
+        // Feed some RTP packets so the stream store has a stream
+        {
+            let mut store = ss.write();
+            let ssrc = 0xDEADBEEF_u32;
+            for i in 0u16..5 {
+                let mut payload = Vec::with_capacity(172);
+                payload.push(0x80);
+                payload.push(0x00); // PT=0 (PCMU)
+                payload.extend_from_slice(&(100 + i).to_be_bytes());
+                payload.extend_from_slice(&((i as u32) * 160).to_be_bytes());
+                payload.extend_from_slice(&ssrc.to_be_bytes());
+                payload.extend_from_slice(&[0x7F; 160]);
+
+                let parsed = ParsedPacket {
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20000,
+                    dst_port: 30000,
+                    transport: TransportProto::Udp,
+                    payload,
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                };
+                let rtp = parse_rtp_header(&parsed.payload).unwrap();
+                store.process_rtp(&parsed, &rtp, parsed.timestamp);
+            }
+        }
+
+        let mut app = sipnab::tui::App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        );
+
+        // Navigate to StreamList
+        app.handle_key(KeyCode::Tab);
+        assert_eq!(*app.current_view(), View::StreamList);
+
+        // Enter should open StreamDetail
+        app.handle_key(KeyCode::Enter);
+        assert!(
+            matches!(app.current_view(), View::StreamDetail(_)),
+            "expected StreamDetail, got {:?}",
+            app.current_view()
+        );
+    }
+
+    // ── Test 2: stream_detail_escape_returns_to_stream_list ──────────
+
+    #[test]
+    fn stream_detail_escape_returns_to_stream_list() {
+        use sipnab::rtp::stream::StreamKey;
+        use sipnab::rtp::stream_store::StreamStore;
+        use sipnab::rtp::parser::parse_rtp_header;
+        use sipnab::capture::parse::ParsedPacket;
+        use std::net::{Ipv4Addr, SocketAddr};
+
+        let ds = std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::sip::dialog_store::DialogStore::new(100, false),
+        ));
+        let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
+
+        // Feed RTP packets
+        {
+            let mut store = ss.write();
+            let ssrc = 0xCAFEBABE_u32;
+            for i in 0u16..5 {
+                let mut payload = Vec::with_capacity(172);
+                payload.push(0x80);
+                payload.push(0x00);
+                payload.extend_from_slice(&(100 + i).to_be_bytes());
+                payload.extend_from_slice(&((i as u32) * 160).to_be_bytes());
+                payload.extend_from_slice(&ssrc.to_be_bytes());
+                payload.extend_from_slice(&[0x7F; 160]);
+
+                let parsed = ParsedPacket {
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20000,
+                    dst_port: 30000,
+                    transport: TransportProto::Udp,
+                    payload,
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                };
+                let rtp = parse_rtp_header(&parsed.payload).unwrap();
+                store.process_rtp(&parsed, &rtp, parsed.timestamp);
+            }
+        }
+
+        let mut app = sipnab::tui::App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        );
+
+        // Navigate to StreamList, then Enter to open StreamDetail
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view(), View::StreamDetail(_)));
+
+        // Escape should return to StreamList
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(*app.current_view(), View::StreamList);
+    }
+
+    // ── Test 3: stream_detail_scroll_j_k ─────────────────────────────
+
+    #[test]
+    fn stream_detail_scroll_j_k() {
+        use sipnab::rtp::stream_store::StreamStore;
+        use sipnab::rtp::parser::parse_rtp_header;
+        use sipnab::capture::parse::ParsedPacket;
+        use std::net::Ipv4Addr;
+
+        let ds = std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::sip::dialog_store::DialogStore::new(100, false),
+        ));
+        let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
+
+        {
+            let mut store = ss.write();
+            let ssrc = 0x11223344_u32;
+            for i in 0u16..5 {
+                let mut payload = Vec::with_capacity(172);
+                payload.push(0x80);
+                payload.push(0x00);
+                payload.extend_from_slice(&(100 + i).to_be_bytes());
+                payload.extend_from_slice(&((i as u32) * 160).to_be_bytes());
+                payload.extend_from_slice(&ssrc.to_be_bytes());
+                payload.extend_from_slice(&[0x7F; 160]);
+
+                let parsed = ParsedPacket {
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20000,
+                    dst_port: 30000,
+                    transport: TransportProto::Udp,
+                    payload,
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                };
+                let rtp = parse_rtp_header(&parsed.payload).unwrap();
+                store.process_rtp(&parsed, &rtp, parsed.timestamp);
+            }
+        }
+
+        let mut app = sipnab::tui::App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        );
+
+        // Navigate to StreamDetail
+        app.handle_key(KeyCode::Tab);
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view(), View::StreamDetail(_)));
+        assert_eq!(app.stream_detail_scroll(), 0);
+
+        // j scrolls down
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(app.stream_detail_scroll(), 1);
+        app.handle_key(KeyCode::Char('j'));
+        assert_eq!(app.stream_detail_scroll(), 2);
+
+        // k scrolls up
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.stream_detail_scroll(), 1);
+
+        // k at 0 stays at 0
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.stream_detail_scroll(), 0);
+        app.handle_key(KeyCode::Char('k'));
+        assert_eq!(app.stream_detail_scroll(), 0);
+    }
+
+    // ── Test 4: rtp_bar_is_after_ack_not_200ok ───────────────────────
+
+    #[test]
+    fn rtp_bar_is_after_ack_not_200ok() {
+        use std::collections::HashSet;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use sipnab::tui::call_flow::prepare::prepare_messages;
+
+        let messages = make_full_dialog_messages("rtp-bar-test@call");
+        let t0 = messages[0].timestamp;
+        let theme = Theme::default();
+        let fold_expanded = HashSet::new();
+
+        let (_participants, formatted) = prepare_messages(
+            &messages,
+            t0,
+            None,
+            SdpDisplayMode::Summary,
+            TimestampMode::DeltaPrev,
+            ColorMode::Method,
+            true, // show_rtp = true
+            None,
+            &theme,
+            &fold_expanded,
+        );
+
+        // Find the RTP bar message
+        let rtp_bar_idx = formatted
+            .iter()
+            .position(|m| m.is_rtp_bar)
+            .expect("should have an RTP bar in the formatted output");
+
+        // Find the ACK message (the one with label "ACK")
+        let ack_idx = formatted
+            .iter()
+            .position(|m| m.label == "ACK")
+            .expect("should have an ACK message");
+
+        // Find the 200 OK message
+        let ok_200_idx = formatted
+            .iter()
+            .position(|m| m.label.starts_with("200"))
+            .expect("should have a 200 OK message");
+
+        // The RTP bar should be on the ACK message, not the 200 OK
+        assert_eq!(
+            rtp_bar_idx, ack_idx,
+            "RTP bar (idx {rtp_bar_idx}) should be on the ACK (idx {ack_idx}), not on 200 OK (idx {ok_200_idx})"
+        );
+
+        // Sanity: ACK comes after 200 OK
+        assert!(
+            ack_idx > ok_200_idx,
+            "ACK (idx {ack_idx}) should come after 200 OK (idx {ok_200_idx})"
+        );
+    }
+
+    // ── Test 5: rtp_bar_has_timestamp_and_codec ──────────────────────
+
+    #[test]
+    fn rtp_bar_has_timestamp_and_codec() {
+        use std::collections::HashSet;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use sipnab::tui::call_flow::prepare::prepare_messages;
+
+        let messages = make_full_dialog_messages("rtp-codec-test@call");
+        let t0 = messages[0].timestamp;
+        let theme = Theme::default();
+        let fold_expanded = HashSet::new();
+
+        let (_participants, formatted) = prepare_messages(
+            &messages,
+            t0,
+            None,
+            SdpDisplayMode::Summary,
+            TimestampMode::DeltaPrev,
+            ColorMode::Method,
+            true, // show_rtp = true
+            None,
+            &theme,
+            &fold_expanded,
+        );
+
+        // Find the RTP bar message
+        let rtp_bar = formatted
+            .iter()
+            .find(|m| m.is_rtp_bar)
+            .expect("should have an RTP bar");
+
+        // The RTP bar should have extra_lines with the bar text
+        assert!(
+            !rtp_bar.extra_lines.is_empty(),
+            "RTP bar should have extra_lines containing the bar text"
+        );
+
+        let bar_text = &rtp_bar.extra_lines[0].0;
+
+        // Should contain "RTP" marker
+        assert!(
+            bar_text.contains("RTP"),
+            "RTP bar text should contain 'RTP', got: {bar_text}"
+        );
+
+        // Should contain a timestamp pattern (HH:MM:SS.mmm)
+        assert!(
+            bar_text.contains(':') && bar_text.contains('.'),
+            "RTP bar text should contain a timestamp (HH:MM:SS.mmm), got: {bar_text}"
+        );
+
+        // Should contain the codec info from the 200 OK SDP (PCMU)
+        assert!(
+            bar_text.contains("PCMU"),
+            "RTP bar text should contain 'PCMU' codec from 200 OK SDP, got: {bar_text}"
+        );
+
+        // Should contain "active" status
+        assert!(
+            bar_text.contains("active"),
+            "RTP bar text should contain 'active' status, got: {bar_text}"
+        );
+    }
 }
