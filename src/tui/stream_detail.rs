@@ -392,3 +392,48 @@ fn jitter_to_block(jitter_ms: f64) -> char {
         _ => '\u{2581}',              // ▁
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mos_to_block_boundaries() {
+        // Top of scale: excellent MOS
+        assert_eq!(mos_to_block(4.5), '\u{2588}'); // █
+        assert_eq!(mos_to_block(4.3), '\u{2588}'); // █ (boundary)
+        // Good
+        assert_eq!(mos_to_block(4.0), '\u{2587}'); // ▇
+        // Fair
+        assert_eq!(mos_to_block(3.5), '\u{2586}'); // ▆
+        // Acceptable
+        assert_eq!(mos_to_block(3.0), '\u{2585}'); // ▅
+        // Poor
+        assert_eq!(mos_to_block(2.5), '\u{2584}'); // ▄
+        // Bad
+        assert_eq!(mos_to_block(2.0), '\u{2583}'); // ▃
+        // Very bad
+        assert_eq!(mos_to_block(1.5), '\u{2582}'); // ▂
+        // Minimum
+        assert_eq!(mos_to_block(1.0), '\u{2581}'); // ▁
+        // Below minimum
+        assert_eq!(mos_to_block(0.5), '\u{2581}'); // ▁
+    }
+
+    #[test]
+    fn jitter_to_block_boundaries() {
+        // Minimal jitter
+        assert_eq!(jitter_to_block(0.0), '\u{2581}');  // ▁
+        assert_eq!(jitter_to_block(4.9), '\u{2581}');  // ▁ (just under 5ms boundary)
+        // Rising jitter levels
+        assert_eq!(jitter_to_block(5.0), '\u{2582}');  // ▂ (boundary)
+        assert_eq!(jitter_to_block(10.0), '\u{2583}'); // ▃
+        assert_eq!(jitter_to_block(15.0), '\u{2584}'); // ▄
+        assert_eq!(jitter_to_block(20.0), '\u{2585}'); // ▅
+        assert_eq!(jitter_to_block(25.0), '\u{2586}'); // ▆
+        assert_eq!(jitter_to_block(30.0), '\u{2587}'); // ▇
+        // Severe jitter
+        assert_eq!(jitter_to_block(35.0), '\u{2588}'); // █ (boundary)
+        assert_eq!(jitter_to_block(100.0), '\u{2588}'); // █ (well above max)
+    }
+}

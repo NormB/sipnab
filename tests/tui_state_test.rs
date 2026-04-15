@@ -3011,4 +3011,208 @@ mod tui_state {
             "RTP bar text should contain 'active' status, got: {bar_text}"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Body search tests — search matches against raw SIP message content
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// Build an INVITE with a User-Agent header that only appears in the
+    /// raw bytes, not in any structured dialog field.
+    fn make_invite_with_user_agent(
+        call_id: &str,
+        from: &str,
+        to: &str,
+        user_agent: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("INVITE sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                &format!("User-Agent: {user_agent}"),
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE with User-Agent")
+    }
+
+    fn app_with_user_agent_dialog() -> App {
+        let t0 = base_ts();
+        let messages = vec![
+            make_invite_with_user_agent(
+                "call-ua@test",
+                "alice",
+                "bob",
+                "FreeSWITCH-mod-sofia/1.10",
+                t0,
+            ),
+            make_response("call-ua@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+        ];
+        App::with_processed_messages(messages)
+    }
+
+    #[test]
+    fn body_search_finds_sip_header_in_body() {
+        // "FreeSWITCH" appears only in the User-Agent header of the raw
+        // message bytes — it is not a structured field (method, from, to,
+        // state, call_id, src/dst).  Body search should still match.
+        let app = app_with_user_agent_dialog();
+        let store = app.dialog_store_ref().read();
+        let q = "freeswitch".to_ascii_lowercase();
+        let matches: Vec<_> = store
+            .iter()
+            .filter(|d| {
+                d.call_id.to_ascii_lowercase().contains(&q)
+                    || d.method.to_ascii_lowercase().contains(&q)
+                    || d.from_user
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.to_user
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.src_addr.to_string().contains(&q)
+                    || d.dst_addr.to_string().contains(&q)
+                    || sipnab::tui::call_list::state_display_str(&d.state)
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.messages.iter().any(|msg| {
+                        String::from_utf8_lossy(&msg.raw)
+                            .to_ascii_lowercase()
+                            .contains(&q)
+                    })
+            })
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "Body search for 'freeswitch' should match exactly one dialog"
+        );
+    }
+
+    #[test]
+    fn body_search_no_match_excludes_dialog() {
+        let app = app_with_user_agent_dialog();
+        let store = app.dialog_store_ref().read();
+        let q = "nonexistent-xyz-string".to_ascii_lowercase();
+        let matches: Vec<_> = store
+            .iter()
+            .filter(|d| {
+                d.call_id.to_ascii_lowercase().contains(&q)
+                    || d.method.to_ascii_lowercase().contains(&q)
+                    || d.from_user
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.to_user
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.src_addr.to_string().contains(&q)
+                    || d.dst_addr.to_string().contains(&q)
+                    || sipnab::tui::call_list::state_display_str(&d.state)
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                    || d.messages.iter().any(|msg| {
+                        String::from_utf8_lossy(&msg.raw)
+                            .to_ascii_lowercase()
+                            .contains(&q)
+                    })
+            })
+            .collect();
+        assert_eq!(
+            matches.len(),
+            0,
+            "Body search for 'nonexistent-xyz-string' should match no dialogs"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Column preference tests — apply_visible_columns
+    // ═══════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn column_config_apply_visible_columns() {
+        use sipnab::tui::call_list::CallListState;
+
+        let mut state = CallListState::new();
+        // All visible by default
+        assert!(state.visible_columns.iter().all(|&v| v));
+
+        state.apply_visible_columns(&[
+            "#".to_string(),
+            "Method".to_string(),
+            "State".to_string(),
+        ]);
+
+        // Index (#) = 0, Method = 1, State = 6
+        assert!(state.visible_columns[0], "# should be visible");
+        assert!(state.visible_columns[1], "Method should be visible");
+        assert!(state.visible_columns[6], "State should be visible");
+
+        // Everything else should be hidden
+        assert!(!state.visible_columns[2], "From should be hidden");
+        assert!(!state.visible_columns[3], "To should be hidden");
+        assert!(!state.visible_columns[4], "Source should be hidden");
+        assert!(!state.visible_columns[5], "Destination should be hidden");
+        assert!(!state.visible_columns[7], "Msgs should be hidden");
+        assert!(!state.visible_columns[8], "Date should be hidden");
+        assert!(!state.visible_columns[9], "PDD should be hidden");
+    }
+
+    #[test]
+    fn column_config_case_insensitive() {
+        use sipnab::tui::call_list::CallListState;
+
+        let mut state = CallListState::new();
+        state.apply_visible_columns(&[
+            "method".to_string(),       // lowercase
+            "FROM".to_string(),         // uppercase
+            "pdd".to_string(),          // lowercase
+        ]);
+
+        // Method = 1, From = 2, PDD = 9
+        assert!(state.visible_columns[1], "method (lowercase) should match Method");
+        assert!(state.visible_columns[2], "FROM (uppercase) should match From");
+        assert!(state.visible_columns[9], "pdd (lowercase) should match PDD");
+
+        // Others hidden
+        assert!(!state.visible_columns[0], "# should be hidden");
+        assert!(!state.visible_columns[3], "To should be hidden");
+        assert!(!state.visible_columns[6], "State should be hidden");
+    }
+
+    #[test]
+    fn column_config_empty_list_preserves_defaults() {
+        use sipnab::tui::call_list::CallListState;
+
+        let mut state = CallListState::new();
+        // All visible by default
+        assert!(state.visible_columns.iter().all(|&v| v));
+
+        // Apply empty list — should leave all columns visible
+        state.apply_visible_columns(&[]);
+
+        assert!(
+            state.visible_columns.iter().all(|&v| v),
+            "All columns should remain visible when applying an empty list"
+        );
+    }
 }
