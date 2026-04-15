@@ -440,13 +440,19 @@ impl TcpReassembler {
         while let Some((&next, _)) = stream.buffer.first_key_value() {
             if next == stream.expected_seq {
                 // This is an in-order segment — consume it
-                let data = stream.buffer.remove(&next).expect("key exists");
+                let data = match stream.buffer.remove(&next) {
+                    Some(d) => d,
+                    None => break,
+                };
                 stream.expected_seq = stream.expected_seq.wrapping_add(data.len() as u32);
                 stream.buffered_bytes = stream.buffered_bytes.saturating_sub(data.len());
                 result.extend_from_slice(&data);
             } else if next < stream.expected_seq {
                 // Retransmit or duplicate — skip it
-                let data = stream.buffer.remove(&next).expect("key exists");
+                let data = match stream.buffer.remove(&next) {
+                    Some(d) => d,
+                    None => break,
+                };
                 stream.buffered_bytes = stream.buffered_bytes.saturating_sub(data.len());
             } else {
                 // Gap — waiting for missing segment

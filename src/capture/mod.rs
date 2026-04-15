@@ -210,7 +210,10 @@ pub fn start_multi_capture(
         // Single device: fall back to normal capture
         return start_capture(
             CaptureSource::Live {
-                device: device_list.into_iter().next().unwrap(),
+                device: match device_list.into_iter().next() {
+                    Some(d) => d,
+                    None => return Err(anyhow::anyhow!("no capture device available")),
+                },
             },
             config,
             tx,

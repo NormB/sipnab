@@ -194,10 +194,9 @@ fn main() {
         } else {
             format!("portrange {lo}-{hi}")
         });
-        log::info!(
-            "Auto-generated BPF filter: {}",
-            capture_config.bpf_filter.as_ref().unwrap()
-        );
+        if let Some(ref filter) = capture_config.bpf_filter {
+            log::info!("Auto-generated BPF filter: {filter}");
+        }
     }
 
     // 8b. Parse --autostop condition
@@ -707,8 +706,14 @@ fn run_tui_mode(
                     break;
                 }
             }
-        })
-        .expect("failed to spawn processing thread");
+        });
+    let processing_thread = match processing_thread {
+        Ok(handle) => handle,
+        Err(e) => {
+            log::error!("Failed to spawn processing thread: {e}");
+            std::process::exit(1);
+        }
+    };
 
     // Start API server if --api is specified
     #[cfg(feature = "api")]
@@ -1903,18 +1908,28 @@ fn start_api_server(
     let handle = std::thread::Builder::new()
         .name("api-server".to_string())
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to create tokio runtime for API server");
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    log::error!("Failed to create tokio runtime for API server: {e}");
+                    return;
+                }
+            };
 
             if let Err(e) = rt.block_on(api::run_server(bind_addr, state, server_config)) {
                 log::error!("API server error: {e}");
             }
-        })
-        .expect("failed to spawn API server thread");
-
-    Some(handle)
+        });
+    match handle {
+        Ok(h) => Some(h),
+        Err(e) => {
+            log::error!("Failed to spawn API server thread: {e}");
+            None
+        }
+    }
 }
 
 /// Mirror a parsed packet into the shared stores used by the API server.
