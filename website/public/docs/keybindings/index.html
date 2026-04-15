@@ -291,7 +291,7 @@
 <tr><td>Tab</td><td>Switch to RTP Streams view</td></tr>
 <tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
 <tr><td>F2</td><td>Save capture <strong>(configurable: <code>save</code>)</strong></td></tr>
-<tr><td>F3</td><td>Search (same as <code>/</code>)</td></tr>
+<tr><td>F3</td><td>Search (same as <code>/</code>). Searches SIP headers and message bodies (SDP, multipart payloads)</td></tr>
 <tr><td>F5</td><td>Clear all calls <strong>(configurable: <code>clear_calls</code>)</strong></td></tr>
 <tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
 <tr><td>F9</td><td>Clear active filter</td></tr>
@@ -299,13 +299,13 @@
 </tbody></table>
 <h2 id="call-flow">Call Flow</h2>
 <table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
-<tr><td>Up / k</td><td>Navigate to previous message (detail panel updates)</td></tr>
-<tr><td>Down / j</td><td>Navigate to next message</td></tr>
+<tr><td>Up / k</td><td>Navigate to previous message or RTP bar (detail panel updates)</td></tr>
+<tr><td>Down / j</td><td>Navigate to next message or RTP bar</td></tr>
 <tr><td>PgUp</td><td>Page up through messages</td></tr>
 <tr><td>PgDn</td><td>Page down through messages</td></tr>
 <tr><td>Home</td><td>Jump to first message</td></tr>
 <tr><td>End</td><td>Jump to last message</td></tr>
-<tr><td>Enter</td><td>Open full-screen raw message view</td></tr>
+<tr><td>Enter</td><td>Open full-screen raw message view. When an RTP bar is selected, opens the Stream Detail view with MOS, jitter, quality intervals, burst/gap analysis, silence detection, and sparklines</td></tr>
 <tr><td>Space</td><td>Select message for diff (press on two messages to compare)</td></tr>
 <tr><td>Esc</td><td>Back to call list</td></tr>
 <tr><td>d</td><td>Cycle SDP display mode (none / summary / full)</td></tr>
@@ -324,6 +324,7 @@
 <tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
 <tr><td>F2</td><td>Save <strong>(configurable: <code>save</code>)</strong></td></tr>
 <tr><td>F5</td><td>Start compare mode <strong>(configurable: <code>clear_calls</code>)</strong></td></tr>
+<tr><td>r</td><td>Jump to RTP Streams list for this dialog</td></tr>
 <tr><td>F6</td><td>Toggle RTP display in flow</td></tr>
 <tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
 <tr><td>F9</td><td>Clear active filter</td></tr>
@@ -352,11 +353,21 @@
 <tr><td>Down / j</td><td>Navigate down</td></tr>
 <tr><td>Home</td><td>Jump to first stream</td></tr>
 <tr><td>End</td><td>Jump to last stream</td></tr>
+<tr><td>Enter</td><td>Open Stream Detail view for the selected stream</td></tr>
 <tr><td>Tab</td><td>Switch to Call List</td></tr>
 <tr><td>Esc</td><td>Back to Call List</td></tr>
 <tr><td>F1</td><td>Help <strong>(configurable: <code>help</code>)</strong></td></tr>
 <tr><td>F7</td><td>Open filter dialog <strong>(configurable: <code>filter</code>)</strong></td></tr>
 </tbody></table>
+<h2 id="stream-detail">Stream Detail</h2>
+<table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
+<tr><td>Up / k</td><td>Scroll up</td></tr>
+<tr><td>Down / j</td><td>Scroll down</td></tr>
+<tr><td>PgUp</td><td>Page up</td></tr>
+<tr><td>PgDn</td><td>Page down</td></tr>
+<tr><td>Esc</td><td>Back to RTP Streams list or Call Flow</td></tr>
+</tbody></table>
+<p>The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream’s lifetime.</p>
 <h2 id="statistics">Statistics</h2>
 <table><thead><tr><th>Key</th><th>Action</th></tr></thead><tbody>
 <tr><td>Esc / q / s</td><td>Back to Call List</td></tr>
@@ -511,6 +522,10 @@
         </li>
         
         <li><a href="#rtp-streams">RTP Streams</a>
+          
+        </li>
+        
+        <li><a href="#stream-detail">Stream Detail</a>
           
         </li>
         

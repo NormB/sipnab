@@ -136,6 +136,15 @@
 <tr><td><code>rtp.loss</code> &gt; 2%</td><td>Packet drops</td><td>Overloaded links, QoS misconfiguration, carrier issue</td></tr>
 </tbody></table>
 <p><strong>Next steps:</strong> If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, run a path MTR/traceroute to find where packets are dropping.</p>
+<h3 id="deep-dive-with-stream-detail">Deep-dive with Stream Detail</h3>
+<p>In the TUI, navigate to a call’s flow view and press <code>Enter</code> on an RTP bar (or press <code>r</code> to jump to the streams list, then <code>Enter</code> on a stream) to open the <strong>Stream Detail</strong> view. This shows:</p>
+<ul>
+<li><strong>MOS and jitter sparklines</strong> – visual trend graphs across the stream’s lifetime, making it easy to spot the exact moment quality degraded.</li>
+<li><strong>Quality intervals</strong> – per-interval breakdown of MOS, jitter, and loss so you can correlate degradation with specific time windows.</li>
+<li><strong>Burst/gap analysis</strong> (RFC 3611) – distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.</li>
+<li><strong>Silence detection</strong> – identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.</li>
+</ul>
+<p>This same data is available in the browser analyzer at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> under the <strong>Streams</strong> tab.</p>
 <hr />
 <h2 id="slow-call-setup-post-dial-delay">Slow Call Setup (Post-Dial Delay)</h2>
 <p>PDD over 3 seconds is perceptible to users. Over 5 seconds and they’ll hang up.</p>
@@ -207,7 +216,7 @@
 <hr />
 <h2 id="quick-browser-analysis">Quick Browser Analysis</h2>
 <p>No install, no upload, no data leaves your machine.</p>
-<p>Drop a pcap file at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> – the file is processed entirely in your browser via WebAssembly. Useful for quick triage when you can’t install the CLI, or for sharing a link with a colleague who doesn’t have sipnab.</p>
+<p>Drop a pcap file at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> – the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: <strong>Dialogs</strong> (SIP call list with flow diagrams) and <strong>Streams</strong> (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can’t install the CLI, or for sharing a link with a colleague who doesn’t have sipnab.</p>
 <hr />
 <h2 id="still-stuck">Still stuck?</h2>
 <p>Build custom queries with the <a href="https://www.sipnab.com/docs/filter-dsl/">Filter DSL</a> – 24 fields, regex support, boolean logic. See the <a href="https://www.sipnab.com/docs/cli/">CLI Reference</a> for every flag and more recipes.</p>
@@ -242,6 +251,12 @@
         </li>
         
         <li><a href="#poor-call-quality">Poor Call Quality</a>
+          
+          <ul>
+            
+            <li><a href="#deep-dive-with-stream-detail">Deep-dive with Stream Detail</a></li>
+            
+          </ul>
           
         </li>
         

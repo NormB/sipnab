@@ -82,6 +82,17 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 
 **Next steps:** If jitter is high but loss is low, the problem is buffering or path instability (check for Wi-Fi hops, VPN tunnels, or missing QoS marking). If loss is high, run a path MTR/traceroute to find where packets are dropping.
 
+### Deep-dive with Stream Detail
+
+In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or press `r` to jump to the streams list, then `Enter` on a stream) to open the **Stream Detail** view. This shows:
+
+- **MOS and jitter sparklines** -- visual trend graphs across the stream's lifetime, making it easy to spot the exact moment quality degraded.
+- **Quality intervals** -- per-interval breakdown of MOS, jitter, and loss so you can correlate degradation with specific time windows.
+- **Burst/gap analysis** (RFC 3611) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.
+- **Silence detection** -- identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.
+
+This same data is available in the browser analyzer at [sipnab.com/analyze/](https://sipnab.com/analyze/) under the **Streams** tab.
+
 ---
 
 ## Slow Call Setup (Post-Dial Delay)
@@ -192,7 +203,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 
 No install, no upload, no data leaves your machine.
 
-Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- the file is processed entirely in your browser via WebAssembly. Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
+Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
 
 ---
 

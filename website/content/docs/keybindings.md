@@ -239,7 +239,7 @@ Toggle display options without leaving the TUI.
 | Tab | Switch to RTP Streams view |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
-| F3 | Search (same as `/`) |
+| F3 | Search (same as `/`). Searches SIP headers and message bodies (SDP, multipart payloads) |
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter |
@@ -249,13 +249,13 @@ Toggle display options without leaving the TUI.
 
 | Key | Action |
 |-----|--------|
-| Up / k | Navigate to previous message (detail panel updates) |
-| Down / j | Navigate to next message |
+| Up / k | Navigate to previous message or RTP bar (detail panel updates) |
+| Down / j | Navigate to next message or RTP bar |
 | PgUp | Page up through messages |
 | PgDn | Page down through messages |
 | Home | Jump to first message |
 | End | Jump to last message |
-| Enter | Open full-screen raw message view |
+| Enter | Open full-screen raw message view. When an RTP bar is selected, opens the Stream Detail view with MOS, jitter, quality intervals, burst/gap analysis, silence detection, and sparklines |
 | Space | Select message for diff (press on two messages to compare) |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
@@ -274,6 +274,7 @@ Toggle display options without leaving the TUI.
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Start compare mode **(configurable: `clear_calls`)** |
+| r | Jump to RTP Streams list for this dialog |
 | F6 | Toggle RTP display in flow |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter |
@@ -308,10 +309,23 @@ Toggle display options without leaving the TUI.
 | Down / j | Navigate down |
 | Home | Jump to first stream |
 | End | Jump to last stream |
+| Enter | Open Stream Detail view for the selected stream |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
 | F1 | Help **(configurable: `help`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
+
+## Stream Detail
+
+| Key | Action |
+|-----|--------|
+| Up / k | Scroll up |
+| Down / j | Scroll down |
+| PgUp | Page up |
+| PgDn | Page down |
+| Esc | Back to RTP Streams list or Call Flow |
+
+The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.
 
 ## Statistics
 
