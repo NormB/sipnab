@@ -1117,6 +1117,25 @@ function toggleHelpPopup() {
   }
 }
 
+function navigateList(selector, direction) {
+  var trs = $$(selector);
+  if (trs.length === 0) return;
+  var currentIdx = -1;
+  for (var i = 0; i < trs.length; i++) {
+    if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
+  }
+  var nextIdx;
+  if (direction > 0) {
+    nextIdx = Math.min(currentIdx + 1, trs.length - 1);
+  } else {
+    nextIdx = Math.max(currentIdx - 1, 0);
+  }
+  if (nextIdx >= 0) {
+    trs[nextIdx].click();
+    trs[nextIdx].scrollIntoView({ block: "nearest" });
+  }
+}
+
 function setupKeyboard() {
   document.addEventListener("keydown", function(e) {
     // Let Escape close help popup first, then blur/go back
@@ -1132,6 +1151,20 @@ function setupKeyboard() {
       }
       // If workspace is visible and we have a selection, clear it step by step
       if ($("#workspace").style.display !== "none") {
+        // Streams tab: clear stream selection
+        if (activeTab === "streams" && selectedStream !== null) {
+          selectedStream = null;
+          var strs = $$("#stream-list-body tr");
+          for (var i = 0; i < strs.length; i++) strs[i].classList.remove("selected");
+          clearStreamDetail();
+          $("#panel-flow-header").textContent = "Stream Detail";
+          $("#flow-placeholder").textContent = "Select a stream to view its quality metrics";
+          $("#flow-placeholder").style.display = "flex";
+          $("#raw-placeholder").textContent = "Select a stream to view burst/gap analysis";
+          $("#raw-placeholder").style.display = "flex";
+          return;
+        }
+        // Dialogs tab: step back through message -> dialog selection
         if (selectedMsgIndex !== null) {
           selectedMsgIndex = null;
           var rows = $$("#flow-messages .flow-msg");

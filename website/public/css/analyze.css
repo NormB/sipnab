@@ -978,3 +978,186 @@
   font-size: 11px;
   text-align: center;
 }
+
+/* =============================================================================
+   Panel Tabs (Dialogs / RTP Streams)
+   ============================================================================= */
+
+.panel-tabs {
+  display: flex;
+  background: var(--status-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.panel-tab {
+  flex: 1;
+  padding: 5px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.panel-tab:hover {
+  color: var(--text);
+}
+
+.panel-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.tab-content {
+  display: none;
+  flex: 1;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.tab-content.active {
+  display: flex;
+}
+
+/* =============================================================================
+   RTP Stream List
+   ============================================================================= */
+
+.stream-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* MOS color classes */
+.mos-good { color: var(--good); }
+.mos-fair { color: var(--warn); }
+.mos-poor { color: var(--bad); }
+
+/* Stream sort headers reuse same pattern as dialog sort */
+.stream-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.stream-sortable::after {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.stream-sortable.sort-active.sort-asc::after {
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-bottom: 4px solid var(--accent);
+}
+
+.stream-sortable.sort-active.sort-desc::after {
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 4px solid var(--accent);
+}
+
+/* =============================================================================
+   Stream Detail View
+   ============================================================================= */
+
+.stream-detail {
+  padding: 12px;
+  overflow-y: auto;
+}
+
+.stream-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.stream-detail-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 8px 10px;
+  border-radius: 2px;
+}
+
+.stream-detail-card .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+}
+
+.stream-detail-card .value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stream-detail-intervals {
+  overflow-x: auto;
+}
+
+.stream-detail-intervals table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.stream-detail-intervals th {
+  text-align: left;
+  padding: 4px 8px;
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+}
+
+.stream-detail-intervals td {
+  padding: 3px 8px;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Stream burst/gap detail in bottom pane */
+.stream-burst-gap {
+  padding: 12px;
+  font-size: 12px;
+  overflow-y: auto;
+}
+
+.burst-gap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.burst-gap-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  border-radius: 2px;
+}
+
+.burst-gap-card .label {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.burst-gap-card .value {
+  font-size: 13px;
+  font-weight: 600;
+}
