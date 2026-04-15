@@ -426,23 +426,23 @@ impl TlsDecryptor {
             return Ok(0);
         };
 
-        let metadata = match std::fs::metadata(path) {
-            Ok(m) => m,
+        // Open the file FIRST, then stat the fd — prevents TOCTOU symlink race
+        // where an attacker could swap the file between stat() and open().
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = match std::fs::File::open(path) {
+            Ok(f) => f,
             Err(e) => {
-                log::debug!("Failed to stat keylog file: {e}");
+                log::debug!("Failed to open keylog file: {e}");
                 return Ok(0);
             }
         };
 
-        let current_size = metadata.len();
+        let current_size = file.metadata()?.len();
         if current_size <= self.last_keylog_size {
             return Ok(0);
         }
 
         // Read from where we left off
-        use std::io::{Read, Seek, SeekFrom};
-        let mut file = std::fs::File::open(path)
-            .with_context(|| format!("Failed to open keylog file: {}", path.display()))?;
         file.seek(SeekFrom::Start(self.last_keylog_size))?;
 
         let mut new_data = String::new();

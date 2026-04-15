@@ -12,9 +12,17 @@ use super::dialog::{DialogState, SipDialog, update_state};
 use super::sdp_timeline::track_sdp;
 use super::timing::update_timing;
 
-/// Maximum messages stored per dialog (D17 defense-in-depth).
-/// Covers normal calls with retransmissions and re-INVITEs.
-const MAX_MESSAGES_PER_DIALOG: usize = 500;
+/// Default maximum messages stored per dialog (D17 defense-in-depth).
+pub const DEFAULT_MAX_MESSAGES_PER_DIALOG: usize = 500;
+
+/// Runtime-configurable limit (set once at startup from config).
+static MAX_MESSAGES_PER_DIALOG: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_MESSAGES_PER_DIALOG);
+
+/// Set the per-dialog message limit from configuration. Call once at startup.
+pub fn set_max_messages_per_dialog(limit: usize) {
+    MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
+}
 
 /// Reason a dialog was correlated to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,7 +110,7 @@ impl DialogStore {
                 }
                 // Mark as retransmission but store it for ladder display (capped)
                 msg.is_retransmission = true;
-                if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG {
+                if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed) {
                     dialog.messages.push(msg);
                 }
                 dialog.updated_at = dialog.messages.last().map(|m| m.timestamp).unwrap_or(dialog.updated_at);
@@ -135,7 +143,7 @@ impl DialogStore {
 
             // Record the message (move instead of clone, capped per D17)
             let ts = msg.timestamp;
-            if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG {
+            if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed) {
                 dialog.messages.push(msg);
             }
             dialog.updated_at = ts;
@@ -1027,8 +1035,8 @@ mod tests {
         let dialog = store.get("capped@test").expect("dialog should exist");
         assert_eq!(
             dialog.messages.len(),
-            MAX_MESSAGES_PER_DIALOG,
-            "messages should be capped at {MAX_MESSAGES_PER_DIALOG}"
+            DEFAULT_MAX_MESSAGES_PER_DIALOG,
+            "messages should be capped at {DEFAULT_MAX_MESSAGES_PER_DIALOG}"
         );
     }
 

@@ -25,9 +25,10 @@ fn sanitize_log_value(s: &str) -> String {
 pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
+    let safe_src = sanitize_log_value(src_ip);
     let safe_ua = sanitize_log_value(ua);
     let safe_method = sanitize_log_value(method);
-    format!("{now} sipnab[{pid}]: scanner_detected src={src_ip} ua={safe_ua} method={safe_method}")
+    format!("{now} sipnab[{pid}]: scanner_detected src={safe_src} ua={safe_ua} method={safe_method}")
 }
 
 /// Format a registration flood detection event for fail2ban log parsing.
@@ -81,5 +82,36 @@ mod tests {
             "should contain source IP"
         );
         assert!(event.contains("count=42"), "should contain count");
+    }
+
+    // ── Security regression tests ────────────────────────────────────
+
+    #[test]
+    fn scanner_event_sanitizes_all_fields() {
+        let event = format_scanner_event("10.0.0.1\r\nfake", "evil\nua", "INVITE\rmethod");
+
+        assert!(
+            !event.contains('\r') && !event.contains('\n'),
+            "output must not contain any CR or LF characters, got: {event:?}"
+        );
+        // The sanitized values should still be present (with newlines replaced)
+        assert!(event.contains("src=10.0.0.1"), "sanitized IP should be present");
+        assert!(event.contains("ua=evil"), "sanitized UA should be present");
+        assert!(event.contains("method=INVITE"), "sanitized method should be present");
+    }
+
+    #[test]
+    fn scanner_event_normal_values() {
+        let event = format_scanner_event("192.168.1.50", "Ooma/3.0", "OPTIONS");
+
+        assert!(event.contains("scanner_detected"), "should contain event type");
+        assert!(event.contains("src=192.168.1.50"), "should contain source IP");
+        assert!(event.contains("ua=Ooma/3.0"), "should contain user agent");
+        assert!(event.contains("method=OPTIONS"), "should contain method");
+        // Should not have any stray newlines
+        assert!(
+            !event.contains('\r') && !event.contains('\n'),
+            "normal output should not contain newlines"
+        );
     }
 }

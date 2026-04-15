@@ -67,6 +67,24 @@ fn main() {
         }
     };
 
+    // 5a. Apply configurable security limits from [limits] section
+    if let Some(v) = loaded.config.limits.max_header_line {
+        sipnab::sip::parser::set_parser_limits(
+            v as usize,
+            loaded.config.limits.max_headers_per_message
+                .map(|h| h as usize)
+                .unwrap_or(sipnab::sip::parser::DEFAULT_MAX_HEADERS_PER_MESSAGE),
+        );
+    } else if let Some(v) = loaded.config.limits.max_headers_per_message {
+        sipnab::sip::parser::set_parser_limits(
+            sipnab::sip::parser::DEFAULT_MAX_HEADER_LINE_LEN,
+            v as usize,
+        );
+    }
+    if let Some(v) = loaded.config.limits.max_messages_per_dialog {
+        sipnab::sip::dialog_store::set_max_messages_per_dialog(v as usize);
+    }
+
     // 6. --dump-config: print version + effective config, then exit
     if cli.dump_config {
         println!("sipnab v{}", cli::build_version());
@@ -313,17 +331,18 @@ fn main() {
         }
     }
 
-    // 16. Drop privileges now that capture devices are open (D15)
-    if let Err(e) = privilege::drop_privileges(cli.user.as_deref(), cli.no_priv_drop) {
-        log::error!("Failed to drop privileges: {e}");
-        std::process::exit(1);
-    }
-
-    // 16a. Chroot after privilege drop if --chroot is set
+    // 16. Chroot BEFORE dropping privileges (chroot requires root).
+    // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
     if let Some(ref chroot_dir) = cli.chroot
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
         log::error!("Failed to chroot: {e}");
+        std::process::exit(1);
+    }
+
+    // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
+    if let Err(e) = privilege::drop_privileges(cli.user.as_deref(), cli.no_priv_drop) {
+        log::error!("Failed to drop privileges: {e}");
         std::process::exit(1);
     }
 

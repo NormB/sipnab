@@ -55,6 +55,9 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "max_streams",
             "max_reassembly",
             "hep_rate_limit",
+            "max_header_line",
+            "max_headers_per_message",
+            "max_messages_per_dialog",
         ]
         .as_slice(),
     );
@@ -222,6 +225,12 @@ pub struct LimitsConfig {
     pub max_reassembly: Option<u64>,
     /// HEP rate limit.
     pub hep_rate_limit: Option<u64>,
+    /// Maximum bytes in a single unfolded SIP header line (default: 8192).
+    pub max_header_line: Option<u64>,
+    /// Maximum number of SIP headers per message (default: 200).
+    pub max_headers_per_message: Option<u64>,
+    /// Maximum stored messages per dialog (default: 500).
+    pub max_messages_per_dialog: Option<u64>,
 }
 
 /// Privilege settings.

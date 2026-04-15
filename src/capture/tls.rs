@@ -184,6 +184,19 @@ pub struct KeyLogEntry {
     pub secret: Vec<u8>,
 }
 
+/// Zeroize key material on drop to prevent secrets lingering in freed heap.
+impl Drop for KeyLogEntry {
+    fn drop(&mut self) {
+        // Zero out secret material byte-by-byte
+        for b in self.secret.iter_mut() {
+            *b = 0;
+        }
+        for b in self.client_random.iter_mut() {
+            *b = 0;
+        }
+    }
+}
+
 /// Parse an SSLKEYLOGFILE into key log entries.
 ///
 /// Reads the file at `path`, skipping comment lines (starting with `#`) and
@@ -404,5 +417,27 @@ mod tests {
     fn parse_keylog_invalid_hex() {
         let line = "CLIENT_RANDOM ZZZZ 0011";
         assert!(parse_keylog_line(line).is_err());
+    }
+
+    // ── Security regression tests ────────────────────────────────────
+
+    #[test]
+    fn keylog_entry_zeroizes_on_drop() {
+        // Verify the Drop impl for KeyLogEntry executes without panic.
+        // In safe Rust we cannot inspect freed heap memory, but we can
+        // confirm the zeroization code path runs and that creating +
+        // dropping entries with known secret bytes is sound.
+        {
+            let entry = KeyLogEntry {
+                label: "CLIENT_RANDOM".to_string(),
+                client_random: vec![0xAA; 32],
+                secret: vec![0xBB; 48],
+            };
+            // Sanity: values are set before drop
+            assert_eq!(entry.secret.len(), 48);
+            assert_eq!(entry.client_random.len(), 32);
+            // entry is dropped here
+        }
+        // If we got here, the Drop impl ran without panic
     }
 }

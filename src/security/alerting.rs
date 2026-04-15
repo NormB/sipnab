@@ -220,7 +220,7 @@ impl AlertEngine {
             command.arg("-c").arg(cmd);
             command.env("SIPNAB_SRC", src_ip.to_string());
             command.env("SIPNAB_RULE", alert_type);
-            command.env("SIPNAB_DETAIL", detail);
+            command.env("SIPNAB_DETAIL", &sanitized_detail);
 
             if let Err(e) = command.spawn() {
                 warn!("Failed to execute alert command: {e}");
@@ -399,6 +399,17 @@ mod tests {
         assert!(
             !second,
             "second alert should be suppressed by default cooldown"
+        );
+    }
+
+    // ── Security regression tests ────────────────────────────────────
+
+    #[test]
+    fn sanitize_log_value_strips_crlf() {
+        let result = sanitize_log_value("hello\r\nworld");
+        assert_eq!(
+            result, "hello  world",
+            "\\r and \\n should each be replaced with a space"
         );
     }
 }
