@@ -157,6 +157,71 @@ pub fn render_stream_detail(
     // ── Quality Over Time ───────────────────────────────────────────
     if !stream.quality_intervals.is_empty() {
         lines.push(section_header("Quality Over Time", theme));
+
+        // Sparkline: MOS trend
+        let mos_values: Vec<f64> = stream
+            .quality_intervals
+            .iter()
+            .map(|qi| estimate_mos(qi.jitter_ms, qi.loss_pct, stream.codec.as_deref()))
+            .collect();
+        let mos_avg = mos_values.iter().sum::<f64>() / mos_values.len() as f64;
+        let mut mos_spans: Vec<Span<'_>> = vec![Span::styled(
+            "  MOS Trend: ",
+            Style::default().fg(theme.muted),
+        )];
+        for &m in &mos_values {
+            let ch = mos_to_block(m);
+            let color = if m >= 4.0 {
+                theme.good
+            } else if m >= 3.0 {
+                theme.warning
+            } else {
+                theme.bad
+            };
+            mos_spans.push(Span::styled(
+                String::from(ch),
+                Style::default().fg(color),
+            ));
+        }
+        mos_spans.push(Span::styled(
+            format!("  (avg: {mos_avg:.1})"),
+            Style::default().fg(theme.muted),
+        ));
+        lines.push(Line::from(mos_spans));
+
+        // Sparkline: Jitter trend
+        let jitter_values: Vec<f64> = stream
+            .quality_intervals
+            .iter()
+            .map(|qi| qi.jitter_ms)
+            .collect();
+        let jitter_avg = jitter_values.iter().sum::<f64>() / jitter_values.len() as f64;
+        let mut jitter_spans: Vec<Span<'_>> = vec![Span::styled(
+            "  Jitter:    ",
+            Style::default().fg(theme.muted),
+        )];
+        for &j in &jitter_values {
+            let ch = jitter_to_block(j);
+            let color = if j < 20.0 {
+                theme.good
+            } else if j < 50.0 {
+                theme.warning
+            } else {
+                theme.bad
+            };
+            jitter_spans.push(Span::styled(
+                String::from(ch),
+                Style::default().fg(color),
+            ));
+        }
+        jitter_spans.push(Span::styled(
+            format!("  (avg: {jitter_avg:.1}ms)"),
+            Style::default().fg(theme.muted),
+        ));
+        lines.push(Line::from(jitter_spans));
+
+        lines.push(Line::raw(""));
+
         lines.push(Line::from(vec![
             Span::styled("  Time       ", Style::default().fg(theme.muted)),
             Span::styled("Jitter     ", Style::default().fg(theme.muted)),
@@ -295,5 +360,35 @@ fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
         Style::default().fg(theme.warning)
     } else {
         Style::default().fg(theme.bad)
+    }
+}
+
+/// Map a MOS value (1.0–4.5) to a Unicode block character.
+fn mos_to_block(mos: f64) -> char {
+    match mos {
+        m if m >= 4.3 => '\u{2588}', // █
+        m if m >= 4.0 => '\u{2587}', // ▇
+        m if m >= 3.5 => '\u{2586}', // ▆
+        m if m >= 3.0 => '\u{2585}', // ▅
+        m if m >= 2.5 => '\u{2584}', // ▄
+        m if m >= 2.0 => '\u{2583}', // ▃
+        m if m >= 1.5 => '\u{2582}', // ▂
+        _ => '\u{2581}',             // ▁
+    }
+}
+
+/// Map a jitter value (ms) to a Unicode block character.
+/// Scale: 0–5ms = ▁, 5–10 = ▂, 10–15 = ▃, 15–20 = ▄,
+///        20–25 = ▅, 25–30 = ▆, 30–35 = ▇, 35+ = █
+fn jitter_to_block(jitter_ms: f64) -> char {
+    match jitter_ms {
+        j if j >= 35.0 => '\u{2588}', // █
+        j if j >= 30.0 => '\u{2587}', // ▇
+        j if j >= 25.0 => '\u{2586}', // ▆
+        j if j >= 20.0 => '\u{2585}', // ▅
+        j if j >= 15.0 => '\u{2584}', // ▄
+        j if j >= 10.0 => '\u{2583}', // ▃
+        j if j >= 5.0 => '\u{2582}',  // ▂
+        _ => '\u{2581}',              // ▁
     }
 }

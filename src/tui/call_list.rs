@@ -262,6 +262,20 @@ impl CallListState {
         }
     }
 
+    /// Apply column visibility from a config list of column names.
+    ///
+    /// When `names` is non-empty, only columns whose label appears in
+    /// the list are visible; all others are hidden. Unknown names are
+    /// silently ignored. When `names` is empty, visibility is unchanged.
+    pub fn apply_visible_columns(&mut self, names: &[String]) {
+        if names.is_empty() {
+            return;
+        }
+        for (i, label) in COLUMN_LABELS.iter().enumerate() {
+            self.visible_columns[i] = names.iter().any(|n| n.eq_ignore_ascii_case(label));
+        }
+    }
+
     /// Clear the multi-selected rows list.
     pub fn clear_selections(&mut self) {
         self.selected_rows.clear();
@@ -359,7 +373,8 @@ pub fn render_call_list(
         store.iter().collect()
     };
 
-    // Text search: filter across all visible fields (case-insensitive)
+    // Text search: filter across all visible fields (case-insensitive),
+    // falling back to raw message body search (like sngrep/Wireshark).
     if !search_query.is_empty() {
         let q = search_query.to_ascii_lowercase();
         dialogs.retain(|d| {
@@ -370,6 +385,11 @@ pub fn render_call_list(
                 || d.src_addr.to_string().contains(&q)
                 || d.dst_addr.to_string().contains(&q)
                 || state_display_str(&d.state).to_ascii_lowercase().contains(&q)
+                || d.messages.iter().any(|msg| {
+                    String::from_utf8_lossy(&msg.raw)
+                        .to_ascii_lowercase()
+                        .contains(&q)
+                })
         });
     }
 
