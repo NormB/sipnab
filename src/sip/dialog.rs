@@ -102,6 +102,8 @@ pub struct SipDialog {
     pub timing: DialogTiming,
     /// SDP offer/answer timeline.
     pub sdp_timeline: Vec<SdpExchange>,
+    /// REFER transfer target URI, if a REFER has been received in this dialog.
+    pub refer_to: Option<String>,
     /// SIPREC recording metadata, if present.
     pub siprec_metadata: Option<super::siprec::SirecMetadata>,
 }
@@ -148,6 +150,7 @@ impl SipDialog {
             tags: Vec::new(),
             timing: DialogTiming::default(),
             sdp_timeline: Vec::new(),
+            refer_to: None,
             siprec_metadata: None,
         })
     }

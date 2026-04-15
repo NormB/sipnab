@@ -10,7 +10,7 @@ use indexmap::IndexMap;
 use super::SipMessage;
 use super::method::SipMethod;
 use super::dialog::{DialogState, SipDialog, update_state};
-use super::sdp_timeline::track_sdp;
+use super::sdp_timeline::{track_sdp, track_transfer};
 use super::timing::update_timing;
 
 /// Default maximum messages stored per dialog (D17 defense-in-depth).
@@ -128,20 +128,23 @@ impl DialogStore {
             // Track SDP
             track_sdp(&mut dialog.sdp_timeline, &msg);
 
-            // TODO: Track REFER-based transfers (track_transfer not yet implemented)
-            // if msg.is_request && msg.method.as_deref() == Some("REFER") {
-            //     super::sdp_timeline::track_transfer(&mut dialog.sdp_timeline, &msg);
-            // }
+            // Track REFER-based transfers
+            if msg.is_request && msg.method.as_ref() == Some(&SipMethod::Refer) {
+                if let Some(refer_to) = msg.header("Refer-To") {
+                    dialog.refer_to = Some(refer_to.to_string());
+                }
+                track_transfer(&mut dialog.sdp_timeline, &msg);
+            }
 
-            // TODO: Parse SIPREC metadata from multipart/mixed bodies (siprec module not yet implemented)
-            // if let Some(ct) = msg.content_type() {
-            //     if ct.contains("multipart/mixed") {
-            //         match super::siprec::parse_siprec_body(ct, &msg.body) {
-            //             Ok(metadata) => dialog.siprec_metadata = Some(metadata),
-            //             Err(_) => {} // Not a SIPREC message, ignore silently
-            //         }
-            //     }
-            // }
+            // Parse SIPREC metadata from multipart/mixed bodies
+            if let Some(ct) = msg.content_type() {
+                if ct.contains("multipart/mixed") {
+                    match crate::sip::siprec::parse_siprec_body(ct, &msg.body) {
+                        Ok(metadata) => dialog.siprec_metadata = Some(metadata),
+                        Err(_) => {} // Not a SIPREC message, ignore silently
+                    }
+                }
+            }
 
             // Record the message (move instead of clone, capped per D17)
             let ts = msg.timestamp;
