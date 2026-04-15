@@ -1550,7 +1550,7 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
                         ("R", "Split"),
                         ("9/0", "Resize"),
                         ("F4", "Extend"),
-                        ("F6", "RTP"),
+                        ("r", "RTP"),
                     ]
                 }
             }
@@ -2800,20 +2800,26 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             if let View::CallFlow(ref call_id) = app.current_view
                 && app.selected_msg_index < msg_count
             {
-                if app.cached_rtp_bar_indices.contains(&app.selected_msg_index) {
-                    // RTP bar selected — drill down to stream detail for this dialog
+                // Check if this message is an RTP bar entry — if so, drill
+                // down to stream detail. Otherwise show raw SIP message.
+                let is_rtp = app.cached_rtp_bar_indices.contains(&app.selected_msg_index);
+                if is_rtp {
                     let cid = call_id.clone();
-                    let stream_key = app.stream_store.try_read().and_then(|store| {
+                    // Find a stream linked to this dialog, or any stream
+                    let stream_key = {
+                        let store = app.stream_store.read();
                         store
                             .iter()
                             .find(|s| s.associated_dialog.as_deref() == Some(&cid))
+                            .or_else(|| store.iter().next())
                             .map(|s| s.key.clone())
-                    });
+                    };
                     if let Some(key) = stream_key {
+                        app.stream_detail_scroll = 0;
                         app.current_view = View::StreamDetail(key);
                     } else {
                         app.status_error =
-                            Some("No RTP stream found for this dialog".to_string());
+                            Some("No RTP streams found".to_string());
                     }
                 } else {
                     // Open full-screen raw message view for the selected message
@@ -2852,6 +2858,10 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     ));
                 }
             }
+        }
+        KeyCode::Char('r') => {
+            // Jump to RTP Streams view
+            app.current_view = View::StreamList;
         }
         KeyCode::Char('d') => {
             // Toggle SDP display mode
