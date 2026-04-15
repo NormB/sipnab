@@ -1,38 +1,391 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Filter DSL -- sipnab</title><meta content="Declarative filter language for matching SIP dialogs and RTP streams." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/filter-dsl/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/analyze/>Analyze</a><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a class=active href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Filter DSL</h1><blockquote><p><strong>Quick start:</strong> <code>sipnab --filter "state == 'Failed'"</code> to find all failed calls, or <code>sipnab --problems</code> for a one-flag diagnostic sweep.</blockquote><p>sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the <code>--filter</code> CLI flag or the <code>expression</code> key in the <code>[filter]</code> config section.<h2 id=grammar>Grammar</h2><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>expr        = or_expr</span></span>
-<span class=giallo-l><span>or_expr     = and_expr ("OR" and_expr)*</span></span>
-<span class=giallo-l><span>and_expr    = not_expr ("AND" not_expr)*</span></span>
-<span class=giallo-l><span>not_expr    = "NOT" atom | atom</span></span>
-<span class=giallo-l><span>atom        = comparison | "(" expr ")"</span></span>
-<span class=giallo-l><span>comparison  = field operator value</span></span></code></pre><p>Operator precedence (highest to lowest): <code>NOT</code>, <code>AND</code>, <code>OR</code>. Use parentheses to override.<h2 id=fields>Fields</h2><p>All 24 addressable fields, organized by type.<h3 id=string-fields>String Fields</h3><table><thead><tr><th>Field<th>Description<th>Example Values<tbody><tr><td><code>from.user</code><td>User part of the SIP From header<td><code>"1001"</code>, <code>"alice"</code><tr><td><code>to.user</code><td>User part of the SIP To header<td><code>"1002"</code>, <code>"bob"</code><tr><td><code>method</code><td>SIP request method<td><code>"INVITE"</code>, <code>"REGISTER"</code>, <code>"BYE"</code><tr><td><code>ua</code><td>User-Agent header (first non-empty across dialog messages)<td><code>"Olle"</code>, <code>"friendly-scanner"</code><tr><td><code>call_id</code><td>SIP Call-ID header<td><code>"abc123@host"</code><tr><td><code>src.ip</code><td>Source IP address (first message)<td><code>"10.0.0.1"</code><tr><td><code>dst.ip</code><td>Destination IP address (first message)<td><code>"10.0.0.2"</code><tr><td><code>state</code><td>Dialog state machine value<td><code>"Trying"</code>, <code>"InCall"</code>, <code>"Failed"</code><tr><td><code>rtp.codec</code><td>RTP codec name (first stream)<td><code>"PCMU"</code>, <code>"opus"</code><tr><td><code>rtp.ssrc</code><td>RTP SSRC in hex format (first stream)<td><code>"0x12345678"</code></table><p><strong>Valid <code>state</code> values:</strong> <code>Trying</code>, <code>Ringing</code>, <code>InCall</code>, <code>Completed</code>, <code>Cancelled</code>, <code>Failed</code>, <code>Registered</code>, <code>Expired</code>, <code>Pending</code>, <code>Active</code>, <code>Terminated</code>, <code>Transferring</code><h3 id=numeric-fields>Numeric Fields</h3><table><thead><tr><th>Field<th>Description<th>Unit<tbody><tr><td><code>src.port</code><td>Source port (first message)<td>port number<tr><td><code>dst.port</code><td>Destination port (first message)<td>port number<tr><td><code>duration</code><td>Dialog duration<td>seconds (float)<tr><td><code>msg_count</code><td>Number of SIP messages in dialog<td>count<tr><td><code>pdd</code><td>Post-dial delay (time to first ringing/response)<td>seconds (float)<tr><td><code>setup_time</code><td>Call setup time (INVITE to 200 OK)<td>seconds (float)<tr><td><code>retransmits</code><td>Total retransmit count in dialog<td>count<tr><td><code>rtp.mos</code><td>Mean Opinion Score (worst across streams, E-model R-factor approximation)<td>1.0 - 5.0<tr><td><code>rtp.jitter</code><td>Jitter (worst/highest across streams)<td>milliseconds<tr><td><code>rtp.loss</code><td>Packet loss (worst/highest across streams)<td>percentage (0-100)<tr><td><code>rtp.packets</code><td>Total RTP packets (sum across all streams)<td>count</table><h3 id=boolean-fields>Boolean Fields</h3><table><thead><tr><th>Field<th>Description<tbody><tr><td><code>rtp.orphaned</code><td>True if any associated RTP stream has no matching SIP dialog<tr><td><code>one_way</code><td>True if one-way audio detected (via diagnosis engine)<tr><td><code>nat_mismatch</code><td>True if NAT mismatch detected (Contact/Via IP discrepancy)<tr><td><code>no_media</code><td>True if no media detected for established call</table><h2 id=operators>Operators</h2><table><thead><tr><th>Operator<th>Applies To<th>Description<tbody><tr><td><code>==</code><td>string, numeric, boolean<td>Equal<tr><td><code>!=</code><td>string, numeric, boolean<td>Not equal<tr><td><code>&lt;</code><td>string, numeric<td>Less than<tr><td><code>></code><td>string, numeric<td>Greater than<tr><td><code>&lt;=</code><td>string, numeric<td>Less than or equal<tr><td><code>>=</code><td>string, numeric<td>Greater than or equal<tr><td><code>=~</code><td>string<td>Regex match (Rust regex syntax)</table><p>Notes:<ul><li>Boolean fields only support <code>==</code> and <code>!=</code>.<li>Regex (<code>=~</code>) is not applicable to numeric or boolean fields.<li>Numeric equality uses epsilon comparison for floating-point precision.</ul><blockquote><p><strong>Note:</strong> String comparisons are case-sensitive. State values must match exactly: <code>'Completed'</code>, <code>'Failed'</code>, <code>'Trying'</code>, <code>'Ringing'</code>, <code>'InCall'</code>, <code>'Cancelled'</code>, <code>'Terminated'</code>. Use <code>=~</code> with a case-insensitive regex pattern if you need case-insensitive matching: <code>state =~ '(?i)failed'</code>.</blockquote><h2 id=values>Values</h2><table><thead><tr><th>Syntax<th>Type<th>Examples<tbody><tr><td><code>'...'</code> or <code>"..."</code><td>String<td><code>'INVITE'</code>, <code>"alice"</code><tr><td>Number<td>Numeric (f64)<td><code>3.0</code>, <code>100</code>, <code>0.5</code><tr><td><code>true</code> / <code>false</code><td>Boolean (case-insensitive)<td><code>true</code>, <code>FALSE</code><tr><td><code>'...'</code> with <code>=~</code><td>Regex<td><code>'friendly.*scanner'</code>, <code>'^1001'</code></table><blockquote><p><strong>Tip:</strong> Regex patterns are compiled once and reused across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer <code>from.user =~ '^100[0-9]$'</code> over <code>from.user =~ '.*100[0-9].*'</code>).</blockquote><h2 id=boolean-combinators>Boolean Combinators</h2><table><thead><tr><th>Keyword<th>Description<tbody><tr><td><code>AND</code><td>Both sides must match (case-insensitive)<tr><td><code>OR</code><td>Either side must match (case-insensitive)<tr><td><code>NOT</code><td>Negates the following atom (case-insensitive)</table><p>Parentheses <code>( )</code> group sub-expressions to override default precedence.<h2 id=named-aliases>Named Aliases</h2><p>These preset expressions are available as CLI flags (<code>--problems</code>, etc.) and expand to DSL expressions internally.<table><thead><tr><th>Alias<th>CLI Flag<th>Expansion<tbody><tr><td><code>problems</code><td><code>--problems</code><td><code>state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true</code><tr><td><code>slow-setup</code><td><code>--slow-setup</code><td><code>pdd > 3.0</code><tr><td><code>short-calls</code><td><code>--short-calls</code><td><code>duration &lt; 5.0 AND state == 'Completed'</code><tr><td><code>one-way</code><td><code>--one-way</code><td><code>one_way == true</code><tr><td><code>nat-issues</code><td><code>--nat-issues</code><td><code>nat_mismatch == true</code></table><h2 id=examples>Examples</h2><h3 id=basic-field-matching>Basic field matching</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>method == 'INVITE'</span></span>
-<span class=giallo-l><span>from.user == '1001'</span></span>
-<span class=giallo-l><span>state == 'InCall'</span></span></code></pre><h3 id=regex-matching>Regex matching</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>ua =~ 'friendly-scanner'</span></span>
-<span class=giallo-l><span>from.user =~ '^100[0-9]'</span></span>
-<span class=giallo-l><span>call_id =~ 'abc.*@'</span></span></code></pre><h3 id=numeric-comparisons>Numeric comparisons</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>pdd > 3.0</span></span>
-<span class=giallo-l><span>rtp.mos &lt; 3.0</span></span>
-<span class=giallo-l><span>rtp.loss > 2.0</span></span>
-<span class=giallo-l><span>duration &lt; 5.0</span></span>
-<span class=giallo-l><span>retransmits > 3</span></span>
-<span class=giallo-l><span>rtp.jitter > 50.0</span></span></code></pre><h3 id=boolean-fields-1>Boolean fields</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>one_way == true</span></span>
-<span class=giallo-l><span>nat_mismatch == true</span></span>
-<span class=giallo-l><span>rtp.orphaned == true</span></span>
-<span class=giallo-l><span>no_media == true</span></span></code></pre><h3 id=compound-expressions>Compound expressions</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>method == 'INVITE' AND rtp.mos &lt; 3.0</span></span>
-<span class=giallo-l><span>from.user =~ '^1001' AND state == 'Failed'</span></span>
-<span class=giallo-l><span>pdd > 3.0 OR retransmits > 5</span></span>
-<span class=giallo-l><span>NOT ua =~ 'friendly-scanner'</span></span>
-<span class=giallo-l><span>(state == 'Failed' OR state == 'Cancelled') AND duration &lt; 1.0</span></span></code></pre><h3 id=real-world-diagnostic-queries>Real-world diagnostic queries</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span># Find calls with poor quality from a specific extension</span></span>
-<span class=giallo-l><span>from.user =~ '^1001' AND rtp.mos &lt; 3.0</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span># Find failed registrations from a subnet</span></span>
-<span class=giallo-l><span>method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^10\.0\.1\.'</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span># Find short calls that completed (possible robocalls)</span></span>
-<span class=giallo-l><span>duration &lt; 5.0 AND state == 'Completed' AND method == 'INVITE'</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span># Find calls with audio issues</span></span>
-<span class=giallo-l><span>one_way == true OR no_media == true OR rtp.jitter > 100.0</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span># Find scanner activity by User-Agent</span></span>
-<span class=giallo-l><span>ua =~ 'sipvicious|friendly-scanner|sipcli'</span></span></code></pre><h2 id=real-world-scenarios>Real-World Scenarios</h2><p>Scenario-based examples showing how to combine filter expressions with CLI flags for common operational tasks.<h3 id=find-calls-with-poor-audio-quality>Find calls with poor audio quality</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>rtp.mos &lt; 3.0 AND state == 'Completed'</span></span></code></pre><p>Only completed calls – in-progress calls may not have enough RTP data for an accurate MOS calculation.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -N -I</span><span style=color:#aad94c> capture.pcap</span><span style=color:#95e6cb> --filter</span><span style=color:#aad94c> "rtp.mos &lt; 3.0 AND state == 'Completed'"</span><span style=color:#95e6cb> --json</span></span></code></pre><h3 id=find-all-failed-international-calls>Find all failed international calls</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>from.user =~ '^\+' AND (state == 'Failed' OR state == 'Cancelled')</span></span></code></pre><p>The <code>^\+</code> regex matches E.164 formatted numbers (international prefix).<h3 id=find-registration-storms>Find registration storms</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>method == 'REGISTER' AND retransmits > 5</span></span></code></pre><p>High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Combine with source IP filtering to isolate a specific endpoint:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>method == 'REGISTER' AND retransmits > 5 AND src.ip == '10.0.0.50'</span></span></code></pre><h3 id=find-calls-with-nat-issues>Find calls with NAT issues</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>nat_mismatch == true AND method == 'INVITE'</span></span></code></pre><p>NAT mismatch means the Contact header IP/port doesn’t match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT.<h3 id=find-one-way-audio-after-call-establishment>Find one-way audio after call establishment</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>one_way == true AND duration > 10.0</span></span></code></pre><p>The duration check avoids false positives during early call setup when RTP hasn’t started flowing yet.<h3 id=complex-b2bua-debugging>Complex B2BUA debugging</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>(from.user == '1001' OR to.user == '1001') AND rtp.loss > 1.0</span></span></code></pre><p>Track a specific user’s calls that have packet loss, regardless of call direction.<h3 id=find-chatty-dialogs-debugging-retransmissions>Find chatty dialogs (debugging retransmissions)</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>msg_count > 20 AND method == 'INVITE'</span></span></code></pre><p>Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).<h3 id=monitor-for-sip-trunk-failures>Monitor for SIP trunk failures</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=plain><span class=giallo-l><span>dst.ip == '192.168.1.100' AND state == 'Failed' AND method == 'INVITE'</span></span></code></pre><p>Filter for failures targeting a specific SIP trunk IP.<blockquote><p><strong>Note:</strong> The filter DSL evaluates against dialogs, not individual messages. A filter like <code>method == 'INVITE'</code> matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).</blockquote><h2 id=parser-constraints>Parser Constraints</h2><ul><li>Maximum parenthesis nesting depth: <strong>50 levels</strong><li>Maximum regex pattern size: <strong>1 MB</strong> (1,000,000 bytes)<li>Empty expressions produce a parse error<li>Trailing unparsed input produces a parse error with position<li>Unknown field names produce a parse error<li>Invalid regex patterns produce a parse error</ul><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/keybindings/>← Keybindings</a><a class=doc-next href=https://www.sipnab.com/docs/theme/>Theme Guide →</a></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#grammar>Grammar</a><li><a href=#fields>Fields</a> <ul><li><a href=#string-fields>String Fields</a><li><a href=#numeric-fields>Numeric Fields</a><li><a href=#boolean-fields>Boolean Fields</a></ul><li><a href=#operators>Operators</a><li><a href=#values>Values</a><li><a href=#boolean-combinators>Boolean Combinators</a><li><a href=#named-aliases>Named Aliases</a><li><a href=#examples>Examples</a> <ul><li><a href=#basic-field-matching>Basic field matching</a><li><a href=#regex-matching>Regex matching</a><li><a href=#numeric-comparisons>Numeric comparisons</a><li><a href=#boolean-fields-1>Boolean fields</a><li><a href=#compound-expressions>Compound expressions</a><li><a href=#real-world-diagnostic-queries>Real-world diagnostic queries</a></ul><li><a href=#real-world-scenarios>Real-World Scenarios</a> <ul><li><a href=#find-calls-with-poor-audio-quality>Find calls with poor audio quality</a><li><a href=#find-all-failed-international-calls>Find all failed international calls</a><li><a href=#find-registration-storms>Find registration storms</a><li><a href=#find-calls-with-nat-issues>Find calls with NAT issues</a><li><a href=#find-one-way-audio-after-call-establishment>Find one-way audio after call establishment</a><li><a href=#complex-b2bua-debugging>Complex B2BUA debugging</a><li><a href=#find-chatty-dialogs-debugging-retransmissions>Find chatty dialogs (debugging retransmissions)</a><li><a href=#monitor-for-sip-trunk-failures>Monitor for SIP trunk failures</a></ul><li><a href=#parser-constraints>Parser Constraints</a></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class="footer-col footer-links"><a href=https://www.sipnab.com/docs/>Documentation</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE>License (MIT/Apache-2.0)</a><a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a></div><div class="footer-col footer-meta"><span class=footer-credit>Built with <a href=https://www.rust-lang.org>Rust</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.linkedin.com/in/nbrandinger>Norm Brandinger</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span></div></div></footer><script>// Mobile nav toggle
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Filter DSL -- sipnab</title>
+  <meta name="description" content="Declarative filter language for matching SIP dialogs and RTP streams.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  
+</head>
+<body>
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" >Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" class="active">Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" >Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main>
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>Filter DSL</h1>
+    <blockquote>
+<p><strong>Quick start:</strong> <code>sipnab --filter "state == 'Failed'"</code> to find all failed calls, or <code>sipnab --problems</code> for a one-flag diagnostic sweep.</p>
+</blockquote>
+<p>sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the <code>--filter</code> CLI flag or the <code>expression</code> key in the <code>[filter]</code> config section.</p>
+<h2 id="grammar">Grammar</h2>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>expr        = or_expr</span></span>
+<span class="giallo-l"><span>or_expr     = and_expr (&quot;OR&quot; and_expr)*</span></span>
+<span class="giallo-l"><span>and_expr    = not_expr (&quot;AND&quot; not_expr)*</span></span>
+<span class="giallo-l"><span>not_expr    = &quot;NOT&quot; atom | atom</span></span>
+<span class="giallo-l"><span>atom        = comparison | &quot;(&quot; expr &quot;)&quot;</span></span>
+<span class="giallo-l"><span>comparison  = field operator value</span></span></code></pre>
+<p>Operator precedence (highest to lowest): <code>NOT</code>, <code>AND</code>, <code>OR</code>. Use parentheses to override.</p>
+<h2 id="fields">Fields</h2>
+<p>All 24 addressable fields, organized by type.</p>
+<h3 id="string-fields">String Fields</h3>
+<table><thead><tr><th>Field</th><th>Description</th><th>Example Values</th></tr></thead><tbody>
+<tr><td><code>from.user</code></td><td>User part of the SIP From header</td><td><code>"1001"</code>, <code>"alice"</code></td></tr>
+<tr><td><code>to.user</code></td><td>User part of the SIP To header</td><td><code>"1002"</code>, <code>"bob"</code></td></tr>
+<tr><td><code>method</code></td><td>SIP request method</td><td><code>"INVITE"</code>, <code>"REGISTER"</code>, <code>"BYE"</code></td></tr>
+<tr><td><code>ua</code></td><td>User-Agent header (first non-empty across dialog messages)</td><td><code>"Olle"</code>, <code>"friendly-scanner"</code></td></tr>
+<tr><td><code>call_id</code></td><td>SIP Call-ID header</td><td><code>"abc123@host"</code></td></tr>
+<tr><td><code>src.ip</code></td><td>Source IP address (first message)</td><td><code>"10.0.0.1"</code></td></tr>
+<tr><td><code>dst.ip</code></td><td>Destination IP address (first message)</td><td><code>"10.0.0.2"</code></td></tr>
+<tr><td><code>state</code></td><td>Dialog state machine value</td><td><code>"Trying"</code>, <code>"InCall"</code>, <code>"Failed"</code></td></tr>
+<tr><td><code>rtp.codec</code></td><td>RTP codec name (first stream)</td><td><code>"PCMU"</code>, <code>"opus"</code></td></tr>
+<tr><td><code>rtp.ssrc</code></td><td>RTP SSRC in hex format (first stream)</td><td><code>"0x12345678"</code></td></tr>
+</tbody></table>
+<p><strong>Valid <code>state</code> values:</strong> <code>Trying</code>, <code>Ringing</code>, <code>InCall</code>, <code>Completed</code>, <code>Cancelled</code>, <code>Failed</code>, <code>Registered</code>, <code>Expired</code>, <code>Pending</code>, <code>Active</code>, <code>Terminated</code>, <code>Transferring</code></p>
+<h3 id="numeric-fields">Numeric Fields</h3>
+<table><thead><tr><th>Field</th><th>Description</th><th>Unit</th></tr></thead><tbody>
+<tr><td><code>src.port</code></td><td>Source port (first message)</td><td>port number</td></tr>
+<tr><td><code>dst.port</code></td><td>Destination port (first message)</td><td>port number</td></tr>
+<tr><td><code>duration</code></td><td>Dialog duration</td><td>seconds (float)</td></tr>
+<tr><td><code>msg_count</code></td><td>Number of SIP messages in dialog</td><td>count</td></tr>
+<tr><td><code>pdd</code></td><td>Post-dial delay (time to first ringing/response)</td><td>seconds (float)</td></tr>
+<tr><td><code>setup_time</code></td><td>Call setup time (INVITE to 200 OK)</td><td>seconds (float)</td></tr>
+<tr><td><code>retransmits</code></td><td>Total retransmit count in dialog</td><td>count</td></tr>
+<tr><td><code>rtp.mos</code></td><td>Mean Opinion Score (worst across streams, E-model R-factor approximation)</td><td>1.0 - 5.0</td></tr>
+<tr><td><code>rtp.jitter</code></td><td>Jitter (worst/highest across streams)</td><td>milliseconds</td></tr>
+<tr><td><code>rtp.loss</code></td><td>Packet loss (worst/highest across streams)</td><td>percentage (0-100)</td></tr>
+<tr><td><code>rtp.packets</code></td><td>Total RTP packets (sum across all streams)</td><td>count</td></tr>
+</tbody></table>
+<h3 id="boolean-fields">Boolean Fields</h3>
+<table><thead><tr><th>Field</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>rtp.orphaned</code></td><td>True if any associated RTP stream has no matching SIP dialog</td></tr>
+<tr><td><code>one_way</code></td><td>True if one-way audio detected (via diagnosis engine)</td></tr>
+<tr><td><code>nat_mismatch</code></td><td>True if NAT mismatch detected (Contact/Via IP discrepancy)</td></tr>
+<tr><td><code>no_media</code></td><td>True if no media detected for established call</td></tr>
+</tbody></table>
+<h2 id="operators">Operators</h2>
+<table><thead><tr><th>Operator</th><th>Applies To</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>==</code></td><td>string, numeric, boolean</td><td>Equal</td></tr>
+<tr><td><code>!=</code></td><td>string, numeric, boolean</td><td>Not equal</td></tr>
+<tr><td><code>&lt;</code></td><td>string, numeric</td><td>Less than</td></tr>
+<tr><td><code>&gt;</code></td><td>string, numeric</td><td>Greater than</td></tr>
+<tr><td><code>&lt;=</code></td><td>string, numeric</td><td>Less than or equal</td></tr>
+<tr><td><code>&gt;=</code></td><td>string, numeric</td><td>Greater than or equal</td></tr>
+<tr><td><code>=~</code></td><td>string</td><td>Regex match (Rust regex syntax)</td></tr>
+</tbody></table>
+<p>Notes:</p>
+<ul>
+<li>Boolean fields only support <code>==</code> and <code>!=</code>.</li>
+<li>Regex (<code>=~</code>) is not applicable to numeric or boolean fields.</li>
+<li>Numeric equality uses epsilon comparison for floating-point precision.</li>
+</ul>
+<blockquote>
+<p><strong>Note:</strong> String comparisons are case-sensitive. State values must match exactly: <code>'Completed'</code>, <code>'Failed'</code>, <code>'Trying'</code>, <code>'Ringing'</code>, <code>'InCall'</code>, <code>'Cancelled'</code>, <code>'Terminated'</code>. Use <code>=~</code> with a case-insensitive regex pattern if you need case-insensitive matching: <code>state =~ '(?i)failed'</code>.</p>
+</blockquote>
+<h2 id="values">Values</h2>
+<table><thead><tr><th>Syntax</th><th>Type</th><th>Examples</th></tr></thead><tbody>
+<tr><td><code>'...'</code> or <code>"..."</code></td><td>String</td><td><code>'INVITE'</code>, <code>"alice"</code></td></tr>
+<tr><td>Number</td><td>Numeric (f64)</td><td><code>3.0</code>, <code>100</code>, <code>0.5</code></td></tr>
+<tr><td><code>true</code> / <code>false</code></td><td>Boolean (case-insensitive)</td><td><code>true</code>, <code>FALSE</code></td></tr>
+<tr><td><code>'...'</code> with <code>=~</code></td><td>Regex</td><td><code>'friendly.*scanner'</code>, <code>'^1001'</code></td></tr>
+</tbody></table>
+<blockquote>
+<p><strong>Tip:</strong> Regex patterns are compiled once and reused across all messages. Avoid unbounded quantifiers on large captures (e.g., prefer <code>from.user =~ '^100[0-9]$'</code> over <code>from.user =~ '.*100[0-9].*'</code>).</p>
+</blockquote>
+<h2 id="boolean-combinators">Boolean Combinators</h2>
+<table><thead><tr><th>Keyword</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>AND</code></td><td>Both sides must match (case-insensitive)</td></tr>
+<tr><td><code>OR</code></td><td>Either side must match (case-insensitive)</td></tr>
+<tr><td><code>NOT</code></td><td>Negates the following atom (case-insensitive)</td></tr>
+</tbody></table>
+<p>Parentheses <code>( )</code> group sub-expressions to override default precedence.</p>
+<h2 id="named-aliases">Named Aliases</h2>
+<p>These preset expressions are available as CLI flags (<code>--problems</code>, etc.) and expand to DSL expressions internally.</p>
+<table><thead><tr><th>Alias</th><th>CLI Flag</th><th>Expansion</th></tr></thead><tbody>
+<tr><td><code>problems</code></td><td><code>--problems</code></td><td><code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true</code></td></tr>
+<tr><td><code>slow-setup</code></td><td><code>--slow-setup</code></td><td><code>pdd &gt; 3.0</code></td></tr>
+<tr><td><code>short-calls</code></td><td><code>--short-calls</code></td><td><code>duration &lt; 5.0 AND state == 'Completed'</code></td></tr>
+<tr><td><code>one-way</code></td><td><code>--one-way</code></td><td><code>one_way == true</code></td></tr>
+<tr><td><code>nat-issues</code></td><td><code>--nat-issues</code></td><td><code>nat_mismatch == true</code></td></tr>
+</tbody></table>
+<h2 id="examples">Examples</h2>
+<h3 id="basic-field-matching">Basic field matching</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;INVITE&#39;</span></span>
+<span class="giallo-l"><span>from.user == &#39;1001&#39;</span></span>
+<span class="giallo-l"><span>state == &#39;InCall&#39;</span></span></code></pre><h3 id="regex-matching">Regex matching</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>ua =~ &#39;friendly-scanner&#39;</span></span>
+<span class="giallo-l"><span>from.user =~ &#39;^100[0-9]&#39;</span></span>
+<span class="giallo-l"><span>call_id =~ &#39;abc.*@&#39;</span></span></code></pre><h3 id="numeric-comparisons">Numeric comparisons</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>pdd &gt; 3.0</span></span>
+<span class="giallo-l"><span>rtp.mos &lt; 3.0</span></span>
+<span class="giallo-l"><span>rtp.loss &gt; 2.0</span></span>
+<span class="giallo-l"><span>duration &lt; 5.0</span></span>
+<span class="giallo-l"><span>retransmits &gt; 3</span></span>
+<span class="giallo-l"><span>rtp.jitter &gt; 50.0</span></span></code></pre><h3 id="boolean-fields-1">Boolean fields</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>one_way == true</span></span>
+<span class="giallo-l"><span>nat_mismatch == true</span></span>
+<span class="giallo-l"><span>rtp.orphaned == true</span></span>
+<span class="giallo-l"><span>no_media == true</span></span></code></pre><h3 id="compound-expressions">Compound expressions</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;INVITE&#39; AND rtp.mos &lt; 3.0</span></span>
+<span class="giallo-l"><span>from.user =~ &#39;^1001&#39; AND state == &#39;Failed&#39;</span></span>
+<span class="giallo-l"><span>pdd &gt; 3.0 OR retransmits &gt; 5</span></span>
+<span class="giallo-l"><span>NOT ua =~ &#39;friendly-scanner&#39;</span></span>
+<span class="giallo-l"><span>(state == &#39;Failed&#39; OR state == &#39;Cancelled&#39;) AND duration &lt; 1.0</span></span></code></pre><h3 id="real-world-diagnostic-queries">Real-world diagnostic queries</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span># Find calls with poor quality from a specific extension</span></span>
+<span class="giallo-l"><span>from.user =~ &#39;^1001&#39; AND rtp.mos &lt; 3.0</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Find failed registrations from a subnet</span></span>
+<span class="giallo-l"><span>method == &#39;REGISTER&#39; AND state == &#39;Failed&#39; AND src.ip =~ &#39;^10\.0\.1\.&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Find short calls that completed (possible robocalls)</span></span>
+<span class="giallo-l"><span>duration &lt; 5.0 AND state == &#39;Completed&#39; AND method == &#39;INVITE&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Find calls with audio issues</span></span>
+<span class="giallo-l"><span>one_way == true OR no_media == true OR rtp.jitter &gt; 100.0</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Find scanner activity by User-Agent</span></span>
+<span class="giallo-l"><span>ua =~ &#39;sipvicious|friendly-scanner|sipcli&#39;</span></span></code></pre><h2 id="real-world-scenarios">Real-World Scenarios</h2>
+<p>Scenario-based examples showing how to combine filter expressions with CLI flags for common operational tasks.</p>
+<h3 id="find-calls-with-poor-audio-quality">Find calls with poor audio quality</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>rtp.mos &lt; 3.0 AND state == &#39;Completed&#39;</span></span></code></pre>
+<p>Only completed calls – in-progress calls may not have enough RTP data for an accurate MOS calculation.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0 AND state == &#39;Completed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="find-all-failed-international-calls">Find all failed international calls</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>from.user =~ &#39;^\+&#39; AND (state == &#39;Failed&#39; OR state == &#39;Cancelled&#39;)</span></span></code></pre>
+<p>The <code>^\+</code> regex matches E.164 formatted numbers (international prefix).</p>
+<h3 id="find-registration-storms">Find registration storms</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;REGISTER&#39; AND retransmits &gt; 5</span></span></code></pre>
+<p>High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Combine with source IP filtering to isolate a specific endpoint:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;REGISTER&#39; AND retransmits &gt; 5 AND src.ip == &#39;10.0.0.50&#39;</span></span></code></pre><h3 id="find-calls-with-nat-issues">Find calls with NAT issues</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>nat_mismatch == true AND method == &#39;INVITE&#39;</span></span></code></pre>
+<p>NAT mismatch means the Contact header IP/port doesn’t match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT.</p>
+<h3 id="find-one-way-audio-after-call-establishment">Find one-way audio after call establishment</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>one_way == true AND duration &gt; 10.0</span></span></code></pre>
+<p>The duration check avoids false positives during early call setup when RTP hasn’t started flowing yet.</p>
+<h3 id="complex-b2bua-debugging">Complex B2BUA debugging</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>(from.user == &#39;1001&#39; OR to.user == &#39;1001&#39;) AND rtp.loss &gt; 1.0</span></span></code></pre>
+<p>Track a specific user’s calls that have packet loss, regardless of call direction.</p>
+<h3 id="find-chatty-dialogs-debugging-retransmissions">Find chatty dialogs (debugging retransmissions)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>msg_count &gt; 20 AND method == &#39;INVITE&#39;</span></span></code></pre>
+<p>Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).</p>
+<h3 id="monitor-for-sip-trunk-failures">Monitor for SIP trunk failures</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>dst.ip == &#39;192.168.1.100&#39; AND state == &#39;Failed&#39; AND method == &#39;INVITE&#39;</span></span></code></pre>
+<p>Filter for failures targeting a specific SIP trunk IP.</p>
+<blockquote>
+<p><strong>Note:</strong> The filter DSL evaluates against dialogs, not individual messages. A filter like <code>method == 'INVITE'</code> matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).</p>
+</blockquote>
+<h2 id="parser-constraints">Parser Constraints</h2>
+<ul>
+<li>Maximum parenthesis nesting depth: <strong>50 levels</strong></li>
+<li>Maximum regex pattern size: <strong>1 MB</strong> (1,000,000 bytes)</li>
+<li>Empty expressions produce a parse error</li>
+<li>Trailing unparsed input produces a parse error with position</li>
+<li>Unknown field names produce a parse error</li>
+<li>Invalid regex patterns produce a parse error</li>
+</ul>
+
+
+    <!-- Prev/Next nav -->
+    
+    <nav class="doc-prevnext">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;keybindings&#x2F;" class="doc-prev">&larr; Keybindings</a>
+      
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;" class="doc-next">Theme Guide &rarr;</a>
+      
+    </nav>
+    
+  </article>
+
+  <!-- Mini TOC -->
+  
+  <aside class="doc-toc">
+    <div class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
+      <ul>
+        
+        <li><a href="#grammar">Grammar</a>
+          
+        </li>
+        
+        <li><a href="#fields">Fields</a>
+          
+          <ul>
+            
+            <li><a href="#string-fields">String Fields</a></li>
+            
+            <li><a href="#numeric-fields">Numeric Fields</a></li>
+            
+            <li><a href="#boolean-fields">Boolean Fields</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#operators">Operators</a>
+          
+        </li>
+        
+        <li><a href="#values">Values</a>
+          
+        </li>
+        
+        <li><a href="#boolean-combinators">Boolean Combinators</a>
+          
+        </li>
+        
+        <li><a href="#named-aliases">Named Aliases</a>
+          
+        </li>
+        
+        <li><a href="#examples">Examples</a>
+          
+          <ul>
+            
+            <li><a href="#basic-field-matching">Basic field matching</a></li>
+            
+            <li><a href="#regex-matching">Regex matching</a></li>
+            
+            <li><a href="#numeric-comparisons">Numeric comparisons</a></li>
+            
+            <li><a href="#boolean-fields-1">Boolean fields</a></li>
+            
+            <li><a href="#compound-expressions">Compound expressions</a></li>
+            
+            <li><a href="#real-world-diagnostic-queries">Real-world diagnostic queries</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#real-world-scenarios">Real-World Scenarios</a>
+          
+          <ul>
+            
+            <li><a href="#find-calls-with-poor-audio-quality">Find calls with poor audio quality</a></li>
+            
+            <li><a href="#find-all-failed-international-calls">Find all failed international calls</a></li>
+            
+            <li><a href="#find-registration-storms">Find registration storms</a></li>
+            
+            <li><a href="#find-calls-with-nat-issues">Find calls with NAT issues</a></li>
+            
+            <li><a href="#find-one-way-audio-after-call-establishment">Find one-way audio after call establishment</a></li>
+            
+            <li><a href="#complex-b2bua-debugging">Complex B2BUA debugging</a></li>
+            
+            <li><a href="#find-chatty-dialogs-debugging-retransmissions">Find chatty dialogs (debugging retransmissions)</a></li>
+            
+            <li><a href="#monitor-for-sip-trunk-failures">Monitor for SIP trunk failures</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#parser-constraints">Parser Constraints</a>
+          
+        </li>
+        
+      </ul>
+    </div>
+  </aside>
+  
+</div>
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">License (MIT/Apache-2.0)</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
   document.getElementById('nav-toggle').addEventListener('click', function() {
     document.getElementById('nav-links').classList.toggle('open');
   });
@@ -110,4 +463,7 @@
         resultsEl.appendChild(a);
       }
     });
-  })();</script>
+  })();
+  </script>
+</body>
+</html>

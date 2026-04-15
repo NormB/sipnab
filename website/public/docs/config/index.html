@@ -1,121 +1,418 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Config Reference -- sipnab</title><meta content="TOML configuration file format and all configurable sections." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/config/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/analyze/>Analyze</a><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a class=active href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Config Reference</h1><blockquote><p><strong>Quick start:</strong> Config is optional. sipnab works with zero configuration out of the box. Use a config file to set persistent defaults for your environment.</blockquote><p>sipnab reads configuration from a TOML file. CLI flags always override config file values.<h2 id=file-locations>File Locations</h2><p>Configuration is loaded from the first file found in this order:<table><thead><tr><th>Priority<th>Source<tbody><tr><td>1<td><code>--config &lt;FILE></code> (must exist; errors if missing)<tr><td>2<td><code>$SIPNAB_CONFIG</code> environment variable<tr><td>3<td><code>~/.config/sipnab/sipnab.toml</code><tr><td>4<td><code>~/.sipnabrc</code><tr><td>5<td><code>/etc/sipnab/sipnab.toml</code></table><p>Use <code>--no-config</code> (<code>-F</code>) to skip all file loading. Use <code>--dump-config</code> (<code>-D</code>) to print the effective merged configuration.<p>Unknown keys produce a warning and are ignored, allowing configs to be shared across versions.<h2 id=format>Format</h2><p>Standard <a href=https://toml.io/ rel=external>TOML</a>. All sections and keys are optional. Only set values you want to change from defaults.<h2 id=sections>Sections</h2><h3 id=capture>[capture]</h3><p>Packet capture defaults.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>device</code><td>string<td>–<td>Default network interface<tr><td><code>portrange</code><td>string<td><code>"5060-5061"</code><td>SIP port range<tr><td><code>snaplen</code><td>integer<td>OS default<td>Snapshot length in bytes<tr><td><code>buffer</code><td>integer<td>OS default<td>Kernel capture buffer size in MiB<tr><td><code>no_rtp</code><td>boolean<td><code>false</code><td>Disable RTP capture by default</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>capture</span><span>]</span></span>
-<span class=giallo-l><span>device</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "eth0"</span></span>
-<span class=giallo-l><span>portrange</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "5060-5080"</span></span>
-<span class=giallo-l><span>snaplen</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 65535</span></span>
-<span class=giallo-l><span>buffer</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 16</span></span>
-<span class=giallo-l><span>no_rtp</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span></code></pre><h3 id=display>[display]</h3><p>Output and TUI display settings.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>color</code><td>string<td><code>"auto"</code><td>Color mode: <code>"auto"</code>, <code>"always"</code>, <code>"never"</code><tr><td><code>payload_limit</code><td>integer<td>–<td>Maximum payload bytes to display<tr><td><code>delta_time</code><td>boolean<td><code>false</code><td>Show delta time between messages by default</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>display</span><span>]</span></span>
-<span class=giallo-l><span>color</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "always"</span></span>
-<span class=giallo-l><span>payload_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 4096</span></span>
-<span class=giallo-l><span>delta_time</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span></code></pre><h3 id=filter>[filter]</h3><p>Default filter presets applied at startup.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>from</code><td>string<td>–<td>Default From header filter (regex)<tr><td><code>to</code><td>string<td>–<td>Default To header filter (regex)<tr><td><code>expression</code><td>string<td>–<td>Default filter DSL expression</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>filter</span><span>]</span></span>
-<span class=giallo-l><span>from</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1001@"</span></span>
-<span class=giallo-l><span>to</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "^1002@"</span></span>
-<span class=giallo-l><span>expression</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "method == 'INVITE'"</span></span></code></pre><h3 id=security>[security]</h3><p>Security detection defaults.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>kill_scanner</code><td>boolean<td><code>false</code><td>Enable scanner detection<tr><td><code>kill_response</code><td>integer<td><code>200</code><td>SIP response code for scanner reports (100-699)<tr><td><code>fraud_detect</code><td>boolean<td><code>false</code><td>Enable fraud detection heuristics<tr><td><code>alert</code><td>array of strings<td><code>[]</code><td>Alert channels: <code>"syslog"</code>, <code>"json"</code>, <code>"exec"</code><tr><td><code>alert_exec</code><td>string<td>–<td>Command to execute on alert</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>security</span><span>]</span></span>
-<span class=giallo-l><span>kill_scanner</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
-<span class=giallo-l><span>kill_response</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 403</span></span>
-<span class=giallo-l><span>fraud_detect</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
-<span class=giallo-l><span>alert</span><span style=color:#bfbdb6b3> =</span><span> [</span><span style=color:#aad94c>"syslog"</span><span style=color:#bfbdb6b3>,</span><span style=color:#aad94c> "json"</span><span>]</span></span>
-<span class=giallo-l><span>alert_exec</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/usr/local/bin/sipnab-alert.sh"</span></span></code></pre><h3 id=limits>[limits]</h3><p>Resource limits to prevent unbounded memory growth.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>dialog_limit</code><td>integer<td><code>100000</code><td>Maximum tracked dialogs<tr><td><code>max_streams</code><td>integer<td><code>50000</code><td>Maximum RTP streams<tr><td><code>max_reassembly</code><td>integer<td><code>10000</code><td>Maximum TCP reassembly sessions<tr><td><code>hep_rate_limit</code><td>integer<td><code>50000</code><td>Maximum HEP packets per second</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>limits</span><span>]</span></span>
-<span class=giallo-l><span>dialog_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 50000</span></span>
-<span class=giallo-l><span>max_streams</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span>
-<span class=giallo-l><span>max_reassembly</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 5000</span></span>
-<span class=giallo-l><span>hep_rate_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span></span></code></pre><h3 id=privilege>[privilege]</h3><p>Privilege separation settings (Linux only).<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>user</code><td>string<td>–<td>User to drop privileges to after opening capture devices<tr><td><code>no_priv_drop</code><td>boolean<td><code>false</code><td>Disable privilege dropping<tr><td><code>chroot</code><td>string<td>–<td>Chroot directory after initialization</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>privilege</span><span>]</span></span>
-<span class=giallo-l><span>user</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "sipnab"</span></span>
-<span class=giallo-l><span>no_priv_drop</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span></span>
-<span class=giallo-l><span>chroot</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/var/lib/sipnab"</span></span></code></pre><h3 id=theme>[theme]</h3><p>TUI color theme with 11 semantic color slots. See the <a href=https://www.sipnab.com/docs/theme/>Theme Guide</a> for a full customization guide.<table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>background</code><td>string<td><code>"reset"</code> (terminal default)<td>Terminal background<tr><td><code>foreground</code><td>string<td><code>"white"</code><td>Default text color<tr><td><code>highlight</code><td>string<td>–<td>Legacy alias for <code>selected</code> (backward compat)<tr><td><code>header</code><td>string<td><code>"cyan"</code><td>Status bar, column headers, endpoint labels<tr><td><code>selected</code><td>string<td><code>"yellow"</code><td>Selected/highlighted row, cursor, focused item<tr><td><code>accent</code><td>string<td><code>"magenta"</code><td>Correlation info, PDD, extended flow labels<tr><td><code>good</code><td>string<td><code>"green"</code><td>Positive quality, success states (InCall, Registered)<tr><td><code>warning</code><td>string<td><code>"yellow"</code><td>Medium quality, caution states (Ringing, CANCEL)<tr><td><code>bad</code><td>string<td><code>"red"</code><td>Poor quality, failures, errors<tr><td><code>muted</code><td>string<td><code>"dark_gray"</code><td>Separators, pipes, disabled text, timestamps<tr><td><code>border</code><td>string<td><code>"white"</code><td>Widget borders, panel frames</table><p>Supported color values:<ul><li>Named: <code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code>, <code>dark_gray</code>, <code>reset</code><li>Hex RGB: <code>"#RRGGBB"</code> (e.g., <code>"#ff8800"</code>)</ul><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1a1a2e"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e0e0e0"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "cyan"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#e94560"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "magenta"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "green"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "yellow"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "red"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "dark_gray"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#444466"</span></span></code></pre><h3 id=keybindings>[keybindings]</h3><p>TUI key binding overrides. All 11 configurable actions are listed below. See <a href=https://www.sipnab.com/docs/keybindings/>Keybindings</a> for the full shortcut reference.<p>Accepted key formats:<ul><li>Single characters: <code>"q"</code>, <code>"/"</code>, <code>"A"</code><li>Function keys: <code>"F1"</code> through <code>"F12"</code><li>Special names: <code>"Esc"</code>, <code>"Space"</code>, <code>"Enter"</code>, <code>"Tab"</code>, <code>"Backspace"</code></ul><table><thead><tr><th>Key<th>Type<th>Default<th>Description<tbody><tr><td><code>quit</code><td>string<td><code>"q"</code><td>Quit the application<tr><td><code>help</code><td>string<td><code>"F1"</code><td>Show help overlay<tr><td><code>filter</code><td>string<td><code>"F7"</code><td>Open filter dialog<tr><td><code>save</code><td>string<td><code>"F2"</code><td>Open save capture dialog<tr><td><code>search</code><td>string<td><code>"/"</code><td>Activate search<tr><td><code>settings</code><td>string<td><code>"F8"</code><td>Open settings popup<tr><td><code>pause</code><td>string<td><code>"p"</code><td>Pause/resume capture<tr><td><code>autoscroll</code><td>string<td><code>"A"</code><td>Toggle autoscroll<tr><td><code>extended_flow</code><td>string<td><code>"F4"</code><td>Toggle extended multi-leg flow<tr><td><code>clear_calls</code><td>string<td><code>"F5"</code><td>Clear all calls<tr><td><code>column_selector</code><td>string<td><code>"F10"</code><td>Open column selector</table><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>keybindings</span><span>]</span></span>
-<span class=giallo-l><span>quit</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "q"</span></span>
-<span class=giallo-l><span>help</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F1"</span></span>
-<span class=giallo-l><span>filter</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F7"</span></span>
-<span class=giallo-l><span>save</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F2"</span></span>
-<span class=giallo-l><span>search</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/"</span></span>
-<span class=giallo-l><span>settings</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F8"</span></span>
-<span class=giallo-l><span>pause</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "p"</span></span>
-<span class=giallo-l><span>autoscroll</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "A"</span></span>
-<span class=giallo-l><span>extended_flow</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F4"</span></span>
-<span class=giallo-l><span>clear_calls</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F5"</span></span>
-<span class=giallo-l><span>column_selector</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F10"</span></span></code></pre><h2 id=full-example>Full Example</h2><p>A production-ready configuration for a SIP monitoring server:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span style=color:#5a6673;font-style:italic># /etc/sipnab/sipnab.toml</span></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># Production SIP monitoring configuration</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Packet capture --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>capture</span><span>]</span></span>
-<span class=giallo-l><span>device</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "eth0"</span><span style=color:#5a6673;font-style:italic>                    # Primary SIP-facing interface</span></span>
-<span class=giallo-l><span>portrange</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "5060-5080"</span><span style=color:#5a6673;font-style:italic>            # Cover SIP, SIP-TLS, and alternate ports</span></span>
-<span class=giallo-l><span>snaplen</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 65535</span><span style=color:#5a6673;font-style:italic>                    # Full packet capture (no truncation)</span></span>
-<span class=giallo-l><span>buffer</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 32</span><span style=color:#5a6673;font-style:italic>                        # 32 MiB kernel buffer for burst tolerance</span></span>
-<span class=giallo-l><span>no_rtp</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> false</span><span style=color:#5a6673;font-style:italic>                     # RTP analysis enabled</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Display settings --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>display</span><span>]</span></span>
-<span class=giallo-l><span>color</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "always"</span><span style=color:#5a6673;font-style:italic>                   # Force color even when piped</span></span>
-<span class=giallo-l><span>payload_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 8192</span><span style=color:#5a6673;font-style:italic>               # Show up to 8K of SIP body (large SDP)</span></span>
-<span class=giallo-l><span>delta_time</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span><span style=color:#5a6673;font-style:italic>                  # Show timing between messages by default</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Default filter (optional) --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>filter</span><span>]</span></span>
-<span class=giallo-l><span>expression</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "method == 'INVITE' OR method == 'REGISTER'"</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Security detection --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>security</span><span>]</span></span>
-<span class=giallo-l><span>kill_scanner</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span><span style=color:#5a6673;font-style:italic>                # Detect SIP scanners (sipvicious, etc.)</span></span>
-<span class=giallo-l><span>fraud_detect</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span><span style=color:#5a6673;font-style:italic>                # Heuristic fraud detection</span></span>
-<span class=giallo-l><span>alert</span><span style=color:#bfbdb6b3> =</span><span> [</span><span style=color:#aad94c>"syslog"</span><span style=color:#bfbdb6b3>,</span><span style=color:#aad94c> "json"</span><span>]</span><span style=color:#5a6673;font-style:italic>        # Send alerts to syslog and JSON log</span></span>
-<span class=giallo-l><span>alert_exec</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/usr/local/bin/sipnab-alert.sh"</span><span style=color:#5a6673;font-style:italic>  # Custom alert handler</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Resource limits --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>limits</span><span>]</span></span>
-<span class=giallo-l><span>dialog_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 50000</span><span style=color:#5a6673;font-style:italic>               # Max tracked dialogs (tune for RAM)</span></span>
-<span class=giallo-l><span>max_streams</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span><span style=color:#5a6673;font-style:italic>                # Max RTP streams</span></span>
-<span class=giallo-l><span>max_reassembly</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 5000</span><span style=color:#5a6673;font-style:italic>              # Max TCP reassembly sessions</span></span>
-<span class=giallo-l><span>hep_rate_limit</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> 25000</span><span style=color:#5a6673;font-style:italic>             # Max HEP packets/sec</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Privilege separation (Linux) --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>privilege</span><span>]</span></span>
-<span class=giallo-l><span>user</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "sipnab"</span><span style=color:#5a6673;font-style:italic>                    # Drop to unprivileged user after device open</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Theme: Catppuccin Mocha --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1e1e2e"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cdd6f4"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#89b4fa"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#f9e2af"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cba6f7"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#a6e3a1"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#fab387"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#f38ba8"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#585b70"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#6c7086"</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># -- Keybindings (defaults shown) --</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>keybindings</span><span>]</span></span>
-<span class=giallo-l><span>quit</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "q"</span></span>
-<span class=giallo-l><span>help</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F1"</span></span>
-<span class=giallo-l><span>filter</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F7"</span></span>
-<span class=giallo-l><span>save</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F2"</span></span>
-<span class=giallo-l><span>search</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "/"</span></span>
-<span class=giallo-l><span>settings</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F8"</span></span>
-<span class=giallo-l><span>pause</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "p"</span></span>
-<span class=giallo-l><span>autoscroll</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "A"</span></span>
-<span class=giallo-l><span>extended_flow</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F4"</span></span>
-<span class=giallo-l><span>clear_calls</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F5"</span></span>
-<span class=giallo-l><span>column_selector</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "F10"</span></span></code></pre><blockquote><p><strong>Tip:</strong> Use <code>sipnab --dump-config</code> to see the effective configuration after merging CLI flags, environment variables, and config file values. This is useful for debugging precedence issues.</blockquote><h3 id=minimal-config>Minimal Config</h3><p>If you only need to override a few defaults, keep it short:<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span style=color:#5a6673;font-style:italic># ~/.config/sipnab/sipnab.toml</span></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>capture</span><span>]</span></span>
-<span class=giallo-l><span>device</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "eth0"</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>display</span><span>]</span></span>
-<span class=giallo-l><span>delta_time</span><span style=color:#bfbdb6b3> =</span><span style=color:#d2a6ff> true</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1e1e2e"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cdd6f4"</span></span></code></pre><blockquote><p><strong>Note:</strong> Unknown keys produce a warning and are ignored. This means configs can be shared across sipnab versions without breaking older installs.</blockquote><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/cli/>← CLI Reference</a><a class=doc-next href=https://www.sipnab.com/docs/keybindings/>Keybindings →</a></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#file-locations>File Locations</a><li><a href=#format>Format</a><li><a href=#sections>Sections</a> <ul><li><a href=#capture>[capture]</a><li><a href=#display>[display]</a><li><a href=#filter>[filter]</a><li><a href=#security>[security]</a><li><a href=#limits>[limits]</a><li><a href=#privilege>[privilege]</a><li><a href=#theme>[theme]</a><li><a href=#keybindings>[keybindings]</a></ul><li><a href=#full-example>Full Example</a> <ul><li><a href=#minimal-config>Minimal Config</a></ul></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class="footer-col footer-links"><a href=https://www.sipnab.com/docs/>Documentation</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE>License (MIT/Apache-2.0)</a><a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a></div><div class="footer-col footer-meta"><span class=footer-credit>Built with <a href=https://www.rust-lang.org>Rust</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.linkedin.com/in/nbrandinger>Norm Brandinger</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span></div></div></footer><script>// Mobile nav toggle
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Config Reference -- sipnab</title>
+  <meta name="description" content="TOML configuration file format and all configurable sections.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;config&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  
+</head>
+<body>
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" class="active">Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" >Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" >Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main>
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>Config Reference</h1>
+    <blockquote>
+<p><strong>Quick start:</strong> Config is optional. sipnab works with zero configuration out of the box. Use a config file to set persistent defaults for your environment.</p>
+</blockquote>
+<p>sipnab reads configuration from a TOML file. CLI flags always override config file values.</p>
+<h2 id="file-locations">File Locations</h2>
+<p>Configuration is loaded from the first file found in this order:</p>
+<table><thead><tr><th>Priority</th><th>Source</th></tr></thead><tbody>
+<tr><td>1</td><td><code>--config &lt;FILE&gt;</code> (must exist; errors if missing)</td></tr>
+<tr><td>2</td><td><code>$SIPNAB_CONFIG</code> environment variable</td></tr>
+<tr><td>3</td><td><code>~/.config/sipnab/sipnab.toml</code></td></tr>
+<tr><td>4</td><td><code>~/.sipnabrc</code></td></tr>
+<tr><td>5</td><td><code>/etc/sipnab/sipnab.toml</code></td></tr>
+</tbody></table>
+<p>Use <code>--no-config</code> (<code>-F</code>) to skip all file loading. Use <code>--dump-config</code> (<code>-D</code>) to print the effective merged configuration.</p>
+<p>Unknown keys produce a warning and are ignored, allowing configs to be shared across versions.</p>
+<h2 id="format">Format</h2>
+<p>Standard <a rel="external" href="https://toml.io/">TOML</a>. All sections and keys are optional. Only set values you want to change from defaults.</p>
+<h2 id="sections">Sections</h2>
+<h3 id="capture">[capture]</h3>
+<p>Packet capture defaults.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>device</code></td><td>string</td><td>–</td><td>Default network interface</td></tr>
+<tr><td><code>portrange</code></td><td>string</td><td><code>"5060-5061"</code></td><td>SIP port range</td></tr>
+<tr><td><code>snaplen</code></td><td>integer</td><td>OS default</td><td>Snapshot length in bytes</td></tr>
+<tr><td><code>buffer</code></td><td>integer</td><td>OS default</td><td>Kernel capture buffer size in MiB</td></tr>
+<tr><td><code>no_rtp</code></td><td>boolean</td><td><code>false</code></td><td>Disable RTP capture by default</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">capture</span><span>]</span></span>
+<span class="giallo-l"><span>device</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span></span>
+<span class="giallo-l"><span>portrange</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;5060-5080&quot;</span></span>
+<span class="giallo-l"><span>snaplen</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 65535</span></span>
+<span class="giallo-l"><span>buffer</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 16</span></span>
+<span class="giallo-l"><span>no_rtp</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span></code></pre><h3 id="display">[display]</h3>
+<p>Output and TUI display settings.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>color</code></td><td>string</td><td><code>"auto"</code></td><td>Color mode: <code>"auto"</code>, <code>"always"</code>, <code>"never"</code></td></tr>
+<tr><td><code>payload_limit</code></td><td>integer</td><td>–</td><td>Maximum payload bytes to display</td></tr>
+<tr><td><code>delta_time</code></td><td>boolean</td><td><code>false</code></td><td>Show delta time between messages by default</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
+<span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span></span>
+<span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 4096</span></span>
+<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span></code></pre><h3 id="filter">[filter]</h3>
+<p>Default filter presets applied at startup.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>from</code></td><td>string</td><td>–</td><td>Default From header filter (regex)</td></tr>
+<tr><td><code>to</code></td><td>string</td><td>–</td><td>Default To header filter (regex)</td></tr>
+<tr><td><code>expression</code></td><td>string</td><td>–</td><td>Default filter DSL expression</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">filter</span><span>]</span></span>
+<span class="giallo-l"><span>from</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1001@&quot;</span></span>
+<span class="giallo-l"><span>to</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;^1002@&quot;</span></span>
+<span class="giallo-l"><span>expression</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39;&quot;</span></span></code></pre><h3 id="security">[security]</h3>
+<p>Security detection defaults.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>kill_scanner</code></td><td>boolean</td><td><code>false</code></td><td>Enable scanner detection</td></tr>
+<tr><td><code>kill_response</code></td><td>integer</td><td><code>200</code></td><td>SIP response code for scanner reports (100-699)</td></tr>
+<tr><td><code>fraud_detect</code></td><td>boolean</td><td><code>false</code></td><td>Enable fraud detection heuristics</td></tr>
+<tr><td><code>alert</code></td><td>array of strings</td><td><code>[]</code></td><td>Alert channels: <code>"syslog"</code>, <code>"json"</code>, <code>"exec"</code></td></tr>
+<tr><td><code>alert_exec</code></td><td>string</td><td>–</td><td>Command to execute on alert</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">security</span><span>]</span></span>
+<span class="giallo-l"><span>kill_scanner</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
+<span class="giallo-l"><span>kill_response</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 403</span></span>
+<span class="giallo-l"><span>fraud_detect</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
+<span class="giallo-l"><span>alert</span><span style="color: #BFBDB6B3;"> =</span><span> [</span><span style="color: #AAD94C;">&quot;syslog&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;json&quot;</span><span>]</span></span>
+<span class="giallo-l"><span>alert_exec</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/usr/local/bin/sipnab-alert.sh&quot;</span></span></code></pre><h3 id="limits">[limits]</h3>
+<p>Resource limits to prevent unbounded memory growth.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>dialog_limit</code></td><td>integer</td><td><code>100000</code></td><td>Maximum tracked dialogs</td></tr>
+<tr><td><code>max_streams</code></td><td>integer</td><td><code>50000</code></td><td>Maximum RTP streams</td></tr>
+<tr><td><code>max_reassembly</code></td><td>integer</td><td><code>10000</code></td><td>Maximum TCP reassembly sessions</td></tr>
+<tr><td><code>hep_rate_limit</code></td><td>integer</td><td><code>50000</code></td><td>Maximum HEP packets per second</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">limits</span><span>]</span></span>
+<span class="giallo-l"><span>dialog_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 50000</span></span>
+<span class="giallo-l"><span>max_streams</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span>
+<span class="giallo-l"><span>max_reassembly</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 5000</span></span>
+<span class="giallo-l"><span>hep_rate_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span></span></code></pre><h3 id="privilege">[privilege]</h3>
+<p>Privilege separation settings (Linux only).</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>user</code></td><td>string</td><td>–</td><td>User to drop privileges to after opening capture devices</td></tr>
+<tr><td><code>no_priv_drop</code></td><td>boolean</td><td><code>false</code></td><td>Disable privilege dropping</td></tr>
+<tr><td><code>chroot</code></td><td>string</td><td>–</td><td>Chroot directory after initialization</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">privilege</span><span>]</span></span>
+<span class="giallo-l"><span>user</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span></span>
+<span class="giallo-l"><span>no_priv_drop</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span></span>
+<span class="giallo-l"><span>chroot</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/var/lib/sipnab&quot;</span></span></code></pre><h3 id="theme">[theme]</h3>
+<p>TUI color theme with 11 semantic color slots. See the <a href="https://www.sipnab.com/docs/theme/">Theme Guide</a> for a full customization guide.</p>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>background</code></td><td>string</td><td><code>"reset"</code> (terminal default)</td><td>Terminal background</td></tr>
+<tr><td><code>foreground</code></td><td>string</td><td><code>"white"</code></td><td>Default text color</td></tr>
+<tr><td><code>highlight</code></td><td>string</td><td>–</td><td>Legacy alias for <code>selected</code> (backward compat)</td></tr>
+<tr><td><code>header</code></td><td>string</td><td><code>"cyan"</code></td><td>Status bar, column headers, endpoint labels</td></tr>
+<tr><td><code>selected</code></td><td>string</td><td><code>"yellow"</code></td><td>Selected/highlighted row, cursor, focused item</td></tr>
+<tr><td><code>accent</code></td><td>string</td><td><code>"magenta"</code></td><td>Correlation info, PDD, extended flow labels</td></tr>
+<tr><td><code>good</code></td><td>string</td><td><code>"green"</code></td><td>Positive quality, success states (InCall, Registered)</td></tr>
+<tr><td><code>warning</code></td><td>string</td><td><code>"yellow"</code></td><td>Medium quality, caution states (Ringing, CANCEL)</td></tr>
+<tr><td><code>bad</code></td><td>string</td><td><code>"red"</code></td><td>Poor quality, failures, errors</td></tr>
+<tr><td><code>muted</code></td><td>string</td><td><code>"dark_gray"</code></td><td>Separators, pipes, disabled text, timestamps</td></tr>
+<tr><td><code>border</code></td><td>string</td><td><code>"white"</code></td><td>Widget borders, panel frames</td></tr>
+</tbody></table>
+<p>Supported color values:</p>
+<ul>
+<li>Named: <code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code>, <code>dark_gray</code>, <code>reset</code></li>
+<li>Hex RGB: <code>"#RRGGBB"</code> (e.g., <code>"#ff8800"</code>)</li>
+</ul>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1a1a2e&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e0e0e0&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#e94560&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#444466&quot;</span></span></code></pre><h3 id="keybindings">[keybindings]</h3>
+<p>TUI key binding overrides. All 11 configurable actions are listed below. See <a href="https://www.sipnab.com/docs/keybindings/">Keybindings</a> for the full shortcut reference.</p>
+<p>Accepted key formats:</p>
+<ul>
+<li>Single characters: <code>"q"</code>, <code>"/"</code>, <code>"A"</code></li>
+<li>Function keys: <code>"F1"</code> through <code>"F12"</code></li>
+<li>Special names: <code>"Esc"</code>, <code>"Space"</code>, <code>"Enter"</code>, <code>"Tab"</code>, <code>"Backspace"</code></li>
+</ul>
+<table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>quit</code></td><td>string</td><td><code>"q"</code></td><td>Quit the application</td></tr>
+<tr><td><code>help</code></td><td>string</td><td><code>"F1"</code></td><td>Show help overlay</td></tr>
+<tr><td><code>filter</code></td><td>string</td><td><code>"F7"</code></td><td>Open filter dialog</td></tr>
+<tr><td><code>save</code></td><td>string</td><td><code>"F2"</code></td><td>Open save capture dialog</td></tr>
+<tr><td><code>search</code></td><td>string</td><td><code>"/"</code></td><td>Activate search</td></tr>
+<tr><td><code>settings</code></td><td>string</td><td><code>"F8"</code></td><td>Open settings popup</td></tr>
+<tr><td><code>pause</code></td><td>string</td><td><code>"p"</code></td><td>Pause/resume capture</td></tr>
+<tr><td><code>autoscroll</code></td><td>string</td><td><code>"A"</code></td><td>Toggle autoscroll</td></tr>
+<tr><td><code>extended_flow</code></td><td>string</td><td><code>"F4"</code></td><td>Toggle extended multi-leg flow</td></tr>
+<tr><td><code>clear_calls</code></td><td>string</td><td><code>"F5"</code></td><td>Clear all calls</td></tr>
+<tr><td><code>column_selector</code></td><td>string</td><td><code>"F10"</code></td><td>Open column selector</td></tr>
+</tbody></table>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">keybindings</span><span>]</span></span>
+<span class="giallo-l"><span>quit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;q&quot;</span></span>
+<span class="giallo-l"><span>help</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F1&quot;</span></span>
+<span class="giallo-l"><span>filter</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F7&quot;</span></span>
+<span class="giallo-l"><span>save</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F2&quot;</span></span>
+<span class="giallo-l"><span>search</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/&quot;</span></span>
+<span class="giallo-l"><span>settings</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F8&quot;</span></span>
+<span class="giallo-l"><span>pause</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;p&quot;</span></span>
+<span class="giallo-l"><span>autoscroll</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;A&quot;</span></span>
+<span class="giallo-l"><span>extended_flow</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F4&quot;</span></span>
+<span class="giallo-l"><span>clear_calls</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F5&quot;</span></span>
+<span class="giallo-l"><span>column_selector</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F10&quot;</span></span></code></pre><h2 id="full-example">Full Example</h2>
+<p>A production-ready configuration for a SIP monitoring server:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># /etc/sipnab/sipnab.toml</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Production SIP monitoring configuration</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Packet capture --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">capture</span><span>]</span></span>
+<span class="giallo-l"><span>device</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span><span style="color: #5A6673;font-style: italic;">                    # Primary SIP-facing interface</span></span>
+<span class="giallo-l"><span>portrange</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;5060-5080&quot;</span><span style="color: #5A6673;font-style: italic;">            # Cover SIP, SIP-TLS, and alternate ports</span></span>
+<span class="giallo-l"><span>snaplen</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 65535</span><span style="color: #5A6673;font-style: italic;">                    # Full packet capture (no truncation)</span></span>
+<span class="giallo-l"><span>buffer</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 32</span><span style="color: #5A6673;font-style: italic;">                        # 32 MiB kernel buffer for burst tolerance</span></span>
+<span class="giallo-l"><span>no_rtp</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> false</span><span style="color: #5A6673;font-style: italic;">                     # RTP analysis enabled</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Display settings --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
+<span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span><span style="color: #5A6673;font-style: italic;">                   # Force color even when piped</span></span>
+<span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 8192</span><span style="color: #5A6673;font-style: italic;">               # Show up to 8K of SIP body (large SDP)</span></span>
+<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span><span style="color: #5A6673;font-style: italic;">                  # Show timing between messages by default</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Default filter (optional) --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">filter</span><span>]</span></span>
+<span class="giallo-l"><span>expression</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39; OR method == &#39;REGISTER&#39;&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Security detection --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">security</span><span>]</span></span>
+<span class="giallo-l"><span>kill_scanner</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span><span style="color: #5A6673;font-style: italic;">                # Detect SIP scanners (sipvicious, etc.)</span></span>
+<span class="giallo-l"><span>fraud_detect</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span><span style="color: #5A6673;font-style: italic;">                # Heuristic fraud detection</span></span>
+<span class="giallo-l"><span>alert</span><span style="color: #BFBDB6B3;"> =</span><span> [</span><span style="color: #AAD94C;">&quot;syslog&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;json&quot;</span><span>]</span><span style="color: #5A6673;font-style: italic;">        # Send alerts to syslog and JSON log</span></span>
+<span class="giallo-l"><span>alert_exec</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/usr/local/bin/sipnab-alert.sh&quot;</span><span style="color: #5A6673;font-style: italic;">  # Custom alert handler</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Resource limits --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">limits</span><span>]</span></span>
+<span class="giallo-l"><span>dialog_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 50000</span><span style="color: #5A6673;font-style: italic;">               # Max tracked dialogs (tune for RAM)</span></span>
+<span class="giallo-l"><span>max_streams</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span><span style="color: #5A6673;font-style: italic;">                # Max RTP streams</span></span>
+<span class="giallo-l"><span>max_reassembly</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 5000</span><span style="color: #5A6673;font-style: italic;">              # Max TCP reassembly sessions</span></span>
+<span class="giallo-l"><span>hep_rate_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 25000</span><span style="color: #5A6673;font-style: italic;">             # Max HEP packets/sec</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Privilege separation (Linux) --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">privilege</span><span>]</span></span>
+<span class="giallo-l"><span>user</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #5A6673;font-style: italic;">                    # Drop to unprivileged user after device open</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Theme: Catppuccin Mocha --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1e1e2e&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cdd6f4&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#89b4fa&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f9e2af&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cba6f7&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a6e3a1&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fab387&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f38ba8&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#585b70&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#6c7086&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Keybindings (defaults shown) --</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">keybindings</span><span>]</span></span>
+<span class="giallo-l"><span>quit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;q&quot;</span></span>
+<span class="giallo-l"><span>help</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F1&quot;</span></span>
+<span class="giallo-l"><span>filter</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F7&quot;</span></span>
+<span class="giallo-l"><span>save</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F2&quot;</span></span>
+<span class="giallo-l"><span>search</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;/&quot;</span></span>
+<span class="giallo-l"><span>settings</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F8&quot;</span></span>
+<span class="giallo-l"><span>pause</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;p&quot;</span></span>
+<span class="giallo-l"><span>autoscroll</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;A&quot;</span></span>
+<span class="giallo-l"><span>extended_flow</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F4&quot;</span></span>
+<span class="giallo-l"><span>clear_calls</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F5&quot;</span></span>
+<span class="giallo-l"><span>column_selector</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;F10&quot;</span></span></code></pre>
+<blockquote>
+<p><strong>Tip:</strong> Use <code>sipnab --dump-config</code> to see the effective configuration after merging CLI flags, environment variables, and config file values. This is useful for debugging precedence issues.</p>
+</blockquote>
+<h3 id="minimal-config">Minimal Config</h3>
+<p>If you only need to override a few defaults, keep it short:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># ~/.config/sipnab/sipnab.toml</span></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">capture</span><span>]</span></span>
+<span class="giallo-l"><span>device</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
+<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1e1e2e&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cdd6f4&quot;</span></span></code></pre>
+<blockquote>
+<p><strong>Note:</strong> Unknown keys produce a warning and are ignored. This means configs can be shared across sipnab versions without breaking older installs.</p>
+</blockquote>
+
+
+    <!-- Prev/Next nav -->
+    
+    <nav class="doc-prevnext">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;" class="doc-prev">&larr; CLI Reference</a>
+      
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;keybindings&#x2F;" class="doc-next">Keybindings &rarr;</a>
+      
+    </nav>
+    
+  </article>
+
+  <!-- Mini TOC -->
+  
+  <aside class="doc-toc">
+    <div class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
+      <ul>
+        
+        <li><a href="#file-locations">File Locations</a>
+          
+        </li>
+        
+        <li><a href="#format">Format</a>
+          
+        </li>
+        
+        <li><a href="#sections">Sections</a>
+          
+          <ul>
+            
+            <li><a href="#capture">[capture]</a></li>
+            
+            <li><a href="#display">[display]</a></li>
+            
+            <li><a href="#filter">[filter]</a></li>
+            
+            <li><a href="#security">[security]</a></li>
+            
+            <li><a href="#limits">[limits]</a></li>
+            
+            <li><a href="#privilege">[privilege]</a></li>
+            
+            <li><a href="#theme">[theme]</a></li>
+            
+            <li><a href="#keybindings">[keybindings]</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#full-example">Full Example</a>
+          
+          <ul>
+            
+            <li><a href="#minimal-config">Minimal Config</a></li>
+            
+          </ul>
+          
+        </li>
+        
+      </ul>
+    </div>
+  </aside>
+  
+</div>
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">License (MIT/Apache-2.0)</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
   document.getElementById('nav-toggle').addEventListener('click', function() {
     document.getElementById('nav-links').classList.toggle('open');
   });
@@ -193,4 +490,7 @@
         resultsEl.appendChild(a);
       }
     });
-  })();</script>
+  })();
+  </script>
+</body>
+</html>

@@ -1,11 +1,200 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Documentation -- sipnab</title><meta content="SIP &amp;amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/analyze/>Analyze</a><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Documentation</h1><h2 id=what-is-sipnab>What is sipnab?</h2><p>sipnab is a network analysis tool for Voice over IP. It captures and decodes SIP signaling (the protocol that sets up, modifies, and tears down phone calls) alongside the RTP media streams that carry the actual audio. Whether you are debugging call quality problems, auditing a VoIP platform for security issues, or simply trying to understand what is happening on the wire, sipnab gives you one Rust binary that covers interactive TUI, CLI batch mode, REST API, and browser-based analysis.<h2 id=documentation-overview>Documentation Overview</h2><ul><li><a href=https://www.sipnab.com/docs/troubleshooting/><strong>Troubleshooting</strong></a> – Real-world VoIP diagnostic workflows with exact commands<li><a href=https://www.sipnab.com/docs/install/><strong>Install</strong></a> – Build from source, binary downloads, Docker, feature flags<li><a href=https://www.sipnab.com/docs/cli/><strong>CLI Reference</strong></a> – Complete flag reference organized by functional group<li><a href=https://www.sipnab.com/docs/filter-dsl/><strong>Filter DSL</strong></a> – Query language for filtering calls and streams<li><a href=https://www.sipnab.com/docs/config/><strong>Configuration</strong></a> – TOML config file reference with all settings<li><a href=https://www.sipnab.com/docs/keybindings/><strong>Keybindings</strong></a> – TUI keyboard shortcuts and navigation<li><a href=https://www.sipnab.com/docs/theme/><strong>Theme</strong></a> – Color customization with preset themes<li><a href=https://www.sipnab.com/docs/api/><strong>REST API</strong></a> – HTTP API, Prometheus metrics, HEP integration</ul><h2 id=quick-start>Quick Start</h2><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=shellscript><span class=giallo-l><span style=color:#5a6673;font-style:italic># Analyze a pcap file</span></span>
-<span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -I</span><span style=color:#aad94c> capture.pcap</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># Live capture on eth0</span></span>
-<span class=giallo-l><span style=color:#59c2ff>sudo</span><span style=color:#aad94c> sipnab</span><span style=color:#95e6cb> -d</span><span style=color:#aad94c> eth0</span></span>
-<span class=giallo-l></span>
-<span class=giallo-l><span style=color:#5a6673;font-style:italic># Find problematic calls</span></span>
-<span class=giallo-l><span style=color:#59c2ff>sipnab</span><span style=color:#95e6cb> -N -I</span><span style=color:#aad94c> capture.pcap</span><span style=color:#95e6cb> --problems --json</span></span></code></pre><div class=doc-index><a class=doc-index-item href=https://www.sipnab.com/docs/install/> <h3>Installation</h3> <p>Install sipnab from pre-built binaries, cargo, package managers, or source.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/troubleshooting/> <h3>Troubleshooting</h3> <p>Real-world VoIP diagnostic workflows with exact commands.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/cli/> <h3>CLI Reference</h3> <p>Complete flag reference for sipnab, organized by functional group.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/config/> <h3>Config Reference</h3> <p>TOML configuration file format and all configurable sections.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/keybindings/> <h3>Keybindings</h3> <p>Complete TUI keyboard shortcut reference for all views.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/filter-dsl/> <h3>Filter DSL</h3> <p>Declarative filter language for matching SIP dialogs and RTP streams.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/theme/> <h3>Theme Guide</h3> <p>Customize sipnab's TUI colors with 11 semantic color slots and preset themes.</p> </a><a class=doc-index-item href=https://www.sipnab.com/docs/api/> <h3>REST API & Metrics</h3> <p>REST API endpoints, Prometheus metrics, and HEP protocol integration.</p> </a></div></article></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class="footer-col footer-links"><a href=https://www.sipnab.com/docs/>Documentation</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE>License (MIT/Apache-2.0)</a><a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a></div><div class="footer-col footer-meta"><span class=footer-credit>Built with <a href=https://www.rust-lang.org>Rust</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.linkedin.com/in/nbrandinger>Norm Brandinger</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span></div></div></footer><script>// Mobile nav toggle
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Documentation -- sipnab</title>
+  <meta name="description" content="SIP &amp;amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  
+</head>
+<body>
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" >Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" >Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" >Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main>
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>Documentation</h1>
+    <h2 id="what-is-sipnab">What is sipnab?</h2>
+<p>sipnab is a network analysis tool for Voice over IP. It captures and decodes SIP signaling (the protocol that sets up, modifies, and tears down phone calls) alongside the RTP media streams that carry the actual audio. Whether you are debugging call quality problems, auditing a VoIP platform for security issues, or simply trying to understand what is happening on the wire, sipnab gives you one Rust binary that covers interactive TUI, CLI batch mode, REST API, and browser-based analysis.</p>
+<h2 id="documentation-overview">Documentation Overview</h2>
+<ul>
+<li><a href="https://www.sipnab.com/docs/troubleshooting/"><strong>Troubleshooting</strong></a> – Real-world VoIP diagnostic workflows with exact commands</li>
+<li><a href="https://www.sipnab.com/docs/install/"><strong>Install</strong></a> – Build from source, binary downloads, Docker, feature flags</li>
+<li><a href="https://www.sipnab.com/docs/cli/"><strong>CLI Reference</strong></a> – Complete flag reference organized by functional group</li>
+<li><a href="https://www.sipnab.com/docs/filter-dsl/"><strong>Filter DSL</strong></a> – Query language for filtering calls and streams</li>
+<li><a href="https://www.sipnab.com/docs/config/"><strong>Configuration</strong></a> – TOML config file reference with all settings</li>
+<li><a href="https://www.sipnab.com/docs/keybindings/"><strong>Keybindings</strong></a> – TUI keyboard shortcuts and navigation</li>
+<li><a href="https://www.sipnab.com/docs/theme/"><strong>Theme</strong></a> – Color customization with preset themes</li>
+<li><a href="https://www.sipnab.com/docs/api/"><strong>REST API</strong></a> – HTTP API, Prometheus metrics, HEP integration</li>
+</ul>
+<h2 id="quick-start">Quick Start</h2>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Analyze a pcap file</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live capture on eth0</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find problematic calls</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems --json</span></span></code></pre>
+
+    
+    <div class="doc-index">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;install&#x2F;" class="doc-index-item">
+        <h3>Installation</h3>
+        
+        <p>Install sipnab from pre-built binaries, cargo, package managers, or source.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;troubleshooting&#x2F;" class="doc-index-item">
+        <h3>Troubleshooting</h3>
+        
+        <p>Real-world VoIP diagnostic workflows with exact commands.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;" class="doc-index-item">
+        <h3>CLI Reference</h3>
+        
+        <p>Complete flag reference for sipnab, organized by functional group.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;config&#x2F;" class="doc-index-item">
+        <h3>Config Reference</h3>
+        
+        <p>TOML configuration file format and all configurable sections.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;keybindings&#x2F;" class="doc-index-item">
+        <h3>Keybindings</h3>
+        
+        <p>Complete TUI keyboard shortcut reference for all views.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;" class="doc-index-item">
+        <h3>Filter DSL</h3>
+        
+        <p>Declarative filter language for matching SIP dialogs and RTP streams.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;" class="doc-index-item">
+        <h3>Theme Guide</h3>
+        
+        <p>Customize sipnab&#x27;s TUI colors with 11 semantic color slots and preset themes.</p>
+        
+      </a>
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;api&#x2F;" class="doc-index-item">
+        <h3>REST API &amp; Metrics</h3>
+        
+        <p>REST API endpoints, Prometheus metrics, and HEP protocol integration.</p>
+        
+      </a>
+      
+    </div>
+    
+  </article>
+</div>
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">License (MIT/Apache-2.0)</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
   document.getElementById('nav-toggle').addEventListener('click', function() {
     document.getElementById('nav-links').classList.toggle('open');
   });
@@ -83,4 +272,7 @@
         resultsEl.appendChild(a);
       }
     });
-  })();</script>
+  })();
+  </script>
+</body>
+</html>
