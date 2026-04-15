@@ -1487,6 +1487,171 @@ fn stream_detail_render_does_not_panic() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// END-TO-END: pcap → RTP payload capture → G.711 decode → WAV export
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Full pipeline test: load a pcap with G.711 RTP, process all packets,
+/// export the captured audio as WAV, and verify the file contains
+/// non-silent audio data. This catches:
+/// - Port filter silently dropping RTP packets
+/// - Payload capture not storing audio bytes
+/// - G.711 decoder producing silence or garbage
+/// - WAV writer producing invalid/empty files
+#[test]
+fn end_to_end_pcap_to_wav_export() {
+    use sipnab::rtp::audio_export::export_dialog_to_wav;
+
+    let pcap_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/pcap-samples/sip-rtp-g711.pcap");
+    let data = std::fs::read(&pcap_path).expect("read pcap");
+    let reader = PcapReader::new(&data).expect("parse pcap");
+
+    let mut store = StreamStore::new(1000);
+
+    // Process all packets — SIP and RTP
+    let link_type = reader.link_type as i32;
+    let mut rtp_count = 0u64;
+    for pkt in reader {
+        let ts = chrono::DateTime::from_timestamp(
+            pkt.timestamp_secs as i64,
+            (pkt.timestamp_usecs as u64 * 1000).min(999_999_999) as u32,
+        )
+        .unwrap_or_default();
+
+        let caplen = pkt.data.len();
+        let origlen = pkt.orig_len as usize;
+        let packet = Packet::new(ts, pkt.data, caplen, origlen, None, link_type);
+        if let Ok(pp) = parse_packet(&packet) {
+            if sipnab::rtp::is_rtp_packet(&pp.payload) {
+                if let Ok(hdr) = parse_rtp_header(&pp.payload) {
+                    store.process_rtp(&pp, &hdr, ts);
+                    rtp_count += 1;
+                }
+            }
+        }
+    }
+
+    // Verify RTP packets were captured
+    assert!(rtp_count > 100, "should have >100 RTP packets, got {rtp_count}");
+
+    // Verify streams were created with audio payloads
+    let streams: Vec<&RtpStream> = store.iter().collect();
+    assert!(streams.len() >= 2, "should have at least 2 RTP streams, got {}", streams.len());
+
+    let streams_with_audio: Vec<&RtpStream> = streams
+        .iter()
+        .filter(|s| !s.payload_buffer.is_empty())
+        .copied()
+        .collect();
+    assert!(
+        !streams_with_audio.is_empty(),
+        "at least one stream should have captured audio payloads"
+    );
+
+    // Verify the codec is G.711
+    for s in &streams_with_audio {
+        assert!(
+            matches!(s.codec.as_deref(), Some("PCMU") | Some("PCMA")),
+            "stream codec should be PCMU or PCMA, got {:?}",
+            s.codec
+        );
+    }
+
+    // Export to WAV
+    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let wav_path = tmp_dir.path().join("test_output.wav");
+
+    let result = export_dialog_to_wav(&streams_with_audio, &wav_path);
+    assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
+
+    let summary = result.expect("export succeeded");
+    assert!(summary.contains("Exported"), "summary should confirm export: {summary}");
+
+    // Verify the WAV file exists and has reasonable size
+    let wav_metadata = std::fs::metadata(&wav_path).expect("WAV file should exist");
+    let wav_size = wav_metadata.len();
+    assert!(wav_size > 44, "WAV file should be larger than just the 44-byte header, got {wav_size} bytes");
+    assert!(wav_size > 1000, "WAV file should contain meaningful audio data, got {wav_size} bytes");
+
+    // Read the WAV file and verify it's valid
+    let wav_data = std::fs::read(&wav_path).expect("read WAV file");
+
+    // Check RIFF header
+    assert_eq!(&wav_data[0..4], b"RIFF", "WAV should start with RIFF");
+    assert_eq!(&wav_data[8..12], b"WAVE", "WAV should have WAVE marker");
+    assert_eq!(&wav_data[12..16], b"fmt ", "WAV should have fmt chunk");
+
+    // Check sample rate (bytes 24-27, little-endian u32)
+    let sample_rate = u32::from_le_bytes([wav_data[24], wav_data[25], wav_data[26], wav_data[27]]);
+    assert_eq!(sample_rate, 8000, "G.711 WAV should be 8000 Hz, got {sample_rate}");
+
+    // Check bits per sample (bytes 34-35, little-endian u16)
+    let bits = u16::from_le_bytes([wav_data[34], wav_data[35]]);
+    assert_eq!(bits, 16, "WAV should be 16-bit PCM, got {bits}");
+
+    // Verify the audio is NOT all silence — at least some samples should be non-zero
+    let data_offset = 44usize; // Standard WAV header size
+    let pcm_data = &wav_data[data_offset..];
+    let non_zero_samples = pcm_data
+        .chunks_exact(2)
+        .filter(|chunk| {
+            let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+            sample.unsigned_abs() > 100 // threshold above noise floor
+        })
+        .count();
+
+    let total_samples = pcm_data.len() / 2;
+    let non_zero_pct = (non_zero_samples as f64 / total_samples as f64) * 100.0;
+
+    assert!(
+        non_zero_samples > 10,
+        "WAV should contain audible audio (non-silent samples), \
+         got {non_zero_samples}/{total_samples} ({non_zero_pct:.1}%) above threshold"
+    );
+}
+
+/// Verify that a pcap with only SIP (no RTP) produces an empty payload buffer,
+/// and WAV export returns an appropriate error.
+#[test]
+fn wav_export_no_rtp_returns_error() {
+    use sipnab::rtp::audio_export::export_dialog_to_wav;
+
+    let pcap_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/pcap-samples/sip-register.pcap");
+    let data = std::fs::read(&pcap_path).expect("read pcap");
+    let reader = PcapReader::new(&data).expect("parse pcap");
+    let link_type = reader.link_type as i32;
+
+    let mut store = StreamStore::new(1000);
+
+    for pkt in reader {
+        let ts = chrono::DateTime::from_timestamp(
+            pkt.timestamp_secs as i64,
+            (pkt.timestamp_usecs as u64 * 1000).min(999_999_999) as u32,
+        )
+        .unwrap_or_default();
+
+        let caplen = pkt.data.len();
+        let origlen = pkt.orig_len as usize;
+        let packet = Packet::new(ts, pkt.data, caplen, origlen, None, link_type);
+        if let Ok(pp) = parse_packet(&packet) {
+            if sipnab::rtp::is_rtp_packet(&pp.payload) {
+                if let Ok(hdr) = parse_rtp_header(&pp.payload) {
+                    store.process_rtp(&pp, &hdr, ts);
+                }
+            }
+        }
+    }
+
+    let streams: Vec<&RtpStream> = store.iter().collect();
+    let tmp_dir = tempfile::tempdir().expect("create temp dir");
+    let wav_path = tmp_dir.path().join("should_not_exist.wav");
+
+    let result = export_dialog_to_wav(&streams, &wav_path);
+    assert!(result.is_err(), "WAV export should fail when no G.711 streams exist");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // TEST: WASM get_streams / get_stream_detail
 //
 // The WASM module is gated behind `cfg(target_arch = "wasm32")`, so
