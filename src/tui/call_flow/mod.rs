@@ -98,4 +98,6 @@ pub struct FormattedMessage {
     pub sdp_badge: Option<String>,
     /// Whether this message is a retransmission.
     pub is_retransmission: bool,
+    /// Whether this message has an RTP bar in its extra_lines (for drill-down to stream detail).
+    pub is_rtp_bar: bool,
 }

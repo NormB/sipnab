@@ -760,6 +760,8 @@ pub struct App {
     cached_displayed_count: usize,
     /// Cached rendered message count for the current call flow (after folding).
     cached_flow_msg_count: usize,
+    /// Indices of FormattedMessages that carry an RTP bar (for Enter drill-down).
+    cached_rtp_bar_indices: std::collections::HashSet<usize>,
     /// Call flow line cache: `(call_id, msg_count) -> formatted lines`.
     /// Invalidated when the dialog's message count changes.
     call_flow_cache: HashMap<String, (usize, Vec<Line<'static>>)>,
@@ -852,6 +854,7 @@ impl App {
             cached_dialog_count: 0,
             cached_displayed_count: 0,
             cached_flow_msg_count: 0,
+            cached_rtp_bar_indices: std::collections::HashSet::new(),
             call_flow_cache: HashMap::new(),
             save_path: String::new(),
             save_cursor: 0,
@@ -1188,8 +1191,15 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 };
 
                 // Update cached rendered message count (excluding spacers)
+                // and track which indices carry an RTP bar for Enter drill-down
                 if let Some((_, ref msgs)) = prepared {
                     app.cached_flow_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                    app.cached_rtp_bar_indices = msgs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| m.is_rtp_bar)
+                        .map(|(i, _)| i)
+                        .collect();
                 }
 
                 // Render ladder using direct buffer painting
@@ -2775,16 +2785,33 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             app.detail_scroll = 0;
         }
         KeyCode::Enter => {
-            // Open full-screen raw message view for the selected message
             if let View::CallFlow(ref call_id) = app.current_view
                 && app.selected_msg_index < msg_count
             {
-                let cid = call_id.clone();
-                app.raw_msg_scroll = 0;
-                app.current_view = View::RawMessage {
-                    call_id: cid,
-                    message_index: app.selected_msg_index,
-                };
+                if app.cached_rtp_bar_indices.contains(&app.selected_msg_index) {
+                    // RTP bar selected — drill down to stream detail for this dialog
+                    let cid = call_id.clone();
+                    let stream_key = app.stream_store.try_read().and_then(|store| {
+                        store
+                            .iter()
+                            .find(|s| s.associated_dialog.as_deref() == Some(&cid))
+                            .map(|s| s.key.clone())
+                    });
+                    if let Some(key) = stream_key {
+                        app.current_view = View::StreamDetail(key);
+                    } else {
+                        app.status_error =
+                            Some("No RTP stream found for this dialog".to_string());
+                    }
+                } else {
+                    // Open full-screen raw message view for the selected message
+                    let cid = call_id.clone();
+                    app.raw_msg_scroll = 0;
+                    app.current_view = View::RawMessage {
+                        call_id: cid,
+                        message_index: app.selected_msg_index,
+                    };
+                }
             }
         }
         KeyCode::Char(' ') => {
@@ -3285,6 +3312,7 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.selected_msg_index = 0;
     app.call_flow_scroll = 0;
     app.cached_flow_msg_count = 0;
+    app.cached_rtp_bar_indices.clear();
     app.fold_expanded.clear();
     app.mark_index = None;
     app.current_view = View::CallList;

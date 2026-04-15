@@ -76,6 +76,45 @@ class MockSipnabSession {
       }
     ];
 
+    this._streams = [
+      {
+        ssrc: 305419896,
+        codec: "PCMU",
+        payload_type: 0,
+        src: "10.0.2.20:6000",
+        dst: "10.0.2.15:7000",
+        packets: 1875,
+        jitter_ms: 2.84,
+        loss_pct: 0.27,
+        lost_packets: 5,
+        mos: 4.38,
+        duration_secs: 8.53,
+        associated_dialog: "12013223@10.0.2.20",
+        orphaned: false,
+        first_seen: "2026-04-14T14:53:01.810Z",
+        last_seen: "2026-04-14T14:53:10.340Z",
+        octet_count: 300000
+      },
+      {
+        ssrc: 2271560481,
+        codec: "PCMU",
+        payload_type: 0,
+        src: "10.0.2.15:7000",
+        dst: "10.0.2.20:6000",
+        packets: 1875,
+        jitter_ms: 3.41,
+        loss_pct: 0.54,
+        lost_packets: 10,
+        mos: 4.31,
+        duration_secs: 8.53,
+        associated_dialog: "12013223@10.0.2.20",
+        orphaned: false,
+        first_seen: "2026-04-14T14:53:01.830Z",
+        last_seen: "2026-04-14T14:53:10.360Z",
+        octet_count: 300000
+      }
+    ];
+
     this._flows = {
       "12013223@10.0.2.20": [
         { timestamp: "2026-04-14T14:52:59.666Z", is_request: true, method: "INVITE", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
@@ -121,12 +160,36 @@ class MockSipnabSession {
     };
   }
 
+  get_streams() {
+    return JSON.stringify(this._streams);
+  }
+
+  get_stream_detail(ssrc, src, dst) {
+    var s = this._streams.find(function(st) {
+      return st.ssrc === ssrc && st.src === src && st.dst === dst;
+    });
+    if (!s) return "{}";
+    // Add quality_intervals and burst_gap for detail view
+    return JSON.stringify(Object.assign({}, s, {
+      clock_rate: 8000,
+      cn_frames: 0,
+      quality_intervals: [
+        { timestamp: "2026-04-14T14:53:02Z", jitter_ms: 2.1, loss_pct: 0.0, packets: 250, mos: 4.41 },
+        { timestamp: "2026-04-14T14:53:07Z", jitter_ms: 3.8, loss_pct: 0.5, packets: 248, mos: 4.32 },
+        { timestamp: "2026-04-14T14:53:12Z", jitter_ms: 2.5, loss_pct: 0.0, packets: 250, mos: 4.40 }
+      ],
+      burst_gap: null
+    }));
+  }
+
   load_pcap(_data) {
     console.warn("Using MOCK session — WASM module not loaded. Showing sample data.");
     return JSON.stringify({
       packets: 4269,
       sip_messages: 20,
-      dialogs: 5
+      dialogs: 5,
+      rtp_packets: 3750,
+      streams: 2
     });
   }
 
@@ -248,12 +311,17 @@ function $$(sel) { return document.querySelectorAll(sel); }
 // ---------------------------------------------------------------------------
 
 var allDialogs = [];
+var allStreams = [];
 var filteredCallIds = null;
 var selectedCallId = null;
 var selectedMsgIndex = null;
+var selectedStream = null;  // { ssrc, src, dst }
 var currentFlow = [];
+var activeTab = "dialogs";
 var sortColumn = "index";
 var sortAsc = true;
+var streamSortColumn = "ssrc";
+var streamSortAsc = true;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -393,17 +461,22 @@ async function handleFile(file) {
     updateStat("topbar-packets", result.packets, "pkts");
     updateStat("topbar-sip", result.sip_messages, "SIP");
     updateStat("topbar-dialogs", result.dialogs, "dialogs");
+    updateStat("topbar-streams", result.streams || 0, "streams");
+    updateStat("topbar-rtp", result.rtp_packets || 0, "RTP");
 
     allDialogs = JSON.parse(session.get_dialogs());
+    allStreams = JSON.parse(session.get_streams());
     filteredCallIds = null;
     selectedCallId = null;
     selectedMsgIndex = null;
+    selectedStream = null;
     currentFlow = [];
 
     $("#dropzone").style.display = "none";
     $("#workspace").style.display = "flex";
 
     renderDialogList();
+    renderStreamList();
     clearCallFlow();
     clearRawMessage();
   } catch (err) {
@@ -948,9 +1021,11 @@ function exportData(format) {
 function setupClear() {
   $("#clear-btn").addEventListener("click", function() {
     allDialogs = [];
+    allStreams = [];
     filteredCallIds = null;
     selectedCallId = null;
     selectedMsgIndex = null;
+    selectedStream = null;
     currentFlow = [];
 
     $("#workspace").style.display = "none";
@@ -959,8 +1034,14 @@ function setupClear() {
 
     var tbody = $("#call-list-body");
     while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+    var stbody = $("#stream-list-body");
+    while (stbody.firstChild) stbody.removeChild(stbody.firstChild);
     clearCallFlow();
     clearRawMessage();
+    clearStreamDetail();
+
+    // Reset to dialogs tab
+    switchTab("dialogs");
   });
 }
 
@@ -1098,48 +1179,38 @@ function setupKeyboard() {
 
     if (!wsVisible) return;
 
-    // j/k/arrows — navigate flow messages if a dialog is selected, else call list
+    // 1/2 — switch tabs
+    if (e.key === "1") { e.preventDefault(); switchTab("dialogs"); return; }
+    if (e.key === "2") { e.preventDefault(); switchTab("streams"); return; }
+
+    // j/k/arrows — context-dependent navigation
     if (e.key === "j" || e.key === "J" || e.key === "ArrowDown") {
       e.preventDefault();
-      if (selectedCallId && currentFlow.length > 0) {
+      if (activeTab === "streams") {
+        navigateList("#stream-list-body tr", 1);
+      } else if (selectedCallId && currentFlow.length > 0) {
         // Navigate flow messages
         var newIdx = (selectedMsgIndex === null) ? 0 : Math.min(selectedMsgIndex + 1, currentFlow.length - 1);
         selectMessage(newIdx);
         var flowRows = $$("#flow-messages .flow-msg");
         if (flowRows[newIdx]) flowRows[newIdx].scrollIntoView({ block: "nearest" });
       } else {
-        // Navigate call list
-        var trs = $$("#call-list-body tr");
-        if (trs.length === 0) return;
-        var currentIdx = -1;
-        for (var i = 0; i < trs.length; i++) {
-          if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
-        }
-        var nextIdx = Math.min(currentIdx + 1, trs.length - 1);
-        if (nextIdx >= 0) trs[nextIdx].click();
-        trs[nextIdx].scrollIntoView({ block: "nearest" });
+        navigateList("#call-list-body tr", 1);
       }
       return;
     }
     if (e.key === "k" || e.key === "K" || e.key === "ArrowUp") {
       e.preventDefault();
-      if (selectedCallId && currentFlow.length > 0) {
+      if (activeTab === "streams") {
+        navigateList("#stream-list-body tr", -1);
+      } else if (selectedCallId && currentFlow.length > 0) {
         // Navigate flow messages
         var newIdx = (selectedMsgIndex === null) ? 0 : Math.max(selectedMsgIndex - 1, 0);
         selectMessage(newIdx);
         var flowRows = $$("#flow-messages .flow-msg");
         if (flowRows[newIdx]) flowRows[newIdx].scrollIntoView({ block: "nearest" });
       } else {
-        // Navigate call list
-        var trs = $$("#call-list-body tr");
-        if (trs.length === 0) return;
-        var currentIdx = -1;
-        for (var i = 0; i < trs.length; i++) {
-          if (trs[i].classList.contains("selected")) { currentIdx = i; break; }
-        }
-        var prevIdx = Math.max(currentIdx - 1, 0);
-        trs[prevIdx].click();
-        trs[prevIdx].scrollIntoView({ block: "nearest" });
+        navigateList("#call-list-body tr", -1);
       }
       return;
     }
@@ -1171,6 +1242,342 @@ function setupKeyboard() {
 }
 
 // ---------------------------------------------------------------------------
+// Tab switching
+// ---------------------------------------------------------------------------
+
+function switchTab(tab) {
+  activeTab = tab;
+  var tabs = $$(".panel-tab");
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].classList.toggle("active", tabs[i].dataset.tab === tab);
+  }
+  var contents = $$(".tab-content");
+  for (var i = 0; i < contents.length; i++) {
+    contents[i].classList.toggle("active", contents[i].id === "tab-content-" + tab);
+  }
+
+  // When switching to dialogs tab, restore dialog detail view
+  if (tab === "dialogs") {
+    clearStreamDetail();
+    if (selectedCallId) {
+      selectDialog(selectedCallId);
+    } else {
+      clearCallFlow();
+      clearRawMessage();
+    }
+  }
+  // When switching to streams tab, restore stream detail view
+  if (tab === "streams") {
+    if (selectedStream) {
+      showStreamDetail(selectedStream.ssrc, selectedStream.src, selectedStream.dst);
+    } else {
+      clearCallFlow();
+      clearRawMessage();
+      clearStreamDetail();
+      $("#panel-flow-header").textContent = "Stream Detail";
+      $("#flow-placeholder").textContent = "Select a stream to view its quality metrics";
+      $("#flow-placeholder").style.display = "flex";
+      $("#raw-placeholder").textContent = "Select a stream to view burst/gap analysis";
+      $("#raw-placeholder").style.display = "flex";
+    }
+  }
+}
+
+function setupTabs() {
+  var tabs = $$(".panel-tab");
+  for (var i = 0; i < tabs.length; i++) {
+    tabs[i].addEventListener("click", (function(tab) {
+      return function() { switchTab(tab.dataset.tab); };
+    })(tabs[i]));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RTP Stream list rendering
+// ---------------------------------------------------------------------------
+
+function getMosClass(mos) {
+  if (mos >= 4.0) return "mos-good";
+  if (mos >= 3.0) return "mos-fair";
+  return "mos-poor";
+}
+
+function formatSsrc(ssrc) {
+  return "0x" + (ssrc >>> 0).toString(16).toUpperCase().padStart(8, "0");
+}
+
+function sortStreams(streams) {
+  var sorted = streams.slice();
+  sorted.sort(function(a, b) {
+    var col = streamSortColumn;
+    var va, vb;
+    if (col === "packets" || col === "jitter_ms" || col === "loss_pct" || col === "mos" || col === "duration_secs" || col === "ssrc") {
+      va = a[col] != null ? a[col] : -1;
+      vb = b[col] != null ? b[col] : -1;
+      return streamSortAsc ? va - vb : vb - va;
+    }
+    va = (a[col] || "").toString().toLowerCase();
+    vb = (b[col] || "").toString().toLowerCase();
+    if (va < vb) return streamSortAsc ? -1 : 1;
+    if (va > vb) return streamSortAsc ? 1 : -1;
+    return 0;
+  });
+  return sorted;
+}
+
+function renderStreamList() {
+  var tbody = $("#stream-list-body");
+  var emptyEl = $("#stream-empty");
+  while (tbody.firstChild) tbody.removeChild(tbody.firstChild);
+
+  if (allStreams.length === 0) {
+    emptyEl.style.display = "block";
+    // Update tab label to show count
+    $("#tab-streams").textContent = "RTP Streams";
+    return;
+  }
+
+  emptyEl.style.display = "none";
+  $("#tab-streams").textContent = "RTP Streams (" + allStreams.length + ")";
+
+  var sorted = sortStreams(allStreams);
+
+  for (var i = 0; i < sorted.length; i++) {
+    var s = sorted[i];
+    var tr = document.createElement("tr");
+    tr.dataset.ssrc = s.ssrc;
+    tr.dataset.src = s.src;
+    tr.dataset.dst = s.dst;
+
+    if (selectedStream && selectedStream.ssrc === s.ssrc && selectedStream.src === s.src && selectedStream.dst === s.dst) {
+      tr.classList.add("selected");
+    }
+
+    appendCell(tr, formatSsrc(s.ssrc), "");
+    appendCell(tr, s.codec || "?", "");
+    appendCell(tr, s.src, "");
+    appendCell(tr, s.dst, "");
+    appendCell(tr, String(s.packets), "");
+    appendCell(tr, s.jitter_ms.toFixed(2) + "ms", "");
+    appendCell(tr, s.loss_pct.toFixed(2) + "%", s.loss_pct > 5 ? "mos-poor" : s.loss_pct > 1 ? "mos-fair" : "");
+    appendCell(tr, s.mos.toFixed(2), getMosClass(s.mos));
+    appendCell(tr, s.duration_secs.toFixed(1) + "s", "");
+
+    tr.addEventListener("click", (function(stream) {
+      return function() { selectStream(stream); };
+    })(s));
+
+    tbody.appendChild(tr);
+  }
+}
+
+function selectStream(s) {
+  selectedStream = { ssrc: s.ssrc, src: s.src, dst: s.dst };
+
+  var rows = $$("#stream-list-body tr");
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var match = parseInt(row.dataset.ssrc) === s.ssrc && row.dataset.src === s.src && row.dataset.dst === s.dst;
+    row.classList.toggle("selected", match);
+  }
+
+  showStreamDetail(s.ssrc, s.src, s.dst);
+}
+
+function setupStreamSorting() {
+  var headers = $$(".stream-sortable");
+  for (var i = 0; i < headers.length; i++) {
+    headers[i].addEventListener("click", (function(th) {
+      return function() {
+        var col = th.dataset.sort;
+        if (streamSortColumn === col) {
+          streamSortAsc = !streamSortAsc;
+        } else {
+          streamSortColumn = col;
+          streamSortAsc = true;
+        }
+
+        var allHeaders = $$(".stream-sortable");
+        for (var j = 0; j < allHeaders.length; j++) {
+          allHeaders[j].classList.remove("sort-active", "sort-asc", "sort-desc");
+        }
+        th.classList.add("sort-active", streamSortAsc ? "sort-asc" : "sort-desc");
+
+        renderStreamList();
+      };
+    })(headers[i]));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stream Detail View
+// ---------------------------------------------------------------------------
+
+function showStreamDetail(ssrc, src, dst) {
+  var detailStr = session.get_stream_detail(ssrc, src, dst);
+  var detail = JSON.parse(detailStr);
+  if (!detail || !detail.ssrc) {
+    clearStreamDetail();
+    return;
+  }
+
+  // Hide call flow, show stream detail
+  $("#flow-container").style.display = "none";
+  $("#flow-placeholder").style.display = "none";
+  $("#stream-detail").style.display = "block";
+  $("#panel-flow-header").textContent = "Stream Detail";
+
+  // Summary cards
+  var summaryEl = $("#stream-detail-summary");
+  while (summaryEl.firstChild) summaryEl.removeChild(summaryEl.firstChild);
+
+  var cards = [
+    { label: "SSRC", value: formatSsrc(detail.ssrc) },
+    { label: "Codec", value: detail.codec + " (PT " + detail.payload_type + ")" },
+    { label: "Source", value: detail.src },
+    { label: "Destination", value: detail.dst },
+    { label: "Packets", value: detail.packets.toLocaleString() },
+    { label: "Lost", value: detail.lost_packets.toLocaleString() + " (" + detail.loss_pct.toFixed(2) + "%)" },
+    { label: "Jitter", value: detail.jitter_ms.toFixed(2) + " ms" },
+    { label: "MOS", value: detail.mos.toFixed(2), cls: getMosClass(detail.mos) },
+    { label: "Duration", value: detail.duration_secs.toFixed(1) + "s" },
+    { label: "Payload", value: formatBytes(detail.octet_count) },
+    { label: "Dialog", value: detail.associated_dialog || "(orphaned)" }
+  ];
+
+  for (var i = 0; i < cards.length; i++) {
+    var card = document.createElement("div");
+    card.className = "stream-detail-card";
+
+    var lbl = document.createElement("div");
+    lbl.className = "label";
+    lbl.textContent = cards[i].label;
+
+    var val = document.createElement("div");
+    val.className = "value";
+    if (cards[i].cls) val.classList.add(cards[i].cls);
+    val.textContent = cards[i].value;
+
+    card.appendChild(lbl);
+    card.appendChild(val);
+    summaryEl.appendChild(card);
+  }
+
+  // Quality intervals table
+  var intervalsEl = $("#stream-detail-intervals");
+  while (intervalsEl.firstChild) intervalsEl.removeChild(intervalsEl.firstChild);
+
+  var intervals = detail.quality_intervals || [];
+  if (intervals.length > 0) {
+    var tbl = document.createElement("table");
+    var thead = document.createElement("thead");
+    var headerRow = document.createElement("tr");
+    var cols = ["Time", "Jitter (ms)", "Loss %", "Packets", "MOS"];
+    for (var c = 0; c < cols.length; c++) {
+      var th = document.createElement("th");
+      th.textContent = cols[c];
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    tbl.appendChild(thead);
+
+    var tbody = document.createElement("tbody");
+    for (var r = 0; r < intervals.length; r++) {
+      var qi = intervals[r];
+      var row = document.createElement("tr");
+      appendCell(row, new Date(qi.timestamp).toLocaleTimeString(), "");
+      appendCell(row, qi.jitter_ms.toFixed(2), "");
+      appendCell(row, qi.loss_pct.toFixed(2), "");
+      appendCell(row, String(qi.packets), "");
+      appendCell(row, qi.mos.toFixed(2), getMosClass(qi.mos));
+      tbody.appendChild(row);
+    }
+    tbl.appendChild(tbody);
+    intervalsEl.appendChild(tbl);
+  } else {
+    var noData = document.createElement("div");
+    noData.className = "stream-empty";
+    noData.textContent = "No quality intervals recorded (stream too short).";
+    intervalsEl.appendChild(noData);
+  }
+
+  // Burst/gap in bottom pane
+  showBurstGap(detail);
+}
+
+function showBurstGap(detail) {
+  var rawPlaceholder = $("#raw-placeholder");
+  var rawMessage = $("#raw-message");
+  var burstGapEl = $("#stream-burst-gap");
+
+  rawPlaceholder.style.display = "none";
+  rawMessage.style.display = "none";
+  burstGapEl.style.display = "block";
+  $("#panel-raw-header").textContent = "Burst/Gap Analysis";
+
+  while (burstGapEl.firstChild) burstGapEl.removeChild(burstGapEl.firstChild);
+
+  var bg = detail.burst_gap;
+  if (!bg) {
+    var noData = document.createElement("div");
+    noData.className = "stream-empty";
+    noData.textContent = "No burst/gap data (zero packet loss detected).";
+    burstGapEl.appendChild(noData);
+    return;
+  }
+
+  var grid = document.createElement("div");
+  grid.className = "burst-gap-grid";
+
+  var items = [
+    { label: "Bursty", value: bg.is_bursty ? "Yes" : "No", cls: bg.is_bursty ? "mos-poor" : "mos-good" },
+    { label: "Burst Count", value: String(bg.burst_count) },
+    { label: "Avg Burst Duration", value: bg.burst_duration_ms.toFixed(1) + " ms" },
+    { label: "Avg Gap Duration", value: bg.gap_duration_ms.toFixed(1) + " ms" },
+    { label: "Burst Loss Rate", value: (bg.burst_loss_rate * 100).toFixed(2) + "%" },
+    { label: "Gap Loss Rate", value: (bg.gap_loss_rate * 100).toFixed(2) + "%" }
+  ];
+
+  for (var i = 0; i < items.length; i++) {
+    var card = document.createElement("div");
+    card.className = "burst-gap-card";
+
+    var lbl = document.createElement("div");
+    lbl.className = "label";
+    lbl.textContent = items[i].label;
+
+    var val = document.createElement("div");
+    val.className = "value";
+    if (items[i].cls) val.classList.add(items[i].cls);
+    val.textContent = items[i].value;
+
+    card.appendChild(lbl);
+    card.appendChild(val);
+    grid.appendChild(card);
+  }
+
+  burstGapEl.appendChild(grid);
+}
+
+function clearStreamDetail() {
+  $("#stream-detail").style.display = "none";
+  var burstGapEl = $("#stream-burst-gap");
+  if (burstGapEl) {
+    burstGapEl.style.display = "none";
+    while (burstGapEl.firstChild) burstGapEl.removeChild(burstGapEl.firstChild);
+  }
+  // Restore headers
+  $("#panel-flow-header").textContent = "Call Flow";
+  $("#panel-raw-header").textContent = "Raw Message";
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
@@ -1178,6 +1585,8 @@ async function init() {
   await initSession();
   setupDropzone();
   setupSorting();
+  setupStreamSorting();
+  setupTabs();
   setupFilter();
   setupExport();
   setupClear();

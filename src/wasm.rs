@@ -26,6 +26,7 @@ pub struct SipnabSession {
     stream_store: StreamStore,
     packet_count: u64,
     sip_count: u64,
+    rtp_count: u64,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -39,6 +40,7 @@ impl SipnabSession {
             stream_store: StreamStore::new(50_000),
             packet_count: 0,
             sip_count: 0,
+            rtp_count: 0,
         }
     }
 
@@ -49,6 +51,7 @@ impl SipnabSession {
         self.stream_store.clear();
         self.packet_count = 0;
         self.sip_count = 0;
+        self.rtp_count = 0;
 
         let reader =
             PcapReader::new(data).map_err(|e| JsError::new(&e.to_string()))?;
@@ -68,20 +71,28 @@ impl SipnabSession {
             let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, None, link_type);
 
             if let Ok(parsed) = parse_packet(&capture_pkt) {
-                if !parsed.payload.is_empty()
-                    && sip::is_sip_message(&parsed.payload)
-                {
-                    if let Ok(sip_msg) = parse_sip(
-                        &parsed.payload,
-                        parsed.timestamp,
-                        parsed.src_addr,
-                        parsed.dst_addr,
-                        parsed.src_port,
-                        parsed.dst_port,
-                        parsed.transport,
-                    ) {
-                        self.dialog_store.process_message(sip_msg);
-                        self.sip_count += 1;
+                if !parsed.payload.is_empty() {
+                    if sip::is_sip_message(&parsed.payload) {
+                        if let Ok(sip_msg) = parse_sip(
+                            &parsed.payload,
+                            parsed.timestamp,
+                            parsed.src_addr,
+                            parsed.dst_addr,
+                            parsed.src_port,
+                            parsed.dst_port,
+                            parsed.transport,
+                        ) {
+                            self.dialog_store.process_message(sip_msg);
+                            self.sip_count += 1;
+                        }
+                    } else if crate::rtp::is_rtp_packet(&parsed.payload) {
+                        if let Ok(rtp_hdr) =
+                            crate::rtp::parser::parse_rtp_header(&parsed.payload)
+                        {
+                            self.stream_store
+                                .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
+                            self.rtp_count += 1;
+                        }
                     }
                 }
             }
@@ -91,6 +102,8 @@ impl SipnabSession {
             "packets": self.packet_count,
             "sip_messages": self.sip_count,
             "dialogs": self.dialog_store.len(),
+            "rtp_packets": self.rtp_count,
+            "streams": self.stream_store.len(),
         })
         .to_string())
     }
@@ -264,5 +277,153 @@ impl SipnabSession {
     }
     pub fn sip_message_count(&self) -> u64 {
         self.sip_count
+    }
+    pub fn stream_count(&self) -> u32 {
+        self.stream_store.len() as u32
+    }
+    pub fn rtp_packet_count(&self) -> u64 {
+        self.rtp_count
+    }
+
+    /// Get all RTP streams as JSON array.
+    pub fn get_streams(&self) -> String {
+        use crate::rtp::quality::estimate_mos;
+
+        let streams: Vec<serde_json::Value> = self
+            .stream_store
+            .iter()
+            .map(|s| {
+                let total = s.packet_count + s.lost_packets;
+                let loss_pct = if total > 0 {
+                    (s.lost_packets as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                };
+                let jitter_ms = s.jitter;
+                let mos = estimate_mos(
+                    jitter_ms,
+                    loss_pct,
+                    s.codec.as_deref(),
+                );
+                let duration_secs = s
+                    .last_seen
+                    .signed_duration_since(s.first_seen)
+                    .num_milliseconds() as f64
+                    / 1000.0;
+
+                serde_json::json!({
+                    "ssrc": s.key.ssrc,
+                    "codec": s.codec.as_deref().unwrap_or("?"),
+                    "payload_type": s.payload_type,
+                    "src": s.key.src.to_string(),
+                    "dst": s.key.dst.to_string(),
+                    "packets": s.packet_count,
+                    "jitter_ms": (jitter_ms * 100.0).round() / 100.0,
+                    "loss_pct": (loss_pct * 100.0).round() / 100.0,
+                    "lost_packets": s.lost_packets,
+                    "mos": (mos * 100.0).round() / 100.0,
+                    "duration_secs": (duration_secs * 100.0).round() / 100.0,
+                    "associated_dialog": s.associated_dialog,
+                    "orphaned": s.orphaned,
+                    "first_seen": s.first_seen.to_rfc3339(),
+                    "last_seen": s.last_seen.to_rfc3339(),
+                    "octet_count": s.octet_count,
+                })
+            })
+            .collect();
+        serde_json::to_string(&streams).unwrap_or_default()
+    }
+
+    /// Get detailed JSON for a single RTP stream identified by SSRC + src + dst.
+    pub fn get_stream_detail(&self, ssrc: u32, src: &str, dst: &str) -> String {
+        use crate::rtp::quality::estimate_mos;
+        use crate::rtp::stream::StreamKey;
+        use std::net::SocketAddr;
+
+        let src_addr: SocketAddr = match src.parse() {
+            Ok(a) => a,
+            Err(_) => return "{}".to_string(),
+        };
+        let dst_addr: SocketAddr = match dst.parse() {
+            Ok(a) => a,
+            Err(_) => return "{}".to_string(),
+        };
+
+        let key = StreamKey {
+            ssrc,
+            src: src_addr,
+            dst: dst_addr,
+        };
+
+        let Some(s) = self.stream_store.get(&key) else {
+            return "{}".to_string();
+        };
+
+        let total = s.packet_count + s.lost_packets;
+        let loss_pct = if total > 0 {
+            (s.lost_packets as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
+        let jitter_ms = s.jitter;
+        let mos = estimate_mos(jitter_ms, loss_pct, s.codec.as_deref());
+        let duration_secs = s
+            .last_seen
+            .signed_duration_since(s.first_seen)
+            .num_milliseconds() as f64
+            / 1000.0;
+
+        let intervals: Vec<serde_json::Value> = s
+            .quality_intervals
+            .iter()
+            .map(|qi| {
+                serde_json::json!({
+                    "timestamp": qi.timestamp.to_rfc3339(),
+                    "jitter_ms": (qi.jitter_ms * 100.0).round() / 100.0,
+                    "loss_pct": (qi.loss_pct * 100.0).round() / 100.0,
+                    "packets": qi.packets,
+                    "mos": (estimate_mos(
+                        qi.jitter_ms,
+                        qi.loss_pct,
+                        s.codec.as_deref(),
+                    ) * 100.0).round() / 100.0,
+                })
+            })
+            .collect();
+
+        let burst_gap = s.burst_gap_analysis().map(|bg| {
+            serde_json::json!({
+                "burst_count": bg.burst_count,
+                "burst_duration_ms": (bg.burst_duration_ms * 10.0).round() / 10.0,
+                "gap_duration_ms": (bg.gap_duration_ms * 10.0).round() / 10.0,
+                "burst_loss_rate": (bg.burst_loss_rate * 10000.0).round() / 10000.0,
+                "gap_loss_rate": (bg.gap_loss_rate * 10000.0).round() / 10000.0,
+                "is_bursty": bg.is_bursty,
+            })
+        });
+
+        serde_json::json!({
+            "ssrc": s.key.ssrc,
+            "codec": s.codec.as_deref().unwrap_or("?"),
+            "payload_type": s.payload_type,
+            "clock_rate": s.clock_rate,
+            "src": s.key.src.to_string(),
+            "dst": s.key.dst.to_string(),
+            "packets": s.packet_count,
+            "jitter_ms": (jitter_ms * 100.0).round() / 100.0,
+            "loss_pct": (loss_pct * 100.0).round() / 100.0,
+            "lost_packets": s.lost_packets,
+            "mos": (mos * 100.0).round() / 100.0,
+            "duration_secs": (duration_secs * 100.0).round() / 100.0,
+            "associated_dialog": s.associated_dialog,
+            "orphaned": s.orphaned,
+            "first_seen": s.first_seen.to_rfc3339(),
+            "last_seen": s.last_seen.to_rfc3339(),
+            "octet_count": s.octet_count,
+            "cn_frames": s.cn_frames,
+            "quality_intervals": intervals,
+            "burst_gap": burst_gap,
+        })
+        .to_string()
     }
 }

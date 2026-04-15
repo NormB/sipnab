@@ -253,6 +253,7 @@ pub fn prepare_messages(
         }
 
         // RTP marker: placed on ACK to INVITE (media starts after ACK, not on 200 OK)
+        let mut has_rtp_bar = false;
         if show_rtp {
             // Track the codec from 200 OK SDP for display on the ACK bar
             let is_invite_200 = !msg.is_request
@@ -271,6 +272,7 @@ pub fn prepare_messages(
                 && !in_call;
             if is_invite_ack {
                 in_call = true;
+                has_rtp_bar = true;
                 let ind = " ".repeat(ts_width + 1);
                 let ts_str = msg.timestamp.format("%H:%M:%S%.3f").to_string();
                 let bar_text = if let Some(ref codec) = pending_rtp_codec {
@@ -308,6 +310,7 @@ pub fn prepare_messages(
             is_spacer: false,
             sdp_badge: None,
             is_retransmission: msg.is_retransmission,
+            is_rtp_bar: has_rtp_bar,
         });
     }
 
@@ -408,6 +411,7 @@ pub fn prepare_messages(
                         is_spacer: true,
                         sdp_badge: None,
                         is_retransmission: false,
+                        is_rtp_bar: false,
                     });
                 }
                 prev_ts_raw = msg.raw_timestamp;
