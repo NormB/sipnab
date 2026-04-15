@@ -690,9 +690,6 @@ fn run_tui_mode(
                     if paused_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
                         continue;
                     }
-                    if !port_in_range(pp.src_port, pp.dst_port, portrange) {
-                        continue;
-                    }
                     tui_process_packet(pp, &ds, &ss, &mut rtp_heuristic, &cli_clone, no_rtp);
                 }
 
@@ -1103,10 +1100,9 @@ fn run_batch_mode(
 
             let pp = hep_unwrapped.as_ref().unwrap_or(pp);
 
-            // Port range filtering: skip packets outside the configured range
-            if !port_in_range(pp.src_port, pp.dst_port, portrange) {
-                continue;
-            }
+            // Port range filtering only applies to SIP detection — RTP uses
+            // dynamic ports negotiated via SDP and must not be filtered here.
+            // The filter is applied inside process_parsed_packet for SIP only.
 
             // Attempt TLS decryption for TCP payloads when --keylog is active
             #[cfg(feature = "tls")]
@@ -1142,6 +1138,7 @@ fn run_batch_mode(
                 is_tls,
                 after_count,
                 &mut trailing_remaining,
+                portrange,
             );
 
             // --hep-send: forward matched SIP messages via HEP
@@ -1315,6 +1312,7 @@ fn process_parsed_packet(
     tls_decrypted: bool,
     after_count: usize,
     trailing_remaining: &mut usize,
+    portrange: (u16, u16),
 ) {
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
@@ -1335,8 +1333,12 @@ fn process_parsed_packet(
     let ws_payload = try_websocket_unwrap(pp);
     let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
 
-    // Try SIP detection first
-    if sip::is_sip_message(effective_payload) {
+    // Try SIP detection first — only on packets matching the SIP port range.
+    // RTP uses dynamic ports negotiated via SDP and is detected below without
+    // port filtering.
+    if port_in_range(pp.src_port, pp.dst_port, portrange)
+        && sip::is_sip_message(effective_payload)
+    {
         let effective_transport = match pp.transport {
             TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
             TransportProto::Tcp if tls_decrypted => TransportProto::Tls,
