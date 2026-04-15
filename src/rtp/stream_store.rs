@@ -4,9 +4,10 @@
 //! creating or updating streams as RTP/RTCP packets arrive. It handles
 //! dialog linking (from SDP), orphan detection, and capacity eviction.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
+
+use indexmap::IndexMap;
 
 use chrono::{DateTime, Utc};
 
@@ -18,13 +19,11 @@ use crate::capture::ParsedPacket;
 /// Central store for all tracked RTP streams.
 ///
 /// Streams are indexed by [`StreamKey`] for O(1) lookup. When the store
-/// reaches its capacity limit, the oldest stream (by `last_seen`) is
+/// reaches its capacity limit, the oldest stream (by insertion order) is
 /// evicted to make room.
 pub struct StreamStore {
-    /// All tracked streams, stored contiguously for iteration performance.
-    streams: Vec<RtpStream>,
-    /// Maps stream keys to indices in `streams` for O(1) lookup.
-    index: HashMap<StreamKey, usize>,
+    /// All tracked streams, keyed by [`StreamKey`] in insertion order.
+    streams: IndexMap<StreamKey, RtpStream>,
     /// Maximum number of concurrent streams before eviction.
     max_streams: usize,
 }
@@ -33,8 +32,7 @@ impl StreamStore {
     /// Create a new store with the given stream capacity limit.
     pub fn new(max_streams: usize) -> Self {
         Self {
-            streams: Vec::new(),
-            index: HashMap::new(),
+            streams: IndexMap::with_capacity(max_streams.min(1024)),
             max_streams,
         }
     }
@@ -57,15 +55,13 @@ impl StreamStore {
 
         let payload_len = parsed.payload.len().saturating_sub(rtp.payload_offset);
 
-        if let Some(&idx) = self.index.get(&key) {
-            self.streams[idx].update(rtp, timestamp, payload_len);
+        if let Some(stream) = self.streams.get_mut(&key) {
+            stream.update(rtp, timestamp, payload_len);
         } else {
             self.ensure_capacity();
-            let idx = self.streams.len();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
-            self.streams.push(stream);
-            self.index.insert(key, idx);
+            self.streams.insert(key, stream);
         }
     }
 
@@ -83,7 +79,7 @@ impl StreamStore {
 
             for report in reports {
                 // Find any stream with this SSRC and update it
-                if let Some(stream) = self.streams.iter_mut().find(|s| s.key.ssrc == report.ssrc) {
+                if let Some(stream) = self.streams.values_mut().find(|s| s.key.ssrc == report.ssrc) {
                     stream.jitter = report.jitter as f64;
                     stream.lost_packets = u64::from(report.cumulative_lost);
                 }
@@ -97,7 +93,7 @@ impl StreamStore {
     /// media address and port plus the dialog's Call-ID. Any stream whose
     /// source or destination matches the media endpoint gets linked.
     pub fn link_to_dialog(&mut self, media_addr: IpAddr, media_port: u16, call_id: &str) {
-        for stream in &mut self.streams {
+        for stream in self.streams.values_mut() {
             let src_match =
                 stream.key.src.ip() == media_addr && stream.key.src.port() == media_port;
             let dst_match =
@@ -119,7 +115,7 @@ impl StreamStore {
             Err(_) => chrono::Duration::days(365),
         };
 
-        for stream in &mut self.streams {
+        for stream in self.streams.values_mut() {
             if stream.associated_dialog.is_none()
                 && !stream.orphaned
                 && now.signed_duration_since(stream.first_seen) >= timeout_chrono
@@ -131,12 +127,12 @@ impl StreamStore {
 
     /// Look up a stream by its key.
     pub fn get(&self, key: &StreamKey) -> Option<&RtpStream> {
-        self.index.get(key).map(|&idx| &self.streams[idx])
+        self.streams.get(key)
     }
 
     /// Iterate over all tracked streams.
     pub fn iter(&self) -> impl Iterator<Item = &RtpStream> {
-        self.streams.iter()
+        self.streams.values()
     }
 
     /// Total number of tracked streams.
@@ -152,40 +148,17 @@ impl StreamStore {
     /// Remove all streams from the store.
     pub fn clear(&mut self) {
         self.streams.clear();
-        self.index.clear();
     }
 
     /// Count of streams flagged as orphaned.
     pub fn orphaned_count(&self) -> usize {
-        self.streams.iter().filter(|s| s.orphaned).count()
+        self.streams.values().filter(|s| s.orphaned).count()
     }
 
-    /// Evict the oldest stream if at capacity.
+    /// Evict the oldest stream (first entry in insertion order) if at capacity.
     fn ensure_capacity(&mut self) {
         if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
-            // Find the stream with the oldest last_seen
-            if let Some((oldest_idx, _)) = self
-                .streams
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, s)| s.last_seen)
-            {
-                self.evict(oldest_idx);
-            }
-        }
-    }
-
-    /// Remove a stream by index, maintaining index consistency via swap-remove.
-    fn evict(&mut self, idx: usize) {
-        // Remove the old key from the index
-        self.index.remove(&self.streams[idx].key);
-
-        // Swap-remove for O(1) deletion
-        self.streams.swap_remove(idx);
-
-        // If we swapped an element into `idx`, update its index entry
-        if idx < self.streams.len() {
-            self.index.insert(self.streams[idx].key.clone(), idx);
+            self.streams.shift_remove_index(0);
         }
     }
 }

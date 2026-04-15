@@ -2189,6 +2189,7 @@ dependencies = [
  "etherparse",
  "expectrl",
  "http-body-util",
+ "indexmap",
  "insta",
  "js-sys",
  "libc",

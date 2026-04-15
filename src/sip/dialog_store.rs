@@ -5,7 +5,7 @@
 //! dialog creation, state machine updates, timing, SDP tracking,
 //! retransmission detection, and capacity-based eviction.
 
-use std::collections::{HashMap, VecDeque};
+use indexmap::IndexMap;
 
 use super::SipMessage;
 use super::dialog::{DialogState, SipDialog, update_state};
@@ -58,10 +58,8 @@ pub struct CorrelationResult<'a> {
 /// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
 /// to make room for new ones.
 pub struct DialogStore {
-    /// All tracked dialogs, in insertion order (O(1) front eviction).
-    dialogs: VecDeque<SipDialog>,
-    /// Call-ID to index mapping for fast lookup.
-    index: HashMap<String, usize>,
+    /// All tracked dialogs, keyed by Call-ID in insertion order.
+    dialogs: IndexMap<String, SipDialog>,
     /// Maximum number of dialogs to retain.
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
@@ -79,8 +77,7 @@ impl DialogStore {
     ///   when at capacity.
     pub fn new(max_dialogs: usize, rotate: bool) -> Self {
         Self {
-            dialogs: VecDeque::with_capacity(max_dialogs.min(1024)),
-            index: HashMap::with_capacity(max_dialogs.min(1024)),
+            dialogs: IndexMap::with_capacity(max_dialogs.min(1024)),
             max_dialogs,
             rotate,
         }
@@ -104,9 +101,7 @@ impl DialogStore {
             None => return,
         };
 
-        if let Some(&idx) = self.index.get(&call_id) {
-            // Existing dialog
-            let dialog = &mut self.dialogs[idx];
+        if let Some(dialog) = self.dialogs.get_mut(&call_id) {
 
             // Retransmission detection: same CSeq number + method already seen
             if is_retransmission(dialog, &msg) {
@@ -171,26 +166,24 @@ impl DialogStore {
                 // Track SDP for the initial message
                 track_sdp(&mut dialog.sdp_timeline, &msg);
 
-                let idx = self.dialogs.len();
-                self.index.insert(call_id, idx);
-                self.dialogs.push_back(dialog);
+                self.dialogs.insert(call_id, dialog);
             }
         }
     }
 
     /// Look up a dialog by Call-ID.
     pub fn get(&self, call_id: &str) -> Option<&SipDialog> {
-        self.index.get(call_id).map(|&idx| &self.dialogs[idx])
+        self.dialogs.get(call_id)
     }
 
     /// Look up a dialog by Call-ID, returning a mutable reference.
     pub fn get_mut(&mut self, call_id: &str) -> Option<&mut SipDialog> {
-        self.index.get(call_id).map(|&idx| &mut self.dialogs[idx])
+        self.dialogs.get_mut(call_id)
     }
 
     /// Iterate over all tracked dialogs.
     pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {
-        self.dialogs.iter()
+        self.dialogs.values()
     }
 
     /// Return the total number of tracked dialogs.
@@ -206,29 +199,20 @@ impl DialogStore {
     /// Remove all dialogs from the store.
     pub fn clear(&mut self) {
         self.dialogs.clear();
-        self.index.clear();
     }
 
     /// Retain only dialogs for which `predicate` returns `true`.
-    ///
-    /// Dialogs that do not satisfy the predicate are removed and the
-    /// internal index is rebuilt.
     pub fn retain<F>(&mut self, predicate: F)
     where
         F: Fn(&SipDialog) -> bool,
     {
-        self.dialogs.retain(|d| predicate(d));
-        // Rebuild index after removal — indices may have shifted
-        self.index.clear();
-        for (idx, dialog) in self.dialogs.iter().enumerate() {
-            self.index.insert(dialog.call_id.clone(), idx);
-        }
+        self.dialogs.retain(|_, d| predicate(d));
     }
 
     /// Count dialogs in an active state (Trying, Ringing, InCall, Transferring, Pending, Active).
     pub fn active_count(&self) -> usize {
         self.dialogs
-            .iter()
+            .values()
             .filter(|d| {
                 matches!(
                     d.state,
@@ -280,7 +264,7 @@ impl DialogStore {
 
         let mut results: Vec<CorrelationResult<'_>> = Vec::new();
 
-        for candidate in &self.dialogs {
+        for candidate in self.dialogs.values() {
             if candidate.call_id == call_id {
                 continue;
             }
@@ -361,18 +345,9 @@ impl DialogStore {
             .collect()
     }
 
-    /// Evict the oldest dialog (front of the deque) to make room.
-    ///
-    /// O(1) pop_front + O(n) index decrement. No element shifting or
-    /// string cloning — just subtract 1 from every index value.
+    /// Evict the oldest dialog (first entry in insertion order).
     fn evict_oldest(&mut self) {
-        if let Some(removed) = self.dialogs.pop_front() {
-            self.index.remove(&removed.call_id);
-            // All remaining indices shifted down by 1
-            for val in self.index.values_mut() {
-                *val -= 1;
-            }
-        }
+        self.dialogs.shift_remove_index(0);
     }
 }
 
@@ -963,10 +938,10 @@ mod tests {
         assert_eq!(results[0].reason, CorrelationReason::XCallId);
     }
 
-    // ── VecDeque eviction with max_dialogs=3 ───────────────────────────
+    // ── Eviction with max_dialogs=3 ──────────────────────────────────
 
     #[test]
-    fn vecdeque_eviction_max3_rotate() {
+    fn eviction_max3_rotate() {
         let mut store = DialogStore::new(3, true);
         let t0 = base_ts();
 
