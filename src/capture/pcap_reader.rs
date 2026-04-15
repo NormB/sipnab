@@ -215,6 +215,7 @@ impl<'a> NgReader<'a> {
 // ── PcapReader public API ─────────────────────────────────────────────
 
 impl<'a> PcapReader<'a> {
+    #[must_use = "parsing result must be handled"]
     pub fn new(data: &'a [u8]) -> Result<Self> {
         ensure!(data.len() >= 12, "capture file too short");
         let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);

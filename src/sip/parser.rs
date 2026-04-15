@@ -43,6 +43,7 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
 /// Returns `Err` only when the data is clearly not a SIP message (e.g.,
 /// binary garbage, no valid first line). Partial SIP messages produce `Ok`
 /// with `parse_error` set.
+#[must_use = "parsing result must be handled"]
 pub fn parse_sip(
     data: &[u8],
     timestamp: DateTime<Utc>,

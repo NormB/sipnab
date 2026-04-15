@@ -10,7 +10,7 @@ use super::stream::RtpStream;
 use crate::sip::sdp::{SdpSession, effective_address};
 
 /// Result of diagnosing media conditions for a dialog's RTP streams.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct MediaDiagnosis {
     /// True if audio flows in only one direction.
     pub one_way_audio: bool,
