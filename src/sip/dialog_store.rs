@@ -137,13 +137,11 @@ impl DialogStore {
             }
 
             // Parse SIPREC metadata from multipart/mixed bodies
-            if let Some(ct) = msg.content_type() {
-                if ct.contains("multipart/mixed") {
-                    match crate::sip::siprec::parse_siprec_body(ct, &msg.body) {
-                        Ok(metadata) => dialog.siprec_metadata = Some(metadata),
-                        Err(_) => {} // Not a SIPREC message, ignore silently
-                    }
-                }
+            if let Some(ct) = msg.content_type()
+                && ct.contains("multipart/mixed")
+                && let Ok(metadata) = crate::sip::siprec::parse_siprec_body(ct, &msg.body)
+            {
+                dialog.siprec_metadata = Some(metadata);
             }
 
             // Record the message (move instead of clone, capped per D17)

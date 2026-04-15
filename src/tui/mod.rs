@@ -3703,7 +3703,7 @@ fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> String {
     }
 
     // Create writer (DLT_EN10MB = 1)
-    let mut writer = match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng) {
+    let mut writer = match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng, crate::capture::PcapExportMode::Raw) {
         Ok(w) => w,
         Err(e) => return format!("Save failed: {e}"),
     };

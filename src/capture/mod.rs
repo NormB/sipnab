@@ -35,7 +35,7 @@ use std::thread;
 pub use packet::Packet;
 pub use parse::ParsedPacket;
 #[cfg(feature = "native")]
-pub use writer::PcapWriter;
+pub use writer::{PcapExportMode, PcapWriter};
 
 use parse::parse_packet;
 use reassembly::{FragmentReassembler, TcpReassembler};
