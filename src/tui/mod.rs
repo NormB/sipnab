@@ -1074,7 +1074,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                             || d.src_addr.to_string().contains(&q)
                             || d.dst_addr.to_string().contains(&q)
-                            || call_list::state_display_str(&d.state).to_ascii_lowercase().contains(&q)
+                            || call_list::state_display_str(d.state()).to_ascii_lowercase().contains(&q)
                             || d.messages.iter().any(|msg| {
                                 String::from_utf8_lossy(&msg.raw)
                                     .to_ascii_lowercase()
@@ -2221,7 +2221,7 @@ fn render_statistics(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, ap
     let mut total_messages: usize = 0;
 
     for dialog in ds.iter() {
-        let state_name = match dialog.state {
+        let state_name = match dialog.state() {
             DialogState::Trying => "Trying",
             DialogState::Ringing => "Ringing",
             DialogState::InCall => "InCall",
@@ -3902,7 +3902,7 @@ fn save_to_json_path(app: &App, path_str: &str) -> String {
             serde_json::json!({
                 "call_id": d.call_id,
                 "method": d.method.as_str(),
-                "state": format_dialog_state(&d.state),
+                "state": format_dialog_state(d.state()),
                 "from_user": d.from_user,
                 "to_user": d.to_user,
                 "src_addr": d.src_addr.to_string(),
@@ -3967,7 +3967,7 @@ fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
         let obj = serde_json::json!({
             "call_id": d.call_id,
             "method": d.method.as_str(),
-            "state": format_dialog_state(&d.state),
+            "state": format_dialog_state(d.state()),
             "from_user": d.from_user,
             "to_user": d.to_user,
             "src_addr": d.src_addr.to_string(),
@@ -4014,7 +4014,7 @@ fn save_to_csv_path(app: &App, path_str: &str) -> String {
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&d.call_id),
             csv_escape(d.method.as_str()),
-            csv_escape(format_dialog_state(&d.state)),
+            csv_escape(format_dialog_state(d.state())),
             csv_escape(d.from_user.as_deref().unwrap_or("")),
             csv_escape(d.to_user.as_deref().unwrap_or("")),
             csv_escape(&d.src_addr.to_string()),
@@ -4056,7 +4056,7 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
         ));
 
         md.push_str("| Field | Value |\n|-------|-------|\n");
-        md.push_str(&format!("| State | {} |\n", format_dialog_state(&d.state)));
+        md.push_str(&format!("| State | {} |\n", format_dialog_state(d.state())));
         md.push_str(&format!(
             "| From | {} |\n",
             d.from_user.as_deref().unwrap_or("-")

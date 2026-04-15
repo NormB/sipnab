@@ -502,7 +502,7 @@ fn eval_compare(
         Field::SrcIp => compare_str(&dialog.src_addr.to_string(), op, value),
         Field::DstIp => compare_str(&dialog.dst_addr.to_string(), op, value),
         Field::State => {
-            let state_str = state_to_str(&dialog.state);
+            let state_str = state_to_str(dialog.state());
             compare_str(state_str, op, value)
         }
         Field::RtpCodec => {
@@ -993,7 +993,22 @@ mod tests {
     #[test]
     fn failed_state() {
         let mut dialog = make_dialog("1001", "2002", "INVITE");
-        dialog.state = DialogState::Failed;
+        // Drive dialog to Failed via the state machine (503 response to INVITE)
+        let raw_503 = build_sip(
+            "SIP/2.0 503 Service Unavailable",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>;tag=t2",
+                "Call-ID: test-call-id@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let fail_msg = parse_sip(&raw_503, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse 503");
+        crate::sip::dialog::update_state(&mut dialog, &fail_msg);
+        assert_eq!(*dialog.state(), DialogState::Failed);
         let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[]));
     }

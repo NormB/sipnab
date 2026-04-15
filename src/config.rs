@@ -243,6 +243,36 @@ pub struct LimitsConfig {
     pub max_audio_frames: Option<u64>,
 }
 
+impl LimitsConfig {
+    /// Validate limit values are within sane ranges.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(0) = self.dialog_limit {
+            return Err("[limits] dialog_limit must be > 0".into());
+        }
+        if let Some(0) = self.max_streams {
+            return Err("[limits] max_streams must be > 0".into());
+        }
+        if let Some(0) = self.max_reassembly {
+            return Err("[limits] max_reassembly must be > 0".into());
+        }
+        if let Some(v) = self.max_header_line
+            && v < 256
+        {
+            return Err("[limits] max_header_line must be >= 256".into());
+        }
+        if let Some(0) = self.max_headers_per_message {
+            return Err("[limits] max_headers_per_message must be > 0".into());
+        }
+        if let Some(0) = self.max_messages_per_dialog {
+            return Err("[limits] max_messages_per_dialog must be > 0".into());
+        }
+        if let Some(0) = self.max_audio_frames {
+            return Err("[limits] max_audio_frames must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
 /// Privilege settings.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -490,9 +520,9 @@ impl Config {
     /// Dump the effective configuration as TOML.
     ///
     /// Used by `--dump-config` to show what sipnab would use.
-    pub fn dump(&self) -> String {
+    pub fn dump(&self) -> Result<String, String> {
         toml::to_string_pretty(self)
-            .unwrap_or_else(|e| format!("# Failed to serialize config: {e}"))
+            .map_err(|e| format!("Failed to serialize config: {e}"))
     }
 }
 
@@ -728,5 +758,107 @@ column_selector = "F10"
         assert_eq!(config.keybindings.quit.as_deref(), Some("x"));
         assert_eq!(config.keybindings.save.as_deref(), Some("F2"));
         assert_eq!(config.keybindings.settings.as_deref(), Some("F8"));
+    }
+
+    // ── LimitsConfig validation tests ──────────────────────────────────
+
+    #[test]
+    fn limits_default_validates() {
+        let limits = LimitsConfig::default();
+        assert!(limits.validate().is_ok());
+    }
+
+    #[test]
+    fn limits_valid_values() {
+        let limits = LimitsConfig {
+            dialog_limit: Some(50000),
+            max_streams: Some(10000),
+            max_reassembly: Some(5000),
+            hep_rate_limit: Some(25000),
+            max_header_line: Some(8192),
+            max_headers_per_message: Some(200),
+            max_messages_per_dialog: Some(500),
+            max_audio_frames: Some(1500),
+        };
+        assert!(limits.validate().is_ok());
+    }
+
+    #[test]
+    fn limits_zero_dialog_limit_rejected() {
+        let limits = LimitsConfig {
+            dialog_limit: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("dialog_limit"));
+    }
+
+    #[test]
+    fn limits_zero_max_streams_rejected() {
+        let limits = LimitsConfig {
+            max_streams: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_streams"));
+    }
+
+    #[test]
+    fn limits_zero_max_reassembly_rejected() {
+        let limits = LimitsConfig {
+            max_reassembly: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_reassembly"));
+    }
+
+    #[test]
+    fn limits_small_max_header_line_rejected() {
+        let limits = LimitsConfig {
+            max_header_line: Some(255),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_header_line"));
+    }
+
+    #[test]
+    fn limits_min_max_header_line_accepted() {
+        let limits = LimitsConfig {
+            max_header_line: Some(256),
+            ..Default::default()
+        };
+        assert!(limits.validate().is_ok());
+    }
+
+    #[test]
+    fn limits_zero_max_headers_per_message_rejected() {
+        let limits = LimitsConfig {
+            max_headers_per_message: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_headers_per_message"));
+    }
+
+    #[test]
+    fn limits_zero_max_messages_per_dialog_rejected() {
+        let limits = LimitsConfig {
+            max_messages_per_dialog: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_messages_per_dialog"));
+    }
+
+    #[test]
+    fn limits_zero_max_audio_frames_rejected() {
+        let limits = LimitsConfig {
+            max_audio_frames: Some(0),
+            ..Default::default()
+        };
+        let err = limits.validate().unwrap_err();
+        assert!(err.contains("max_audio_frames"));
     }
 }

@@ -133,7 +133,13 @@ fn main() {
         }
     };
 
-    // 5a. Apply configurable security limits from [limits] section
+    // 5a. Validate limits config
+    if let Err(e) = loaded.config.limits.validate() {
+        log::error!("{e}");
+        std::process::exit(1);
+    }
+
+    // 5b. Apply configurable security limits from [limits] section
     if let Some(v) = loaded.config.limits.max_header_line {
         sipnab::sip::parser::set_parser_limits(
             v as usize,
@@ -160,7 +166,13 @@ fn main() {
         } else {
             println!("# No config file loaded (defaults only)");
         }
-        println!("{}", loaded.config.dump());
+        match loaded.config.dump() {
+            Ok(toml_str) => println!("{toml_str}"),
+            Err(e) => {
+                log::error!("Failed to dump config: {e}");
+                std::process::exit(1);
+            }
+        }
         return;
     }
 
@@ -1500,7 +1512,7 @@ fn process_parsed_packet(
                     let prev_state = sip_msg
                         .call_id()
                         .and_then(|id| dialog_store.get(id))
-                        .map(|d| d.state.to_string());
+                        .map(|d| d.state().to_string());
 
                     dialog_store.process_message(sip_msg.clone());
 
@@ -1517,7 +1529,7 @@ fn process_parsed_packet(
                     if let Some(call_id) = sip_msg.call_id()
                         && let Some(dialog) = dialog_store.get(call_id)
                     {
-                        let new_state = dialog.state.to_string();
+                        let new_state = dialog.state().to_string();
                         if prev_state.as_deref() != Some(&new_state) {
                             event_exec.fire_dialog_event(dialog);
                         }

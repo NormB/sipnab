@@ -3095,7 +3095,7 @@ mod tui_state {
                         .contains(&q)
                     || d.src_addr.to_string().contains(&q)
                     || d.dst_addr.to_string().contains(&q)
-                    || sipnab::tui::call_list::state_display_str(&d.state)
+                    || sipnab::tui::call_list::state_display_str(d.state())
                         .to_ascii_lowercase()
                         .contains(&q)
                     || d.messages.iter().any(|msg| {
@@ -3134,7 +3134,7 @@ mod tui_state {
                         .contains(&q)
                     || d.src_addr.to_string().contains(&q)
                     || d.dst_addr.to_string().contains(&q)
-                    || sipnab::tui::call_list::state_display_str(&d.state)
+                    || sipnab::tui::call_list::state_display_str(d.state())
                         .to_ascii_lowercase()
                         .contains(&q)
                     || d.messages.iter().any(|msg| {

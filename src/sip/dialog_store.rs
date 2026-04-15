@@ -217,7 +217,7 @@ impl DialogStore {
             .values()
             .filter(|d| {
                 matches!(
-                    d.state,
+                    d.state(),
                     DialogState::Trying
                         | DialogState::Ringing
                         | DialogState::InCall
@@ -474,7 +474,7 @@ mod tests {
 
         assert_eq!(store.len(), 1);
         let dialog = store.get("call-1@test").expect("dialog should exist");
-        assert_eq!(dialog.state, DialogState::InCall);
+        assert_eq!(*dialog.state(), DialogState::InCall);
         assert_eq!(dialog.messages.len(), 2);
     }
 
@@ -548,14 +548,14 @@ mod tests {
         store.process_message(make_200_ok("state-test@test", t1));
 
         let dialog = store.get("state-test@test").expect("dialog should exist");
-        assert_eq!(dialog.state, DialogState::InCall);
+        assert_eq!(*dialog.state(), DialogState::InCall);
 
         // Now process a retransmitted INVITE (same CSeq)
         store.process_message(make_invite_msg("state-test@test", t2));
 
         let dialog = store.get("state-test@test").expect("dialog should exist");
         // State should still be InCall — the retransmission should not change it
-        assert_eq!(dialog.state, DialogState::InCall);
+        assert_eq!(*dialog.state(), DialogState::InCall);
         // Should have 3 messages now (original INVITE + 200 OK + retransmitted INVITE)
         assert_eq!(dialog.messages.len(), 3);
         assert!(dialog.messages[2].is_retransmission);
@@ -586,7 +586,7 @@ mod tests {
         store.process_message(make_bye_msg("lifecycle@test", t0 + TimeDelta::seconds(60)));
 
         let dialog = store.get("lifecycle@test").expect("dialog should exist");
-        assert_eq!(dialog.state, DialogState::Completed);
+        assert_eq!(*dialog.state(), DialogState::Completed);
         assert_eq!(dialog.messages.len(), 3);
     }
 
@@ -1084,7 +1084,7 @@ mod tests {
         store.process_message(make_200_ok("refer-track@test", t1));
 
         let dialog = store.get("refer-track@test").expect("dialog should exist");
-        assert_eq!(dialog.state, DialogState::InCall);
+        assert_eq!(*dialog.state(), DialogState::InCall);
         assert!(dialog.refer_to.is_none(), "refer_to should be None before REFER");
 
         // Send REFER with Refer-To header
@@ -1107,7 +1107,7 @@ mod tests {
         store.process_message(refer);
 
         let dialog = store.get("refer-track@test").expect("dialog should exist");
-        assert_eq!(dialog.state, DialogState::Transferring);
+        assert_eq!(*dialog.state(), DialogState::Transferring);
         assert!(
             dialog.refer_to.is_some(),
             "refer_to should be populated after REFER"
