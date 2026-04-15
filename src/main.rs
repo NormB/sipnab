@@ -738,6 +738,7 @@ fn run_tui_mode(
         Some(paused_flag),
         theme,
         keymap,
+        config.display.visible_columns.clone(),
     ) {
         log::error!("TUI error: {e}");
     }

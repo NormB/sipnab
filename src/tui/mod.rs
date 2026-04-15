@@ -946,7 +946,7 @@ pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Result<()> {
-    run_tui_with_pause(dialog_store, stream_store, None, Theme::default(), Keymap::default())
+    run_tui_with_pause(dialog_store, stream_store, None, Theme::default(), Keymap::default(), None)
 }
 
 /// Run the TUI with an optional shared pause flag.
@@ -959,6 +959,7 @@ pub fn run_tui_with_pause(
     paused_flag: Option<Arc<AtomicBool>>,
     theme: Theme,
     keymap: Keymap,
+    visible_columns: Option<Vec<String>>,
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -980,6 +981,9 @@ pub fn run_tui_with_pause(
     let mut app = App::new(dialog_store, stream_store, theme, keymap);
     if let Some(flag) = paused_flag {
         app.paused_flag = flag;
+    }
+    if let Some(ref cols) = visible_columns {
+        app.call_list.apply_visible_columns(cols);
     }
 
     // Main event loop
@@ -1068,6 +1072,11 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             || d.src_addr.to_string().contains(&q)
                             || d.dst_addr.to_string().contains(&q)
                             || call_list::state_display_str(&d.state).to_ascii_lowercase().contains(&q)
+                            || d.messages.iter().any(|msg| {
+                                String::from_utf8_lossy(&msg.raw)
+                                    .to_ascii_lowercase()
+                                    .contains(&q)
+                            })
                     })
                     .count();
             }
@@ -3303,8 +3312,10 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
         ss.clear();
     }
 
-    // Reset TUI state
+    // Reset TUI state (preserve column visibility preferences)
+    let saved_columns = app.call_list.visible_columns;
     app.call_list = CallListState::new();
+    app.call_list.visible_columns = saved_columns;
     app.stream_list = StreamListState::new();
     app.active_filter = None;
     app.active_filter_text.clear();

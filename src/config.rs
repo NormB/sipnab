@@ -34,7 +34,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     );
     m.insert(
         "display",
-        ["color", "payload_limit", "delta_time"].as_slice(),
+        ["color", "payload_limit", "delta_time", "visible_columns"].as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
     m.insert(
@@ -183,6 +183,13 @@ pub struct DisplayConfig {
     pub payload_limit: Option<usize>,
     /// Show delta time by default.
     pub delta_time: Option<bool>,
+    /// Visible columns in the call list (list of column names).
+    ///
+    /// Valid names: `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`,
+    /// `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`.
+    /// When set, only the listed columns are shown; unlisted columns are hidden.
+    /// When unset, all columns are visible (the default).
+    pub visible_columns: Option<Vec<String>>,
 }
 
 /// Filter presets.
@@ -658,6 +665,27 @@ filter = "/"
         assert_eq!(parse_keycode("Esc"), Some(KeyCode::Esc));
         assert_eq!(parse_keycode("Space"), Some(KeyCode::Char(' ')));
         assert_eq!(parse_keycode("bogus_key"), None);
+    }
+
+    #[test]
+    fn parse_visible_columns() {
+        let toml_str = r##"
+[display]
+visible_columns = ["#", "Method", "From", "To", "State"]
+"##;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let cols = config.display.visible_columns.as_ref().unwrap();
+        assert_eq!(cols.len(), 5);
+        assert_eq!(cols[0], "#");
+        assert_eq!(cols[1], "Method");
+        assert_eq!(cols[4], "State");
+    }
+
+    #[test]
+    fn visible_columns_absent_is_none() {
+        let toml_str = "[display]\ncolor = \"auto\"\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.display.visible_columns.is_none());
     }
 
     #[test]
