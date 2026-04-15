@@ -108,7 +108,7 @@ fn warn_unknown_keys(value: &toml::Value) {
         None => return,
     };
 
-    let root_keys = known.get("").expect("known_keys() always inserts the root key");
+    let Some(root_keys) = known.get("") else { return };
     for key in table.keys() {
         if !root_keys.contains(&key.as_str()) {
             log::warn!("Unknown config key: {key}");

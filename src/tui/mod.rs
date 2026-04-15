@@ -2233,14 +2233,11 @@ fn render_message_diff(
     let msg1 = dialog.messages.get(msg1_idx);
     let msg2 = dialog.messages.get(msg2_idx);
 
-    if msg1.is_none() || msg2.is_none() {
+    let (Some(msg1), Some(msg2)) = (msg1, msg2) else {
         let para = Paragraph::new("Message not found.").style(Style::default().fg(theme.bad));
         frame.render_widget(para, area);
         return;
-    }
-
-    let msg1 = msg1.unwrap();
-    let msg2 = msg2.unwrap();
+    };
 
     let raw1 = String::from_utf8_lossy(&msg1.raw);
     let raw2 = String::from_utf8_lossy(&msg2.raw);
