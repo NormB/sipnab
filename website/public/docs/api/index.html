@@ -272,6 +272,8 @@
 <span class="giallo-l"><span style="color: #39BAE6;">      &quot;mode&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sendrecv&quot;</span></span>
 <span class="giallo-l"><span>    }</span></span>
 <span class="giallo-l"><span>  ]</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">  &quot;refer_to&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> null</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">  &quot;siprec_metadata&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> null</span><span style="color: #BFBDB6B3;">,</span></span>
 <span class="giallo-l"><span style="color: #39BAE6;">  &quot;diagnosis&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
 <span class="giallo-l"><span style="color: #39BAE6;">    &quot;one_way_audio&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> false</span><span style="color: #BFBDB6B3;">,</span></span>
 <span class="giallo-l"><span style="color: #39BAE6;">    &quot;nat_mismatch&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> false</span><span style="color: #BFBDB6B3;">,</span></span>
@@ -298,6 +300,12 @@
 <span class="giallo-l"><span>    }</span></span>
 <span class="giallo-l"><span>  ]</span></span>
 <span class="giallo-l"><span>}</span></span></code></pre>
+<p><strong>Additional dialog fields:</strong></p>
+<ul>
+<li><strong><code>refer_to</code></strong> – Present when a REFER transfer is detected. Contains the <code>Refer-To</code> URI extracted from the REFER request. The dialog state transitions to <code>Transferring</code> while the transfer is in progress.</li>
+<li><strong><code>siprec_metadata</code></strong> – Present when SIPREC recording metadata is detected. Parsed from <code>multipart/mixed</code> message bodies per RFC 7866. Contains the recording session XML metadata (participant info, session identifiers, media streams).</li>
+<li><strong><code>stir_shaken</code></strong> – When <code>--stir-shaken</code> validation is enabled, the <code>diagnosis.hints</code> array includes STIR/SHAKEN results. Tokens with an <code>iat</code> (issued-at) timestamp older than 60 seconds are rejected as <code>Expired</code> per RFC 8224 Section 12.</li>
+</ul>
 <p>Returns <code>404</code> if the Call-ID is not found.</p>
 <hr />
 <h3 id="get-v1-dialogs-call-id-report">GET /v1/dialogs/{call_id}/report</h3>

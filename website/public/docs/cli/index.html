@@ -257,7 +257,7 @@
 <tr><td><code>--keylog-watch</code></td><td>–</td><td>off</td><td>Watch key log file for new entries (live decryption). Feature: <code>tls</code></td></tr>
 <tr><td><code>--dtls-keylog</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>DTLS key log file for SRTP key extraction. Feature: <code>tls</code></td></tr>
 <tr><td><code>--srtp-keys</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>SRTP master keys file for RTP decryption. Feature: <code>tls</code></td></tr>
-<tr><td><code>--pcap-export-mode</code></td><td><code>&lt;MODE&gt;</code></td><td><code>decrypted</code></td><td>Pcap export mode for encrypted traffic</td></tr>
+<tr><td><code>--pcap-export-mode</code></td><td><code>&lt;MODE&gt;</code></td><td><code>decrypted</code></td><td>Pcap export mode for encrypted traffic: <code>decrypted</code> (plaintext payloads, no DSB), <code>raw</code> (original encrypted bytes, no DSB), <code>wired</code> (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt)</td></tr>
 <tr><td><code>--allow-coredump</code></td><td>–</td><td>off</td><td>Allow core dumps (do not call <code>prctl</code> to disable them)</td></tr>
 </tbody></table>
 <h2 id="privilege">Privilege</h2>

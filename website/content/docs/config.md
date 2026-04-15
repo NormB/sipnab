@@ -60,12 +60,14 @@ Output and TUI display settings.
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"` |
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
+| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values: `"method"`, `"from"`, `"to"`, `"src_ip"`, `"dst_ip"`, `"state"`, `"msgs"`, `"date"`, `"pdd"`, `"duration"`, `"codec"`, `"mos"` |
 
 ```toml
 [display]
 color = "always"
 payload_limit = 4096
 delta_time = true
+visible_columns = ["method", "from", "to", "state", "msgs", "pdd", "mos"]
 ```
 
 ### \[filter\]
@@ -243,6 +245,7 @@ no_rtp = false                     # RTP analysis enabled
 color = "always"                   # Force color even when piped
 payload_limit = 8192               # Show up to 8K of SIP body (large SDP)
 delta_time = true                  # Show timing between messages by default
+# visible_columns = ["method", "from", "to", "state", "msgs", "pdd"]  # Persistent column prefs
 
 # -- Default filter (optional) --
 [filter]

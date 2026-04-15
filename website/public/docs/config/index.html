@@ -118,11 +118,13 @@
 <tr><td><code>color</code></td><td>string</td><td><code>"auto"</code></td><td>Color mode: <code>"auto"</code>, <code>"always"</code>, <code>"never"</code></td></tr>
 <tr><td><code>payload_limit</code></td><td>integer</td><td>–</td><td>Maximum payload bytes to display</td></tr>
 <tr><td><code>delta_time</code></td><td>boolean</td><td><code>false</code></td><td>Show delta time between messages by default</td></tr>
+<tr><td><code>visible_columns</code></td><td>array of strings</td><td>all columns</td><td>Columns to display in the Call List (persisted across sessions). Values: <code>"method"</code>, <code>"from"</code>, <code>"to"</code>, <code>"src_ip"</code>, <code>"dst_ip"</code>, <code>"state"</code>, <code>"msgs"</code>, <code>"date"</code>, <code>"pdd"</code>, <code>"duration"</code>, <code>"codec"</code>, <code>"mos"</code></td></tr>
 </tbody></table>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">display</span><span>]</span></span>
 <span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span></span>
 <span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 4096</span></span>
-<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span></code></pre><h3 id="filter">[filter]</h3>
+<span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span></span>
+<span class="giallo-l"><span>visible_columns</span><span style="color: #BFBDB6B3;"> =</span><span> [</span><span style="color: #AAD94C;">&quot;method&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;from&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;to&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;state&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;msgs&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;pdd&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;mos&quot;</span><span>]</span></span></code></pre><h3 id="filter">[filter]</h3>
 <p>Default filter presets applied at startup.</p>
 <table><thead><tr><th>Key</th><th>Type</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>from</code></td><td>string</td><td>–</td><td>Default From header filter (regex)</td></tr>
@@ -254,6 +256,7 @@
 <span class="giallo-l"><span>color</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;always&quot;</span><span style="color: #5A6673;font-style: italic;">                   # Force color even when piped</span></span>
 <span class="giallo-l"><span>payload_limit</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> 8192</span><span style="color: #5A6673;font-style: italic;">               # Show up to 8K of SIP body (large SDP)</span></span>
 <span class="giallo-l"><span>delta_time</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #D2A6FF;"> true</span><span style="color: #5A6673;font-style: italic;">                  # Show timing between messages by default</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># visible_columns = [&quot;method&quot;, &quot;from&quot;, &quot;to&quot;, &quot;state&quot;, &quot;msgs&quot;, &quot;pdd&quot;]  # Persistent column prefs</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># -- Default filter (optional) --</span></span>
 <span class="giallo-l"><span>[</span><span style="color: #59C2FF;">filter</span><span>]</span></span>

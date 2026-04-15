@@ -304,6 +304,8 @@ console.log(`State: ${dialog.state}`);
       "mode": "sendrecv"
     }
   ],
+  "refer_to": null,
+  "siprec_metadata": null,
   "diagnosis": {
     "one_way_audio": false,
     "nat_mismatch": false,
@@ -331,6 +333,12 @@ console.log(`State: ${dialog.state}`);
   ]
 }
 ```
+
+**Additional dialog fields:**
+
+- **`refer_to`** -- Present when a REFER transfer is detected. Contains the `Refer-To` URI extracted from the REFER request. The dialog state transitions to `Transferring` while the transfer is in progress.
+- **`siprec_metadata`** -- Present when SIPREC recording metadata is detected. Parsed from `multipart/mixed` message bodies per RFC 7866. Contains the recording session XML metadata (participant info, session identifiers, media streams).
+- **`stir_shaken`** -- When `--stir-shaken` validation is enabled, the `diagnosis.hints` array includes STIR/SHAKEN results. Tokens with an `iat` (issued-at) timestamp older than 60 seconds are rejected as `Expired` per RFC 8224 Section 12.
 
 Returns `404` if the Call-ID is not found.
 
