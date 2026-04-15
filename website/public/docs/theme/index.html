@@ -1,109 +1,397 @@
-<!doctype html><html lang=en><head><meta charset=utf-8><meta content="width=device-width,initial-scale=1" name=viewport><title>Theme Guide -- sipnab</title><meta content="Customize sipnab's TUI colors with 11 semantic color slots and preset themes." name=description><meta content=sipnab property=og:title><meta content="SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust." property=og:description><meta content=website property=og:type><meta content=https://www.sipnab.com/docs/theme/ property=og:url><link href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>" rel=icon><link href=https://fonts.bunny.net rel=preconnect><link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel=stylesheet><link href=https://www.sipnab.com/style.css rel=stylesheet><script defer src=https://www.sipnab.com/elasticlunr.min.js></script><body><nav class=topnav id=topnav><div class=nav-inner><a class=nav-logo href=https://www.sipnab.com>sipnab</a><button aria-label="Toggle navigation" class=nav-toggle id=nav-toggle><span></span><span></span><span></span></button><div class=nav-links id=nav-links><a href=https://www.sipnab.com/analyze/>Analyze</a><a class=active href=https://www.sipnab.com/docs/>Docs</a><a href=https://www.sipnab.com/docs/install/>Install</a><a href=https://www.sipnab.com/docs/cli/>CLI</a><a href=https://www.sipnab.com/docs/config/>Config</a><a href=https://www.sipnab.com/docs/keybindings/>Keys</a><a href=https://www.sipnab.com/docs/filter-dsl/>Filter DSL</a><a class=active href=https://www.sipnab.com/docs/theme/>Theme</a><a href=https://www.sipnab.com/docs/api/>API</a></div><div class=nav-right><button aria-label=Search class=search-trigger id=search-trigger><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg></button><a aria-label=GitHub class=nav-github href=https://github.com/NormB/sipnab> <svg viewbox="0 0 24 24" fill=currentColor height=20 width=20><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg> </a></div></div></nav><div class=search-overlay id=search-overlay><div class=search-modal><div class=search-input-wrap><svg viewbox="0 0 24 24" fill=none height=18 stroke=currentColor stroke-width=2 width=18><circle cx=11 cy=11 r=8 /><line x1=21 x2=16.65 y1=21 y2=16.65 /></svg><input placeholder="Search documentation..." autocomplete=off autofocus id=search-input><kbd>Esc</kbd></div><div class=search-results id=search-results></div></div></div><main><div class=doc-layout><article class=doc-content><h1>Theme Guide</h1><blockquote><p><strong>Quick start:</strong> Create <code>~/.config/sipnab/sipnab.toml</code> with a <code>[theme]</code> section to customize colors. Or copy one of the preset themes below.</blockquote><p>sipnab’s TUI uses 11 semantic color slots that control every visual element. Customize them via the <code>[theme]</code> section in your config file.<h2 id=color-slots>Color Slots</h2><table><thead><tr><th>Slot<th>Default<th>What It Affects<tbody><tr><td><code>background</code><td><code>reset</code> (terminal default)<td>Terminal background color<tr><td><code>foreground</code><td><code>white</code><td>Default text color<tr><td><code>header</code><td><code>cyan</code><td>Status bar, column headers, endpoint labels in call flow<tr><td><code>selected</code><td><code>yellow</code><td>Selected/highlighted row, cursor position, focused item<tr><td><code>accent</code><td><code>magenta</code><td>Correlation info, PDD annotations, extended flow labels<tr><td><code>good</code><td><code>green</code><td>Positive quality (MOS > threshold), success states (InCall, Registered)<tr><td><code>warning</code><td><code>yellow</code><td>Medium quality, caution states (Ringing, CANCEL)<tr><td><code>bad</code><td><code>red</code><td>Poor quality, failures, errors, high loss/jitter<tr><td><code>muted</code><td><code>dark_gray</code><td>Separators, pipe characters, disabled text, timestamps<tr><td><code>border</code><td><code>white</code><td>Widget borders, panel frames<tr><td><code>highlight</code><td>–<td>Legacy alias for <code>selected</code> (backward compatibility only)</table><p>The internal <code>status_bg</code> color (dark blue-gray <code>#303040</code>) is not configurable and is used for the status bar background.<h2 id=supported-color-syntax>Supported Color Syntax</h2><h3 id=named-colors>Named Colors</h3><p><code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code> (or <code>grey</code>), <code>dark_gray</code> (or <code>dark_grey</code>, <code>darkgray</code>, <code>darkgrey</code>), <code>reset</code> (or <code>default</code>)<h3 id=hex-rgb>Hex RGB</h3><p><code>"#RRGGBB"</code> format, e.g., <code>"#ff8800"</code>, <code>"#1a1a2e"</code>. Requires a terminal with true-color (24-bit) support.<h2 id=how-to-apply>How to Apply</h2><p>Create or edit your config file at one of these locations (searched in order):<ol><li>Path specified via <code>--config &lt;FILE></code><li><code>$SIPNAB_CONFIG</code> environment variable<li><code>~/.config/sipnab/sipnab.toml</code><li><code>~/.sipnabrc</code><li><code>/etc/sipnab/sipnab.toml</code></ol><p>Add a <code>[theme]</code> section with the color values you want to override. Omitted fields use the built-in defaults.<h2 id=example-themes>Example Themes</h2><p>Each theme below includes a TOML config block and a live preview showing how it renders in sipnab’s TUI.<h3 id=default-ayu-mirage>Default (Ayu Mirage)</h3><p>The built-in theme works on dark terminal backgrounds without any configuration.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "reset"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "white"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "cyan"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "yellow"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "magenta"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "green"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "yellow"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "red"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "dark_gray"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "white"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Default Theme</span></div><pre class=terminal-body style=color:#cbccc6;background:#0a0e14><span style=color:#707a8c>  #  Method     From           To             State</span>
-<span style=color:#fc6>▸</span> <span style=color:#d4bfff>1  INVITE     alice          bob            </span><span style=color:#bae67e>InCall</span>
-  <span style=color:#d4bfff>2  REGISTER   admin          --             </span><span style=color:#bae67e>Registered</span>
-  <span style=color:#d4bfff>3  INVITE     charlie        dave           </span><span style=color:#fc6>Ringing</span>
-  <span style=color:#d4bfff>4  INVITE     +15551234      +15559876      </span><span style=color:#f66>Failed</span>
-  <span style=color:#d4bfff>5  INVITE     1005           1006           </span><span style=color:#bae67e>Completed</span></pre></div><h3 id=catppuccin-mocha>Catppuccin Mocha</h3><p>Pastel palette inspired by the Catppuccin color scheme.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#1e1e2e"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cdd6f4"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#89b4fa"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#f9e2af"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cba6f7"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#a6e3a1"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#fab387"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#f38ba8"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#585b70"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#6c7086"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Catppuccin Mocha</span></div><pre class=terminal-body style=color:#cdd6f4;background:#1e1e2e><span style=color:#585b70>  #  Method     From           To             State</span>
-<span style=color:#f9e2af>▸</span> <span style=color:#cba6f7>1  INVITE     alice          bob            </span><span style=color:#a6e3a1>InCall</span>
-  <span style=color:#cba6f7>2  REGISTER   admin          --             </span><span style=color:#a6e3a1>Registered</span>
-  <span style=color:#cba6f7>3  INVITE     charlie        dave           </span><span style=color:#fab387>Ringing</span>
-  <span style=color:#cba6f7>4  INVITE     +15551234      +15559876      </span><span style=color:#f38ba8>Failed</span>
-  <span style=color:#cba6f7>5  INVITE     1005           1006           </span><span style=color:#a6e3a1>Completed</span></pre></div><h3 id=nord>Nord</h3><p>Low-contrast theme based on the Nord palette. Easy on the eyes for long monitoring sessions.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#2e3440"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#d8dee9"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#88c0d0"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ebcb8b"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#b48ead"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#a3be8c"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ebcb8b"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#bf616a"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#4c566a"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#616e88"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Nord</span></div><pre class=terminal-body style=color:#d8dee9;background:#2e3440><span style=color:#4c566a>  #  Method     From           To             State</span>
-<span style=color:#ebcb8b>▸</span> <span style=color:#b48ead>1  INVITE     alice          bob            </span><span style=color:#a3be8c>InCall</span>
-  <span style=color:#b48ead>2  REGISTER   admin          --             </span><span style=color:#a3be8c>Registered</span>
-  <span style=color:#b48ead>3  INVITE     charlie        dave           </span><span style=color:#ebcb8b>Ringing</span>
-  <span style=color:#b48ead>4  INVITE     +15551234      +15559876      </span><span style=color:#bf616a>Failed</span>
-  <span style=color:#b48ead>5  INVITE     1005           1006           </span><span style=color:#a3be8c>Completed</span></pre></div><h3 id=solarized-dark>Solarized Dark</h3><pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#002b36"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#839496"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#268bd2"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#b58900"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#d33682"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#859900"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cb4b16"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#dc322f"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#586e75"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#657b83"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Solarized Dark</span></div><pre class=terminal-body style=color:#839496;background:#002b36><span style=color:#586e75>  #  Method     From           To             State</span>
-<span style=color:#b58900>▸</span> <span style=color:#d33682>1  INVITE     alice          bob            </span><span style=color:#859900>InCall</span>
-  <span style=color:#d33682>2  REGISTER   admin          --             </span><span style=color:#859900>Registered</span>
-  <span style=color:#d33682>3  INVITE     charlie        dave           </span><span style=color:#cb4b16>Ringing</span>
-  <span style=color:#d33682>4  INVITE     +15551234      +15559876      </span><span style=color:#dc322f>Failed</span>
-  <span style=color:#d33682>5  INVITE     1005           1006           </span><span style=color:#859900>Completed</span></pre></div><h3 id=gruvbox-dark>Gruvbox Dark</h3><p>Warm, retro-inspired color scheme.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#282828"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ebdbb2"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#83a598"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#fabd2f"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#d3869b"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#b8bb26"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#fe8019"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#fb4934"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#665c54"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#7c6f64"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Gruvbox Dark</span></div><pre class=terminal-body style=color:#ebdbb2;background:#282828><span style=color:#665c54>  #  Method     From           To             State</span>
-<span style=color:#fabd2f>▸</span> <span style=color:#d3869b>1  INVITE     alice          bob            </span><span style=color:#b8bb26>InCall</span>
-  <span style=color:#d3869b>2  REGISTER   admin          --             </span><span style=color:#b8bb26>Registered</span>
-  <span style=color:#d3869b>3  INVITE     charlie        dave           </span><span style=color:#fe8019>Ringing</span>
-  <span style=color:#d3869b>4  INVITE     +15551234      +15559876      </span><span style=color:#fb4934>Failed</span>
-  <span style=color:#d3869b>5  INVITE     1005           1006           </span><span style=color:#b8bb26>Completed</span></pre></div><h3 id=light-terminal>Light Terminal</h3><p>For light terminal backgrounds (white/cream). Uses darker colors for readability.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "reset"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "black"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "blue"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#b35900"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#8b008b"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#006400"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#b8860b"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#cc0000"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "gray"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "dark_gray"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>Light Terminal</span></div><pre class=terminal-body style=color:#1a1a1a;background:#f5f5f0><span style=color:#999>  #  Method     From           To             State</span>
-<span style=color:#b35900>▸</span> <span style=color:#8b008b>1  INVITE     alice          bob            </span><span style=color:#006400>InCall</span>
-  <span style=color:#8b008b>2  REGISTER   admin          --             </span><span style=color:#006400>Registered</span>
-  <span style=color:#8b008b>3  INVITE     charlie        dave           </span><span style=color:#b8860b>Ringing</span>
-  <span style=color:#8b008b>4  INVITE     +15551234      +15559876      </span><span style=color:#c00>Failed</span>
-  <span style=color:#8b008b>5  INVITE     1005           1006           </span><span style=color:#006400>Completed</span></pre></div><h3 id=high-contrast>High Contrast</h3><p>Maximum readability for accessibility or bright environments.<pre class=giallo style=color:#bfbdb6;background-color:#0d1017><code data-lang=toml><span class=giallo-l><span>[</span><span style=color:#59c2ff>theme</span><span>]</span></span>
-<span class=giallo-l><span>background</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "black"</span></span>
-<span class=giallo-l><span>foreground</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "white"</span></span>
-<span class=giallo-l><span>header</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "cyan"</span></span>
-<span class=giallo-l><span>selected</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ffff00"</span></span>
-<span class=giallo-l><span>accent</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ff00ff"</span></span>
-<span class=giallo-l><span>good</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#00ff00"</span></span>
-<span class=giallo-l><span>warning</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ffaa00"</span></span>
-<span class=giallo-l><span>bad</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "#ff0000"</span></span>
-<span class=giallo-l><span>muted</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "gray"</span></span>
-<span class=giallo-l><span>border</span><span style=color:#bfbdb6b3> =</span><span style=color:#aad94c> "white"</span></span></code></pre><div class=terminal><div class=terminal-bar><span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span><span class=terminal-title>High Contrast</span></div><pre class=terminal-body style=color:#fff;background:#000><span style=color:#999>  #  Method     From           To             State</span>
-<span style=color:#ff0>▸</span> <span style=color:#f0f>1  INVITE     alice          bob            </span><span style=color:#0f0>InCall</span>
-  <span style=color:#f0f>2  REGISTER   admin          --             </span><span style=color:#0f0>Registered</span>
-  <span style=color:#f0f>3  INVITE     charlie        dave           </span><span style=color:#fa0>Ringing</span>
-  <span style=color:#f0f>4  INVITE     +15551234      +15559876      </span><span style=color:red>Failed</span>
-  <span style=color:#f0f>5  INVITE     1005           1006           </span><span style=color:#0f0>Completed</span></pre></div><h2 id=tips>Tips</h2><ul><li>Use <code>reset</code> for <code>background</code> to inherit your terminal’s background color. This is usually the best choice.<li>Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).<li>Use <code>sipnab --dump-config</code> to verify your theme is being loaded.<li>The <code>highlight</code> key is a legacy alias for <code>selected</code>. If both are set, <code>selected</code> takes precedence.</ul><nav class=doc-prevnext><a class=doc-prev href=https://www.sipnab.com/docs/filter-dsl/>← Filter DSL</a><a class=doc-next href=https://www.sipnab.com/docs/api/>REST API & Metrics →</a></nav></article><aside class=doc-toc><div class=doc-toc-inner><span class=doc-toc-title>On this page</span><ul><li><a href=#color-slots>Color Slots</a><li><a href=#supported-color-syntax>Supported Color Syntax</a> <ul><li><a href=#named-colors>Named Colors</a><li><a href=#hex-rgb>Hex RGB</a></ul><li><a href=#how-to-apply>How to Apply</a><li><a href=#example-themes>Example Themes</a> <ul><li><a href=#default-ayu-mirage>Default (Ayu Mirage)</a><li><a href=#catppuccin-mocha>Catppuccin Mocha</a><li><a href=#nord>Nord</a><li><a href=#solarized-dark>Solarized Dark</a><li><a href=#gruvbox-dark>Gruvbox Dark</a><li><a href=#light-terminal>Light Terminal</a><li><a href=#high-contrast>High Contrast</a></ul><li><a href=#tips>Tips</a></ul></div></aside></div></main><footer class=site-footer><div class=footer-inner><div class=footer-col><span class=footer-logo>sipnab</span><span class=footer-version>v0.3.1</span></div><div class="footer-col footer-links"><a href=https://www.sipnab.com/docs/>Documentation</a><a href=https://github.com/NormB/sipnab>GitHub</a><a href=https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE>License (MIT/Apache-2.0)</a><a href=https://github.com/NormB/sipnab/blob/main/CHANGELOG.md>Changelog</a></div><div class="footer-col footer-meta"><span class=footer-credit>Built with <a href=https://www.rust-lang.org>Rust</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.linkedin.com/in/nbrandinger>Norm Brandinger</a></span><span class=footer-sep>·</span><span class=footer-credit><a href=https://www.sipnab.com>sipnab.com</a></span></div></div></footer><script>// Mobile nav toggle
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Theme Guide -- sipnab</title>
+  <meta name="description" content="Customize sipnab&#x27;s TUI colors with 11 semantic color slots and preset themes.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  
+</head>
+<body>
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" >Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" >Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" class="active">Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main>
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>Theme Guide</h1>
+    <blockquote>
+<p><strong>Quick start:</strong> Create <code>~/.config/sipnab/sipnab.toml</code> with a <code>[theme]</code> section to customize colors. Or copy one of the preset themes below.</p>
+</blockquote>
+<p>sipnab’s TUI uses 11 semantic color slots that control every visual element. Customize them via the <code>[theme]</code> section in your config file.</p>
+<h2 id="color-slots">Color Slots</h2>
+<table><thead><tr><th>Slot</th><th>Default</th><th>What It Affects</th></tr></thead><tbody>
+<tr><td><code>background</code></td><td><code>reset</code> (terminal default)</td><td>Terminal background color</td></tr>
+<tr><td><code>foreground</code></td><td><code>white</code></td><td>Default text color</td></tr>
+<tr><td><code>header</code></td><td><code>cyan</code></td><td>Status bar, column headers, endpoint labels in call flow</td></tr>
+<tr><td><code>selected</code></td><td><code>yellow</code></td><td>Selected/highlighted row, cursor position, focused item</td></tr>
+<tr><td><code>accent</code></td><td><code>magenta</code></td><td>Correlation info, PDD annotations, extended flow labels</td></tr>
+<tr><td><code>good</code></td><td><code>green</code></td><td>Positive quality (MOS &gt; threshold), success states (InCall, Registered)</td></tr>
+<tr><td><code>warning</code></td><td><code>yellow</code></td><td>Medium quality, caution states (Ringing, CANCEL)</td></tr>
+<tr><td><code>bad</code></td><td><code>red</code></td><td>Poor quality, failures, errors, high loss/jitter</td></tr>
+<tr><td><code>muted</code></td><td><code>dark_gray</code></td><td>Separators, pipe characters, disabled text, timestamps</td></tr>
+<tr><td><code>border</code></td><td><code>white</code></td><td>Widget borders, panel frames</td></tr>
+<tr><td><code>highlight</code></td><td>–</td><td>Legacy alias for <code>selected</code> (backward compatibility only)</td></tr>
+</tbody></table>
+<p>The internal <code>status_bg</code> color (dark blue-gray <code>#303040</code>) is not configurable and is used for the status bar background.</p>
+<h2 id="supported-color-syntax">Supported Color Syntax</h2>
+<h3 id="named-colors">Named Colors</h3>
+<p><code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>yellow</code>, <code>blue</code>, <code>magenta</code>, <code>cyan</code>, <code>gray</code> (or <code>grey</code>), <code>dark_gray</code> (or <code>dark_grey</code>, <code>darkgray</code>, <code>darkgrey</code>), <code>reset</code> (or <code>default</code>)</p>
+<h3 id="hex-rgb">Hex RGB</h3>
+<p><code>"#RRGGBB"</code> format, e.g., <code>"#ff8800"</code>, <code>"#1a1a2e"</code>. Requires a terminal with true-color (24-bit) support.</p>
+<h2 id="how-to-apply">How to Apply</h2>
+<p>Create or edit your config file at one of these locations (searched in order):</p>
+<ol>
+<li>Path specified via <code>--config &lt;FILE&gt;</code></li>
+<li><code>$SIPNAB_CONFIG</code> environment variable</li>
+<li><code>~/.config/sipnab/sipnab.toml</code></li>
+<li><code>~/.sipnabrc</code></li>
+<li><code>/etc/sipnab/sipnab.toml</code></li>
+</ol>
+<p>Add a <code>[theme]</code> section with the color values you want to override. Omitted fields use the built-in defaults.</p>
+<h2 id="example-themes">Example Themes</h2>
+<p>Each theme below includes a TOML config block and a live preview showing how it renders in sipnab’s TUI.</p>
+<h3 id="default-ayu-mirage">Default (Ayu Mirage)</h3>
+<p>The built-in theme works on dark terminal backgrounds without any configuration.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Default Theme</span>
+</div>
+<pre class="terminal-body" style="background:#0a0e14;color:#cbccc6"><span style="color:#707a8c">  #  Method     From           To             State</span>
+<span style="color:#ffcc66">▸</span> <span style="color:#d4bfff">1  INVITE     alice          bob            </span><span style="color:#bae67e">InCall</span>
+  <span style="color:#d4bfff">2  REGISTER   admin          --             </span><span style="color:#bae67e">Registered</span>
+  <span style="color:#d4bfff">3  INVITE     charlie        dave           </span><span style="color:#ffcc66">Ringing</span>
+  <span style="color:#d4bfff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff6666">Failed</span>
+  <span style="color:#d4bfff">5  INVITE     1005           1006           </span><span style="color:#bae67e">Completed</span></pre>
+</div>
+<h3 id="catppuccin-mocha">Catppuccin Mocha</h3>
+<p>Pastel palette inspired by the Catppuccin color scheme.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1e1e2e&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cdd6f4&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#89b4fa&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f9e2af&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cba6f7&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a6e3a1&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fab387&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f38ba8&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#585b70&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#6c7086&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Catppuccin Mocha</span>
+</div>
+<pre class="terminal-body" style="background:#1e1e2e;color:#cdd6f4"><span style="color:#585b70">  #  Method     From           To             State</span>
+<span style="color:#f9e2af">▸</span> <span style="color:#cba6f7">1  INVITE     alice          bob            </span><span style="color:#a6e3a1">InCall</span>
+  <span style="color:#cba6f7">2  REGISTER   admin          --             </span><span style="color:#a6e3a1">Registered</span>
+  <span style="color:#cba6f7">3  INVITE     charlie        dave           </span><span style="color:#fab387">Ringing</span>
+  <span style="color:#cba6f7">4  INVITE     +15551234      +15559876      </span><span style="color:#f38ba8">Failed</span>
+  <span style="color:#cba6f7">5  INVITE     1005           1006           </span><span style="color:#a6e3a1">Completed</span></pre>
+</div>
+<h3 id="nord">Nord</h3>
+<p>Low-contrast theme based on the Nord palette. Easy on the eyes for long monitoring sessions.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#2e3440&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d8dee9&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#88c0d0&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b48ead&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a3be8c&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#bf616a&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#4c566a&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#616e88&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Nord</span>
+</div>
+<pre class="terminal-body" style="background:#2e3440;color:#d8dee9"><span style="color:#4c566a">  #  Method     From           To             State</span>
+<span style="color:#ebcb8b">▸</span> <span style="color:#b48ead">1  INVITE     alice          bob            </span><span style="color:#a3be8c">InCall</span>
+  <span style="color:#b48ead">2  REGISTER   admin          --             </span><span style="color:#a3be8c">Registered</span>
+  <span style="color:#b48ead">3  INVITE     charlie        dave           </span><span style="color:#ebcb8b">Ringing</span>
+  <span style="color:#b48ead">4  INVITE     +15551234      +15559876      </span><span style="color:#bf616a">Failed</span>
+  <span style="color:#b48ead">5  INVITE     1005           1006           </span><span style="color:#a3be8c">Completed</span></pre>
+</div>
+<h3 id="solarized-dark">Solarized Dark</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#002b36&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#839496&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#268bd2&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b58900&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d33682&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#859900&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cb4b16&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#dc322f&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#586e75&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#657b83&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Solarized Dark</span>
+</div>
+<pre class="terminal-body" style="background:#002b36;color:#839496"><span style="color:#586e75">  #  Method     From           To             State</span>
+<span style="color:#b58900">▸</span> <span style="color:#d33682">1  INVITE     alice          bob            </span><span style="color:#859900">InCall</span>
+  <span style="color:#d33682">2  REGISTER   admin          --             </span><span style="color:#859900">Registered</span>
+  <span style="color:#d33682">3  INVITE     charlie        dave           </span><span style="color:#cb4b16">Ringing</span>
+  <span style="color:#d33682">4  INVITE     +15551234      +15559876      </span><span style="color:#dc322f">Failed</span>
+  <span style="color:#d33682">5  INVITE     1005           1006           </span><span style="color:#859900">Completed</span></pre>
+</div>
+<h3 id="gruvbox-dark">Gruvbox Dark</h3>
+<p>Warm, retro-inspired color scheme.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#282828&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebdbb2&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#83a598&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fabd2f&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d3869b&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b8bb26&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fe8019&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fb4934&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#665c54&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#7c6f64&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Gruvbox Dark</span>
+</div>
+<pre class="terminal-body" style="background:#282828;color:#ebdbb2"><span style="color:#665c54">  #  Method     From           To             State</span>
+<span style="color:#fabd2f">▸</span> <span style="color:#d3869b">1  INVITE     alice          bob            </span><span style="color:#b8bb26">InCall</span>
+  <span style="color:#d3869b">2  REGISTER   admin          --             </span><span style="color:#b8bb26">Registered</span>
+  <span style="color:#d3869b">3  INVITE     charlie        dave           </span><span style="color:#fe8019">Ringing</span>
+  <span style="color:#d3869b">4  INVITE     +15551234      +15559876      </span><span style="color:#fb4934">Failed</span>
+  <span style="color:#d3869b">5  INVITE     1005           1006           </span><span style="color:#b8bb26">Completed</span></pre>
+</div>
+<h3 id="light-terminal">Light Terminal</h3>
+<p>For light terminal backgrounds (white/cream). Uses darker colors for readability.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;blue&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b35900&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#8b008b&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#006400&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b8860b&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cc0000&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">Light Terminal</span>
+</div>
+<pre class="terminal-body" style="background:#f5f5f0;color:#1a1a1a"><span style="color:#999999">  #  Method     From           To             State</span>
+<span style="color:#b35900">▸</span> <span style="color:#8b008b">1  INVITE     alice          bob            </span><span style="color:#006400">InCall</span>
+  <span style="color:#8b008b">2  REGISTER   admin          --             </span><span style="color:#006400">Registered</span>
+  <span style="color:#8b008b">3  INVITE     charlie        dave           </span><span style="color:#b8860b">Ringing</span>
+  <span style="color:#8b008b">4  INVITE     +15551234      +15559876      </span><span style="color:#cc0000">Failed</span>
+  <span style="color:#8b008b">5  INVITE     1005           1006           </span><span style="color:#006400">Completed</span></pre>
+</div>
+<h3 id="high-contrast">High Contrast</h3>
+<p>Maximum readability for accessibility or bright environments.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
+<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
+<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
+<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
+<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffff00&quot;</span></span>
+<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff00ff&quot;</span></span>
+<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#00ff00&quot;</span></span>
+<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffaa00&quot;</span></span>
+<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff0000&quot;</span></span>
+<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
+<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><div class="terminal">
+<div class="terminal-bar">
+<span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
+<span class="terminal-title">High Contrast</span>
+</div>
+<pre class="terminal-body" style="background:#000000;color:#ffffff"><span style="color:#999999">  #  Method     From           To             State</span>
+<span style="color:#ffff00">▸</span> <span style="color:#ff00ff">1  INVITE     alice          bob            </span><span style="color:#00ff00">InCall</span>
+  <span style="color:#ff00ff">2  REGISTER   admin          --             </span><span style="color:#00ff00">Registered</span>
+  <span style="color:#ff00ff">3  INVITE     charlie        dave           </span><span style="color:#ffaa00">Ringing</span>
+  <span style="color:#ff00ff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff0000">Failed</span>
+  <span style="color:#ff00ff">5  INVITE     1005           1006           </span><span style="color:#00ff00">Completed</span></pre>
+</div>
+<h2 id="tips">Tips</h2>
+<ul>
+<li>Use <code>reset</code> for <code>background</code> to inherit your terminal’s background color. This is usually the best choice.</li>
+<li>Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).</li>
+<li>Use <code>sipnab --dump-config</code> to verify your theme is being loaded.</li>
+<li>The <code>highlight</code> key is a legacy alias for <code>selected</code>. If both are set, <code>selected</code> takes precedence.</li>
+</ul>
+
+
+    <!-- Prev/Next nav -->
+    
+    <nav class="doc-prevnext">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;" class="doc-prev">&larr; Filter DSL</a>
+      
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;api&#x2F;" class="doc-next">REST API &amp; Metrics &rarr;</a>
+      
+    </nav>
+    
+  </article>
+
+  <!-- Mini TOC -->
+  
+  <aside class="doc-toc">
+    <div class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
+      <ul>
+        
+        <li><a href="#color-slots">Color Slots</a>
+          
+        </li>
+        
+        <li><a href="#supported-color-syntax">Supported Color Syntax</a>
+          
+          <ul>
+            
+            <li><a href="#named-colors">Named Colors</a></li>
+            
+            <li><a href="#hex-rgb">Hex RGB</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#how-to-apply">How to Apply</a>
+          
+        </li>
+        
+        <li><a href="#example-themes">Example Themes</a>
+          
+          <ul>
+            
+            <li><a href="#default-ayu-mirage">Default (Ayu Mirage)</a></li>
+            
+            <li><a href="#catppuccin-mocha">Catppuccin Mocha</a></li>
+            
+            <li><a href="#nord">Nord</a></li>
+            
+            <li><a href="#solarized-dark">Solarized Dark</a></li>
+            
+            <li><a href="#gruvbox-dark">Gruvbox Dark</a></li>
+            
+            <li><a href="#light-terminal">Light Terminal</a></li>
+            
+            <li><a href="#high-contrast">High Contrast</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#tips">Tips</a>
+          
+        </li>
+        
+      </ul>
+    </div>
+  </aside>
+  
+</div>
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">License (MIT/Apache-2.0)</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
   document.getElementById('nav-toggle').addEventListener('click', function() {
     document.getElementById('nav-links').classList.toggle('open');
   });
@@ -181,4 +469,7 @@
         resultsEl.appendChild(a);
       }
     });
-  })();</script>
+  })();
+  </script>
+</body>
+</html>

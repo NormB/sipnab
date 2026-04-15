@@ -5,7 +5,7 @@ default_language = "en"
 compile_sass = true
 build_search_index = true
 generate_feeds = false
-minify_html = true
+minify_html = false
 
 [search]
 include_title = true
