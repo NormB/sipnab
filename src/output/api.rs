@@ -1109,4 +1109,42 @@ mod tests {
         assert_eq!(percentile(&odd, 0), Some(10));
         assert_eq!(percentile(&odd, 100), Some(50));
     }
+
+    // ── constant_time_eq hardening tests ──────────────────────────────
+
+    #[test]
+    fn constant_time_eq_equal_slices() {
+        assert!(
+            constant_time_eq(b"secret-key-12345", b"secret-key-12345"),
+            "Identical slices should return true"
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_different_slices() {
+        assert!(
+            !constant_time_eq(b"secret-key-12345", b"secret-key-XXXXX"),
+            "Different slices of same length should return false"
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_different_lengths() {
+        assert!(
+            !constant_time_eq(b"short", b"much-longer-string"),
+            "Different length slices should return false"
+        );
+        assert!(
+            !constant_time_eq(b"much-longer-string", b"short"),
+            "Different length slices (reversed) should return false"
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_empty() {
+        assert!(
+            constant_time_eq(b"", b""),
+            "Two empty slices should return true"
+        );
+    }
 }

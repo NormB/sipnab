@@ -650,4 +650,87 @@ mod tests {
         let result = verify_srtp_auth_tag(&[0u8; 10], &material, &stub);
         assert!(result.is_err(), "Too-short packet should error");
     }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn derive_session_key_not_equal_to_master_key() {
+        use crate::crypto::RingCryptoBackend;
+
+        let crypto = RingCryptoBackend;
+        let master_key = vec![0xAA; 16];
+        let master_salt = vec![0xBB; 14];
+
+        // Derive auth key (label 0x01) and verify it differs from the master key
+        let auth_key =
+            derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20, &crypto).unwrap();
+
+        assert_ne!(
+            &auth_key[..16],
+            master_key.as_slice(),
+            "Derived session auth key must differ from master key"
+        );
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn derive_different_labels_produce_different_keys() {
+        use crate::crypto::RingCryptoBackend;
+
+        let crypto = RingCryptoBackend;
+        let master_key = vec![0xCC; 16];
+        let master_salt = vec![0xDD; 14];
+
+        let cipher_key =
+            derive_session_key(&master_key, &master_salt, 0x00, 20, &crypto).unwrap();
+        let auth_key =
+            derive_session_key(&master_key, &master_salt, 0x01, 20, &crypto).unwrap();
+        let salt_key =
+            derive_session_key(&master_key, &master_salt, 0x02, 20, &crypto).unwrap();
+
+        assert_ne!(cipher_key, auth_key, "label 0x00 and 0x01 must produce different keys");
+        assert_ne!(cipher_key, salt_key, "label 0x00 and 0x02 must produce different keys");
+        assert_ne!(auth_key, salt_key, "label 0x01 and 0x02 must produce different keys");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn verify_auth_tag_with_derived_key() {
+        use crate::crypto::{CryptoBackend, RingCryptoBackend};
+
+        let crypto = RingCryptoBackend;
+        let key = vec![0x55u8; 16];
+        let salt = vec![0x66u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: key.clone(),
+            master_salt: salt.clone(),
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        // Build a minimal RTP packet: 12-byte header + 4-byte payload
+        let mut packet = vec![0x80, 0x00]; // V=2, PT=0
+        packet.extend_from_slice(&[0x00, 0x42]); // seq=66
+        packet.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
+        packet.extend_from_slice(&[0x00, 0x00, 0xAB, 0xCD]); // SSRC
+        packet.extend_from_slice(&[0xCA, 0xFE, 0xBA, 0xBE]); // payload
+
+        // Derive the session auth key and compute the correct tag
+        let session_auth_key =
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
+                .unwrap();
+
+        let mut hmac_input = packet.clone();
+        hmac_input.extend_from_slice(&0u32.to_be_bytes()); // ROC=0
+        let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
+        let auth_tag = &full_tag[..10]; // 80-bit tag
+
+        // Append auth tag to make a complete SRTP packet
+        packet.extend_from_slice(auth_tag);
+
+        let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
+        assert!(result, "Auth tag computed with derived session key should verify");
+    }
 }
