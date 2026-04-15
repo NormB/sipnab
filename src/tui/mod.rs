@@ -1550,7 +1550,8 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
                         ("R", "Split"),
                         ("9/0", "Resize"),
                         ("F4", "Extend"),
-                        ("r", "RTP"),
+                        ("r", "Streams"),
+                        ("F6", "RTP"),
                     ]
                 }
             }

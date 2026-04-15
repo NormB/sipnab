@@ -106,6 +106,7 @@ pub fn prepare_messages(
     let mut pdd_done = false;
     let mut in_call = false;
     let mut pending_rtp_codec: Option<String> = None;
+    let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
     let mut result = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
 
@@ -253,7 +254,6 @@ pub fn prepare_messages(
         }
 
         // RTP marker: placed on ACK to INVITE (media starts after ACK, not on 200 OK)
-        let mut has_rtp_bar = false;
         if show_rtp {
             // Track the codec from 200 OK SDP for display on the ACK bar
             let is_invite_200 = !msg.is_request
@@ -267,23 +267,19 @@ pub fn prepare_messages(
             }
 
             // Place RTP bar after ACK (media starts flowing after ACK completes handshake)
+            // Created as a deferred entry — pushed as a separate FormattedMessage
+            // AFTER the ACK so it's independently selectable with j/k navigation.
             let is_invite_ack = msg.is_request
                 && msg.method.as_deref() == Some("ACK")
                 && !in_call;
             if is_invite_ack {
                 in_call = true;
-                has_rtp_bar = true;
-                let ind = " ".repeat(ts_width + 1);
-                let ts_str = msg.timestamp.format("%H:%M:%S%.3f").to_string();
-                let bar_text = if let Some(ref codec) = pending_rtp_codec {
-                    format!("{ind}\u{2500}\u{2500} RTP {ts_str} \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}")
+                let rtp_label = if let Some(ref codec) = pending_rtp_codec {
+                    format!("\u{2500}\u{2500} RTP \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}")
                 } else {
-                    format!("{ind}\u{2500}\u{2500} RTP {ts_str} \u{00B7} active \u{2500}\u{2500}")
+                    "\u{2500}\u{2500} RTP \u{00B7} active \u{2500}\u{2500}".to_string()
                 };
-                extra_lines.push((
-                    bar_text,
-                    Style::default().fg(theme.accent),
-                ));
+                deferred_rtp_bar = Some((msg.timestamp, rtp_label));
                 pending_rtp_codec = None;
             }
             if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
@@ -310,8 +306,38 @@ pub fn prepare_messages(
             is_spacer: false,
             sdp_badge: None,
             is_retransmission: msg.is_retransmission,
-            is_rtp_bar: has_rtp_bar,
+            is_rtp_bar: false,
         });
+
+        // Push the deferred RTP bar as a separate selectable entry
+        if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
+            let rtp_timestamp = format!(
+                "{:<width$}",
+                rtp_ts.format("%H:%M:%S%.3f"),
+                width = ts_width
+            );
+            result.push(FormattedMessage {
+                timestamp: rtp_timestamp,
+                timestamp_style: Style::default().fg(theme.accent),
+                label: rtp_label,
+                style: Style::default().fg(theme.accent),
+                src_col: 0,
+                dst_col: 0,
+                pdd_note: None,
+                extra_lines: vec![],
+                selected: false,
+                call_id: msg.call_id().unwrap_or("").to_string(),
+                selection_state: SelectionState::Normal,
+                is_response: false,
+                raw_timestamp: rtp_ts,
+                folded_count: 0,
+                fold_label: None,
+                is_spacer: false,
+                sdp_badge: None,
+                is_retransmission: false,
+                is_rtp_bar: true,
+            });
+        }
     }
 
     // ── SDP delta badges (Feature 4) ──────────────────────────────

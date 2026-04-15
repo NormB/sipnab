@@ -460,21 +460,51 @@ pub fn render_call_flow_direct(
             let src_col = msg.src_col.min(n.saturating_sub(1));
             let dst_col = msg.dst_col.min(n.saturating_sub(1));
 
-            // Arrow between source and destination pipes
-            let src_x = pipe_positions[src_col];
-            let dst_x = pipe_positions[dst_col];
-            if src_x != dst_x {
-                let (arrow_str, arrow_x) =
-                    format_arrow(&msg.label, src_x, dst_x, msg.is_response);
-                let arrow_style = match msg.selection_state {
+            // RTP bar: render as a full-width label between the pipes
+            if msg.is_rtp_bar {
+                let left_pipe = pipe_positions.first().copied().unwrap_or(ts_width);
+                let right_pipe = pipe_positions.last().copied().unwrap_or(area.right());
+                let bar_x = left_pipe + 1;
+                let bar_width = right_pipe.saturating_sub(left_pipe).saturating_sub(1) as usize;
+                let label = &msg.label;
+                let padded = if label.len() < bar_width {
+                    let pad = bar_width.saturating_sub(label.len());
+                    let left_pad = pad / 2;
+                    let right_pad = pad - left_pad;
+                    format!(
+                        "{}{}{}",
+                        "\u{2500}".repeat(left_pad),
+                        label,
+                        "\u{2500}".repeat(right_pad),
+                    )
+                } else {
+                    label.to_string()
+                };
+                let bar_style = match msg.selection_state {
                     SelectionState::Selected => msg
                         .style
                         .bg(Color::Rgb(40, 40, 60))
                         .add_modifier(Modifier::BOLD),
-                    SelectionState::Related => msg.style,
-                    SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
+                    _ => msg.style,
                 };
-                buf.set_string(arrow_x, y, &arrow_str, arrow_style);
+                buf.set_string(bar_x, y, &padded, bar_style);
+            } else {
+                // Arrow between source and destination pipes
+                let src_x = pipe_positions[src_col];
+                let dst_x = pipe_positions[dst_col];
+                if src_x != dst_x {
+                    let (arrow_str, arrow_x) =
+                        format_arrow(&msg.label, src_x, dst_x, msg.is_response);
+                    let arrow_style = match msg.selection_state {
+                        SelectionState::Selected => msg
+                            .style
+                            .bg(Color::Rgb(40, 40, 60))
+                            .add_modifier(Modifier::BOLD),
+                        SelectionState::Related => msg.style,
+                        SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
+                    };
+                    buf.set_string(arrow_x, y, &arrow_str, arrow_style);
+                }
             }
 
             // PDD annotation after the rightmost pipe
