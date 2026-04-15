@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# sipnab pre-commit hook
+# Prevents the class of bugs caught by users in this project:
+# - Code that compiles but silently doesn't work
+# - WASM module out of sync with Rust source
+# - Test count on homepage stale
+# - Config keys parsed but never wired
+
+set -e
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+echo -e "${YELLOW}Running pre-commit checks...${NC}"
+
+# ── 1. Clippy must pass ────────────────────────────────────────────
+echo -n "  Clippy... "
+if ! cargo clippy --features full -- -D warnings 2>/dev/null; then
+    echo -e "${RED}FAIL${NC}"
+    echo "Fix clippy warnings before committing."
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
+# ── 2. Tests must pass ─────────────────────────────────────────────
+echo -n "  Tests... "
+TEST_OUTPUT=$(cargo test --features full 2>&1)
+if echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
+    echo -e "${RED}FAIL${NC}"
+    echo "Tests are failing. Run: cargo test --features full"
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
+# ── 3. No unwrap()/expect() in production code ────────────────────
+echo -n "  No unwrap/expect in production... "
+UNWRAP_COUNT=$(python3 -c "
+import os
+count = 0
+for root, dirs, files in os.walk('src'):
+    for f in files:
+        if not f.endswith('.rs') or f.endswith('_test.rs'):
+            continue
+        path = os.path.join(root, f)
+        in_test = False
+        with open(path) as fh:
+            for i, line in enumerate(fh, 1):
+                stripped = line.strip()
+                if stripped == '#[cfg(test)]' or stripped.startswith('mod tests'):
+                    in_test = True
+                if in_test:
+                    continue
+                if stripped.startswith('///') or stripped.startswith('//!'):
+                    continue
+                if '.unwrap()' in line or '.expect(' in line:
+                    count += 1
+                    print(f'  {path}:{i}: {stripped}', file=__import__('sys').stderr)
+print(count)
+" 2>&1)
+if [ "$UNWRAP_COUNT" != "0" ]; then
+    echo -e "${RED}FAIL${NC}"
+    echo "Found unwrap()/expect() in production code. Use ? or match instead."
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
+# ── 4. WASM module in sync with source ────────────────────────────
+echo -n "  WASM exports in sync... "
+if [ -f "website/static/wasm/sipnab.js" ]; then
+    WASM_CHECK=$(python3 -c "
+js = open('website/static/wasm/sipnab.js').read()
+required = ['load_pcap', 'get_dialogs', 'get_call_flow', 'get_raw_message',
+            'filter', 'export_json', 'export_csv', 'export_mermaid',
+            'get_streams', 'get_stream_detail', 'stream_count', 'rtp_packet_count']
+missing = [fn for fn in required if fn + '(' not in js]
+if missing:
+    print('MISSING: ' + ', '.join(missing))
+else:
+    print('OK')
+")
+    if [[ "$WASM_CHECK" != "OK" ]]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  $WASM_CHECK"
+        echo "  Rebuild: wasm-pack build --target web --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm"
+        exit 1
+    fi
+    echo -e "${GREEN}OK${NC}"
+else
+    echo -e "${YELLOW}SKIP (no WASM build)${NC}"
+fi
+
+# ── 5. Homepage test count matches actual ──────────────────────────
+echo -n "  Homepage test count... "
+if [ -f "website/templates/index.html" ]; then
+    ACTUAL=$(cargo test --features full 2>&1 | grep "test result:" | awk '{sum += $4} END {print sum}')
+    HOMEPAGE=$(grep -o 'data-count="[0-9]*"' website/templates/index.html | grep -o '[0-9]*' | tail -1)
+    if [ -n "$ACTUAL" ] && [ -n "$HOMEPAGE" ] && [ "$ACTUAL" != "$HOMEPAGE" ]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  Homepage shows $HOMEPAGE tests but actual count is $ACTUAL"
+        echo "  Update website/templates/index.html"
+        exit 1
+    fi
+    echo -e "${GREEN}OK ($ACTUAL)${NC}"
+else
+    echo -e "${YELLOW}SKIP (no website)${NC}"
+fi
+
+# ── 6. No TODO stubs in production code ────────────────────────────
+echo -n "  No TODO stubs... "
+TODO_COUNT=$(grep -rn "TODO\|FIXME" src/ -g '*.rs' 2>/dev/null | grep -v test | grep -v '_test.rs' | wc -l | tr -d ' ')
+if [ "$TODO_COUNT" != "0" ]; then
+    echo -e "${YELLOW}WARN: $TODO_COUNT TODO/FIXME comments${NC}"
+else
+    echo -e "${GREEN}OK${NC}"
+fi
+
+# ── 7. Check for staged wasm.rs changes without WASM rebuild ──────
+echo -n "  WASM rebuild check... "
+if git diff --cached --name-only | grep -q "src/wasm.rs"; then
+    if ! git diff --cached --name-only | grep -q "website/static/wasm/sipnab"; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  src/wasm.rs changed but website/static/wasm/ not updated."
+        echo "  Rebuild: wasm-pack build --target web --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm"
+        exit 1
+    fi
+fi
+echo -e "${GREEN}OK${NC}"
+
+echo -e "${GREEN}All pre-commit checks passed.${NC}"
