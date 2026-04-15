@@ -48,6 +48,12 @@ pub struct CorrelationResult<'a> {
 
 /// In-memory store of active and completed SIP dialogs.
 ///
+/// # Lock Ordering
+///
+/// When both `DialogStore` and `StreamStore` are held under `RwLock`,
+/// always acquire `DialogStore` first, then `StreamStore`. This prevents
+/// deadlocks between the capture/processing thread and the API/TUI threads.
+///
 /// Dialogs are indexed by Call-ID for O(1) lookup. When the store reaches
 /// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
 /// to make room for new ones.

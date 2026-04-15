@@ -368,7 +368,7 @@ async fn list_dialogs(
         .iter()
         .filter(|d| {
             if let Some(sf) = state_filter {
-                let state_str = format!("{:?}", d.state);
+                let state_str = d.state.to_string();
                 if !state_str.eq_ignore_ascii_case(sf) {
                     return false;
                 }
@@ -606,7 +606,7 @@ async fn get_metrics(
     // Populate from dialog store
     let ds = state.dialog_store.read();
     for d in ds.iter() {
-        let state_str = format!("{:?}", d.state).to_lowercase();
+        let state_str = d.state.to_string().to_lowercase();
         *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
 
         // PDD histogram
@@ -670,7 +670,7 @@ fn dialog_summary(d: &crate::sip::dialog::SipDialog) -> Value {
         "call_id": d.call_id,
         "from": d.from_user,
         "to": d.to_user,
-        "state": format!("{:?}", d.state),
+        "state": d.state.to_string(),
         "method": d.method,
         "duration_sec": duration_sec,
         "msg_count": d.messages.len(),

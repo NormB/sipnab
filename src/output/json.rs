@@ -243,7 +243,7 @@ pub fn dialog_to_json(
         to: dialog.to_user.clone(),
         from_display: dialog.from_display.clone(),
         to_display: dialog.to_display.clone(),
-        state: format!("{:?}", dialog.state),
+        state: dialog.state.to_string(),
         method: dialog.method.clone(),
         msg_count: dialog.messages.len(),
         duration_sec,

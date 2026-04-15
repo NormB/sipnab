@@ -117,7 +117,7 @@ impl SipnabSession {
                 serde_json::json!({
                     "call_id": d.call_id,
                     "method": d.method,
-                    "state": format!("{:?}", d.state),
+                    "state": d.state.to_string(),
                     "from_user": d.from_user,
                     "to_user": d.to_user,
                     "src_addr": d.src_addr.to_string(),

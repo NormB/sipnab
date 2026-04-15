@@ -114,8 +114,10 @@ impl StreamStore {
     /// than the given timeout without being associated to a dialog.
     pub fn mark_orphaned(&mut self, timeout: Duration) {
         let now = Utc::now();
-        let timeout_chrono =
-            chrono::Duration::from_std(timeout).unwrap_or(chrono::Duration::seconds(30));
+        let timeout_chrono = match chrono::Duration::from_std(timeout) {
+            Ok(d) => d,
+            Err(_) => chrono::Duration::days(365),
+        };
 
         for stream in &mut self.streams {
             if stream.associated_dialog.is_none()
