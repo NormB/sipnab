@@ -142,10 +142,30 @@ fn parse_first_line(line: &str) -> Result<FirstLine> {
     }
 }
 
+/// Default maximum bytes in a single unfolded header line (D17 defense-in-depth).
+pub const DEFAULT_MAX_HEADER_LINE_LEN: usize = 8 * 1024;
+
+/// Default maximum number of headers per SIP message (D17 defense-in-depth).
+pub const DEFAULT_MAX_HEADERS_PER_MESSAGE: usize = 200;
+
+/// Runtime-configurable limits (set once at startup from config).
+static MAX_HEADER_LINE_LEN: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_HEADER_LINE_LEN);
+static MAX_HEADERS_PER_MESSAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_HEADERS_PER_MESSAGE);
+
+/// Set parser limits from configuration. Call once at startup.
+pub fn set_parser_limits(max_header_line: usize, max_headers: usize) {
+    MAX_HEADER_LINE_LEN.store(max_header_line, std::sync::atomic::Ordering::Relaxed);
+    MAX_HEADERS_PER_MESSAGE.store(max_headers, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Parse SIP headers (with folding and compact form expansion) and extract body.
 ///
 /// Returns `(headers, body, parse_error)`.
 fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>, bool) {
+    let max_header_line = MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed);
+    let max_headers = MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed);
     let mut headers = Vec::new();
     let mut pos = start;
     let mut parse_error = false;
@@ -164,6 +184,7 @@ fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>
                 if line_bytes.is_empty() {
                     // Flush any pending header
                     if !current_line.is_empty()
+                        && headers.len() < max_headers
                         && let Some(hdr) = parse_header_line(&current_line)
                     {
                         headers.push(hdr);
@@ -184,12 +205,17 @@ fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>
 
                 // RFC 3261 SS7.3.1: continuation lines start with SP or HTAB
                 if line_str.starts_with(' ') || line_str.starts_with('\t') {
-                    // Header folding: append to current line with a single space
-                    current_line.push(' ');
-                    current_line.push_str(line_str.trim_start());
+                    // Header folding: append to current line with a single space (capped)
+                    if current_line.len() + line_str.len() < max_header_line {
+                        current_line.push(' ');
+                        current_line.push_str(line_str.trim_start());
+                    } else {
+                        parse_error = true;
+                    }
                 } else {
                     // New header — flush the previous one
                     if !current_line.is_empty()
+                        && headers.len() < max_headers
                         && let Some(hdr) = parse_header_line(&current_line)
                     {
                         headers.push(hdr);
@@ -203,10 +229,14 @@ fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>
                     && let Ok(remainder) = std::str::from_utf8(&data[pos..])
                 {
                     if remainder.starts_with(' ') || remainder.starts_with('\t') {
-                        current_line.push(' ');
-                        current_line.push_str(remainder.trim_start());
+                        if current_line.len() + remainder.len() < max_header_line {
+                            current_line.push(' ');
+                            current_line.push_str(remainder.trim_start());
+                        }
+                        // parse_error set below in the None→break path
                     } else {
                         if !current_line.is_empty()
+                            && headers.len() < max_headers
                             && let Some(hdr) = parse_header_line(&current_line)
                         {
                             headers.push(hdr);
@@ -222,6 +252,7 @@ fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>
 
     // Flush any remaining header
     if !current_line.is_empty()
+        && headers.len() < max_headers
         && let Some(hdr) = parse_header_line(&current_line)
     {
         headers.push(hdr);
@@ -753,5 +784,126 @@ Content-Length: 0\r\n\
 
         assert!(sip.parse_error);
         assert_eq!(sip.body, b"short");
+    }
+
+    // ── Security regression tests ────────────────────────────────────
+
+    #[test]
+    fn header_folding_capped_at_8kb() {
+        // Construct a Via header followed by 500 continuation lines of ~100
+        // bytes each, totalling ~50KB of folded content. The parser must not
+        // allocate an unbounded string — the MAX_HEADER_LINE_LEN (8KB) cap
+        // should kick in and set parse_error.
+        let padding: String = "x".repeat(97); // 97 chars + " " prefix + CRLF overhead ≈ 100 bytes
+        let mut raw = Vec::new();
+        raw.extend_from_slice(b"INVITE sip:bob@example.com SIP/2.0\r\n");
+        raw.extend_from_slice(b"Via: SIP/2.0/UDP host.example.com\r\n");
+        for _ in 0..500 {
+            raw.extend_from_slice(b" ");
+            raw.extend_from_slice(padding.as_bytes());
+            raw.extend_from_slice(b"\r\n");
+        }
+        raw.extend_from_slice(b"Content-Length: 0\r\n");
+        raw.extend_from_slice(b"\r\n");
+
+        let sip = parse_sip(
+            &raw,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse without panic");
+
+        assert!(
+            sip.parse_error,
+            "parse_error should be set when folding exceeds 8KB"
+        );
+
+        // The Via value must be truncated, not the full ~50KB
+        let via = sip.via_headers();
+        if !via.is_empty() {
+            assert!(
+                via[0].len() < DEFAULT_MAX_HEADER_LINE_LEN,
+                "Via value should be truncated below {DEFAULT_MAX_HEADER_LINE_LEN} bytes, got {}",
+                via[0].len()
+            );
+        }
+    }
+
+    #[test]
+    fn header_count_capped_at_200() {
+        // Send 300 headers; the parser must stop at MAX_HEADERS_PER_MESSAGE (200).
+        let mut headers: Vec<String> = (1..=300)
+            .map(|i| format!("X-Junk-{i:03}: value-{i}"))
+            .collect();
+        headers.push("Content-Length: 0".to_string());
+
+        let header_refs: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &header_refs,
+            b"",
+        );
+
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse with capped headers");
+
+        assert!(
+            sip.headers.len() <= DEFAULT_MAX_HEADERS_PER_MESSAGE,
+            "headers should be capped at {DEFAULT_MAX_HEADERS_PER_MESSAGE}, got {}",
+            sip.headers.len()
+        );
+    }
+
+    #[test]
+    fn crlf_injection_in_header_value_no_log_injection() {
+        // A malicious User-Agent embeds \r\n to try to inject a fake header.
+        // The parser should treat the CRLF as a header boundary, so the
+        // User-Agent value must NOT contain a newline.
+        let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+User-Agent: evil\r\n\
+fake-header: injected\r\n\
+Content-Length: 0\r\n\
+\r\n";
+
+        let sip = parse_sip(
+            raw,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let ua = sip
+            .header("User-Agent")
+            .expect("User-Agent header should exist");
+
+        assert!(
+            !ua.contains('\n') && !ua.contains('\r'),
+            "User-Agent value must not contain newlines, got: {ua:?}"
+        );
+        assert_eq!(ua, "evil", "User-Agent should be just 'evil'");
+
+        // The CRLF should have been treated as a header boundary, creating
+        // "fake-header" as a separate header.
+        assert_eq!(
+            sip.header("fake-header"),
+            Some("injected"),
+            "CRLF should split into a separate header, not embed in UA value"
+        );
     }
 }

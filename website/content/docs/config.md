@@ -116,6 +116,9 @@ Resource limits to prevent unbounded memory growth.
 | `max_streams` | integer | `50000` | Maximum RTP streams |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |
+| `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
+| `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
+| `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
 
 ```toml
 [limits]
@@ -123,6 +126,9 @@ dialog_limit = 50000
 max_streams = 25000
 max_reassembly = 5000
 hep_rate_limit = 25000
+max_header_line = 8192
+max_headers_per_message = 200
+max_messages_per_dialog = 500
 ```
 
 ### \[privilege\]
