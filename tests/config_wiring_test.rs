@@ -312,3 +312,64 @@ fn wasm_export_csv_state_format() {
         );
     }
 }
+
+// ── Non-exhaustive enum compliance tests ────────────────────────────
+
+/// Verify DialogState has Display (not just Debug) for stable serialization
+#[test]
+fn dialog_state_all_variants_have_display() {
+    use sipnab::sip::dialog::DialogState;
+    let states = [
+        DialogState::Trying, DialogState::Ringing, DialogState::InCall,
+        DialogState::Completed, DialogState::Cancelled, DialogState::Failed,
+        DialogState::Registered, DialogState::Expired, DialogState::Pending,
+        DialogState::Active, DialogState::Terminated, DialogState::Transferring,
+    ];
+    for state in &states {
+        let display = state.to_string();
+        assert!(!display.is_empty(), "Display for {:?} should not be empty", state);
+        assert!(!display.contains("::"), "Display should not contain :: (Debug format), got: {display}");
+    }
+}
+
+/// Verify SipMethod has Display for all standard variants
+#[test]
+fn sip_method_all_variants_have_display() {
+    use sipnab::sip::SipMethod;
+    let methods = [
+        SipMethod::Invite, SipMethod::Ack, SipMethod::Bye,
+        SipMethod::Cancel, SipMethod::Register, SipMethod::Options,
+        SipMethod::Subscribe, SipMethod::Notify, SipMethod::Publish,
+        SipMethod::Info, SipMethod::Refer, SipMethod::Message,
+        SipMethod::Update, SipMethod::Prack,
+    ];
+    for method in &methods {
+        let display = method.to_string();
+        assert!(!display.is_empty());
+        assert_eq!(display, display.to_uppercase(), "SIP methods should be uppercase: {display}");
+    }
+    // Custom variant
+    let custom = SipMethod::Custom("XMETHOD".into());
+    assert_eq!(custom.to_string(), "XMETHOD");
+}
+
+/// Verify PcapExportMode parse round-trips all variants
+#[test]
+fn pcap_export_mode_all_variants_round_trip() {
+    use sipnab::capture::PcapExportMode;
+    let modes = ["decrypted", "raw", "encrypted+dsb"];
+    for mode_str in &modes {
+        let parsed = PcapExportMode::parse_mode(mode_str);
+        assert!(parsed.is_some(), "parse_mode({mode_str}) should return Some");
+    }
+}
+
+/// Verify release profile has panic=abort and strip=true
+#[test]
+fn cargo_toml_release_profile_optimized() {
+    let cargo = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
+    assert!(cargo.contains("panic = \"abort\""), "Release profile should have panic = abort");
+    assert!(cargo.contains("lto = true"), "Release profile should have LTO enabled");
+    assert!(cargo.contains("strip = true"), "Release profile should strip symbols");
+    assert!(cargo.contains("codegen-units = 1"), "Release profile should use single codegen unit");
+}
