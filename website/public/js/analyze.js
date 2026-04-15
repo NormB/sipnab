@@ -289,7 +289,7 @@ var session;
 
 async function initSession() {
   try {
-    var wasm = await import("/wasm/sipnab.js");
+    var wasm = await import("/wasm/sipnab.js?v=2");
     await wasm.default();
     session = new wasm.SipnabSession();
     console.log("sipnab WASM module loaded");
@@ -465,7 +465,7 @@ async function handleFile(file) {
     updateStat("topbar-rtp", result.rtp_packets || 0, "RTP");
 
     allDialogs = JSON.parse(session.get_dialogs());
-    allStreams = JSON.parse(session.get_streams());
+    allStreams = (typeof session.get_streams === "function") ? JSON.parse(session.get_streams()) : [];
     filteredCallIds = null;
     selectedCallId = null;
     selectedMsgIndex = null;
