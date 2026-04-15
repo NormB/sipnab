@@ -295,22 +295,30 @@ impl Default for CallListState {
 
 // ── Rendering ───────────────────────────────────────────────────────
 
+/// Display parameters for the call list view.
+pub struct CallListDisplay<'a> {
+    pub filter: Option<&'a FilterExpr>,
+    pub search_query: &'a str,
+    pub timestamp_mode: TimestampMode,
+    pub theme: &'a super::Theme,
+}
+
 /// Render the call list table into the given area.
 ///
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
 /// selected row, full-width layout. No title line -- status is rendered
 /// separately at the top of the screen.
-#[allow(clippy::too_many_arguments)]
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut CallListState,
     store: &DialogStore,
-    filter: Option<&FilterExpr>,
-    search_query: &str,
-    timestamp_mode: TimestampMode,
-    theme: &super::Theme,
+    display: &CallListDisplay<'_>,
 ) {
+    let filter = display.filter;
+    let search_query = display.search_query;
+    let timestamp_mode = display.timestamp_mode;
+    let theme = display.theme;
     // The entire area is used for the table (no title line)
     let table_area = area;
 
@@ -379,7 +387,7 @@ pub fn render_call_list(
         let q = search_query.to_ascii_lowercase();
         dialogs.retain(|d| {
             d.call_id.to_ascii_lowercase().contains(&q)
-                || d.method.to_ascii_lowercase().contains(&q)
+                || d.method.as_str().to_ascii_lowercase().contains(&q)
                 || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                 || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                 || d.src_addr.to_string().contains(&q)

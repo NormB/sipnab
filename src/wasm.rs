@@ -116,7 +116,7 @@ impl SipnabSession {
             .map(|d| {
                 serde_json::json!({
                     "call_id": d.call_id,
-                    "method": d.method,
+                    "method": d.method.as_str(),
                     "state": d.state.to_string(),
                     "from_user": d.from_user,
                     "to_user": d.to_user,
@@ -142,7 +142,7 @@ impl SipnabSession {
                     serde_json::json!({
                         "timestamp": m.timestamp.to_rfc3339(),
                         "is_request": m.is_request,
-                        "method": m.method,
+                        "method": m.method.as_ref().map(|m| m.as_str()),
                         "status_code": m.status_code,
                         "reason": m.reason,
                         "src_addr": m.src_addr.to_string(),
@@ -253,7 +253,7 @@ impl SipnabSession {
                     .replace(':', "_");
                 let arrow = if msg.is_request { "->>" } else { "-->>" };
                 let label = if msg.is_request {
-                    msg.method.as_deref().unwrap_or("?").to_string()
+                    msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
                 } else {
                     format!(
                         "{} {}",

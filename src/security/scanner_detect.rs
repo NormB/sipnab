@@ -116,7 +116,7 @@ impl ScannerDetector {
     #[must_use]
     pub fn check(&mut self, msg: &SipMessage) -> Option<ScannerAlert> {
         let method = if msg.is_request {
-            msg.method.as_deref().unwrap_or("UNKNOWN")
+            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN")
         } else {
             return None; // Only check requests
         };

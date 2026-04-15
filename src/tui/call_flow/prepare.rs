@@ -15,6 +15,7 @@ use crate::tui::SdpDisplayMode;
 use crate::tui::TimestampMode;
 use crate::tui::Theme;
 
+use super::FlowDisplayOptions;
 use super::arrows::truncate;
 use super::{FormattedMessage, Participant, SelectionState, TS_COL_WIDTH};
 
@@ -40,19 +41,19 @@ pub fn delta_style(delta_ms: i64, theme: &Theme) -> Style {
 ///
 /// Applies all display modes (SDP, timestamp, color, RTP) and returns
 /// a list of `Participant`s and `FormattedMessage`s.
-#[allow(clippy::too_many_arguments)]
 pub fn prepare_messages(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
     pdd_ms: Option<i64>,
-    sdp_mode: SdpDisplayMode,
-    ts_mode: TimestampMode,
-    color_mode: ColorMode,
-    show_rtp: bool,
-    selected_msg: Option<usize>,
-    theme: &Theme,
+    opts: &FlowDisplayOptions<'_>,
     fold_expanded: &HashSet<usize>,
 ) -> (Vec<Participant>, Vec<FormattedMessage>) {
+    let sdp_mode = opts.sdp_mode;
+    let ts_mode = opts.ts_mode;
+    let color_mode = opts.color_mode;
+    let show_rtp = opts.show_rtp;
+    let selected_msg = opts.selected_msg;
+    let theme = opts.theme;
     if messages.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -272,7 +273,7 @@ pub fn prepare_messages(
             // Created as a deferred entry — pushed as a separate FormattedMessage
             // AFTER the ACK so it's independently selectable with j/k navigation.
             let is_invite_ack = msg.is_request
-                && msg.method.as_deref() == Some("ACK")
+                && msg.method.as_ref() == Some(&crate::sip::SipMethod::Ack)
                 && !in_call;
             if is_invite_ack {
                 in_call = true;
@@ -284,7 +285,7 @@ pub fn prepare_messages(
                 deferred_rtp_bar = Some((msg.timestamp, rtp_label));
                 pending_rtp_codec = None;
             }
-            if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
+            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call {
                 in_call = false;
             }
         }
@@ -615,7 +616,7 @@ fn detect_auth_sequence(messages: &[SipMessage], start: usize) -> Option<usize> 
     }
 
     // msg2: ACK with same CSeq
-    if !msg2.is_request || msg2.method.as_deref() != Some("ACK") {
+    if !msg2.is_request || msg2.method.as_ref() != Some(&crate::sip::SipMethod::Ack) {
         return None;
     }
     let (seq2, _) = msg2.cseq()?;
@@ -624,7 +625,7 @@ fn detect_auth_sequence(messages: &[SipMessage], start: usize) -> Option<usize> 
     }
 
     // msg3: same method request with CSeq N+1 and Authorization header
-    if !msg3.is_request || msg3.method.as_deref() != Some(method0) {
+    if !msg3.is_request || msg3.method.as_ref().map(|m| m.as_str()) != Some(method0) {
         return None;
     }
     let (seq3, _) = msg3.cseq()?;
@@ -654,7 +655,7 @@ pub fn format_message_label(msg: &SipMessage) -> String {
     let sdp_suffix = if has_sdp { " (SDP)" } else { "" };
 
     if msg.is_request {
-        format!("{}{}", msg.method.as_deref().unwrap_or("?"), sdp_suffix)
+        format!("{}{}", msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?"), sdp_suffix)
     } else {
         let code = msg.status_code.unwrap_or(0);
         let reason = msg.reason.as_deref().unwrap_or("");
@@ -670,7 +671,7 @@ pub fn format_message_label(msg: &SipMessage) -> String {
 /// orange for client error, bold red for server error.
 pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
     if msg.is_request {
-        let method = msg.method.as_deref().unwrap_or("");
+        let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("");
         match method {
             "INVITE" | "SUBSCRIBE" => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
             "BYE" | "CANCEL" => Style::default().fg(Color::Rgb(215, 95, 95)),         // Coral

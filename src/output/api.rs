@@ -615,7 +615,7 @@ async fn get_metrics(
         }
 
         // Count messages by method
-        *metrics.messages_total.entry(d.method.clone()).or_insert(0) += 1;
+        *metrics.messages_total.entry(d.method.to_string()).or_insert(0) += 1;
     }
     drop(ds);
 
@@ -671,7 +671,7 @@ fn dialog_summary(d: &crate::sip::dialog::SipDialog) -> Value {
         "from": d.from_user,
         "to": d.to_user,
         "state": d.state.to_string(),
-        "method": d.method,
+        "method": d.method.as_str(),
         "duration_sec": duration_sec,
         "msg_count": d.messages.len(),
         "timing": {

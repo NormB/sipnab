@@ -11,6 +11,7 @@ pub mod dsl;
 #[cfg(feature = "native")]
 pub mod matcher;
 pub mod message;
+pub mod method;
 pub mod parser;
 pub mod response_codes;
 pub mod sdp;
@@ -21,6 +22,7 @@ pub mod stir_shaken;
 pub mod timing;
 
 pub use message::{SipHeader, SipMessage};
+pub use method::SipMethod;
 pub use parser::parse_sip;
 pub use response_codes::explain_response_code;
 pub use sdp::{SdpConnection, SdpCrypto, SdpDirection, SdpMedia, SdpSession, parse_sdp};

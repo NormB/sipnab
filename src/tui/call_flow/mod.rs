@@ -17,6 +17,25 @@ pub mod render;
 use chrono::{DateTime, Utc};
 use ratatui::style::Style;
 
+use super::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+
+// ── Bundled display options ────────────────────────────────────────
+
+/// Display options for call flow rendering.
+///
+/// Bundles the display mode parameters that are threaded through
+/// `prepare_messages`, `format_ladder_with_options`, and the various
+/// `build_*` / `render_*` call flow functions.
+#[derive(Debug, Clone)]
+pub struct FlowDisplayOptions<'a> {
+    pub sdp_mode: SdpDisplayMode,
+    pub ts_mode: TimestampMode,
+    pub color_mode: ColorMode,
+    pub show_rtp: bool,
+    pub selected_msg: Option<usize>,
+    pub theme: &'a Theme,
+}
+
 // Re-export everything that external code uses.
 pub use arrows::truncate;
 pub use prepare::{prepare_messages, delta_style, format_message_label, format_sdp_codecs, message_style};

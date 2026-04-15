@@ -31,6 +31,63 @@ use sipnab::capture::decrypt::TlsDecryptor;
 #[cfg(feature = "tls")]
 use sipnab::capture::tls;
 
+// ── Bundled parameter structs ──────────────────────────────────────
+
+/// Security detection engines bundle.
+struct DetectionEngines {
+    scanner: Option<ScannerDetector>,
+    fraud: Option<FraudDetector>,
+    digest: Option<DigestLeakDetector>,
+    reg_flood: Option<RegFloodDetector>,
+    alerts: AlertEngine,
+    kill_handle: Option<ScannerKillHandle>,
+    kill_response_code: u16,
+}
+
+/// Packet processing counters and state.
+struct PacketCounters {
+    sip_count: u64,
+    rtp_count: u64,
+    prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    trailing_remaining: usize,
+}
+
+/// Owned batch-mode processing components.
+struct BatchProcessing {
+    matcher: SipMatcher,
+    filter_expr: Option<FilterExpr>,
+    output_opts: OutputOptions,
+    event_exec: EventExecEngine,
+}
+
+/// Immutable batch-mode configuration for packet processing.
+struct BatchContext<'a> {
+    matcher: &'a SipMatcher,
+    filter_expr: &'a Option<FilterExpr>,
+    output_opts: &'a OutputOptions,
+    cli: &'a Cli,
+    no_rtp: bool,
+    after_count: usize,
+    portrange: (u16, u16),
+}
+
+/// Mutable processing state for the main receive loop.
+struct ProcessingState<'a> {
+    dialog_store: &'a mut DialogStore,
+    stream_store: &'a mut StreamStore,
+    rtp_heuristic: &'a mut rtp::heuristic::RtpHeuristic,
+    event_exec: &'a mut EventExecEngine,
+}
+
+/// Capture split/stop policy.
+struct CapturePolicy {
+    split_bytes: Option<u64>,
+    split_duration: Option<std::time::Duration>,
+    autostop_duration: Option<std::time::Duration>,
+    autostop_filesize_mb: Option<u64>,
+    portrange: (u16, u16),
+}
+
 fn main() {
     // 1. Parse CLI arguments
     let cli = Cli::parse_args();
@@ -495,9 +552,13 @@ fn main() {
             capture_config,
             handle,
             rx,
-            split_bytes,
-            split_duration,
-            portrange,
+            CapturePolicy {
+                split_bytes,
+                split_duration,
+                autostop_duration,
+                autostop_filesize_mb,
+                portrange,
+            },
             #[cfg(feature = "api")]
             metrics_bind_addr,
         );
@@ -508,15 +569,19 @@ fn main() {
             capture_config,
             handle,
             rx,
-            matcher,
-            filter_expr,
-            output_opts,
-            event_exec,
-            split_bytes,
-            split_duration,
-            portrange,
-            autostop_duration,
-            autostop_filesize_mb,
+            BatchProcessing {
+                matcher,
+                filter_expr,
+                output_opts,
+                event_exec,
+            },
+            CapturePolicy {
+                split_bytes,
+                split_duration,
+                autostop_duration,
+                autostop_filesize_mb,
+                portrange,
+            },
         );
     }
 }
@@ -588,16 +653,13 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
 /// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
 /// the TUI event loop on the main thread.
 #[cfg(feature = "tui")]
-#[allow(clippy::too_many_arguments)]
 fn run_tui_mode(
     cli: Cli,
     config: Config,
     capture_config: CaptureConfig,
     handle: capture::CaptureHandle,
     rx: crossbeam_channel::Receiver<capture::Packet>,
-    split_bytes: Option<u64>,
-    split_duration: Option<std::time::Duration>,
-    _portrange: (u16, u16),
+    policy: CapturePolicy,
     #[cfg(feature = "api")] metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
@@ -673,8 +735,8 @@ fn run_tui_mode(
                     match PcapWriter::new(
                         &PathBuf::from(output_path),
                         packet.link_type,
-                        split_bytes,
-                        split_duration,
+                        policy.split_bytes,
+                        policy.split_duration,
                     ) {
                         Ok(w) => writer = Some(w),
                         Err(e) => {
@@ -847,23 +909,24 @@ fn tui_process_packet(
 // ── Batch (non-interactive) mode ────────────────────────────────────
 
 /// Run sipnab in non-interactive batch mode (original behavior).
-#[allow(clippy::too_many_arguments)]
 fn run_batch_mode(
     cli: Cli,
     config: &Config,
     capture_config: CaptureConfig,
     handle: capture::CaptureHandle,
     rx: crossbeam_channel::Receiver<capture::Packet>,
-    matcher: SipMatcher,
-    filter_expr: Option<FilterExpr>,
-    output_opts: OutputOptions,
-    mut event_exec: EventExecEngine,
-    split_bytes: Option<u64>,
-    split_duration: Option<std::time::Duration>,
-    portrange: (u16, u16),
-    autostop_duration: Option<std::time::Duration>,
-    autostop_filesize_mb: Option<u64>,
+    batch: BatchProcessing,
+    policy: CapturePolicy,
 ) {
+    let matcher = batch.matcher;
+    let filter_expr = batch.filter_expr;
+    let output_opts = batch.output_opts;
+    let mut event_exec = batch.event_exec;
+    let split_bytes = policy.split_bytes;
+    let split_duration = policy.split_duration;
+    let portrange = policy.portrange;
+    let autostop_duration = policy.autostop_duration;
+    let autostop_filesize_mb = policy.autostop_filesize_mb;
     // 16. Open output writer if -O is specified
     let mut writer: Option<PcapWriter> = None;
     let use_pcapng = cli.pcapng;
@@ -894,7 +957,7 @@ fn run_batch_mode(
 
     // 17a. Initialize security detectors
     let kill_scanner_active = cli.kill_scanner || config.security.kill_scanner.unwrap_or(false);
-    let mut scanner_detector = if kill_scanner_active {
+    let scanner_detector = if kill_scanner_active {
         let custom = cli
             .kill_ua
             .as_deref()
@@ -906,7 +969,7 @@ fn run_batch_mode(
     };
 
     // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
-    let mut scanner_kill_handle: Option<ScannerKillHandle> = if kill_scanner_active {
+    let scanner_kill_handle: Option<ScannerKillHandle> = if kill_scanner_active {
         match process_isolation::spawn_scanner_kill_worker(None) {
             Ok(handle) => Some(handle),
             Err(e) => {
@@ -919,19 +982,19 @@ fn run_batch_mode(
     };
     let kill_response_code = cli.kill_response;
 
-    let mut fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
+    let fraud_detector = if cli.fraud_detect || config.security.fraud_detect.unwrap_or(false) {
         Some(FraudDetector::new(None))
     } else {
         None
     };
 
-    let mut digest_detector = if cli.digest_leak {
+    let digest_detector = if cli.digest_leak {
         Some(DigestLeakDetector::new())
     } else {
         None
     };
 
-    let mut reg_flood_detector = if cli.reg_flood {
+    let reg_flood_detector = if cli.reg_flood {
         Some(RegFloodDetector::new(0))
     } else {
         None
@@ -953,6 +1016,16 @@ fn run_batch_mode(
     if cli.syslog {
         alert_engine.set_syslog(true);
     }
+
+    let mut engines = DetectionEngines {
+        scanner: scanner_detector,
+        fraud: fraud_detector,
+        digest: digest_detector,
+        reg_flood: reg_flood_detector,
+        alerts: alert_engine,
+        kill_handle: scanner_kill_handle,
+        kill_response_code,
+    };
 
     // 17c. Initialize TLS decryptor if --keylog is provided
     #[cfg(feature = "tls")]
@@ -995,19 +1068,38 @@ fn run_batch_mode(
         }
     };
 
+    // --after / -A trailing context counter
+    let after_count = cli.after.unwrap_or(0);
+
+    let batch_ctx = BatchContext {
+        matcher: &matcher,
+        filter_expr: &filter_expr,
+        output_opts: &output_opts,
+        cli: &cli,
+        no_rtp,
+        after_count,
+        portrange,
+    };
+
+    let mut proc_state = ProcessingState {
+        dialog_store: &mut dialog_store,
+        stream_store: &mut stream_store,
+        rtp_heuristic: &mut rtp_heuristic,
+        event_exec: &mut event_exec,
+    };
+
     let mut last_sweep = std::time::Instant::now();
     let sweep_interval = std::time::Duration::from_secs(5);
 
     // 18. Main receive loop
     let start = std::time::Instant::now();
     let mut total_count: u64 = 0;
-    let mut sip_count: u64 = 0;
-    let mut rtp_count: u64 = 0;
-    let mut prev_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
-
-    // --after / -A trailing context counter
-    let after_count = cli.after.unwrap_or(0);
-    let mut trailing_remaining: usize = 0;
+    let mut counters = PacketCounters {
+        sip_count: 0,
+        rtp_count: 0,
+        prev_timestamp: None,
+        trailing_remaining: 0,
+    };
 
     // Autostop filesize in bytes (input is in MB)
     let autostop_filesize_bytes = autostop_filesize_mb.map(|mb| mb * 1_000_000);
@@ -1020,15 +1112,15 @@ fn run_batch_mode(
         // Periodic sweep of reassembly state and orphan detection (every 5 seconds)
         if last_sweep.elapsed() >= sweep_interval {
             processor.sweep();
-            stream_store.mark_orphaned(std::time::Duration::from_secs(30));
+            proc_state.stream_store.mark_orphaned(std::time::Duration::from_secs(30));
             let security_max_age = std::time::Duration::from_secs(120);
-            if let Some(det) = scanner_detector.as_mut() {
+            if let Some(det) = engines.scanner.as_mut() {
                 det.sweep(security_max_age);
             }
-            if let Some(det) = fraud_detector.as_mut() {
+            if let Some(det) = engines.fraud.as_mut() {
                 det.sweep(security_max_age);
             }
-            if let Some(det) = reg_flood_detector.as_mut() {
+            if let Some(det) = engines.reg_flood.as_mut() {
                 det.sweep(security_max_age);
             }
             #[cfg(feature = "api")]
@@ -1126,29 +1218,11 @@ fn run_batch_mode(
             let effective_pp = tls_decrypted.as_ref().unwrap_or(pp);
             process_parsed_packet(
                 effective_pp,
-                &matcher,
-                &filter_expr,
-                &output_opts,
-                &cli,
-                &mut dialog_store,
-                &mut stream_store,
-                &mut rtp_heuristic,
-                &mut event_exec,
-                &mut scanner_detector,
-                &mut fraud_detector,
-                &mut digest_detector,
-                &mut reg_flood_detector,
-                &mut alert_engine,
-                &scanner_kill_handle,
-                kill_response_code,
-                &mut sip_count,
-                &mut rtp_count,
-                &mut prev_timestamp,
-                no_rtp,
+                &batch_ctx,
+                &mut proc_state,
+                &mut engines,
+                &mut counters,
                 is_tls,
-                after_count,
-                &mut trailing_remaining,
-                portrange,
             );
 
             // --hep-send: forward matched SIP messages via HEP
@@ -1212,7 +1286,7 @@ fn run_batch_mode(
     }
 
     // 19. Shut down scanner-kill worker (D16)
-    if let Some(ref mut kill_handle) = scanner_kill_handle {
+    if let Some(ref mut kill_handle) = engines.kill_handle {
         kill_handle.shutdown();
     }
 
@@ -1226,11 +1300,11 @@ fn run_batch_mode(
     }
 
     // 21. Post-capture output
-    generate_reports(&cli, &dialog_store, &stream_store);
+    generate_reports(&cli, proc_state.dialog_store, proc_state.stream_store);
 
     // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
     if cli.wireshark {
-        let call_ids: Vec<&str> = dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+        let call_ids: Vec<&str> = proc_state.dialog_store.iter().map(|d| d.call_id.as_str()).collect();
         if call_ids.is_empty() {
             eprintln!("No SIP dialogs to generate Wireshark filter for.");
         } else {
@@ -1250,7 +1324,7 @@ fn run_batch_mode(
             println!("tshark -r {} -Y '{}' -V", input_file, _tshark_expr);
         } else if cli.input.is_some() {
             // Generate tshark command from tracked dialogs (only when --wireshark + -I)
-            let call_ids: Vec<&str> = dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+            let call_ids: Vec<&str> = proc_state.dialog_store.iter().map(|d| d.call_id.as_str()).collect();
             if !call_ids.is_empty() {
                 let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
                 let filter_parts: Vec<String> = call_ids
@@ -1269,11 +1343,12 @@ fn run_batch_mode(
     // 22. Summary
     if !cli.quiet {
         log::info!(
-            "sipnab: {total_count} packets captured, {sip_count} SIP messages, {rtp_count} RTP streams",
+            "sipnab: {total_count} packets captured, {} SIP messages, {} RTP streams",
+            counters.sip_count, counters.rtp_count,
         );
 
         // Helpful guidance when no SIP traffic was found
-        if sip_count == 0 {
+        if counters.sip_count == 0 {
             eprintln!(
                 "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
             );
@@ -1297,33 +1372,36 @@ fn run_batch_mode(
 ///
 /// `tls_decrypted` should be `true` when the payload was decrypted from a
 /// TLS record, so the transport is reported as "TLS" rather than "TCP".
-#[allow(clippy::too_many_arguments)]
 fn process_parsed_packet(
     pp: &ParsedPacket,
-    matcher: &SipMatcher,
-    filter_expr: &Option<FilterExpr>,
-    output_opts: &OutputOptions,
-    cli: &Cli,
-    dialog_store: &mut DialogStore,
-    stream_store: &mut StreamStore,
-    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
-    event_exec: &mut EventExecEngine,
-    scanner_detector: &mut Option<ScannerDetector>,
-    fraud_detector: &mut Option<FraudDetector>,
-    digest_detector: &mut Option<DigestLeakDetector>,
-    reg_flood_detector: &mut Option<RegFloodDetector>,
-    alert_engine: &mut AlertEngine,
-    scanner_kill_handle: &Option<ScannerKillHandle>,
-    kill_response_code: u16,
-    sip_count: &mut u64,
-    rtp_count: &mut u64,
-    prev_timestamp: &mut Option<chrono::DateTime<chrono::Utc>>,
-    no_rtp: bool,
+    ctx: &BatchContext<'_>,
+    state: &mut ProcessingState<'_>,
+    engines: &mut DetectionEngines,
+    counters: &mut PacketCounters,
     tls_decrypted: bool,
-    after_count: usize,
-    trailing_remaining: &mut usize,
-    portrange: (u16, u16),
 ) {
+    let matcher = ctx.matcher;
+    let filter_expr = ctx.filter_expr;
+    let output_opts = ctx.output_opts;
+    let cli = ctx.cli;
+    let no_rtp = ctx.no_rtp;
+    let after_count = ctx.after_count;
+    let portrange = ctx.portrange;
+    let dialog_store = &mut *state.dialog_store;
+    let stream_store = &mut *state.stream_store;
+    let rtp_heuristic = &mut *state.rtp_heuristic;
+    let event_exec = &mut *state.event_exec;
+    let scanner_detector = &mut engines.scanner;
+    let fraud_detector = &mut engines.fraud;
+    let digest_detector = &mut engines.digest;
+    let reg_flood_detector = &mut engines.reg_flood;
+    let alert_engine = &mut engines.alerts;
+    let scanner_kill_handle = &engines.kill_handle;
+    let kill_response_code = engines.kill_response_code;
+    let sip_count = &mut counters.sip_count;
+    let rtp_count = &mut counters.rtp_count;
+    let prev_timestamp = &mut counters.prev_timestamp;
+    let trailing_remaining = &mut counters.trailing_remaining;
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
         let dump = output::hexdump(&pp.payload);
@@ -1541,10 +1619,10 @@ fn process_parsed_packet(
                     if let Some(call_id) = sip_msg.call_id()
                         && let Some(dialog) = dialog_store.get(call_id)
                     {
-                        dialog.method == "INVITE"
+                        dialog.method == crate::sip::SipMethod::Invite
                     } else {
                         // No dialog tracked — only show if it's an INVITE request
-                        sip_msg.method.as_deref() == Some("INVITE")
+                        sip_msg.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
                     }
                 } else {
                     true
@@ -1735,7 +1813,7 @@ fn dispatch_sip_output(
         // Fail2ban output for scanner-like messages
         if msg.is_request {
             let ua = msg.user_agent().unwrap_or("unknown");
-            let method = msg.method.as_deref().unwrap_or("UNKNOWN");
+            let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
             let event = output::format_scanner_event(&msg.src_addr.to_string(), ua, method);
             println!("{event}");
         }

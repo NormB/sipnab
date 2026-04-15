@@ -88,7 +88,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
 /// Appends a [`SdpEvent::Transfer`] entry when the message is a REFER request.
 /// Non-REFER messages are silently ignored.
 pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
-    if !msg.is_request || msg.method.as_deref() != Some("REFER") {
+    if !msg.is_request || msg.method.as_ref() != Some(&super::method::SipMethod::Refer) {
         return;
     }
     let target = msg.header("Refer-To").unwrap_or("unknown").to_string();

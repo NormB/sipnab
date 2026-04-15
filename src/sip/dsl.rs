@@ -488,7 +488,7 @@ fn eval_compare(
             let val = dialog.to_user.as_deref().unwrap_or("");
             compare_str(val, op, value)
         }
-        Field::Method => compare_str(&dialog.method, op, value),
+        Field::Method => compare_str(dialog.method.as_str(), op, value),
         Field::Ua => {
             // Check User-Agent across all messages in the dialog
             let ua = dialog

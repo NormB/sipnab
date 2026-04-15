@@ -149,8 +149,8 @@ impl SipMatcher {
         if self.calls_only {
             let is_invite = msg
                 .method
-                .as_deref()
-                .is_some_and(|m| m.eq_ignore_ascii_case("INVITE"));
+                .as_ref()
+                .is_some_and(|m| m.as_str().eq_ignore_ascii_case("INVITE"));
             if !is_invite {
                 return false;
             }

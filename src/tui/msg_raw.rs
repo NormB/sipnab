@@ -14,26 +14,27 @@ use crate::sip::dialog_store::DialogStore;
 
 // ── Public rendering ────────────────────────────────────────────────
 
+/// Navigation and display state for the raw message viewer.
+pub struct RawMessageView<'a> {
+    pub call_id: &'a str,
+    pub message_index: usize,
+    pub scroll_offset: u16,
+    pub search_query: &'a str,
+    pub theme: &'a super::Theme,
+}
+
 /// Render the raw SIP message text with syntax highlighting.
-///
-/// # Arguments
-///
-/// * `store` — Dialog store to look up the message.
-/// * `call_id` — Call-ID of the dialog.
-/// * `message_index` — Index of the message within the dialog.
-/// * `scroll_offset` — Vertical scroll position.
-/// * `search_query` — Text to highlight within the message.
-#[allow(clippy::too_many_arguments)]
 pub fn render_raw_message(
     frame: &mut Frame,
     area: Rect,
     store: &DialogStore,
-    call_id: &str,
-    message_index: usize,
-    scroll_offset: u16,
-    search_query: &str,
-    theme: &super::Theme,
+    view: &RawMessageView<'_>,
 ) {
+    let call_id = view.call_id;
+    let message_index = view.message_index;
+    let scroll_offset = view.scroll_offset;
+    let search_query = view.search_query;
+    let theme = view.theme;
     let title = format!(
         " Raw SIP Message [{}/{}] (Esc: Back | /: Search) ",
         message_index + 1,

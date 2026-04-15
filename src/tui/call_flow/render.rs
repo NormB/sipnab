@@ -17,6 +17,7 @@ use crate::tui::SdpDisplayMode;
 use crate::tui::TimestampMode;
 use crate::tui::Theme;
 
+use super::FlowDisplayOptions;
 use super::arrows::{format_arrow, format_arrow_left, format_arrow_right, truncate};
 use super::prepare::{
     delta_style, format_message_label, format_sdp_codecs, message_style,
@@ -95,17 +96,11 @@ pub fn build_call_flow_lines_with_width(
 }
 
 /// Build call flow lines with display options (SDP mode, timestamp mode, color mode, etc.).
-#[allow(clippy::too_many_arguments)]
 pub fn build_call_flow_lines_with_options(
     store: &DialogStore,
     call_id: &str,
     term_width: usize,
-    sdp_mode: SdpDisplayMode,
-    ts_mode: TimestampMode,
-    color_mode: ColorMode,
-    show_rtp: bool,
-    selected_msg: Option<usize>,
-    theme: &Theme,
+    opts: &FlowDisplayOptions<'_>,
 ) -> Option<(usize, Vec<Line<'static>>)> {
     let dialog = store.get(call_id)?;
     if dialog.messages.is_empty() {
@@ -122,12 +117,7 @@ pub fn build_call_flow_lines_with_options(
         ft,
         dialog.timing.pdd_ms(),
         aw,
-        sdp_mode,
-        ts_mode,
-        color_mode,
-        show_rtp,
-        selected_msg,
-        theme,
+        opts,
     );
     let correlated = store.find_correlated(call_id);
     if !correlated.is_empty() {
@@ -135,7 +125,7 @@ pub fn build_call_flow_lines_with_options(
         lines.push(Line::from(Span::styled(
             " Correlated Legs:",
             Style::default()
-                .fg(theme.accent)
+                .fg(opts.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
         for leg in &correlated {
@@ -145,7 +135,7 @@ pub fn build_call_flow_lines_with_options(
                     truncate(&leg.call_id, 40),
                     leg.method
                 ),
-                Style::default().fg(theme.accent),
+                Style::default().fg(opts.theme.accent),
             )));
         }
     }
@@ -157,10 +147,7 @@ pub fn build_extended_flow_lines(
     store: &DialogStore,
     call_id: &str,
     term_width: usize,
-    sdp_mode: SdpDisplayMode,
-    ts_mode: TimestampMode,
-    color_mode: ColorMode,
-    theme: &Theme,
+    opts: &FlowDisplayOptions<'_>,
 ) -> Option<(usize, Vec<Line<'static>>)> {
     let dialog = store.get(call_id)?;
     if dialog.messages.is_empty() {
@@ -190,13 +177,18 @@ pub fn build_extended_flow_lines(
                 correlated.len()
             ),
             Style::default()
-                .fg(theme.accent)
+                .fg(opts.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
+    let ext_opts = FlowDisplayOptions {
+        show_rtp: false,
+        selected_msg: None,
+        ..opts.clone()
+    };
     lines.extend(format_ladder_with_options(
-        &owned, ft, None, aw, sdp_mode, ts_mode, color_mode, false, None, theme,
+        &owned, ft, None, aw, &ext_opts,
     ));
     Some((mc, lines))
 }
@@ -244,22 +236,29 @@ pub fn render_call_flow_lines(
 
 // ── Direct buffer painting (TUI path) ───────────────────────────────
 
+/// Navigation state for the call flow direct renderer.
+pub struct FlowNavigation {
+    pub scroll_offset: usize,
+    pub mark_index: Option<usize>,
+    pub selected_index: usize,
+}
+
 /// Render a call flow ladder diagram by painting directly into the terminal buffer.
 ///
 /// Instead of building `Line`/`Span` objects and rendering via `Paragraph`,
 /// this writes characters at exact `(x, y)` coordinates in the buffer,
 /// guaranteeing perfect column alignment regardless of character widths.
-#[allow(clippy::too_many_arguments)]
 pub fn render_call_flow_direct(
     frame: &mut Frame,
     area: Rect,
     participants: &[Participant],
     messages: &[FormattedMessage],
-    scroll_offset: usize,
+    nav: &FlowNavigation,
     theme: &Theme,
-    mark_index: Option<usize>,
-    selected_index: usize,
 ) {
+    let scroll_offset = nav.scroll_offset;
+    let mark_index = nav.mark_index;
+    let selected_index = nav.selected_index;
     let buf = frame.buffer_mut();
     let width = area.width;
     let height = area.height;
@@ -591,14 +590,12 @@ pub fn render_call_flow_direct_or_empty(
     frame: &mut Frame,
     area: Rect,
     prepared: Option<&(Vec<Participant>, Vec<FormattedMessage>)>,
-    scroll_offset: usize,
+    nav: &FlowNavigation,
     theme: &Theme,
-    mark_index: Option<usize>,
-    selected_index: usize,
 ) {
     match prepared {
         Some((participants, msgs)) => {
-            render_call_flow_direct(frame, area, participants, msgs, scroll_offset, theme, mark_index, selected_index);
+            render_call_flow_direct(frame, area, participants, msgs, nav, theme);
         }
         None => {
             let buf = frame.buffer_mut();
@@ -647,7 +644,7 @@ pub fn render_message_detail(
         selected_msg + 1,
         dialog.messages.len(),
         if msg.is_request {
-            msg.method.as_deref().unwrap_or("?").to_string()
+            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
         } else {
             format!(
                 "{} {}",
@@ -835,19 +832,19 @@ pub fn format_ladder(
 }
 
 /// Format ladder with full display options (SDP mode, timestamp mode, color, etc.).
-#[allow(clippy::too_many_arguments)]
 fn format_ladder_with_options(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
     pdd_ms: Option<i64>,
     arrow_width: usize,
-    sdp_mode: SdpDisplayMode,
-    ts_mode: TimestampMode,
-    color_mode: ColorMode,
-    show_rtp: bool,
-    selected_msg: Option<usize>,
-    theme: &Theme,
+    opts: &FlowDisplayOptions<'_>,
 ) -> Vec<Line<'static>> {
+    let sdp_mode = opts.sdp_mode;
+    let ts_mode = opts.ts_mode;
+    let color_mode = opts.color_mode;
+    let show_rtp = opts.show_rtp;
+    let selected_msg = opts.selected_msg;
+    let theme = opts.theme;
     if messages.is_empty() {
         return vec![Line::from("(no messages)")];
     }
@@ -1056,7 +1053,7 @@ fn format_ladder_with_options(
             if !msg.is_request && msg.status_code == Some(200) {
                 in_call = true;
             }
-            if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
+            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call {
                 lines.push(Line::from(Span::styled(
                     format!(
                         "{}\u{2500}\u{2500}\u{2500}\u{2500} RTP stream active \u{2500}\u{2500}\u{2500}\u{2500}",

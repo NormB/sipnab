@@ -113,7 +113,7 @@ impl EventExecEngine {
                 dialog.to_user.as_deref().unwrap_or("").to_string(),
             ),
             ("SIPNAB_STATE", dialog.state.to_string()),
-            ("SIPNAB_METHOD", dialog.method.clone()),
+            ("SIPNAB_METHOD", dialog.method.to_string()),
             ("SIPNAB_JSON", json),
         ];
 

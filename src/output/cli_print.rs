@@ -105,7 +105,7 @@ pub fn format_sip_message(
 
     // Method or status descriptor
     let (descriptor, color_code) = if msg.is_request {
-        let method = msg.method.as_deref().unwrap_or("???");
+        let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("???");
         let color = match method {
             "INVITE" => GREEN,
             "BYE" => RED,

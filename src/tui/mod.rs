@@ -1069,7 +1069,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             return false;
                         }
                         d.call_id.to_ascii_lowercase().contains(&q)
-                            || d.method.to_ascii_lowercase().contains(&q)
+                            || d.method.as_str().to_ascii_lowercase().contains(&q)
                             || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                             || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                             || d.src_addr.to_string().contains(&q)
@@ -1103,10 +1103,12 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     main_area,
                     &mut app.call_list,
                     &store,
-                    app.active_filter.as_ref(),
-                    &app.search_query,
-                    app.timestamp_mode,
-                    &app.theme,
+                    &call_list::CallListDisplay {
+                        filter: app.active_filter.as_ref(),
+                        search_query: &app.search_query,
+                        timestamp_mode: app.timestamp_mode,
+                        theme: &app.theme,
+                    },
                 );
             }
         }
@@ -1158,16 +1160,19 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             None
                         } else {
                             let ft = owned[0].timestamp;
+                            let flow_opts = call_flow::FlowDisplayOptions {
+                                sdp_mode: app.sdp_display_mode,
+                                ts_mode: app.timestamp_mode,
+                                color_mode: app.color_mode,
+                                show_rtp: false,
+                                selected_msg: Some(sel),
+                                theme: &app.theme,
+                            };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 &owned,
                                 ft,
                                 None,
-                                app.sdp_display_mode,
-                                app.timestamp_mode,
-                                app.color_mode,
-                                false,
-                                Some(sel),
-                                &app.theme,
+                                &flow_opts,
                                 &app.fold_expanded,
                             );
                             Some((participants, msgs))
@@ -1183,16 +1188,19 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         } else {
                             let ft = d.messages[0].timestamp;
                             let pdd = d.timing.pdd_ms();
+                            let flow_opts = call_flow::FlowDisplayOptions {
+                                sdp_mode: app.sdp_display_mode,
+                                ts_mode: app.timestamp_mode,
+                                color_mode: app.color_mode,
+                                show_rtp: app.show_rtp_in_flow,
+                                selected_msg: Some(sel),
+                                theme: &app.theme,
+                            };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 &d.messages,
                                 ft,
                                 pdd,
-                                app.sdp_display_mode,
-                                app.timestamp_mode,
-                                app.color_mode,
-                                app.show_rtp_in_flow,
-                                Some(sel),
-                                &app.theme,
+                                &flow_opts,
                                 &app.fold_expanded,
                             );
                             Some((participants, msgs))
@@ -1222,10 +1230,12 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     frame,
                     ladder_area,
                     prepared.as_ref(),
-                    scroll,
+                    &call_flow::render::FlowNavigation {
+                        scroll_offset: scroll,
+                        mark_index: app.mark_index,
+                        selected_index: sel,
+                    },
                     &app.theme,
-                    app.mark_index,
-                    sel,
                 );
 
                 // Render message detail panel (right side) if split is active
@@ -1251,11 +1261,13 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     frame,
                     main_area,
                     &store,
-                    call_id,
-                    *message_index,
-                    app.raw_msg_scroll,
-                    &app.search_query,
-                    &app.theme,
+                    &msg_raw::RawMessageView {
+                        call_id,
+                        message_index: *message_index,
+                        scroll_offset: app.raw_msg_scroll,
+                        search_query: &app.search_query,
+                        theme: &app.theme,
+                    },
                 );
             }
         }
@@ -1854,22 +1866,31 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(para, inner);
 }
 
+/// State for a single filter text input field.
+struct FilterTextField<'a> {
+    label: &'a str,
+    value: &'a str,
+    field_width: u16,
+    focused: bool,
+    cursor_pos: usize,
+}
+
 /// Render a text input field with cursor for the filter dialog.
 ///
 /// Paints: `label [content_with_cursor_________________]`
 /// The field content is rendered with a block cursor at `cursor_pos` when focused.
-#[allow(clippy::too_many_arguments)]
 fn render_filter_text_field(
     buf: &mut ratatui::buffer::Buffer,
     x: u16,
     y: u16,
-    label: &str,
-    value: &str,
-    field_width: u16,
-    focused: bool,
-    cursor_pos: usize,
+    field: &FilterTextField<'_>,
     theme: &Theme,
 ) {
+    let label = field.label;
+    let value = field.value;
+    let field_width = field.field_width;
+    let focused = field.focused;
+    let cursor_pos = field.cursor_pos;
     let label_style = Style::default().fg(theme.header);
     let bracket_style = if focused {
         Style::default().fg(theme.foreground)
@@ -2011,11 +2032,13 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
             buf,
             ix,
             iy + 1 + i as u16,
-            label,
-            state.text_field(i),
-            field_width,
-            focused,
-            cursor,
+            &FilterTextField {
+                label,
+                value: state.text_field(i),
+                field_width,
+                focused,
+                cursor_pos: cursor,
+            },
             theme,
         );
     }
@@ -2971,16 +2994,19 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     }
                     let ft = d.messages[0].timestamp;
                     let pdd = d.timing.pdd_ms();
+                    let flow_opts = call_flow::FlowDisplayOptions {
+                        sdp_mode: app.sdp_display_mode,
+                        ts_mode: app.timestamp_mode,
+                        color_mode: app.color_mode,
+                        show_rtp: app.show_rtp_in_flow,
+                        selected_msg: None,
+                        theme: &app.theme,
+                    };
                     let (participants, msgs) = call_flow::prepare_messages(
                         &d.messages,
                         ft,
                         pdd,
-                        app.sdp_display_mode,
-                        app.timestamp_mode,
-                        app.color_mode,
-                        app.show_rtp_in_flow,
-                        None,
-                        &app.theme,
+                        &flow_opts,
                         &app.fold_expanded,
                     );
                     Some((participants, msgs))
@@ -3778,16 +3804,19 @@ fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     }
 
     let ft = messages[0].timestamp;
+    let flow_opts = call_flow::FlowDisplayOptions {
+        sdp_mode: SdpDisplayMode::None,
+        ts_mode: TimestampMode::Absolute,
+        color_mode: ColorMode::Method,
+        show_rtp: false,
+        selected_msg: None,
+        theme: &app.theme,
+    };
     let (participants, msgs) = call_flow::prepare_messages(
         &messages,
         ft,
         None,
-        SdpDisplayMode::None,
-        TimestampMode::Absolute,
-        ColorMode::Method,
-        false,
-        None,
-        &app.theme,
+        &flow_opts,
         &std::collections::HashSet::new(),
     );
 
@@ -3852,7 +3881,7 @@ fn save_to_json_path(app: &App, path_str: &str) -> String {
                     serde_json::json!({
                         "timestamp": m.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                         "is_request": m.is_request,
-                        "method": m.method,
+                        "method": m.method.as_ref().map(|m| m.as_str()),
                         "status_code": m.status_code,
                         "src": format!("{}:{}", m.src_addr, m.src_port),
                         "dst": format!("{}:{}", m.dst_addr, m.dst_port),
@@ -3872,7 +3901,7 @@ fn save_to_json_path(app: &App, path_str: &str) -> String {
 
             serde_json::json!({
                 "call_id": d.call_id,
-                "method": d.method,
+                "method": d.method.as_str(),
                 "state": format_dialog_state(&d.state),
                 "from_user": d.from_user,
                 "to_user": d.to_user,
@@ -3918,7 +3947,7 @@ fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
                 serde_json::json!({
                     "timestamp": m.timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     "is_request": m.is_request,
-                    "method": m.method,
+                    "method": m.method.as_ref().map(|m| m.as_str()),
                     "status_code": m.status_code,
                     "src": format!("{}:{}", m.src_addr, m.src_port),
                     "dst": format!("{}:{}", m.dst_addr, m.dst_port),
@@ -3937,7 +3966,7 @@ fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
 
         let obj = serde_json::json!({
             "call_id": d.call_id,
-            "method": d.method,
+            "method": d.method.as_str(),
             "state": format_dialog_state(&d.state),
             "from_user": d.from_user,
             "to_user": d.to_user,
@@ -3984,7 +4013,7 @@ fn save_to_csv_path(app: &App, path_str: &str) -> String {
         let row = format!(
             "{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_escape(&d.call_id),
-            csv_escape(&d.method),
+            csv_escape(d.method.as_str()),
             csv_escape(format_dialog_state(&d.state)),
             csv_escape(d.from_user.as_deref().unwrap_or("")),
             csv_escape(d.to_user.as_deref().unwrap_or("")),
@@ -4023,7 +4052,7 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     for d in &dialogs {
         md.push_str(&format!(
             "## Dialog: {} ({})\n\n",
-            d.call_id, d.method,
+            d.call_id, d.method.as_str(),
         ));
 
         md.push_str("| Field | Value |\n|-------|-------|\n");
@@ -4076,7 +4105,7 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
                     "\u{2190}" // ←
                 };
                 let label = if m.is_request {
-                    m.method.as_deref().unwrap_or("?").to_string()
+                    m.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
                 } else {
                     match (m.status_code, m.reason.as_deref()) {
                         (Some(code), Some(reason)) => format!("{code} {reason}"),
@@ -4139,7 +4168,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
     xml.push_str("<!-- Generated by sipnab v0.3.1 -->\n");
     xml.push_str(&format!(
         "<scenario name=\"sipnab_{}\">\n",
-        dialog.method.to_lowercase()
+        dialog.method.as_str().to_lowercase()
     ));
 
     let mut prev_ts = dialog.messages[0].timestamp;
@@ -4161,7 +4190,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
         if m.is_request {
             if is_from_caller {
                 // Caller sends request
-                let method = m.method.as_deref().unwrap_or("UNKNOWN");
+                let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
                 let ruri = m.request_uri.as_deref().unwrap_or("sip:[service]@[remote_ip]:[remote_port]");
                 let ruri_sipp = ruri
                     .replace(&m.dst_addr.to_string(), "[remote_ip]")
@@ -4190,7 +4219,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
                 xml.push_str("    ]]>\n  </send>\n");
             } else {
                 // Callee sends request (e.g., BYE from remote) — receive it
-                let method = m.method.as_deref().unwrap_or("UNKNOWN");
+                let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
                 xml.push_str(&format!(
                     "\n  <recv request=\"{method}\"/>\n"
                 ));
@@ -4610,7 +4639,7 @@ mod tests {
         let msg = SipMessage {
             raw: large_body,
             is_request: true,
-            method: Some("INVITE".to_string()),
+            method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
             reason: None,
             request_uri: Some("sip:test@example.com".to_string()),

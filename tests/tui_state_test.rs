@@ -2521,16 +2521,19 @@ mod tui_state {
         let theme = Theme::default();
         let fold_expanded = HashSet::new();
 
+        let flow_opts = sipnab::tui::call_flow::FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::None,
+            ts_mode: TimestampMode::DeltaPrev,
+            color_mode: ColorMode::Method,
+            show_rtp: false,
+            selected_msg: None,
+            theme: &theme,
+        };
         let (participants, formatted) = prepare_messages(
             &messages,
             t0,
             None,
-            SdpDisplayMode::None,
-            TimestampMode::DeltaPrev,
-            ColorMode::Method,
-            false,
-            None,
-            &theme,
+            &flow_opts,
             &fold_expanded,
         );
 
@@ -2903,16 +2906,19 @@ mod tui_state {
         let theme = Theme::default();
         let fold_expanded = HashSet::new();
 
+        let flow_opts = sipnab::tui::call_flow::FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::Summary,
+            ts_mode: TimestampMode::DeltaPrev,
+            color_mode: ColorMode::Method,
+            show_rtp: true,
+            selected_msg: None,
+            theme: &theme,
+        };
         let (_participants, formatted) = prepare_messages(
             &messages,
             t0,
             None,
-            SdpDisplayMode::Summary,
-            TimestampMode::DeltaPrev,
-            ColorMode::Method,
-            true, // show_rtp = true
-            None,
-            &theme,
+            &flow_opts,
             &fold_expanded,
         );
 
@@ -2964,16 +2970,19 @@ mod tui_state {
         let theme = Theme::default();
         let fold_expanded = HashSet::new();
 
+        let flow_opts = sipnab::tui::call_flow::FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::Summary,
+            ts_mode: TimestampMode::DeltaPrev,
+            color_mode: ColorMode::Method,
+            show_rtp: true,
+            selected_msg: None,
+            theme: &theme,
+        };
         let (_participants, formatted) = prepare_messages(
             &messages,
             t0,
             None,
-            SdpDisplayMode::Summary,
-            TimestampMode::DeltaPrev,
-            ColorMode::Method,
-            true, // show_rtp = true
-            None,
-            &theme,
+            &flow_opts,
             &fold_expanded,
         );
 
@@ -3073,7 +3082,7 @@ mod tui_state {
             .iter()
             .filter(|d| {
                 d.call_id.to_ascii_lowercase().contains(&q)
-                    || d.method.to_ascii_lowercase().contains(&q)
+                    || d.method.as_str().to_ascii_lowercase().contains(&q)
                     || d.from_user
                         .as_deref()
                         .unwrap_or("")
@@ -3112,7 +3121,7 @@ mod tui_state {
             .iter()
             .filter(|d| {
                 d.call_id.to_ascii_lowercase().contains(&q)
-                    || d.method.to_ascii_lowercase().contains(&q)
+                    || d.method.as_str().to_ascii_lowercase().contains(&q)
                     || d.from_user
                         .as_deref()
                         .unwrap_or("")

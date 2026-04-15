@@ -104,7 +104,7 @@ impl FraudDetector {
     #[must_use]
     pub fn check(&mut self, msg: &SipMessage, dialog: &SipDialog) -> Option<FraudAlert> {
         // Only analyze INVITE requests
-        if !msg.is_request || msg.method.as_deref() != Some("INVITE") {
+        if !msg.is_request || msg.method.as_ref() != Some(&crate::sip::SipMethod::Invite) {
             return None;
         }
 
