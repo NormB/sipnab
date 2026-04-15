@@ -315,14 +315,33 @@ pub fn prepare_messages(
         // Push the deferred RTP bar as a separate selectable entry
         if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
             let rtp_sel = selected_msg == Some(fmt_idx);
-            let rtp_timestamp = format!(
-                "{:<width$}",
-                rtp_ts.format("%H:%M:%S%.3f"),
-                width = ts_width
-            );
+            // Format timestamp using the same mode as all other messages
+            let (rtp_timestamp, rtp_ts_style) = match ts_mode {
+                TimestampMode::Absolute => {
+                    let s = format!("{:<width$}", rtp_ts.format("%H:%M:%S%.3f"), width = ts_width);
+                    (s, Style::default().fg(theme.accent))
+                }
+                TimestampMode::DeltaPrev => {
+                    let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
+                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    prev_ts = rtp_ts;
+                    (s, delta_style(d, theme))
+                }
+                TimestampMode::DeltaFirst => {
+                    let d = rtp_ts.signed_duration_since(first_ts).num_milliseconds();
+                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    (s, delta_style(d, theme))
+                }
+                TimestampMode::Scaled => {
+                    let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
+                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    prev_ts = rtp_ts;
+                    (s, delta_style(d, theme))
+                }
+            };
             result.push(FormattedMessage {
                 timestamp: rtp_timestamp,
-                timestamp_style: Style::default().fg(theme.accent),
+                timestamp_style: rtp_ts_style,
                 label: rtp_label,
                 style: Style::default().fg(theme.accent),
                 src_col: 0,
