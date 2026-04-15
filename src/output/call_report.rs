@@ -85,7 +85,7 @@ fn generate_text_report(
     };
     let _ = writeln!(out, "To:         {to_str}");
 
-    let result_str = match &dialog.state {
+    let result_str = match dialog.state() {
         DialogState::Completed => "Completed (BYE)".to_string(),
         DialogState::Cancelled => "Cancelled".to_string(),
         DialogState::Failed => "Failed".to_string(),
@@ -212,7 +212,7 @@ fn generate_markdown_report(
         dialog.from_user.as_deref().unwrap_or("-")
     );
     let _ = writeln!(out, "| To | {} |", dialog.to_user.as_deref().unwrap_or("-"));
-    let _ = writeln!(out, "| State | {:?} |", dialog.state);
+    let _ = writeln!(out, "| State | {:?} |", dialog.state());
     if !dialog.tags.is_empty() {
         let _ = writeln!(out, "| Tags | {} |", dialog.tags.join(", "));
     }

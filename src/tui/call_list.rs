@@ -392,7 +392,7 @@ pub fn render_call_list(
                 || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                 || d.src_addr.to_string().contains(&q)
                 || d.dst_addr.to_string().contains(&q)
-                || state_display_str(&d.state).to_ascii_lowercase().contains(&q)
+                || state_display_str(d.state()).to_ascii_lowercase().contains(&q)
                 || d.messages.iter().any(|msg| {
                     String::from_utf8_lossy(&msg.raw)
                         .to_ascii_lowercase()
@@ -529,8 +529,8 @@ pub fn render_call_list(
                 Cell::from(Span::raw(dialog.src_addr.to_string())),
                 Cell::from(Span::raw(dialog.dst_addr.to_string())),
                 Cell::from(Span::styled(
-                    state_display_str(&dialog.state),
-                    state_style(&dialog.state, theme),
+                    state_display_str(dialog.state()),
+                    state_style(dialog.state(), theme),
                 )),
                 Cell::from(Span::raw(dialog.messages.len().to_string())),
                 Cell::from(Span::raw(date_str)),
@@ -543,7 +543,7 @@ pub fn render_call_list(
             let row = Row::new(visible_cells);
 
             // Row style based on state
-            let row_style = match dialog.state {
+            let row_style = match dialog.state() {
                 DialogState::Failed => Style::default().fg(theme.bad),
                 DialogState::InCall | DialogState::Active => Style::default().fg(theme.good),
                 DialogState::Cancelled => Style::default().fg(theme.warning),
@@ -687,7 +687,7 @@ fn sort_dialogs(
                 .cmp(b.to_user.as_deref().unwrap_or("")),
             SortColumn::Source => a.src_addr.cmp(&b.src_addr),
             SortColumn::Destination => a.dst_addr.cmp(&b.dst_addr),
-            SortColumn::State => state_display_str(&a.state).cmp(state_display_str(&b.state)),
+            SortColumn::State => state_display_str(a.state()).cmp(state_display_str(b.state())),
             SortColumn::Messages => a.messages.len().cmp(&b.messages.len()),
             SortColumn::Date => a.created_at.cmp(&b.created_at),
             SortColumn::Pdd => a

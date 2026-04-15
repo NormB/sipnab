@@ -82,8 +82,8 @@ pub struct SipDialog {
     pub from_display: Option<String>,
     /// Display name from the To header.
     pub to_display: Option<String>,
-    /// Current dialog state.
-    pub state: DialogState,
+    /// Current dialog state (private — use `state()` accessor and `update_state()` mutator).
+    state: DialogState,
     /// Initial SIP method that created this dialog (e.g., `SipMethod::Invite`).
     pub method: SipMethod,
     /// All SIP messages seen in this dialog, in order.
@@ -109,6 +109,11 @@ pub struct SipDialog {
 }
 
 impl SipDialog {
+    /// Returns a reference to the current dialog state.
+    pub fn state(&self) -> &DialogState {
+        &self.state
+    }
+
     /// Create a new dialog from the first message in a conversation.
     ///
     /// Initializes the dialog state based on the message's method:

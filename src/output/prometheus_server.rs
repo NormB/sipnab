@@ -220,7 +220,7 @@ fn collect_metrics(
     {
         let ds = dialog_store.read();
         for dialog in ds.iter() {
-            let state_str = dialog.state.to_string();
+            let state_str = dialog.state().to_string();
             *metrics.dialogs_total.entry(state_str).or_insert(0) += 1;
 
             // Count messages by method

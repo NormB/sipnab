@@ -32,7 +32,7 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
         let call_id = truncate_str(&dialog.call_id, 30);
         let from = dialog.from_user.as_deref().unwrap_or("-");
         let to = dialog.to_user.as_deref().unwrap_or("-");
-        let state = state_str(&dialog.state);
+        let state = state_str(dialog.state());
         let duration = format_duration(dialog);
         let msg_count = dialog.messages.len();
         let pdd = dialog
