@@ -128,6 +128,9 @@ pub struct AlertEngine {
     exec_cmd: Option<String>,
     /// Whether to send alerts to syslog via `libc::syslog()`.
     syslog_enabled: bool,
+    /// Tracked child processes from exec commands (for reaping).
+    #[cfg(feature = "native")]
+    children: Vec<std::process::Child>,
 }
 
 impl AlertEngine {
@@ -146,6 +149,8 @@ impl AlertEngine {
             cooldowns: HashMap::new(),
             exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
             syslog_enabled: false,
+            #[cfg(feature = "native")]
+            children: Vec::new(),
         }
     }
 
@@ -215,15 +220,24 @@ impl AlertEngine {
         // Execute command if configured — pass data via env vars, never interpolated
         #[cfg(feature = "native")]
         if let Some(cmd) = &self.exec_cmd {
-            use std::process::Command;
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(cmd);
-            command.env("SIPNAB_SRC", src_ip.to_string());
-            command.env("SIPNAB_RULE", alert_type);
-            command.env("SIPNAB_DETAIL", &sanitized_detail);
+            // Reap finished children to prevent zombie accumulation
+            self.children.retain_mut(|child| child.try_wait().ok().flatten().is_none());
 
-            if let Err(e) = command.spawn() {
-                warn!("Failed to execute alert command: {e}");
+            // Cap concurrent children to prevent local DoS
+            if self.children.len() >= 100 {
+                warn!("Alert exec queue full (100 children), dropping alert");
+            } else {
+                use std::process::Command;
+                let mut command = Command::new("sh");
+                command.arg("-c").arg(cmd);
+                command.env("SIPNAB_SRC", src_ip.to_string());
+                command.env("SIPNAB_RULE", alert_type);
+                command.env("SIPNAB_DETAIL", &sanitized_detail);
+
+                match command.spawn() {
+                    Ok(child) => self.children.push(child),
+                    Err(e) => warn!("Failed to execute alert command: {e}"),
+                }
             }
         }
 

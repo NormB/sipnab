@@ -628,7 +628,7 @@ fn detect_auth_sequence(messages: &[SipMessage], start: usize) -> Option<usize> 
         return None;
     }
     let (seq3, _) = msg3.cseq()?;
-    if seq3 != seq0 + 1 {
+    if seq3 != seq0.wrapping_add(1) {
         return None;
     }
     // Must have Authorization or Proxy-Authorization header

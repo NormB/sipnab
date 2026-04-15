@@ -62,7 +62,7 @@ impl SipnabSession {
 
             let ts = chrono::DateTime::from_timestamp(
                 pkt.timestamp_secs as i64,
-                pkt.timestamp_usecs * 1000,
+                (pkt.timestamp_usecs as u64 * 1000).min(999_999_999) as u32,
             )
             .unwrap_or_default();
 
