@@ -727,6 +727,7 @@ pub struct App {
     should_quit: bool,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
+    last_known_dialog_count: usize,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
     /// Settings popup state.
@@ -831,6 +832,7 @@ impl App {
             stream_list: StreamListState::new(),
             should_quit: false,
             last_data_update: Instant::now(),
+            last_known_dialog_count: 0,
             filter_dialog: FilterDialogState::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -990,8 +992,15 @@ pub fn run_tui_with_pause(
             handle_key_event(&mut app, key);
         }
 
-        // Mark data updated on every iteration (the stores are live)
-        app.mark_data_updated();
+        // Only mark data updated when store counts actually change
+        // (prevents the TUI from staying in active-poll mode on static pcaps)
+        let current_count = app.dialog_store.try_read().map(|ds| ds.len());
+        if let Some(count) = current_count
+            && count != app.last_known_dialog_count
+        {
+            app.last_known_dialog_count = count;
+            app.mark_data_updated();
+        }
     }
 
     Ok(())
@@ -1050,7 +1059,7 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                             || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                             || d.src_addr.to_string().contains(&q)
                             || d.dst_addr.to_string().contains(&q)
-                            || format!("{:?}", d.state).to_ascii_lowercase().contains(&q)
+                            || call_list::state_display_str(&d.state).to_ascii_lowercase().contains(&q)
                     })
                     .count();
             }

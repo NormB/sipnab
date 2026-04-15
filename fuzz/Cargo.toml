@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-sipnab = { path = "..", features = ["hep"] }
+sipnab = { path = "..", default-features = false, features = ["native", "hep", "tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [[bin]]
@@ -31,3 +31,27 @@ path = "fuzz_targets/filter_dsl.rs"
 [[bin]]
 name = "fuzz_hep_parser"
 path = "fuzz_targets/hep_parser.rs"
+
+[[bin]]
+name = "fuzz_rtcp_parser"
+path = "fuzz_targets/rtcp_parser.rs"
+
+[[bin]]
+name = "fuzz_websocket_frame"
+path = "fuzz_targets/websocket_frame.rs"
+
+[[bin]]
+name = "fuzz_tls_records"
+path = "fuzz_targets/tls_records.rs"
+
+[[bin]]
+name = "fuzz_stir_shaken"
+path = "fuzz_targets/stir_shaken.rs"
+
+[[bin]]
+name = "fuzz_srtp_keys"
+path = "fuzz_targets/srtp_keys.rs"
+
+[[bin]]
+name = "fuzz_keylog_line"
+path = "fuzz_targets/keylog_line.rs"

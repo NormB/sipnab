@@ -369,7 +369,7 @@ pub fn render_call_list(
                 || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
                 || d.src_addr.to_string().contains(&q)
                 || d.dst_addr.to_string().contains(&q)
-                || format!("{:?}", d.state).to_ascii_lowercase().contains(&q)
+                || state_display_str(&d.state).to_ascii_lowercase().contains(&q)
         });
     }
 
@@ -501,7 +501,7 @@ pub fn render_call_list(
                 Cell::from(Span::raw(dialog.src_addr.to_string())),
                 Cell::from(Span::raw(dialog.dst_addr.to_string())),
                 Cell::from(Span::styled(
-                    format_state(&dialog.state),
+                    state_display_str(&dialog.state),
                     state_style(&dialog.state, theme),
                 )),
                 Cell::from(Span::raw(dialog.messages.len().to_string())),
@@ -620,8 +620,8 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Format a [`DialogState`] as a short display string.
-fn format_state(state: &DialogState) -> &'static str {
+/// Format a [`DialogState`] as a short display string (&'static str, zero-alloc).
+pub fn state_display_str(state: &DialogState) -> &'static str {
     match state {
         DialogState::Trying => "Trying",
         DialogState::Ringing => "Ringing",
@@ -660,7 +660,7 @@ fn sort_dialogs(
                 .cmp(b.to_user.as_deref().unwrap_or("")),
             SortColumn::Source => a.src_addr.cmp(&b.src_addr),
             SortColumn::Destination => a.dst_addr.cmp(&b.dst_addr),
-            SortColumn::State => format_state(&a.state).cmp(format_state(&b.state)),
+            SortColumn::State => state_display_str(&a.state).cmp(state_display_str(&b.state)),
             SortColumn::Messages => a.messages.len().cmp(&b.messages.len()),
             SortColumn::Date => a.created_at.cmp(&b.created_at),
             SortColumn::Pdd => a
@@ -819,9 +819,9 @@ mod tests {
 
     #[test]
     fn format_state_strings() {
-        assert_eq!(format_state(&DialogState::Trying), "Trying");
-        assert_eq!(format_state(&DialogState::InCall), "InCall");
-        assert_eq!(format_state(&DialogState::Failed), "FAILED");
-        assert_eq!(format_state(&DialogState::Completed), "Completed");
+        assert_eq!(state_display_str(&DialogState::Trying), "Trying");
+        assert_eq!(state_display_str(&DialogState::InCall), "InCall");
+        assert_eq!(state_display_str(&DialogState::Failed), "FAILED");
+        assert_eq!(state_display_str(&DialogState::Completed), "Completed");
     }
 }
