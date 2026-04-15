@@ -42,7 +42,8 @@ pub enum Attestation {
 /// Signature verification status.
 ///
 /// sipnab does not fetch external certificates, so this is always
-/// [`NotChecked`](VerificationStatus::NotChecked) for locally parsed headers.
+/// [`NotChecked`](VerificationStatus::NotChecked) for locally parsed headers
+/// unless the `iat` freshness check fails (→ [`Expired`](VerificationStatus::Expired)).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationStatus {
     /// Signature was not checked (no cert available).
@@ -53,6 +54,9 @@ pub enum VerificationStatus {
     Invalid,
     /// No certificate available for verification.
     NoCert,
+    /// The `iat` claim is stale — more than 60 seconds from the current time
+    /// (RFC 8224 Section 4.4).
+    Expired,
 }
 
 /// Parsed STIR/SHAKEN information from a SIP Identity header.
@@ -145,13 +149,29 @@ pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
     let orig_tn = claims.orig.and_then(|o| o.tn);
     let dest_tn = claims.dest.and_then(|d| d.tn.into_iter().next());
 
+    // RFC 8224 Section 4.4: the `iat` claim must be within 60 seconds of
+    // the current time. If it is stale (or too far in the future), mark
+    // the token as expired. Missing `iat` is noted by leaving the field
+    // as `None` — callers can treat absence as suspicious.
+    let verified = match claims.iat {
+        Some(iat) => {
+            let now = chrono::Utc::now().timestamp();
+            if (now - iat).abs() > 60 {
+                VerificationStatus::Expired
+            } else {
+                VerificationStatus::NotChecked
+            }
+        }
+        None => VerificationStatus::NotChecked,
+    };
+
     Ok(StirShakenInfo {
         attestation,
         orig_tn,
         dest_tn,
         orig_id: claims.origid,
         iat: claims.iat,
-        verified: VerificationStatus::NotChecked,
+        verified,
     })
 }
 
@@ -210,7 +230,8 @@ mod tests {
             Some("550e8400-e29b-41d4-a716-446655440000")
         );
         assert_eq!(info.iat, Some(1_700_000_000));
-        assert_eq!(info.verified, VerificationStatus::NotChecked);
+        // iat is from 2023 — well beyond the 60s freshness window
+        assert_eq!(info.verified, VerificationStatus::Expired);
     }
 
     #[test]
@@ -291,6 +312,54 @@ mod tests {
     }
 
     #[test]
+    fn iat_fresh_within_window() {
+        let now = chrono::Utc::now().timestamp();
+        let payload = format!(
+            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "dest": {{"tn": ["2002"]}}, "iat": {now}}}"#,
+        );
+        let header = build_identity_header(&payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert_eq!(info.verified, VerificationStatus::NotChecked);
+    }
+
+    #[test]
+    fn iat_stale_past() {
+        // 2 minutes ago — well outside the 60s window
+        let stale = chrono::Utc::now().timestamp() - 120;
+        let payload = format!(
+            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {stale}}}"#,
+        );
+        let header = build_identity_header(&payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert_eq!(info.verified, VerificationStatus::Expired);
+    }
+
+    #[test]
+    fn iat_stale_future() {
+        // 2 minutes in the future — also outside the 60s window
+        let future = chrono::Utc::now().timestamp() + 120;
+        let payload = format!(
+            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {future}}}"#,
+        );
+        let header = build_identity_header(&payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert_eq!(info.verified, VerificationStatus::Expired);
+    }
+
+    #[test]
+    fn iat_missing_not_expired() {
+        let payload = r#"{"attest": "B", "orig": {"tn": "1001"}}"#;
+        let header = build_identity_header(payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert!(info.iat.is_none());
+        assert_eq!(info.verified, VerificationStatus::NotChecked);
+    }
+
+    #[test]
     fn sip_message_stir_shaken_missing_header() {
         use std::net::{IpAddr, Ipv4Addr};
         let msg = SipMessage {
@@ -351,5 +420,7 @@ mod tests {
             .expect("should parse");
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
+        // iat=1700000000 is stale
+        assert_eq!(info.verified, VerificationStatus::Expired);
     }
 }

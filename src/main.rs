@@ -12,7 +12,7 @@ use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::websocket;
-use sipnab::capture::{self, CaptureConfig, CaptureSource, ParsedPacket, PcapWriter};
+use sipnab::capture::{self, CaptureConfig, CaptureSource, PcapExportMode, ParsedPacket, PcapWriter};
 use sipnab::cli::{self, Cli};
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
@@ -706,6 +706,8 @@ fn run_tui_mode(
                 capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
             let mut writer: Option<PcapWriter> = None;
+            let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.pcap_export_mode)
+                .unwrap_or(PcapExportMode::Decrypted);
             let mut last_sweep = std::time::Instant::now();
             let sweep_interval = std::time::Duration::from_secs(5);
             let start = std::time::Instant::now();
@@ -732,13 +734,25 @@ fn run_tui_mode(
                 if writer.is_none()
                     && let Some(ref output_path) = cli_clone.output
                 {
-                    match PcapWriter::new(
+                    match PcapWriter::with_format(
                         &PathBuf::from(output_path),
                         packet.link_type,
                         policy.split_bytes,
                         policy.split_duration,
+                        cli_clone.pcapng,
+                        tui_export_mode,
                     ) {
-                        Ok(w) => writer = Some(w),
+                        Ok(mut w) => {
+                            // Write DSB with keylog content if mode requires it
+                            if let Some(ref keylog_path) = cli_clone.keylog
+                                && let Err(e) = w.maybe_write_keylog_dsb(
+                                    std::path::Path::new(keylog_path),
+                                )
+                            {
+                                log::warn!("Failed to write DSB: {e}");
+                            }
+                            writer = Some(w);
+                        }
                         Err(e) => {
                             log::error!("Failed to open output file: {e}");
                             break;
@@ -930,6 +944,8 @@ fn run_batch_mode(
     // 16. Open output writer if -O is specified
     let mut writer: Option<PcapWriter> = None;
     let use_pcapng = cli.pcapng;
+    let export_mode = PcapExportMode::parse_mode(&cli.pcap_export_mode)
+        .unwrap_or(PcapExportMode::Decrypted);
 
     // 16a. Initialize HEP sender if --hep-send is set
     #[cfg(feature = "hep")]
@@ -1157,8 +1173,17 @@ fn run_batch_mode(
                 split_bytes,
                 split_duration,
                 use_pcapng,
+                export_mode,
             ) {
-                Ok(w) => writer = Some(w),
+                Ok(mut w) => {
+                    // Write DSB with keylog content if mode requires it
+                    if let Some(ref keylog_path) = cli.keylog
+                        && let Err(e) = w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
+                    {
+                        log::warn!("Failed to write DSB: {e}");
+                    }
+                    writer = Some(w);
+                }
                 Err(e) => {
                     log::error!("Failed to open output file: {e}");
                     std::process::exit(1);

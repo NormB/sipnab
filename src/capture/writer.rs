@@ -5,6 +5,7 @@
 //! - File rotation by size (`--split filesize:N`)
 //! - File rotation by duration (`--split duration:N`)
 //! - On-demand rotation via SIGUSR1 (checked via [`crate::signals::rotation_requested`])
+//! - Export mode control via `--pcap-export-mode` for TLS traffic
 
 use std::borrow::Cow;
 use std::io::BufWriter;
@@ -19,6 +20,45 @@ use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
 
 use super::packet::Packet;
 use crate::signals;
+
+/// Controls how encrypted traffic is written to output pcap files.
+///
+/// - `Decrypted`: Include DSB (Decryption Secrets Block) so Wireshark can
+///   decrypt inline. In a future version this may write synthetic decrypted
+///   frames; today it behaves identically to `EncryptedWithDsb`.
+/// - `EncryptedWithDsb`: Write original (encrypted) frames and include DSBs
+///   containing the TLS key material so Wireshark can decrypt on load.
+/// - `Raw`: Write original (encrypted) frames with no DSBs. The output file
+///   contains only the packets as captured on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PcapExportMode {
+    /// Default. Include DSBs; future: may write decrypted frames.
+    Decrypted,
+    /// Write encrypted frames + DSBs for Wireshark decryption.
+    EncryptedWithDsb,
+    /// Write original frames only, no key material embedded.
+    Raw,
+}
+
+impl PcapExportMode {
+    /// Parse from the CLI string value.
+    ///
+    /// Returns `None` for unrecognized values (caller should reject at
+    /// validation time, so this is a fallback).
+    pub fn parse_mode(s: &str) -> Option<Self> {
+        match s {
+            "decrypted" => Some(Self::Decrypted),
+            "encrypted+dsb" => Some(Self::EncryptedWithDsb),
+            "raw" => Some(Self::Raw),
+            _ => None,
+        }
+    }
+
+    /// Whether this mode should include DSB blocks in the output.
+    pub fn include_dsb(self) -> bool {
+        matches!(self, Self::Decrypted | Self::EncryptedWithDsb)
+    }
+}
 
 /// Internal writer backend: either standard pcap or PCAP-NG.
 enum WriterBackend {
@@ -50,6 +90,10 @@ pub struct PcapWriter {
     max_file_bytes: Option<u64>,
     /// Rotate when file has been open for this duration (from `--split duration:N`).
     max_file_duration: Option<std::time::Duration>,
+    /// How encrypted traffic should be exported (controls DSB inclusion).
+    export_mode: PcapExportMode,
+    /// Whether a DSB has already been written to the current file.
+    dsb_written: bool,
 }
 
 impl PcapWriter {
@@ -57,6 +101,7 @@ impl PcapWriter {
     ///
     /// The file is created immediately with the specified link-layer type.
     /// Rotation parameters are optional; pass `None` to disable automatic rotation.
+    /// Uses standard pcap format and `Decrypted` export mode.
     ///
     /// Warns if the path contains `..` components, which may indicate path
     /// traversal. The file is still opened (user may have legitimate reasons).
@@ -66,19 +111,28 @@ impl PcapWriter {
         max_file_bytes: Option<u64>,
         max_file_duration: Option<std::time::Duration>,
     ) -> Result<Self> {
-        Self::with_format(path, link_type, max_file_bytes, max_file_duration, false)
+        Self::with_format(
+            path,
+            link_type,
+            max_file_bytes,
+            max_file_duration,
+            false,
+            PcapExportMode::Decrypted,
+        )
     }
 
-    /// Create a new writer with explicit format selection.
+    /// Create a new writer with explicit format and export mode selection.
     ///
     /// When `pcapng` is `true`, the output uses PCAP-NG format; otherwise
-    /// standard pcap.
+    /// standard pcap. The `export_mode` controls whether DSB blocks are
+    /// written for TLS key material.
     pub fn with_format(
         path: &Path,
         link_type: i32,
         max_file_bytes: Option<u64>,
         max_file_duration: Option<std::time::Duration>,
         pcapng: bool,
+        export_mode: PcapExportMode,
     ) -> Result<Self> {
         // M5: Warn on path traversal components
         if path
@@ -99,9 +153,14 @@ impl PcapWriter {
         };
 
         log::info!(
-            "Writing packets to '{}' ({})",
+            "Writing packets to '{}' ({}, mode={})",
             path.display(),
-            if pcapng { "pcapng" } else { "pcap" }
+            if pcapng { "pcapng" } else { "pcap" },
+            match export_mode {
+                PcapExportMode::Decrypted => "decrypted",
+                PcapExportMode::EncryptedWithDsb => "encrypted+dsb",
+                PcapExportMode::Raw => "raw",
+            },
         );
 
         Ok(Self {
@@ -114,6 +173,8 @@ impl PcapWriter {
             file_opened_at: std::time::Instant::now(),
             max_file_bytes,
             max_file_duration,
+            export_mode,
+            dsb_written: false,
         })
     }
 
@@ -175,11 +236,54 @@ impl PcapWriter {
         Ok(())
     }
 
+    /// Return the current export mode.
+    pub fn export_mode(&self) -> PcapExportMode {
+        self.export_mode
+    }
+
+    /// Write a DSB from a keylog file, if the export mode requires it.
+    ///
+    /// Reads the SSLKEYLOGFILE at `keylog_path` and embeds its content as a
+    /// Decryption Secrets Block. No-ops if:
+    /// - The export mode is `Raw` (no key material should be embedded)
+    /// - A DSB has already been written to the current file
+    /// - The keylog file cannot be read (logs a warning)
+    /// - The backend is standard pcap (DSBs require PCAP-NG)
+    pub fn maybe_write_keylog_dsb(&mut self, keylog_path: &Path) -> Result<()> {
+        if !self.export_mode.include_dsb() {
+            return Ok(());
+        }
+        if self.dsb_written {
+            return Ok(());
+        }
+        match std::fs::read(keylog_path) {
+            Ok(data) if !data.is_empty() => {
+                self.write_dsb(&data)?;
+                self.dsb_written = true;
+                log::info!(
+                    "Wrote DSB ({} bytes of key material) to '{}'",
+                    data.len(),
+                    self.base_path.display(),
+                );
+            }
+            Ok(_) => {
+                log::debug!("Keylog file '{}' is empty; skipping DSB", keylog_path.display());
+            }
+            Err(e) => {
+                log::warn!("Cannot read keylog '{}' for DSB: {e}", keylog_path.display());
+            }
+        }
+        Ok(())
+    }
+
     /// Write a Decryption Secrets Block (DSB) containing TLS key material.
     ///
     /// The `secrets_data` should be SSLKEYLOGFILE-format content.
     /// Call after IDB, before first EPB. Only works with PCAP-NG backend;
     /// silently skips if using standard pcap format.
+    ///
+    /// Prefer [`maybe_write_keylog_dsb`](Self::maybe_write_keylog_dsb) which
+    /// checks the export mode automatically.
     pub fn write_dsb(&mut self, secrets_data: &[u8]) -> Result<()> {
         match &mut self.backend {
             WriterBackend::PcapNg(writer) => {
@@ -240,6 +344,7 @@ impl PcapWriter {
             WriterBackend::Pcap(create_savefile(&new_path, linktype)?)
         };
         self.bytes_written = 0;
+        self.dsb_written = false;
         self.file_opened_at = std::time::Instant::now();
 
         Ok(())

@@ -259,6 +259,60 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
     }
 }
 
+/// Derive an SRTP session key using a simplified KDF based on RFC 3711 Section 4.3.1.
+///
+/// The full SRTP KDF uses AES-CM (counter mode) as the PRF, keyed with the
+/// master key, to derive session keys from `label XOR master_salt`. Since
+/// AES-CM is not directly exposed by our [`CryptoBackend`] trait, this
+/// implementation uses HMAC-SHA1(master_key, label || master_salt) as a
+/// key-separation step. This is not strictly RFC 3711 compliant (the spec
+/// mandates AES-CM), but it provides proper key separation between the
+/// master key and the session authentication key — vastly better than using
+/// the master key directly as the HMAC key.
+///
+/// # Arguments
+///
+/// * `master_key` — The SRTP master key.
+/// * `master_salt` — The SRTP master salt (typically 14 bytes / 112 bits).
+/// * `label` — The SRTP key derivation label (0x00 = cipher, 0x01 = auth,
+///   0x02 = salt for SRTP; 0x03/0x04/0x05 for SRTCP).
+/// * `output_len` — Desired output length in bytes (e.g., 20 for auth key).
+/// * `crypto` — The crypto backend for HMAC computation.
+///
+/// # Returns
+///
+/// The derived session key, truncated to `output_len` bytes.
+fn derive_session_key(
+    master_key: &[u8],
+    master_salt: &[u8],
+    label: u8,
+    output_len: usize,
+    crypto: &dyn crate::crypto::CryptoBackend,
+) -> Result<Vec<u8>> {
+    // RFC 3711 Section 4.3.1: x = label * 2^48 XOR master_salt (padded to 112 bits)
+    // We construct the KDF input as: label byte || master_salt, which provides
+    // domain separation between key types while incorporating the salt.
+    let mut kdf_input = Vec::with_capacity(1 + master_salt.len());
+    kdf_input.push(label);
+    kdf_input.extend_from_slice(master_salt);
+
+    let derived = crypto.hmac_sha1(master_key, &kdf_input)?;
+
+    // HMAC-SHA1 produces 20 bytes; truncate to the requested length.
+    if output_len > derived.len() {
+        anyhow::bail!(
+            "Requested KDF output length ({output_len}) exceeds HMAC-SHA1 output ({})",
+            derived.len()
+        );
+    }
+    Ok(derived[..output_len].to_vec())
+}
+
+/// SRTP KDF label for the session authentication key (RFC 3711 Section 4.3.1).
+const SRTP_LABEL_AUTH: u8 = 0x01;
+/// Session auth key length: 160 bits (20 bytes) per RFC 3711.
+const SRTP_AUTH_KEY_LEN: usize = 20;
+
 /// Verify the SRTP authentication tag on an SRTP packet.
 ///
 /// The SRTP packet format is: `[RTP header + encrypted payload] [auth tag]`.
@@ -266,6 +320,10 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
 /// portion (everything before the tag) with the ROC (rollover counter)
 /// appended. For simplicity, this implementation assumes ROC = 0 (valid
 /// for the first 65535 packets of a session).
+///
+/// The session authentication key is derived from the master key and salt
+/// via [`derive_session_key`] with label 0x01 (RFC 3711 Section 4.3.1),
+/// rather than using the master key directly.
 ///
 /// Returns `Ok(true)` if the tag is valid, `Ok(false)` if the tag does
 /// not match, or `Err` if the crypto operation fails.
@@ -292,17 +350,22 @@ pub fn verify_srtp_auth_tag(
     let auth_portion = &packet[..auth_portion_len];
     let received_tag = &packet[auth_portion_len..];
 
-    // Derive auth key from master key and salt.
-    // SRTP KDF: auth_key = KDF(master_key, label=0x01, master_salt, index=0)
-    // For simplicity, use the master key directly as the HMAC key.
-    // A full implementation would use the SRTP KDF (AES-CM based PRF),
-    // but for initial tag detection this provides a reasonable signal.
-    // Note: With the simplified approach, we compute HMAC-SHA1(master_key, auth_portion || ROC).
+    // Derive the session authentication key from master key + salt via KDF.
+    // RFC 3711 Section 4.3.1: label=0x01 for auth, 160-bit (20-byte) output.
+    let session_auth_key = derive_session_key(
+        &key_material.master_key,
+        &key_material.master_salt,
+        SRTP_LABEL_AUTH,
+        SRTP_AUTH_KEY_LEN,
+        crypto,
+    )?;
+
+    // HMAC-SHA1(session_auth_key, auth_portion || ROC)
     let mut hmac_input = auth_portion.to_vec();
     // Append ROC (assumed 0 for initial implementation)
     hmac_input.extend_from_slice(&0u32.to_be_bytes());
 
-    let full_tag = crypto.hmac_sha1(&key_material.master_key, &hmac_input)?;
+    let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input)?;
     let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
 
     Ok(computed_tag == received_tag)
@@ -475,7 +538,7 @@ mod tests {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
             master_key: key.clone(),
-            master_salt: salt,
+            master_salt: salt.clone(),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -490,11 +553,16 @@ mod tests {
         packet.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // SSRC
         packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE, 0xBA, 0xBE]); // payload
 
-        // Compute the correct auth tag
+        // Derive the session auth key the same way verify_srtp_auth_tag does
+        let session_auth_key =
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
+                .unwrap();
+
+        // Compute the correct auth tag using the derived session auth key
         let auth_portion = packet.clone();
         let mut hmac_input = auth_portion.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes()); // ROC=0
-        let full_tag = crypto.hmac_sha1(&key, &hmac_input).unwrap();
+        let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
         let auth_tag = &full_tag[..10];
 
         // Append auth tag to packet
@@ -516,7 +584,7 @@ mod tests {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80,
             master_key: wrong_key,
-            master_salt: salt,
+            master_salt: salt.clone(),
             ssrc: None,
             media_addr: None,
             media_port: None,
@@ -524,19 +592,46 @@ mod tests {
 
         let crypto = RingCryptoBackend;
 
-        // Build packet with auth tag computed using the correct key
+        // Build packet with auth tag computed using the correct key's derived session auth key
         let mut packet = vec![
             0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
         ];
         packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
+        let session_auth_key =
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
+                .unwrap();
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes());
-        let full_tag = crypto.hmac_sha1(&key, &hmac_input).unwrap();
+        let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
         packet.extend_from_slice(&full_tag[..10]);
 
         let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
         assert!(!result, "Auth tag should fail with wrong key");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn derive_session_key_produces_different_keys_per_label() {
+        use crate::crypto::RingCryptoBackend;
+
+        let crypto = RingCryptoBackend;
+        let master_key = vec![0xAA; 16];
+        let master_salt = vec![0xBB; 14];
+
+        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 16, &crypto).unwrap();
+        let auth_key =
+            derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20, &crypto).unwrap();
+        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 14, &crypto).unwrap();
+
+        // Each label must produce a different key
+        assert_ne!(cipher_key, auth_key[..16], "cipher and auth keys must differ");
+        assert_ne!(cipher_key, salt_key[..14], "cipher and salt keys must differ");
+        assert_ne!(
+            &auth_key[..14],
+            salt_key.as_slice(),
+            "auth and salt keys must differ"
+        );
     }
 
     #[test]

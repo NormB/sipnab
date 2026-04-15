@@ -170,7 +170,12 @@ fn check_basic_auth(auth_value: &str, expected_creds: &str) -> bool {
     constant_time_eq(decoded.as_bytes(), expected_creds.as_bytes())
 }
 
-/// Constant-time byte comparison.
+/// Constant-time byte comparison to prevent timing side-channel attacks.
+///
+/// `#[inline(never)]` prevents the optimizer from rewriting the loop into
+/// a short-circuiting form. `black_box` on the accumulator forces the
+/// compiler to materialize it, blocking dead-store elimination.
+#[inline(never)]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let len_match = a.len() == b.len();
     let max_len = a.len().max(b.len());
@@ -180,7 +185,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         let y = b.get(i).copied().unwrap_or(0);
         byte_diff |= x ^ y;
     }
-    len_match && byte_diff == 0
+    len_match && std::hint::black_box(byte_diff) == 0
 }
 
 /// Parse a bind address string into a [`SocketAddr`].

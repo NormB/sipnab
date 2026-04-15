@@ -302,6 +302,11 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
 /// Does not leak the length of either input: both are compared up to
 /// the length of the longer input, and the length check is folded into
 /// the final result without early return.
+///
+/// `#[inline(never)]` prevents the optimizer from rewriting the loop into
+/// a short-circuiting form. `black_box` on the accumulator forces the
+/// compiler to materialize it, blocking dead-store elimination.
+#[inline(never)]
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let len_match = a.len() == b.len();
     let max_len = a.len().max(b.len());
@@ -311,7 +316,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         let y = b.get(i).copied().unwrap_or(0);
         byte_diff |= x ^ y;
     }
-    len_match && byte_diff == 0
+    len_match && std::hint::black_box(byte_diff) == 0
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
