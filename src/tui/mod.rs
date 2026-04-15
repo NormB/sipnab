@@ -1546,7 +1546,8 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
                 }
             }
             View::MessageDiff { .. } => vec![("Esc", "Back")],
-            View::StreamList => vec![("Esc", "Back"), ("Tab", "Calls"), ("F7", "Filter")],
+            View::StreamList => vec![("Esc", "Back"), ("Enter", "Detail"), ("Tab", "Calls"), ("F7", "Filter")],
+            View::StreamDetail(_) => vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page")],
             _ => vec![("Esc", "Back")],
         }
     };
@@ -2683,7 +2684,7 @@ fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
 
 /// Get the StreamKey for the currently selected row in the stream list.
 fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
-    let store = app.stream_store.try_read()?;
+    let store = app.stream_store.read();
     let streams: Vec<_> = store.iter().collect();
     let idx = app.stream_list.selected();
     streams.get(idx).map(|s| s.key.clone())

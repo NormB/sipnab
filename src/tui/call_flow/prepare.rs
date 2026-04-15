@@ -105,6 +105,7 @@ pub fn prepare_messages(
 
     let mut pdd_done = false;
     let mut in_call = false;
+    let mut pending_rtp_codec: Option<String> = None;
     let mut result = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
 
@@ -251,28 +252,37 @@ pub fn prepare_messages(
             }
         }
 
-        // RTP marker: placed on 200 OK to INVITE (call established), not on 200 OK to BYE
+        // RTP marker: placed on ACK to INVITE (media starts after ACK, not on 200 OK)
         if show_rtp {
+            // Track the codec from 200 OK SDP for display on the ACK bar
             let is_invite_200 = !msg.is_request
                 && msg.status_code == Some(200)
                 && msg.cseq().is_some_and(|(_, method)| method == "INVITE");
             if is_invite_200 && !in_call {
-                in_call = true;
-                // Extract codec from 200 OK SDP for the RTP bar
-                let codec_info = msg.sdp().and_then(|ss| {
+                pending_rtp_codec = msg.sdp().and_then(|ss| {
                     let codecs = format_sdp_codecs(&ss);
                     if codecs.is_empty() { None } else { Some(codecs) }
                 });
+            }
+
+            // Place RTP bar after ACK (media starts flowing after ACK completes handshake)
+            let is_invite_ack = msg.is_request
+                && msg.method.as_deref() == Some("ACK")
+                && !in_call;
+            if is_invite_ack {
+                in_call = true;
                 let ind = " ".repeat(ts_width + 1);
-                let bar_text = if let Some(ref codec) = codec_info {
-                    format!("{ind}\u{2500}\u{2500} RTP stream \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}")
+                let ts_str = msg.timestamp.format("%H:%M:%S%.3f").to_string();
+                let bar_text = if let Some(ref codec) = pending_rtp_codec {
+                    format!("{ind}\u{2500}\u{2500} RTP {ts_str} \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}")
                 } else {
-                    format!("{ind}\u{2500}\u{2500}\u{2500}\u{2500} RTP stream \u{00B7} active \u{2500}\u{2500}\u{2500}\u{2500}")
+                    format!("{ind}\u{2500}\u{2500} RTP {ts_str} \u{00B7} active \u{2500}\u{2500}")
                 };
                 extra_lines.push((
                     bar_text,
                     Style::default().fg(theme.accent),
                 ));
+                pending_rtp_codec = None;
             }
             if msg.is_request && msg.method.as_deref() == Some("BYE") && in_call {
                 in_call = false;
