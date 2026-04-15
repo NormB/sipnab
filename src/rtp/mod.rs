@@ -15,8 +15,10 @@
 //! - [`heuristic`] — RTP detection without SDP signaling
 //! - [`diagnosis`] — Media path issue detection (one-way audio, NAT, no media)
 
+pub mod audio_export;
 pub mod diagnosis;
 pub mod dtmf;
+pub mod g711;
 pub mod heuristic;
 pub mod parser;
 pub mod quality;
@@ -25,6 +27,7 @@ pub mod rtcp;
 pub mod srtp;
 pub mod stream;
 pub mod stream_store;
+pub mod wav;
 
 /// Quick check whether a UDP payload is likely an RTP packet.
 ///

@@ -26,6 +26,8 @@ pub struct StreamStore {
     streams: IndexMap<StreamKey, RtpStream>,
     /// Maximum number of concurrent streams before eviction.
     max_streams: usize,
+    /// Maximum number of audio frames to retain per stream for WAV export.
+    max_audio_frames: usize,
 }
 
 impl StreamStore {
@@ -34,7 +36,13 @@ impl StreamStore {
         Self {
             streams: IndexMap::with_capacity(max_streams.min(1024)),
             max_streams,
+            max_audio_frames: 1500,
         }
+    }
+
+    /// Set the maximum number of audio frames retained per stream for WAV export.
+    pub fn set_max_audio_frames(&mut self, max: usize) {
+        self.max_audio_frames = max;
     }
 
     /// Process an RTP packet: create a new stream or update an existing one.
@@ -57,10 +65,29 @@ impl StreamStore {
 
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
+            // Capture G.711 payload for audio export (ring buffer, capped)
+            if matches!(stream.codec.as_deref(), Some("PCMU") | Some("PCMA")) {
+                let payload_start = rtp.payload_offset;
+                if payload_start < parsed.payload.len() {
+                    let audio = parsed.payload[payload_start..].to_vec();
+                    if stream.payload_buffer.len() >= self.max_audio_frames {
+                        stream.payload_buffer.pop_front();
+                    }
+                    stream.payload_buffer.push_back((rtp.timestamp, audio));
+                }
+            }
         } else {
             self.ensure_capacity();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
+            // Capture G.711 payload for audio export (first packet)
+            if matches!(stream.codec.as_deref(), Some("PCMU") | Some("PCMA")) {
+                let payload_start = rtp.payload_offset;
+                if payload_start < parsed.payload.len() {
+                    let audio = parsed.payload[payload_start..].to_vec();
+                    stream.payload_buffer.push_back((rtp.timestamp, audio));
+                }
+            }
             self.streams.insert(key, stream);
         }
     }

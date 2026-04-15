@@ -102,6 +102,9 @@ pub struct RtpStream {
     pub cn_frames: u32,
     /// Detected silence periods (capped at 100).
     pub silence_periods: Vec<SilencePeriod>,
+    /// Ring buffer of raw RTP payloads for audio export (G.711 only).
+    /// Each entry: (RTP timestamp, raw payload bytes).
+    pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
 
     // ── Private state for jitter/interval tracking ───────────────────
     /// Wall-clock arrival time of the previous packet (for jitter calc).
@@ -147,6 +150,7 @@ impl RtpStream {
             lost_sequences: std::collections::VecDeque::new(),
             cn_frames: 0,
             silence_periods: Vec::new(),
+            payload_buffer: std::collections::VecDeque::new(),
             prev_arrival: Some(timestamp),
             prev_rtp_ts: Some(header.timestamp),
             interval_start: timestamp,

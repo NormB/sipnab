@@ -668,7 +668,13 @@ fn run_tui_mode(
         cli.limit as usize,
         cli.rotate,
     )));
-    let stream_store = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
+    let stream_store = {
+        let mut ss = StreamStore::new(cli.max_streams as usize);
+        if let Some(max_frames) = config.limits.max_audio_frames {
+            ss.set_max_audio_frames(max_frames as usize);
+        }
+        Arc::new(RwLock::new(ss))
+    };
 
     // Start standalone metrics server with the REAL stores (not empty copies)
     #[cfg(feature = "api")]
@@ -969,6 +975,9 @@ fn run_batch_mode(
     let mut dialog_store = DialogStore::new(cli.limit as usize, cli.rotate);
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let mut stream_store = StreamStore::new(cli.max_streams as usize);
+    if let Some(max_frames) = config.limits.max_audio_frames {
+        stream_store.set_max_audio_frames(max_frames as usize);
+    }
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
     // 17a. Initialize security detectors

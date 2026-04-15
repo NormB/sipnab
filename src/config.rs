@@ -58,6 +58,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "max_header_line",
             "max_headers_per_message",
             "max_messages_per_dialog",
+            "max_audio_frames",
         ]
         .as_slice(),
     );
@@ -238,6 +239,8 @@ pub struct LimitsConfig {
     pub max_headers_per_message: Option<u64>,
     /// Maximum stored messages per dialog (default: 500).
     pub max_messages_per_dialog: Option<u64>,
+    /// Maximum audio frames retained per RTP stream for WAV export (default: 1500).
+    pub max_audio_frames: Option<u64>,
 }
 
 /// Privilege settings.
