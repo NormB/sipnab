@@ -598,8 +598,7 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
         // Tighter layout: #(4) + Method(8) + State(10) + Msgs(4) + Date(8) + PDD(6) = 40
         let fixed: u16 = 40 + overhead;
         let flex = total_width.saturating_sub(fixed);
-        // Give Source/Dest ~40% each, From/To ~10% each of flex
-        let addr_each = (flex * 2 / 5).max(11); // at least "Destination" header
+        let addr_each = (flex * 2 / 5).max(11);
         let from_to_pool = flex.saturating_sub(addr_each * 2);
         let from_w = (from_to_pool / 2).max(4);
         let to_w = from_to_pool.saturating_sub(from_w).max(4);

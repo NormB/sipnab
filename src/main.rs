@@ -36,7 +36,16 @@ fn main() {
     let cli = Cli::parse_args();
 
     // 2. Setup logging (env var: SIPNAB_LOG, default: info; quiet overrides to warn)
-    let default_level = if cli.quiet { "warn" } else { "info" };
+    // TUI mode: suppress log output to avoid corruption of the alternate screen.
+    // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
+    let tui_active = !cli.no_tui;
+    let default_level = if cli.quiet {
+        "warn"
+    } else if tui_active && std::env::var("SIPNAB_LOG").is_err() {
+        "error"
+    } else {
+        "info"
+    };
     env_logger::Builder::from_env(env_logger::Env::new().filter_or("SIPNAB_LOG", default_level))
         .format_timestamp_millis()
         .init();
