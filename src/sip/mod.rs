@@ -1,9 +1,12 @@
-//! SIP message parsing and analysis for sipnab.
+//! SIP protocol parsing, dialog state tracking, and filter DSL.
 //!
-//! Provides zero-copy SIP message parsing, lazy header extraction, and
-//! response code intelligence. The parser operates on `&[u8]` byte slices
-//! from the capture engine's [`ParsedPacket`](crate::capture::ParsedPacket)
-//! payloads.
+//! Provides zero-copy SIP message parsing, lazy header extraction,
+//! response code intelligence, dialog state tracking, and a declarative
+//! filter DSL for matching calls.
+//!
+//! Core types: [`SipMessage`], [`SipDialog`](dialog::SipDialog),
+//! [`DialogState`](dialog::DialogState), [`SipMethod`],
+//! [`FilterExpr`](dsl::FilterExpr).
 
 pub mod dialog;
 pub mod dialog_store;

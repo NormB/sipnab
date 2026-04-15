@@ -1,4 +1,5 @@
-//! Packet capture orchestration for sipnab.
+//! Network packet capture, pcap/pcapng file reading, TCP reassembly, HEP protocol,
+//! and TLS decryption.
 //!
 //! This module coordinates live device capture, pcap file reading, and output
 //! writing. It provides [`start_capture`] as the main entry point, which spawns

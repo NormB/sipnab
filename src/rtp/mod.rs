@@ -1,10 +1,16 @@
-//! RTP stream engine for sipnab.
+//! RTP/RTCP stream analysis, quality metrics, and audio export.
 //!
 //! This module provides RTP and RTCP packet parsing, stream lifecycle
 //! tracking, heuristic discovery (for streams without SDP signaling),
 //! and media path diagnosis. RTP streams are first-class entities that
 //! peer with SIP dialogs via cross-references rather than being children
 //! of dialogs.
+//!
+//! Core types: [`RtpStream`](stream::RtpStream),
+//! [`StreamKey`](stream::StreamKey),
+//! [`StreamStore`](stream_store::StreamStore).
+//! Functions: [`estimate_mos`](quality::estimate_mos),
+//! [`parse_rtp_header`](parser::parse_rtp_header).
 //!
 //! # Architecture
 //!

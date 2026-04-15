@@ -1,4 +1,5 @@
-//! Security analysis and detection for SIP traffic.
+//! VoIP security detection: SIP scanner detection, toll fraud, registration
+//! flooding, digest credential leaks, and alerting.
 //!
 //! This module provides real-time detection of SIP security threats including
 //! scanner reconnaissance, toll fraud patterns, digest authentication

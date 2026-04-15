@@ -10,7 +10,7 @@
 /// OPTIONS) and common extensions (PRACK, SUBSCRIBE, NOTIFY, PUBLISH,
 /// INFO, REFER, MESSAGE, UPDATE). Any other method is stored as
 /// `Custom(Box<str>)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[non_exhaustive]
 pub enum SipMethod {
     Invite,

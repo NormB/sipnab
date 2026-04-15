@@ -1,4 +1,4 @@
-//! Cryptographic backend abstraction for TLS/SRTP decryption.
+//! Cryptographic backend abstraction for TLS/SRTP operations.
 //!
 //! Defines the [`CryptoBackend`] trait that abstracts over different crypto
 //! implementations (pure-Rust via `ring`, wolfSSL, or OpenSSL). When the

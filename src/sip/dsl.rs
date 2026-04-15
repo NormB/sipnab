@@ -173,6 +173,7 @@ impl FilterExpr {
     /// - A syntax error is found (with approximate position)
     /// - Parentheses nest deeper than 50 levels
     /// - A regex pattern fails to compile or exceeds the 1 MB size limit
+    #[must_use = "parsing result must be handled"]
     pub fn parse(input: &str) -> Result<Self> {
         let trimmed = input.trim();
         if trimmed.is_empty() {

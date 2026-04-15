@@ -1,4 +1,4 @@
-//! Configuration file loading for sipnab.
+//! TOML configuration file loading with cascading search paths.
 //!
 //! Supports TOML configuration with cascading file search:
 //! explicit path > `$SIPNAB_CONFIG` > `~/.config/sipnab/sipnab.toml` >
