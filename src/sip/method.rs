@@ -11,6 +11,7 @@
 /// INFO, REFER, MESSAGE, UPDATE). Any other method is stored as
 /// `Custom(Box<str>)`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SipMethod {
     Invite,
     Ack,

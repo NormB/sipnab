@@ -31,6 +31,7 @@ use crate::signals;
 /// - `Raw`: Write original (encrypted) frames with no DSBs. The output file
 ///   contains only the packets as captured on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PcapExportMode {
     /// Default. Include DSBs; future: may write decrypted frames.
     Decrypted,

@@ -16,6 +16,7 @@
 /// is the period of received packets between bursts. Bursty loss patterns
 /// are perceptually worse than uniformly distributed loss at the same rate.
 #[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
 pub struct BurstGapAnalysis {
     /// Number of loss bursts detected.
     pub burst_count: u32,
