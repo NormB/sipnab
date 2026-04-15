@@ -1,5 +1,3 @@
-/* @ts-self-types="./sipnab.d.ts" */
-
 /**
  * A browser-side sipnab analysis session.
  * All data stays in WASM linear memory -- nothing is uploaded.
@@ -184,6 +182,53 @@ export class SipnabSession {
         }
     }
     /**
+     * Get detailed JSON for a single RTP stream identified by SSRC + src + dst.
+     * @param {number} ssrc
+     * @param {string} src
+     * @param {string} dst
+     * @returns {string}
+     */
+    get_stream_detail(ssrc, src, dst) {
+        let deferred3_0;
+        let deferred3_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passStringToWasm0(src, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len0 = WASM_VECTOR_LEN;
+            const ptr1 = passStringToWasm0(dst, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
+            const len1 = WASM_VECTOR_LEN;
+            wasm.sipnabsession_get_stream_detail(retptr, this.__wbg_ptr, ssrc, ptr0, len0, ptr1, len1);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred3_0 = r0;
+            deferred3_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export(deferred3_0, deferred3_1, 1);
+        }
+    }
+    /**
+     * Get all RTP streams as JSON array.
+     * @returns {string}
+     */
+    get_streams() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.sipnabsession_get_streams(retptr, this.__wbg_ptr);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            deferred1_0 = r0;
+            deferred1_1 = r1;
+            return getStringFromWasm0(r0, r1);
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+            wasm.__wbindgen_export(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
      * Load a pcap file from raw bytes. Returns a JSON summary.
      * @param {Uint8Array} data
      * @returns {string}
@@ -230,9 +275,23 @@ export class SipnabSession {
     /**
      * @returns {bigint}
      */
+    rtp_packet_count() {
+        const ret = wasm.sipnabsession_rtp_packet_count(this.__wbg_ptr);
+        return BigInt.asUintN(64, ret);
+    }
+    /**
+     * @returns {bigint}
+     */
     sip_message_count() {
         const ret = wasm.sipnabsession_sip_message_count(this.__wbg_ptr);
         return BigInt.asUintN(64, ret);
+    }
+    /**
+     * @returns {number}
+     */
+    stream_count() {
+        const ret = wasm.sipnabsession_stream_count(this.__wbg_ptr);
+        return ret >>> 0;
     }
 }
 if (Symbol.dispose) SipnabSession.prototype[Symbol.dispose] = SipnabSession.prototype.free;
