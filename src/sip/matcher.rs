@@ -62,6 +62,19 @@ impl SipMatcher {
     /// Returns an error if any user-provided pattern fails to compile or
     /// exceeds the regex size limit (1 MB).
     pub fn new(cli: &Cli, payload_pattern: Option<&str>) -> Result<Self> {
+        Self::new_with_overrides(cli, payload_pattern, cli.from.as_deref(), cli.to.as_deref())
+    }
+
+    /// Build a matcher with explicit from/to overrides (for config fallback).
+    ///
+    /// `effective_from` and `effective_to` should already reflect the
+    /// CLI-over-config priority (i.e., `cli.from.or(config.filter.from)`).
+    pub fn new_with_overrides(
+        cli: &Cli,
+        payload_pattern: Option<&str>,
+        effective_from: Option<&str>,
+        effective_to: Option<&str>,
+    ) -> Result<Self> {
         let case_insensitive = cli.ignore_case;
         let word = cli.word;
         // When single_line is false (default), `.` matches newlines so
@@ -74,16 +87,12 @@ impl SipMatcher {
             .transpose()
             .context("invalid payload match expression")?;
 
-        let from_regex = cli
-            .from
-            .as_deref()
+        let from_regex = effective_from
             .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --from pattern")?;
 
-        let to_regex = cli
-            .to
-            .as_deref()
+        let to_regex = effective_to
             .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid --to pattern")?;

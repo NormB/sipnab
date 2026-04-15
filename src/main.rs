@@ -296,8 +296,10 @@ fn main() {
         (None, None)
     };
 
-    // 10. Build the SIP matcher from CLI filter flags
-    let matcher = match SipMatcher::new(&cli, None) {
+    // 10. Build the SIP matcher from CLI filter flags, with config fallbacks
+    let effective_from = cli.from.as_deref().or(loaded.config.filter.from.as_deref());
+    let effective_to = cli.to.as_deref().or(loaded.config.filter.to.as_deref());
+    let matcher = match SipMatcher::new_with_overrides(&cli, None, effective_from, effective_to) {
         Ok(m) => m,
         Err(e) => {
             log::error!("Invalid filter pattern: {e}");
@@ -305,8 +307,9 @@ fn main() {
         }
     };
 
-    // 11. Build the filter DSL expression if --filter (or diagnostic aliases)
-    let filter_expr = build_filter_expr(&cli);
+    // 11. Build the filter DSL expression if --filter (or diagnostic aliases),
+    //     falling back to config.filter.expression
+    let filter_expr = build_filter_expr(&cli, &loaded.config);
 
     // 12. Build output options
     let output_opts = OutputOptions {
@@ -398,7 +401,8 @@ fn main() {
 
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
     // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
-    if let Some(ref chroot_dir) = cli.chroot
+    let effective_chroot = cli.chroot.as_ref().or(loaded.config.privilege.chroot.as_ref());
+    if let Some(ref chroot_dir) = effective_chroot
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
         log::error!("Failed to chroot: {e}");
@@ -406,7 +410,9 @@ fn main() {
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-    if let Err(e) = privilege::drop_privileges(cli.user.as_deref(), cli.no_priv_drop) {
+    let effective_user = cli.user.as_deref().or(loaded.config.privilege.user.as_deref());
+    let effective_no_priv_drop = cli.no_priv_drop || loaded.config.privilege.no_priv_drop.unwrap_or(false);
+    if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         log::error!("Failed to drop privileges: {e}");
         std::process::exit(1);
     }
@@ -1025,9 +1031,14 @@ fn run_batch_mode(
         None
     };
 
-    // 17b. Initialize alert engine from --alert rules and --alert-exec
-    let alert_rules: Vec<AlertRule> = cli
-        .alert
+    // 17b. Initialize alert engine from --alert rules and --alert-exec,
+    //      falling back to config.security.alert and config.security.alert_exec
+    let effective_alert_sources: &[String] = if cli.alert.is_empty() {
+        config.security.alert.as_deref().unwrap_or(&[])
+    } else {
+        &cli.alert
+    };
+    let alert_rules: Vec<AlertRule> = effective_alert_sources
         .iter()
         .filter_map(|s| match AlertRule::parse(s) {
             Ok(r) => Some(r),
@@ -1037,7 +1048,8 @@ fn run_batch_mode(
             }
         })
         .collect();
-    let mut alert_engine = AlertEngine::new(alert_rules, cli.alert_exec.clone());
+    let effective_alert_exec = cli.alert_exec.clone().or(config.security.alert_exec.clone());
+    let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
     if cli.syslog {
         alert_engine.set_syslog(true);
     }
@@ -1904,8 +1916,8 @@ fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &Stream
 
 // ── Filter expression building ──────────────────────────────────────
 
-/// Build a `FilterExpr` from CLI `--filter` flag or diagnostic aliases.
-fn build_filter_expr(cli: &Cli) -> Option<FilterExpr> {
+/// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or config fallback.
+fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
     // Explicit --filter takes precedence
     if let Some(ref expr) = cli.filter {
         match FilterExpr::parse(expr) {
@@ -1936,18 +1948,29 @@ fn build_filter_expr(cli: &Cli) -> Option<FilterExpr> {
         parts.push("nat_mismatch == true");
     }
 
-    if parts.is_empty() {
-        return None;
+    if !parts.is_empty() {
+        let combined = parts.join(" OR ");
+        return match FilterExpr::parse(&combined) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                log::error!("Internal error building diagnostic filter: {e}");
+                std::process::exit(2);
+            }
+        };
     }
 
-    let combined = parts.join(" OR ");
-    match FilterExpr::parse(&combined) {
-        Ok(f) => Some(f),
-        Err(e) => {
-            log::error!("Internal error building diagnostic filter: {e}");
-            std::process::exit(2);
+    // Fall back to config file expression
+    if let Some(ref expr) = config.filter.expression {
+        match FilterExpr::parse(expr) {
+            Ok(f) => return Some(f),
+            Err(e) => {
+                log::error!("Invalid config filter expression: {e}");
+                std::process::exit(2);
+            }
         }
     }
+
+    None
 }
 
 // ── Capture config builder ──────────────────────────────────────────
