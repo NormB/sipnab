@@ -42,6 +42,25 @@ pub enum DialogState {
     Transferring,
 }
 
+impl std::fmt::Display for DialogState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Trying => "Trying",
+            Self::Ringing => "Ringing",
+            Self::InCall => "InCall",
+            Self::Completed => "Completed",
+            Self::Cancelled => "Cancelled",
+            Self::Failed => "Failed",
+            Self::Registered => "Registered",
+            Self::Expired => "Expired",
+            Self::Pending => "Pending",
+            Self::Active => "Active",
+            Self::Terminated => "Terminated",
+            Self::Transferring => "Transferring",
+        })
+    }
+}
+
 /// A tracked SIP dialog (call, registration, or subscription).
 ///
 /// Created when the first message for a given Call-ID is processed.
