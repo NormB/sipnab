@@ -1,5 +1,5 @@
 # sipnab RTP Quality TUI Demo
-# Shows: call list → call flow with RTP bars → RTP streams tab
+# Shows: call list → call flow with selectable RTP bar → stream detail → streams tab
 
 Output website/demos/08-rtp-tui.gif
 Set Theme "Ayu Mirage"
@@ -18,28 +18,46 @@ Show
 
 Type "sipnab -I tests/pcap-samples/voipshark-normal-call.pcap"
 Enter
-Sleep 4s
+Sleep 3s
 
 # Navigate to INVITE dialog
-Down Down Down Down Down Down
-Sleep 2s
+Down Down Down Down Down Down Down Down Down
+Sleep 1.5s
 
 # Enter call flow
 Enter
 Sleep 2s
 
-# Scroll down to see RTP bars
-Down Down Down Down Down Down Down Down Down Down Down Down Down Down
+# Scroll down past SIP messages to the RTP bar
+Down Down Down Down Down Down Down Down
+Sleep 2s
+
+# Select the RTP bar — it's highlighted
+Down
+Sleep 1.5s
+
+# Press Enter to drill into RTP Stream Detail
+Enter
 Sleep 3s
 
-# Back to list
+# Scroll down to see quality intervals and sparklines
+Down Down Down Down Down
+Sleep 2s
+
+# Esc back to call flow (not stream list!)
 Escape
-Sleep 1s
+Sleep 2s
 
-# Switch to RTP Streams tab
-Tab
-Sleep 3s
+# Press 'r' to jump to RTP Streams tab
+Type "r"
+Sleep 2s
 
 # Navigate streams
-Down Down Down
+Down Down
+Sleep 1.5s
+
+# Enter stream detail from stream list
+Enter
 Sleep 3s
+
+Sleep 1s
