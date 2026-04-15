@@ -109,8 +109,10 @@ pub fn prepare_messages(
     let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
     let mut result = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
+    let mut fmt_idx: usize = 0; // running index in the formatted (non-spacer) output
 
     for (mi, msg) in messages.iter().enumerate() {
+        let _ = mi; // raw message index — not used for selection
         let (timestamp, timestamp_style) = match ts_mode {
             TimestampMode::Absolute => {
                 let ts_str = format!(
@@ -179,7 +181,7 @@ pub fn prepare_messages(
             }
         };
 
-        let sel = selected_msg == Some(mi);
+        let sel = selected_msg == Some(fmt_idx);
         let selection_state = if sel {
             SelectionState::Selected
         } else if let Some((ref sel_src, ref sel_dst)) = sel_endpoints {
@@ -308,9 +310,11 @@ pub fn prepare_messages(
             is_retransmission: msg.is_retransmission,
             is_rtp_bar: false,
         });
+        fmt_idx += 1;
 
         // Push the deferred RTP bar as a separate selectable entry
         if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
+            let rtp_sel = selected_msg == Some(fmt_idx);
             let rtp_timestamp = format!(
                 "{:<width$}",
                 rtp_ts.format("%H:%M:%S%.3f"),
@@ -325,9 +329,9 @@ pub fn prepare_messages(
                 dst_col: 0,
                 pdd_note: None,
                 extra_lines: vec![],
-                selected: false,
+                selected: rtp_sel,
                 call_id: msg.call_id().unwrap_or("").to_string(),
-                selection_state: SelectionState::Normal,
+                selection_state: if rtp_sel { SelectionState::Selected } else { SelectionState::Normal },
                 is_response: false,
                 raw_timestamp: rtp_ts,
                 folded_count: 0,
@@ -337,6 +341,7 @@ pub fn prepare_messages(
                 is_retransmission: false,
                 is_rtp_bar: true,
             });
+            fmt_idx += 1;
         }
     }
 
