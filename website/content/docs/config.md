@@ -121,6 +121,7 @@ Resource limits to prevent unbounded memory growth.
 | `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
 | `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
 | `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
+| `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
 
 ```toml
 [limits]
@@ -131,6 +132,7 @@ hep_rate_limit = 25000
 max_header_line = 8192
 max_headers_per_message = 200
 max_messages_per_dialog = 500
+max_audio_frames = 1500
 ```
 
 ### \[privilege\]

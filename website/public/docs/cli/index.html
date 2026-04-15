@@ -123,7 +123,14 @@
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --wireshark</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate a tshark command filtered by caller</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --tshark-filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39;&quot;</span></span></code></pre><h3 id="pipe-through-jq-for-custom-analysis">Pipe through jq for custom analysis</h3>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --tshark-filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39;&quot;</span></span></code></pre><h3 id="export-call-audio-as-wav">Export call audio as WAV</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># In TUI: select a dialog → F2 → Tab to WAV → Enter → filename.wav</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># The WAV contains decoded G.711 (mu-law/A-law) audio from the RTP streams.</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1 stream = mono, 2 streams (caller + callee) = stereo.</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Supported codecs: PCMU (G.711 mu-law), PCMA (G.711 A-law)</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Audio is captured in a ring buffer (~30 seconds by default).</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Configure with: [limits] max_audio_frames = 1500</span></span></code></pre><h3 id="pipe-through-jq-for-custom-analysis">Pipe through jq for custom analysis</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Count failures by response code</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
 <span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.status&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
@@ -362,6 +369,8 @@
             <li><a href="#security-monitoring">Security monitoring</a></li>
             
             <li><a href="#export-for-wireshark-analysis">Export for Wireshark analysis</a></li>
+            
+            <li><a href="#export-call-audio-as-wav">Export call audio as WAV</a></li>
             
             <li><a href="#pipe-through-jq-for-custom-analysis">Pipe through jq for custom analysis</a></li>
             
