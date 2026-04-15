@@ -1203,8 +1203,11 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 // and track which indices carry an RTP bar for Enter drill-down
                 if let Some((_, ref msgs)) = prepared {
                     app.cached_flow_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                    // Build RTP bar indices in terms of non-spacer message index
+                    // (matching selected_msg_index which skips spacers)
                     app.cached_rtp_bar_indices = msgs
                         .iter()
+                        .filter(|m| !m.is_spacer)
                         .enumerate()
                         .filter(|(_, m)| m.is_rtp_bar)
                         .map(|(i, _)| i)
