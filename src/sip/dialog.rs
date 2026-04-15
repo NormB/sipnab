@@ -16,6 +16,7 @@ use super::timing::DialogTiming;
 
 /// Dialog lifecycle state, covering INVITE, REGISTER, and SUBSCRIBE flows.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DialogState {
     /// INVITE sent, no provisional response yet.
     Trying,
