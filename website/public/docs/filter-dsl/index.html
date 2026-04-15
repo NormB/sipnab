@@ -239,7 +239,72 @@
 <blockquote>
 <p><strong>Note:</strong> The filter DSL evaluates against dialogs, not individual messages. A filter like <code>method == 'INVITE'</code> matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).</p>
 </blockquote>
-<h2 id="parser-constraints">Parser Constraints</h2>
+<h2 id="rtp-quality-media-queries">RTP Quality &amp; Media Queries</h2>
+<p>The filter DSL provides direct access to RTP stream metrics. These fields query the aggregate quality of all RTP streams associated with a dialog.</p>
+<h3 id="mos-based-quality-monitoring">MOS-Based Quality Monitoring</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with MOS below carrier threshold</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.5&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with excellent quality (verify your codecs are performing)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &gt; 4.0 AND state == &#39;Completed&#39;&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live alert: MOS drops below 3.0 on any active call</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> tee</span><span style="color: #AAD94C;"> /var/log/sipnab/quality.ndjson</span></span></code></pre>
+<p>MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.</p>
+<h3 id="jitter-packet-loss">Jitter &amp; Packet Loss</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># High jitter (network congestion indicator)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.jitter &gt; 50.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Packet loss above 1% (codec-dependent threshold)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.loss &gt; 1.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Combined: calls where quality is degraded by both jitter AND loss</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.jitter &gt; 30.0 AND rtp.loss &gt; 0.5&quot;</span><span style="color: #95E6CB;"> --report</span></span></code></pre>
+<p>Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm). Loss is a percentage (0.0–100.0).</p>
+<h3 id="rtp-stream-investigation">RTP Stream Investigation</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with orphaned RTP streams (no matching SDP)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.orphaned == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by codec (useful for codec-specific quality analysis)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.codec == &#39;PCMU&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with specific SSRC (trace a specific media stream)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.ssrc == &#39;12345678&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># High packet count calls (long duration or high-rate codecs)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.packets &gt; 10000&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="one-way-audio-media-path-issues">One-Way Audio &amp; Media Path Issues</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect one-way audio (one direction has zero RTP packets)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Calls with no media at all (SDP negotiated but no RTP ever flowed)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;no_media == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># NAT mismatch + one-way audio (the classic NAT problem)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;nat_mismatch == true AND one_way == true&quot;</span><span style="color: #95E6CB;"> --report</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># One-way audio after call establishment (filter out early-media false positives)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true AND duration &gt; 10.0&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="rtcp-extended-reports">RTCP Extended Reports</h3>
+<p>When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (RFC 3611 Section 4.7) including:</p>
+<ul>
+<li>Round-trip delay, end-system delay</li>
+<li>Signal/noise levels</li>
+<li>R-factor, external R-factor</li>
+<li>MOS-LQ, MOS-CQ</li>
+<li>Burst/gap loss metrics</li>
+</ul>
+<p>These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.</p>
+<h3 id="combining-rtp-with-sip-filters">Combining RTP with SIP Filters</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Failed calls that also had quality issues (correlate signaling + media)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39; AND rtp.mos &lt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Calls from a specific user with packet loss</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39; AND rtp.loss &gt; 0.5&quot;</span><span style="color: #95E6CB;"> --report</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Trunk monitoring: all calls to a specific destination with quality metrics</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;dst.ip == &#39;10.0.0.100&#39; AND rtp.mos &lt; 4.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Registration + quality correlation (find endpoints with both reg and quality issues)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39; AND retransmits &gt; 3 AND rtp.jitter &gt; 30&quot;</span></span></code></pre><h2 id="parser-constraints">Parser Constraints</h2>
 <ul>
 <li>Maximum parenthesis nesting depth: <strong>50 levels</strong></li>
 <li>Maximum regex pattern size: <strong>1 MB</strong> (1,000,000 bytes)</li>
@@ -343,6 +408,26 @@
             <li><a href="#find-chatty-dialogs-debugging-retransmissions">Find chatty dialogs (debugging retransmissions)</a></li>
             
             <li><a href="#monitor-for-sip-trunk-failures">Monitor for SIP trunk failures</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#rtp-quality-media-queries">RTP Quality &amp; Media Queries</a>
+          
+          <ul>
+            
+            <li><a href="#mos-based-quality-monitoring">MOS-Based Quality Monitoring</a></li>
+            
+            <li><a href="#jitter-packet-loss">Jitter &amp; Packet Loss</a></li>
+            
+            <li><a href="#rtp-stream-investigation">RTP Stream Investigation</a></li>
+            
+            <li><a href="#one-way-audio-media-path-issues">One-Way Audio &amp; Media Path Issues</a></li>
+            
+            <li><a href="#rtcp-extended-reports">RTCP Extended Reports</a></li>
+            
+            <li><a href="#combining-rtp-with-sip-filters">Combining RTP with SIP Filters</a></li>
             
           </ul>
           

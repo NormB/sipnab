@@ -264,6 +264,99 @@ Filter for failures targeting a specific SIP trunk IP.
 
 > **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
 
+## RTP Quality & Media Queries
+
+The filter DSL provides direct access to RTP stream metrics. These fields query the aggregate quality of all RTP streams associated with a dialog.
+
+### MOS-Based Quality Monitoring
+
+```bash
+# Find calls with MOS below carrier threshold
+sipnab -N -I capture.pcap --filter "rtp.mos < 3.5" --json
+
+# Find calls with excellent quality (verify your codecs are performing)
+sipnab -N -I capture.pcap --filter "rtp.mos > 4.0 AND state == 'Completed'"
+
+# Live alert: MOS drops below 3.0 on any active call
+sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0" --json | tee /var/log/sipnab/quality.ndjson
+```
+
+MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.
+
+### Jitter & Packet Loss
+
+```bash
+# High jitter (network congestion indicator)
+sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0" --json
+
+# Packet loss above 1% (codec-dependent threshold)
+sipnab -N -I capture.pcap --filter "rtp.loss > 1.0" --json
+
+# Combined: calls where quality is degraded by both jitter AND loss
+sipnab -N -I capture.pcap --filter "rtp.jitter > 30.0 AND rtp.loss > 0.5" --report
+```
+
+Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm). Loss is a percentage (0.0–100.0).
+
+### RTP Stream Investigation
+
+```bash
+# Find calls with orphaned RTP streams (no matching SDP)
+sipnab -N -I capture.pcap --filter "rtp.orphaned == true" --json
+
+# Filter by codec (useful for codec-specific quality analysis)
+sipnab -N -I capture.pcap --filter "rtp.codec == 'PCMU'" --json
+
+# Find calls with specific SSRC (trace a specific media stream)
+sipnab -N -I capture.pcap --filter "rtp.ssrc == '12345678'" --json
+
+# High packet count calls (long duration or high-rate codecs)
+sipnab -N -I capture.pcap --filter "rtp.packets > 10000" --json
+```
+
+### One-Way Audio & Media Path Issues
+
+```bash
+# Detect one-way audio (one direction has zero RTP packets)
+sipnab -N -I capture.pcap --filter "one_way == true" --json
+
+# Calls with no media at all (SDP negotiated but no RTP ever flowed)
+sipnab -N -I capture.pcap --filter "no_media == true" --json
+
+# NAT mismatch + one-way audio (the classic NAT problem)
+sipnab -N -I capture.pcap --filter "nat_mismatch == true AND one_way == true" --report
+
+# One-way audio after call establishment (filter out early-media false positives)
+sipnab -N -I capture.pcap --filter "one_way == true AND duration > 10.0" --json
+```
+
+### RTCP Extended Reports
+
+When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (RFC 3611 Section 4.7) including:
+- Round-trip delay, end-system delay
+- Signal/noise levels
+- R-factor, external R-factor
+- MOS-LQ, MOS-CQ
+- Burst/gap loss metrics
+
+These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.
+
+### Combining RTP with SIP Filters
+
+```bash
+# Failed calls that also had quality issues (correlate signaling + media)
+sipnab -N -I capture.pcap --filter "state == 'Failed' AND rtp.mos < 3.0" --json
+
+# Calls from a specific user with packet loss
+sipnab -N -I capture.pcap --filter "from.user == '1001' AND rtp.loss > 0.5" --report
+
+# Trunk monitoring: all calls to a specific destination with quality metrics
+sipnab -N -I capture.pcap --filter "dst.ip == '10.0.0.100' AND rtp.mos < 4.0" --json
+
+# Registration + quality correlation (find endpoints with both reg and quality issues)
+sipnab -N -I capture.pcap --filter "method == 'INVITE' AND retransmits > 3 AND rtp.jitter > 30"
+```
+
 ## Parser Constraints
 
 - Maximum parenthesis nesting depth: **50 levels**
