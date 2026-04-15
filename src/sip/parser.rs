@@ -12,6 +12,7 @@ use chrono::{DateTime, Utc};
 
 use crate::capture::parse::TransportProto;
 use super::message::{SipHeader, SipMessage};
+use super::method::SipMethod;
 
 /// Mapping from single-character compact header names to canonical long forms
 /// per RFC 3261 SS7.3.3 and extensions.
@@ -93,7 +94,7 @@ pub fn parse_sip(
 /// Parsed components of a SIP first line.
 struct FirstLine {
     is_request: bool,
-    method: Option<String>,
+    method: Option<SipMethod>,
     status_code: Option<u16>,
     reason: Option<String>,
     request_uri: Option<String>,
@@ -124,7 +125,7 @@ fn parse_first_line(line: &str) -> Result<FirstLine> {
     } else if line.ends_with("SIP/2.0") {
         // Request: "INVITE sip:bob@example.com SIP/2.0"
         let first_space = line.find(' ').context("No space in request line")?;
-        let method = line[..first_space].to_string();
+        let method_str = &line[..first_space];
 
         let rest = &line[first_space + 1..];
         let last_space = rest.rfind(' ').context("No space before SIP version")?;
@@ -132,7 +133,7 @@ fn parse_first_line(line: &str) -> Result<FirstLine> {
 
         Ok(FirstLine {
             is_request: true,
-            method: Some(method),
+            method: Some(SipMethod::parse(method_str)),
             status_code: None,
             reason: None,
             request_uri: Some(uri),
@@ -374,7 +375,7 @@ mod tests {
         .expect("should parse INVITE");
 
         assert!(sip.is_request);
-        assert_eq!(sip.method.as_deref(), Some("INVITE"));
+        assert_eq!(sip.method, Some(SipMethod::Invite));
         assert_eq!(
             sip.request_uri.as_deref(),
             Some("sip:bob@biloxi.example.com")
@@ -626,7 +627,7 @@ Content-Length: 0\r\n\
             .expect("partial parse should succeed");
 
         assert!(sip.is_request);
-        assert_eq!(sip.method.as_deref(), Some("INVITE"));
+        assert_eq!(sip.method, Some(SipMethod::Invite));
         assert!(sip.parse_error);
         assert!(sip.body.is_empty());
     }

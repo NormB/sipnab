@@ -221,7 +221,7 @@ fn collect_metrics(
             // Count messages by method
             *metrics
                 .messages_total
-                .entry(dialog.method.clone())
+                .entry(dialog.method.to_string())
                 .or_insert(0) += dialog.messages.len() as u64;
         }
     }

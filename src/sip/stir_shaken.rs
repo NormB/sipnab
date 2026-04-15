@@ -296,7 +296,7 @@ mod tests {
         let msg = SipMessage {
             raw: Vec::new(),
             is_request: true,
-            method: Some("INVITE".to_string()),
+            method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
             reason: None,
             request_uri: Some("sip:bob@example.com".to_string()),
@@ -326,7 +326,7 @@ mod tests {
         let msg = SipMessage {
             raw: Vec::new(),
             is_request: true,
-            method: Some("INVITE".to_string()),
+            method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
             reason: None,
             request_uri: Some("sip:bob@example.com".to_string()),

@@ -324,7 +324,7 @@ fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
                 let _ = writeln!(out, "  {line}");
                 line.clear();
             }
-            let method = msg.method.as_deref().unwrap_or("???");
+            let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("???");
             line = method.to_string();
             current_cseq = cseq_key;
         } else if cseq_key == current_cseq {
@@ -434,15 +434,15 @@ mod tests {
             .expect("should parse");
 
         let mut d = SipDialog::new(&invite).expect("should create");
-        crate::sip::timing::update_timing(&mut d.timing, &invite, "INVITE");
+        crate::sip::timing::update_timing(&mut d.timing, &invite, &crate::sip::SipMethod::Invite);
 
         dialog::update_state(&mut d, &ringing);
-        crate::sip::timing::update_timing(&mut d.timing, &ringing, "INVITE");
+        crate::sip::timing::update_timing(&mut d.timing, &ringing, &crate::sip::SipMethod::Invite);
         d.messages.push(ringing.clone());
         d.updated_at = ringing.timestamp;
 
         dialog::update_state(&mut d, &ok);
-        crate::sip::timing::update_timing(&mut d.timing, &ok, "INVITE");
+        crate::sip::timing::update_timing(&mut d.timing, &ok, &crate::sip::SipMethod::Invite);
         d.messages.push(ok.clone());
         d.updated_at = ok.timestamp;
 

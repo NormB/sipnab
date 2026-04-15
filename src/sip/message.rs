@@ -10,6 +10,7 @@ use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 
 use crate::capture::parse::TransportProto;
+use super::method::SipMethod;
 use super::sdp::{self, SdpSession};
 
 /// A single SIP header: name (normalized to long form) and value.
@@ -33,8 +34,8 @@ pub struct SipMessage {
     pub raw: Vec<u8>,
     /// `true` for requests (INVITE, REGISTER, ...), `false` for responses.
     pub is_request: bool,
-    /// Request method (e.g., `"INVITE"`). `None` for responses.
-    pub method: Option<String>,
+    /// Request method (e.g., `SipMethod::Invite`). `None` for responses.
+    pub method: Option<SipMethod>,
     /// Response status code (e.g., `200`). `None` for requests.
     pub status_code: Option<u16>,
     /// Response reason phrase (e.g., `"OK"`). `None` for requests.

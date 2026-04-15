@@ -8,6 +8,7 @@
 use indexmap::IndexMap;
 
 use super::SipMessage;
+use super::method::SipMethod;
 use super::dialog::{DialogState, SipDialog, update_state};
 use super::sdp_timeline::track_sdp;
 use super::timing::update_timing;
@@ -253,14 +254,14 @@ impl DialogStore {
         let src_branches: std::collections::HashSet<&str> = dialog
             .messages
             .iter()
-            .filter(|m| m.is_request && m.method.as_deref() == Some("INVITE"))
+            .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
             .flat_map(|m| m.via_headers())
             .filter_map(|v| extract_via_branch(v))
             .collect();
 
         // Strategy 3 data: endpoint IPs and creation time
         let src_ips = [dialog.src_addr, dialog.dst_addr];
-        let is_invite = dialog.method == "INVITE";
+        let is_invite = dialog.method == SipMethod::Invite;
 
         let mut results: Vec<CorrelationResult<'_>> = Vec::new();
 
@@ -290,7 +291,7 @@ impl DialogStore {
                 let candidate_branches: Vec<&str> = candidate
                     .messages
                     .iter()
-                    .filter(|m| m.is_request && m.method.as_deref() == Some("INVITE"))
+                    .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
                     .flat_map(|m| m.via_headers())
                     .filter_map(|v| extract_via_branch(v))
                     .collect();
@@ -310,7 +311,7 @@ impl DialogStore {
             }
 
             // Strategy 3: Timing heuristic (score=50)
-            if is_invite && candidate.method == "INVITE" {
+            if is_invite && candidate.method == SipMethod::Invite {
                 let candidate_ips = [candidate.src_addr, candidate.dst_addr];
                 let ip_overlap = src_ips.iter().any(|ip| candidate_ips.contains(ip));
                 if ip_overlap {

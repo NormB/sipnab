@@ -375,21 +375,29 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
 
 // ── HEP v3 builder (for sender) ─────────────────────────────────────
 
+/// Network endpoint pair for HEP packet construction.
+pub struct HepEndpoint {
+    pub src_addr: IpAddr,
+    pub dst_addr: IpAddr,
+    pub src_port: u16,
+    pub dst_port: u16,
+}
+
 /// Build a HEP v3 packet from components.
 ///
 /// Constructs a valid HEP v3 byte sequence with all required chunks.
 /// Used by [`HepSender`] and by round-trip tests.
-#[allow(clippy::too_many_arguments)]
 pub fn build_hep_v3(
-    src_addr: IpAddr,
-    dst_addr: IpAddr,
-    src_port: u16,
-    dst_port: u16,
+    endpoint: &HepEndpoint,
     timestamp: DateTime<Utc>,
     protocol: HepProtocol,
     capture_id: u32,
     payload: &[u8],
 ) -> Vec<u8> {
+    let src_addr = endpoint.src_addr;
+    let dst_addr = endpoint.dst_addr;
+    let src_port = endpoint.src_port;
+    let dst_port = endpoint.dst_port;
     let mut chunks: Vec<u8> = Vec::with_capacity(256 + payload.len());
 
     // IP protocol family
@@ -778,11 +786,14 @@ impl HepSender {
     ///
     /// Returns an error if the UDP send fails.
     pub fn send(&self, msg: &crate::sip::message::SipMessage) -> Result<()> {
+        let endpoint = HepEndpoint {
+            src_addr: msg.src_addr,
+            dst_addr: msg.dst_addr,
+            src_port: msg.src_port,
+            dst_port: msg.dst_port,
+        };
         let pkt = build_hep_v3(
-            msg.src_addr,
-            msg.dst_addr,
-            msg.src_port,
-            msg.dst_port,
+            &endpoint,
             msg.timestamp,
             HepProtocol::Sip,
             self.capture_id,
@@ -1000,7 +1011,8 @@ mod tests {
         let ts = Utc.timestamp_opt(1700000000, 500_000_000).single().unwrap();
         let payload = b"INVITE sip:alice@example.com SIP/2.0\r\n\r\n";
 
-        let built = build_hep_v3(src, dst, 5060, 5061, ts, HepProtocol::Sip, 99, payload);
+        let endpoint = HepEndpoint { src_addr: src, dst_addr: dst, src_port: 5060, dst_port: 5061 };
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 
         assert_eq!(parsed.version, 3);
@@ -1023,7 +1035,8 @@ mod tests {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
         let payload = b"BYE sip:test@example.com SIP/2.0\r\n\r\n";
 
-        let built = build_hep_v3(src, dst, 6000, 7000, ts, HepProtocol::Rtp, 1, payload);
+        let endpoint = HepEndpoint { src_addr: src, dst_addr: dst, src_port: 6000, dst_port: 7000 };
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 
         assert_eq!(parsed.src_addr, src);

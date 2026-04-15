@@ -10,6 +10,7 @@ use std::net::IpAddr;
 use chrono::{DateTime, Utc};
 
 use super::SipMessage;
+use super::method::SipMethod;
 use super::sdp_timeline::SdpExchange;
 use super::timing::DialogTiming;
 
@@ -83,8 +84,8 @@ pub struct SipDialog {
     pub to_display: Option<String>,
     /// Current dialog state.
     pub state: DialogState,
-    /// Initial SIP method that created this dialog (e.g., `"INVITE"`, `"REGISTER"`).
-    pub method: String,
+    /// Initial SIP method that created this dialog (e.g., `SipMethod::Invite`).
+    pub method: SipMethod,
     /// All SIP messages seen in this dialog, in order.
     pub messages: Vec<SipMessage>,
     /// Timestamp when this dialog was first created.
@@ -116,16 +117,16 @@ impl SipDialog {
     pub fn new(msg: &SipMessage) -> Option<Self> {
         let call_id = msg.call_id()?.to_string();
         let method = if msg.is_request {
-            msg.method.as_deref().unwrap_or("UNKNOWN").to_string()
+            msg.method.clone().unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
         } else {
             // For responses, derive the method from CSeq
             msg.cseq()
-                .map(|(_, m)| m.to_string())
-                .unwrap_or_else(|| "UNKNOWN".to_string())
+                .map(|(_, m)| SipMethod::parse(m))
+                .unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
         };
 
-        let initial_state = match method.as_str() {
-            "SUBSCRIBE" => DialogState::Pending,
+        let initial_state = match method {
+            SipMethod::Subscribe => DialogState::Pending,
             _ => DialogState::Trying,
         };
 
@@ -162,10 +163,10 @@ impl SipDialog {
 ///
 /// ACK messages are recorded but do not cause state transitions.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
-    match dialog.method.as_str() {
-        "INVITE" => update_invite_state(dialog, msg),
-        "REGISTER" => update_register_state(dialog, msg),
-        "SUBSCRIBE" => update_subscribe_state(dialog, msg),
+    match dialog.method {
+        SipMethod::Invite => update_invite_state(dialog, msg),
+        SipMethod::Register => update_register_state(dialog, msg),
+        SipMethod::Subscribe => update_subscribe_state(dialog, msg),
         _ => {
             // For unknown methods, apply basic response code logic
             update_generic_state(dialog, msg);
@@ -183,23 +184,22 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
 /// State transitions for INVITE dialogs.
 fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if msg.is_request {
-        let method = msg.method.as_deref().unwrap_or("");
-        match method {
-            "CANCEL" => {
+        match msg.method.as_ref() {
+            Some(SipMethod::Cancel) => {
                 dialog.state = DialogState::Cancelled;
             }
-            "BYE" => {
+            Some(SipMethod::Bye) => {
                 dialog.state = DialogState::Completed;
             }
-            "ACK" => {
+            Some(SipMethod::Ack) => {
                 // ACK doesn't change state
             }
-            "REFER" => {
+            Some(SipMethod::Refer) => {
                 if dialog.state == DialogState::InCall {
                     dialog.state = DialogState::Transferring;
                 }
             }
-            "NOTIFY" => {
+            Some(SipMethod::Notify) => {
                 if dialog.state == DialogState::Transferring
                     && let Some(sub_state) = msg.header("Subscription-State")
                     && sub_state.starts_with("terminated")
@@ -273,8 +273,7 @@ fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
 /// State transitions for SUBSCRIBE dialogs.
 fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if msg.is_request {
-        let method = msg.method.as_deref().unwrap_or("");
-        if method == "NOTIFY" {
+        if msg.method.as_ref() == Some(&SipMethod::Notify) {
             dialog.state = DialogState::Active;
         }
     } else if let Some(code) = msg.status_code {
@@ -380,7 +379,7 @@ mod tests {
         let mut dialog = SipDialog::new(&invite).expect("should create dialog");
 
         assert_eq!(dialog.state, DialogState::Trying);
-        assert_eq!(dialog.method, "INVITE");
+        assert_eq!(dialog.method, SipMethod::Invite);
         assert_eq!(dialog.call_id, "dialog-test@example.com");
         assert_eq!(dialog.from_user.as_deref(), Some("alice"));
         assert_eq!(dialog.to_user.as_deref(), Some("bob"));
@@ -457,7 +456,7 @@ mod tests {
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
         assert_eq!(dialog.state, DialogState::Trying);
-        assert_eq!(dialog.method, "REGISTER");
+        assert_eq!(dialog.method, SipMethod::Register);
 
         let ok = make_response(200, "OK", "REGISTER");
         update_state(&mut dialog, &ok);
@@ -506,7 +505,7 @@ mod tests {
 
         let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
         assert_eq!(dialog.state, DialogState::Pending);
-        assert_eq!(dialog.method, "SUBSCRIBE");
+        assert_eq!(dialog.method, SipMethod::Subscribe);
 
         let ok = make_response(200, "OK", "SUBSCRIBE");
         update_state(&mut dialog, &ok);

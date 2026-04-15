@@ -74,7 +74,7 @@ impl RegFloodDetector {
     pub fn check(&mut self, msg: &SipMessage) -> Option<RegFloodAlert> {
         let now = Instant::now();
 
-        if msg.is_request && msg.method.as_deref() == Some("REGISTER") {
+        if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Register) {
             // Cap the sources map to prevent memory exhaustion (H4)
             if self.sources.len() >= MAX_SOURCE_ENTRIES
                 && !self.sources.contains_key(&msg.src_addr)

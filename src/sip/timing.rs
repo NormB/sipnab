@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 
 use super::SipMessage;
+use super::method::SipMethod;
 
 /// Timing measurements collected across a dialog's lifetime.
 ///
@@ -96,20 +97,19 @@ impl DialogTiming {
 /// to determine which timing field to populate. Only the first occurrence
 /// of each milestone is recorded (subsequent duplicates are ignored to
 /// avoid overwriting with retransmissions).
-pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method: &str) {
+pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method: &SipMethod) {
     if msg.is_request {
-        let method = msg.method.as_deref().unwrap_or("");
-        match method {
-            "INVITE" if dialog_method == "INVITE" && timing.invite_sent.is_none() => {
+        match msg.method.as_ref() {
+            Some(SipMethod::Invite) if *dialog_method == SipMethod::Invite && timing.invite_sent.is_none() => {
                 timing.invite_sent = Some(msg.timestamp);
             }
-            "BYE" if timing.bye_sent.is_none() => {
+            Some(SipMethod::Bye) if timing.bye_sent.is_none() => {
                 timing.bye_sent = Some(msg.timestamp);
             }
-            "REFER" if timing.refer_sent_at.is_none() => {
+            Some(SipMethod::Refer) if timing.refer_sent_at.is_none() => {
                 timing.refer_sent_at = Some(msg.timestamp);
             }
-            "NOTIFY" => {
+            Some(SipMethod::Notify) => {
                 if let Some(sub_state) = msg.header("Subscription-State")
                     && sub_state.starts_with("terminated")
                     && timing.transfer_completed_at.is_none()
@@ -222,8 +222,8 @@ mod tests {
         let invite = make_invite(t0);
         let ringing = make_response(180, "Ringing", "INVITE", t1);
 
-        update_timing(&mut timing, &invite, "INVITE");
-        update_timing(&mut timing, &ringing, "INVITE");
+        update_timing(&mut timing, &invite, &SipMethod::Invite);
+        update_timing(&mut timing, &ringing, &SipMethod::Invite);
 
         assert_eq!(timing.pdd_ms(), Some(1500));
     }
@@ -237,8 +237,8 @@ mod tests {
         let invite = make_invite(t0);
         let ok = make_response(200, "OK", "INVITE", t3);
 
-        update_timing(&mut timing, &invite, "INVITE");
-        update_timing(&mut timing, &ok, "INVITE");
+        update_timing(&mut timing, &invite, &SipMethod::Invite);
+        update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.setup_ms(), Some(3000));
     }
@@ -254,9 +254,9 @@ mod tests {
         let ringing = make_response(180, "Ringing", "INVITE", t1);
         let ok = make_response(200, "OK", "INVITE", t2);
 
-        update_timing(&mut timing, &invite, "INVITE");
-        update_timing(&mut timing, &ringing, "INVITE");
-        update_timing(&mut timing, &ok, "INVITE");
+        update_timing(&mut timing, &invite, &SipMethod::Invite);
+        update_timing(&mut timing, &ringing, &SipMethod::Invite);
+        update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.ring_ms(), Some(3000));
     }
@@ -270,8 +270,8 @@ mod tests {
         let invite = make_invite(t0);
         let trying = make_response(100, "Trying", "INVITE", t1);
 
-        update_timing(&mut timing, &invite, "INVITE");
-        update_timing(&mut timing, &trying, "INVITE");
+        update_timing(&mut timing, &invite, &SipMethod::Invite);
+        update_timing(&mut timing, &trying, &SipMethod::Invite);
 
         assert_eq!(timing.trying_delay_ms(), Some(50));
     }
@@ -285,8 +285,8 @@ mod tests {
         let bye = make_bye(t0);
         let ok = make_response(200, "OK", "BYE", t1);
 
-        update_timing(&mut timing, &bye, "INVITE");
-        update_timing(&mut timing, &ok, "INVITE");
+        update_timing(&mut timing, &bye, &SipMethod::Invite);
+        update_timing(&mut timing, &ok, &SipMethod::Invite);
 
         assert_eq!(timing.teardown_ms(), Some(200));
     }
@@ -322,9 +322,9 @@ mod tests {
         let ringing1 = make_response(180, "Ringing", "INVITE", t1);
         let ringing2 = make_response(180, "Ringing", "INVITE", t2);
 
-        update_timing(&mut timing, &invite, "INVITE");
-        update_timing(&mut timing, &ringing1, "INVITE");
-        update_timing(&mut timing, &ringing2, "INVITE");
+        update_timing(&mut timing, &invite, &SipMethod::Invite);
+        update_timing(&mut timing, &ringing1, &SipMethod::Invite);
+        update_timing(&mut timing, &ringing2, &SipMethod::Invite);
 
         assert_eq!(timing.pdd_ms(), Some(1000)); // First ringing, not second
     }
@@ -352,7 +352,7 @@ mod tests {
             parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
                 .expect("should parse REFER")
         };
-        update_timing(&mut timing, &refer, "INVITE");
+        update_timing(&mut timing, &refer, &SipMethod::Invite);
         assert_eq!(timing.refer_sent_at, Some(t0));
         assert!(timing.transfer_completed_at.is_none());
 
@@ -373,7 +373,7 @@ mod tests {
             parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
                 .expect("should parse NOTIFY")
         };
-        update_timing(&mut timing, &notify, "INVITE");
+        update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t1));
     }
 }
