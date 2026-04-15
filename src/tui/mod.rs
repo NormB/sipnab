@@ -9,6 +9,7 @@ pub mod call_flow;
 pub mod call_list;
 pub mod help;
 pub mod msg_raw;
+pub mod stream_detail;
 pub mod stream_list;
 
 use std::collections::{HashMap, HashSet};
@@ -692,6 +693,8 @@ pub enum View {
     Help,
     /// Statistics summary view.
     Statistics,
+    /// RTP stream detail (by StreamKey).
+    StreamDetail(crate::rtp::stream::StreamKey),
 }
 
 /// Modal popup dialogs that overlay the current view.
@@ -728,6 +731,7 @@ pub struct App {
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
     last_known_dialog_count: usize,
+    stream_detail_scroll: usize,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
     /// Settings popup state.
@@ -833,6 +837,7 @@ impl App {
             should_quit: false,
             last_data_update: Instant::now(),
             last_known_dialog_count: 0,
+            stream_detail_scroll: 0,
             filter_dialog: FilterDialogState::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -1093,6 +1098,13 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         View::StreamList => {
             if let Some(store) = app.stream_store.try_read() {
                 stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store, &app.theme);
+            }
+        }
+        View::StreamDetail(key) => {
+            if let Some(store) = app.stream_store.try_read() {
+                stream_detail::render_stream_detail(
+                    frame, main_area, key, &store, app.stream_detail_scroll, &app.theme,
+                );
             }
         }
         View::CallFlow(call_id) => {
@@ -2336,6 +2348,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     match &app.current_view {
         View::CallList => handle_call_list_key(app, key),
         View::StreamList => handle_stream_list_key(app, key),
+        View::StreamDetail(_) => handle_stream_detail_key(app, key),
         View::CallFlow(_) => handle_call_flow_key(app, key),
         View::RawMessage { .. } => handle_raw_message_key(app, key),
         View::MessageDiff { .. } => handle_message_diff_key(app, key),
@@ -2634,9 +2647,46 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
         }
+        KeyCode::Enter => {
+            if let Some(key) = get_selected_stream_key(app) {
+                app.stream_detail_scroll = 0;
+                app.current_view = View::StreamDetail(key);
+            }
+        }
         KeyCode::Esc => app.current_view = View::CallList,
         _ => {}
     }
+}
+
+/// Handle keys in the RTP stream detail view.
+fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        k if k == app.keymap.quit => app.should_quit = true,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.stream_detail_scroll += 1;
+        }
+        KeyCode::PageUp => {
+            app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(20);
+        }
+        KeyCode::PageDown => {
+            app.stream_detail_scroll += 20;
+        }
+        KeyCode::Home => app.stream_detail_scroll = 0,
+        k if k == app.keymap.help => app.current_view = View::Help,
+        KeyCode::Esc => app.current_view = View::StreamList,
+        _ => {}
+    }
+}
+
+/// Get the StreamKey for the currently selected row in the stream list.
+fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
+    let store = app.stream_store.try_read()?;
+    let streams: Vec<_> = store.iter().collect();
+    let idx = app.stream_list.selected();
+    streams.get(idx).map(|s| s.key.clone())
 }
 
 /// Handle keys in the call flow view.

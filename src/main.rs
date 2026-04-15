@@ -588,7 +588,7 @@ fn run_tui_mode(
     rx: crossbeam_channel::Receiver<capture::Packet>,
     split_bytes: Option<u64>,
     split_duration: Option<std::time::Duration>,
-    portrange: (u16, u16),
+    _portrange: (u16, u16),
     #[cfg(feature = "api")] metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
