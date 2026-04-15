@@ -198,7 +198,7 @@ impl SipnabSession {
         );
         for d in self.dialog_store.iter() {
             out.push_str(&format!(
-                "{},{},{:?},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{}\n",
                 d.call_id,
                 d.method,
                 d.state,
