@@ -32,6 +32,7 @@
       <button class="demo-tab" onclick="showDemo(1, this)">Mark + Delta</button>
       <button class="demo-tab" onclick="showDemo(2, this)">Search</button>
       <button class="demo-tab" onclick="showDemo(3, this)">File Open</button>
+      <button class="demo-tab" onclick="showDemo(4, this)">RTP Quality</button>
     </div>
     <div class="demo-panels">
       <div class="demo-panel active" data-demo="0">
@@ -49,6 +50,10 @@
       <div class="demo-panel" data-demo="3">
         <p class="demo-desc">Switch to a different pcap file from within the TUI — no need to restart. Data is reloaded instantly.</p>
         <img src="{{ get_url(path='demos/05-file-open.gif') }}?v=3" alt="sipnab file open demo" loading="lazy">
+      </div>
+      <div class="demo-panel" data-demo="4">
+        <p class="demo-desc">Analyze RTP quality in CLI mode — extract MOS, jitter, packet loss, and codec info as JSON. Pipe through <kbd>jq</kbd> for custom analysis.</p>
+        <img src="{{ get_url(path='demos/07-rtp-cli.gif') }}?v=1" alt="sipnab RTP quality CLI demo" loading="lazy">
       </div>
     </div>
   </div>
