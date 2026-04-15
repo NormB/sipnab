@@ -4135,9 +4135,49 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     }
 }
 
-/// WAV export stub — requires RTP payload storage not yet available.
-fn save_to_wav_path(_app: &App, _path_str: &str) -> String {
-    "WAV export: G.711 audio extraction requires RTP payload capture (planned for v0.4)".to_string()
+/// Export captured RTP audio to a WAV file.
+///
+/// Finds G.711 streams associated with the current dialog (or all streams
+/// if no dialog is in focus) and exports them via [`crate::rtp::audio_export`].
+fn save_to_wav_path(app: &App, path_str: &str) -> String {
+    let path = PathBuf::from(path_str);
+
+    // Determine the current dialog's Call-ID (if viewing a call flow)
+    let call_id = match &app.current_view {
+        View::CallFlow(cid) => Some(cid.clone()),
+        _ => {
+            // Try to get the selected dialog from the call list
+            let store = app.dialog_store.read();
+            let dialogs: Vec<_> = store.iter().collect();
+            let idx = app.call_list.selected();
+            dialogs.get(idx).map(|d| d.call_id.clone())
+        }
+    };
+
+    let stream_store = app.stream_store.read();
+
+    // Collect streams: filter by dialog if we have one, otherwise use all
+    let streams: Vec<&crate::rtp::stream::RtpStream> = if let Some(ref cid) = call_id {
+        stream_store
+            .iter()
+            .filter(|s| s.associated_dialog.as_deref() == Some(cid.as_str()))
+            .collect()
+    } else {
+        stream_store.iter().collect()
+    };
+
+    if streams.is_empty() {
+        return if call_id.is_some() {
+            "No RTP streams associated with this dialog".to_string()
+        } else {
+            "No RTP streams captured".to_string()
+        };
+    }
+
+    match crate::rtp::audio_export::export_dialog_to_wav(&streams, &path) {
+        Ok(msg) => msg,
+        Err(e) => format!("WAV export failed: {e}"),
+    }
 }
 
 /// Export a SIPp scenario XML from the current dialog's call flow.

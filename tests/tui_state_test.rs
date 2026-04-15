@@ -2294,7 +2294,7 @@ mod tui_state {
     }
 
     #[test]
-    fn save_wav_shows_not_implemented_message() {
+    fn save_wav_without_rtp_streams_shows_error() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.wav");
         let mut app = app_with_three_dialogs();
@@ -2307,11 +2307,11 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::Wav);
         app.handle_key(KeyCode::Enter);
         assert!(app.active_popup().is_none());
-        // WAV should produce a status message about RTP payload capture
+        // WAV export with no RTP streams should produce an informative error
         let status = app.status_error().unwrap();
         assert!(
-            status.contains("RTP payload") || status.contains("WAV") || status.contains("planned"),
-            "Expected WAV not-implemented message, got: {status}"
+            status.contains("No RTP streams"),
+            "Expected no-RTP-streams message, got: {status}"
         );
     }
 
