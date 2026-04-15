@@ -457,40 +457,20 @@ fn main() {
         std::process::exit(1);
     }
 
-    // 17a. Start standalone metrics server if --metrics is set (without --api)
+    // 17a. Start standalone metrics server if --metrics is set (without --api).
+    // Note: The metrics server shares the same stores that are created inside
+    // run_tui_mode/run_batch_mode. We parse/validate the address here but defer
+    // actual server start to those functions where the stores are available.
     #[cfg(feature = "api")]
-    let _metrics_handle = if let Some(metrics_addr_str) = cli.metrics.as_deref() {
-        let bind_addr =
-            match sipnab::output::prometheus_server::parse_metrics_addr(metrics_addr_str) {
-                Ok(a) => a,
-                Err(e) => {
-                    log::error!("Invalid --metrics address: {e}");
-                    std::process::exit(2);
-                }
-            };
-
-        // Create shared stores for the metrics server to read
-        let metrics_ds = Arc::new(RwLock::new(DialogStore::new(
-            cli.limit as usize,
-            cli.rotate,
-        )));
-        let metrics_ss = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
-
-        match sipnab::output::prometheus_server::start_metrics_server(
-            bind_addr,
-            metrics_ds,
-            metrics_ss,
-            cli.metrics_auth.clone(),
-        ) {
-            Ok(h) => Some(h),
+    let metrics_bind_addr: Option<std::net::SocketAddr> = cli.metrics.as_deref().map(|addr_str| {
+        match sipnab::output::prometheus_server::parse_metrics_addr(addr_str) {
+            Ok(a) => a,
             Err(e) => {
-                log::error!("Failed to start metrics server: {e}");
-                std::process::exit(1);
+                log::error!("Invalid --metrics address: {e}");
+                std::process::exit(2);
             }
         }
-    } else {
-        None
-    };
+    });
 
     // 18. Branch: TUI mode vs non-interactive mode
     #[cfg(feature = "tui")]
@@ -509,6 +489,8 @@ fn main() {
             split_bytes,
             split_duration,
             portrange,
+            #[cfg(feature = "api")]
+            metrics_bind_addr,
         );
     } else {
         run_batch_mode(
@@ -607,6 +589,7 @@ fn run_tui_mode(
     split_bytes: Option<u64>,
     split_duration: Option<std::time::Duration>,
     portrange: (u16, u16),
+    #[cfg(feature = "api")] metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
@@ -615,6 +598,25 @@ fn run_tui_mode(
         cli.rotate,
     )));
     let stream_store = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
+
+    // Start standalone metrics server with the REAL stores (not empty copies)
+    #[cfg(feature = "api")]
+    let _metrics_handle = if let Some(bind_addr) = metrics_bind_addr {
+        match sipnab::output::prometheus_server::start_metrics_server(
+            bind_addr,
+            Arc::clone(&dialog_store),
+            Arc::clone(&stream_store),
+            cli.metrics_auth.clone(),
+        ) {
+            Ok(h) => Some(h),
+            Err(e) => {
+                log::error!("Failed to start metrics server: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // Shared pause flag between TUI and processing thread
     let paused_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
