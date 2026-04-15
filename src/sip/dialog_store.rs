@@ -1069,4 +1069,153 @@ mod tests {
         assert_eq!(branch_result.unwrap().score, 80);
         assert_eq!(branch_result.unwrap().reason, CorrelationReason::ViaBranch);
     }
+
+    // ── REFER transfer tracking tests ─────────────────────────────────
+
+    #[test]
+    fn refer_stores_refer_to_header() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+        let t2 = t0 + TimeDelta::seconds(2);
+
+        // Establish call: INVITE -> 200 OK -> InCall
+        store.process_message(make_invite_msg("refer-track@test", t0));
+        store.process_message(make_200_ok("refer-track@test", t1));
+
+        let dialog = store.get("refer-track@test").expect("dialog should exist");
+        assert_eq!(dialog.state, DialogState::InCall);
+        assert!(dialog.refer_to.is_none(), "refer_to should be None before REFER");
+
+        // Send REFER with Refer-To header
+        let refer = {
+            let raw = build_sip(
+                "REFER sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: refer-track@test",
+                    "CSeq: 2 REFER",
+                    "Refer-To: <sip:1003@example.com>",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+                .expect("should parse REFER")
+        };
+        store.process_message(refer);
+
+        let dialog = store.get("refer-track@test").expect("dialog should exist");
+        assert_eq!(dialog.state, DialogState::Transferring);
+        assert!(
+            dialog.refer_to.is_some(),
+            "refer_to should be populated after REFER"
+        );
+        let refer_to = dialog.refer_to.as_deref().unwrap();
+        assert!(
+            refer_to.contains("sip:1003@example.com"),
+            "refer_to should contain the target URI, got: {refer_to}"
+        );
+    }
+
+    #[test]
+    fn refer_without_header_leaves_none() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+        let t2 = t0 + TimeDelta::seconds(2);
+
+        // Establish call
+        store.process_message(make_invite_msg("refer-none@test", t0));
+        store.process_message(make_200_ok("refer-none@test", t1));
+
+        // Send REFER without Refer-To header
+        let refer = {
+            let raw = build_sip(
+                "REFER sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: refer-none@test",
+                    "CSeq: 2 REFER",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+                .expect("should parse REFER")
+        };
+        store.process_message(refer);
+
+        let dialog = store.get("refer-none@test").expect("dialog should exist");
+        assert!(
+            dialog.refer_to.is_none(),
+            "refer_to should remain None when no Refer-To header present"
+        );
+    }
+
+    // ── SIPREC metadata parsing test ──────────────────────────────────
+
+    #[test]
+    fn siprec_metadata_parsed_from_multipart() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+
+        // Create dialog with initial INVITE
+        store.process_message(make_invite_msg("siprec@test", t0));
+
+        let dialog = store.get("siprec@test").expect("dialog should exist");
+        assert!(dialog.siprec_metadata.is_none(), "no SIPREC metadata yet");
+
+        // Build a multipart/mixed message with SIPREC metadata
+        let siprec_body = b"--unique-boundary\r\n\
+Content-Type: application/sdp\r\n\r\n\
+v=0\r\n\
+--unique-boundary\r\n\
+Content-Type: application/rs-metadata+xml\r\n\r\n\
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+<recording xmlns=\"urn:ietf:params:xml:ns:recording:1\">\n\
+  <session session_id=\"siprec-sess-001\">\n\
+    <participant participant_id=\"p1\">\n\
+      <nameID><aor>sip:alice@example.com</aor></nameID>\n\
+      <name>Alice</name>\n\
+    </participant>\n\
+    <stream stream_id=\"s1\">\n\
+      <label>audio</label>\n\
+    </stream>\n\
+  </session>\n\
+</recording>\n\
+--unique-boundary--";
+
+        let content_len = siprec_body.len();
+        let raw = build_sip(
+            "INVITE sip:recorder@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: siprec@test",
+                "CSeq: 2 INVITE",
+                "Content-Type: multipart/mixed; boundary=unique-boundary",
+                &format!("Content-Length: {content_len}"),
+            ],
+            siprec_body,
+        );
+        let msg = parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse SIPREC INVITE");
+        store.process_message(msg);
+
+        let dialog = store.get("siprec@test").expect("dialog should exist");
+        assert!(
+            dialog.siprec_metadata.is_some(),
+            "SIPREC metadata should be parsed and stored"
+        );
+        let metadata = dialog.siprec_metadata.as_ref().unwrap();
+        assert_eq!(metadata.session_id.as_deref(), Some("siprec-sess-001"));
+        assert_eq!(metadata.participants.len(), 1);
+        assert_eq!(metadata.participants[0].name.as_deref(), Some("Alice"));
+        assert_eq!(metadata.streams.len(), 1);
+        assert_eq!(metadata.streams[0].label.as_deref(), Some("audio"));
+    }
 }

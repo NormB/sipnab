@@ -563,4 +563,46 @@ mod tests {
             "pre-epoch timestamp should fall back to 0 nanos"
         );
     }
+
+    #[test]
+    fn pcap_export_mode_parse() {
+        assert_eq!(
+            PcapExportMode::parse_mode("decrypted"),
+            Some(PcapExportMode::Decrypted)
+        );
+        assert_eq!(
+            PcapExportMode::parse_mode("raw"),
+            Some(PcapExportMode::Raw)
+        );
+        assert_eq!(
+            PcapExportMode::parse_mode("encrypted+dsb"),
+            Some(PcapExportMode::EncryptedWithDsb)
+        );
+        assert_eq!(
+            PcapExportMode::parse_mode("bogus"),
+            None,
+            "Unrecognized mode should return None"
+        );
+        assert_eq!(
+            PcapExportMode::parse_mode(""),
+            None,
+            "Empty string should return None"
+        );
+    }
+
+    #[test]
+    fn pcap_export_mode_include_dsb() {
+        assert!(
+            PcapExportMode::Decrypted.include_dsb(),
+            "Decrypted mode should include DSB"
+        );
+        assert!(
+            PcapExportMode::EncryptedWithDsb.include_dsb(),
+            "EncryptedWithDsb mode should include DSB"
+        );
+        assert!(
+            !PcapExportMode::Raw.include_dsb(),
+            "Raw mode should NOT include DSB"
+        );
+    }
 }
