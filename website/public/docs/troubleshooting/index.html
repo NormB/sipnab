@@ -218,8 +218,19 @@
 <p>No install, no upload, no data leaves your machine.</p>
 <p>Drop a pcap file at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> – the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: <strong>Dialogs</strong> (SIP call list with flow diagrams) and <strong>Streams</strong> (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can’t install the CLI, or for sharing a link with a colleague who doesn’t have sipnab.</p>
 <hr />
+<h2 id="export-call-audio">Export Call Audio</h2>
+<p>When metrics aren’t enough — export the actual audio to hear what the caller heard.</p>
+<p>In the TUI: select a dialog, press <strong>F2</strong>, Tab to <strong>WAV</strong> format, type a filename, press Enter.</p>
+<p>sipnab decodes G.711 audio (mu-law/A-law) from captured RTP streams and writes a standard WAV file. If the dialog has two RTP streams (one per direction), the export produces a <strong>stereo WAV</strong> with caller on the left channel and callee on the right.</p>
+<ul>
+<li><strong>Supported codecs:</strong> PCMU (PT 0), PCMA (PT 8)</li>
+<li><strong>Buffer:</strong> Last ~30 seconds of audio per stream (configurable: <code>[limits] max_audio_frames</code>)</li>
+<li><strong>Output:</strong> 16-bit PCM WAV at the stream’s sample rate (typically 8000 Hz)</li>
+</ul>
+<p>Open the WAV in any audio player or Audacity.</p>
+<hr />
 <h2 id="still-stuck">Still stuck?</h2>
-<p>Build custom queries with the <a href="https://www.sipnab.com/docs/filter-dsl/">Filter DSL</a> – 24 fields, regex support, boolean logic. See the <a href="https://www.sipnab.com/docs/cli/">CLI Reference</a> for every flag and more recipes.</p>
+<p>Build custom queries with the <a href="https://www.sipnab.com/docs/filter-dsl/">Filter DSL</a> – 25 fields, regex support, boolean logic. See the <a href="https://www.sipnab.com/docs/cli/">CLI Reference</a> for every flag and more recipes.</p>
 
 
     <!-- Prev/Next nav -->
@@ -281,6 +292,10 @@
         </li>
         
         <li><a href="#quick-browser-analysis">Quick Browser Analysis</a>
+          
+        </li>
+        
+        <li><a href="#export-call-audio">Export Call Audio</a>
           
         </li>
         

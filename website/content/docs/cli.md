@@ -75,6 +75,18 @@ sipnab -I capture.pcap --wireshark
 sipnab -I capture.pcap --tshark-filter "from.user == '1001'"
 ```
 
+### Export call audio as WAV
+
+```bash
+# In TUI: select a dialog → F2 → Tab to WAV → Enter → filename.wav
+# The WAV contains decoded G.711 (mu-law/A-law) audio from the RTP streams.
+# 1 stream = mono, 2 streams (caller + callee) = stereo.
+
+# Supported codecs: PCMU (G.711 mu-law), PCMA (G.711 A-law)
+# Audio is captured in a ring buffer (~30 seconds by default).
+# Configure with: [limits] max_audio_frames = 1500
+```
+
 ### Pipe through jq for custom analysis
 
 ```bash

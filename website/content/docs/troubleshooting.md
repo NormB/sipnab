@@ -207,6 +207,22 @@ Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- the fi
 
 ---
 
+## Export Call Audio
+
+When metrics aren't enough — export the actual audio to hear what the caller heard.
+
+In the TUI: select a dialog, press **F2**, Tab to **WAV** format, type a filename, press Enter.
+
+sipnab decodes G.711 audio (mu-law/A-law) from captured RTP streams and writes a standard WAV file. If the dialog has two RTP streams (one per direction), the export produces a **stereo WAV** with caller on the left channel and callee on the right.
+
+- **Supported codecs:** PCMU (PT 0), PCMA (PT 8)
+- **Buffer:** Last ~30 seconds of audio per stream (configurable: `[limits] max_audio_frames`)
+- **Output:** 16-bit PCM WAV at the stream's sample rate (typically 8000 Hz)
+
+Open the WAV in any audio player or Audacity.
+
+---
+
 ## Still stuck?
 
-Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 24 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
+Build custom queries with the [Filter DSL](@/docs/filter-dsl.md) -- 25 fields, regex support, boolean logic. See the [CLI Reference](@/docs/cli.md) for every flag and more recipes.
