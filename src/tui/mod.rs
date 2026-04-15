@@ -4480,6 +4480,11 @@ impl App {
         self.save_cursor = path.len();
     }
 
+    /// Return a reference to the shared dialog store (for tests).
+    pub fn dialog_store_ref(&self) -> &Arc<RwLock<DialogStore>> {
+        &self.dialog_store
+    }
+
     /// Render the full application frame into the given frame (for snapshot tests).
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
         render_app(frame, self);
