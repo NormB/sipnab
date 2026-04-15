@@ -2934,10 +2934,14 @@ mod tui_state {
             .position(|m| m.label.starts_with("200"))
             .expect("should have a 200 OK message");
 
-        // The RTP bar should be on the ACK message, not the 200 OK
-        assert_eq!(
-            rtp_bar_idx, ack_idx,
-            "RTP bar (idx {rtp_bar_idx}) should be on the ACK (idx {ack_idx}), not on 200 OK (idx {ok_200_idx})"
+        // The RTP bar should be a separate entry AFTER the ACK, not on the 200 OK
+        assert!(
+            rtp_bar_idx > ack_idx,
+            "RTP bar (idx {rtp_bar_idx}) should come after ACK (idx {ack_idx})"
+        );
+        assert!(
+            rtp_bar_idx > ok_200_idx,
+            "RTP bar (idx {rtp_bar_idx}) should come after 200 OK (idx {ok_200_idx})"
         );
 
         // Sanity: ACK comes after 200 OK
@@ -2979,36 +2983,30 @@ mod tui_state {
             .find(|m| m.is_rtp_bar)
             .expect("should have an RTP bar");
 
-        // The RTP bar should have extra_lines with the bar text
-        assert!(
-            !rtp_bar.extra_lines.is_empty(),
-            "RTP bar should have extra_lines containing the bar text"
-        );
+        // The RTP bar label should contain RTP info
+        let bar_text = &rtp_bar.label;
 
-        let bar_text = &rtp_bar.extra_lines[0].0;
-
-        // Should contain "RTP" marker
         assert!(
             bar_text.contains("RTP"),
-            "RTP bar text should contain 'RTP', got: {bar_text}"
-        );
-
-        // Should contain a timestamp pattern (HH:MM:SS.mmm)
-        assert!(
-            bar_text.contains(':') && bar_text.contains('.'),
-            "RTP bar text should contain a timestamp (HH:MM:SS.mmm), got: {bar_text}"
+            "RTP bar label should contain 'RTP', got: {bar_text}"
         );
 
         // Should contain the codec info from the 200 OK SDP (PCMU)
         assert!(
             bar_text.contains("PCMU"),
-            "RTP bar text should contain 'PCMU' codec from 200 OK SDP, got: {bar_text}"
+            "RTP bar label should contain 'PCMU' codec from 200 OK SDP, got: {bar_text}"
         );
 
         // Should contain "active" status
         assert!(
             bar_text.contains("active"),
-            "RTP bar text should contain 'active' status, got: {bar_text}"
+            "RTP bar label should contain 'active' status, got: {bar_text}"
+        );
+
+        // The timestamp field should be populated (not empty)
+        assert!(
+            !rtp_bar.timestamp.trim().is_empty(),
+            "RTP bar should have a timestamp"
         );
     }
 
