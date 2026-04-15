@@ -732,6 +732,8 @@ pub struct App {
     last_data_update: Instant,
     last_known_dialog_count: usize,
     stream_detail_scroll: usize,
+    /// View to return to when pressing Esc from StreamDetail.
+    stream_detail_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
     /// Settings popup state.
@@ -840,6 +842,7 @@ impl App {
             last_data_update: Instant::now(),
             last_known_dialog_count: 0,
             stream_detail_scroll: 0,
+            stream_detail_return_view: None,
             filter_dialog: FilterDialogState::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -2674,6 +2677,7 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             if let Some(key) = get_selected_stream_key(app) {
                 app.stream_detail_scroll = 0;
+                app.stream_detail_return_view = Some(View::StreamList);
                 app.current_view = View::StreamDetail(key);
             }
         }
@@ -2700,7 +2704,12 @@ fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Home => app.stream_detail_scroll = 0,
         k if k == app.keymap.help => app.current_view = View::Help,
-        KeyCode::Esc => app.current_view = View::StreamList,
+        KeyCode::Esc => {
+            app.current_view = match app.stream_detail_return_view.take() {
+                Some(v) => v,
+                None => View::StreamList,
+            };
+        }
         _ => {}
     }
 }
@@ -2817,6 +2826,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     };
                     if let Some(key) = stream_key {
                         app.stream_detail_scroll = 0;
+                        app.stream_detail_return_view = Some(app.current_view.clone());
                         app.current_view = View::StreamDetail(key);
                     } else {
                         app.status_error =
