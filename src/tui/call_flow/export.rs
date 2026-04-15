@@ -104,6 +104,7 @@ mod tests {
             is_spacer: false,
             sdp_badge: None,
             is_retransmission: false,
+            is_rtp_bar: false,
         }
     }
 
