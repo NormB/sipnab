@@ -27,6 +27,8 @@ pub mod dtmf;
 pub mod g711;
 pub mod heuristic;
 pub mod parser;
+#[cfg(feature = "audio")]
+pub mod playback;
 pub mod quality;
 pub mod rtcp;
 #[cfg(feature = "tls")]

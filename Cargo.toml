@@ -4,13 +4,14 @@ version = "0.3.1"
 edition = "2024"
 rust-version = "1.92"
 authors = ["Norm Brandinger"]
-description = "SIP & RTP capture, analysis, and security"
+description = "SIP & RTP capture, analysis, and security tool"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/NormB/sipnab"
 homepage = "https://sipnab.com"
 default-run = "sipnab"
-keywords = ["sip", "voip", "rtp", "pcap", "sngrep"]
-categories = ["command-line-utilities", "network-programming"]
+keywords = ["sip", "rtp", "voip", "pcap", "network"]
+categories = ["network-programming", "command-line-utilities"]
+exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
 
 [dependencies]
 # Phase 1: Capture & core
@@ -52,6 +53,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 aes = { version = "0.8", optional = true }
 cbc = { version = "0.1", features = ["alloc"], optional = true }
 
+# Audio playback (feature-gated)
+rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
+
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
@@ -83,9 +87,10 @@ native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "de
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = []
+audio = ["dep:rodio"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["native", "tui", "tls", "hep", "api"]
+full = ["native", "tui", "tls", "hep", "api", "audio"]
 
 [lib]
 name = "sipnab"
