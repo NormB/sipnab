@@ -159,8 +159,8 @@ fn pcap_packet_to_packet(pkt: &sipnab::capture::pcap_reader::PcapPacket, link_ty
 #[test]
 fn rtp_packets_detected_in_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
-    let data = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let data =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
     let reader = PcapReader::new(&data)
         .unwrap_or_else(|e| panic!("Failed to parse pcap {}: {e}", path.display()));
@@ -248,7 +248,10 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
     );
     assert_eq!(stream.clock_rate, 8000, "PCMU clock rate is 8000 Hz");
     assert_eq!(stream.lost_packets, 0, "No sequence gaps, no loss");
-    assert!(stream.jitter.is_finite(), "Jitter should be a finite number");
+    assert!(
+        stream.jitter.is_finite(),
+        "Jitter should be a finite number"
+    );
 }
 
 #[test]
@@ -302,10 +305,7 @@ fn mos_good_quality_is_high() {
         mos > 4.0,
         "Good quality (0 jitter, 0 loss, G.711) should give MOS > 4.0, got {mos}"
     );
-    assert!(
-        mos <= 4.5,
-        "MOS should never exceed 4.5, got {mos}"
-    );
+    assert!(mos <= 4.5, "MOS should never exceed 4.5, got {mos}");
 }
 
 #[test]
@@ -316,10 +316,7 @@ fn mos_bad_quality_is_low() {
         mos < 2.5,
         "Bad quality (100ms jitter, 10% loss) should give MOS < 2.5, got {mos}"
     );
-    assert!(
-        mos >= 1.0,
-        "MOS should never go below 1.0, got {mos}"
-    );
+    assert!(mos >= 1.0, "MOS should never go below 1.0, got {mos}");
 }
 
 #[test]
@@ -635,10 +632,7 @@ fn comfort_noise_counted_and_silence_tracked() {
         stream.update(&h, ts(i as i64), 1);
     }
 
-    assert_eq!(
-        stream.cn_frames, 8,
-        "Should count 8 CN frames (5 + 3)"
-    );
+    assert_eq!(stream.cn_frames, 8, "Should count 8 CN frames (5 + 3)");
     assert!(
         stream.silence_periods.len() >= 2,
         "Should detect at least 2 silence periods, got {}",
@@ -647,7 +641,10 @@ fn comfort_noise_counted_and_silence_tracked() {
 
     // First silence period: 5 consecutive CN packets = 100ms
     let sp0 = &stream.silence_periods[0];
-    assert_eq!(sp0.duration_ms, 100, "First silence period should be 100ms (5 * 20ms)");
+    assert_eq!(
+        sp0.duration_ms, 100,
+        "First silence period should be 100ms (5 * 20ms)"
+    );
 
     // Verify codec_from_pt recognizes CN
     assert_eq!(codec_from_pt(13), Some("CN"));
@@ -662,7 +659,16 @@ fn stream_linked_to_dialog() {
     let mut store = StreamStore::new(100);
 
     // Create a stream: 10.0.0.1:20000 -> 10.0.0.2:30000
-    let parsed = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, 0x1234, 100, 0, 0);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0x1234,
+        100,
+        0,
+        0,
+    );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
 
@@ -684,26 +690,28 @@ fn stream_linked_to_dialog() {
         Some("call-id-test-123@sip.example.com"),
         "Stream should be linked to the dialog Call-ID"
     );
-    assert!(
-        !stream.orphaned,
-        "Linked stream should not be orphaned"
-    );
+    assert!(!stream.orphaned, "Linked stream should not be orphaned");
 }
 
 #[test]
 fn link_by_source_endpoint() {
     let mut store = StreamStore::new(100);
 
-    let parsed = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, 0x5678, 100, 0, 0);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0x5678,
+        100,
+        0,
+        0,
+    );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
 
     // Link by source endpoint
-    store.link_to_dialog(
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
-        20000,
-        "call-by-src",
-    );
+    store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, "call-by-src");
 
     let stream = store.iter().next().unwrap();
     assert_eq!(
@@ -722,7 +730,16 @@ fn unlinked_stream_marked_orphaned() {
     let mut store = StreamStore::new(100);
 
     // Create a stream with a timestamp far in the past
-    let parsed = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, 0xAAAA, 100, 0, 0);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0xAAAA,
+        100,
+        0,
+        0,
+    );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0)); // ts(0) = 1_700_000_000, far in past
 
@@ -746,15 +763,20 @@ fn unlinked_stream_marked_orphaned() {
 fn linked_stream_not_orphaned() {
     let mut store = StreamStore::new(100);
 
-    let parsed = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, 0xBBBB, 100, 0, 0);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0xBBBB,
+        100,
+        0,
+        0,
+    );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
 
-    store.link_to_dialog(
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-        30000,
-        "linked-call",
-    );
+    store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000, "linked-call");
 
     // Even with zero timeout, linked stream should not be orphaned
     store.mark_orphaned(Duration::from_secs(0));
@@ -954,7 +976,10 @@ fn diagnose_no_streams_no_sdp_is_clean() {
     let streams: Vec<&RtpStream> = vec![];
     let diag = diagnose_media(&streams, None);
 
-    assert!(!diag.no_media, "No streams + no SDP should not flag no_media");
+    assert!(
+        !diag.no_media,
+        "No streams + no SDP should not flag no_media"
+    );
     assert!(!diag.one_way_audio);
     assert!(!diag.nat_mismatch);
 }
@@ -969,8 +994,8 @@ fn diagnose_no_streams_no_sdp_is_clean() {
 #[test]
 fn end_to_end_pcap_to_streams_voipshark() {
     let path = pcap_samples_dir().join("voipshark-normal-call.pcap");
-    let data = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let data =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
     let reader = PcapReader::new(&data)
         .unwrap_or_else(|e| panic!("Failed to parse pcap {}: {e}", path.display()));
@@ -1059,8 +1084,8 @@ fn end_to_end_pcap_to_streams_voipshark() {
 #[test]
 fn end_to_end_g711_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
-    let data = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let data =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
     let reader = PcapReader::new(&data).unwrap();
     let link_type = reader.link_type;
@@ -1095,12 +1120,9 @@ fn end_to_end_g711_pcap() {
     );
 
     // At least one stream should be identified as PCMU or PCMA
-    let has_g711 = store.iter().any(|s| {
-        matches!(
-            s.codec.as_deref(),
-            Some("PCMU") | Some("PCMA")
-        )
-    });
+    let has_g711 = store
+        .iter()
+        .any(|s| matches!(s.codec.as_deref(), Some("PCMU") | Some("PCMA")));
     assert!(
         has_g711,
         "sip-rtp-g711.pcap should have at least one PCMU/PCMA stream"
@@ -1116,7 +1138,16 @@ fn rtcp_updates_stream_jitter_and_loss() {
     let mut store = StreamStore::new(100);
 
     // Create a stream
-    let parsed = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, 0xFFFF, 100, 0, 0);
+    let parsed = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        0xFFFF,
+        100,
+        0,
+        0,
+    );
     let rtp = parse_rtp_header(&parsed.payload).unwrap();
     store.process_rtp(&parsed, &rtp, ts(0));
 
@@ -1206,8 +1237,8 @@ fn is_rtp_packet_rejects_rtcp_pt_range() {
 #[test]
 fn rtp_detected_in_g722_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g722.pcap");
-    let data = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let data =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
     let reader = PcapReader::new(&data).unwrap();
     let link_type = reader.link_type;
@@ -1237,8 +1268,8 @@ fn rtp_detected_in_g722_pcap() {
 #[test]
 fn rtp_detected_in_g729a_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g729a.pcap");
-    let data = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
+    let data =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
     let reader = PcapReader::new(&data).unwrap();
     let link_type = reader.link_type;
@@ -1340,7 +1371,16 @@ fn sequence_wraparound_no_false_loss_in_store() {
     let ssrc_val = 0xDDDD_u32;
 
     // Start at seq 65534
-    let p1 = make_rtp_parsed([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000, ssrc_val, 65534, 0, 0);
+    let p1 = make_rtp_parsed(
+        [10, 0, 0, 1],
+        [10, 0, 0, 2],
+        20000,
+        30000,
+        ssrc_val,
+        65534,
+        0,
+        0,
+    );
     let r1 = parse_rtp_header(&p1.payload).unwrap();
     store.process_rtp(&p1, &r1, ts(0));
 
@@ -1501,8 +1541,8 @@ fn stream_detail_render_does_not_panic() {
 fn end_to_end_pcap_to_wav_export() {
     use sipnab::rtp::audio_export::export_dialog_to_wav;
 
-    let pcap_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/pcap-samples/sip-rtp-g711.pcap");
+    let pcap_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples/sip-rtp-g711.pcap");
     let data = std::fs::read(&pcap_path).expect("read pcap");
     let reader = PcapReader::new(&data).expect("parse pcap");
 
@@ -1532,11 +1572,18 @@ fn end_to_end_pcap_to_wav_export() {
     }
 
     // Verify RTP packets were captured
-    assert!(rtp_count > 100, "should have >100 RTP packets, got {rtp_count}");
+    assert!(
+        rtp_count > 100,
+        "should have >100 RTP packets, got {rtp_count}"
+    );
 
     // Verify streams were created with audio payloads
     let streams: Vec<&RtpStream> = store.iter().collect();
-    assert!(streams.len() >= 2, "should have at least 2 RTP streams, got {}", streams.len());
+    assert!(
+        streams.len() >= 2,
+        "should have at least 2 RTP streams, got {}",
+        streams.len()
+    );
 
     let streams_with_audio: Vec<&RtpStream> = streams
         .iter()
@@ -1565,13 +1612,22 @@ fn end_to_end_pcap_to_wav_export() {
     assert!(result.is_ok(), "WAV export failed: {:?}", result.err());
 
     let summary = result.expect("export succeeded");
-    assert!(summary.contains("Exported"), "summary should confirm export: {summary}");
+    assert!(
+        summary.contains("Exported"),
+        "summary should confirm export: {summary}"
+    );
 
     // Verify the WAV file exists and has reasonable size
     let wav_metadata = std::fs::metadata(&wav_path).expect("WAV file should exist");
     let wav_size = wav_metadata.len();
-    assert!(wav_size > 44, "WAV file should be larger than just the 44-byte header, got {wav_size} bytes");
-    assert!(wav_size > 1000, "WAV file should contain meaningful audio data, got {wav_size} bytes");
+    assert!(
+        wav_size > 44,
+        "WAV file should be larger than just the 44-byte header, got {wav_size} bytes"
+    );
+    assert!(
+        wav_size > 1000,
+        "WAV file should contain meaningful audio data, got {wav_size} bytes"
+    );
 
     // Read the WAV file and verify it's valid
     let wav_data = std::fs::read(&wav_path).expect("read WAV file");
@@ -1583,7 +1639,10 @@ fn end_to_end_pcap_to_wav_export() {
 
     // Check sample rate (bytes 24-27, little-endian u32)
     let sample_rate = u32::from_le_bytes([wav_data[24], wav_data[25], wav_data[26], wav_data[27]]);
-    assert_eq!(sample_rate, 8000, "G.711 WAV should be 8000 Hz, got {sample_rate}");
+    assert_eq!(
+        sample_rate, 8000,
+        "G.711 WAV should be 8000 Hz, got {sample_rate}"
+    );
 
     // Check bits per sample (bytes 34-35, little-endian u16)
     let bits = u16::from_le_bytes([wav_data[34], wav_data[35]]);
@@ -1616,8 +1675,8 @@ fn end_to_end_pcap_to_wav_export() {
 fn wav_export_no_rtp_returns_error() {
     use sipnab::rtp::audio_export::export_dialog_to_wav;
 
-    let pcap_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/pcap-samples/sip-register.pcap");
+    let pcap_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples/sip-register.pcap");
     let data = std::fs::read(&pcap_path).expect("read pcap");
     let reader = PcapReader::new(&data).expect("parse pcap");
     let link_type = reader.link_type as i32;
@@ -1648,7 +1707,10 @@ fn wav_export_no_rtp_returns_error() {
     let wav_path = tmp_dir.path().join("should_not_exist.wav");
 
     let result = export_dialog_to_wav(&streams, &wav_path);
-    assert!(result.is_err(), "WAV export should fail when no G.711 streams exist");
+    assert!(
+        result.is_err(),
+        "WAV export should fail when no G.711 streams exist"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
