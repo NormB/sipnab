@@ -13,13 +13,13 @@ mod tui_snapshots {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    use crossterm::event::KeyCode;
     use sipnab::capture::parse::TransportProto;
     use sipnab::rtp::parser::RtpHeader;
     use sipnab::rtp::stream_store::StreamStore;
     use sipnab::sip::SipMessage;
     use sipnab::sip::dialog_store::DialogStore;
     use sipnab::sip::parser::parse_sip;
-    use crossterm::event::KeyCode;
     use sipnab::tui::App;
 
     // ── Helper: extract buffer as a plain string ───────────────────────
@@ -78,7 +78,16 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
     }
 
     fn make_response(
@@ -98,8 +107,16 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse response")
+        parse_sip(
+            &raw,
+            ts,
+            localhost_b(),
+            localhost_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse response")
     }
 
     fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -113,7 +130,16 @@ mod tui_snapshots {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse BYE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse BYE")
     }
 
     // ── Helper: create App with 3 test dialogs ─────────────────────────
@@ -236,7 +262,12 @@ mod tui_snapshots {
             store.mark_orphaned(std::time::Duration::from_secs(0));
         }
 
-        App::new(ds, ss, sipnab::tui::Theme::default(), sipnab::tui::Keymap::default())
+        App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        )
     }
 
     // ── Snapshot tests ────────────────────────────────────────────────
@@ -454,7 +485,13 @@ mod tui_snapshots {
              Content-Length: {}\r\n\
              \r\n\
              {}",
-            to, call_id, from, to, call_id, sdp.len(), sdp
+            to,
+            call_id,
+            from,
+            to,
+            call_id,
+            sdp.len(),
+            sdp
         );
         let raw = headers.into_bytes();
         sipnab::sip::parser::parse_sip(

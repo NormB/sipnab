@@ -53,7 +53,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).expect("parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
     }
 
     fn make_response(
@@ -73,8 +82,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse response")
+        parse_sip(
+            &raw,
+            ts,
+            localhost_b(),
+            localhost_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse response")
     }
 
     fn app_with_three_dialogs() -> App {
@@ -660,7 +677,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     /// Create an app with the call flow view open on dialog 1.
@@ -683,7 +709,7 @@ mod tui_state {
     fn app_in_message_diff() -> App {
         let mut app = app_with_call_flow_open();
         app.handle_key(KeyCode::Char(' ')); // select first message
-        app.handle_key(KeyCode::Down);      // move to second
+        app.handle_key(KeyCode::Down); // move to second
         app.handle_key(KeyCode::Char(' ')); // open diff
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
         app
@@ -737,7 +763,9 @@ mod tui_state {
     fn search_esc_cancels_and_clears() {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::Char('/'));
-        for c in "test".chars() { app.handle_key(KeyCode::Char(c)); }
+        for c in "test".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
         assert_eq!(app.search_query(), "test");
         app.handle_key(KeyCode::Esc);
         assert!(!app.search_active());
@@ -748,7 +776,9 @@ mod tui_state {
     fn search_enter_commits_query() {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::Char('/'));
-        for c in "hello".chars() { app.handle_key(KeyCode::Char(c)); }
+        for c in "hello".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
         app.handle_key(KeyCode::Enter);
         assert!(!app.search_active());
         assert_eq!(app.search_query(), "hello"); // retained for highlighting
@@ -758,7 +788,9 @@ mod tui_state {
     fn search_backspace_removes_last_char() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('/'));
-        for c in "abc".chars() { app.handle_key(KeyCode::Char(c)); }
+        for c in "abc".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
         app.handle_key(KeyCode::Backspace);
         assert_eq!(app.search_query(), "ab");
     }
@@ -956,14 +988,18 @@ mod tui_state {
     #[test]
     fn call_flow_plus_clamps_at_max() {
         let mut app = app_with_call_flow_open();
-        for _ in 0..20 { app.handle_key(KeyCode::Char('+')); }
+        for _ in 0..20 {
+            app.handle_key(KeyCode::Char('+'));
+        }
         assert!(app.raw_preview_pct() <= 80);
     }
 
     #[test]
     fn call_flow_minus_clamps_at_min() {
         let mut app = app_with_call_flow_open();
-        for _ in 0..20 { app.handle_key(KeyCode::Char('-')); }
+        for _ in 0..20 {
+            app.handle_key(KeyCode::Char('-'));
+        }
         assert!(app.raw_preview_pct() >= 10);
     }
 
@@ -1026,7 +1062,7 @@ mod tui_state {
     fn call_flow_space_second_opens_diff() {
         let mut app = app_with_call_flow_open();
         app.handle_key(KeyCode::Char(' ')); // select msg 0
-        app.handle_key(KeyCode::Down);       // move to msg 1
+        app.handle_key(KeyCode::Down); // move to msg 1
         app.handle_key(KeyCode::Char(' ')); // open diff
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
     }
@@ -1087,7 +1123,9 @@ mod tui_state {
         // First apply a filter from the call list
         app.handle_key(KeyCode::Esc); // back to call list
         app.handle_key(KeyCode::F(7));
-        for c in "1001".chars() { app.handle_key(KeyCode::Char(c)); }
+        for c in "1001".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
         app.handle_key(KeyCode::Enter);
         let filtered_count = app.visible_dialog_count();
         // Re-enter call flow and clear filter
@@ -1352,9 +1390,17 @@ mod tui_state {
         app.handle_key(KeyCode::F(2));
         app.set_save_path("/tmp/test.pcap");
         app.handle_key(KeyCode::Tab);
-        assert!(app.save_path().ends_with(".pcapng"), "got: {}", app.save_path());
+        assert!(
+            app.save_path().ends_with(".pcapng"),
+            "got: {}",
+            app.save_path()
+        );
         app.handle_key(KeyCode::Tab);
-        assert!(app.save_path().ends_with(".txt"), "got: {}", app.save_path());
+        assert!(
+            app.save_path().ends_with(".txt"),
+            "got: {}",
+            app.save_path()
+        );
     }
 
     #[test]
@@ -2024,7 +2070,10 @@ mod tui_state {
     #[test]
     fn file_open_enter_valid_pcap_loads() {
         // Use one of the test pcap files (path relative to CARGO_MANIFEST_DIR)
-        let pcap_path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples/sip-rtp-g711.pcap");
+        let pcap_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/pcap-samples/sip-rtp-g711.pcap"
+        );
         if !std::path::Path::new(pcap_path).exists() {
             return; // Skip if test pcaps not available
         }
@@ -2049,8 +2098,10 @@ mod tui_state {
         let mut app = app_with_three_dialogs();
         assert_eq!(app.visible_dialog_count(), 3);
 
-        let pcap_path =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples/sip-sdp-example.pcap");
+        let pcap_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/pcap-samples/sip-sdp-example.pcap"
+        );
         if !std::path::Path::new(pcap_path).exists() {
             return;
         }
@@ -2131,7 +2182,10 @@ mod tui_state {
     #[test]
     fn call_flow_fold_starts_empty() {
         let app = app_with_call_flow_open();
-        assert!(app.fold_expanded().is_empty(), "fold_expanded should start empty");
+        assert!(
+            app.fold_expanded().is_empty(),
+            "fold_expanded should start empty"
+        );
     }
 
     #[test]
@@ -2375,7 +2429,10 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "Txt file should exist");
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("# Message"), "Txt should have message headers");
+        assert!(
+            content.contains("# Message"),
+            "Txt should have message headers"
+        );
         assert!(content.contains("---"), "Txt should have separators");
         assert!(content.contains("SIP/2.0"), "Txt should contain raw SIP");
     }
@@ -2396,10 +2453,19 @@ mod tui_state {
         assert!(path.exists(), "CSV file should exist");
         let content = std::fs::read_to_string(&path).unwrap();
         let first_line = content.lines().next().unwrap();
-        assert!(first_line.contains("call_id"), "CSV header should contain call_id");
-        assert!(first_line.contains("method"), "CSV header should contain method");
+        assert!(
+            first_line.contains("call_id"),
+            "CSV header should contain call_id"
+        );
+        assert!(
+            first_line.contains("method"),
+            "CSV header should contain method"
+        );
         // Verify there are data rows (at least header + 1 row = 2 lines)
-        assert!(content.lines().count() >= 2, "CSV should have header + data rows");
+        assert!(
+            content.lines().count() >= 2,
+            "CSV should have header + data rows"
+        );
     }
 
     #[test]
@@ -2442,8 +2508,14 @@ mod tui_state {
         app.handle_key(KeyCode::Enter);
         assert!(path.exists(), "SIPp XML file should exist");
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains("<scenario"), "SIPp should have <scenario> tag");
-        assert!(content.contains("</scenario>"), "SIPp should close </scenario>");
+        assert!(
+            content.contains("<scenario"),
+            "SIPp should have <scenario> tag"
+        );
+        assert!(
+            content.contains("</scenario>"),
+            "SIPp should close </scenario>"
+        );
         assert!(
             content.contains("<send>") || content.contains("<recv"),
             "SIPp should have send/recv"
@@ -2454,9 +2526,9 @@ mod tui_state {
 
     #[test]
     fn prepare_messages_three_participants() {
-        use std::collections::HashSet;
-        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use sipnab::tui::call_flow::prepare::prepare_messages;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use std::collections::HashSet;
 
         let t0 = base_ts();
         let la = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -2488,7 +2560,16 @@ mod tui_state {
                     "Content-Length: 0",
                 ],
             );
-            parse_sip(&raw, t0 + TimeDelta::milliseconds(100), lb, lc, 5060, 5060, TransportProto::Udp).unwrap()
+            parse_sip(
+                &raw,
+                t0 + TimeDelta::milliseconds(100),
+                lb,
+                lc,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .unwrap()
         };
         let msg3 = {
             let raw = build_sip(
@@ -2501,7 +2582,16 @@ mod tui_state {
                     "Content-Length: 0",
                 ],
             );
-            parse_sip(&raw, t0 + TimeDelta::milliseconds(200), lc, lb, 5060, 5060, TransportProto::Udp).unwrap()
+            parse_sip(
+                &raw,
+                t0 + TimeDelta::milliseconds(200),
+                lc,
+                lb,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .unwrap()
         };
         let msg4 = {
             let raw = build_sip(
@@ -2514,7 +2604,16 @@ mod tui_state {
                     "Content-Length: 0",
                 ],
             );
-            parse_sip(&raw, t0 + TimeDelta::milliseconds(300), lb, la, 5060, 5060, TransportProto::Udp).unwrap()
+            parse_sip(
+                &raw,
+                t0 + TimeDelta::milliseconds(300),
+                lb,
+                la,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .unwrap()
         };
 
         let messages = vec![msg1, msg2, msg3, msg4];
@@ -2529,21 +2628,30 @@ mod tui_state {
             selected_msg: None,
             theme: &theme,
         };
-        let (participants, formatted) = prepare_messages(
-            &messages,
-            t0,
-            None,
-            &flow_opts,
-            &fold_expanded,
-        );
+        let (participants, formatted) =
+            prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
 
-        assert_eq!(participants.len(), 3, "should have 3 participants, got {}", participants.len());
-        assert!(formatted.len() >= 4, "should have at least 4 messages, got {}", formatted.len());
+        assert_eq!(
+            participants.len(),
+            3,
+            "should have 3 participants, got {}",
+            participants.len()
+        );
+        assert!(
+            formatted.len() >= 4,
+            "should have at least 4 messages, got {}",
+            formatted.len()
+        );
         // Verify src_col and dst_col use different columns for different endpoints
-        let cols_used: HashSet<usize> = formatted.iter()
+        let cols_used: HashSet<usize> = formatted
+            .iter()
             .flat_map(|m| [m.src_col, m.dst_col])
             .collect();
-        assert_eq!(cols_used.len(), 3, "all 3 participant columns should be used");
+        assert_eq!(
+            cols_used.len(),
+            3,
+            "all 3 participant columns should be used"
+        );
     }
 
     // ── Settings popup timestamp mode cycle with Scaled ──────────────
@@ -2603,7 +2711,16 @@ mod tui_state {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     fn make_100_trying(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -2617,7 +2734,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_b(),
+            localhost_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     fn make_180_ringing(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -2631,7 +2757,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_b(),
+            localhost_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     fn make_200_ok_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -2654,7 +2789,16 @@ mod tui_state {
             ],
             sdp.as_bytes(),
         );
-        parse_sip(&raw, ts, localhost_b(), localhost_a(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_b(),
+            localhost_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     fn make_ack(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -2668,7 +2812,16 @@ mod tui_state {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, localhost_a(), localhost_b(), 5060, 5060, TransportProto::Udp).unwrap()
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap()
     }
 
     /// Build a full INVITE dialog: INVITE(SDP) -> 100 -> 180 -> 200 OK(SDP) -> ACK
@@ -2679,7 +2832,10 @@ mod tui_state {
             make_100_trying(call_id, t0 + TimeDelta::milliseconds(50)),
             make_180_ringing(call_id, t0 + TimeDelta::milliseconds(500)),
             make_200_ok_with_sdp(call_id, t0 + TimeDelta::seconds(2)),
-            make_ack(call_id, t0 + TimeDelta::seconds(2) + TimeDelta::milliseconds(10)),
+            make_ack(
+                call_id,
+                t0 + TimeDelta::seconds(2) + TimeDelta::milliseconds(10),
+            ),
         ]
     }
 
@@ -2687,10 +2843,10 @@ mod tui_state {
 
     #[test]
     fn stream_detail_enter_from_stream_list() {
+        use sipnab::capture::parse::ParsedPacket;
+        use sipnab::rtp::parser::parse_rtp_header;
         use sipnab::rtp::stream::StreamKey;
         use sipnab::rtp::stream_store::StreamStore;
-        use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::capture::parse::ParsedPacket;
         use std::net::{Ipv4Addr, SocketAddr};
 
         // Create an App with a stream in its store
@@ -2713,7 +2869,8 @@ mod tui_state {
                 payload.extend_from_slice(&[0x7F; 160]);
 
                 let parsed = ParsedPacket {
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
+                        .unwrap(),
                     src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20000,
@@ -2756,10 +2913,10 @@ mod tui_state {
 
     #[test]
     fn stream_detail_escape_returns_to_stream_list() {
+        use sipnab::capture::parse::ParsedPacket;
+        use sipnab::rtp::parser::parse_rtp_header;
         use sipnab::rtp::stream::StreamKey;
         use sipnab::rtp::stream_store::StreamStore;
-        use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::capture::parse::ParsedPacket;
         use std::net::{Ipv4Addr, SocketAddr};
 
         let ds = std::sync::Arc::new(parking_lot::RwLock::new(
@@ -2781,7 +2938,8 @@ mod tui_state {
                 payload.extend_from_slice(&[0x7F; 160]);
 
                 let parsed = ParsedPacket {
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
+                        .unwrap(),
                     src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20000,
@@ -2821,9 +2979,9 @@ mod tui_state {
 
     #[test]
     fn stream_detail_scroll_j_k() {
-        use sipnab::rtp::stream_store::StreamStore;
-        use sipnab::rtp::parser::parse_rtp_header;
         use sipnab::capture::parse::ParsedPacket;
+        use sipnab::rtp::parser::parse_rtp_header;
+        use sipnab::rtp::stream_store::StreamStore;
         use std::net::Ipv4Addr;
 
         let ds = std::sync::Arc::new(parking_lot::RwLock::new(
@@ -2844,7 +3002,8 @@ mod tui_state {
                 payload.extend_from_slice(&[0x7F; 160]);
 
                 let parsed = ParsedPacket {
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0).unwrap(),
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
+                        .unwrap(),
                     src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
                     dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
                     src_port: 20000,
@@ -2897,9 +3056,9 @@ mod tui_state {
 
     #[test]
     fn rtp_bar_is_after_ack_not_200ok() {
-        use std::collections::HashSet;
-        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use sipnab::tui::call_flow::prepare::prepare_messages;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use std::collections::HashSet;
 
         let messages = make_full_dialog_messages("rtp-bar-test@call");
         let t0 = messages[0].timestamp;
@@ -2914,13 +3073,8 @@ mod tui_state {
             selected_msg: None,
             theme: &theme,
         };
-        let (_participants, formatted) = prepare_messages(
-            &messages,
-            t0,
-            None,
-            &flow_opts,
-            &fold_expanded,
-        );
+        let (_participants, formatted) =
+            prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
 
         // Find the RTP bar message
         let rtp_bar_idx = formatted
@@ -2961,9 +3115,9 @@ mod tui_state {
 
     #[test]
     fn rtp_bar_has_timestamp_and_codec() {
-        use std::collections::HashSet;
-        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
         use sipnab::tui::call_flow::prepare::prepare_messages;
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use std::collections::HashSet;
 
         let messages = make_full_dialog_messages("rtp-codec-test@call");
         let t0 = messages[0].timestamp;
@@ -2978,13 +3132,8 @@ mod tui_state {
             selected_msg: None,
             theme: &theme,
         };
-        let (_participants, formatted) = prepare_messages(
-            &messages,
-            t0,
-            None,
-            &flow_opts,
-            &fold_expanded,
-        );
+        let (_participants, formatted) =
+            prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
 
         // Find the RTP bar message
         let rtp_bar = formatted
@@ -3065,7 +3214,13 @@ mod tui_state {
                 "FreeSWITCH-mod-sofia/1.10",
                 t0,
             ),
-            make_response("call-ua@test", 200, "OK", "INVITE", t0 + TimeDelta::seconds(1)),
+            make_response(
+                "call-ua@test",
+                200,
+                "OK",
+                "INVITE",
+                t0 + TimeDelta::seconds(1),
+            ),
         ];
         App::with_processed_messages(messages)
     }
@@ -3163,11 +3318,7 @@ mod tui_state {
         // All visible by default
         assert!(state.visible_columns.iter().all(|&v| v));
 
-        state.apply_visible_columns(&[
-            "#".to_string(),
-            "Method".to_string(),
-            "State".to_string(),
-        ]);
+        state.apply_visible_columns(&["#".to_string(), "Method".to_string(), "State".to_string()]);
 
         // Index (#) = 0, Method = 1, State = 6
         assert!(state.visible_columns[0], "# should be visible");
@@ -3190,14 +3341,20 @@ mod tui_state {
 
         let mut state = CallListState::new();
         state.apply_visible_columns(&[
-            "method".to_string(),       // lowercase
-            "FROM".to_string(),         // uppercase
-            "pdd".to_string(),          // lowercase
+            "method".to_string(), // lowercase
+            "FROM".to_string(),   // uppercase
+            "pdd".to_string(),    // lowercase
         ]);
 
         // Method = 1, From = 2, PDD = 9
-        assert!(state.visible_columns[1], "method (lowercase) should match Method");
-        assert!(state.visible_columns[2], "FROM (uppercase) should match From");
+        assert!(
+            state.visible_columns[1],
+            "method (lowercase) should match Method"
+        );
+        assert!(
+            state.visible_columns[2],
+            "FROM (uppercase) should match From"
+        );
         assert!(state.visible_columns[9], "pdd (lowercase) should match PDD");
 
         // Others hidden
