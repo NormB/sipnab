@@ -216,8 +216,16 @@ mod tests {
             ],
             b"",
         );
-        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         let raw_bye = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
@@ -230,8 +238,16 @@ mod tests {
             ],
             b"",
         );
-        let bye = parse_sip(&raw_bye, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let bye = parse_sip(
+            &raw_bye,
+            t1,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         let mut dialog = SipDialog::new(&invite).expect("should create dialog");
         crate::sip::dialog::update_state(&mut dialog, &bye);

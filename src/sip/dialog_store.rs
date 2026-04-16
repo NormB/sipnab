@@ -8,8 +8,8 @@
 use indexmap::IndexMap;
 
 use super::SipMessage;
-use super::method::SipMethod;
 use super::dialog::{DialogState, SipDialog, update_state};
+use super::method::SipMethod;
 use super::sdp_timeline::{track_sdp, track_transfer};
 use super::timing::update_timing;
 
@@ -103,7 +103,6 @@ impl DialogStore {
         };
 
         if let Some(dialog) = self.dialogs.get_mut(&call_id) {
-
             // Retransmission detection: same CSeq number + method already seen
             if is_retransmission(dialog, &msg) {
                 let cseq_key = cseq_key(&msg);
@@ -112,10 +111,16 @@ impl DialogStore {
                 }
                 // Mark as retransmission but store it for ladder display (capped)
                 msg.is_retransmission = true;
-                if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed) {
+                if dialog.messages.len()
+                    < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
+                {
                     dialog.messages.push(msg);
                 }
-                dialog.updated_at = dialog.messages.last().map(|m| m.timestamp).unwrap_or(dialog.updated_at);
+                dialog.updated_at = dialog
+                    .messages
+                    .last()
+                    .map(|m| m.timestamp)
+                    .unwrap_or(dialog.updated_at);
                 return;
             }
 
@@ -146,7 +151,9 @@ impl DialogStore {
 
             // Record the message (move instead of clone, capped per D17)
             let ts = msg.timestamp;
-            if dialog.messages.len() < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed) {
+            if dialog.messages.len()
+                < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
+            {
                 dialog.messages.push(msg);
             }
             dialog.updated_at = ts;
@@ -297,9 +304,7 @@ impl DialogStore {
                     .filter_map(|v| extract_via_branch(v))
                     .collect();
 
-                let branch_overlap = candidate_branches
-                    .iter()
-                    .any(|b| src_branches.contains(b));
+                let branch_overlap = candidate_branches.iter().any(|b| src_branches.contains(b));
 
                 if branch_overlap {
                     results.push(CorrelationResult {
@@ -428,8 +433,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -444,8 +457,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse 200 OK")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse 200 OK")
     }
 
     fn make_bye_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -460,7 +481,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse BYE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse BYE")
     }
 
     #[test]
@@ -622,8 +652,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         store.process_message(msg);
         assert_eq!(store.len(), 0);
@@ -686,7 +724,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
+            parse_sip(
+                &raw,
+                t1,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse")
         };
         store.process_message(trying);
 
@@ -703,7 +750,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
+            parse_sip(
+                &raw,
+                t2,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse")
         };
         store.process_message(ringing);
 
@@ -726,8 +782,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE with X-Call-ID")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE with X-Call-ID")
     }
 
     #[test]
@@ -815,11 +879,7 @@ mod tests {
     }
 
     /// Build an INVITE with a Via header containing a specific branch parameter.
-    fn make_invite_with_via_branch(
-        call_id: &str,
-        branch: &str,
-        ts: DateTime<Utc>,
-    ) -> SipMessage {
+    fn make_invite_with_via_branch(call_id: &str, branch: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
             &[
@@ -833,7 +893,13 @@ mod tests {
             b"",
         );
         parse_sip(
-            &raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp,
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
         )
         .expect("should parse INVITE with Via branch")
     }
@@ -868,10 +934,7 @@ mod tests {
 
         // Two INVITEs from same IP within 2 seconds, no other correlation signal
         store.process_message(make_invite_msg("timing-a@test", t0));
-        store.process_message(make_invite_msg(
-            "timing-b@test",
-            t0 + TimeDelta::seconds(1),
-        ));
+        store.process_message(make_invite_msg("timing-b@test", t0 + TimeDelta::seconds(1)));
 
         let results = store.find_correlated_scored("timing-a@test");
         assert_eq!(results.len(), 1);
@@ -886,10 +949,7 @@ mod tests {
         let t0 = base_ts();
 
         store.process_message(make_invite_msg("gap-a@test", t0));
-        store.process_message(make_invite_msg(
-            "gap-b@test",
-            t0 + TimeDelta::seconds(3),
-        ));
+        store.process_message(make_invite_msg("gap-b@test", t0 + TimeDelta::seconds(3)));
 
         let results = store.find_correlated_scored("gap-a@test");
         assert!(results.is_empty());
@@ -957,24 +1017,45 @@ mod tests {
         assert_eq!(store.len(), 3);
 
         // First dialog evicted
-        assert!(store.get("evict-1@test").is_none(), "evict-1 should have been evicted");
+        assert!(
+            store.get("evict-1@test").is_none(),
+            "evict-1 should have been evicted"
+        );
 
         // Remaining 3 accessible by Call-ID
-        assert!(store.get("evict-2@test").is_some(), "evict-2 should still be present");
-        assert!(store.get("evict-3@test").is_some(), "evict-3 should still be present");
-        assert!(store.get("evict-4@test").is_some(), "evict-4 should still be present");
+        assert!(
+            store.get("evict-2@test").is_some(),
+            "evict-2 should still be present"
+        );
+        assert!(
+            store.get("evict-3@test").is_some(),
+            "evict-3 should still be present"
+        );
+        assert!(
+            store.get("evict-4@test").is_some(),
+            "evict-4 should still be present"
+        );
 
         // Verify index correctness: get_mut also works (proves indices are correct)
-        let d2 = store.get_mut("evict-2@test").expect("evict-2 should be mutable");
+        let d2 = store
+            .get_mut("evict-2@test")
+            .expect("evict-2 should be mutable");
         assert_eq!(d2.call_id, "evict-2@test");
-        let d3 = store.get_mut("evict-3@test").expect("evict-3 should be mutable");
+        let d3 = store
+            .get_mut("evict-3@test")
+            .expect("evict-3 should be mutable");
         assert_eq!(d3.call_id, "evict-3@test");
-        let d4 = store.get_mut("evict-4@test").expect("evict-4 should be mutable");
+        let d4 = store
+            .get_mut("evict-4@test")
+            .expect("evict-4 should be mutable");
         assert_eq!(d4.call_id, "evict-4@test");
 
         // Verify iteration order: oldest-remaining first
         let call_ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
-        assert_eq!(call_ids, vec!["evict-2@test", "evict-3@test", "evict-4@test"]);
+        assert_eq!(
+            call_ids,
+            vec!["evict-2@test", "evict-3@test", "evict-4@test"]
+        );
     }
 
     // ── Message cap per dialog ─────────────────────────────────────────
@@ -1085,7 +1166,10 @@ mod tests {
 
         let dialog = store.get("refer-track@test").expect("dialog should exist");
         assert_eq!(*dialog.state(), DialogState::InCall);
-        assert!(dialog.refer_to.is_none(), "refer_to should be None before REFER");
+        assert!(
+            dialog.refer_to.is_none(),
+            "refer_to should be None before REFER"
+        );
 
         // Send REFER with Refer-To header
         let refer = {
@@ -1101,8 +1185,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-                .expect("should parse REFER")
+            parse_sip(
+                &raw,
+                t2,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse REFER")
         };
         store.process_message(refer);
 
@@ -1143,8 +1235,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-                .expect("should parse REFER")
+            parse_sip(
+                &raw,
+                t2,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse REFER")
         };
         store.process_message(refer);
 
@@ -1202,8 +1302,16 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             ],
             siprec_body,
         );
-        let msg = parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse SIPREC INVITE");
+        let msg = parse_sip(
+            &raw,
+            t1,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SIPREC INVITE");
         store.process_message(msg);
 
         let dialog = store.get("siprec@test").expect("dialog should exist");

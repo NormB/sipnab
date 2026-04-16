@@ -102,7 +102,7 @@ pub struct RtpStream {
     pub cn_frames: u32,
     /// Detected silence periods (capped at 100).
     pub silence_periods: Vec<SilencePeriod>,
-    /// Ring buffer of raw RTP payloads for audio export (G.711 only).
+    /// Ring buffer of raw RTP payloads for audio export (G.711 and Opus).
     /// Each entry: (RTP timestamp, raw payload bytes).
     pub payload_buffer: std::collections::VecDeque<(u32, Vec<u8>)>,
 

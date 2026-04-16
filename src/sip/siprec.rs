@@ -266,7 +266,11 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         // No --b1-- terminator
         let result = parse_siprec_body(ct, body);
         // Should succeed (graceful handling of missing terminator)
-        assert!(result.is_ok(), "truncated body should parse gracefully: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "truncated body should parse gracefully: {:?}",
+            result.err()
+        );
         assert_eq!(result.unwrap().session_id.as_deref(), Some("abc"));
     }
 

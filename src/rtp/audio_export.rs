@@ -1,59 +1,50 @@
 //! Audio export from RTP streams to WAV files.
 //!
-//! Decodes G.711 (PCMU/PCMA) RTP payload buffers into 16-bit linear PCM
-//! and writes standard WAV files. Supports mono (single stream) and stereo
-//! (two streams interleaved as left/right channels) export.
+//! Decodes G.711 (PCMU/PCMA) and Opus RTP payload buffers into 16-bit
+//! linear PCM and writes standard WAV files. Supports mono (single stream)
+//! and stereo (two streams interleaved as left/right channels) export.
+//!
+//! G.711 streams export at 8 kHz; Opus streams export at 48 kHz. When
+//! mixing G.711 and Opus in stereo mode, the G.711 channel is resampled
+//! to 48 kHz to match.
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
 
 use super::g711::{G711Codec, decode_frame};
+use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
 use super::wav::write_wav;
 
 /// Export a single RTP stream to a mono WAV file.
 ///
-/// Decodes all captured G.711 payloads in the stream's ring buffer to
-/// 16-bit linear PCM and writes a mono WAV at the stream's clock rate.
+/// Decodes all captured payloads in the stream's ring buffer to 16-bit
+/// linear PCM and writes a mono WAV. G.711 streams export at 8 kHz;
+/// Opus streams export at 48 kHz.
 ///
 /// # Errors
 ///
 /// Returns an error if:
-/// - The stream codec is not PCMU or PCMA
+/// - The stream codec is not PCMU, PCMA, or Opus
 /// - No audio payloads have been captured
 /// - The WAV file cannot be written
 pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
-    let codec = match stream.codec.as_deref() {
-        Some("PCMU") => G711Codec::Ulaw,
-        Some("PCMA") => G711Codec::Alaw,
-        Some(other) => bail!(
-            "Unsupported codec for WAV export: {other}. Only PCMU and PCMA are supported."
-        ),
-        None => bail!("Unknown codec — cannot decode to WAV"),
-    };
-
     if stream.payload_buffer.is_empty() {
-        bail!("No audio payload captured for this stream. Audio capture requires G.711 codec streams.");
+        bail!("No audio payload captured for this stream.");
     }
 
-    // Decode all frames to PCM
-    let mut pcm_samples: Vec<i16> = Vec::new();
-    for (_rtp_ts, payload) in &stream.payload_buffer {
-        let decoded = decode_frame(codec, payload);
-        pcm_samples.extend_from_slice(&decoded);
-    }
-
-    let duration_secs = pcm_samples.len() as f64 / stream.clock_rate as f64;
-    write_wav(path, &pcm_samples, stream.clock_rate, 1)?;
+    let (pcm_samples, sample_rate, codec_label) = decode_stream_pcm(stream)?;
+    let duration_secs = pcm_samples.len() as f64 / sample_rate as f64;
+    write_wav(path, &pcm_samples, sample_rate, 1)?;
 
     Ok(format!(
         "Exported {:.1}s of {} audio ({} frames, {}/{}Hz) to {}",
         duration_secs,
-        codec_name(codec),
+        codec_label,
         stream.payload_buffer.len(),
         stream.codec.as_deref().unwrap_or("?"),
-        stream.clock_rate,
+        sample_rate,
         path.display(),
     ))
 }
@@ -64,7 +55,9 @@ pub fn export_stream_to_wav(stream: &RtpStream, path: &Path) -> Result<String> {
 /// - If two or more exportable streams: creates a stereo WAV with the first
 ///   stream as the left channel and the second as the right channel.
 ///
-/// Only G.711 streams with captured payload data are considered exportable.
+/// G.711 and Opus streams with captured payload data are considered
+/// exportable. When mixing codecs at different sample rates (e.g., G.711
+/// at 8 kHz and Opus at 48 kHz), the lower-rate channel is resampled up.
 ///
 /// # Errors
 ///
@@ -74,47 +67,32 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         bail!("No RTP streams to export");
     }
 
-    // Filter to G.711 streams with payload data
+    // Filter to streams with decodable audio payload data
     let exportable: Vec<&RtpStream> = streams
         .iter()
-        .filter(|s| {
-            matches!(s.codec.as_deref(), Some("PCMU") | Some("PCMA"))
-                && !s.payload_buffer.is_empty()
-        })
+        .filter(|s| is_exportable_codec(s.codec.as_deref()) && !s.payload_buffer.is_empty())
         .copied()
         .collect();
 
     if exportable.is_empty() {
-        bail!("No G.711 streams with captured audio found");
+        bail!("No audio streams with captured data found");
     }
 
     if exportable.len() == 1 {
         return export_stream_to_wav(exportable[0], path);
     }
 
-    // Stereo: decode both streams, interleave left/right
-    let left = &exportable[0];
-    let right = &exportable[1];
+    // Stereo: decode both streams
+    let (mut left_pcm, left_rate, _) = decode_stream_pcm(exportable[0])?;
+    let (mut right_pcm, right_rate, _) = decode_stream_pcm(exportable[1])?;
 
-    let left_codec = match left.codec.as_deref() {
-        Some("PCMU") => G711Codec::Ulaw,
-        Some("PCMA") => G711Codec::Alaw,
-        _ => unreachable!("filtered to G.711 above"),
-    };
-    let right_codec = match right.codec.as_deref() {
-        Some("PCMU") => G711Codec::Ulaw,
-        Some("PCMA") => G711Codec::Alaw,
-        _ => unreachable!("filtered to G.711 above"),
-    };
-
-    let mut left_pcm: Vec<i16> = Vec::new();
-    for (_ts, payload) in &left.payload_buffer {
-        left_pcm.extend_from_slice(&decode_frame(left_codec, payload));
+    // Use the higher sample rate as the output rate; resample the lower one
+    let output_rate = left_rate.max(right_rate);
+    if left_rate < output_rate {
+        left_pcm = resample_linear(&left_pcm, left_rate, output_rate);
     }
-
-    let mut right_pcm: Vec<i16> = Vec::new();
-    for (_ts, payload) in &right.payload_buffer {
-        right_pcm.extend_from_slice(&decode_frame(right_codec, payload));
+    if right_rate < output_rate {
+        right_pcm = resample_linear(&right_pcm, right_rate, output_rate);
     }
 
     // Pad the shorter channel with silence so both are the same length
@@ -129,25 +107,95 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
         interleaved.push(right_pcm[i]);
     }
 
-    // Use the clock rate from the first stream (both should be 8000 for G.711)
-    let sample_rate = left.clock_rate;
-    let duration_secs = max_len as f64 / sample_rate as f64;
-    write_wav(path, &interleaved, sample_rate, 2)?;
+    let duration_secs = max_len as f64 / output_rate as f64;
+    write_wav(path, &interleaved, output_rate, 2)?;
 
     Ok(format!(
-        "Exported {:.1}s stereo audio ({} + {} frames) to {}",
+        "Exported {:.1}s stereo audio ({} + {} frames, {}Hz) to {}",
         duration_secs,
-        left.payload_buffer.len(),
-        right.payload_buffer.len(),
+        exportable[0].payload_buffer.len(),
+        exportable[1].payload_buffer.len(),
+        output_rate,
         path.display(),
     ))
 }
 
-fn codec_name(codec: G711Codec) -> &'static str {
-    match codec {
-        G711Codec::Ulaw => "mu-law",
-        G711Codec::Alaw => "A-law",
+/// Check whether a codec name represents a decodable audio codec.
+fn is_exportable_codec(codec: Option<&str>) -> bool {
+    matches!(
+        codec,
+        Some("PCMU") | Some("PCMA") | Some("opus") | Some("OPUS") | Some("Opus")
+    )
+}
+
+/// Check if a codec name is Opus (case-insensitive per SDP convention).
+fn is_opus_codec(codec: &str) -> bool {
+    codec.eq_ignore_ascii_case("opus")
+}
+
+/// Decode all captured payloads in a stream to PCM i16 samples.
+///
+/// Returns `(samples, sample_rate, codec_label)`.
+fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)> {
+    let codec_name = stream.codec.as_deref();
+
+    match codec_name {
+        Some("PCMU") => {
+            let mut pcm: Vec<i16> = Vec::new();
+            for (_ts, payload) in &stream.payload_buffer {
+                pcm.extend_from_slice(&decode_frame(G711Codec::Ulaw, payload));
+            }
+            Ok((pcm, stream.clock_rate, "mu-law"))
+        }
+        Some("PCMA") => {
+            let mut pcm: Vec<i16> = Vec::new();
+            for (_ts, payload) in &stream.payload_buffer {
+                pcm.extend_from_slice(&decode_frame(G711Codec::Alaw, payload));
+            }
+            Ok((pcm, stream.clock_rate, "A-law"))
+        }
+        Some(name) if is_opus_codec(name) => {
+            // Opus decodes at 48 kHz mono by default. SDP declares
+            // opus/48000/2 but RTP frames are typically mono.
+            let mut decoder = OpusStreamDecoder::new(48000, 1)?;
+            let mut pcm: Vec<i16> = Vec::new();
+            for (_ts, payload) in &stream.payload_buffer {
+                match decoder.decode_frame(payload) {
+                    Ok(samples) => pcm.extend_from_slice(&samples),
+                    Err(e) => {
+                        log::debug!("Opus decode error (skipping frame): {e}");
+                    }
+                }
+            }
+            Ok((pcm, 48000, "Opus"))
+        }
+        Some(other) => {
+            bail!("Unsupported codec for WAV export: {other}. Supported: PCMU, PCMA, Opus.")
+        }
+        None => bail!("Unknown codec — cannot decode to WAV"),
     }
+}
+
+/// Resample PCM i16 samples using linear interpolation.
+///
+/// Adequate quality for voice audio upsampling (e.g., 8 kHz to 48 kHz).
+fn resample_linear(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let ratio = to_rate as f64 / from_rate as f64;
+    let output_len = (samples.len() as f64 * ratio) as usize;
+    let mut out = Vec::with_capacity(output_len);
+    for i in 0..output_len {
+        let src_pos = i as f64 / ratio;
+        let src_idx = src_pos as usize;
+        let frac = src_pos - src_idx as f64;
+        let s0 = samples.get(src_idx).copied().unwrap_or(0) as f64;
+        let s1 = samples.get(src_idx + 1).copied().unwrap_or(s0 as i16) as f64;
+        let interpolated = s0 + (s1 - s0) * frac;
+        out.push(interpolated.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -209,7 +257,12 @@ mod tests {
         let result = export_stream_to_wav(&stream, &path);
 
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unsupported codec"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Unsupported codec")
+        );
     }
 
     #[test]
@@ -254,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn export_dialog_filters_non_g711() {
+    fn export_dialog_filters_unsupported_codecs() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mixed.wav");
 
@@ -262,7 +315,7 @@ mod tests {
         let g729 = make_stream(Some("G729"), vec![(0, vec![0; 10])]);
         let result = export_dialog_to_wav(&[&g711, &g729], &path).unwrap();
 
-        // Should fall back to mono since only one G.711 stream
+        // Should fall back to mono since only one decodable stream
         assert!(result.contains("mu-law"));
     }
 

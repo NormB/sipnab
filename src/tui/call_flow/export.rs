@@ -84,7 +84,12 @@ mod tests {
     use crate::tui::call_flow::SelectionState;
 
     /// Helper to create a minimal FormattedMessage for testing.
-    fn test_msg(src_col: usize, dst_col: usize, label: &str, is_response: bool) -> FormattedMessage {
+    fn test_msg(
+        src_col: usize,
+        dst_col: usize,
+        label: &str,
+        is_response: bool,
+    ) -> FormattedMessage {
         FormattedMessage {
             timestamp: String::new(),
             timestamp_style: Style::default(),
@@ -152,10 +157,7 @@ mod tests {
         ];
         let out = export_mermaid(&participants, &messages);
         // Should have exactly 2 message lines (INVITE + 200 OK), no spacer
-        let msg_lines: Vec<&str> = out
-            .lines()
-            .filter(|l| l.contains("->>"))
-            .collect();
+        let msg_lines: Vec<&str> = out.lines().filter(|l| l.contains("->>")).collect();
         assert_eq!(msg_lines.len(), 2);
     }
 
@@ -187,7 +189,10 @@ mod tests {
         assert!(out.contains("participant 10_0_0_3_5060 as bob"));
         // 2 requests use ->>, 2 responses use -->>
         let arrow_count = out.matches("->>").count();
-        assert_eq!(arrow_count, 4, "expected 4 arrows (->>/-->>), got {arrow_count}");
+        assert_eq!(
+            arrow_count, 4,
+            "expected 4 arrows (->>/-->>), got {arrow_count}"
+        );
     }
 
     #[test]

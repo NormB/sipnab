@@ -12,8 +12,8 @@ use crate::sip::sdp::{self, SdpDirection};
 
 use crate::tui::ColorMode;
 use crate::tui::SdpDisplayMode;
-use crate::tui::TimestampMode;
 use crate::tui::Theme;
+use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
 use super::arrows::truncate;
@@ -265,7 +265,11 @@ pub fn prepare_messages(
             if is_invite_200 && !in_call {
                 pending_rtp_codec = msg.sdp().and_then(|ss| {
                     let codecs = format_sdp_codecs(&ss);
-                    if codecs.is_empty() { None } else { Some(codecs) }
+                    if codecs.is_empty() {
+                        None
+                    } else {
+                        Some(codecs)
+                    }
                 });
             }
 
@@ -278,14 +282,17 @@ pub fn prepare_messages(
             if is_invite_ack {
                 in_call = true;
                 let rtp_label = if let Some(ref codec) = pending_rtp_codec {
-                    format!("\u{2500}\u{2500} RTP \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}")
+                    format!(
+                        "\u{2500}\u{2500} RTP \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}"
+                    )
                 } else {
                     "\u{2500}\u{2500} RTP \u{00B7} active \u{2500}\u{2500}".to_string()
                 };
                 deferred_rtp_bar = Some((msg.timestamp, rtp_label));
                 pending_rtp_codec = None;
             }
-            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call {
+            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call
+            {
                 in_call = false;
             }
         }
@@ -319,23 +326,39 @@ pub fn prepare_messages(
             // Format timestamp using the same mode as all other messages
             let (rtp_timestamp, rtp_ts_style) = match ts_mode {
                 TimestampMode::Absolute => {
-                    let s = format!("{:<width$}", rtp_ts.format("%H:%M:%S%.3f"), width = ts_width);
+                    let s = format!(
+                        "{:<width$}",
+                        rtp_ts.format("%H:%M:%S%.3f"),
+                        width = ts_width
+                    );
                     (s, Style::default().fg(theme.accent))
                 }
                 TimestampMode::DeltaPrev => {
                     let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
-                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    let s = format!(
+                        "{:>width$}",
+                        format!("+{:.3}s", d as f64 / 1000.0),
+                        width = ts_width - 1
+                    ) + " ";
                     prev_ts = rtp_ts;
                     (s, delta_style(d, theme))
                 }
                 TimestampMode::DeltaFirst => {
                     let d = rtp_ts.signed_duration_since(first_ts).num_milliseconds();
-                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    let s = format!(
+                        "{:>width$}",
+                        format!("+{:.3}s", d as f64 / 1000.0),
+                        width = ts_width - 1
+                    ) + " ";
                     (s, delta_style(d, theme))
                 }
                 TimestampMode::Scaled => {
                     let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
-                    let s = format!("{:>width$}", format!("+{:.3}s", d as f64 / 1000.0), width = ts_width - 1) + " ";
+                    let s = format!(
+                        "{:>width$}",
+                        format!("+{:.3}s", d as f64 / 1000.0),
+                        width = ts_width - 1
+                    ) + " ";
                     prev_ts = rtp_ts;
                     (s, delta_style(d, theme))
                 }
@@ -351,7 +374,11 @@ pub fn prepare_messages(
                 extra_lines: vec![],
                 selected: rtp_sel,
                 call_id: msg.call_id().unwrap_or("").to_string(),
-                selection_state: if rtp_sel { SelectionState::Selected } else { SelectionState::Normal },
+                selection_state: if rtp_sel {
+                    SelectionState::Selected
+                } else {
+                    SelectionState::Normal
+                },
                 is_response: false,
                 raw_timestamp: rtp_ts,
                 folded_count: 0,
@@ -374,7 +401,11 @@ pub fn prepare_messages(
             let cid = msg.call_id().unwrap_or("").to_string();
             if let Some(ss) = msg.sdp() {
                 let codecs = extract_codec_list(&ss);
-                let dir = ss.media.first().map(|m| m.direction.clone()).unwrap_or(SdpDirection::SendRecv);
+                let dir = ss
+                    .media
+                    .first()
+                    .map(|m| m.direction.clone())
+                    .unwrap_or(SdpDirection::SendRecv);
                 if let Some(prev_codecs) = last_codecs.get(&cid) {
                     let mut badge_parts: Vec<String> = Vec::new();
                     // Codec additions
@@ -392,10 +423,16 @@ pub fn prepare_messages(
                     // Direction changes
                     if let Some(prev_dir) = last_direction.get(&cid) {
                         match (&dir, prev_dir) {
-                            (SdpDirection::SendOnly | SdpDirection::Inactive, SdpDirection::SendRecv) => {
+                            (
+                                SdpDirection::SendOnly | SdpDirection::Inactive,
+                                SdpDirection::SendRecv,
+                            ) => {
                                 badge_parts.push("HOLD".to_string());
                             }
-                            (SdpDirection::SendRecv, SdpDirection::SendOnly | SdpDirection::Inactive) => {
+                            (
+                                SdpDirection::SendRecv,
+                                SdpDirection::SendOnly | SdpDirection::Inactive,
+                            ) => {
                                 badge_parts.push("UNHOLD".to_string());
                             }
                             _ => {}
@@ -554,10 +591,8 @@ fn fold_messages(
             if let Some(_fm) = source[i].take() {
                 if let Some(prev) = result.last_mut() {
                     prev.folded_count += 1;
-                    prev.fold_label = Some(format!(
-                        "(+{} retx) - press e to expand",
-                        prev.folded_count
-                    ));
+                    prev.fold_label =
+                        Some(format!("(+{} retx) - press e to expand", prev.folded_count));
                 } else {
                     // No previous message to fold into — re-insert and emit
                     source[i] = Some(_fm);
@@ -655,7 +690,11 @@ pub fn format_message_label(msg: &SipMessage) -> String {
     let sdp_suffix = if has_sdp { " (SDP)" } else { "" };
 
     if msg.is_request {
-        format!("{}{}", msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?"), sdp_suffix)
+        format!(
+            "{}{}",
+            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?"),
+            sdp_suffix
+        )
     } else {
         let code = msg.status_code.unwrap_or(0);
         let reason = msg.reason.as_deref().unwrap_or("");
@@ -674,17 +713,17 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
         let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("");
         match method {
             "INVITE" | "SUBSCRIBE" => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
-            "BYE" | "CANCEL" => Style::default().fg(Color::Rgb(215, 95, 95)),         // Coral
-            "ACK" | "PRACK" => Style::default().fg(theme.muted),                      // Gray
-            "REGISTER" | "OPTIONS" => Style::default().fg(Color::Rgb(95, 135, 215)),  // Blue
+            "BYE" | "CANCEL" => Style::default().fg(Color::Rgb(215, 95, 95)),        // Coral
+            "ACK" | "PRACK" => Style::default().fg(theme.muted),                     // Gray
+            "REGISTER" | "OPTIONS" => Style::default().fg(Color::Rgb(95, 135, 215)), // Blue
             _ => Style::default().fg(theme.foreground),
         }
     } else {
         let code = msg.status_code.unwrap_or(0);
         match code {
             100..=199 => Style::default().fg(Color::Rgb(215, 175, 95)), // Amber (provisional)
-            200..=299 => Style::default().fg(theme.good),                // Green (success)
-            300..=399 => Style::default().fg(theme.warning),             // Yellow (redirect)
+            200..=299 => Style::default().fg(theme.good),               // Green (success)
+            300..=399 => Style::default().fg(theme.warning),            // Yellow (redirect)
             400..=499 => Style::default().fg(Color::Rgb(215, 135, 0)),  // Orange (client error)
             500..=699 => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD), // Red (server error)
             _ => Style::default().fg(theme.foreground),

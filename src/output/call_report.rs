@@ -394,8 +394,16 @@ mod tests {
             ],
             b"",
         );
-        let invite = parse_sip(&raw_invite, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         let raw_ringing = build_sip(
             "SIP/2.0 180 Ringing",
@@ -430,8 +438,16 @@ mod tests {
             ],
             b"",
         );
-        let ok = parse_sip(&raw_ok, t2, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let ok = parse_sip(
+            &raw_ok,
+            t2,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         let mut d = SipDialog::new(&invite).expect("should create");
         crate::sip::timing::update_timing(&mut d.timing, &invite, &crate::sip::SipMethod::Invite);

@@ -221,7 +221,8 @@ impl AlertEngine {
         #[cfg(feature = "native")]
         if let Some(cmd) = &self.exec_cmd {
             // Reap finished children to prevent zombie accumulation
-            self.children.retain_mut(|child| child.try_wait().ok().flatten().is_none());
+            self.children
+                .retain_mut(|child| child.try_wait().ok().flatten().is_none());
 
             // Cap concurrent children to prevent local DoS
             if self.children.len() >= 100 {

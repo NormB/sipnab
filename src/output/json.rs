@@ -343,7 +343,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse")
     }
 
     fn make_stream() -> RtpStream {
@@ -397,8 +406,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
         let json_str = message_to_json(&msg);
         let parsed: serde_json::Value =
             serde_json::from_str(json_str.trim()).expect("should be valid JSON");

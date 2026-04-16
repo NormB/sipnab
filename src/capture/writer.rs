@@ -268,10 +268,16 @@ impl PcapWriter {
                 );
             }
             Ok(_) => {
-                log::debug!("Keylog file '{}' is empty; skipping DSB", keylog_path.display());
+                log::debug!(
+                    "Keylog file '{}' is empty; skipping DSB",
+                    keylog_path.display()
+                );
             }
             Err(e) => {
-                log::warn!("Cannot read keylog '{}' for DSB: {e}", keylog_path.display());
+                log::warn!(
+                    "Cannot read keylog '{}' for DSB: {e}",
+                    keylog_path.display()
+                );
             }
         }
         Ok(())
@@ -541,15 +547,14 @@ mod tests {
         assert_eq!(nanos, 0, "far-future timestamp should fall back to 0 nanos");
 
         // Also verify a normal timestamp works correctly
-        let normal = DateTime::from_timestamp(1_700_000_000, 500_000_000)
-            .expect("valid normal timestamp");
+        let normal =
+            DateTime::from_timestamp(1_700_000_000, 500_000_000).expect("valid normal timestamp");
         let normal_nanos: u64 = normal
             .timestamp_nanos_opt()
             .and_then(|n| u64::try_from(n).ok())
             .unwrap_or(0);
         assert_eq!(
-            normal_nanos,
-            1_700_000_000_500_000_000u64,
+            normal_nanos, 1_700_000_000_500_000_000u64,
             "normal timestamp nanos should be exact"
         );
 
@@ -571,10 +576,7 @@ mod tests {
             PcapExportMode::parse_mode("decrypted"),
             Some(PcapExportMode::Decrypted)
         );
-        assert_eq!(
-            PcapExportMode::parse_mode("raw"),
-            Some(PcapExportMode::Raw)
-        );
+        assert_eq!(PcapExportMode::parse_mode("raw"), Some(PcapExportMode::Raw));
         assert_eq!(
             PcapExportMode::parse_mode("encrypted+dsb"),
             Some(PcapExportMode::EncryptedWithDsb)

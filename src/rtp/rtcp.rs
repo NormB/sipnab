@@ -392,9 +392,7 @@ fn parse_extended_report(data: &[u8]) -> Result<ExtendedReport> {
                     block_data[6],
                     block_data[7],
                 ]);
-                XrBlock::ReceiverReferenceTime {
-                    ntp_timestamp: ntp,
-                }
+                XrBlock::ReceiverReferenceTime { ntp_timestamp: ntp }
             }
             1 if block_length >= 4 => {
                 let rle_ssrc = u32::from_be_bytes([

@@ -275,7 +275,6 @@ pub async fn run_server(
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
 
-
 /// Check authentication. Returns `Err(StatusCode)` if auth fails.
 fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let Some(ref expected_key) = state.api_key else {
@@ -620,7 +619,10 @@ async fn get_metrics(
         }
 
         // Count messages by method
-        *metrics.messages_total.entry(d.method.to_string()).or_insert(0) += 1;
+        *metrics
+            .messages_total
+            .entry(d.method.to_string())
+            .or_insert(0) += 1;
     }
     drop(ds);
 
@@ -742,9 +744,9 @@ fn percentile(sorted: &[i64], p: u8) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
     use axum::body::Body;
     use axum::http::Request;
-    use crate::capture::parse::TransportProto;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -785,9 +787,16 @@ mod tests {
                 ],
                 b"",
             );
-            let msg =
-                crate::sip::parser::parse_sip(&raw, ts, localhost, localhost, 5060, 5060, TransportProto::Udp)
-                    .expect("parse");
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts,
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse");
             ds.process_message(msg);
         }
     }
@@ -798,11 +807,10 @@ mod tests {
             .uri(uri)
             .body(Body::empty())
             .expect("build request");
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(
-                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                12345,
-            )));
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            12345,
+        )));
         req
     }
 
@@ -813,11 +821,10 @@ mod tests {
             .header(header_name, header_value)
             .body(Body::empty())
             .expect("build request");
-        req.extensions_mut()
-            .insert(ConnectInfo(SocketAddr::new(
-                IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-                12345,
-            )));
+        req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            12345,
+        )));
         req
     }
 

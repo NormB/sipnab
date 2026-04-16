@@ -10,9 +10,9 @@ use std::net::IpAddr;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::capture::parse::TransportProto;
 use super::message::{SipHeader, SipMessage};
 use super::method::SipMethod;
+use crate::capture::parse::TransportProto;
 
 /// Mapping from single-character compact header names to canonical long forms
 /// per RFC 3261 SS7.3.3 and extensions.
@@ -485,8 +485,16 @@ Call-ID: folding-test@example.com\r\n\
 Content-Length: 0\r\n\
 \r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse folded headers");
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse folded headers");
 
         let via = sip.via_headers();
         assert_eq!(via.len(), 1);
@@ -624,8 +632,16 @@ Content-Length: 0\r\n\
         // Has a first line and one header but no \r\n\r\n separator
         let msg = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP x\r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
-            .expect("partial parse should succeed");
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("partial parse should succeed");
 
         assert!(sip.is_request);
         assert_eq!(sip.method, Some(SipMethod::Invite));
@@ -653,8 +669,16 @@ Content-Length: 0\r\n\
         // Headers end with \r\n but no blank line separator
         let msg = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP host\r\nContent-Length: 0\r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse with empty body");
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse with empty body");
 
         assert!(!sip.is_request);
         assert_eq!(sip.status_code, Some(200));
@@ -665,7 +689,15 @@ Content-Length: 0\r\n\
     #[test]
     fn non_sip_data() {
         let msg = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let result = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 80, 80, TransportProto::Tcp);
+        let result = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            80,
+            80,
+            TransportProto::Tcp,
+        );
         assert!(result.is_err());
     }
 
@@ -695,7 +727,15 @@ Content-Length: 0\r\n\
 
     #[test]
     fn empty_data_returns_error() {
-        let result = parse_sip(b"", ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp);
+        let result = parse_sip(
+            b"",
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        );
         assert!(result.is_err());
     }
 
@@ -757,8 +797,16 @@ Via: SIP/2.0/UDP host.example.com\r\n\
 Content-Length: 0\r\n\
 \r\n";
 
-        let sip = parse_sip(msg, ts(), localhost_v4(), localhost_v4(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse tab-folded header");
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse tab-folded header");
 
         let via = sip.via_headers();
         assert_eq!(via.len(), 1);
@@ -844,11 +892,7 @@ Content-Length: 0\r\n\
         headers.push("Content-Length: 0".to_string());
 
         let header_refs: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
-        let msg = build_sip(
-            "INVITE sip:bob@example.com SIP/2.0",
-            &header_refs,
-            b"",
-        );
+        let msg = build_sip("INVITE sip:bob@example.com SIP/2.0", &header_refs, b"");
 
         let sip = parse_sip(
             &msg,

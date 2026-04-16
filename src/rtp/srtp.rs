@@ -555,8 +555,7 @@ mod tests {
 
         // Derive the session auth key the same way verify_srtp_auth_tag does
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
-                .unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
 
         // Compute the correct auth tag using the derived session auth key
         let auth_portion = packet.clone();
@@ -599,8 +598,7 @@ mod tests {
         packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
-                .unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes());
         let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
@@ -625,8 +623,16 @@ mod tests {
         let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 14, &crypto).unwrap();
 
         // Each label must produce a different key
-        assert_ne!(cipher_key, auth_key[..16], "cipher and auth keys must differ");
-        assert_ne!(cipher_key, salt_key[..14], "cipher and salt keys must differ");
+        assert_ne!(
+            cipher_key,
+            auth_key[..16],
+            "cipher and auth keys must differ"
+        );
+        assert_ne!(
+            cipher_key,
+            salt_key[..14],
+            "cipher and salt keys must differ"
+        );
         assert_ne!(
             &auth_key[..14],
             salt_key.as_slice(),
@@ -680,16 +686,22 @@ mod tests {
         let master_key = vec![0xCC; 16];
         let master_salt = vec![0xDD; 14];
 
-        let cipher_key =
-            derive_session_key(&master_key, &master_salt, 0x00, 20, &crypto).unwrap();
-        let auth_key =
-            derive_session_key(&master_key, &master_salt, 0x01, 20, &crypto).unwrap();
-        let salt_key =
-            derive_session_key(&master_key, &master_salt, 0x02, 20, &crypto).unwrap();
+        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 20, &crypto).unwrap();
+        let auth_key = derive_session_key(&master_key, &master_salt, 0x01, 20, &crypto).unwrap();
+        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 20, &crypto).unwrap();
 
-        assert_ne!(cipher_key, auth_key, "label 0x00 and 0x01 must produce different keys");
-        assert_ne!(cipher_key, salt_key, "label 0x00 and 0x02 must produce different keys");
-        assert_ne!(auth_key, salt_key, "label 0x01 and 0x02 must produce different keys");
+        assert_ne!(
+            cipher_key, auth_key,
+            "label 0x00 and 0x01 must produce different keys"
+        );
+        assert_ne!(
+            cipher_key, salt_key,
+            "label 0x00 and 0x02 must produce different keys"
+        );
+        assert_ne!(
+            auth_key, salt_key,
+            "label 0x01 and 0x02 must produce different keys"
+        );
     }
 
     #[cfg(feature = "tls")]
@@ -719,8 +731,7 @@ mod tests {
 
         // Derive the session auth key and compute the correct tag
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto)
-                .unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
 
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes()); // ROC=0
@@ -731,6 +742,9 @@ mod tests {
         packet.extend_from_slice(auth_tag);
 
         let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
-        assert!(result, "Auth tag computed with derived session key should verify");
+        assert!(
+            result,
+            "Auth tag computed with derived session key should verify"
+        );
     }
 }

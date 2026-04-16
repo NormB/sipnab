@@ -147,7 +147,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse")
+        parse_sip(
+            &raw,
+            ts(),
+            scanner_ip(),
+            local_ip(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse")
     }
 
     fn make_options() -> SipMessage {
@@ -163,7 +172,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse")
+        parse_sip(
+            &raw,
+            ts(),
+            scanner_ip(),
+            local_ip(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse")
     }
 
     #[test]
@@ -244,8 +262,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        let msg =
-            parse_sip(&raw, ts(), scanner_ip(), local_ip(), 5060, 5060, TransportProto::Udp).expect("parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            scanner_ip(),
+            local_ip(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
         assert!(build_scanner_response(&msg, 200).is_none());
     }
 

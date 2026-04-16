@@ -222,8 +222,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     fn make_error_response() -> SipMessage {
@@ -238,8 +246,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse response")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse response")
     }
 
     #[test]
@@ -308,8 +324,16 @@ mod tests {
             ],
             body,
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         let opts = OutputOptions {
             color: ColorMode::Never,

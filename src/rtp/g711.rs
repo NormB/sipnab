@@ -163,10 +163,10 @@ mod tests {
         let input = [0xFF, 0x80, 0x00, 0x7F];
         let pcm = decode_frame(G711Codec::Ulaw, &input);
         assert_eq!(pcm.len(), 4);
-        assert_eq!(pcm[0], 0);       // silence
-        assert_eq!(pcm[1], 32124);   // max positive
-        assert_eq!(pcm[2], -32124);  // max negative
-        assert_eq!(pcm[3], 0);       // near-silence
+        assert_eq!(pcm[0], 0); // silence
+        assert_eq!(pcm[1], 32124); // max positive
+        assert_eq!(pcm[2], -32124); // max negative
+        assert_eq!(pcm[3], 0); // near-silence
     }
 
     #[test]
@@ -174,10 +174,10 @@ mod tests {
         let input = [0xD5, 0x55, 0x80, 0x00];
         let pcm = decode_frame(G711Codec::Alaw, &input);
         assert_eq!(pcm.len(), 4);
-        assert_eq!(pcm[0], -8);     // near-silence
-        assert_eq!(pcm[1], 8);      // near-silence (opposite polarity)
-        assert_eq!(pcm[2], -5504);  // negative value
-        assert_eq!(pcm[3], 5504);   // positive value
+        assert_eq!(pcm[0], -8); // near-silence
+        assert_eq!(pcm[1], 8); // near-silence (opposite polarity)
+        assert_eq!(pcm[2], -5504); // negative value
+        assert_eq!(pcm[3], 5504); // positive value
     }
 
     #[test]

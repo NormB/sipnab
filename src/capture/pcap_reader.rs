@@ -51,12 +51,23 @@ impl<'a> ClassicReader<'a> {
         self.offset += 16;
 
         let end = self.offset.checked_add(incl_len)?;
-        if end > self.data.len() { return None; }
+        if end > self.data.len() {
+            return None;
+        }
         let data = self.data[self.offset..end].to_vec();
         self.offset = end;
 
-        let ts_usec = if self.nanoseconds { ts_usec / 1000 } else { ts_usec };
-        Some(PcapPacket { timestamp_secs: ts_sec, timestamp_usecs: ts_usec, data, orig_len })
+        let ts_usec = if self.nanoseconds {
+            ts_usec / 1000
+        } else {
+            ts_usec
+        };
+        Some(PcapPacket {
+            timestamp_secs: ts_sec,
+            timestamp_usecs: ts_usec,
+            data,
+            orig_len,
+        })
     }
 }
 
@@ -185,7 +196,8 @@ impl<'a> NgReader<'a> {
             };
 
             // if_tsresol option (code 9)
-            if opt_code == 9 && opt_len >= 1
+            if opt_code == 9
+                && opt_len >= 1
                 && let Some(&tsresol) = self.data.get(pos)
             {
                 if tsresol & 0x80 != 0 {
@@ -199,7 +211,9 @@ impl<'a> NgReader<'a> {
             }
 
             // opt_endofopt (code 0)
-            if opt_code == 0 { break; }
+            if opt_code == 0 {
+                break;
+            }
 
             // Pad to 4-byte boundary
             let padded = opt_len + (4 - (opt_len % 4)) % 4;
@@ -233,7 +247,10 @@ impl<'a> PcapReader<'a> {
                 };
                 Ok(Self {
                     inner: ReaderInner::Classic(ClassicReader {
-                        data, offset: 24, big_endian, nanoseconds,
+                        data,
+                        offset: 24,
+                        big_endian,
+                        nanoseconds,
                     }),
                     link_type,
                 })
@@ -249,7 +266,11 @@ impl<'a> PcapReader<'a> {
                 } else {
                     u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize
                 };
-                let start = if shb_len > 0 && shb_len <= data.len() { shb_len } else { 28 };
+                let start = if shb_len > 0 && shb_len <= data.len() {
+                    shb_len
+                } else {
+                    28
+                };
 
                 Ok(Self {
                     inner: ReaderInner::Ng(NgReader {
@@ -264,8 +285,13 @@ impl<'a> PcapReader<'a> {
             }
 
             // Microsoft Network Monitor format
-            0x55424d47 => bail!("Microsoft Network Monitor (.cap) format is not supported. Convert to pcap with: editcap -F pcap input.cap output.pcap"),
-            _ => bail!("Not a pcap/pcapng file (magic: 0x{:08x}). Supported formats: .pcap, .pcapng, .cap (pcap format)", magic),
+            0x55424d47 => bail!(
+                "Microsoft Network Monitor (.cap) format is not supported. Convert to pcap with: editcap -F pcap input.cap output.pcap"
+            ),
+            _ => bail!(
+                "Not a pcap/pcapng file (magic: 0x{:08x}). Supported formats: .pcap, .pcapng, .cap (pcap format)",
+                magic
+            ),
         }
     }
 }
@@ -303,8 +329,15 @@ mod tests {
         let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
-        assert!(packets.len() > 5, "pcapng should have packets, got {}", packets.len());
-        assert!(packets[0].timestamp_secs > 0, "timestamp should be non-zero");
+        assert!(
+            packets.len() > 5,
+            "pcapng should have packets, got {}",
+            packets.len()
+        );
+        assert!(
+            packets[0].timestamp_secs > 0,
+            "timestamp should be non-zero"
+        );
     }
 
     #[test]
@@ -389,39 +422,120 @@ mod tests {
 
     // -- pcap format files --
 
-    #[test] fn load_asterisk_zfone() { assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10); }
-    #[test] fn load_dtmfsipinfo() { assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1); }
-    #[test] fn load_h263_rtp() { assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1); }
-    #[test] fn load_metasploit() { assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1); }
-    #[test] fn load_rtp_protocol() { assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1); }
-    #[test] fn load_sip_call_g711() { assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100); }
-    #[test] fn load_sip_dtmf2_cap() { assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10); }
-    #[test] fn load_sip_over_tcp() { assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1); }
-    #[test] fn load_sip_proxy() { assert_loads("tests/pcap-samples/sip-proxy.pcap", 1); }
-    #[test] fn load_sip_register() { assert_loads("tests/pcap-samples/sip-register.pcap", 1); }
-    #[test] fn load_sip_rtp_g711() { assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10); }
-    #[test] fn load_sip_rtp_g722() { assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10); }
-    #[test] fn load_sip_rtp_g729a() { assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10); }
-    #[test] fn load_sip_rtp_opus() { assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1); }
-    #[test] fn load_sip_sdp_example() { assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1); }
-    #[test] fn load_rtsp_tcp_cap() { assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1); }
-    #[test] fn load_voipshark_normal() { assert_loads("tests/pcap-samples/voipshark-normal-call.pcap", 100); }
-    #[test] fn load_voipshark_dtmf() { assert_loads("tests/pcap-samples/voipshark-dtmf.pcap", 100); }
-    #[test] fn load_voipshark_srtp() { assert_loads("tests/pcap-samples/voipshark-srtp-call.pcap", 100); }
-    #[test] fn load_voipshark_tls_rtp() { assert_loads("tests/pcap-samples/voipshark-tls-rtp.pcap", 100); }
-    #[test] fn load_voipshark_tls_srtp() { assert_loads("tests/pcap-samples/voipshark-tls-srtp.pcap", 100); }
+    #[test]
+    fn load_asterisk_zfone() {
+        assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10);
+    }
+    #[test]
+    fn load_dtmfsipinfo() {
+        assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1);
+    }
+    #[test]
+    fn load_h263_rtp() {
+        assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1);
+    }
+    #[test]
+    fn load_metasploit() {
+        assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1);
+    }
+    #[test]
+    fn load_rtp_protocol() {
+        assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1);
+    }
+    #[test]
+    fn load_sip_call_g711() {
+        assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100);
+    }
+    #[test]
+    fn load_sip_dtmf2_cap() {
+        assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10);
+    }
+    #[test]
+    fn load_sip_over_tcp() {
+        assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1);
+    }
+    #[test]
+    fn load_sip_proxy() {
+        assert_loads("tests/pcap-samples/sip-proxy.pcap", 1);
+    }
+    #[test]
+    fn load_sip_register() {
+        assert_loads("tests/pcap-samples/sip-register.pcap", 1);
+    }
+    #[test]
+    fn load_sip_rtp_g711() {
+        assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10);
+    }
+    #[test]
+    fn load_sip_rtp_g722() {
+        assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10);
+    }
+    #[test]
+    fn load_sip_rtp_g729a() {
+        assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10);
+    }
+    #[test]
+    fn load_sip_rtp_opus() {
+        assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1);
+    }
+    #[test]
+    fn load_sip_sdp_example() {
+        assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1);
+    }
+    #[test]
+    fn load_rtsp_tcp_cap() {
+        assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1);
+    }
+    #[test]
+    fn load_voipshark_normal() {
+        assert_loads("tests/pcap-samples/voipshark-normal-call.pcap", 100);
+    }
+    #[test]
+    fn load_voipshark_dtmf() {
+        assert_loads("tests/pcap-samples/voipshark-dtmf.pcap", 100);
+    }
+    #[test]
+    fn load_voipshark_srtp() {
+        assert_loads("tests/pcap-samples/voipshark-srtp-call.pcap", 100);
+    }
+    #[test]
+    fn load_voipshark_tls_rtp() {
+        assert_loads("tests/pcap-samples/voipshark-tls-rtp.pcap", 100);
+    }
+    #[test]
+    fn load_voipshark_tls_srtp() {
+        assert_loads("tests/pcap-samples/voipshark-tls-srtp.pcap", 100);
+    }
 
     // -- pcapng format files --
 
-    #[test] fn load_b2bua_pcapng() { assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10); }
-    #[test] fn load_sip_488_pcapng() { assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1); }
-    #[test] fn load_sip_auth_pcapng() { assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1); }
-    #[test] fn load_sip_routing_pcapng() { assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1); }
-    #[test] fn load_sipp_branch_pcapng() { assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100); }
+    #[test]
+    fn load_b2bua_pcapng() {
+        assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10);
+    }
+    #[test]
+    fn load_sip_488_pcapng() {
+        assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1);
+    }
+    #[test]
+    fn load_sip_auth_pcapng() {
+        assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1);
+    }
+    #[test]
+    fn load_sip_routing_pcapng() {
+        assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1);
+    }
+    #[test]
+    fn load_sipp_branch_pcapng() {
+        assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100);
+    }
 
     // -- .cap files (mixed formats) --
 
-    #[test] fn load_http_cap_pcap_format() { assert_loads("tests/pcap-samples/http-example.cap", 1); }
+    #[test]
+    fn load_http_cap_pcap_format() {
+        assert_loads("tests/pcap-samples/http-example.cap", 1);
+    }
 
     #[test]
     fn load_c07_sip_r2_netmon() {
@@ -429,8 +543,14 @@ mod tests {
         let result = PcapReader::new(&data);
         assert!(result.is_err(), "NetMon format should error");
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("Network Monitor"), "Error should mention Network Monitor: {err}");
-        assert!(err.contains("editcap"), "Error should suggest editcap conversion: {err}");
+        assert!(
+            err.contains("Network Monitor"),
+            "Error should mention Network Monitor: {err}"
+        );
+        assert!(
+            err.contains("editcap"),
+            "Error should suggest editcap conversion: {err}"
+        );
     }
 
     // ── Hardening regression tests ───────────────────────────────────
@@ -487,7 +607,13 @@ mod tests {
     }
 
     /// Helper: build a pcapng EPB (Enhanced Packet Block), little-endian.
-    fn build_epb(ts_high: u32, ts_low: u32, captured_len: u32, orig_len: u32, pkt_data: &[u8]) -> Vec<u8> {
+    fn build_epb(
+        ts_high: u32,
+        ts_low: u32,
+        captured_len: u32,
+        orig_len: u32,
+        pkt_data: &[u8],
+    ) -> Vec<u8> {
         let data_padded = if pkt_data.len() % 4 != 0 {
             pkt_data.len() + (4 - pkt_data.len() % 4)
         } else {
@@ -538,7 +664,12 @@ mod tests {
     }
 
     /// Helper: build a classic pcap packet record header (16 bytes, LE).
-    fn build_pcap_packet_header(ts_sec: u32, ts_usec: u32, incl_len: u32, orig_len: u32) -> Vec<u8> {
+    fn build_pcap_packet_header(
+        ts_sec: u32,
+        ts_usec: u32,
+        incl_len: u32,
+        orig_len: u32,
+    ) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&ts_sec.to_le_bytes());
         buf.extend_from_slice(&ts_usec.to_le_bytes());
@@ -556,8 +687,8 @@ mod tests {
 
         // Craft a truncated EPB: write block_type + block_total_len only (8 bytes),
         // claiming total_len = 64, but provide no further data.
-        data.extend_from_slice(&6u32.to_le_bytes());   // block type: EPB
-        data.extend_from_slice(&64u32.to_le_bytes());   // block_total_len = 64
+        data.extend_from_slice(&6u32.to_le_bytes()); // block type: EPB
+        data.extend_from_slice(&64u32.to_le_bytes()); // block_total_len = 64
 
         // Only 8 bytes of the "block" exist — reads at offset+12..+28 must fail gracefully
         let reader = PcapReader::new(&data).unwrap();
@@ -575,7 +706,10 @@ mod tests {
 
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
-        assert!(packets.is_empty(), "huge incl_len should produce no packets");
+        assert!(
+            packets.is_empty(),
+            "huge incl_len should produce no packets"
+        );
     }
 
     #[test]
@@ -589,19 +723,22 @@ mod tests {
         // just large enough for the header (32). The captured_len will exceed
         // the actual data, so it should be skipped.
         let mut epb = Vec::new();
-        epb.extend_from_slice(&6u32.to_le_bytes());           // block type: EPB
-        epb.extend_from_slice(&32u32.to_le_bytes());           // block_total_len = 32
-        epb.extend_from_slice(&0u32.to_le_bytes());            // interface ID
-        epb.extend_from_slice(&0u32.to_le_bytes());            // ts_high
-        epb.extend_from_slice(&0u32.to_le_bytes());            // ts_low
-        epb.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes());   // captured_len (huge)
-        epb.extend_from_slice(&0u32.to_le_bytes());            // orig_len
-        epb.extend_from_slice(&32u32.to_le_bytes());           // trailing block_total_len
+        epb.extend_from_slice(&6u32.to_le_bytes()); // block type: EPB
+        epb.extend_from_slice(&32u32.to_le_bytes()); // block_total_len = 32
+        epb.extend_from_slice(&0u32.to_le_bytes()); // interface ID
+        epb.extend_from_slice(&0u32.to_le_bytes()); // ts_high
+        epb.extend_from_slice(&0u32.to_le_bytes()); // ts_low
+        epb.extend_from_slice(&0xFFFFFFFFu32.to_le_bytes()); // captured_len (huge)
+        epb.extend_from_slice(&0u32.to_le_bytes()); // orig_len
+        epb.extend_from_slice(&32u32.to_le_bytes()); // trailing block_total_len
         data.extend_from_slice(&epb);
 
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
-        assert!(packets.is_empty(), "huge captured_len EPB should produce no packets");
+        assert!(
+            packets.is_empty(),
+            "huge captured_len EPB should produce no packets"
+        );
     }
 
     #[test]
@@ -631,7 +768,11 @@ mod tests {
         let reader = PcapReader::new(&data).unwrap();
         let packets: Vec<_> = reader.collect();
         // Should produce exactly one packet without panicking
-        assert_eq!(packets.len(), 1, "should parse the EPB even with overflowed tsresol");
+        assert_eq!(
+            packets.len(),
+            1,
+            "should parse the EPB even with overflowed tsresol"
+        );
         assert_eq!(packets[0].data.len(), 16);
         // Timestamp may be clamped/weird, but must be finite and not cause panic
         // (the division by u64::MAX yields 0 for ts_sec, which is fine)

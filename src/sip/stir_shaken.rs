@@ -327,9 +327,7 @@ mod tests {
     fn iat_stale_past() {
         // 2 minutes ago — well outside the 60s window
         let stale = chrono::Utc::now().timestamp() - 120;
-        let payload = format!(
-            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {stale}}}"#,
-        );
+        let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {stale}}}"#,);
         let header = build_identity_header(&payload);
         let info = parse_identity_header(&header).expect("should parse");
 
@@ -340,9 +338,7 @@ mod tests {
     fn iat_stale_future() {
         // 2 minutes in the future — also outside the 60s window
         let future = chrono::Utc::now().timestamp() + 120;
-        let payload = format!(
-            r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {future}}}"#,
-        );
+        let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {future}}}"#,);
         let header = build_identity_header(&payload);
         let info = parse_identity_header(&header).expect("should parse");
 

@@ -300,8 +300,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
         SipDialog::new(&msg).expect("should create dialog")
     }
 

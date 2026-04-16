@@ -125,7 +125,9 @@ impl SipDialog {
     pub fn new(msg: &SipMessage) -> Option<Self> {
         let call_id = msg.call_id()?.to_string();
         let method = if msg.is_request {
-            msg.method.clone().unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
+            msg.method
+                .clone()
+                .unwrap_or_else(|| SipMethod::parse("UNKNOWN"))
         } else {
             // For responses, derive the method from CSeq
             msg.cseq()
@@ -346,8 +348,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     fn make_response(status: u16, reason: &str, cseq_method: &str) -> SipMessage {
@@ -362,8 +372,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse response")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse response")
     }
 
     fn make_request(method: &str) -> SipMessage {
@@ -378,8 +396,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse request")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse request")
     }
 
     #[test]
@@ -460,8 +486,16 @@ mod tests {
             ],
             b"",
         );
-        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse REGISTER");
+        let register = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REGISTER");
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
         assert_eq!(dialog.state, DialogState::Trying);
@@ -485,8 +519,16 @@ mod tests {
             ],
             b"",
         );
-        let register = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse REGISTER");
+        let register = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REGISTER");
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
 
@@ -509,8 +551,16 @@ mod tests {
             ],
             b"",
         );
-        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse SUBSCRIBE");
+        let subscribe = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SUBSCRIBE");
 
         let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
         assert_eq!(dialog.state, DialogState::Pending);
@@ -534,8 +584,16 @@ mod tests {
             ],
             b"",
         );
-        let subscribe = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse SUBSCRIBE");
+        let subscribe = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SUBSCRIBE");
 
         let mut dialog = SipDialog::new(&subscribe).expect("should create dialog");
         assert_eq!(dialog.state, DialogState::Pending);
@@ -582,8 +640,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         assert!(SipDialog::new(&msg).is_none());
     }
@@ -614,8 +680,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse REFER")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REFER")
     }
 
     fn make_notify_terminated() -> SipMessage {
@@ -631,8 +705,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse NOTIFY")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse NOTIFY")
     }
 
     fn make_notify_active() -> SipMessage {
@@ -648,8 +730,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse NOTIFY")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse NOTIFY")
     }
 
     #[test]

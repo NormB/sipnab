@@ -9,9 +9,9 @@ use std::net::IpAddr;
 
 use chrono::{DateTime, Utc};
 
-use crate::capture::parse::TransportProto;
 use super::method::SipMethod;
 use super::sdp::{self, SdpSession};
+use crate::capture::parse::TransportProto;
 
 /// A single SIP header: name (normalized to long form) and value.
 #[derive(Debug, Clone, PartialEq, Eq)]

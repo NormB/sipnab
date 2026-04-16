@@ -726,8 +726,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
         SipDialog::new(&msg).expect("should create dialog")
     }
 
@@ -1006,8 +1014,16 @@ mod tests {
             ],
             b"",
         );
-        let fail_msg = parse_sip(&raw_503, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse 503");
+        let fail_msg = parse_sip(
+            &raw_503,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse 503");
         crate::sip::dialog::update_state(&mut dialog, &fail_msg);
         assert_eq!(*dialog.state(), DialogState::Failed);
         let filter = FilterExpr::parse("state == 'Failed'").expect("should parse");

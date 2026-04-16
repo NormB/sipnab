@@ -185,7 +185,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("parse")
+        parse_sip(
+            &raw,
+            ts(),
+            src,
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse")
     }
 
     #[test]
@@ -252,8 +261,16 @@ mod tests {
             ],
             b"",
         );
-        let resp =
-            parse_sip(&raw, ts(), localhost(), attacker_ip(), 5060, 5060, TransportProto::Udp).expect("parse");
+        let resp = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            attacker_ip(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
         detector.check(&resp);
 
         // Verify the attacker's state includes the auth failure

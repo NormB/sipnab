@@ -338,7 +338,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), src, localhost(), 5060, 5060, TransportProto::Udp).expect("should parse")
+        parse_sip(
+            &raw,
+            ts(),
+            src,
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse")
     }
 
     fn make_dialog_from_msg(msg: &SipMessage) -> SipDialog {
@@ -461,8 +470,16 @@ mod tests {
             ],
             b"",
         );
-        let msg =
-            parse_sip(&raw, ts(), attacker_ip(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            attacker_ip(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
         let dialog = make_dialog_from_msg(&msg);
 
         assert!(

@@ -56,6 +56,9 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 # Audio playback (feature-gated)
 rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
 
+# Opus codec (pure Rust, no FFI — always available for WAV export)
+opus-decoder = "0.1"
+
 # Phase 5: Metrics & API
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }

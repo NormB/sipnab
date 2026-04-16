@@ -1011,7 +1011,12 @@ mod tests {
         let ts = Utc.timestamp_opt(1700000000, 500_000_000).single().unwrap();
         let payload = b"INVITE sip:alice@example.com SIP/2.0\r\n\r\n";
 
-        let endpoint = HepEndpoint { src_addr: src, dst_addr: dst, src_port: 5060, dst_port: 5061 };
+        let endpoint = HepEndpoint {
+            src_addr: src,
+            dst_addr: dst,
+            src_port: 5060,
+            dst_port: 5061,
+        };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 
@@ -1035,7 +1040,12 @@ mod tests {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
         let payload = b"BYE sip:test@example.com SIP/2.0\r\n\r\n";
 
-        let endpoint = HepEndpoint { src_addr: src, dst_addr: dst, src_port: 6000, dst_port: 7000 };
+        let endpoint = HepEndpoint {
+            src_addr: src,
+            dst_addr: dst,
+            src_port: 6000,
+            dst_port: 7000,
+        };
         let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 

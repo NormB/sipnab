@@ -222,7 +222,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 401")
     }
 
     fn make_401_no_qop() -> SipMessage {
@@ -238,7 +247,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 401")
     }
 
     fn make_401_good() -> SipMessage {
@@ -254,7 +272,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse 401")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 401")
     }
 
     #[test]
@@ -333,8 +360,16 @@ mod tests {
             ],
             b"",
         );
-        let msg =
-            parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
 
         let alerts = detector.check(&msg);
         assert!(

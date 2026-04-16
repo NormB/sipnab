@@ -14,10 +14,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 
+use super::TimestampMode;
 use crate::sip::dialog::DialogState;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::FilterExpr;
-use super::TimestampMode;
 
 // ── Sort column ─────────────────────────────────────────────────────
 
@@ -328,9 +328,7 @@ pub fn render_call_list(
         .add_modifier(Modifier::BOLD);
 
     // Determine which column indices are visible
-    let vis_indices: Vec<usize> = (0..10)
-        .filter(|&i| state.visible_columns[i])
-        .collect();
+    let vis_indices: Vec<usize> = (0..10).filter(|&i| state.visible_columns[i]).collect();
 
     // Build header cells with sort indicator on the active sort column
     let sort_col_idx = state.sort_column_index();
@@ -367,10 +365,7 @@ pub fn render_call_list(
     // Dynamic column widths based on available terminal width,
     // filtered to only include visible columns.
     let all_widths = compute_column_widths(table_area.width);
-    let widths: Vec<Constraint> = vis_indices
-        .iter()
-        .map(|&i| all_widths[i])
-        .collect();
+    let widths: Vec<Constraint> = vis_indices.iter().map(|&i| all_widths[i]).collect();
 
     let mut dialogs: Vec<_> = if let Some(filter) = filter {
         store
@@ -388,11 +383,21 @@ pub fn render_call_list(
         dialogs.retain(|d| {
             d.call_id.to_ascii_lowercase().contains(&q)
                 || d.method.as_str().to_ascii_lowercase().contains(&q)
-                || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
-                || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                || d.from_user
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&q)
+                || d.to_user
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .contains(&q)
                 || d.src_addr.to_string().contains(&q)
                 || d.dst_addr.to_string().contains(&q)
-                || state_display_str(d.state()).to_ascii_lowercase().contains(&q)
+                || state_display_str(d.state())
+                    .to_ascii_lowercase()
+                    .contains(&q)
                 || d.messages.iter().any(|msg| {
                     String::from_utf8_lossy(&msg.raw)
                         .to_ascii_lowercase()
@@ -469,9 +474,7 @@ pub fn render_call_list(
 
             // Date column formatting based on timestamp mode
             let date_str = match timestamp_mode {
-                TimestampMode::Absolute => {
-                    dialog.created_at.format("%H:%M:%S").to_string()
-                }
+                TimestampMode::Absolute => dialog.created_at.format("%H:%M:%S").to_string(),
                 TimestampMode::DeltaPrev => {
                     // Delta from previous dialog in the sorted list
                     let full_idx = scroll_offset + vis_idx;
@@ -485,12 +488,10 @@ pub fn render_call_list(
                         None => "+0.000s".to_string(),
                     }
                 }
-                TimestampMode::DeltaFirst => {
-                    match first_ts {
-                        Some(first) => format_delta(dialog.created_at - first),
-                        None => "+0.000s".to_string(),
-                    }
-                }
+                TimestampMode::DeltaFirst => match first_ts {
+                    Some(first) => format_delta(dialog.created_at - first),
+                    None => "+0.000s".to_string(),
+                },
                 TimestampMode::Scaled => {
                     // Scaled mode uses delta-prev in the call list
                     let full_idx = scroll_offset + vis_idx;
@@ -536,10 +537,8 @@ pub fn render_call_list(
                 Cell::from(Span::raw(date_str)),
                 Cell::from(Span::raw(pdd)),
             ];
-            let visible_cells: Vec<Cell> = vis_indices
-                .iter()
-                .map(|&i| all_cells[i].clone())
-                .collect();
+            let visible_cells: Vec<Cell> =
+                vis_indices.iter().map(|&i| all_cells[i].clone()).collect();
             let row = Row::new(visible_cells);
 
             // Row style based on state
@@ -701,7 +700,12 @@ fn sort_dialogs(
 }
 
 /// Render the column selector popup as a centered overlay.
-pub fn render_column_selector(frame: &mut Frame, area: Rect, state: &CallListState, theme: &super::Theme) {
+pub fn render_column_selector(
+    frame: &mut Frame,
+    area: Rect,
+    state: &CallListState,
+    theme: &super::Theme,
+) {
     let popup_width: u16 = 38;
     let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 5; // columns + borders + footer
     let w = popup_width.min(area.width);

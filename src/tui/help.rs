@@ -116,10 +116,7 @@ fn build_help_lines(theme: &super::Theme) -> Vec<Line<'static>> {
                 let desc_part = trimmed[split_pos..].trim_start();
                 lines.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(
-                        format!("{:<18}", key_part),
-                        Style::default().fg(theme.good),
-                    ),
+                    Span::styled(format!("{:<18}", key_part), Style::default().fg(theme.good)),
                     Span::raw(desc_part.to_string()),
                 ]));
             } else {

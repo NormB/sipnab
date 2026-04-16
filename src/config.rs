@@ -109,7 +109,9 @@ fn warn_unknown_keys(value: &toml::Value) {
         None => return,
     };
 
-    let Some(root_keys) = known.get("") else { return };
+    let Some(root_keys) = known.get("") else {
+        return;
+    };
     for key in table.keys() {
         if !root_keys.contains(&key.as_str()) {
             log::warn!("Unknown config key: {key}");
@@ -398,9 +400,11 @@ pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
         "Tab" | "tab" => Some(KeyCode::Tab),
         "Backspace" | "backspace" => Some(KeyCode::Backspace),
         _ if s.len() == 1 => s.chars().next().map(KeyCode::Char),
-        _ if s.starts_with('F') || s.starts_with('f') => {
-            s[1..].parse::<u8>().ok().filter(|&n| (1..=12).contains(&n)).map(KeyCode::F)
-        }
+        _ if s.starts_with('F') || s.starts_with('f') => s[1..]
+            .parse::<u8>()
+            .ok()
+            .filter(|&n| (1..=12).contains(&n))
+            .map(KeyCode::F),
         _ => {
             log::warn!("Unknown keybinding value: {s:?}");
             None
@@ -521,8 +525,7 @@ impl Config {
     ///
     /// Used by `--dump-config` to show what sipnab would use.
     pub fn dump(&self) -> Result<String, String> {
-        toml::to_string_pretty(self)
-            .map_err(|e| format!("Failed to serialize config: {e}"))
+        toml::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {e}"))
     }
 }
 
