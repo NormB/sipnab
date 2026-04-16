@@ -91,10 +91,7 @@ fn default_duration_is_none() {
 #[test]
 fn default_autostop_is_none() {
     let cli = defaults();
-    assert!(
-        cli.autostop.is_none(),
-        "autostop should be None by default"
-    );
+    assert!(cli.autostop.is_none(), "autostop should be None by default");
 }
 
 #[test]
@@ -366,10 +363,7 @@ fn default_fail2ban_is_false() {
 #[test]
 fn default_group_by_is_none() {
     let cli = defaults();
-    assert!(
-        cli.group_by.is_none(),
-        "group_by should be None by default"
-    );
+    assert!(cli.group_by.is_none(), "group_by should be None by default");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -422,7 +416,10 @@ fn default_rtp_interval() {
 #[test]
 fn default_max_streams() {
     let cli = defaults();
-    assert_eq!(cli.max_streams, 50_000, "default max_streams should be 50000");
+    assert_eq!(
+        cli.max_streams, 50_000,
+        "default max_streams should be 50000"
+    );
 }
 
 #[test]
@@ -537,10 +534,7 @@ fn default_exec_rate_limit() {
 #[test]
 fn default_metrics_is_none() {
     let cli = defaults();
-    assert!(
-        cli.metrics.is_none(),
-        "metrics should be None by default"
-    );
+    assert!(cli.metrics.is_none(), "metrics should be None by default");
 }
 
 #[test]
@@ -561,10 +555,7 @@ fn default_api_is_none() {
 #[test]
 fn default_api_key_is_none() {
     let cli = defaults();
-    assert!(
-        cli.api_key.is_none(),
-        "api_key should be None by default"
-    );
+    assert!(cli.api_key.is_none(), "api_key should be None by default");
 }
 
 #[test]
@@ -588,10 +579,7 @@ fn default_api_tls_key_is_none() {
 #[test]
 fn default_api_max_conn() {
     let cli = defaults();
-    assert_eq!(
-        cli.api_max_conn, 100,
-        "default api_max_conn should be 100"
-    );
+    assert_eq!(cli.api_max_conn, 100, "default api_max_conn should be 100");
 }
 
 #[test]
@@ -606,10 +594,7 @@ fn default_hep_listen_is_none() {
 #[test]
 fn default_hep_send_is_none() {
     let cli = defaults();
-    assert!(
-        cli.hep_send.is_none(),
-        "hep_send should be None by default"
-    );
+    assert!(cli.hep_send.is_none(), "hep_send should be None by default");
 }
 
 #[test]
@@ -649,10 +634,7 @@ fn default_syslog_is_false() {
 #[test]
 fn default_tls_key_is_none() {
     let cli = defaults();
-    assert!(
-        cli.tls_key.is_none(),
-        "tls_key should be None by default"
-    );
+    assert!(cli.tls_key.is_none(), "tls_key should be None by default");
 }
 
 #[test]
