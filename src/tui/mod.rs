@@ -821,6 +821,9 @@ pub struct App {
     pub theme: Theme,
     /// Resolved key bindings.
     pub keymap: Keymap,
+    /// Audio player for RTP stream playback (lazily initialized).
+    #[cfg(feature = "audio")]
+    audio_player: Option<crate::rtp::playback::AudioPlayer>,
 }
 
 impl App {
@@ -884,6 +887,8 @@ impl App {
             paused_flag: Arc::new(AtomicBool::new(false)),
             theme,
             keymap,
+            #[cfg(feature = "audio")]
+            audio_player: None,
         }
     }
 
@@ -1585,7 +1590,16 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
             }
             View::MessageDiff { .. } => vec![("Esc", "Back")],
             View::StreamList => vec![("Esc", "Back"), ("Enter", "Detail"), ("Tab", "Calls"), ("F7", "Filter")],
-            View::StreamDetail(_) => vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page")],
+            View::StreamDetail(_) => {
+                #[cfg(feature = "audio")]
+                {
+                    vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page"), ("P", "Play")]
+                }
+                #[cfg(not(feature = "audio"))]
+                {
+                    vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page")]
+                }
+            }
             _ => vec![("Esc", "Back")],
         }
     };
@@ -2733,7 +2747,41 @@ fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
                 None => View::StreamList,
             };
         }
+        #[cfg(feature = "audio")]
+        KeyCode::Char('P') => {
+            handle_stream_detail_play(app);
+        }
         _ => {}
+    }
+}
+
+/// Handle Shift+P audio playback toggle in stream detail view.
+#[cfg(feature = "audio")]
+fn handle_stream_detail_play(app: &mut App) {
+    // Initialize player lazily on first use
+    if app.audio_player.is_none() {
+        match crate::rtp::playback::AudioPlayer::new() {
+            Ok(player) => app.audio_player = Some(player),
+            Err(e) => {
+                app.status_error = Some(format!("Audio init failed: {e}"));
+                return;
+            }
+        }
+    }
+
+    if let Some(player) = &app.audio_player {
+        if player.is_playing() {
+            player.stop();
+            app.status_error = Some("Playback stopped".to_string());
+        } else if let View::StreamDetail(ref key) = app.current_view {
+            let store = app.stream_store.read();
+            if let Some(stream) = store.get(key) {
+                match player.play_stream(stream) {
+                    Ok(msg) => app.status_error = Some(msg),
+                    Err(e) => app.status_error = Some(format!("Playback error: {e}")),
+                }
+            }
+        }
     }
 }
 
