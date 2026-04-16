@@ -467,7 +467,7 @@ fn scanner_detector_caps_behavioral_entries() {
             TransportProto::Udp,
         )
         .expect("parse");
-        detector.check(&msg);
+        let _ = detector.check(&msg);
     }
 
     // We can't directly inspect the private behavioral HashMap, but the
@@ -505,7 +505,7 @@ fn fraud_detector_caps_call_pattern_entries() {
         )
         .expect("parse");
         let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        detector.check(&msg, &dialog);
+        let _ = detector.check(&msg, &dialog);
     }
     // No panic or OOM -- the cap held.
 }
@@ -540,7 +540,7 @@ fn reg_flood_detector_caps_source_entries() {
             TransportProto::Udp,
         )
         .expect("parse");
-        detector.check(&msg);
+        let _ = detector.check(&msg);
     }
     // No panic or OOM -- the cap held.
 }
