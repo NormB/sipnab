@@ -1,8 +1,8 @@
 //! Real-time audio playback from RTP stream payload buffers.
 //!
-//! Decodes G.711 audio, resamples to the system output rate, and plays
-//! through the default audio device via rodio. The resampler uses simple
-//! linear interpolation which is perfectly adequate for 8 kHz voice preview.
+//! Decodes G.711 and Opus audio, resamples to the system output rate, and
+//! plays through the default audio device via rodio. G.711 is resampled
+//! from 8 kHz; Opus decodes natively at 48 kHz (no resampling needed).
 
 use std::num::NonZero;
 
@@ -13,6 +13,7 @@ use rodio::buffer::SamplesBuffer;
 use rodio::stream::MixerDeviceSink;
 
 use super::g711::{G711Codec, decode_frame};
+use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
 
 /// Audio player wrapping a rodio output device and player.
@@ -35,41 +36,34 @@ impl AudioPlayer {
     }
 
     /// Play audio from an RTP stream's payload buffer.
+    ///
+    /// Supports G.711 (PCMU/PCMA) and Opus codecs. G.711 is decoded at
+    /// 8 kHz and resampled to 48 kHz; Opus decodes natively at 48 kHz.
     pub fn play_stream(&self, stream: &RtpStream) -> Result<String> {
-        let codec = match stream.codec.as_deref() {
-            Some("PCMU") => G711Codec::Ulaw,
-            Some("PCMA") => G711Codec::Alaw,
-            Some(other) => bail!("Unsupported codec for playback: {other}"),
-            None => bail!("Unknown codec"),
-        };
-
         if stream.payload_buffer.is_empty() {
             bail!("No audio payload captured");
         }
 
-        // Decode all G.711 frames to PCM f32
-        let mut pcm_8k: Vec<f32> = Vec::new();
-        for (_ts, payload) in &stream.payload_buffer {
-            let decoded = decode_frame(codec, payload);
-            for sample in decoded {
-                pcm_8k.push(sample as f32 / 32768.0);
-            }
-        }
-
-        // Resample 8 kHz -> 48 kHz using linear interpolation
-        // (perfectly adequate for voice preview quality)
         let output_rate = 48000u32;
-        let ratio = output_rate as f64 / stream.clock_rate as f64;
-        let output_len = (pcm_8k.len() as f64 * ratio) as usize;
-        let mut pcm_48k = Vec::with_capacity(output_len);
-        for i in 0..output_len {
-            let src_pos = i as f64 / ratio;
-            let src_idx = src_pos as usize;
-            let frac = (src_pos - src_idx as f64) as f32;
-            let s0 = pcm_8k.get(src_idx).copied().unwrap_or(0.0);
-            let s1 = pcm_8k.get(src_idx + 1).copied().unwrap_or(s0);
-            pcm_48k.push(s0 + (s1 - s0) * frac);
-        }
+        let (pcm_48k, codec_label) = match stream.codec.as_deref() {
+            Some("PCMU") => {
+                let pcm = decode_g711_to_f32(G711Codec::Ulaw, stream);
+                let resampled = resample_f32(&pcm, stream.clock_rate, output_rate);
+                (resampled, "mu-law")
+            }
+            Some("PCMA") => {
+                let pcm = decode_g711_to_f32(G711Codec::Alaw, stream);
+                let resampled = resample_f32(&pcm, stream.clock_rate, output_rate);
+                (resampled, "A-law")
+            }
+            Some(name) if name.eq_ignore_ascii_case("opus") => {
+                let pcm = decode_opus_to_f32(stream)?;
+                // Opus already at 48 kHz, no resampling needed
+                (pcm, "Opus")
+            }
+            Some(other) => bail!("Unsupported codec for playback: {other}"),
+            None => bail!("Unknown codec"),
+        };
 
         let duration_secs = pcm_48k.len() as f64 / output_rate as f64;
         let channels = match NonZero::new(1u16) {
@@ -86,10 +80,7 @@ impl AudioPlayer {
         Ok(format!(
             "Playing {:.1}s of {} audio ({} frames)",
             duration_secs,
-            match codec {
-                G711Codec::Ulaw => "mu-law",
-                G711Codec::Alaw => "A-law",
-            },
+            codec_label,
             stream.payload_buffer.len(),
         ))
     }
@@ -103,4 +94,54 @@ impl AudioPlayer {
     pub fn is_playing(&self) -> bool {
         !self.player.empty()
     }
+}
+
+/// Decode G.711 frames to f32 PCM in [-1.0, 1.0] range.
+fn decode_g711_to_f32(codec: G711Codec, stream: &RtpStream) -> Vec<f32> {
+    let mut pcm = Vec::new();
+    for (_ts, payload) in &stream.payload_buffer {
+        let decoded = decode_frame(codec, payload);
+        for sample in decoded {
+            pcm.push(sample as f32 / 32768.0);
+        }
+    }
+    pcm
+}
+
+/// Decode Opus frames to f32 PCM in [-1.0, 1.0] range at 48 kHz.
+fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
+    let mut decoder = OpusStreamDecoder::new(48000, 1)?;
+    let mut pcm = Vec::new();
+    for (_ts, payload) in &stream.payload_buffer {
+        match decoder.decode_frame(payload) {
+            Ok(samples) => {
+                for sample in samples {
+                    pcm.push(sample as f32 / 32768.0);
+                }
+            }
+            Err(e) => {
+                log::debug!("Opus decode error (skipping frame): {e}");
+            }
+        }
+    }
+    Ok(pcm)
+}
+
+/// Resample f32 PCM using linear interpolation.
+fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || samples.is_empty() {
+        return samples.to_vec();
+    }
+    let ratio = to_rate as f64 / from_rate as f64;
+    let output_len = (samples.len() as f64 * ratio) as usize;
+    let mut out = Vec::with_capacity(output_len);
+    for i in 0..output_len {
+        let src_pos = i as f64 / ratio;
+        let src_idx = src_pos as usize;
+        let frac = (src_pos - src_idx as f64) as f32;
+        let s0 = samples.get(src_idx).copied().unwrap_or(0.0);
+        let s1 = samples.get(src_idx + 1).copied().unwrap_or(s0);
+        out.push(s0 + (s1 - s0) * frac);
+    }
+    out
 }

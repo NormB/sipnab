@@ -7,7 +7,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
 /// Write PCM samples to a WAV file.
 ///

@@ -38,7 +38,9 @@ pub struct FlowDisplayOptions<'a> {
 
 // Re-export everything that external code uses.
 pub use arrows::truncate;
-pub use prepare::{prepare_messages, delta_style, format_message_label, format_sdp_codecs, message_style};
+pub use prepare::{
+    delta_style, format_message_label, format_sdp_codecs, message_style, prepare_messages,
+};
 pub use render::{
     build_call_flow_lines, build_call_flow_lines_with_options, build_call_flow_lines_with_width,
     build_extended_flow_lines, render_call_flow, render_call_flow_direct,

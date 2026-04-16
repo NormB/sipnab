@@ -53,11 +53,10 @@ pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
             let end_pos = abs_pos + sipnab_field.len();
 
             // Check word boundary: character before must not be a field char
-            let before_ok = abs_pos == 0
-                || !is_field_char(result.as_bytes()[abs_pos - 1] as char);
+            let before_ok = abs_pos == 0 || !is_field_char(result.as_bytes()[abs_pos - 1] as char);
             // Character after must not be a field char
-            let after_ok = end_pos >= result.len()
-                || !is_field_char(result.as_bytes()[end_pos] as char);
+            let after_ok =
+                end_pos >= result.len() || !is_field_char(result.as_bytes()[end_pos] as char);
 
             if before_ok && after_ok {
                 new_result.push_str(&result[search_from..abs_pos]);
@@ -119,12 +118,8 @@ mod tests {
 
     #[test]
     fn translate_compound_filter() {
-        let result =
-            dsl_to_wireshark("from.user == '1001' AND src_ip == '10.0.0.1'").unwrap();
-        assert_eq!(
-            result,
-            "sip.from.user == '1001' AND ip.src == '10.0.0.1'"
-        );
+        let result = dsl_to_wireshark("from.user == '1001' AND src_ip == '10.0.0.1'").unwrap();
+        assert_eq!(result, "sip.from.user == '1001' AND ip.src == '10.0.0.1'");
     }
 
     #[test]

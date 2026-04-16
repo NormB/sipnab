@@ -234,8 +234,16 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE with SDP")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE with SDP")
     }
 
     fn make_200_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
@@ -251,8 +259,16 @@ mod tests {
             ],
             sdp_body,
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse 200 OK with SDP")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse 200 OK with SDP")
     }
 
     fn sendrecv_sdp(codec: &str, addr: &str, port: u16) -> Vec<u8> {
@@ -443,8 +459,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, base_ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         track_sdp(&mut timeline, &msg);
         assert!(timeline.is_empty());
@@ -485,8 +509,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse REFER");
+        let msg = parse_sip(
+            &raw,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REFER");
 
         track_transfer(&mut timeline, &msg);
         assert_eq!(timeline.len(), 1);
@@ -515,8 +547,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE");
+        let msg = parse_sip(
+            &raw,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE");
 
         track_transfer(&mut timeline, &msg);
         assert!(timeline.is_empty());

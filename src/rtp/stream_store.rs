@@ -15,6 +15,7 @@ use super::parser::RtpHeader;
 use super::rtcp::{ReceptionReport, RtcpPacket};
 use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
+use crate::sip::sdp::SdpMedia;
 
 /// Central store for all tracked RTP streams.
 ///
@@ -66,7 +67,7 @@ impl StreamStore {
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
             // Capture G.711 payload for audio export (ring buffer, capped)
-            if matches!(stream.codec.as_deref(), Some("PCMU") | Some("PCMA")) {
+            if is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
                 if payload_start < parsed.payload.len() {
                     let audio = parsed.payload[payload_start..].to_vec();
@@ -81,7 +82,7 @@ impl StreamStore {
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
             // Capture G.711 payload for audio export (first packet)
-            if matches!(stream.codec.as_deref(), Some("PCMU") | Some("PCMA")) {
+            if is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
                 if payload_start < parsed.payload.len() {
                     let audio = parsed.payload[payload_start..].to_vec();
@@ -106,7 +107,11 @@ impl StreamStore {
 
             for report in reports {
                 // Find any stream with this SSRC and update it
-                if let Some(stream) = self.streams.values_mut().find(|s| s.key.ssrc == report.ssrc) {
+                if let Some(stream) = self
+                    .streams
+                    .values_mut()
+                    .find(|s| s.key.ssrc == report.ssrc)
+                {
                     stream.jitter = report.jitter as f64;
                     stream.lost_packets = u64::from(report.cumulative_lost);
                 }
@@ -129,6 +134,47 @@ impl StreamStore {
             if (src_match || dst_match) && stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(call_id.to_string());
                 stream.orphaned = false;
+            }
+        }
+    }
+
+    /// Link streams to a SIP dialog and enrich codec/clock_rate from SDP.
+    ///
+    /// Like [`link_to_dialog`], but also propagates codec name and clock rate
+    /// from SDP `a=rtpmap` entries to streams with dynamic payload types.
+    /// This enables audio capture and export for codecs like Opus that use
+    /// dynamic PT numbers (96-127).
+    pub fn link_to_dialog_with_sdp(
+        &mut self,
+        media_addr: IpAddr,
+        media_port: u16,
+        call_id: &str,
+        media: &SdpMedia,
+    ) {
+        for stream in self.streams.values_mut() {
+            let src_match =
+                stream.key.src.ip() == media_addr && stream.key.src.port() == media_port;
+            let dst_match =
+                stream.key.dst.ip() == media_addr && stream.key.dst.port() == media_port;
+
+            if src_match || dst_match {
+                if stream.associated_dialog.is_none() {
+                    stream.associated_dialog = Some(call_id.to_string());
+                    stream.orphaned = false;
+                }
+
+                // Enrich codec info from SDP rtpmap for dynamic payload types.
+                // Only update if the stream's codec is unknown (dynamic PT with
+                // no static mapping).
+                if stream.codec.is_none()
+                    && let Some(rtpmap) = media
+                        .rtpmap
+                        .iter()
+                        .find(|rm| rm.payload_type == stream.payload_type)
+                {
+                    stream.codec = Some(rtpmap.encoding.clone());
+                    stream.clock_rate = rtpmap.clock_rate;
+                }
             }
         }
     }
@@ -188,6 +234,17 @@ impl StreamStore {
             self.streams.shift_remove_index(0);
         }
     }
+}
+
+/// Check if a codec supports audio payload capture for playback/export.
+///
+/// G.711 (PCMU/PCMA) and Opus are supported. Opus codec names are
+/// case-insensitive per SDP convention (`opus`, `OPUS`, `Opus`).
+fn is_audio_capturable(codec: Option<&str>) -> bool {
+    matches!(
+        codec,
+        Some("PCMU") | Some("PCMA") | Some("opus") | Some("OPUS") | Some("Opus")
+    )
 }
 
 #[cfg(test)]

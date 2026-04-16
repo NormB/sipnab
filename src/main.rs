@@ -12,7 +12,9 @@ use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::websocket;
-use sipnab::capture::{self, CaptureConfig, CaptureSource, PcapExportMode, ParsedPacket, PcapWriter};
+use sipnab::capture::{
+    self, CaptureConfig, CaptureSource, ParsedPacket, PcapExportMode, PcapWriter,
+};
 use sipnab::cli::{self, Cli};
 use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
@@ -143,7 +145,10 @@ fn main() {
     if let Some(v) = loaded.config.limits.max_header_line {
         sipnab::sip::parser::set_parser_limits(
             v as usize,
-            loaded.config.limits.max_headers_per_message
+            loaded
+                .config
+                .limits
+                .max_headers_per_message
                 .map(|h| h as usize)
                 .unwrap_or(sipnab::sip::parser::DEFAULT_MAX_HEADERS_PER_MESSAGE),
         );
@@ -413,7 +418,10 @@ fn main() {
 
     // 16. Chroot BEFORE dropping privileges (chroot requires root).
     // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
-    let effective_chroot = cli.chroot.as_ref().or(loaded.config.privilege.chroot.as_ref());
+    let effective_chroot = cli
+        .chroot
+        .as_ref()
+        .or(loaded.config.privilege.chroot.as_ref());
     if let Some(ref chroot_dir) = effective_chroot
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
@@ -422,8 +430,12 @@ fn main() {
     }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-    let effective_user = cli.user.as_deref().or(loaded.config.privilege.user.as_deref());
-    let effective_no_priv_drop = cli.no_priv_drop || loaded.config.privilege.no_priv_drop.unwrap_or(false);
+    let effective_user = cli
+        .user
+        .as_deref()
+        .or(loaded.config.privilege.user.as_deref());
+    let effective_no_priv_drop =
+        cli.no_priv_drop || loaded.config.privilege.no_priv_drop.unwrap_or(false);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
         log::error!("Failed to drop privileges: {e}");
         std::process::exit(1);
@@ -769,9 +781,8 @@ fn run_tui_mode(
                         Ok(mut w) => {
                             // Write DSB with keylog content if mode requires it
                             if let Some(ref keylog_path) = cli_clone.keylog
-                                && let Err(e) = w.maybe_write_keylog_dsb(
-                                    std::path::Path::new(keylog_path),
-                                )
+                                && let Err(e) =
+                                    w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                             {
                                 log::warn!("Failed to write DSB: {e}");
                             }
@@ -886,22 +897,25 @@ fn tui_process_packet(
             effective_transport,
         ) && !cli.no_dialog
         {
-            // Extract SDP link info before acquiring any lock
-            let sdp_links: Vec<(std::net::IpAddr, u16, String)> = if let Some(sdp) = sip_msg.sdp()
-                && let Some(call_id) = sip_msg.call_id()
-            {
-                sdp.media
-                    .iter()
-                    .filter_map(|media| {
-                        let addr_str = sip::sdp::effective_address(media, &sdp);
-                        addr_str
-                            .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                            .map(|ip| (ip, media.port, call_id.to_string()))
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
+            // Extract SDP link info before acquiring any lock.
+            // Clone media descriptions so codec/clock_rate can be propagated
+            // to RTP streams with dynamic payload types (e.g., Opus).
+            let sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> =
+                if let Some(sdp) = sip_msg.sdp()
+                    && let Some(call_id) = sip_msg.call_id()
+                {
+                    sdp.media
+                        .iter()
+                        .filter_map(|media| {
+                            let addr_str = sip::sdp::effective_address(media, &sdp);
+                            addr_str
+                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                                .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
 
             // Quick write to dialog store, then release
             {
@@ -911,8 +925,8 @@ fn tui_process_packet(
             // Link SDP media endpoints to RTP streams (separate lock)
             if !sdp_links.is_empty() {
                 let mut ss = stream_store.write();
-                for (ip, port, call_id) in &sdp_links {
-                    ss.link_to_dialog(*ip, *port, call_id);
+                for (ip, port, call_id, media) in &sdp_links {
+                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
         }
@@ -968,8 +982,8 @@ fn run_batch_mode(
     // 16. Open output writer if -O is specified
     let mut writer: Option<PcapWriter> = None;
     let use_pcapng = cli.pcapng;
-    let export_mode = PcapExportMode::parse_mode(&cli.pcap_export_mode)
-        .unwrap_or(PcapExportMode::Decrypted);
+    let export_mode =
+        PcapExportMode::parse_mode(&cli.pcap_export_mode).unwrap_or(PcapExportMode::Decrypted);
 
     // 16a. Initialize HEP sender if --hep-send is set
     #[cfg(feature = "hep")]
@@ -1060,7 +1074,10 @@ fn run_batch_mode(
             }
         })
         .collect();
-    let effective_alert_exec = cli.alert_exec.clone().or(config.security.alert_exec.clone());
+    let effective_alert_exec = cli
+        .alert_exec
+        .clone()
+        .or(config.security.alert_exec.clone());
     let mut alert_engine = AlertEngine::new(alert_rules, effective_alert_exec);
     if cli.syslog {
         alert_engine.set_syslog(true);
@@ -1161,7 +1178,9 @@ fn run_batch_mode(
         // Periodic sweep of reassembly state and orphan detection (every 5 seconds)
         if last_sweep.elapsed() >= sweep_interval {
             processor.sweep();
-            proc_state.stream_store.mark_orphaned(std::time::Duration::from_secs(30));
+            proc_state
+                .stream_store
+                .mark_orphaned(std::time::Duration::from_secs(30));
             let security_max_age = std::time::Duration::from_secs(120);
             if let Some(det) = engines.scanner.as_mut() {
                 det.sweep(security_max_age);
@@ -1362,7 +1381,11 @@ fn run_batch_mode(
 
     // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
     if cli.wireshark {
-        let call_ids: Vec<&str> = proc_state.dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+        let call_ids: Vec<&str> = proc_state
+            .dialog_store
+            .iter()
+            .map(|d| d.call_id.as_str())
+            .collect();
         if call_ids.is_empty() {
             eprintln!("No SIP dialogs to generate Wireshark filter for.");
         } else {
@@ -1382,7 +1405,11 @@ fn run_batch_mode(
             println!("tshark -r {} -Y '{}' -V", input_file, _tshark_expr);
         } else if cli.input.is_some() {
             // Generate tshark command from tracked dialogs (only when --wireshark + -I)
-            let call_ids: Vec<&str> = proc_state.dialog_store.iter().map(|d| d.call_id.as_str()).collect();
+            let call_ids: Vec<&str> = proc_state
+                .dialog_store
+                .iter()
+                .map(|d| d.call_id.as_str())
+                .collect();
             if !call_ids.is_empty() {
                 let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
                 let filter_parts: Vec<String> = call_ids
@@ -1402,7 +1429,8 @@ fn run_batch_mode(
     if !cli.quiet {
         log::info!(
             "sipnab: {total_count} packets captured, {} SIP messages, {} RTP streams",
-            counters.sip_count, counters.rtp_count,
+            counters.sip_count,
+            counters.rtp_count,
         );
 
         // Helpful guidance when no SIP traffic was found
@@ -1482,8 +1510,7 @@ fn process_parsed_packet(
     // Try SIP detection first — only on packets matching the SIP port range.
     // RTP uses dynamic ports negotiated via SDP and is detected below without
     // port filtering.
-    if port_in_range(pp.src_port, pp.dst_port, portrange)
-        && sip::is_sip_message(effective_payload)
+    if port_in_range(pp.src_port, pp.dst_port, portrange) && sip::is_sip_message(effective_payload)
     {
         let effective_transport = match pp.transport {
             TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
@@ -1544,7 +1571,8 @@ fn process_parsed_packet(
                             if let Some(addr) = addr_str
                                 && let Ok(ip) = addr.parse::<std::net::IpAddr>()
                             {
-                                stream_store.link_to_dialog(ip, media.port, call_id);
+                                stream_store
+                                    .link_to_dialog_with_sdp(ip, media.port, call_id, media);
                             }
                         }
                     }
@@ -2138,7 +2166,7 @@ fn mirror_to_shared_stores(
                     if let Some(addr) = addr_str
                         && let Ok(ip) = addr.parse::<std::net::IpAddr>()
                     {
-                        ss.link_to_dialog(ip, media.port, call_id);
+                        ss.link_to_dialog_with_sdp(ip, media.port, call_id, media);
                     }
                 }
             }

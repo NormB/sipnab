@@ -14,16 +14,14 @@ use crate::sip::dialog_store::DialogStore;
 
 use crate::tui::ColorMode;
 use crate::tui::SdpDisplayMode;
-use crate::tui::TimestampMode;
 use crate::tui::Theme;
+use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
 use super::arrows::{format_arrow, format_arrow_left, format_arrow_right, truncate};
-use super::prepare::{
-    delta_style, format_message_label, format_sdp_codecs, message_style,
-};
+use super::prepare::{delta_style, format_message_label, format_sdp_codecs, message_style};
 use super::{
-    FormattedMessage, Participant, SelectionState, ENDPOINT_COL_WIDTH, MIN_ARROW_WIDTH,
+    ENDPOINT_COL_WIDTH, FormattedMessage, MIN_ARROW_WIDTH, Participant, SelectionState,
     TS_COL_WIDTH,
 };
 
@@ -112,13 +110,8 @@ pub fn build_call_flow_lines_with_options(
         .max(MIN_ARROW_WIDTH);
     let mc = dialog.messages.len();
     let ft = dialog.messages[0].timestamp;
-    let mut lines = format_ladder_with_options(
-        &dialog.messages,
-        ft,
-        dialog.timing.pdd_ms(),
-        aw,
-        opts,
-    );
+    let mut lines =
+        format_ladder_with_options(&dialog.messages, ft, dialog.timing.pdd_ms(), aw, opts);
     let correlated = store.find_correlated(call_id);
     if !correlated.is_empty() {
         lines.push(Line::from(""));
@@ -187,9 +180,7 @@ pub fn build_extended_flow_lines(
         selected_msg: None,
         ..opts.clone()
     };
-    lines.extend(format_ladder_with_options(
-        &owned, ft, None, aw, &ext_opts,
-    ));
+    lines.extend(format_ladder_with_options(&owned, ft, None, aw, &ext_opts));
     Some((mc, lines))
 }
 
@@ -407,9 +398,7 @@ pub fn render_call_flow_direct(
 
             // Spacer rows: only render pipes and optional gap timestamp
             if msg.is_spacer {
-                let spacer_style = Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::DIM);
+                let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
                 // Timestamp (gap label on first spacer, blank otherwise)
                 if !msg.timestamp.trim().is_empty() {
                     buf.set_string(ts_col, y, &msg.timestamp, spacer_style);
@@ -622,8 +611,7 @@ pub fn render_message_detail(
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
-            let para =
-                Paragraph::new("Dialog not found.").style(Style::default().fg(theme.muted));
+            let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.muted));
             frame.render_widget(para, area);
             return;
         }
@@ -644,7 +632,11 @@ pub fn render_message_detail(
         selected_msg + 1,
         dialog.messages.len(),
         if msg.is_request {
-            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
+            msg.method
+                .as_ref()
+                .map(|m| m.as_str())
+                .unwrap_or("?")
+                .to_string()
         } else {
             format!(
                 "{} {}",
@@ -1053,7 +1045,8 @@ fn format_ladder_with_options(
             if !msg.is_request && msg.status_code == Some(200) {
                 in_call = true;
             }
-            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call {
+            if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call
+            {
                 lines.push(Line::from(Span::styled(
                     format!(
                         "{}\u{2500}\u{2500}\u{2500}\u{2500} RTP stream active \u{2500}\u{2500}\u{2500}\u{2500}",

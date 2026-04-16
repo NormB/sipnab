@@ -23,8 +23,8 @@ pub fn render_stream_detail(
     let stream = match store.get(key) {
         Some(s) => s,
         None => {
-            let msg = Paragraph::new("Stream no longer available.")
-                .style(Style::default().fg(theme.bad));
+            let msg =
+                Paragraph::new("Stream no longer available.").style(Style::default().fg(theme.bad));
             frame.render_widget(msg, area);
             return;
         }
@@ -39,25 +39,34 @@ pub fn render_stream_detail(
     let clock = stream.clock_rate;
 
     lines.push(Line::from(vec![
-        Span::styled("RTP Stream Detail", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "RTP Stream Detail",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  SSRC: "),
         Span::styled(&ssrc, Style::default().fg(theme.header)),
         Span::raw("  Codec: "),
-        Span::styled(format!("{codec_str}/{clock}"), Style::default().fg(theme.header)),
+        Span::styled(
+            format!("{codec_str}/{clock}"),
+            Style::default().fg(theme.header),
+        ),
         Span::raw(format!("  PT: {pt}")),
     ]));
 
     lines.push(Line::from(vec![
-        Span::styled(stream.key.src.to_string(), Style::default().fg(theme.accent)),
-        Span::raw(" → "),
-        Span::styled(stream.key.dst.to_string(), Style::default().fg(theme.accent)),
-        Span::raw("  Dialog: "),
-        Span::raw(
-            stream
-                .associated_dialog
-                .as_deref()
-                .unwrap_or("(orphaned)"),
+        Span::styled(
+            stream.key.src.to_string(),
+            Style::default().fg(theme.accent),
         ),
+        Span::raw(" → "),
+        Span::styled(
+            stream.key.dst.to_string(),
+            Style::default().fg(theme.accent),
+        ),
+        Span::raw("  Dialog: "),
+        Span::raw(stream.associated_dialog.as_deref().unwrap_or("(orphaned)")),
     ]));
 
     lines.push(Line::raw(""));
@@ -74,7 +83,9 @@ pub fn render_stream_detail(
     let mos_style = if mos >= 4.0 {
         Style::default().fg(theme.good).add_modifier(Modifier::BOLD)
     } else if mos >= 3.0 {
-        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(theme.warning)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.bad).add_modifier(Modifier::BOLD)
     };
@@ -95,7 +106,10 @@ pub fn render_stream_detail(
         Span::raw("  MOS: "),
         Span::styled(format!("{mos:.1} ({mos_label})"), mos_style),
         Span::raw("    Jitter: "),
-        Span::styled(format!("{:.1}ms", stream.jitter), jitter_style(stream.jitter, theme)),
+        Span::styled(
+            format!("{:.1}ms", stream.jitter),
+            jitter_style(stream.jitter, theme),
+        ),
         Span::raw("    Loss: "),
         Span::styled(format!("{loss_pct:.2}%"), loss_style(loss_pct, theme)),
     ]));
@@ -113,7 +127,10 @@ pub fn render_stream_detail(
 
     lines.push(Line::from(vec![
         Span::raw("  Packets: "),
-        Span::styled(stream.packet_count.to_string(), Style::default().fg(theme.header)),
+        Span::styled(
+            stream.packet_count.to_string(),
+            Style::default().fg(theme.header),
+        ),
         Span::raw("    Octets: "),
         Span::raw(stream.octet_count.to_string()),
         Span::raw("    Duration: "),
@@ -178,10 +195,7 @@ pub fn render_stream_detail(
             } else {
                 theme.bad
             };
-            mos_spans.push(Span::styled(
-                String::from(ch),
-                Style::default().fg(color),
-            ));
+            mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         mos_spans.push(Span::styled(
             format!("  (avg: {mos_avg:.1})"),
@@ -209,10 +223,7 @@ pub fn render_stream_detail(
             } else {
                 theme.bad
             };
-            jitter_spans.push(Span::styled(
-                String::from(ch),
-                Style::default().fg(color),
-            ));
+            jitter_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         jitter_spans.push(Span::styled(
             format!("  (avg: {jitter_avg:.1}ms)"),
@@ -239,8 +250,14 @@ pub fn render_stream_detail(
 
             lines.push(Line::from(vec![
                 Span::raw(format!("  +{offset:<8}s ")),
-                Span::styled(format!("{:<10.1}ms ", qi.jitter_ms), jitter_style(qi.jitter_ms, theme)),
-                Span::styled(format!("{:<10.2}% ", qi.loss_pct), loss_style(qi.loss_pct, theme)),
+                Span::styled(
+                    format!("{:<10.1}ms ", qi.jitter_ms),
+                    jitter_style(qi.jitter_ms, theme),
+                ),
+                Span::styled(
+                    format!("{:<10.2}% ", qi.loss_pct),
+                    loss_style(qi.loss_pct, theme),
+                ),
                 Span::raw(format!("{:<10} ", qi.packets)),
                 Span::styled(
                     format!("{qi_mos:.1}"),
@@ -261,30 +278,38 @@ pub fn render_stream_detail(
     if stream.lost_packets > 0
         && let Some(bga) = stream.burst_gap_analysis()
     {
-            lines.push(section_header("Burst/Gap Analysis", theme));
-            lines.push(Line::from(vec![
-                Span::raw("  Bursts: "),
-                Span::styled(bga.burst_count.to_string(), Style::default().fg(theme.warning)),
-                Span::raw("    Burst duration: "),
-                Span::raw(format!("{:.0}ms", bga.burst_duration_ms)),
-                Span::raw("    Gap duration: "),
-                Span::raw(format!("{:.1}s", bga.gap_duration_ms / 1000.0)),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("  Burst loss rate: "),
-                Span::styled(format!("{:.1}%", bga.burst_loss_rate * 100.0), Style::default().fg(theme.bad)),
-                Span::raw("    Gap loss rate: "),
-                Span::raw(format!("{:.1}%", bga.gap_loss_rate * 100.0)),
-                Span::raw("    Pattern: "),
-                Span::styled(
-                    if bga.is_bursty { "Bursty" } else { "Random" },
-                    if bga.is_bursty {
-                        Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.muted)
-                    },
-                ),
-            ]));
+        lines.push(section_header("Burst/Gap Analysis", theme));
+        lines.push(Line::from(vec![
+            Span::raw("  Bursts: "),
+            Span::styled(
+                bga.burst_count.to_string(),
+                Style::default().fg(theme.warning),
+            ),
+            Span::raw("    Burst duration: "),
+            Span::raw(format!("{:.0}ms", bga.burst_duration_ms)),
+            Span::raw("    Gap duration: "),
+            Span::raw(format!("{:.1}s", bga.gap_duration_ms / 1000.0)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("  Burst loss rate: "),
+            Span::styled(
+                format!("{:.1}%", bga.burst_loss_rate * 100.0),
+                Style::default().fg(theme.bad),
+            ),
+            Span::raw("    Gap loss rate: "),
+            Span::raw(format!("{:.1}%", bga.gap_loss_rate * 100.0)),
+            Span::raw("    Pattern: "),
+            Span::styled(
+                if bga.is_bursty { "Bursty" } else { "Random" },
+                if bga.is_bursty {
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                },
+            ),
+        ]));
         lines.push(Line::raw(""));
     }
 
@@ -336,10 +361,7 @@ fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            "─".repeat(50),
-            Style::default().fg(theme.border),
-        ),
+        Span::styled("─".repeat(50), Style::default().fg(theme.border)),
     ])
 }
 
@@ -423,10 +445,10 @@ mod tests {
     #[test]
     fn jitter_to_block_boundaries() {
         // Minimal jitter
-        assert_eq!(jitter_to_block(0.0), '\u{2581}');  // ▁
-        assert_eq!(jitter_to_block(4.9), '\u{2581}');  // ▁ (just under 5ms boundary)
+        assert_eq!(jitter_to_block(0.0), '\u{2581}'); // ▁
+        assert_eq!(jitter_to_block(4.9), '\u{2581}'); // ▁ (just under 5ms boundary)
         // Rising jitter levels
-        assert_eq!(jitter_to_block(5.0), '\u{2582}');  // ▂ (boundary)
+        assert_eq!(jitter_to_block(5.0), '\u{2582}'); // ▂ (boundary)
         assert_eq!(jitter_to_block(10.0), '\u{2583}'); // ▃
         assert_eq!(jitter_to_block(15.0), '\u{2584}'); // ▄
         assert_eq!(jitter_to_block(20.0), '\u{2585}'); // ▅

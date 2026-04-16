@@ -96,7 +96,12 @@ pub fn render_raw_message(
 /// - Header values: default
 /// - SDP body: dimmed/italic
 /// - Search matches: highlighted background
-fn highlight_sip_message<'a>(info: &str, raw_text: &str, search_query: &str, theme: &super::Theme) -> Vec<Line<'a>> {
+fn highlight_sip_message<'a>(
+    info: &str,
+    raw_text: &str,
+    search_query: &str,
+    theme: &super::Theme,
+) -> Vec<Line<'a>> {
     let mut lines: Vec<Line<'a>> = Vec::new();
 
     // Info line
@@ -216,10 +221,7 @@ fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> L
         if start > last_end {
             spans.push(Span::styled(line[last_end..start].to_string(), base_style));
         }
-        spans.push(Span::styled(
-            line[start..end].to_string(),
-            highlight_style,
-        ));
+        spans.push(Span::styled(line[start..end].to_string(), highlight_style));
         last_end = end;
     }
 

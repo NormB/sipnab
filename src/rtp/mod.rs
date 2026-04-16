@@ -26,6 +26,7 @@ pub mod diagnosis;
 pub mod dtmf;
 pub mod g711;
 pub mod heuristic;
+pub mod opus_decode;
 pub mod parser;
 #[cfg(feature = "audio")]
 pub mod playback;

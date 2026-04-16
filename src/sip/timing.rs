@@ -100,7 +100,9 @@ impl DialogTiming {
 pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method: &SipMethod) {
     if msg.is_request {
         match msg.method.as_ref() {
-            Some(SipMethod::Invite) if *dialog_method == SipMethod::Invite && timing.invite_sent.is_none() => {
+            Some(SipMethod::Invite)
+                if *dialog_method == SipMethod::Invite && timing.invite_sent.is_none() =>
+            {
                 timing.invite_sent = Some(msg.timestamp);
             }
             Some(SipMethod::Bye) if timing.bye_sent.is_none() => {
@@ -173,8 +175,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE")
     }
 
     fn make_response(
@@ -194,8 +204,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse response")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse response")
     }
 
     fn make_bye(ts: DateTime<Utc>) -> SipMessage {
@@ -210,7 +228,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp).expect("should parse BYE")
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse BYE")
     }
 
     #[test]
@@ -349,8 +376,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t0, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-                .expect("should parse REFER")
+            parse_sip(
+                &raw,
+                t0,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse REFER")
         };
         update_timing(&mut timing, &refer, &SipMethod::Invite);
         assert_eq!(timing.refer_sent_at, Some(t0));
@@ -370,8 +405,16 @@ mod tests {
                 ],
                 b"",
             );
-            parse_sip(&raw, t1, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-                .expect("should parse NOTIFY")
+            parse_sip(
+                &raw,
+                t1,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse NOTIFY")
         };
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t1));

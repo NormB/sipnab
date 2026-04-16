@@ -7,12 +7,7 @@
 /// Format an arrow between two column positions.
 ///
 /// Returns the arrow string and the x-position to start drawing.
-pub fn format_arrow(
-    label: &str,
-    src_x: u16,
-    dst_x: u16,
-    is_response: bool,
-) -> (String, u16) {
+pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (String, u16) {
     let goes_right = dst_x > src_x;
     let start = src_x.min(dst_x) + 1; // after the source pipe
     let end = src_x.max(dst_x); // at the dest pipe (arrow head lands here)

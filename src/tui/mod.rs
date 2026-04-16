@@ -954,7 +954,14 @@ pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Result<()> {
-    run_tui_with_pause(dialog_store, stream_store, None, Theme::default(), Keymap::default(), None)
+    run_tui_with_pause(
+        dialog_store,
+        stream_store,
+        None,
+        Theme::default(),
+        Keymap::default(),
+        None,
+    )
 }
 
 /// Run the TUI with an optional shared pause flag.
@@ -1059,14 +1066,18 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         app.cached_dialog_count = store.len();
         app.cached_displayed_count = {
             let mut count = if let Some(ref filter) = app.active_filter {
-                store.iter().filter(|d| filter.matches_dialog(d, &[])).count()
+                store
+                    .iter()
+                    .filter(|d| filter.matches_dialog(d, &[]))
+                    .count()
             } else {
                 store.len()
             };
             // Apply text search filter to the count
             if !app.search_query.is_empty() {
                 let q = app.search_query.to_ascii_lowercase();
-                count = store.iter()
+                count = store
+                    .iter()
                     .filter(|d| {
                         if let Some(ref filter) = app.active_filter
                             && !filter.matches_dialog(d, &[])
@@ -1075,11 +1086,21 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         }
                         d.call_id.to_ascii_lowercase().contains(&q)
                             || d.method.as_str().to_ascii_lowercase().contains(&q)
-                            || d.from_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
-                            || d.to_user.as_deref().unwrap_or("").to_ascii_lowercase().contains(&q)
+                            || d.from_user
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&q)
+                            || d.to_user
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&q)
                             || d.src_addr.to_string().contains(&q)
                             || d.dst_addr.to_string().contains(&q)
-                            || call_list::state_display_str(d.state()).to_ascii_lowercase().contains(&q)
+                            || call_list::state_display_str(d.state())
+                                .to_ascii_lowercase()
+                                .contains(&q)
                             || d.messages.iter().any(|msg| {
                                 String::from_utf8_lossy(&msg.raw)
                                     .to_ascii_lowercase()
@@ -1119,13 +1140,24 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         }
         View::StreamList => {
             if let Some(store) = app.stream_store.try_read() {
-                stream_list::render_stream_list(frame, main_area, &mut app.stream_list, &store, &app.theme);
+                stream_list::render_stream_list(
+                    frame,
+                    main_area,
+                    &mut app.stream_list,
+                    &store,
+                    &app.theme,
+                );
             }
         }
         View::StreamDetail(key) => {
             if let Some(store) = app.stream_store.try_read() {
                 stream_detail::render_stream_detail(
-                    frame, main_area, key, &store, app.stream_detail_scroll, &app.theme,
+                    frame,
+                    main_area,
+                    key,
+                    &store,
+                    app.stream_detail_scroll,
+                    &app.theme,
                 );
             }
         }
@@ -1282,7 +1314,9 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             msg2_idx,
         } => {
             if let Some(store) = app.dialog_store.try_read() {
-                render_message_diff(frame, main_area, &store, call_id, *msg1_idx, *msg2_idx, &app.theme);
+                render_message_diff(
+                    frame, main_area, &store, call_id, *msg1_idx, *msg2_idx, &app.theme,
+                );
             }
         }
         View::Help => {
@@ -1294,7 +1328,13 @@ fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     }
 
     // F-key bar (sngrep-style, context-sensitive) at bottom
-    render_fkey_bar(frame, fkey_area, &app.current_view, &app.active_popup, &app.theme);
+    render_fkey_bar(
+        frame,
+        fkey_area,
+        &app.current_view,
+        &app.active_popup,
+        &app.theme,
+    );
 
     // Render popup overlay on top of everything (if active)
     if let Some(popup) = &app.active_popup.clone() {
@@ -1368,7 +1408,9 @@ fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         spans.push(Span::raw(padded[mode_end..ps].to_string()));
         spans.push(Span::styled(
             "PAUSED".to_string(),
-            Style::default().fg(app.theme.bad).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.bad)
+                .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::raw(padded[ps + 6..].to_string()));
     } else {
@@ -1421,8 +1463,8 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         let content = format!(" {}", err);
         // Use bright foreground + bold for high contrast on the dark status bar.
         // Actual errors (containing "error" or "fail") get the bad/red color.
-        let is_error = err.to_ascii_lowercase().contains("error")
-            || err.to_ascii_lowercase().contains("fail");
+        let is_error =
+            err.to_ascii_lowercase().contains("error") || err.to_ascii_lowercase().contains("fail");
         let fg = if is_error {
             app.theme.bad
         } else {
@@ -1474,7 +1516,13 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 /// Key names in bold white, labels in default. Full-width dark background.
 /// The bar is context-sensitive based on the current view. On narrow
 /// terminals, lower-priority items are dropped to avoid truncation.
-fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &Option<Popup>, theme: &Theme) {
+fn render_fkey_bar(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    view: &View,
+    popup: &Option<Popup>,
+    theme: &Theme,
+) {
     let key_style = Style::default()
         .fg(theme.foreground)
         .add_modifier(Modifier::BOLD);
@@ -1589,11 +1637,21 @@ fn render_fkey_bar(frame: &mut ratatui::Frame, area: Rect, view: &View, popup: &
                 }
             }
             View::MessageDiff { .. } => vec![("Esc", "Back")],
-            View::StreamList => vec![("Esc", "Back"), ("Enter", "Detail"), ("Tab", "Calls"), ("F7", "Filter")],
+            View::StreamList => vec![
+                ("Esc", "Back"),
+                ("Enter", "Detail"),
+                ("Tab", "Calls"),
+                ("F7", "Filter"),
+            ],
             View::StreamDetail(_) => {
                 #[cfg(feature = "audio")]
                 {
-                    vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page"), ("P", "Play")]
+                    vec![
+                        ("Esc", "Back"),
+                        ("j/k", "Scroll"),
+                        ("PgUp/Dn", "Page"),
+                        ("P", "Play"),
+                    ]
                 }
                 #[cfg(not(feature = "audio"))]
                 {
@@ -1652,11 +1710,17 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 
     // Build vertical format list grouped by category.
     let all_formats = [
-        SaveFormat::Pcap, SaveFormat::PcapNg,          // Packet Capture
-        SaveFormat::Txt, SaveFormat::SippXml,           // SIP-Specific
-        SaveFormat::Json, SaveFormat::Ndjson, SaveFormat::Csv, // Structured
-        SaveFormat::Html, SaveFormat::Markdown,          // Reporting
-        SaveFormat::Wav, SaveFormat::RtpJson,            // RTP/Media
+        SaveFormat::Pcap,
+        SaveFormat::PcapNg, // Packet Capture
+        SaveFormat::Txt,
+        SaveFormat::SippXml, // SIP-Specific
+        SaveFormat::Json,
+        SaveFormat::Ndjson,
+        SaveFormat::Csv, // Structured
+        SaveFormat::Html,
+        SaveFormat::Markdown, // Reporting
+        SaveFormat::Wav,
+        SaveFormat::RtpJson, // RTP/Media
     ];
     let mut fmt_lines: Vec<Line<'_>> = Vec::new();
     let mut last_cat = "";
@@ -1669,14 +1733,18 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             }
             fmt_lines.push(Line::from(Span::styled(
                 format!("  {cat}"),
-                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
             )));
             last_cat = cat;
         }
         let is_selected = *fmt == app.save_format;
         let marker = if is_selected { "\u{25B8} " } else { "  " }; // ▸ or space
         let label_style = if is_selected {
-            Style::default().fg(app.theme.foreground).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(app.theme.foreground)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.theme.muted)
         };
@@ -1743,11 +1811,7 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         }
     }
 
-    let mut lines: Vec<Line<'_>> = vec![
-        Line::from(""),
-        Line::from(path_spans),
-        Line::from(""),
-    ];
+    let mut lines: Vec<Line<'_>> = vec![Line::from(""), Line::from(path_spans), Line::from("")];
     lines.extend(fmt_lines);
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -2008,7 +2072,12 @@ fn render_filter_text_field(
 /// |                                                    |
 /// +----------------------------------------------------+
 /// ```
-fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDialogState, theme: &Theme) {
+fn render_filter_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    state: &FilterDialogState,
+    theme: &Theme,
+) {
     let popup_width: u16 = 56;
     let popup_height: u16 = 19;
     let popup_area = centered_popup(area, popup_width, popup_height);
@@ -2114,9 +2183,7 @@ fn render_filter_popup(frame: &mut ratatui::Frame, area: Rect, state: &FilterDia
     let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
 
     let filter_style = if filter_focused {
-        Style::default()
-            .fg(theme.good)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.good).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.foreground)
     };
@@ -2176,7 +2243,11 @@ fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             TimestampMode::DeltaFirst => "DeltaFirst",
             TimestampMode::Scaled => "Scaled",
         },
-        if app.call_list.autoscroll { "ON" } else { "OFF" },
+        if app.call_list.autoscroll {
+            "ON"
+        } else {
+            "OFF"
+        },
         if app.raw_preview { "ON" } else { "OFF" },
         match app.sdp_display_mode {
             SdpDisplayMode::None => "None",
@@ -2804,7 +2875,11 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 .try_read()
                 .map(|s| {
                     let base = s.get(call_id).map(|d| d.messages.len()).unwrap_or(0);
-                    let correlated: usize = s.find_correlated(call_id).iter().map(|d| d.messages.len()).sum();
+                    let correlated: usize = s
+                        .find_correlated(call_id)
+                        .iter()
+                        .map(|d| d.messages.len())
+                        .sum();
                     base + correlated
                 })
                 .unwrap_or(0)
@@ -2900,8 +2975,7 @@ fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         app.stream_detail_return_view = Some(app.current_view.clone());
                         app.current_view = View::StreamDetail(key);
                     } else {
-                        app.status_error =
-                            Some("No RTP streams found".to_string());
+                        app.status_error = Some("No RTP streams found".to_string());
                     }
                 } else {
                     // Open full-screen raw message view for the selected message
@@ -3751,7 +3825,14 @@ fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> String {
     }
 
     // Create writer (DLT_EN10MB = 1)
-    let mut writer = match crate::capture::PcapWriter::with_format(&path, 1, None, None, pcapng, crate::capture::PcapExportMode::Raw) {
+    let mut writer = match crate::capture::PcapWriter::with_format(
+        &path,
+        1,
+        None,
+        None,
+        pcapng,
+        crate::capture::PcapExportMode::Raw,
+    ) {
         Ok(w) => w,
         Err(e) => return format!("Save failed: {e}"),
     };
@@ -3823,29 +3904,30 @@ fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     let store = app.dialog_store.read();
 
     // Collect messages based on current view
-    let messages: Vec<crate::sip::SipMessage> = if let View::CallFlow(ref call_id) = app.current_view {
-        // In call flow: export just this dialog (+ correlated if extended)
-        if app.extended_flow {
-            if let Some(dialog) = store.get(call_id) {
-                let mut all: Vec<&crate::sip::SipMessage> = dialog.messages.iter().collect();
-                let correlated = store.find_correlated(call_id);
-                for leg in &correlated {
-                    all.extend(leg.messages.iter());
+    let messages: Vec<crate::sip::SipMessage> =
+        if let View::CallFlow(ref call_id) = app.current_view {
+            // In call flow: export just this dialog (+ correlated if extended)
+            if app.extended_flow {
+                if let Some(dialog) = store.get(call_id) {
+                    let mut all: Vec<&crate::sip::SipMessage> = dialog.messages.iter().collect();
+                    let correlated = store.find_correlated(call_id);
+                    for leg in &correlated {
+                        all.extend(leg.messages.iter());
+                    }
+                    all.sort_by_key(|m| m.timestamp);
+                    all.into_iter().cloned().collect()
+                } else {
+                    Vec::new()
                 }
-                all.sort_by_key(|m| m.timestamp);
-                all.into_iter().cloned().collect()
+            } else if let Some(dialog) = store.get(call_id) {
+                dialog.messages.clone()
             } else {
                 Vec::new()
             }
-        } else if let Some(dialog) = store.get(call_id) {
-            dialog.messages.clone()
         } else {
-            Vec::new()
-        }
-    } else {
-        // In call list: export all dialogs
-        store.iter().flat_map(|d| d.messages.clone()).collect()
-    };
+            // In call list: export all dialogs
+            store.iter().flat_map(|d| d.messages.clone()).collect()
+        };
 
     if messages.is_empty() {
         return "No messages to export".to_string();
@@ -4004,7 +4086,9 @@ fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
             .collect();
 
         let duration_ms = d.timing.bye_sent.and_then(|bye| {
-            d.timing.answered_at.map(|ans| (bye - ans).num_milliseconds())
+            d.timing
+                .answered_at
+                .map(|ans| (bye - ans).num_milliseconds())
         });
         let timing = serde_json::json!({
             "pdd_ms": d.timing.pdd_ms(),
@@ -4055,7 +4139,9 @@ fn save_to_csv_path(app: &App, path_str: &str) -> String {
         return "No dialogs to save".to_string();
     }
 
-    let mut output = String::from("call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,setup_ms,created_at\n");
+    let mut output = String::from(
+        "call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,setup_ms,created_at\n",
+    );
 
     for d in &dialogs {
         let row = format!(
@@ -4070,7 +4156,8 @@ fn save_to_csv_path(app: &App, path_str: &str) -> String {
             d.messages.len(),
             d.timing.pdd_ms().map_or(String::new(), |v| v.to_string()),
             d.timing.setup_ms().map_or(String::new(), |v| v.to_string()),
-            d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            d.created_at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         );
         output.push_str(&row);
     }
@@ -4100,7 +4187,8 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     for d in &dialogs {
         md.push_str(&format!(
             "## Dialog: {} ({})\n\n",
-            d.call_id, d.method.as_str(),
+            d.call_id,
+            d.method.as_str(),
         ));
 
         md.push_str("| Field | Value |\n|-------|-------|\n");
@@ -4153,7 +4241,11 @@ fn save_to_markdown_path(app: &App, path_str: &str) -> String {
                     "\u{2190}" // ←
                 };
                 let label = if m.is_request {
-                    m.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
+                    m.method
+                        .as_ref()
+                        .map(|m| m.as_str())
+                        .unwrap_or("?")
+                        .to_string()
                 } else {
                     match (m.status_code, m.reason.as_deref()) {
                         (Some(code), Some(reason)) => format!("{code} {reason}"),
@@ -4264,10 +4356,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
         // Insert pause for gaps > 500ms
         let gap_ms = (m.timestamp - prev_ts).num_milliseconds();
         if gap_ms > 500 {
-            xml.push_str(&format!(
-                "\n  <pause milliseconds=\"{}\"/>\n",
-                gap_ms
-            ));
+            xml.push_str(&format!("\n  <pause milliseconds=\"{}\"/>\n", gap_ms));
         }
         prev_ts = m.timestamp;
 
@@ -4279,14 +4368,19 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
             if is_from_caller {
                 // Caller sends request
                 let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
-                let ruri = m.request_uri.as_deref().unwrap_or("sip:[service]@[remote_ip]:[remote_port]");
+                let ruri = m
+                    .request_uri
+                    .as_deref()
+                    .unwrap_or("sip:[service]@[remote_ip]:[remote_port]");
                 let ruri_sipp = ruri
                     .replace(&m.dst_addr.to_string(), "[remote_ip]")
                     .replace(&m.dst_port.to_string(), "[remote_port]");
 
                 xml.push_str("\n  <send>\n    <![CDATA[\n");
                 xml.push_str(&format!("      {} {} SIP/2.0\r\n", method, ruri_sipp));
-                xml.push_str("      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\r\n");
+                xml.push_str(
+                    "      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]\r\n",
+                );
                 xml.push_str(&format!(
                     "      From: <sip:{}@[local_ip]>;tag=[call_number]\r\n",
                     dialog.from_user.as_deref().unwrap_or("user")
@@ -4308,9 +4402,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
             } else {
                 // Callee sends request (e.g., BYE from remote) — receive it
                 let method = m.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
-                xml.push_str(&format!(
-                    "\n  <recv request=\"{method}\"/>\n"
-                ));
+                xml.push_str(&format!("\n  <recv request=\"{method}\"/>\n"));
             }
         } else {
             // Response
@@ -4329,9 +4421,7 @@ fn save_to_sipp_path(app: &App, path_str: &str) -> String {
                 } else {
                     ""
                 };
-                xml.push_str(&format!(
-                    "\n  <recv response=\"{code}\"{optional}/>\n"
-                ));
+                xml.push_str(&format!("\n  <recv response=\"{code}\"{optional}/>\n"));
             }
         }
     }
@@ -4718,10 +4808,10 @@ mod tests {
         // Verify that a SIP message with a raw payload exceeding 65535 bytes
         // does not panic due to u16 overflow in UDP/IP length fields.
         // The fix uses u16 saturation (unwrap_or(u16::MAX) / saturating_add).
-        use std::net::{IpAddr, Ipv4Addr};
         use crate::capture::parse::TransportProto;
         use crate::sip::SipMessage;
         use chrono::Utc;
+        use std::net::{IpAddr, Ipv4Addr};
 
         let large_body = vec![b'X'; 70_000]; // > u16::MAX (65535)
         let msg = SipMessage {
@@ -4751,6 +4841,10 @@ mod tests {
         // IP total length field (bytes 16-17 of the packet, offset 14+2 into Ethernet)
         let ip_total = u16::from_be_bytes([pkt.data[16], pkt.data[17]]);
         // With saturation, udp_len = u16::MAX and ip_total_len = 20.saturating_add(u16::MAX) = u16::MAX
-        assert_eq!(ip_total, u16::MAX, "IP total length should saturate to u16::MAX");
+        assert_eq!(
+            ip_total,
+            u16::MAX,
+            "IP total length should saturate to u16::MAX"
+        );
     }
 }

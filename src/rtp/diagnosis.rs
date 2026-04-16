@@ -279,7 +279,10 @@ mod tests {
 
         let diag = diagnose_media(&streams, None);
         // With high CN ratio, one_way_audio should NOT be flagged
-        assert!(!diag.one_way_audio, "one_way_audio should be suppressed by comfort noise");
+        assert!(
+            !diag.one_way_audio,
+            "one_way_audio should be suppressed by comfort noise"
+        );
         assert!(
             diag.hints.iter().any(|h| h.contains("comfort noise")),
             "hints should mention comfort noise: {:?}",

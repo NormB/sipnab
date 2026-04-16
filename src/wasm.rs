@@ -53,8 +53,7 @@ impl SipnabSession {
         self.sip_count = 0;
         self.rtp_count = 0;
 
-        let reader =
-            PcapReader::new(data).map_err(|e| JsError::new(&e.to_string()))?;
+        let reader = PcapReader::new(data).map_err(|e| JsError::new(&e.to_string()))?;
         let link_type = reader.link_type as i32;
 
         for pkt in reader {
@@ -86,9 +85,7 @@ impl SipnabSession {
                             self.sip_count += 1;
                         }
                     } else if crate::rtp::is_rtp_packet(&parsed.payload) {
-                        if let Ok(rtp_hdr) =
-                            crate::rtp::parser::parse_rtp_header(&parsed.payload)
-                        {
+                        if let Ok(rtp_hdr) = crate::rtp::parser::parse_rtp_header(&parsed.payload) {
                             self.stream_store
                                 .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
                             self.rtp_count += 1;
@@ -174,8 +171,8 @@ impl SipnabSession {
     /// Apply a filter expression, return matching dialog Call-IDs as JSON array.
     pub fn filter(&self, expr: &str) -> Result<String, JsError> {
         use crate::sip::dsl::FilterExpr;
-        let filter = FilterExpr::parse(expr)
-            .map_err(|e| JsError::new(&format!("Filter error: {e}")))?;
+        let filter =
+            FilterExpr::parse(expr).map_err(|e| JsError::new(&format!("Filter error: {e}")))?;
         let empty_streams: Vec<&crate::rtp::stream::RtpStream> = Vec::new();
         let matching: Vec<&str> = self
             .dialog_store
@@ -193,9 +190,8 @@ impl SipnabSession {
 
     /// Export as CSV.
     pub fn export_csv(&self) -> String {
-        let mut out = String::from(
-            "call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,created_at\n",
-        );
+        let mut out =
+            String::from("call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,created_at\n");
         for d in self.dialog_store.iter() {
             out.push_str(&format!(
                 "{},{},{},{},{},{},{},{},{},{}\n",
@@ -218,24 +214,14 @@ impl SipnabSession {
     pub fn export_mermaid(&self, call_id: &str) -> String {
         if let Some(dialog) = self.dialog_store.get(call_id) {
             let mut out = String::from("sequenceDiagram\n");
-            let first_src_port = dialog
-                .messages
-                .first()
-                .map(|m| m.src_port)
-                .unwrap_or(0);
-            let first_dst_port = dialog
-                .messages
-                .first()
-                .map(|m| m.dst_port)
-                .unwrap_or(0);
-            let src_participant =
-                format!("{}_{}", dialog.src_addr, first_src_port)
-                    .replace('.', "_")
-                    .replace(':', "_");
-            let dst_participant =
-                format!("{}_{}", dialog.dst_addr, first_dst_port)
-                    .replace('.', "_")
-                    .replace(':', "_");
+            let first_src_port = dialog.messages.first().map(|m| m.src_port).unwrap_or(0);
+            let first_dst_port = dialog.messages.first().map(|m| m.dst_port).unwrap_or(0);
+            let src_participant = format!("{}_{}", dialog.src_addr, first_src_port)
+                .replace('.', "_")
+                .replace(':', "_");
+            let dst_participant = format!("{}_{}", dialog.dst_addr, first_dst_port)
+                .replace('.', "_")
+                .replace(':', "_");
             out.push_str(&format!(
                 "    participant {} as {}:{}\n",
                 src_participant, dialog.src_addr, first_src_port
@@ -253,7 +239,11 @@ impl SipnabSession {
                     .replace(':', "_");
                 let arrow = if msg.is_request { "->>" } else { "-->>" };
                 let label = if msg.is_request {
-                    msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?").to_string()
+                    msg.method
+                        .as_ref()
+                        .map(|m| m.as_str())
+                        .unwrap_or("?")
+                        .to_string()
                 } else {
                     format!(
                         "{} {}",
@@ -300,11 +290,7 @@ impl SipnabSession {
                     0.0
                 };
                 let jitter_ms = s.jitter;
-                let mos = estimate_mos(
-                    jitter_ms,
-                    loss_pct,
-                    s.codec.as_deref(),
-                );
+                let mos = estimate_mos(jitter_ms, loss_pct, s.codec.as_deref());
                 let duration_secs = s
                     .last_seen
                     .signed_duration_since(s.first_seen)

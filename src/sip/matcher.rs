@@ -284,8 +284,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("test INVITE should parse")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("test INVITE should parse")
     }
 
     /// Construct a test REGISTER SipMessage.
@@ -301,8 +309,16 @@ mod tests {
             ],
             b"",
         );
-        parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("test REGISTER should parse")
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("test REGISTER should parse")
     }
 
     /// Helper: build a default CLI with no filters.
@@ -486,8 +502,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         assert!(matcher.matches(&msg));
     }
@@ -507,8 +531,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         assert!(!matcher.matches(&msg));
     }
@@ -530,8 +562,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         assert!(matcher.matches(&msg));
     }
@@ -621,8 +661,16 @@ mod tests {
             ],
             b"",
         );
-        let msg = parse_sip(&raw, ts(), localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse");
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
 
         assert!(!matcher.matches(&msg));
     }
