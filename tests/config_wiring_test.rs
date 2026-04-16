@@ -84,16 +84,19 @@ fn json_output_schema_is_complete() {
     }
 
     // Verify schema_version is 1
-    assert_eq!(
-        parsed["schema_version"], 1,
-        "schema_version should be 1"
-    );
+    assert_eq!(parsed["schema_version"], 1, "schema_version should be 1");
 
     // Verify types
     assert!(parsed["src"].is_string(), "src should be a string");
     assert!(parsed["dst"].is_string(), "dst should be a string");
-    assert!(parsed["src_port"].is_number(), "src_port should be a number");
-    assert!(parsed["dst_port"].is_number(), "dst_port should be a number");
+    assert!(
+        parsed["src_port"].is_number(),
+        "src_port should be a number"
+    );
+    assert!(
+        parsed["dst_port"].is_number(),
+        "dst_port should be a number"
+    );
     assert!(
         parsed["transport"].is_string(),
         "transport should be a string"
@@ -237,18 +240,11 @@ fn stir_shaken_without_tls_is_gated() {
 fn config_visible_columns_round_trip() {
     let dir = tempfile::tempdir().unwrap();
     let columns = ["#", "Method", "From", "To", "State"];
-    let config_content = format!(
-        "[display]\nvisible_columns = {:?}\n",
-        columns.as_slice()
-    );
+    let config_content = format!("[display]\nvisible_columns = {:?}\n", columns.as_slice());
     let config_path = write_config(&dir, &config_content);
 
     // Load and dump the config
-    let (stdout, _stderr, code) = run(&[
-        "-f",
-        config_path.to_str().unwrap(),
-        "--dump-config",
-    ]);
+    let (stdout, _stderr, code) = run(&["-f", config_path.to_str().unwrap(), "--dump-config"]);
     assert_eq!(code, 0, "dump-config should succeed");
 
     // Verify every column name appears in the dumped output
@@ -320,15 +316,30 @@ fn wasm_export_csv_state_format() {
 fn dialog_state_all_variants_have_display() {
     use sipnab::sip::dialog::DialogState;
     let states = [
-        DialogState::Trying, DialogState::Ringing, DialogState::InCall,
-        DialogState::Completed, DialogState::Cancelled, DialogState::Failed,
-        DialogState::Registered, DialogState::Expired, DialogState::Pending,
-        DialogState::Active, DialogState::Terminated, DialogState::Transferring,
+        DialogState::Trying,
+        DialogState::Ringing,
+        DialogState::InCall,
+        DialogState::Completed,
+        DialogState::Cancelled,
+        DialogState::Failed,
+        DialogState::Registered,
+        DialogState::Expired,
+        DialogState::Pending,
+        DialogState::Active,
+        DialogState::Terminated,
+        DialogState::Transferring,
     ];
     for state in &states {
         let display = state.to_string();
-        assert!(!display.is_empty(), "Display for {:?} should not be empty", state);
-        assert!(!display.contains("::"), "Display should not contain :: (Debug format), got: {display}");
+        assert!(
+            !display.is_empty(),
+            "Display for {:?} should not be empty",
+            state
+        );
+        assert!(
+            !display.contains("::"),
+            "Display should not contain :: (Debug format), got: {display}"
+        );
     }
 }
 
@@ -337,16 +348,29 @@ fn dialog_state_all_variants_have_display() {
 fn sip_method_all_variants_have_display() {
     use sipnab::sip::SipMethod;
     let methods = [
-        SipMethod::Invite, SipMethod::Ack, SipMethod::Bye,
-        SipMethod::Cancel, SipMethod::Register, SipMethod::Options,
-        SipMethod::Subscribe, SipMethod::Notify, SipMethod::Publish,
-        SipMethod::Info, SipMethod::Refer, SipMethod::Message,
-        SipMethod::Update, SipMethod::Prack,
+        SipMethod::Invite,
+        SipMethod::Ack,
+        SipMethod::Bye,
+        SipMethod::Cancel,
+        SipMethod::Register,
+        SipMethod::Options,
+        SipMethod::Subscribe,
+        SipMethod::Notify,
+        SipMethod::Publish,
+        SipMethod::Info,
+        SipMethod::Refer,
+        SipMethod::Message,
+        SipMethod::Update,
+        SipMethod::Prack,
     ];
     for method in &methods {
         let display = method.to_string();
         assert!(!display.is_empty());
-        assert_eq!(display, display.to_uppercase(), "SIP methods should be uppercase: {display}");
+        assert_eq!(
+            display,
+            display.to_uppercase(),
+            "SIP methods should be uppercase: {display}"
+        );
     }
     // Custom variant
     let custom = SipMethod::Custom("XMETHOD".into());
@@ -360,7 +384,10 @@ fn pcap_export_mode_all_variants_round_trip() {
     let modes = ["decrypted", "raw", "encrypted+dsb"];
     for mode_str in &modes {
         let parsed = PcapExportMode::parse_mode(mode_str);
-        assert!(parsed.is_some(), "parse_mode({mode_str}) should return Some");
+        assert!(
+            parsed.is_some(),
+            "parse_mode({mode_str}) should return Some"
+        );
     }
 }
 
@@ -368,8 +395,20 @@ fn pcap_export_mode_all_variants_round_trip() {
 #[test]
 fn cargo_toml_release_profile_optimized() {
     let cargo = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    assert!(cargo.contains("panic = \"abort\""), "Release profile should have panic = abort");
-    assert!(cargo.contains("lto = true"), "Release profile should have LTO enabled");
-    assert!(cargo.contains("strip = true"), "Release profile should strip symbols");
-    assert!(cargo.contains("codegen-units = 1"), "Release profile should use single codegen unit");
+    assert!(
+        cargo.contains("panic = \"abort\""),
+        "Release profile should have panic = abort"
+    );
+    assert!(
+        cargo.contains("lto = true"),
+        "Release profile should have LTO enabled"
+    );
+    assert!(
+        cargo.contains("strip = true"),
+        "Release profile should strip symbols"
+    );
+    assert!(
+        cargo.contains("codegen-units = 1"),
+        "Release profile should use single codegen unit"
+    );
 }

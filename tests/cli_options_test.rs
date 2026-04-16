@@ -96,9 +96,20 @@ fn long_help_flag() {
     assert!(stdout.contains("EXAMPLES:"));
     // Spot-check a selection of flags are documented
     for flag in &[
-        "--device", "--input", "--output", "--json", "--from", "--to",
-        "--kill-scanner", "--report", "--problems", "--no-rtp",
-        "--call-report", "--filter", "--hexdump", "--delta-time",
+        "--device",
+        "--input",
+        "--output",
+        "--json",
+        "--from",
+        "--to",
+        "--kill-scanner",
+        "--report",
+        "--problems",
+        "--no-rtp",
+        "--call-report",
+        "--filter",
+        "--hexdump",
+        "--delta-time",
     ] {
         assert!(stdout.contains(flag), "help missing {flag}");
     }
@@ -138,15 +149,22 @@ fn output_writes_pcap() {
     let fixture = sip_call_fixture();
 
     let (_, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "-O", out_path.to_str().unwrap(),
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "-O",
+        out_path.to_str().unwrap(),
     ]);
     assert_eq!(code, 0);
 
     // Re-read the written pcap
     let (stdout, _, code2) = run(&["-N", "-I", out_path.to_str().unwrap(), "--json"]);
     assert_eq!(code2, 0);
-    assert_eq!(json_line_count(&stdout), 7, "roundtrip should preserve all messages");
+    assert_eq!(
+        json_line_count(&stdout),
+        7,
+        "roundtrip should preserve all messages"
+    );
 }
 
 #[test]
@@ -185,7 +203,10 @@ fn no_rtp_still_shows_sip() {
 fn non_interactive_mode() {
     let (stdout, _, code) = run_text(&[]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("INVITE"), "default text output should show INVITE");
+    assert!(
+        stdout.contains("INVITE"),
+        "default text output should show INVITE"
+    );
 }
 
 #[test]
@@ -193,8 +214,8 @@ fn json_output_valid() {
     let (stdout, _, code) = run_json(&[]);
     assert_eq!(code, 0);
     for (i, line) in stdout.lines().filter(|l| !l.is_empty()).enumerate() {
-        let v: serde_json::Value = serde_json::from_str(line)
-            .unwrap_or_else(|e| panic!("line {i} invalid JSON: {e}"));
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line {i} invalid JSON: {e}"));
         assert_eq!(v["schema_version"], 1);
     }
 }
@@ -203,7 +224,12 @@ fn json_output_valid() {
 fn json_pretty_output() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "--json-pretty", "-n", "1",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--json-pretty",
+        "-n",
+        "1",
     ]);
     assert_eq!(code, 0);
     // Should still parse as valid JSON
@@ -213,11 +239,12 @@ fn json_pretty_output() {
 #[test]
 fn text_dump_shows_raw_headers() {
     let fixture = sip_call_fixture();
-    let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "-T", "-n", "1",
-    ]);
+    let (stdout, _, code) = run(&["-N", "-I", fixture.to_str().unwrap(), "-T", "-n", "1"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("INVITE sip:"), "should show raw request line");
+    assert!(
+        stdout.contains("INVITE sip:"),
+        "should show raw request line"
+    );
     assert!(stdout.contains("Call-ID:"), "should show Call-ID header");
     assert!(stdout.contains("Via:"), "should show Via header");
     assert!(stdout.contains("CSeq:"), "should show CSeq header");
@@ -227,10 +254,18 @@ fn text_dump_shows_raw_headers() {
 fn hexdump_output() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "--hexdump", "-n", "1",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--hexdump",
+        "-n",
+        "1",
     ]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("00000000"), "should have hex offset markers");
+    assert!(
+        stdout.contains("00000000"),
+        "should have hex offset markers"
+    );
     assert!(stdout.contains('|'), "should have ASCII column delimiter");
 }
 
@@ -332,8 +367,7 @@ fn calls_only() {
     let (stdout, _, code) = run_json(&["-c"]);
     assert_eq!(code, 0);
     assert_eq!(json_line_count(&stdout), 1, "calls-only shows 1 INVITE");
-    let parsed: serde_json::Value =
-        serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(stdout.lines().next().unwrap()).unwrap();
     assert_eq!(parsed["method"], "INVITE");
 }
 
@@ -341,7 +375,11 @@ fn calls_only() {
 fn no_dialog_mode() {
     let (stdout, _, code) = run_json(&["--no-dialog"]);
     assert_eq!(code, 0);
-    assert_eq!(json_line_count(&stdout), 7, "no-dialog still outputs all messages");
+    assert_eq!(
+        json_line_count(&stdout),
+        7,
+        "no-dialog still outputs all messages"
+    );
 }
 
 #[test]
@@ -378,19 +416,27 @@ fn delta_time_output() {
 fn color_never() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "--color", "never", "-T", "-n", "1",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--color",
+        "never",
+        "-T",
+        "-n",
+        "1",
     ]);
     assert_eq!(code, 0);
     // No ANSI escape sequences
-    assert!(!stdout.contains("\x1b["), "color=never should have no ANSI escapes");
+    assert!(
+        !stdout.contains("\x1b["),
+        "color=never should have no ANSI escapes"
+    );
 }
 
 #[test]
 fn color_always() {
     let fixture = sip_call_fixture();
-    let (_, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "--color", "always",
-    ]);
+    let (_, _, code) = run(&["-N", "-I", fixture.to_str().unwrap(), "--color", "always"]);
     assert_eq!(code, 0);
 }
 
@@ -412,8 +458,14 @@ fn show_empty_flag() {
 fn payload_limit() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "--payload-limit", "50", "-T", "-n", "1",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--payload-limit",
+        "50",
+        "-T",
+        "-n",
+        "1",
     ]);
     assert_eq!(code, 0);
     // With a 50-byte limit, output should be shorter than full message
@@ -463,11 +515,17 @@ fn report_markdown_format() {
 fn call_report_specific_call() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "--call-report", "test-call-1@10.0.0.1",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--call-report",
+        "test-call-1@10.0.0.1",
     ]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("Call Report:"), "should contain report header");
+    assert!(
+        stdout.contains("Call Report:"),
+        "should contain report header"
+    );
     assert!(stdout.contains("test-call-1@10.0.0.1"));
 }
 
@@ -475,8 +533,12 @@ fn call_report_specific_call() {
 fn call_report_markdown() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "--call-report", "test-call-1@10.0.0.1", "--markdown",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--call-report",
+        "test-call-1@10.0.0.1",
+        "--markdown",
     ]);
     assert_eq!(code, 0);
     assert!(stdout.contains("test-call-1@10.0.0.1"));
@@ -486,8 +548,11 @@ fn call_report_markdown() {
 fn call_report_nonexistent_call() {
     let fixture = sip_call_fixture();
     let (_, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "--call-report", "nonexistent@nowhere",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--call-report",
+        "nonexistent@nowhere",
     ]);
     // Should not crash — may exit 0 with no report or with all messages
     assert!(code == 0 || code == 1);
@@ -521,7 +586,10 @@ fn short_calls_filter() {
     // Call duration is 60s, threshold is 10s — should not match as "short"
     // (whatever count we get, it shouldn't crash)
     let count = json_line_count(&stdout);
-    assert!(count <= 7, "short-calls should not produce more than total messages");
+    assert!(
+        count <= 7,
+        "short-calls should not produce more than total messages"
+    );
 }
 
 #[test]
@@ -626,16 +694,17 @@ fn dump_config_with_file() {
 
     let (stdout, _, code) = run(&["-f", cfg.to_str().unwrap(), "--dump-config"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("eth99"), "config should reflect device setting");
+    assert!(
+        stdout.contains("eth99"),
+        "config should reflect device setting"
+    );
 }
 
 #[test]
 fn no_config_flag() {
     let (stdout, _, code) = run(&["--no-config", "--dump-config"]);
     assert_eq!(code, 0);
-    assert!(
-        stdout.contains("No config file loaded") || stdout.contains("defaults only")
-    );
+    assert!(stdout.contains("No config file loaded") || stdout.contains("defaults only"));
 }
 
 #[test]
@@ -746,9 +815,7 @@ fn json_with_count_and_from_filter() {
 #[test]
 fn text_dump_with_count() {
     let fixture = sip_call_fixture();
-    let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(), "-T", "-n", "2",
-    ]);
+    let (stdout, _, code) = run(&["-N", "-I", fixture.to_str().unwrap(), "-T", "-n", "2"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("INVITE sip:"));
     assert!(stdout.contains("100 Trying"));
@@ -772,7 +839,10 @@ fn delta_time_with_json() {
 #[test]
 fn security_flags_combined() {
     let (stdout, _, code) = run_json(&[
-        "--kill-scanner", "--fraud-detect", "--reg-flood", "--digest-leak",
+        "--kill-scanner",
+        "--fraud-detect",
+        "--reg-flood",
+        "--digest-leak",
     ]);
     assert_eq!(code, 0);
     assert_eq!(json_line_count(&stdout), 7);
@@ -785,9 +855,13 @@ fn output_with_count_and_filter() {
     let fixture = sip_call_fixture();
 
     let (_, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "-O", out_path.to_str().unwrap(),
-        "-n", "3",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "-O",
+        out_path.to_str().unwrap(),
+        "-n",
+        "3",
     ]);
     assert_eq!(code, 0);
 
@@ -800,8 +874,14 @@ fn output_with_count_and_filter() {
 fn hexdump_with_count_and_color_never() {
     let fixture = sip_call_fixture();
     let (stdout, _, code) = run(&[
-        "-N", "-I", fixture.to_str().unwrap(),
-        "--hexdump", "-n", "1", "--color", "never",
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "--hexdump",
+        "-n",
+        "1",
+        "--color",
+        "never",
     ]);
     assert_eq!(code, 0);
     assert!(stdout.contains("00000000"));
@@ -885,10 +965,7 @@ fn udp_5060_fixture_all_options() {
 #[test]
 fn summary_reports_correct_counts() {
     let fixture = sip_call_fixture();
-    let (stdout, stderr, code) = run_with_log(
-        &["-N", "-I", fixture.to_str().unwrap()],
-        "info",
-    );
+    let (stdout, stderr, code) = run_with_log(&["-N", "-I", fixture.to_str().unwrap()], "info");
     assert_eq!(code, 0);
     let combined = format!("{stdout}{stderr}");
     assert!(combined.contains("7 packets captured"), "got: {combined}");
