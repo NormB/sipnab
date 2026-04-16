@@ -663,32 +663,6 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3); // no change
     }
 
-    // ── Additional helpers ────────────────────────────────────────────
-
-    fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
-        let raw = build_sip(
-            "BYE sip:1002@10.0.0.2 SIP/2.0",
-            &[
-                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-bye",
-                &format!("From: <sip:1001@10.0.0.1>;tag=t1"),
-                &format!("To: <sip:1002@10.0.0.2>;tag=t2"),
-                &format!("Call-ID: {}", call_id),
-                "CSeq: 2 BYE",
-                "Content-Length: 0",
-            ],
-        );
-        parse_sip(
-            &raw,
-            ts,
-            localhost_a(),
-            localhost_b(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .unwrap()
-    }
-
     /// Create an app with the call flow view open on dialog 1.
     fn app_with_call_flow_open() -> App {
         let mut app = app_with_three_dialogs();
@@ -2845,9 +2819,8 @@ mod tui_state {
     fn stream_detail_enter_from_stream_list() {
         use sipnab::capture::parse::ParsedPacket;
         use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::rtp::stream::StreamKey;
         use sipnab::rtp::stream_store::StreamStore;
-        use std::net::{Ipv4Addr, SocketAddr};
+        use std::net::Ipv4Addr;
 
         // Create an App with a stream in its store
         let ds = std::sync::Arc::new(parking_lot::RwLock::new(
@@ -2915,9 +2888,8 @@ mod tui_state {
     fn stream_detail_escape_returns_to_stream_list() {
         use sipnab::capture::parse::ParsedPacket;
         use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::rtp::stream::StreamKey;
         use sipnab::rtp::stream_store::StreamStore;
-        use std::net::{Ipv4Addr, SocketAddr};
+        use std::net::Ipv4Addr;
 
         let ds = std::sync::Arc::new(parking_lot::RwLock::new(
             sipnab::sip::dialog_store::DialogStore::new(100, false),

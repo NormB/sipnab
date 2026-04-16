@@ -247,7 +247,7 @@ mod tests {
 
         // Send a REGISTER from attacker
         let reg = make_register(attacker_ip(), "auth-test@test");
-        detector.check(&reg);
+        let _ = detector.check(&reg);
 
         // Send a 401 response back to the attacker
         let raw = build_sip(
@@ -271,7 +271,7 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("parse");
-        detector.check(&resp);
+        let _ = detector.check(&resp);
 
         // Verify the attacker's state includes the auth failure
         let state = detector.sources.get(&attacker_ip()).expect("state exists");
