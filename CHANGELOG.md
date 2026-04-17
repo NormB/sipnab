@@ -2,6 +2,15 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Changed
+- End-of-capture summary now distinguishes RTP packets from RTP streams,
+  reporting `N RTP packets across M streams` instead of conflating the two
+- "No SIP traffic found" guidance is softened to a media-only notice when
+  RTP was successfully parsed, so media-only pcaps no longer look like
+  parse failures
+
 ## [0.3.1] - 2026-04-09
 
 ### Changed
