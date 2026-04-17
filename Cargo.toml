@@ -84,13 +84,13 @@ name = "parser_bench"
 harness = false
 
 [features]
-default = ["native", "tui"]
+default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = []
-audio = ["dep:rodio"]
+audio = ["dep:rodio", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
 full = ["native", "tui", "tls", "hep", "api", "audio"]

@@ -11,6 +11,28 @@ expression: output
    3    INVITE     1005            1006             10.0.0.1        10.0.0.2        InCall       2     +5.000s
 
 
+                    ┌ Open PCAP File ──────────────────────────────────────────────────────────────┐
+                    │                                                                              │
+                    │  Path: /tmp/test.pcap                                                        │
+                    │                                                                              │
+                    │  Supports .pcap, .pcapng, .cap files (~ expands to $HOME)                    │
+                    │                                                                              │
+                    │  [Enter] Open  [Tab] Browse  [Esc] Cancel                                    │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    │                                                                              │
+                    └──────────────────────────────────────────────────────────────────────────────┘
 
 
 
@@ -18,27 +40,5 @@ expression: output
 
 
 
-                         ┌ Open PCAP File ────────────────────────────────────────────────────┐
-                         │                                                                    │
-                         │  File: /tmp/test.pcap                                              │
-                         │                                                                    │
-                         │  Supports .pcap, .pcapng, .cap files                               │
-                         │                                                                    │
-                         │  [Enter] Open  [Esc] Cancel                                        │
-                         └────────────────────────────────────────────────────────────────────┘
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-Enter Open  Esc Cancel
+Enter Open/Cd  ⇧⇩ Nav  Backspace Up  Tab Type path  Esc Cancel

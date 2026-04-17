@@ -4,12 +4,24 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Interactive file-open browser for loading pcaps: directory listing with
+  pcap filter, typed narrowing, manual-path mode, and selection state
+
 ### Changed
 - End-of-capture summary now distinguishes RTP packets from RTP streams,
   reporting `N RTP packets across M streams` instead of conflating the two
 - "No SIP traffic found" guidance is softened to a media-only notice when
   RTP was successfully parsed, so media-only pcaps no longer look like
   parse failures
+
+### Fixed
+- Audio playback init no longer corrupts the TUI on hosts without a usable
+  audio device (e.g. Tegra/Jetson Ubuntu, headless): libasound stderr is
+  redirected to `/dev/null` during device open, and a failed init is cached
+  so repeated `P` presses don't retry and re-spam the terminal
+- Failed audio init now surfaces an actionable message suggesting `F2 Save
+  WAV` as an offline alternative
 
 ## [0.3.1] - 2026-04-09
 
