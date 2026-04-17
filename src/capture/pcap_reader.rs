@@ -506,6 +506,15 @@ mod tests {
     fn load_voipshark_tls_srtp() {
         assert_loads("tests/pcap-samples/voipshark-tls-srtp.pcap", 100);
     }
+    #[test]
+    fn load_speech_8k_ulaw() {
+        // Linux SLL (cooked v1) link-type — the only SLL fixture in the suite.
+        assert_loads("tests/pcap-samples/speech_8k_ulaw.pcap", 100);
+    }
+    #[test]
+    fn load_voicecmd_combined() {
+        assert_loads("tests/pcap-samples/voicecmd_combined.pcap", 1000);
+    }
 
     // -- pcapng format files --
 
