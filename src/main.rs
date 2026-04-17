@@ -1427,18 +1427,30 @@ fn run_batch_mode(
 
     // 22. Summary
     if !cli.quiet {
+        let stream_count = proc_state.stream_store.len();
         log::info!(
-            "sipnab: {total_count} packets captured, {} SIP messages, {} RTP streams",
+            "sipnab: {total_count} packets captured, {} SIP messages, {} RTP packets across {stream_count} streams",
             counters.sip_count,
             counters.rtp_count,
         );
 
-        // Helpful guidance when no SIP traffic was found
+        // Helpful guidance when no SIP signalling was found. If RTP was
+        // parsed, the capture was readable — just media-only — so soften
+        // the message rather than implying a parse failure.
         if counters.sip_count == 0 {
-            eprintln!(
-                "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
-            );
-            eprintln!("Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content.");
+            if counters.rtp_count > 0 {
+                eprintln!(
+                    "No SIP signalling found, but {} RTP packets across {stream_count} stream(s) were parsed. Use --report to see stream details.",
+                    counters.rtp_count
+                );
+            } else {
+                eprintln!(
+                    "No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061)."
+                );
+                eprintln!(
+                    "Tip: Use 'sipnab -N -I file.pcap --hexdump' to inspect raw packet content."
+                );
+            }
         }
     }
 
