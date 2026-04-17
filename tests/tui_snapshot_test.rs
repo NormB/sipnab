@@ -798,8 +798,12 @@ mod tui_snapshots {
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
+        // Open the file dialog, switch to manual-path mode for deterministic
+        // rendering (the browser mode lists the current working directory),
+        // then type a sample path.
         app.handle_key(KeyCode::Char('O'));
-        // Type a sample path
+        app.handle_key(KeyCode::Tab);
+        app.open_path_clear_for_test();
         for c in "/tmp/test.pcap".chars() {
             app.handle_key(KeyCode::Char(c));
         }

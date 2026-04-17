@@ -1965,10 +1965,20 @@ mod tui_state {
         assert!(app.active_popup().is_none());
     }
 
+    /// Helper: open the file dialog and switch to manual-path mode with an
+    /// empty path. The browser is the default mode (see `open_file_dialog`),
+    /// so tests that exercise path-editing use Tab to enter the text-input
+    /// variant and then clear the seeded directory path.
+    fn open_manual_file_dialog(app: &mut App) {
+        app.handle_key(KeyCode::Char('O'));
+        app.handle_key(KeyCode::Tab);
+        app.open_path_clear_for_test();
+    }
+
     #[test]
     fn file_open_char_appends() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('/'));
         app.handle_key(KeyCode::Char('t'));
         app.handle_key(KeyCode::Char('m'));
@@ -1980,7 +1990,7 @@ mod tui_state {
     #[test]
     fn file_open_backspace() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
         app.handle_key(KeyCode::Char('b'));
         app.handle_key(KeyCode::Backspace);
@@ -1991,7 +2001,7 @@ mod tui_state {
     #[test]
     fn file_open_left_right_cursor() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
         app.handle_key(KeyCode::Char('b'));
         app.handle_key(KeyCode::Char('c'));
@@ -2005,7 +2015,7 @@ mod tui_state {
     #[test]
     fn file_open_home_end() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Char('a'));
         app.handle_key(KeyCode::Char('b'));
         app.handle_key(KeyCode::Home);
@@ -2017,7 +2027,7 @@ mod tui_state {
     #[test]
     fn file_open_enter_empty_path_closes() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         app.handle_key(KeyCode::Enter);
         // Should close popup with error message
         assert!(app.active_popup().is_none());
@@ -2027,8 +2037,7 @@ mod tui_state {
     #[test]
     fn file_open_enter_nonexistent_file() {
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
-        // Type a nonexistent path
+        open_manual_file_dialog(&mut app);
         for c in "/nonexistent/file.pcap".chars() {
             app.handle_key(KeyCode::Char(c));
         }
@@ -2053,7 +2062,7 @@ mod tui_state {
         }
 
         let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         for c in pcap_path.chars() {
             app.handle_key(KeyCode::Char(c));
         }
@@ -2064,6 +2073,38 @@ mod tui_state {
         assert!(
             app.visible_dialog_count() > 0,
             "Expected dialogs to be loaded from pcap"
+        );
+    }
+
+    #[test]
+    fn file_open_rtp_only_pcap_populates_streams_and_switches_view() {
+        // RTP-only pcap (no SIP) — exercises the RTP ingestion path in
+        // `load_pcap_file` and the auto-switch to the stream list.
+        let pcap_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/pcap-samples/speech_8k_ulaw.pcap"
+        );
+        if !std::path::Path::new(pcap_path).exists() {
+            return;
+        }
+
+        let mut app = App::new_test();
+        open_manual_file_dialog(&mut app);
+        for c in pcap_path.chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        assert!(app.active_popup().is_none());
+        assert_eq!(app.visible_dialog_count(), 0, "no SIP in this pcap");
+        assert!(
+            app.stream_count_for_test() > 0,
+            "expected RTP streams to be parsed"
+        );
+        assert!(
+            matches!(app.current_view(), View::StreamList),
+            "should auto-switch to stream list when SIP=0 and RTP>0, got {:?}",
+            app.current_view()
         );
     }
 
@@ -2080,7 +2121,7 @@ mod tui_state {
             return;
         }
 
-        app.handle_key(KeyCode::Char('O'));
+        open_manual_file_dialog(&mut app);
         for c in pcap_path.chars() {
             app.handle_key(KeyCode::Char(c));
         }
@@ -2089,6 +2130,77 @@ mod tui_state {
         // Original 3 dialogs should be gone, replaced by pcap content
         let status = app.status_error().unwrap();
         assert!(status.contains("Loaded"), "unexpected status: {status}");
+    }
+
+    /// Browser mode should list symlinked directories as directories, not
+    /// filter them out as non-pcap files. `DirEntry::file_type()` reports
+    /// symlinks with `is_dir() == false` on Linux, so the picker must
+    /// follow symlinks before classifying the entry.
+    #[test]
+    fn file_open_browser_shows_symlinked_directories() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let real = tmp.path().join("realdir");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, tmp.path().join("linkdir")).unwrap();
+
+        let mut app = App::new_test();
+        app.set_open_dir_for_test(tmp.path().to_path_buf());
+        app.handle_key(KeyCode::Char('O'));
+
+        let names = app.open_entry_names_for_test();
+        assert!(
+            names.iter().any(|n| n == "realdir"),
+            "expected realdir in listing: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "linkdir"),
+            "symlinked directory should be listed: {names:?}"
+        );
+    }
+
+    /// Browser mode end-to-end: from the crate root, filter+Enter into
+    /// `tests/`, then into `tests/pcap-samples/`, and verify the sample
+    /// pcap files appear in the listing.
+    #[test]
+    fn file_open_browser_navigates_to_pcap_samples() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let samples = manifest_dir.join("tests/pcap-samples");
+        if !samples.is_dir() {
+            return;
+        }
+
+        let mut app = App::new_test();
+        app.set_open_dir_for_test(manifest_dir.clone());
+        app.handle_key(KeyCode::Char('O'));
+        assert_eq!(app.active_popup(), Some(&Popup::FileOpenDialog));
+
+        let names = app.open_entry_names_for_test();
+        assert!(
+            names.iter().any(|n| n == "tests"),
+            "expected 'tests' directory in listing: {names:?}"
+        );
+
+        for c in "tests".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        // First entry is always ".." — skip it before entering.
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.open_dir_for_test(), manifest_dir.join("tests"));
+
+        for c in "pcap-samples".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.open_dir_for_test(), samples);
+
+        let names = app.open_entry_names_for_test();
+        assert!(
+            names.iter().any(|n| n == "sip-rtp-g711.pcap"),
+            "expected sip-rtp-g711.pcap in listing: {names:?}"
+        );
+        assert_eq!(app.active_popup(), Some(&Popup::FileOpenDialog));
     }
 
     // ── Save format labels (all 11) ─────────────────────────────────

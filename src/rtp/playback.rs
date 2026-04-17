@@ -4,6 +4,7 @@
 //! plays through the default audio device via rodio. G.711 is resampled
 //! from 8 kHz; Opus decodes natively at 48 kHz (no resampling needed).
 
+use std::io::Write;
 use std::num::NonZero;
 
 use anyhow::{Result, bail};
@@ -25,8 +26,19 @@ pub struct AudioPlayer {
 impl AudioPlayer {
     /// Create a new audio player using the default output device.
     pub fn new() -> Result<Self> {
-        let mut device_sink = DeviceSinkBuilder::open_default_sink()
-            .map_err(|e| anyhow::anyhow!("No audio output device: {e}"))?;
+        let mut device_sink = {
+            // libasound writes config/device errors straight to stderr,
+            // which corrupts the alternate-screen TUI. Redirect stderr
+            // to /dev/null for the duration of the device open.
+            let _silencer = StderrSilencer::new();
+            DeviceSinkBuilder::open_default_sink()
+        }
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "No audio output device available ({e}). \
+                 Use F2 to save the stream as a WAV file instead."
+            )
+        })?;
         device_sink.log_on_drop(false);
         let player = Player::connect_new(device_sink.mixer());
         Ok(Self {
@@ -125,6 +137,64 @@ fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
         }
     }
     Ok(pcm)
+}
+
+/// RAII guard that redirects stderr to /dev/null while alive.
+///
+/// Used during audio device initialization so that libasound's C-level
+/// error output (e.g. ALSA config evaluation failures on Tegra/Jetson)
+/// does not bleed through and corrupt the TUI's alternate screen.
+#[cfg(unix)]
+struct StderrSilencer {
+    saved_fd: libc::c_int,
+}
+
+#[cfg(unix)]
+impl StderrSilencer {
+    fn new() -> Option<Self> {
+        let _ = std::io::stderr().flush();
+        // SAFETY: all file descriptors are owned locally and only closed
+        // on the exact paths that produced them.
+        unsafe {
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
+            if devnull < 0 {
+                return None;
+            }
+            let saved_fd = libc::dup(libc::STDERR_FILENO);
+            if saved_fd < 0 {
+                libc::close(devnull);
+                return None;
+            }
+            if libc::dup2(devnull, libc::STDERR_FILENO) < 0 {
+                libc::close(saved_fd);
+                libc::close(devnull);
+                return None;
+            }
+            libc::close(devnull);
+            Some(Self { saved_fd })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for StderrSilencer {
+    fn drop(&mut self) {
+        // SAFETY: saved_fd came from a successful dup() in new().
+        unsafe {
+            libc::dup2(self.saved_fd, libc::STDERR_FILENO);
+            libc::close(self.saved_fd);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct StderrSilencer;
+
+#[cfg(not(unix))]
+impl StderrSilencer {
+    fn new() -> Option<Self> {
+        None
+    }
 }
 
 /// Resample f32 PCM using linear interpolation.

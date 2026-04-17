@@ -276,6 +276,17 @@ impl ColorMode {
     }
 }
 
+/// A single entry in the file-open browser's directory listing.
+#[derive(Debug, Clone)]
+struct FileEntry {
+    /// File name (no path) — what the user sees in the list.
+    name: String,
+    /// Absolute path — what we pass to `load_pcap_file` or `cd` into.
+    path: PathBuf,
+    /// Whether this entry is a directory.
+    is_dir: bool,
+}
+
 /// Save file format for the F2 save dialog.
 ///
 /// Cycle order (Tab): PCAP → PCAP-NG → TXT → JSON → NDJSON → CSV →
@@ -779,10 +790,20 @@ pub struct App {
     save_message_count: usize,
     /// Selected save format (PCAP, PCAP-NG, or TXT).
     save_format: SaveFormat,
-    /// File-open dialog: path being edited.
+    /// File-open dialog: path being edited (used only in manual-path mode).
     open_path: String,
     /// File-open dialog: cursor position in path.
     open_cursor: usize,
+    /// File-open dialog: current directory being browsed.
+    open_dir: std::path::PathBuf,
+    /// File-open dialog: entries in the current directory (dirs first, then pcaps).
+    open_entries: Vec<FileEntry>,
+    /// File-open dialog: selected row in the entries list.
+    open_selected: usize,
+    /// File-open dialog: typed filter substring (narrows the entries list).
+    open_filter: String,
+    /// File-open dialog: manual-path edit mode (Tab toggles).
+    open_manual_mode: bool,
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
@@ -824,6 +845,11 @@ pub struct App {
     /// Audio player for RTP stream playback (lazily initialized).
     #[cfg(feature = "audio")]
     audio_player: Option<crate::rtp::playback::AudioPlayer>,
+    /// Cached message from a previously failed audio-init attempt.
+    /// Once set, subsequent Play presses surface this instead of
+    /// retrying (which would re-emit libasound errors).
+    #[cfg(feature = "audio")]
+    audio_init_error: Option<String>,
 }
 
 impl App {
@@ -870,6 +896,11 @@ impl App {
             save_format: SaveFormat::default(),
             open_path: String::new(),
             open_cursor: 0,
+            open_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            open_entries: Vec::new(),
+            open_selected: 0,
+            open_filter: String::new(),
+            open_manual_mode: false,
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
@@ -889,6 +920,8 @@ impl App {
             keymap,
             #[cfg(feature = "audio")]
             audio_player: None,
+            #[cfg(feature = "audio")]
+            audio_init_error: None,
         }
     }
 
@@ -1551,7 +1584,13 @@ fn render_fkey_bar(
                     ("Esc", "Close"),
                 ]
             }
-            Popup::FileOpenDialog => vec![("Enter", "Open"), ("Esc", "Cancel")],
+            Popup::FileOpenDialog => vec![
+                ("Enter", "Open/Cd"),
+                ("\u{21E7}\u{21E9}", "Nav"),
+                ("Backspace", "Up"),
+                ("Tab", "Type path"),
+                ("Esc", "Cancel"),
+            ],
         }
     } else {
         match view {
@@ -1560,6 +1599,7 @@ fn render_fkey_bar(
                     vec![
                         ("Esc", "Quit"),
                         ("Enter", "Show"),
+                        ("Tab", "Streams"),
                         ("F2", "Save"),
                         ("F7", "Filter"),
                     ]
@@ -1567,6 +1607,7 @@ fn render_fkey_bar(
                     vec![
                         ("Esc", "Quit"),
                         ("Enter", "Show"),
+                        ("Tab", "Streams"),
                         ("F2", "Save"),
                         ("F3", "Search"),
                         ("F6", "Raw"),
@@ -1577,6 +1618,8 @@ fn render_fkey_bar(
                     vec![
                         ("Esc", "Quit"),
                         ("Enter", "Show"),
+                        ("Tab", "Streams"),
+                        ("O", "Open"),
                         ("F2", "Save"),
                         ("F3", "Search"),
                         ("F4", "Extended"),
@@ -1641,6 +1684,7 @@ fn render_fkey_bar(
                 ("Esc", "Back"),
                 ("Enter", "Detail"),
                 ("Tab", "Calls"),
+                ("F2", "Save WAV"),
                 ("F7", "Filter"),
             ],
             View::StreamDetail(_) => {
@@ -1651,11 +1695,17 @@ fn render_fkey_bar(
                         ("j/k", "Scroll"),
                         ("PgUp/Dn", "Page"),
                         ("P", "Play"),
+                        ("F2", "Save WAV"),
                     ]
                 }
                 #[cfg(not(feature = "audio"))]
                 {
-                    vec![("Esc", "Back"), ("j/k", "Scroll"), ("PgUp/Dn", "Page")]
+                    vec![
+                        ("Esc", "Back"),
+                        ("j/k", "Scroll"),
+                        ("PgUp/Dn", "Page"),
+                        ("F2", "Save WAV"),
+                    ]
                 }
             }
             _ => vec![("Esc", "Back")],
@@ -1850,11 +1900,14 @@ fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 /// Render the file-open dialog as a centered popup overlay.
+///
+/// Two modes: a directory browser (default) that lists subdirectories and
+/// pcap/pcapng/cap files, or a manual-path text input (toggled with Tab).
 fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let popup_width = 70.min(area.width.saturating_sub(4));
-    let popup_area = centered_popup(area, popup_width, 8);
+    let popup_width = 80.min(area.width.saturating_sub(4));
+    let popup_height = 22.min(area.height.saturating_sub(2));
+    let popup_area = centered_popup(area, popup_width, popup_height);
 
-    // Clear the area behind the popup
     frame.render_widget(Clear, popup_area);
 
     let block = Block::default()
@@ -1865,11 +1918,127 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    // Build the path display with a visible cursor (reverse video at cursor position)
+    if app.open_manual_mode {
+        render_file_open_manual(frame, inner, app);
+    } else {
+        render_file_open_browser(frame, inner, app);
+    }
+}
+
+/// Render the directory-browser variant of the Open dialog.
+fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
+    let header = format!("  Dir: {}", app.open_dir.display());
+    let filter_label = if app.open_filter.is_empty() {
+        "  (type to filter — Backspace: up dir  Tab: type path)".to_string()
+    } else {
+        format!("  Filter: {}", app.open_filter)
+    };
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(inner.height as usize);
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default()
+            .fg(app.theme.header)
+            .add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        filter_label,
+        Style::default().fg(app.theme.muted),
+    )));
+    lines.push(Line::from(""));
+
+    let list_rows = (inner.height as usize).saturating_sub(5);
+    if app.open_entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  (no matching pcap files)",
+            Style::default().fg(app.theme.muted),
+        )));
+    } else {
+        let scroll_offset = app.open_selected.saturating_sub(list_rows.saturating_sub(1));
+        for (idx, entry) in app
+            .open_entries
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(list_rows)
+        {
+            let selected = idx == app.open_selected;
+            let prefix = if entry.is_dir { "  [DIR] " } else { "        " };
+            let style = if selected {
+                Style::default()
+                    .bg(app.theme.selected)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else if entry.is_dir {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.foreground)
+            };
+            let pad_to = (inner.width as usize).saturating_sub(prefix.len());
+            let display = format!("{:<width$}", entry.name, width = pad_to);
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(display, style),
+            ]));
+        }
+    }
+
+    // Pad so the footer sits at the bottom
+    while lines.len() + 1 < inner.height as usize {
+        lines.push(Line::from(""));
+    }
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "  [Enter]",
+            Style::default()
+                .fg(app.theme.good)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Open/Cd  "),
+        Span::styled(
+            "[\u{21E7}\u{21E9}]",
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Nav  "),
+        Span::styled(
+            "[Backspace]",
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Up  "),
+        Span::styled(
+            "[Tab]",
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Path  "),
+        Span::styled(
+            "[Esc]",
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" Cancel"),
+    ]));
+
+    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
+    let para = Paragraph::new(visible_lines).style(Style::default().bg(app.theme.background));
+    frame.render_widget(para, inner);
+}
+
+/// Render the manual path-input variant of the Open dialog.
+fn render_file_open_manual(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
     let path = &app.open_path;
     let cursor = app.open_cursor.min(path.len());
     let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
-        "  File: ",
+        "  Path: ",
         Style::default().fg(app.theme.header),
     )];
     if path.is_empty() {
@@ -1878,7 +2047,6 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default().bg(Color::White).fg(Color::Black),
         ));
     } else {
-        // Text before cursor
         if cursor > 0 {
             path_spans.push(Span::styled(
                 path[..cursor].to_string(),
@@ -1887,13 +2055,11 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        // Cursor character (reverse video)
         if cursor < path.len() {
             path_spans.push(Span::styled(
                 path[cursor..cursor + 1].to_string(),
                 Style::default().bg(Color::White).fg(Color::Black),
             ));
-            // Text after cursor
             if cursor + 1 < path.len() {
                 path_spans.push(Span::styled(
                     path[cursor + 1..].to_string(),
@@ -1903,7 +2069,6 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 ));
             }
         } else {
-            // Cursor at end — show block cursor
             path_spans.push(Span::styled(
                 " ",
                 Style::default().bg(Color::White).fg(Color::Black),
@@ -1916,7 +2081,7 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         Line::from(path_spans),
         Line::from(""),
         Line::from(Span::styled(
-            "  Supports .pcap, .pcapng, .cap files",
+            "  Supports .pcap, .pcapng, .cap files (~ expands to $HOME)",
             Style::default().fg(app.theme.muted),
         )),
         Line::from(""),
@@ -1929,6 +2094,13 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             ),
             Span::raw(" Open  "),
             Span::styled(
+                "[Tab]",
+                Style::default()
+                    .fg(app.theme.header)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" Browse  "),
+            Span::styled(
                 "[Esc]",
                 Style::default()
                     .fg(app.theme.warning)
@@ -1938,7 +2110,6 @@ fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         ]),
     ];
 
-    // Ensure we don't exceed the inner area height
     let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
     let para = Paragraph::new(visible_lines).style(Style::default().bg(app.theme.background));
     frame.render_widget(para, inner);
@@ -2647,9 +2818,7 @@ fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         }
         // O — Open pcap file
         KeyCode::Char('O') => {
-            app.open_path = String::new();
-            app.open_cursor = 0;
-            app.active_popup = Some(Popup::FileOpenDialog);
+            open_file_dialog(app);
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
         _ => {}
@@ -2777,6 +2946,9 @@ fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
             app.search_query.clear();
         }
         k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.save => {
+            open_save_popup(app);
+        }
         k if k == app.keymap.filter => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
@@ -2812,6 +2984,9 @@ fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Home => app.stream_detail_scroll = 0,
         k if k == app.keymap.help => app.current_view = View::Help,
+        k if k == app.keymap.save => {
+            open_save_popup(app);
+        }
         KeyCode::Esc => {
             app.current_view = match app.stream_detail_return_view.take() {
                 Some(v) => v,
@@ -2829,12 +3004,21 @@ fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
 /// Handle Shift+P audio playback toggle in stream detail view.
 #[cfg(feature = "audio")]
 fn handle_stream_detail_play(app: &mut App) {
+    // Don't re-attempt init if it already failed — retrying would
+    // re-trigger libasound's stderr spam each keypress.
+    if let Some(msg) = app.audio_init_error.as_deref() {
+        app.status_error = Some(msg.to_string());
+        return;
+    }
+
     // Initialize player lazily on first use
     if app.audio_player.is_none() {
         match crate::rtp::playback::AudioPlayer::new() {
             Ok(player) => app.audio_player = Some(player),
             Err(e) => {
-                app.status_error = Some(format!("Audio init failed: {e}"));
+                let msg = format!("Audio init failed: {e}");
+                app.status_error = Some(msg.clone());
+                app.audio_init_error = Some(msg);
                 return;
             }
         }
@@ -3274,14 +3458,17 @@ fn handle_help_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Open the save popup, pre-populating path and counts.
+///
+/// From a stream view, defaults to WAV export; otherwise defaults to PCAP.
 fn open_save_popup(app: &mut App) {
-    // Reset format to default (PCAP)
-    app.save_format = SaveFormat::default();
+    app.save_format = match app.current_view {
+        View::StreamList | View::StreamDetail(_) => SaveFormat::Wav,
+        _ => SaveFormat::default(),
+    };
 
-    // Generate default path with timestamp
     let now = chrono::Local::now();
-    let default_path = format!("/tmp/sipnab_{}.pcap", now.format("%Y%m%d_%H%M%S"));
-    app.save_path = default_path;
+    let ext = app.save_format.extension();
+    app.save_path = format!("/tmp/sipnab_{}.{ext}", now.format("%Y%m%d_%H%M%S"));
     app.save_cursor = app.save_path.len();
 
     // Cache counts for display
@@ -3396,14 +3583,186 @@ fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Open the file-open dialog, seeding it with a directory listing rooted at
+/// the last-browsed directory (or the current working directory on first use).
+fn open_file_dialog(app: &mut App) {
+    if !app.open_dir.is_dir() {
+        app.open_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    }
+    app.open_filter.clear();
+    app.open_manual_mode = false;
+    app.open_path.clear();
+    app.open_cursor = 0;
+    refresh_file_entries(app);
+    app.active_popup = Some(Popup::FileOpenDialog);
+}
+
+/// Extensions recognised as pcap/pcapng files by the file browser.
+const PCAP_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
+
+/// Rebuild [`App::open_entries`] from the current [`App::open_dir`], applying
+/// [`App::open_filter`] and sorting dirs-first / alphabetical.
+fn refresh_file_entries(app: &mut App) {
+    let mut entries: Vec<FileEntry> = Vec::new();
+
+    if let Some(parent) = app.open_dir.parent() {
+        entries.push(FileEntry {
+            name: "..".to_string(),
+            path: parent.to_path_buf(),
+            is_dir: true,
+        });
+    }
+
+    if let Ok(read_dir) = std::fs::read_dir(&app.open_dir) {
+        let filter_lc = app.open_filter.to_lowercase();
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') && !filter_lc.starts_with('.') {
+                continue;
+            }
+            let is_dir = match entry.file_type() {
+                // `file_type()` does not follow symlinks, so a symlinked
+                // directory reports `is_dir() == false`. Resolve via
+                // `metadata()` (which does follow) so directory symlinks
+                // still appear in the browser. Broken or unreadable links
+                // fall through as non-directories.
+                Ok(ft) if ft.is_symlink() => std::fs::metadata(entry.path())
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false),
+                Ok(ft) => ft.is_dir(),
+                Err(_) => false,
+            };
+
+            if !is_dir {
+                let ext_ok = std::path::Path::new(&name)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| PCAP_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)))
+                    .unwrap_or(false);
+                if !ext_ok {
+                    continue;
+                }
+            }
+
+            if !filter_lc.is_empty() && !name.to_lowercase().contains(&filter_lc) {
+                continue;
+            }
+
+            entries.push(FileEntry {
+                name,
+                path: entry.path(),
+                is_dir,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| match (a.name.as_str(), b.name.as_str()) {
+        ("..", _) => std::cmp::Ordering::Less,
+        (_, "..") => std::cmp::Ordering::Greater,
+        _ => match (a.is_dir, b.is_dir) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        },
+    });
+
+    app.open_entries = entries;
+    if app.open_selected >= app.open_entries.len() {
+        app.open_selected = app.open_entries.len().saturating_sub(1);
+    }
+}
+
 /// Handle keys in the file-open dialog popup.
 fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
+    if app.open_manual_mode {
+        handle_file_open_manual_key(app, key);
+        return;
+    }
+
     match key.code {
         KeyCode::Esc => {
             app.active_popup = None;
         }
+        KeyCode::Tab => {
+            app.open_manual_mode = true;
+            if app.open_path.is_empty() {
+                app.open_path = app.open_dir.to_string_lossy().into_owned();
+                if !app.open_path.ends_with(std::path::MAIN_SEPARATOR) {
+                    app.open_path.push(std::path::MAIN_SEPARATOR);
+                }
+            }
+            app.open_cursor = app.open_path.len();
+        }
+        KeyCode::Up => {
+            if app.open_selected > 0 {
+                app.open_selected -= 1;
+            }
+        }
+        KeyCode::Down => {
+            if app.open_selected + 1 < app.open_entries.len() {
+                app.open_selected += 1;
+            }
+        }
+        KeyCode::PageUp => {
+            app.open_selected = app.open_selected.saturating_sub(10);
+        }
+        KeyCode::PageDown => {
+            app.open_selected =
+                (app.open_selected + 10).min(app.open_entries.len().saturating_sub(1));
+        }
+        KeyCode::Home => app.open_selected = 0,
+        KeyCode::End => {
+            app.open_selected = app.open_entries.len().saturating_sub(1);
+        }
         KeyCode::Enter => {
-            let path = app.open_path.clone();
+            let entry = match app.open_entries.get(app.open_selected).cloned() {
+                Some(e) => e,
+                None => return,
+            };
+            if entry.is_dir {
+                app.open_dir = entry.path;
+                app.open_filter.clear();
+                app.open_selected = 0;
+                refresh_file_entries(app);
+            } else {
+                let path = entry.path.to_string_lossy().into_owned();
+                let msg = load_pcap_file(app, &path);
+                app.status_error = Some(msg);
+                app.active_popup = None;
+            }
+        }
+        KeyCode::Backspace => {
+            if !app.open_filter.is_empty() {
+                app.open_filter.pop();
+                app.open_selected = 0;
+                refresh_file_entries(app);
+            } else if let Some(parent) = app.open_dir.parent() {
+                app.open_dir = parent.to_path_buf();
+                app.open_selected = 0;
+                refresh_file_entries(app);
+            }
+        }
+        KeyCode::Char(c) => {
+            app.open_filter.push(c);
+            app.open_selected = 0;
+            refresh_file_entries(app);
+        }
+        _ => {}
+    }
+}
+
+/// Manual-path edit mode within the file-open dialog.
+/// Tab toggles back to browser mode; Enter loads the typed path.
+fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_popup = None;
+        }
+        KeyCode::Tab => {
+            app.open_manual_mode = false;
+        }
+        KeyCode::Enter => {
+            let path = expand_tilde(&app.open_path);
             if path.is_empty() {
                 app.status_error = Some("No file path specified".to_string());
                 app.active_popup = None;
@@ -3456,19 +3815,29 @@ fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Expand a leading `~` to the user's home directory.
+fn expand_tilde(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix('~')
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return format!("{home}{rest}");
+    }
+    path.to_string()
+}
+
 /// Load a pcap file into the application, replacing all existing data.
 ///
-/// Parses each packet through etherparse, extracts SIP messages, and feeds
-/// them into the dialog store. Returns a status message describing the result.
+/// Parses each packet through etherparse, then routes it through SIP, RTP,
+/// and RTCP detection — mirroring the online-capture pipeline so that
+/// RTP-only pcaps populate the stream store for playback and WAV export.
 fn load_pcap_file(app: &mut App, path_str: &str) -> String {
-    use std::path::Path;
+    use crate::capture::parse::TransportProto;
 
-    let path = Path::new(path_str);
+    let path = std::path::Path::new(path_str);
     if !path.exists() {
         return format!("File not found: {path_str}");
     }
 
-    // Open pcap file
     let mut cap = match pcap::Capture::from_file(path) {
         Ok(c) => c,
         Err(e) => return format!("Failed to open: {e}"),
@@ -3500,9 +3869,11 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.mark_index = None;
     app.current_view = View::CallList;
 
-    // Process packets using the existing parse pipeline
     let mut packet_count = 0u64;
     let mut sip_count = 0u64;
+    let mut rtp_count = 0u64;
+    let mut rtcp_count = 0u64;
+    let mut rtp_heuristic = crate::rtp::heuristic::RtpHeuristic::new();
     let link_type = cap.get_datalink().0;
 
     while let Ok(pkt) = cap.next_packet() {
@@ -3523,10 +3894,17 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
             link_type,
         );
 
-        if let Ok(parsed) = crate::capture::parse::parse_packet(&capture_pkt)
-            && !parsed.payload.is_empty()
-            && crate::sip::is_sip_message(&parsed.payload)
-            && let Ok(sip_msg) = crate::sip::parser::parse_sip(
+        let Ok(parsed) = crate::capture::parse::parse_packet(&capture_pkt) else {
+            continue;
+        };
+        if parsed.payload.is_empty() {
+            continue;
+        }
+
+        // SIP: parse the message, ingest it into the dialog store, and link
+        // any SDP media endpoints so matching RTP streams join the dialog.
+        if crate::sip::is_sip_message(&parsed.payload) {
+            if let Ok(sip_msg) = crate::sip::parser::parse_sip(
                 &parsed.payload,
                 parsed.timestamp,
                 parsed.src_addr,
@@ -3534,14 +3912,70 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
                 parsed.src_port,
                 parsed.dst_port,
                 parsed.transport,
-            )
+            ) {
+                let sdp_links: Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)> =
+                    if let Some(sdp) = sip_msg.sdp()
+                        && let Some(call_id) = sip_msg.call_id()
+                    {
+                        sdp.media
+                            .iter()
+                            .filter_map(|media| {
+                                crate::sip::sdp::effective_address(media, &sdp)
+                                    .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                                    .map(|ip| {
+                                        (ip, media.port, call_id.to_string(), media.clone())
+                                    })
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
+                app.dialog_store.write().process_message(sip_msg);
+                sip_count += 1;
+
+                if !sdp_links.is_empty() {
+                    let mut ss = app.stream_store.write();
+                    for (ip, port, call_id, media) in &sdp_links {
+                        ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                    }
+                }
+            }
+            continue;
+        }
+
+        // RTP/RTCP detection — only UDP, and only after SIP was ruled out.
+        if parsed.transport != TransportProto::Udp {
+            continue;
+        }
+
+        if is_rtcp_offline(&parsed.payload, parsed.dst_port) {
+            let rtcp_packets = crate::rtp::rtcp::parse_rtcp(&parsed.payload);
+            if !rtcp_packets.is_empty() {
+                app.stream_store.write().process_rtcp(&rtcp_packets);
+                rtcp_count += rtcp_packets.len() as u64;
+            }
+            continue;
+        }
+
+        if crate::rtp::is_rtp_packet(&parsed.payload)
+            && let Ok(rtp_hdr) = crate::rtp::parser::parse_rtp_header(&parsed.payload)
         {
-            app.dialog_store.write().process_message(sip_msg);
-            sip_count += 1;
+            app.stream_store
+                .write()
+                .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
+            rtp_count += 1;
+            continue;
+        }
+
+        if let Some(rtp_hdr) = rtp_heuristic.check(&parsed) {
+            app.stream_store
+                .write()
+                .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
+            rtp_count += 1;
         }
     }
 
-    // Update capture mode display
     let filename = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -3549,7 +3983,38 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.set_capture_mode(format!("Offline ({filename})"));
     app.mark_data_updated();
 
-    format!("Loaded {sip_count} SIP messages from {packet_count} packets ({filename})")
+    // If the pcap had no SIP but did have RTP streams, jump straight to the
+    // stream list so playback / WAV export are immediately reachable.
+    let stream_count = app.stream_store.read().len();
+    if sip_count == 0 && stream_count > 0 {
+        app.current_view = View::StreamList;
+    }
+
+    let rtcp_suffix = if rtcp_count > 0 {
+        format!(", {rtcp_count} RTCP")
+    } else {
+        String::new()
+    };
+    format!(
+        "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename})"
+    )
+}
+
+/// Offline RTCP heuristic — matches the online-capture check in `main.rs`:
+/// odd dst port, version=2, and payload type in the 200-204 range.
+fn is_rtcp_offline(data: &[u8], dst_port: u16) -> bool {
+    if data.len() < 8 {
+        return false;
+    }
+    if dst_port.is_multiple_of(2) {
+        return false;
+    }
+    let version = (data[0] >> 6) & 0x03;
+    if version != 2 {
+        return false;
+    }
+    let pt = data[1];
+    (200..=204).contains(&pt)
 }
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
@@ -4539,6 +5004,27 @@ impl App {
         handle_key_event(self, key);
     }
 
+    #[doc(hidden)]
+    pub fn open_path_clear_for_test(&mut self) {
+        self.open_path.clear();
+        self.open_cursor = 0;
+    }
+
+    #[doc(hidden)]
+    pub fn set_open_dir_for_test(&mut self, dir: PathBuf) {
+        self.open_dir = dir;
+    }
+
+    #[doc(hidden)]
+    pub fn open_dir_for_test(&self) -> &std::path::Path {
+        &self.open_dir
+    }
+
+    #[doc(hidden)]
+    pub fn open_entry_names_for_test(&self) -> Vec<String> {
+        self.open_entries.iter().map(|e| e.name.clone()).collect()
+    }
+
     /// Simulate a keypress with modifiers.
     pub fn handle_key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let key = KeyEvent::new(code, modifiers);
@@ -4578,6 +5064,12 @@ impl App {
     /// Count dialogs visible after applying the active filter.
     pub fn visible_dialog_count(&self) -> usize {
         filtered_dialog_count(self)
+    }
+
+    /// Return the number of tracked RTP streams (exposed for integration tests).
+    #[doc(hidden)]
+    pub fn stream_count_for_test(&self) -> usize {
+        self.stream_store.read().len()
     }
 
     /// Return a reference to the filter dialog state (for tests).
