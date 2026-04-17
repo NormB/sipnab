@@ -59,12 +59,13 @@ mod tui_e2e {
     #[ignore]
     fn tui_tab_switches_to_stream_list() {
         let mut s = spawn_sipnab(&["-I", "tests/fixtures/sip_call.pcap"]);
-        s.expect("Call List").unwrap();
+        // "Dialogs:" appears in the call-list status line.
+        s.expect("Dialogs:").unwrap();
         // Send Tab to switch views
         s.send("\t").unwrap();
         keystroke_delay();
-        // Should see RTP Streams header
-        s.expect("RTP Streams").unwrap();
+        // Stream list table has an "SSRC" column header.
+        s.expect("SSRC").unwrap();
         // Quit
         s.send("q").unwrap();
         s.expect(Eof).unwrap();
@@ -74,7 +75,7 @@ mod tui_e2e {
     #[ignore]
     fn tui_f1_shows_help() {
         let mut s = spawn_sipnab(&["-I", "tests/fixtures/sip_call.pcap"]);
-        s.expect("Call List").unwrap();
+        s.expect("Dialogs:").unwrap();
         // Send F1 (xterm escape sequence: ESC O P)
         s.send("\x1bOP").unwrap();
         keystroke_delay();
@@ -92,7 +93,7 @@ mod tui_e2e {
     #[ignore]
     fn tui_enter_opens_call_flow() {
         let mut s = spawn_sipnab(&["-I", "tests/fixtures/sip_call.pcap"]);
-        s.expect("Call List").unwrap();
+        s.expect("Dialogs:").unwrap();
         // Enter on first dialog to open call flow
         s.send("\r").unwrap();
         keystroke_delay();
@@ -110,7 +111,7 @@ mod tui_e2e {
     #[ignore]
     fn tui_quit_exits_cleanly() {
         let mut s = spawn_sipnab(&["-I", "tests/fixtures/sip_call.pcap"]);
-        s.expect("Call List").unwrap();
+        s.expect("Dialogs:").unwrap();
         s.send("q").unwrap();
         // Should reach EOF (process exited)
         s.expect(Eof).unwrap();
