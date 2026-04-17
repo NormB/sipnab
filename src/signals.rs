@@ -47,14 +47,14 @@ pub fn install_handlers() {
     // which are async-signal-safe per POSIX.1-2008 §2.4.3.
     unsafe {
         let mut sa_shutdown: libc::sigaction = std::mem::zeroed();
-        sa_shutdown.sa_sigaction = shutdown_handler as usize;
+        sa_shutdown.sa_sigaction = shutdown_handler as *const () as usize;
         sa_shutdown.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa_shutdown.sa_mask);
         libc::sigaction(libc::SIGINT, &sa_shutdown, std::ptr::null_mut());
         libc::sigaction(libc::SIGTERM, &sa_shutdown, std::ptr::null_mut());
 
         let mut sa_rotate: libc::sigaction = std::mem::zeroed();
-        sa_rotate.sa_sigaction = rotate_handler as usize;
+        sa_rotate.sa_sigaction = rotate_handler as *const () as usize;
         sa_rotate.sa_flags = libc::SA_RESTART;
         libc::sigemptyset(&mut sa_rotate.sa_mask);
         libc::sigaction(libc::SIGUSR1, &sa_rotate, std::ptr::null_mut());
