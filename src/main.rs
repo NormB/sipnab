@@ -2230,10 +2230,13 @@ fn start_mcp_server(
                 });
             handle.ok()
         }
+        #[cfg(feature = "mcp-http")]
+        "http" => start_mcp_http_server(cli, dialog_store, stream_store),
+        #[cfg(not(feature = "mcp-http"))]
         "http" => {
             tracing::error!(
-                "--mcp-transport http requires the mcp-http feature, not yet wired \
-                 in this build. See Phase 8.2."
+                "--mcp-transport http requires the mcp-http feature; rebuild with \
+                 --features mcp-http (or full)."
             );
             None
         }
@@ -2242,4 +2245,65 @@ fn start_mcp_server(
             None
         }
     }
+}
+
+/// Resolve the MCP bind address (default 127.0.0.1:8731) plus the bearer token
+/// from --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN env, then start a
+/// dedicated thread with a current-thread tokio runtime running the HTTP
+/// transport.
+#[cfg(feature = "mcp-http")]
+fn start_mcp_http_server(
+    cli: &Cli,
+    dialog_store: Arc<RwLock<DialogStore>>,
+    stream_store: Arc<RwLock<StreamStore>>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let bind_str = cli
+        .mcp_bind
+        .as_deref()
+        .unwrap_or("127.0.0.1:8731");
+    let bind = match output::api::parse_bind_addr(bind_str) {
+        Ok(addr) => addr,
+        Err(e) => {
+            tracing::error!("--mcp-bind: {e}");
+            return None;
+        }
+    };
+
+    // Resolve token: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN.
+    let token: Option<String> = if let Some(t) = cli.mcp_token.as_ref() {
+        Some(t.trim().to_string())
+    } else if let Some(path) = cli.mcp_token_file.as_ref() {
+        match std::fs::read_to_string(path) {
+            Ok(s) => Some(s.trim().to_string()),
+            Err(e) => {
+                tracing::error!("--mcp-token-file '{path}': {e}");
+                return None;
+            }
+        }
+    } else {
+        None
+    }
+    .filter(|s| !s.is_empty());
+
+    let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store);
+    let handle = std::thread::Builder::new()
+        .name("mcp-http".into())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    tracing::error!("Failed to build tokio runtime for MCP HTTP: {e}");
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                if let Err(e) = sipnab::mcp::transport::serve_http(server, bind, token).await {
+                    tracing::error!("MCP HTTP server error: {e}");
+                }
+            });
+        });
+    handle.ok()
 }

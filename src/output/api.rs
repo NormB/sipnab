@@ -306,7 +306,7 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
 /// a short-circuiting form. `black_box` on the accumulator forces the
 /// compiler to materialize it, blocking dead-store elimination.
 #[inline(never)]
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let len_match = a.len() == b.len();
     let max_len = a.len().max(b.len());
     let mut byte_diff = 0u8;
