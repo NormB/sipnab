@@ -579,10 +579,18 @@ fn main() {
         }
     });
 
-    // 18. Branch: TUI mode vs non-interactive mode
-    #[cfg(feature = "tui")]
+    // 18. Branch: TUI mode vs non-interactive mode.
+    //
+    // MCP mode (--mcp) is treated as a non-interactive variant of batch mode:
+    // it forces no_tui, suppresses stdout text/JSON event output, and spawns
+    // an MCP server thread alongside the capture loop. The decision lives
+    // inside run_batch_mode so MCP mode reuses the existing single-parse,
+    // shared-store infrastructure from Phase 8.0a.
+    #[cfg(feature = "mcp")]
+    let use_tui = !cli.no_tui && !cli.mcp;
+    #[cfg(all(feature = "tui", not(feature = "mcp")))]
     let use_tui = !cli.no_tui;
-    #[cfg(not(feature = "tui"))]
+    #[cfg(not(any(feature = "tui", feature = "mcp")))]
     let use_tui = false;
 
     if use_tui {
@@ -1149,6 +1157,15 @@ fn run_batch_mode(
         None
     };
 
+    // Start MCP server if --mcp is specified (feature-gated). The server
+    // reads the same Arc<RwLock<...>> stores the packet loop writes to.
+    #[cfg(feature = "mcp")]
+    let _mcp_thread = if cli.mcp {
+        start_mcp_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store))
+    } else {
+        None
+    };
+
     // --after / -A trailing context counter
     let after_count = cli.after.unwrap_or(0);
 
@@ -1464,19 +1481,33 @@ fn run_batch_mode(
         }
     }
 
-    // If the API server is running, keep the process alive so clients can
-    // query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
+    // If the API or MCP server is running, keep the process alive so clients
+    // can query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
     // exits cleanly instead of blocking on a thread that never returns.
     #[cfg(feature = "api")]
-    if let Some(thread) = _api_thread {
-        tracing::info!("API server active — press Ctrl-C to stop");
+    let api_active = _api_thread.is_some();
+    #[cfg(not(feature = "api"))]
+    let api_active = false;
+
+    #[cfg(feature = "mcp")]
+    let mcp_active = _mcp_thread.is_some();
+    #[cfg(not(feature = "mcp"))]
+    let mcp_active = false;
+
+    if api_active || mcp_active {
+        if api_active {
+            tracing::info!("API server active — press Ctrl-C to stop");
+        }
+        if mcp_active {
+            tracing::info!("MCP server active — press Ctrl-C to stop");
+        }
         while !signals::shutdown_requested() {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        // The axum task does not have a graceful-shutdown signal wired in
-        // here; dropping the JoinHandle and letting process exit tear down
-        // the listener is acceptable for batch mode.
-        drop(thread);
+        #[cfg(feature = "api")]
+        drop(_api_thread);
+        #[cfg(feature = "mcp")]
+        drop(_mcp_thread);
     }
 }
 
@@ -1921,6 +1952,11 @@ fn dispatch_sip_output(
     cli: &Cli,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
 ) {
+    // Phase 8.1 — MCP mode owns stdout; no per-packet text/JSON output.
+    #[cfg(feature = "mcp")]
+    if cli.mcp {
+        return;
+    }
     if cli.json || cli.json_pretty {
         let json = output::json::message_to_json(msg);
         print!("{json}");
@@ -2159,3 +2195,51 @@ fn start_api_server(
 // `mirror_to_shared_stores` was removed in Phase 8.0a — batch mode now writes
 // to a single Arc<RwLock<...>> store that the API server reads from directly,
 // eliminating the second parse pass per packet.
+
+/// Spawn the MCP server on a dedicated thread with its own current-thread
+/// tokio runtime. Mirrors the `start_api_server` pattern. The server holds
+/// references to the same Arc<RwLock<...>> stores the capture loop writes to.
+#[cfg(feature = "mcp")]
+fn start_mcp_server(
+    cli: &Cli,
+    dialog_store: Arc<RwLock<DialogStore>>,
+    stream_store: Arc<RwLock<StreamStore>>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let transport = cli.mcp_transport.as_str();
+    match transport {
+        "stdio" => {
+            let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store);
+            let handle = std::thread::Builder::new()
+                .name("mcp-stdio".into())
+                .spawn(move || {
+                    let runtime = match tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                    {
+                        Ok(rt) => rt,
+                        Err(e) => {
+                            tracing::error!("Failed to build tokio runtime for MCP: {e}");
+                            return;
+                        }
+                    };
+                    runtime.block_on(async move {
+                        if let Err(e) = sipnab::mcp::transport::serve_stdio(server).await {
+                            tracing::error!("MCP stdio server error: {e}");
+                        }
+                    });
+                });
+            handle.ok()
+        }
+        "http" => {
+            tracing::error!(
+                "--mcp-transport http requires the mcp-http feature, not yet wired \
+                 in this build. See Phase 8.2."
+            );
+            None
+        }
+        other => {
+            tracing::error!("unknown --mcp-transport '{other}', expected stdio or http");
+            None
+        }
+    }
+}
