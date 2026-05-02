@@ -1967,7 +1967,13 @@ fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &Stream
                 .into_iter()
                 .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
                 .collect();
-            let diagnosis = sipnab::rtp::diagnosis::diagnose_media(&dialog_streams, None);
+            let mut diagnosis = sipnab::rtp::diagnosis::diagnose_media(&dialog_streams, None);
+            sipnab::rtp::diagnosis::diagnose_asymmetry(
+                &mut diagnosis,
+                Some(dialog),
+                &dialog_streams,
+                &sipnab::rtp::diagnosis::AsymmetryThresholds::default(),
+            );
             let format = if cli.json || cli.json_pretty {
                 ReportFormat::Json
             } else if cli.markdown {
