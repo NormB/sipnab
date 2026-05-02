@@ -41,7 +41,9 @@ struct DetectionEngines {
     fraud: Option<FraudDetector>,
     digest: Option<DigestLeakDetector>,
     reg_flood: Option<RegFloodDetector>,
-    alerts: AlertEngine,
+    /// Shared with the MCP server (when --mcp is on) so the
+    /// `security_findings` tool can read the FindingsHistory ring buffer.
+    alerts: Arc<RwLock<AlertEngine>>,
     kill_handle: Option<ScannerKillHandle>,
     kill_response_code: u16,
 }
@@ -1112,6 +1114,7 @@ fn run_batch_mode(
     if cli.syslog {
         alert_engine.set_syslog(true);
     }
+    let alert_engine = Arc::new(RwLock::new(alert_engine));
 
     let mut engines = DetectionEngines {
         scanner: scanner_detector,
@@ -1158,10 +1161,16 @@ fn run_batch_mode(
     };
 
     // Start MCP server if --mcp is specified (feature-gated). The server
-    // reads the same Arc<RwLock<...>> stores the packet loop writes to.
+    // reads the same Arc<RwLock<...>> stores the packet loop writes to,
+    // plus the shared AlertEngine for the security_findings tool.
     #[cfg(feature = "mcp")]
     let _mcp_thread = if cli.mcp {
-        start_mcp_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store))
+        start_mcp_server(
+            &cli,
+            Arc::clone(&dialog_store),
+            Arc::clone(&stream_store),
+            Arc::clone(&engines.alerts),
+        )
     } else {
         None
     };
@@ -1663,7 +1672,7 @@ fn process_parsed_packet(
                 if let Some(det) = scanner_detector
                     && let Some(alert) = det.check(&sip_msg)
                 {
-                    alert_engine.fire(
+                    alert_engine.write().fire(
                         "scanner",
                         alert.src_ip,
                         &format!(
@@ -1699,7 +1708,7 @@ fn process_parsed_packet(
                     && let Some(dialog) = dialog_store.get(call_id)
                     && let Some(alert) = det.check(&sip_msg, dialog)
                 {
-                    alert_engine.fire(
+                    alert_engine.write().fire(
                         "fraud",
                         alert.src_ip,
                         &format!("{:?}: {}", alert.alert_type, alert.detail),
@@ -1710,7 +1719,7 @@ fn process_parsed_packet(
                 if let Some(det) = digest_detector {
                     let alerts = det.check(&sip_msg);
                     for alert in &alerts {
-                        alert_engine.fire(
+                        alert_engine.write().fire(
                             "digest",
                             sip_msg.src_addr,
                             &format!("{:?}: {}", alert.vulnerability, alert.detail),
@@ -1722,7 +1731,7 @@ fn process_parsed_packet(
                 if let Some(det) = reg_flood_detector
                     && let Some(alert) = det.check(&sip_msg)
                 {
-                    alert_engine.fire(
+                    alert_engine.write().fire(
                         "reg_flood",
                         alert.src_ip,
                         &format!(
@@ -2204,11 +2213,13 @@ fn start_mcp_server(
     cli: &Cli,
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
+    alerts: Arc<RwLock<AlertEngine>>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let transport = cli.mcp_transport.as_str();
     match transport {
         "stdio" => {
-            let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store);
+            let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store)
+                .with_alert_engine(alerts);
             let handle = std::thread::Builder::new()
                 .name("mcp-stdio".into())
                 .spawn(move || {
@@ -2231,7 +2242,7 @@ fn start_mcp_server(
             handle.ok()
         }
         #[cfg(feature = "mcp-http")]
-        "http" => start_mcp_http_server(cli, dialog_store, stream_store),
+        "http" => start_mcp_http_server(cli, dialog_store, stream_store, alerts),
         #[cfg(not(feature = "mcp-http"))]
         "http" => {
             tracing::error!(
@@ -2256,6 +2267,7 @@ fn start_mcp_http_server(
     cli: &Cli,
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
+    alerts: Arc<RwLock<AlertEngine>>,
 ) -> Option<std::thread::JoinHandle<()>> {
     let bind_str = cli
         .mcp_bind
@@ -2285,7 +2297,8 @@ fn start_mcp_http_server(
     }
     .filter(|s| !s.is_empty());
 
-    let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store);
+    let server =
+        sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
     let handle = std::thread::Builder::new()
         .name("mcp-http".into())
         .spawn(move || {

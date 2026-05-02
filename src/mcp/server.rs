@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use crate::output::{ReportFormat, generate_call_report};
 use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
 use crate::rtp::stream_store::StreamStore;
+use crate::security::alerting::AlertEngine;
 use crate::sip::dialog::SipDialog;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::{FilterExpr, expand_alias};
@@ -39,6 +40,9 @@ use super::shape::{HARD_LIMIT, resolve_limit};
 pub struct SipnabMcp {
     pub dialog_store: Arc<RwLock<DialogStore>>,
     pub stream_store: Arc<RwLock<StreamStore>>,
+    /// Optional shared alert engine for `security_findings`. When None,
+    /// the tool returns an empty list rather than erroring.
+    pub alert_engine: Option<Arc<RwLock<AlertEngine>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -51,8 +55,16 @@ impl SipnabMcp {
         Self {
             dialog_store,
             stream_store,
+            alert_engine: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Attach a shared alert engine so the `security_findings` tool can
+    /// read from its FindingsHistory ring buffer.
+    pub fn with_alert_engine(mut self, alerts: Arc<RwLock<AlertEngine>>) -> Self {
+        self.alert_engine = Some(alerts);
+        self
     }
 }
 
@@ -184,6 +196,28 @@ pub struct StatsResponse {
     pub stream_count: usize,
     pub orphaned_stream_count: usize,
     pub active_call_count: usize,
+}
+
+/// Parameters for `security_findings`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SecurityFindingsParams {
+    /// Filter to specific rule kinds (e.g. ["scanner","fraud"]). Empty/None
+    /// returns all kinds.
+    pub kinds: Option<Vec<String>>,
+    /// RFC 3339 timestamp; only findings recorded strictly after are returned.
+    pub since: Option<String>,
+    /// Maximum findings to return (default 50, max 1000).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct FindingJson {
+    pub rule_name: String,
+    pub src_ip: String,
+    pub detail: String,
+    pub timestamp: String,
 }
 
 // ── Compact summary returned by list_dialogs / find_problems ────────
@@ -728,6 +762,58 @@ impl SipnabMcp {
         };
 
         Ok(CallToolResult::success(vec![Content::json(response)?]))
+    }
+
+    /// Returns recent security findings (scanner/fraud/digest/reg-flood/etc.)
+    /// from the in-memory ring buffer. When the AlertEngine isn't attached
+    /// (e.g. running in a query-only mode without active detection rules),
+    /// returns an empty list rather than erroring.
+    #[tool(
+        name = "security_findings",
+        description = "Returns recent security findings recorded by the \
+                       active detection rules (scanner, fraud, digest leaks, \
+                       reg flood). Optional `kinds` filter and `since` RFC \
+                       3339 cursor; empty list when no AlertEngine is \
+                       attached."
+    )]
+    pub async fn security_findings(
+        &self,
+        Parameters(params): Parameters<SecurityFindingsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = resolve_limit(params.limit);
+        let since: Option<chrono::DateTime<chrono::Utc>> = match params.since {
+            Some(s) => match chrono::DateTime::parse_from_rfc3339(&s) {
+                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                Err(e) => {
+                    return Err(rmcp::ErrorData::invalid_params(
+                        format!("since must be RFC 3339: {e}"),
+                        None,
+                    ));
+                }
+            },
+            None => None,
+        };
+        let findings: Vec<FindingJson> = match &self.alert_engine {
+            Some(engine) => {
+                let kinds_owned: Vec<String> = params.kinds.unwrap_or_default();
+                let kinds_ref: Vec<&str> = kinds_owned.iter().map(String::as_str).collect();
+                let guard = engine.read();
+                let raw = guard.iter_findings(&kinds_ref, since, limit);
+                raw.iter()
+                    .map(|f| FindingJson {
+                        rule_name: f.rule_name.clone(),
+                        src_ip: f.src_ip.to_string(),
+                        detail: super::shape::truncate_string(
+                            &f.detail,
+                            super::shape::MAX_BODY_BYTES,
+                        ),
+                        timestamp: f.timestamp.to_rfc3339(),
+                    })
+                    .collect::<Vec<_>>()
+            }
+            None => Vec::new(),
+        };
+        Ok(CallToolResult::success(vec![Content::json(findings)?]))
     }
 
     /// Aggregate counters across the active stores.
