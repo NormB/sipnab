@@ -133,6 +133,11 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint |
 | `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections |
+| `--mcp` | -- | off | Run sipnab as an MCP server. Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
+| `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. |
+| `--mcp-bind` | `<ADDR>` | `127.0.0.1:8731` | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
+| `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. |
+| `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |

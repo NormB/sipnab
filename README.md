@@ -11,16 +11,18 @@ security analysis.
 
 ## Features
 
-- **Three output modes** -- interactive TUI, non-interactive CLI, JSON
+- **Four output modes** -- interactive TUI, non-interactive CLI, JSON, MCP server (drive sipnab from an AI agent)
 - **SIP header matching** -- From, To, Contact, User-Agent, filter DSL
 - **RTP quality monitoring** -- jitter, loss, MOS scoring, one-way audio detection
-- **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues`
+- **Per-call asymmetry signals** -- codec, ptime, payload-type, duration, late-media (Phase 8.7)
+- **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues`, `--codec-asym`, `--ptime-asym`, `--payload-asym`, `--duration-asym`, `--late-media`
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
 - **HEP v3** -- send/receive Homer Encapsulation Protocol
 - **TLS/SRTP decryption** -- private key, keylog file, DTLS support
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
+- **MCP server mode** -- expose read-only analysis (dialogs, streams, RTP, security findings) as Model Context Protocol tools an AI agent can call. Stdio + HTTP transports. See [`docs/mcp-overview.md`](./docs/mcp-overview.md).
 
 ## Prerequisites
 
