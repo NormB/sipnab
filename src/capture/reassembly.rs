@@ -122,7 +122,7 @@ impl FragmentReassembler {
 
             // Overlap detection: ranges [existing_offset..existing_end) and [byte_offset..new_end)
             if byte_offset < existing_end && new_end > *existing_offset {
-                log::warn!(
+                tracing::warn!(
                     "Overlapping IP fragment detected (id={ip_id}, src={}, dst={}); \
                      dropping all fragments for this datagram (possible evasion)",
                     parsed.src_addr,
@@ -146,7 +146,7 @@ impl FragmentReassembler {
 
         // Safety check: refuse to reassemble datagrams > 64KB
         if total_len > MAX_REASSEMBLED_SIZE {
-            log::warn!(
+            tracing::warn!(
                 "Oversized reassembled datagram ({total_len} bytes > {MAX_REASSEMBLED_SIZE}); \
                  dropping (id={ip_id}, src={}, dst={})",
                 parsed.src_addr,
@@ -179,7 +179,7 @@ impl FragmentReassembler {
             reassembled[*off..*off + data.len()].copy_from_slice(data);
         }
 
-        log::debug!(
+        tracing::debug!(
             "Reassembled IP datagram: id={ip_id}, {} -> {}, {total_len} bytes",
             parsed.src_addr,
             parsed.dst_addr,
@@ -199,7 +199,7 @@ impl FragmentReassembler {
             .retain(|_key, entry| now.duration_since(entry.created) < self.ttl);
         let evicted = before - self.entries.len();
         if evicted > 0 {
-            log::debug!("Fragment reassembler: swept {evicted} stale entries");
+            tracing::debug!("Fragment reassembler: swept {evicted} stale entries");
         }
     }
 
@@ -221,7 +221,7 @@ impl FragmentReassembler {
             .min_by_key(|(_, e)| e.created)
             .map(|(k, _)| k.clone())
         {
-            log::warn!(
+            tracing::warn!(
                 "Fragment reassembler at capacity ({}); evicting oldest entry",
                 self.max_entries,
             );
@@ -328,7 +328,7 @@ impl TcpReassembler {
         // RST: discard the stream entirely
         if flags.rst {
             if self.streams.remove(&key).is_some() {
-                log::debug!("TCP RST: discarded stream {} -> {}", key.src, key.dst,);
+                tracing::debug!("TCP RST: discarded stream {} -> {}", key.src, key.dst,);
             }
             return Vec::new();
         }
@@ -403,7 +403,7 @@ impl TcpReassembler {
         if stream.buffered_bytes > MAX_TCP_BUFFER {
             let flushed = self.drain_in_order(&key);
             if !flushed.is_empty() {
-                log::debug!(
+                tracing::debug!(
                     "TCP buffer overflow flush: {} -> {} ({} bytes)",
                     key.src,
                     key.dst,
@@ -473,7 +473,7 @@ impl TcpReassembler {
             .retain(|_key, stream| now.duration_since(stream.last_seen) < self.ttl);
         let evicted = before - self.streams.len();
         if evicted > 0 {
-            log::debug!("TCP reassembler: swept {evicted} stale streams");
+            tracing::debug!("TCP reassembler: swept {evicted} stale streams");
         }
     }
 
@@ -495,7 +495,7 @@ impl TcpReassembler {
             .min_by_key(|(_, s)| s.last_seen)
             .map(|(k, _)| k.clone())
         {
-            log::warn!(
+            tracing::warn!(
                 "TCP reassembler at capacity ({}); evicting oldest stream",
                 self.max_entries,
             );

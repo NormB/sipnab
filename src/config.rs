@@ -114,7 +114,7 @@ fn warn_unknown_keys(value: &toml::Value) {
     };
     for key in table.keys() {
         if !root_keys.contains(&key.as_str()) {
-            log::warn!("Unknown config key: {key}");
+            tracing::warn!("Unknown config key: {key}");
         }
     }
 
@@ -124,7 +124,7 @@ fn warn_unknown_keys(value: &toml::Value) {
         {
             for key in section_table.keys() {
                 if !valid_keys.contains(&key.as_str()) {
-                    log::warn!("Unknown config key: {section}.{key}");
+                    tracing::warn!("Unknown config key: {section}.{key}");
                 }
             }
         }
@@ -380,7 +380,7 @@ pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
             Some(Color::Rgb(r, g, b))
         }
         _ => {
-            log::warn!("Unknown color value: {s:?}");
+            tracing::warn!("Unknown color value: {s:?}");
             None
         }
     }
@@ -406,7 +406,7 @@ pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
             .filter(|&n| (1..=12).contains(&n))
             .map(KeyCode::F),
         _ => {
-            log::warn!("Unknown keybinding value: {s:?}");
+            tracing::warn!("Unknown keybinding value: {s:?}");
             None
         }
     }
@@ -435,7 +435,7 @@ impl Config {
     /// without searching any files.
     pub fn load(explicit_path: Option<&str>, skip_default: bool) -> Result<LoadedConfig, String> {
         if skip_default {
-            log::debug!("Config loading skipped (--no-config)");
+            tracing::debug!("Config loading skipped (--no-config)");
             return Ok(LoadedConfig {
                 config: Config::default(),
                 source: None,
@@ -465,7 +465,7 @@ impl Config {
                     source: Some(p),
                 });
             }
-            log::debug!(
+            tracing::debug!(
                 "SIPNAB_CONFIG={} does not exist, continuing search",
                 env_path
             );
@@ -483,7 +483,7 @@ impl Config {
             }
         }
 
-        log::debug!("No config file found, using defaults");
+        tracing::debug!("No config file found, using defaults");
         Ok(LoadedConfig {
             config: Config::default(),
             source: None,

@@ -59,7 +59,7 @@ pub fn install_handlers() {
         libc::sigemptyset(&mut sa_rotate.sa_mask);
         libc::sigaction(libc::SIGUSR1, &sa_rotate, std::ptr::null_mut());
     }
-    log::debug!("Signal handlers installed (SIGINT, SIGTERM, SIGUSR1)");
+    tracing::debug!("Signal handlers installed (SIGINT, SIGTERM, SIGUSR1)");
 }
 
 /// Signal handler for SIGINT and SIGTERM.

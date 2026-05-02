@@ -34,7 +34,7 @@ pub fn start_metrics_server(
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| anyhow::anyhow!("Failed to bind metrics server on {bind_addr}: {e}"))?;
 
-    log::info!("Prometheus metrics server listening on {bind_addr}");
+    tracing::info!("Prometheus metrics server listening on {bind_addr}");
 
     let handle = std::thread::Builder::new()
         .name("metrics-server".to_string())
@@ -47,7 +47,7 @@ pub fn start_metrics_server(
                 let mut stream = match stream {
                     Ok(s) => s,
                     Err(e) => {
-                        log::debug!("Metrics server accept error: {e}");
+                        tracing::debug!("Metrics server accept error: {e}");
                         continue;
                     }
                 };

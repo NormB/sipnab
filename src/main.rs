@@ -105,16 +105,27 @@ fn main() {
     } else {
         "info"
     };
-    env_logger::Builder::from_env(env_logger::Env::new().filter_or("SIPNAB_LOG", default_level))
-        .format_timestamp_millis()
-        .init();
+    // Phase 8.0b: tracing-subscriber writes to stderr by default — preserves
+    // the future stdio MCP invariant that stdout is the JSON-RPC wire.
+    // tracing-log routes any remaining `log::*` events from third-party deps
+    // through the same subscriber.
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("SIPNAB_LOG")
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(default_level));
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .compact()
+        .finish();
+    let _ = tracing::subscriber::set_global_default(subscriber);
+    let _ = tracing_log::LogTracer::init();
 
     // 3. Install signal handlers
     signals::install_handlers();
 
     // 4. Validate CLI argument combinations
     if let Err(msg) = cli.validate() {
-        log::error!("{}", msg);
+        tracing::error!("{}", msg);
         std::process::exit(2);
     }
 
@@ -125,19 +136,19 @@ fn main() {
     let loaded = match Config::load(cli.config.as_deref(), cli.no_config) {
         Ok(loaded) => {
             if let Some(ref source) = loaded.source {
-                log::info!("Loaded config from {}", source.display());
+                tracing::info!("Loaded config from {}", source.display());
             }
             loaded
         }
         Err(e) => {
-            log::error!("{}", e);
+            tracing::error!("{}", e);
             std::process::exit(1);
         }
     };
 
     // 5a. Validate limits config
     if let Err(e) = loaded.config.limits.validate() {
-        log::error!("{e}");
+        tracing::error!("{e}");
         std::process::exit(1);
     }
 
@@ -174,7 +185,7 @@ fn main() {
         match loaded.config.dump() {
             Ok(toml_str) => println!("{toml_str}"),
             Err(e) => {
-                log::error!("Failed to dump config: {e}");
+                tracing::error!("Failed to dump config: {e}");
                 std::process::exit(1);
             }
         }
@@ -203,7 +214,7 @@ fn main() {
                 .map(|cidr| match sipnab::capture::hep::CidrRange::parse(cidr) {
                     Ok(r) => r,
                     Err(e) => {
-                        log::error!("Invalid --hep-allow CIDR '{}': {}", cidr, e);
+                        tracing::error!("Invalid --hep-allow CIDR '{}': {}", cidr, e);
                         std::process::exit(2);
                     }
                 })
@@ -224,18 +235,18 @@ fn main() {
             // Auto-detect default network interface (matches sngrep behavior)
             match capture::device::find_default_device() {
                 Ok(device) => {
-                    log::info!("Auto-detected capture device: {}", device);
+                    tracing::info!("Auto-detected capture device: {}", device);
                     CaptureSource::Live { device }
                 }
                 Err(e) => {
                     let devices = capture::device::list_devices();
                     if devices.is_empty() {
-                        log::error!(
+                        tracing::error!(
                             "No capture device found. Use -d <device> or -I <file>\n  \
                              Try: sudo sipnab"
                         );
                     } else {
-                        log::error!(
+                        tracing::error!(
                             "{}\n  Available devices: {}\n  Try: sipnab -d {}",
                             e,
                             devices.join(", "),
@@ -262,7 +273,7 @@ fn main() {
     let portrange = match parse_portrange(portrange_str) {
         Ok(range) => range,
         Err(e) => {
-            log::error!("Invalid --portrange: {e}");
+            tracing::error!("Invalid --portrange: {e}");
             std::process::exit(2);
         }
     };
@@ -278,7 +289,7 @@ fn main() {
             format!("portrange {lo}-{hi}")
         });
         if let Some(ref filter) = capture_config.bpf_filter {
-            log::info!("Auto-generated BPF filter: {filter}");
+            tracing::info!("Auto-generated BPF filter: {filter}");
         }
     }
 
@@ -289,7 +300,7 @@ fn main() {
         let (dur, size) = match parse_autostop(cond) {
             Ok(v) => v,
             Err(e) => {
-                log::error!("Invalid --autostop: {e}");
+                tracing::error!("Invalid --autostop: {e}");
                 std::process::exit(2);
             }
         };
@@ -305,7 +316,7 @@ fn main() {
         match capture::writer::parse_split(split) {
             Ok(params) => params,
             Err(e) => {
-                log::error!("{e}");
+                tracing::error!("{e}");
                 std::process::exit(2);
             }
         }
@@ -319,7 +330,7 @@ fn main() {
     let matcher = match SipMatcher::new_with_overrides(&cli, None, effective_from, effective_to) {
         Ok(m) => m,
         Err(e) => {
-            log::error!("Invalid filter pattern: {e}");
+            tracing::error!("Invalid filter pattern: {e}");
             std::process::exit(2);
         }
     };
@@ -360,7 +371,7 @@ fn main() {
         let device_str = match &source {
             CaptureSource::Live { device } => device.clone(),
             _ => {
-                log::error!("--multi-device requires a live capture device (-d)");
+                tracing::error!("--multi-device requires a live capture device (-d)");
                 std::process::exit(2);
             }
         };
@@ -368,7 +379,7 @@ fn main() {
         {
             Ok(h) => h,
             Err(e) => {
-                log::error!("Failed to start multi-device capture: {e}");
+                tracing::error!("Failed to start multi-device capture: {e}");
                 std::process::exit(1);
             }
         }
@@ -376,7 +387,7 @@ fn main() {
         match capture::start_capture(source, capture_config.clone(), tx, Some(ready_tx)) {
             Ok(h) => h,
             Err(e) => {
-                log::error!("Failed to start capture: {e}");
+                tracing::error!("Failed to start capture: {e}");
                 std::process::exit(1);
             }
         }
@@ -386,7 +397,7 @@ fn main() {
     //      This must happen BEFORE privilege drop so we don't lose CAP_NET_RAW.
     match ready_rx.recv() {
         Ok(Ok(())) => {
-            log::debug!("Capture source opened successfully");
+            tracing::debug!("Capture source opened successfully");
         }
         Ok(Err(e)) => {
             let is_permission = e.contains("ermission")
@@ -398,7 +409,7 @@ fn main() {
                     CaptureSource::Live { device } => device.as_str(),
                     _ => "capture source",
                 };
-                log::error!(
+                tracing::error!(
                     "Permission denied on '{}'. Run with sudo or set capabilities:\n  \
                      sudo sipnab\n  \
                      # or (Linux only):\n  \
@@ -406,12 +417,12 @@ fn main() {
                     dev_name
                 );
             } else {
-                log::error!("Capture source failed to open: {e}");
+                tracing::error!("Capture source failed to open: {e}");
             }
             std::process::exit(1);
         }
         Err(_) => {
-            log::error!("Capture thread exited before signaling ready");
+            tracing::error!("Capture thread exited before signaling ready");
             std::process::exit(1);
         }
     }
@@ -425,7 +436,7 @@ fn main() {
     if let Some(ref chroot_dir) = effective_chroot
         && let Err(e) = privilege::do_chroot(std::path::Path::new(chroot_dir))
     {
-        log::error!("Failed to chroot: {e}");
+        tracing::error!("Failed to chroot: {e}");
         std::process::exit(1);
     }
 
@@ -437,7 +448,7 @@ fn main() {
     let effective_no_priv_drop =
         cli.no_priv_drop || loaded.config.privilege.no_priv_drop.unwrap_or(false);
     if let Err(e) = privilege::drop_privileges(effective_user, effective_no_priv_drop) {
-        log::error!("Failed to drop privileges: {e}");
+        tracing::error!("Failed to drop privileges: {e}");
         std::process::exit(1);
     }
 
@@ -449,14 +460,14 @@ fn main() {
     // 16c. Validate --hep-send requires hep feature
     #[cfg(not(feature = "hep"))]
     if cli.hep_send.is_some() {
-        log::error!("HEP support requires --features hep");
+        tracing::error!("HEP support requires --features hep");
         std::process::exit(2);
     }
 
     // 16d. Validate --hep-parse requires hep feature
     #[cfg(not(feature = "hep"))]
     if cli.hep_parse {
-        log::error!("HEP support requires --features hep");
+        tracing::error!("HEP support requires --features hep");
         std::process::exit(2);
     }
 
@@ -464,19 +475,19 @@ fn main() {
     #[cfg(not(feature = "tls"))]
     {
         if cli.tls_key.is_some() {
-            log::error!("--tls-key requires the 'tls' feature (not compiled in)");
+            tracing::error!("--tls-key requires the 'tls' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.keylog.is_some() {
-            log::error!("--keylog requires the 'tls' feature (not compiled in)");
+            tracing::error!("--keylog requires the 'tls' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.keylog_watch {
-            log::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
+            tracing::error!("--keylog-watch requires the 'tls' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.srtp_keys.is_some() {
-            log::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
+            tracing::error!("--srtp-keys requires the 'tls' feature (not compiled in)");
             std::process::exit(2);
         }
     }
@@ -485,19 +496,19 @@ fn main() {
     #[cfg(not(feature = "api"))]
     {
         if cli.api.is_some() {
-            log::error!("--api requires the 'api' feature (not compiled in)");
+            tracing::error!("--api requires the 'api' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.api_key.is_some() {
-            log::error!("--api-key requires the 'api' feature (not compiled in)");
+            tracing::error!("--api-key requires the 'api' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.api_tls_cert.is_some() {
-            log::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
+            tracing::error!("--api-tls-cert requires the 'api' feature (not compiled in)");
             std::process::exit(2);
         }
         if cli.api_tls_key.is_some() {
-            log::error!("--api-tls-key requires the 'api' feature (not compiled in)");
+            tracing::error!("--api-tls-key requires the 'api' feature (not compiled in)");
             std::process::exit(2);
         }
     }
@@ -506,7 +517,7 @@ fn main() {
     match cli.pcap_export_mode.as_str() {
         "decrypted" | "encrypted+dsb" | "raw" => {}
         other => {
-            log::error!(
+            tracing::error!(
                 "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
             );
             std::process::exit(2);
@@ -520,23 +531,23 @@ fn main() {
             dtls_path,
         )) {
             Ok(count) => {
-                log::info!("DTLS keylog: {count} entries loaded from {dtls_path}");
+                tracing::info!("DTLS keylog: {count} entries loaded from {dtls_path}");
             }
             Err(e) => {
-                log::error!("Failed to load DTLS keylog: {e}");
+                tracing::error!("Failed to load DTLS keylog: {e}");
                 std::process::exit(1);
             }
         }
     }
     #[cfg(not(feature = "tls"))]
     if cli.dtls_keylog.is_some() {
-        log::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
+        tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
         std::process::exit(2);
     }
 
     // 16g. Validate --api-tls-cert/--api-tls-key consistency
     if cli.api_tls_cert.is_some() != cli.api_tls_key.is_some() {
-        log::error!("--api-tls-cert and --api-tls-key must both be specified together");
+        tracing::error!("--api-tls-cert and --api-tls-key must both be specified together");
         std::process::exit(2);
     }
 
@@ -549,7 +560,7 @@ fn main() {
         && !cli.allow_coredump
         && let Err(e) = privilege::disable_core_dumps()
     {
-        log::error!("Failed to disable core dumps: {e}");
+        tracing::error!("Failed to disable core dumps: {e}");
         std::process::exit(1);
     }
 
@@ -562,7 +573,7 @@ fn main() {
         match sipnab::output::prometheus_server::parse_metrics_addr(addr_str) {
             Ok(a) => a,
             Err(e) => {
-                log::error!("Invalid --metrics address: {e}");
+                tracing::error!("Invalid --metrics address: {e}");
                 std::process::exit(2);
             }
         }
@@ -717,7 +728,7 @@ fn run_tui_mode(
         ) {
             Ok(h) => Some(h),
             Err(e) => {
-                log::error!("Failed to start metrics server: {e}");
+                tracing::error!("Failed to start metrics server: {e}");
                 None
             }
         }
@@ -784,12 +795,12 @@ fn run_tui_mode(
                                 && let Err(e) =
                                     w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                             {
-                                log::warn!("Failed to write DSB: {e}");
+                                tracing::warn!("Failed to write DSB: {e}");
                             }
                             writer = Some(w);
                         }
                         Err(e) => {
-                            log::error!("Failed to open output file: {e}");
+                            tracing::error!("Failed to open output file: {e}");
                             break;
                         }
                     }
@@ -798,7 +809,7 @@ fn run_tui_mode(
                 if let Some(ref mut w) = writer
                     && let Err(e) = w.write(&packet)
                 {
-                    log::error!("Failed to write packet: {e}");
+                    tracing::error!("Failed to write packet: {e}");
                     break;
                 }
 
@@ -829,7 +840,7 @@ fn run_tui_mode(
     let processing_thread = match processing_thread {
         Ok(handle) => handle,
         Err(e) => {
-            log::error!("Failed to spawn processing thread: {e}");
+            tracing::error!("Failed to spawn processing thread: {e}");
             std::process::exit(1);
         }
     };
@@ -851,7 +862,7 @@ fn run_tui_mode(
         keymap,
         config.display.visible_columns.clone(),
     ) {
-        log::error!("TUI error: {e}");
+        tracing::error!("TUI error: {e}");
     }
 
     // Signal shutdown and wait for threads
@@ -859,7 +870,7 @@ fn run_tui_mode(
     signals::request_shutdown();
 
     if let Err(e) = processing_thread.join() {
-        log::error!("Processing thread panicked: {:?}", e);
+        tracing::error!("Processing thread panicked: {:?}", e);
     }
 
     drop(handle);
@@ -990,11 +1001,11 @@ fn run_batch_mode(
     let hep_sender: Option<sipnab::capture::hep::HepSender> = if let Some(ref addr) = cli.hep_send {
         match sipnab::capture::hep::HepSender::new(addr, 1) {
             Ok(sender) => {
-                log::info!("HEP sender targeting {addr}");
+                tracing::info!("HEP sender targeting {addr}");
                 Some(sender)
             }
             Err(e) => {
-                log::error!("Failed to create HEP sender: {e}");
+                tracing::error!("Failed to create HEP sender: {e}");
                 None
             }
         }
@@ -1003,13 +1014,24 @@ fn run_batch_mode(
     };
 
     // 17. Initialize processing state
+    //
+    // Stores live behind Arc<RwLock<...>> from the start so the API server
+    // (when --api is set) reads from the SAME store the packet loop writes
+    // to, eliminating the prior mirror-and-double-parse pattern. In the
+    // common single-writer batch case the locks are uncontested.
     let mut processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
-    let mut dialog_store = DialogStore::new(cli.limit as usize, cli.rotate);
+    let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(DialogStore::new(
+        cli.limit as usize,
+        cli.rotate,
+    )));
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
-    let mut stream_store = StreamStore::new(cli.max_streams as usize);
-    if let Some(max_frames) = config.limits.max_audio_frames {
-        stream_store.set_max_audio_frames(max_frames as usize);
-    }
+    let stream_store: Arc<RwLock<StreamStore>> = {
+        let mut ss = StreamStore::new(cli.max_streams as usize);
+        if let Some(max_frames) = config.limits.max_audio_frames {
+            ss.set_max_audio_frames(max_frames as usize);
+        }
+        Arc::new(RwLock::new(ss))
+    };
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
     // 17a. Initialize security detectors
@@ -1030,7 +1052,7 @@ fn run_batch_mode(
         match process_isolation::spawn_scanner_kill_worker(None) {
             Ok(handle) => Some(handle),
             Err(e) => {
-                log::error!("Failed to spawn scanner-kill worker: {e}");
+                tracing::error!("Failed to spawn scanner-kill worker: {e}");
                 None
             }
         }
@@ -1069,7 +1091,7 @@ fn run_batch_mode(
         .filter_map(|s| match AlertRule::parse(s) {
             Ok(r) => Some(r),
             Err(e) => {
-                log::warn!("Skipping invalid alert rule '{}': {}", s, e);
+                tracing::warn!("Skipping invalid alert rule '{}': {}", s, e);
                 None
             }
         })
@@ -1101,7 +1123,7 @@ fn run_batch_mode(
         match TlsDecryptor::new(keylog_path, crypto) {
             Ok(d) => {
                 if d.keylog_entry_count() > 0 {
-                    log::info!(
+                    tracing::info!(
                         "sipnab: TLS decryption active (keylog loaded). \
                          Decrypted traffic visible in output."
                     );
@@ -1109,7 +1131,7 @@ fn run_batch_mode(
                 Some(d)
             }
             Err(e) => {
-                log::error!("Failed to initialize TLS decryptor: {e}");
+                tracing::error!("Failed to initialize TLS decryptor: {e}");
                 None
             }
         }
@@ -1118,20 +1140,13 @@ fn run_batch_mode(
     };
 
     // Start API server if --api is specified (feature-gated)
-    // In batch mode, we share stores via Arc<RwLock> when the API is active.
+    // The API reads from the SAME stores the packet loop writes to —
+    // no mirror, no second parse.
     #[cfg(feature = "api")]
-    let (shared_ds, shared_ss, _api_thread) = {
-        if cli.api.is_some() {
-            let ds = Arc::new(RwLock::new(DialogStore::new(
-                cli.limit as usize,
-                cli.rotate,
-            )));
-            let ss = Arc::new(RwLock::new(StreamStore::new(cli.max_streams as usize)));
-            let thread = start_api_server(&cli, Arc::clone(&ds), Arc::clone(&ss));
-            (Some(ds), Some(ss), thread)
-        } else {
-            (None, None, None)
-        }
+    let _api_thread = if cli.api.is_some() {
+        start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store))
+    } else {
+        None
     };
 
     // --after / -A trailing context counter
@@ -1145,13 +1160,6 @@ fn run_batch_mode(
         no_rtp,
         after_count,
         portrange,
-    };
-
-    let mut proc_state = ProcessingState {
-        dialog_store: &mut dialog_store,
-        stream_store: &mut stream_store,
-        rtp_heuristic: &mut rtp_heuristic,
-        event_exec: &mut event_exec,
     };
 
     let mut last_sweep = std::time::Instant::now();
@@ -1178,8 +1186,8 @@ fn run_batch_mode(
         // Periodic sweep of reassembly state and orphan detection (every 5 seconds)
         if last_sweep.elapsed() >= sweep_interval {
             processor.sweep();
-            proc_state
-                .stream_store
+            stream_store
+                .write()
                 .mark_orphaned(std::time::Duration::from_secs(30));
             let security_max_age = std::time::Duration::from_secs(120);
             if let Some(det) = engines.scanner.as_mut() {
@@ -1191,10 +1199,6 @@ fn run_batch_mode(
             if let Some(det) = engines.reg_flood.as_mut() {
                 det.sweep(security_max_age);
             }
-            #[cfg(feature = "api")]
-            if let Some(ref ss) = shared_ss {
-                ss.write().mark_orphaned(std::time::Duration::from_secs(30));
-            }
 
             // --keylog-watch: poll for new keys in the keylog file
             #[cfg(feature = "tls")]
@@ -1202,7 +1206,7 @@ fn run_batch_mode(
                 && let Some(ref mut decryptor) = tls_decryptor
                 && let Err(e) = decryptor.poll_keylog_file()
             {
-                log::debug!("Keylog poll error: {e}");
+                tracing::debug!("Keylog poll error: {e}");
             }
 
             last_sweep = std::time::Instant::now();
@@ -1232,12 +1236,12 @@ fn run_batch_mode(
                     if let Some(ref keylog_path) = cli.keylog
                         && let Err(e) = w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                     {
-                        log::warn!("Failed to write DSB: {e}");
+                        tracing::warn!("Failed to write DSB: {e}");
                     }
                     writer = Some(w);
                 }
                 Err(e) => {
-                    log::error!("Failed to open output file: {e}");
+                    tracing::error!("Failed to open output file: {e}");
                     std::process::exit(1);
                 }
             }
@@ -1247,7 +1251,7 @@ fn run_batch_mode(
         if let Some(ref mut w) = writer
             && let Err(e) = w.write(&packet)
         {
-            log::error!("Failed to write packet: {e}");
+            tracing::error!("Failed to write packet: {e}");
             break;
         }
 
@@ -1293,14 +1297,28 @@ fn run_batch_mode(
             // If TLS decryption yielded a SIP message, process the decrypted packet
             let is_tls = tls_decrypted.is_some();
             let effective_pp = tls_decrypted.as_ref().unwrap_or(pp);
-            process_parsed_packet(
-                effective_pp,
-                &batch_ctx,
-                &mut proc_state,
-                &mut engines,
-                &mut counters,
-                is_tls,
-            );
+
+            // Acquire write locks once per packet. The locks are uncontested
+            // in the no-API case; with --api, the API thread briefly waits
+            // for in-flight per-packet processing to finish.
+            {
+                let mut ds_guard = dialog_store.write();
+                let mut ss_guard = stream_store.write();
+                let mut proc_state = ProcessingState {
+                    dialog_store: &mut ds_guard,
+                    stream_store: &mut ss_guard,
+                    rtp_heuristic: &mut rtp_heuristic,
+                    event_exec: &mut event_exec,
+                };
+                process_parsed_packet(
+                    effective_pp,
+                    &batch_ctx,
+                    &mut proc_state,
+                    &mut engines,
+                    &mut counters,
+                    is_tls,
+                );
+            }
 
             // --hep-send: forward matched SIP messages via HEP
             #[cfg(feature = "hep")]
@@ -1317,13 +1335,7 @@ fn run_batch_mode(
                 )
                 && let Err(e) = sender.send(&sip_msg)
             {
-                log::debug!("HEP send failed: {e}");
-            }
-
-            // Mirror updates to shared stores for API access
-            #[cfg(feature = "api")]
-            if let (Some(ds), Some(ss)) = (&shared_ds, &shared_ss) {
-                mirror_to_shared_stores(effective_pp, ds, ss, no_rtp);
+                tracing::debug!("HEP send failed: {e}");
             }
         }
 
@@ -1345,7 +1357,7 @@ fn run_batch_mode(
         if let Some(autostop_dur) = autostop_duration
             && start.elapsed() >= autostop_dur
         {
-            log::info!("Autostop: duration limit reached ({autostop_dur:?})");
+            tracing::info!("Autostop: duration limit reached ({autostop_dur:?})");
             break;
         }
 
@@ -1354,7 +1366,7 @@ fn run_batch_mode(
             && let Some(ref w) = writer
             && w.bytes_written() >= max_bytes
         {
-            log::info!(
+            tracing::info!(
                 "Autostop: filesize limit reached ({} MB)",
                 autostop_filesize_mb.unwrap_or(0)
             );
@@ -1372,20 +1384,21 @@ fn run_batch_mode(
     drop(rx);
     match handle.thread.join() {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => log::warn!("Capture thread error: {e}"),
-        Err(_) => log::error!("Capture thread panicked"),
+        Ok(Err(e)) => tracing::warn!("Capture thread error: {e}"),
+        Err(_) => tracing::error!("Capture thread panicked"),
     }
 
     // 21. Post-capture output
-    generate_reports(&cli, proc_state.dialog_store, proc_state.stream_store);
+    {
+        let ds_guard = dialog_store.read();
+        let ss_guard = stream_store.read();
+        generate_reports(&cli, &ds_guard, &ss_guard);
+    }
 
     // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
     if cli.wireshark {
-        let call_ids: Vec<&str> = proc_state
-            .dialog_store
-            .iter()
-            .map(|d| d.call_id.as_str())
-            .collect();
+        let ds_guard = dialog_store.read();
+        let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
         if call_ids.is_empty() {
             eprintln!("No SIP dialogs to generate Wireshark filter for.");
         } else {
@@ -1405,11 +1418,8 @@ fn run_batch_mode(
             println!("tshark -r {} -Y '{}' -V", input_file, _tshark_expr);
         } else if cli.input.is_some() {
             // Generate tshark command from tracked dialogs (only when --wireshark + -I)
-            let call_ids: Vec<&str> = proc_state
-                .dialog_store
-                .iter()
-                .map(|d| d.call_id.as_str())
-                .collect();
+            let ds_guard = dialog_store.read();
+            let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
             if !call_ids.is_empty() {
                 let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
                 let filter_parts: Vec<String> = call_ids
@@ -1427,8 +1437,8 @@ fn run_batch_mode(
 
     // 22. Summary
     if !cli.quiet {
-        let stream_count = proc_state.stream_store.len();
-        log::info!(
+        let stream_count = stream_store.read().len();
+        tracing::info!(
             "sipnab: {total_count} packets captured, {} SIP messages, {} RTP packets across {stream_count} streams",
             counters.sip_count,
             counters.rtp_count,
@@ -1455,11 +1465,18 @@ fn run_batch_mode(
     }
 
     // If the API server is running, keep the process alive so clients can
-    // query the captured data. The API thread serves until interrupted.
+    // query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
+    // exits cleanly instead of blocking on a thread that never returns.
     #[cfg(feature = "api")]
     if let Some(thread) = _api_thread {
-        log::info!("API server active — press Ctrl-C to stop");
-        let _ = thread.join();
+        tracing::info!("API server active — press Ctrl-C to stop");
+        while !signals::shutdown_requested() {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        // The axum task does not have a graceful-shutdown signal wired in
+        // here; dropping the JoinHandle and letting process exit tear down
+        // the listener is acceptable for batch mode.
+        drop(thread);
     }
 }
 
@@ -1698,7 +1715,7 @@ fn process_parsed_packet(
                 {
                     match result {
                         Ok(info) => {
-                            log::info!(
+                            tracing::info!(
                                 "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
                                 info.attestation,
                                 info.orig_tn.as_deref().unwrap_or("-"),
@@ -1707,7 +1724,7 @@ fn process_parsed_packet(
                             );
                         }
                         Err(e) => {
-                            log::debug!("STIR/SHAKEN parse error: {e}");
+                            tracing::debug!("STIR/SHAKEN parse error: {e}");
                         }
                     }
                 }
@@ -1744,7 +1761,7 @@ fn process_parsed_packet(
                 *prev_timestamp = Some(sip_msg.timestamp);
             }
             Err(e) => {
-                log::debug!("SIP parse error: {e}");
+                tracing::debug!("SIP parse error: {e}");
             }
         }
         return;
@@ -1782,7 +1799,7 @@ fn process_parsed_packet(
                 101, // Default telephone-event PT
                 pp.timestamp,
             ) {
-                log::info!(
+                tracing::info!(
                     "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
                     dtmf.digit,
                     dtmf.duration_ms,
@@ -1961,7 +1978,7 @@ fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &Stream
             let report = output::generate_call_report(dialog, &dialog_streams, &diagnosis, format);
             print!("{report}");
         } else {
-            log::warn!("Call-ID '{}' not found in tracked dialogs", call_id);
+            tracing::warn!("Call-ID '{}' not found in tracked dialogs", call_id);
         }
     }
 }
@@ -1975,7 +1992,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
         match FilterExpr::parse(expr) {
             Ok(f) => return Some(f),
             Err(e) => {
-                log::error!("Invalid --filter expression: {e}");
+                tracing::error!("Invalid --filter expression: {e}");
                 std::process::exit(2);
             }
         }
@@ -2005,7 +2022,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
         return match FilterExpr::parse(&combined) {
             Ok(f) => Some(f),
             Err(e) => {
-                log::error!("Internal error building diagnostic filter: {e}");
+                tracing::error!("Internal error building diagnostic filter: {e}");
                 std::process::exit(2);
             }
         };
@@ -2016,7 +2033,7 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
         match FilterExpr::parse(expr) {
             Ok(f) => return Some(f),
             Err(e) => {
-                log::error!("Invalid config filter expression: {e}");
+                tracing::error!("Invalid config filter expression: {e}");
                 std::process::exit(2);
             }
         }
@@ -2038,7 +2055,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
             Err(e) => {
-                log::error!("Failed to read BPF filter file '{}': {e}", bpf_file);
+                tracing::error!("Failed to read BPF filter file '{}': {e}", bpf_file);
                 std::process::exit(2);
             }
         }
@@ -2056,7 +2073,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         .map(|d| match capture::parse_duration(d) {
             Ok(dur) => dur,
             Err(e) => {
-                log::error!("Invalid --duration: {e}");
+                tracing::error!("Invalid --duration: {e}");
                 std::process::exit(2);
             }
         });
@@ -2088,7 +2105,7 @@ fn start_api_server(
     let bind_addr = match api::parse_bind_addr(addr_str) {
         Ok(a) => a,
         Err(e) => {
-            log::error!("Invalid --api address: {e}");
+            tracing::error!("Invalid --api address: {e}");
             std::process::exit(2);
         }
     };
@@ -2115,85 +2132,24 @@ fn start_api_server(
             {
                 Ok(rt) => rt,
                 Err(e) => {
-                    log::error!("Failed to create tokio runtime for API server: {e}");
+                    tracing::error!("Failed to create tokio runtime for API server: {e}");
                     return;
                 }
             };
 
             if let Err(e) = rt.block_on(api::run_server(bind_addr, state, server_config)) {
-                log::error!("API server error: {e}");
+                tracing::error!("API server error: {e}");
             }
         });
     match handle {
         Ok(h) => Some(h),
         Err(e) => {
-            log::error!("Failed to spawn API server thread: {e}");
+            tracing::error!("Failed to spawn API server thread: {e}");
             None
         }
     }
 }
 
-/// Mirror a parsed packet into the shared stores used by the API server.
-///
-/// This is used in batch mode when the API is enabled: the main processing
-/// loop uses local stores for performance, and we duplicate updates to the
-/// shared stores so the API can read them.
-#[cfg(feature = "api")]
-fn mirror_to_shared_stores(
-    pp: &ParsedPacket,
-    dialog_store: &Arc<RwLock<DialogStore>>,
-    stream_store: &Arc<RwLock<StreamStore>>,
-    no_rtp: bool,
-) {
-    // Try WebSocket unwrapping for TCP on common WS ports
-    let ws_payload = try_websocket_unwrap(pp);
-    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
-
-    let effective_transport = match pp.transport {
-        TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
-        other => other,
-    };
-
-    // Mirror SIP messages
-    if sip::is_sip_message(effective_payload) {
-        if let Ok(sip_msg) = sip::parse_sip(
-            effective_payload,
-            pp.timestamp,
-            pp.src_addr,
-            pp.dst_addr,
-            pp.src_port,
-            pp.dst_port,
-            effective_transport,
-        ) {
-            let mut ds = dialog_store.write();
-            ds.process_message(sip_msg.clone());
-
-            // Link SDP media endpoints to RTP streams
-            if let Some(sdp) = sip_msg.sdp()
-                && let Some(call_id) = sip_msg.call_id()
-            {
-                let mut ss = stream_store.write();
-                for media in &sdp.media {
-                    let addr_str = sip::sdp::effective_address(media, &sdp);
-                    if let Some(addr) = addr_str
-                        && let Ok(ip) = addr.parse::<std::net::IpAddr>()
-                    {
-                        ss.link_to_dialog_with_sdp(ip, media.port, call_id, media);
-                    }
-                }
-            }
-        }
-        return;
-    }
-
-    // Mirror RTP
-    if no_rtp || pp.transport != TransportProto::Udp {
-        return;
-    }
-
-    if rtp::is_rtp_packet(&pp.payload)
-        && let Ok(rtp_hdr) = parse_rtp_header(&pp.payload)
-    {
-        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
-    }
-}
+// `mirror_to_shared_stores` was removed in Phase 8.0a — batch mode now writes
+// to a single Arc<RwLock<...>> store that the API server reads from directly,
+// eliminating the second parse pass per packet.

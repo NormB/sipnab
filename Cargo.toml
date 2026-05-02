@@ -22,6 +22,11 @@ regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 log = "0.4"
 env_logger = { version = "0.11", optional = true }
+# Phase 8.0b: tracing facade is unconditional; subscriber is gated under
+# the `native` feature alongside env_logger.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["env-filter", "fmt", "ansi"], optional = true }
+tracing-log = { version = "0.2", optional = true }
 parking_lot = "0.12"
 crossbeam-channel = { version = "0.5", optional = true }
 libc = { version = "0.2", optional = true }
@@ -78,6 +83,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 expectrl = "0.8"
+libc = "0.2"
 
 [[bench]]
 name = "parser_bench"
@@ -86,7 +92,7 @@ harness = false
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
-native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file"]
+native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = []

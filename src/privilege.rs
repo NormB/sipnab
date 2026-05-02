@@ -28,13 +28,29 @@ use anyhow::{Result, bail};
 /// underlying syscalls (`setgroups`, `setgid`, `setuid`) fail.
 pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<()> {
     if no_priv_drop {
-        log::info!("Privilege drop disabled (--no-priv-drop)");
+        tracing::info!("Privilege drop disabled (--no-priv-drop)");
         return Ok(());
     }
 
     // Only drop if running as root
     if !is_root() {
-        log::debug!("Not running as root, skipping privilege drop");
+        tracing::debug!("Not running as root, skipping privilege drop");
+        return Ok(());
+    }
+
+    // On macOS, dropping to 'nobody' (uid 65534) strands the process without
+    // a launchd per-user session, which crashes CoreAudio and other user-
+    // context frameworks the moment they are invoked (e.g., pressing P to
+    // play RTP audio in the TUI). macOS's security model relies on TCC and
+    // the app sandbox rather than uid-based privilege separation, so the
+    // drop buys little here. Require an explicit --user to opt in.
+    #[cfg(target_os = "macos")]
+    if target_user.is_none() {
+        tracing::warn!(
+            "Running as root on macOS without --user; skipping privilege drop \
+             to avoid breaking CoreAudio and other per-user services. \
+             Pass --user <name> to opt in, or run without sudo."
+        );
         return Ok(());
     }
 
@@ -57,7 +73,7 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     #[cfg(target_os = "linux")]
     set_no_new_privs()?;
 
-    log::info!(
+    tracing::info!(
         "Dropped privileges to user '{}' (uid={}, gid={})",
         user,
         uid,
@@ -92,7 +108,7 @@ pub fn disable_core_dumps() -> Result<()> {
         // the trailing arguments are unused but required by the syscall ABI.
         unsafe {
             if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                log::warn!(
+                tracing::warn!(
                     "prctl(PR_SET_DUMPABLE, 0) failed: {}",
                     std::io::Error::last_os_error()
                 );
@@ -110,7 +126,7 @@ pub fn disable_core_dumps() -> Result<()> {
                 rlim_max: 0,
             };
             if libc::setrlimit(libc::RLIMIT_CORE, &rlimit) != 0 {
-                log::warn!(
+                tracing::warn!(
                     "setrlimit(RLIMIT_CORE, 0) failed: {}",
                     std::io::Error::last_os_error()
                 );
@@ -118,7 +134,7 @@ pub fn disable_core_dumps() -> Result<()> {
         }
     }
 
-    log::info!("Core dumps disabled (decryption active)");
+    tracing::info!("Core dumps disabled (decryption active)");
     Ok(())
 }
 
@@ -197,7 +213,7 @@ fn set_no_new_privs() -> Result<()> {
     // once set, it cannot be unset. Trailing args are unused.
     unsafe {
         if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
-            log::warn!(
+            tracing::warn!(
                 "prctl(PR_SET_NO_NEW_PRIVS) failed: {}",
                 std::io::Error::last_os_error()
             );
@@ -241,7 +257,7 @@ pub fn do_chroot(dir: &std::path::Path) -> Result<()> {
         }
     }
 
-    log::info!("Chrooted to {}", dir.display());
+    tracing::info!("Chrooted to {}", dir.display());
     Ok(())
 }
 

@@ -301,7 +301,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
             }
             _ => {
                 // Unknown chunk — skip silently for forward compatibility.
-                log::trace!(
+                tracing::trace!(
                     "Skipping unknown HEP v3 chunk: vendor={_vendor:#06x}, type={chunk_type:#06x}"
                 );
             }
@@ -592,7 +592,7 @@ impl HepRateLimiter {
         self.count_this_second += 1;
         if self.count_this_second > self.max_per_second {
             self.dropped_total += 1;
-            log::debug!(
+            tracing::debug!(
                 "HEP rate limit exceeded ({}/s), dropping packet (total dropped: {})",
                 self.max_per_second,
                 self.dropped_total
@@ -663,28 +663,28 @@ pub fn capture_hep(
     let mut rate_limiter = HepRateLimiter::new(rate_limit);
 
     if !allowlist.is_empty() {
-        log::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
+        tracing::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
     }
 
-    log::info!("HEP listener started on {bind_addr}");
+    tracing::info!("HEP listener started on {bind_addr}");
 
     loop {
         if signals::shutdown_requested() {
-            log::debug!("Shutdown requested, stopping HEP listener");
+            tracing::debug!("Shutdown requested, stopping HEP listener");
             break;
         }
 
         if let Some(max_count) = config.count
             && count >= max_count
         {
-            log::debug!("Reached packet count limit ({max_count})");
+            tracing::debug!("Reached packet count limit ({max_count})");
             break;
         }
 
         if let Some(duration) = config.duration
             && start.elapsed() >= duration
         {
-            log::debug!("Reached duration limit ({duration:?})");
+            tracing::debug!("Reached duration limit ({duration:?})");
             break;
         }
 
@@ -693,7 +693,7 @@ pub fn capture_hep(
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
             Err(e) => {
-                log::error!("HEP socket recv error: {e}");
+                tracing::error!("HEP socket recv error: {e}");
                 return Err(e).context("Fatal HEP socket error");
             }
         };
@@ -702,7 +702,7 @@ pub fn capture_hep(
         if !allowlist.is_empty() {
             let peer_ip = peer.ip();
             if !allowlist.iter().any(|cidr| cidr.contains(peer_ip)) {
-                log::debug!("Dropping HEP packet from non-allowed source {peer_ip}");
+                tracing::debug!("Dropping HEP packet from non-allowed source {peer_ip}");
                 continue;
             }
         }
@@ -715,7 +715,7 @@ pub fn capture_hep(
         let hep = match parse_hep(&buf[..n]) {
             Ok(h) => h,
             Err(e) => {
-                log::debug!("Skipping malformed HEP packet ({n} bytes): {e}");
+                tracing::debug!("Skipping malformed HEP packet ({n} bytes): {e}");
                 continue;
             }
         };
@@ -735,14 +735,14 @@ pub fn capture_hep(
         );
 
         if tx.send(packet).is_err() {
-            log::debug!("Receiver dropped, stopping HEP listener");
+            tracing::debug!("Receiver dropped, stopping HEP listener");
             break;
         }
 
         count += 1;
     }
 
-    log::info!("HEP listener on {bind_addr} finished: {count} packets");
+    tracing::info!("HEP listener on {bind_addr} finished: {count} packets");
     Ok(())
 }
 

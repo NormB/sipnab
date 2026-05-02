@@ -60,28 +60,28 @@ pub fn capture_file(
     let mut prev_ts: Option<DateTime<Utc>> = None;
 
     if replay {
-        log::info!("Replaying from '{}' with original timing", path.display());
+        tracing::info!("Replaying from '{}' with original timing", path.display());
     } else {
-        log::info!("Reading from '{}'", path.display());
+        tracing::info!("Reading from '{}'", path.display());
     }
 
     loop {
         if signals::shutdown_requested() {
-            log::debug!("Shutdown requested, stopping file reader");
+            tracing::debug!("Shutdown requested, stopping file reader");
             break;
         }
 
         if let Some(max_count) = config.count
             && count >= max_count
         {
-            log::debug!("Reached packet count limit ({max_count})");
+            tracing::debug!("Reached packet count limit ({max_count})");
             break;
         }
 
         if let Some(duration) = config.duration
             && start.elapsed() >= duration
         {
-            log::debug!("Reached duration limit ({duration:?})");
+            tracing::debug!("Reached duration limit ({duration:?})");
             break;
         }
 
@@ -113,24 +113,24 @@ pub fn capture_file(
                 );
 
                 if tx.send(packet).is_err() {
-                    log::debug!("Receiver dropped, stopping file reader");
+                    tracing::debug!("Receiver dropped, stopping file reader");
                     break;
                 }
 
                 count += 1;
             }
             Err(pcap::Error::NoMorePackets) => {
-                log::debug!("End of file reached");
+                tracing::debug!("End of file reached");
                 break;
             }
             Err(e) => {
-                log::error!("Error reading pcap file '{}': {e}", path.display());
+                tracing::error!("Error reading pcap file '{}': {e}", path.display());
                 return Err(e).context("Error reading pcap file");
             }
         }
     }
 
-    log::info!(
+    tracing::info!(
         "File reader finished: {count} packets from '{}'",
         path.display()
     );

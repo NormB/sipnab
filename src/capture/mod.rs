@@ -222,7 +222,7 @@ pub fn start_multi_capture(
         );
     }
 
-    log::info!(
+    tracing::info!(
         "Multi-device capture on {} interfaces: {}",
         device_list.len(),
         devices
@@ -296,13 +296,13 @@ pub fn start_multi_capture(
                 match h.join() {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
-                        log::warn!("Capture thread error: {e}");
+                        tracing::warn!("Capture thread error: {e}");
                         if first_error.is_none() {
                             first_error = Some(e);
                         }
                     }
                     Err(_) => {
-                        log::error!("Capture thread panicked");
+                        tracing::error!("Capture thread panicked");
                     }
                 }
             }
@@ -360,7 +360,7 @@ impl PacketProcessor {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
             Err(e) => {
-                log::debug!("Skipping unparseable packet: {e}");
+                tracing::debug!("Skipping unparseable packet: {e}");
                 return Vec::new();
             }
         };

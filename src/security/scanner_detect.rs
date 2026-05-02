@@ -10,7 +10,6 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::Instant;
 
-use log;
 use regex::{Regex, RegexBuilder};
 
 use crate::sip::SipMessage;
@@ -97,7 +96,7 @@ impl ScannerDetector {
             {
                 Ok(re) => patterns.push(re),
                 Err(e) => {
-                    log::warn!("Skipping invalid or oversized --kill-ua pattern '{pat}': {e}");
+                    tracing::warn!("Skipping invalid or oversized --kill-ua pattern '{pat}': {e}");
                 }
             }
         }
