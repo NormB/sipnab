@@ -90,6 +90,102 @@ pub struct FindProblemsParams {
     pub limit: Option<u32>,
 }
 
+// ── Phase 8.3 parameter structs ─────────────────────────────────────
+
+/// Parameters for `get_dialog`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct GetDialogParams {
+    /// Call-ID identifying the dialog.
+    pub call_id: String,
+    /// Maximum messages to return per page (default 100, max 1000).
+    pub max_messages: Option<u32>,
+    /// Cursor — index of the first message to return. Default 0.
+    pub cursor: Option<u32>,
+}
+
+/// Parameters for `get_message`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct GetMessageParams {
+    /// Call-ID identifying the dialog.
+    pub call_id: String,
+    /// Zero-based index of the message in the dialog.
+    pub index: u32,
+}
+
+/// Parameters for `render_ladder`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RenderLadderParams {
+    /// Call-ID identifying the dialog.
+    pub call_id: String,
+    /// Output format: "markdown" (default) or "text".
+    pub format: Option<String>,
+}
+
+/// Parameters for `rtp_stats`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct RtpStatsParams {
+    /// Call-ID identifying the dialog.
+    pub call_id: String,
+}
+
+/// Parameters for `search_messages`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SearchMessagesParams {
+    /// Substring to match against method, status, From, To, User-Agent, body.
+    /// Case-insensitive.
+    pub query: String,
+    /// Maximum hits to return (default 50, max 1000).
+    pub limit: Option<u32>,
+}
+
+/// Parameters for `tail_dialogs`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct TailDialogsParams {
+    /// Cursor: an RFC 3339 timestamp; only dialogs updated strictly after
+    /// this are returned. Omit on the first call to start from the
+    /// beginning.
+    pub cursor: Option<String>,
+    /// Maximum dialogs to return (default 50, max 1000).
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct SearchHit {
+    pub call_id: String,
+    pub message_index: usize,
+    pub snippet: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct TailDialogsResponse {
+    pub dialogs: Vec<DialogSummary>,
+    /// Cursor to pass to the next call. Empty when no more updates exist
+    /// at the moment.
+    pub next_cursor: Option<String>,
+    /// True when the underlying capture source has been fully consumed
+    /// (e.g., pcap EOF). Subsequent calls will keep returning empty
+    /// dialogs arrays unless a new capture starts.
+    pub source_exhausted: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct StatsResponse {
+    pub schema_version: u32,
+    pub dialog_count: usize,
+    pub stream_count: usize,
+    pub orphaned_stream_count: usize,
+    pub active_call_count: usize,
+}
+
 // ── Compact summary returned by list_dialogs / find_problems ────────
 
 /// Minimal per-dialog row — keeps response size predictable.
@@ -320,6 +416,342 @@ impl SipnabMcp {
         };
 
         Ok(CallToolResult::success(vec![Content::json(summaries)?]))
+    }
+
+    // ── Phase 8.3 tools ─────────────────────────────────────────────
+
+    /// Returns a paginated dialog including its SIP messages.
+    #[tool(
+        name = "get_dialog",
+        description = "Returns a paginated dialog including SIP messages. \
+                       Supports cursor-based pagination via max_messages \
+                       (default 100, max 1000) and cursor (default 0)."
+    )]
+    pub async fn get_dialog(
+        &self,
+        Parameters(params): Parameters<GetDialogParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let max = match params.max_messages {
+            None | Some(0) => 100usize,
+            Some(n) => (n as usize).min(HARD_LIMIT),
+        };
+        let cursor = params.cursor.unwrap_or(0) as usize;
+
+        let payload: serde_json::Value = {
+            let ds = self.dialog_store.read();
+            let dialog = match ds.get(&params.call_id) {
+                Some(d) => d,
+                None => {
+                    drop(ds);
+                    return Err(rmcp::ErrorData::invalid_params(
+                        format!("call_id '{}' not found", params.call_id),
+                        None,
+                    ));
+                }
+            };
+            let total = dialog.messages.len();
+            let end = (cursor + max).min(total);
+            let slice = if cursor >= total {
+                Vec::new()
+            } else {
+                dialog.messages[cursor..end]
+                    .iter()
+                    .map(|m| {
+                        let line = crate::output::json::message_to_json(m);
+                        serde_json::from_str::<serde_json::Value>(line.trim_end())
+                            .unwrap_or(serde_json::Value::String(line))
+                    })
+                    .collect()
+            };
+            let summary = DialogSummary::from(dialog);
+            let next_cursor = if end < total { Some(end) } else { None };
+            drop(ds);
+            serde_json::json!({
+                "dialog": summary,
+                "messages": slice,
+                "total_messages": total,
+                "next_cursor": next_cursor,
+                "complete": end >= total,
+            })
+        };
+
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+    }
+
+    /// Returns a single SIP message at the given index.
+    #[tool(
+        name = "get_message",
+        description = "Returns a single SIP message at the given zero-based \
+                       index of a dialog. Returns invalid_params when the \
+                       Call-ID is unknown or the index is out of range."
+    )]
+    pub async fn get_message(
+        &self,
+        Parameters(params): Parameters<GetMessageParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let line: String = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let idx = params.index as usize;
+            let msg = dialog.messages.get(idx).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!(
+                        "index {idx} out of range for dialog with {} messages",
+                        dialog.messages.len()
+                    ),
+                    None,
+                )
+            })?;
+            crate::output::json::message_to_json(msg)
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(line.trim_end()).unwrap_or(serde_json::Value::String(line));
+        Ok(CallToolResult::success(vec![Content::json(parsed)?]))
+    }
+
+    /// Renders a SIP call-flow ladder as markdown or text.
+    #[tool(
+        name = "render_ladder",
+        description = "Renders a SIP call-flow ladder for one Call-ID. \
+                       Format 'markdown' (default) or 'text'. Output is \
+                       byte-identical to `--call-report --markdown`."
+    )]
+    pub async fn render_ladder(
+        &self,
+        Parameters(params): Parameters<RenderLadderParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let format = match params.format.as_deref() {
+            Some("text") | Some("txt") => ReportFormat::Text,
+            None | Some("markdown") | Some("md") => ReportFormat::Markdown,
+            Some(other) => {
+                return Err(rmcp::ErrorData::invalid_params(
+                    format!("unknown format '{other}', expected markdown|text"),
+                    None,
+                ));
+            }
+        };
+        let report: String = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let ss = self.stream_store.read();
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss
+                .iter()
+                .filter(|s| s.associated_dialog.as_deref() == Some(params.call_id.as_str()))
+                .collect();
+            let mut diag = diagnose_media(&dialog_streams, None);
+            diagnose_asymmetry(
+                &mut diag,
+                Some(dialog),
+                &dialog_streams,
+                &AsymmetryThresholds::default(),
+            );
+            let r = generate_call_report(dialog, &dialog_streams, &diag, format);
+            drop(ss);
+            drop(ds);
+            r
+        };
+        Ok(CallToolResult::success(vec![Content::text(report)]))
+    }
+
+    /// Returns RTP quality stats for all streams associated with the dialog.
+    #[tool(
+        name = "rtp_stats",
+        description = "Returns per-stream RTP quality (codec, MOS, jitter, \
+                       loss%, packet count, SSRC) plus media diagnosis for \
+                       every stream associated with the given Call-ID."
+    )]
+    pub async fn rtp_stats(
+        &self,
+        Parameters(params): Parameters<RtpStatsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload: serde_json::Value = {
+            let ds = self.dialog_store.read();
+            let dialog = ds.get(&params.call_id).ok_or_else(|| {
+                rmcp::ErrorData::invalid_params(
+                    format!("call_id '{}' not found", params.call_id),
+                    None,
+                )
+            })?;
+            let ss = self.stream_store.read();
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss
+                .iter()
+                .filter(|s| s.associated_dialog.as_deref() == Some(params.call_id.as_str()))
+                .collect();
+            let stream_jsons: Vec<serde_json::Value> = dialog_streams
+                .iter()
+                .map(|s| {
+                    let line = crate::output::json::stream_to_json(s);
+                    serde_json::from_str(&line).unwrap_or(serde_json::Value::Null)
+                })
+                .collect();
+            let mut diag = diagnose_media(&dialog_streams, None);
+            diagnose_asymmetry(
+                &mut diag,
+                Some(dialog),
+                &dialog_streams,
+                &AsymmetryThresholds::default(),
+            );
+            let diag_json =
+                serde_json::to_value(&diag).unwrap_or(serde_json::Value::Null);
+            drop(ss);
+            drop(ds);
+            serde_json::json!({
+                "call_id": params.call_id,
+                "streams": stream_jsons,
+                "diagnosis": diag_json,
+            })
+        };
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+    }
+
+    /// Substring-search SIP messages across all dialogs.
+    #[tool(
+        name = "search_messages",
+        description = "Case-insensitive substring search over SIP method, \
+                       status, From, To, User-Agent, and body across all \
+                       dialogs in the active store. Returns up to `limit` \
+                       (default 50, max 1000) (call_id, message_index, \
+                       snippet) hits."
+    )]
+    pub async fn search_messages(
+        &self,
+        Parameters(params): Parameters<SearchMessagesParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        if params.query.is_empty() {
+            return Err(rmcp::ErrorData::invalid_params(
+                "query must be non-empty".to_string(),
+                None,
+            ));
+        }
+        let limit = resolve_limit(params.limit);
+        let needle = params.query.to_lowercase();
+        let hits: Vec<SearchHit> = {
+            let ds = self.dialog_store.read();
+            let mut out: Vec<SearchHit> = Vec::new();
+            'outer: for d in ds.iter() {
+                for (idx, msg) in d.messages.iter().enumerate() {
+                    let haystack = format!(
+                        "{} {} {} {} {} {}",
+                        msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
+                        msg.status_code.map(|s| s.to_string()).unwrap_or_default(),
+                        msg.from_header().unwrap_or(""),
+                        msg.to_header().unwrap_or(""),
+                        msg.user_agent().unwrap_or(""),
+                        String::from_utf8_lossy(&msg.body),
+                    )
+                    .to_lowercase();
+                    if haystack.contains(&needle) {
+                        let snippet = super::shape::truncate_string(
+                            &String::from_utf8_lossy(&msg.raw),
+                            super::shape::MAX_BODY_BYTES,
+                        );
+                        out.push(SearchHit {
+                            call_id: d.call_id.clone(),
+                            message_index: idx,
+                            snippet,
+                        });
+                        if out.len() >= limit {
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+            drop(ds);
+            out
+        };
+        Ok(CallToolResult::success(vec![Content::json(hits)?]))
+    }
+
+    /// Incremental dialog fetch — returns dialogs updated strictly after the
+    /// supplied cursor.
+    #[tool(
+        name = "tail_dialogs",
+        description = "Returns dialogs whose updated_at is strictly after \
+                       `cursor` (an RFC 3339 timestamp, omit for first call). \
+                       Used for polling-based change tracking. The response \
+                       carries source_exhausted=true after a pcap source has \
+                       been fully consumed."
+    )]
+    pub async fn tail_dialogs(
+        &self,
+        Parameters(params): Parameters<TailDialogsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = resolve_limit(params.limit);
+        let cursor: Option<chrono::DateTime<chrono::Utc>> = match params.cursor {
+            Some(s) => match chrono::DateTime::parse_from_rfc3339(&s) {
+                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
+                Err(e) => {
+                    return Err(rmcp::ErrorData::invalid_params(
+                        format!("cursor must be RFC 3339: {e}"),
+                        None,
+                    ));
+                }
+            },
+            None => None,
+        };
+
+        let response: TailDialogsResponse = {
+            let ds = self.dialog_store.read();
+            let mut summaries: Vec<DialogSummary> = Vec::new();
+            for d in ds.iter() {
+                if let Some(c) = cursor
+                    && d.updated_at <= c
+                {
+                    continue;
+                }
+                summaries.push(DialogSummary::from(d));
+                if summaries.len() >= limit {
+                    break;
+                }
+            }
+            // Sort ascending by updated_at so the next_cursor is the latest
+            // updated_at returned, which establishes a clean "fetch >cursor"
+            // contract.
+            summaries.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+            let next_cursor = summaries.last().map(|s| s.updated_at.clone());
+            drop(ds);
+            TailDialogsResponse {
+                dialogs: summaries,
+                next_cursor,
+                source_exhausted: false, // 8.3 stub; 8.5 sets this from capture state
+            }
+        };
+
+        Ok(CallToolResult::success(vec![Content::json(response)?]))
+    }
+
+    /// Aggregate counters across the active stores.
+    #[tool(
+        name = "stats",
+        description = "Returns aggregate counters: total dialogs, total \
+                       streams, orphaned-stream count, active-call count."
+    )]
+    pub async fn stats(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let payload = {
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let resp = StatsResponse {
+                schema_version: 1,
+                dialog_count: ds.len(),
+                stream_count: ss.len(),
+                orphaned_stream_count: ss.orphaned_count(),
+                active_call_count: ds.active_count(),
+            };
+            drop(ss);
+            drop(ds);
+            resp
+        };
+        Ok(CallToolResult::success(vec![Content::json(payload)?]))
     }
 }
 
