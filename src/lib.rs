@@ -25,6 +25,8 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod crypto;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "native")]
 pub mod output;
 #[doc(hidden)]

@@ -378,6 +378,31 @@ pub struct Cli {
     #[arg(long, value_name = "N", default_value = "100")]
     pub api_max_conn: u32,
 
+    // ── MCP (Model Context Protocol) ──────────────────────────────────
+    /// Run sipnab as an MCP server (Model Context Protocol) instead of TUI/CLI.
+    /// Implies --no-tui. Default transport is stdio; --mcp-transport selects
+    /// http (requires the mcp-http feature).
+    #[arg(long)]
+    pub mcp: bool,
+
+    /// MCP transport: "stdio" (default) or "http".
+    #[arg(long = "mcp-transport", value_name = "TRANSPORT", default_value = "stdio")]
+    pub mcp_transport: String,
+
+    /// Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
+    #[arg(long = "mcp-bind", value_name = "ADDR")]
+    pub mcp_bind: Option<String>,
+
+    /// Bearer token for HTTP MCP transport. Reads from env SIPNAB_MCP_TOKEN
+    /// when not given via the flag; required for non-loopback binds.
+    #[arg(long = "mcp-token", value_name = "TOKEN", env = "SIPNAB_MCP_TOKEN")]
+    pub mcp_token: Option<String>,
+
+    /// Read the MCP bearer token from a file (preferred over env in
+    /// systemd units).
+    #[arg(long = "mcp-token-file", value_name = "FILE")]
+    pub mcp_token_file: Option<String>,
+
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(short = 'L', long = "hep-listen", value_name = "ADDR")]
     pub hep_listen: Option<String>,
@@ -506,6 +531,46 @@ impl Cli {
                 "Output flags ({}) require -N/--no-tui mode (or --call-report)",
                 output_flags_used.join(", ")
             ));
+        }
+
+        // Phase 8.1 — MCP mode owns stdout (JSON-RPC wire); reject any flag
+        // combination that would also try to write to stdout.
+        if self.mcp {
+            if !self.no_tui {
+                return Err(
+                    "--mcp implies non-interactive mode; pass -N/--no-tui as well"
+                        .to_string(),
+                );
+            }
+            let stdout_flags: Vec<&str> = [
+                (self.json, "--json"),
+                (self.json_pretty, "--json-pretty"),
+                (self.report, "--report"),
+                (self.hexdump, "--hexdump"),
+                (self.wireshark, "--wireshark"),
+                (self.call_report.is_some(), "--call-report"),
+                (self.tshark_filter.is_some(), "--tshark-filter"),
+            ]
+            .iter()
+            .filter(|(active, _)| *active)
+            .map(|(_, name)| *name)
+            .collect();
+            if !stdout_flags.is_empty() {
+                return Err(format!(
+                    "--mcp uses stdout for the JSON-RPC wire and cannot be combined with \
+                     stdout-writing flags ({})",
+                    stdout_flags.join(", ")
+                ));
+            }
+            // Token + bind validation for non-loopback HTTP transport happens
+            // in the http transport module (Phase 8.2); for stdio there is no
+            // network surface to validate.
+            if self.mcp_transport != "stdio" && self.mcp_transport != "http" {
+                return Err(format!(
+                    "--mcp-transport must be 'stdio' or 'http', got '{}'",
+                    self.mcp_transport
+                ));
+            }
         }
 
         Ok(())

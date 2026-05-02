@@ -68,6 +68,9 @@ opus-decoder = "0.1"
 axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["full"], optional = true }
 
+# Phase 8.1: MCP server (Model Context Protocol)
+rmcp = { version = "1", default-features = false, features = ["server", "transport-io", "macros", "schemars"], optional = true }
+
 # WASM browser integration (feature-gated)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { version = "0.2", optional = true }
@@ -98,8 +101,10 @@ tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base6
 hep = []
 audio = ["dep:rodio", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
+mcp = ["native", "dep:tokio", "dep:rmcp"]
+mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["native", "tui", "tls", "hep", "api", "audio"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp"]
 
 [lib]
 name = "sipnab"
