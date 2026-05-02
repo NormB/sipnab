@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 
 use crate::output;
 use crate::output::prometheus::{self, PrometheusMetrics};
-use crate::rtp::diagnosis::diagnose_media;
+use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
 use crate::rtp::quality;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog::DialogState;
@@ -420,7 +420,13 @@ async fn get_dialog(
         .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
         .collect();
 
-    let diagnosis = diagnose_media(&streams, None);
+    let mut diagnosis = diagnose_media(&streams, None);
+    diagnose_asymmetry(
+        &mut diagnosis,
+        Some(dialog),
+        &streams,
+        &AsymmetryThresholds::default(),
+    );
     let json_str = output::json::dialog_to_json(dialog, &streams, &diagnosis);
     drop(ss);
     drop(ds);
@@ -448,7 +454,13 @@ async fn get_dialog_report(
         .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
         .collect();
 
-    let diagnosis = diagnose_media(&streams, None);
+    let mut diagnosis = diagnose_media(&streams, None);
+    diagnose_asymmetry(
+        &mut diagnosis,
+        Some(dialog),
+        &streams,
+        &AsymmetryThresholds::default(),
+    );
     let report =
         output::generate_call_report(dialog, &streams, &diagnosis, output::ReportFormat::Json);
     drop(ss);

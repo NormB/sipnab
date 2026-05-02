@@ -100,6 +100,12 @@ enum Field {
     OneWay,
     NatMismatch,
     NoMedia,
+    // Phase 8.7 — per-call asymmetry signals
+    CodecAsymmetry,
+    PtimeAsymmetry,
+    PayloadAsymmetry,
+    DurationAsymmetry,
+    LateMedia,
 }
 
 /// Comparison operators.
@@ -128,11 +134,16 @@ enum Value {
 /// Expand a named filter alias to its DSL expression.
 ///
 /// Supported aliases:
-/// - `"problems"` - calls with any diagnostic issue
-/// - `"slow-setup"` - calls with PDD > 3 seconds
-/// - `"short-calls"` - completed calls under 5 seconds
-/// - `"one-way"` - calls with one-way audio
-/// - `"nat-issues"` - calls with NAT mismatch
+/// - `"problems"` — calls with any diagnostic issue (includes 8.7 asymmetry signals)
+/// - `"slow-setup"` — calls with PDD > 3 seconds
+/// - `"short-calls"` — completed calls under 5 seconds
+/// - `"one-way"` — calls with one-way audio
+/// - `"nat-issues"` — calls with NAT mismatch
+/// - `"codec-asym"` — codec asymmetry across the two legs (8.7)
+/// - `"ptime-asym"` — packetization-time asymmetry (8.7)
+/// - `"payload-asym"` — payload-type asymmetry (8.7)
+/// - `"duration-asym"` — leg-duration asymmetry (8.7)
+/// - `"late-media"` — RTP started long after 200 OK (8.7)
 ///
 /// Returns `None` if the alias is not recognized.
 pub fn expand_alias(alias: &str) -> Option<&'static str> {
@@ -140,12 +151,20 @@ pub fn expand_alias(alias: &str) -> Option<&'static str> {
         "problems" => Some(
             "state == 'Failed' OR one_way == true OR rtp.loss > 2.0 \
              OR rtp.jitter > 50.0 OR nat_mismatch == true \
-             OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true",
+             OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true \
+             OR codec_asymmetry == true OR ptime_asymmetry == true \
+             OR payload_asymmetry == true OR duration_asymmetry == true \
+             OR late_media == true",
         ),
         "slow-setup" => Some("pdd > 3.0"),
         "short-calls" => Some("duration < 5.0 AND state == 'Completed'"),
         "one-way" => Some("one_way == true"),
         "nat-issues" => Some("nat_mismatch == true"),
+        "codec-asym" => Some("codec_asymmetry == true"),
+        "ptime-asym" => Some("ptime_asymmetry == true"),
+        "payload-asym" => Some("payload_asymmetry == true"),
+        "duration-asym" => Some("duration_asymmetry == true"),
+        "late-media" => Some("late_media == true"),
         _ => None,
     }
 }
@@ -215,7 +234,13 @@ impl FilterExpr {
     /// Boolean diagnosis fields (`one_way`, `nat_mismatch`, `no_media`) are
     /// computed from the associated streams via the diagnosis engine.
     pub fn matches_dialog(&self, dialog: &SipDialog, streams: &[&RtpStream]) -> bool {
-        let diag = diagnosis::diagnose_media(streams, None);
+        let mut diag = diagnosis::diagnose_media(streams, None);
+        diagnosis::diagnose_asymmetry(
+            &mut diag,
+            Some(dialog),
+            streams,
+            &diagnosis::AsymmetryThresholds::default(),
+        );
         eval_expr(&self.root, dialog, streams, &diag)
     }
 }
@@ -368,6 +393,11 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "one_way" => Field::OneWay,
         "nat_mismatch" => Field::NatMismatch,
         "no_media" => Field::NoMedia,
+        "codec_asymmetry" => Field::CodecAsymmetry,
+        "ptime_asymmetry" => Field::PtimeAsymmetry,
+        "payload_asymmetry" => Field::PayloadAsymmetry,
+        "duration_asymmetry" => Field::DurationAsymmetry,
+        "late_media" => Field::LateMedia,
         _ => {
             return Err(nom::Err::Failure(nom::error::Error::new(
                 input,
@@ -596,6 +626,11 @@ fn eval_compare(
         Field::OneWay => compare_bool(diag.one_way_audio, op, value),
         Field::NatMismatch => compare_bool(diag.nat_mismatch, op, value),
         Field::NoMedia => compare_bool(diag.no_media, op, value),
+        Field::CodecAsymmetry => compare_bool(diag.codec_asymmetry.is_some(), op, value),
+        Field::PtimeAsymmetry => compare_bool(diag.ptime_asymmetry.is_some(), op, value),
+        Field::PayloadAsymmetry => compare_bool(diag.payload_type_asymmetry.is_some(), op, value),
+        Field::DurationAsymmetry => compare_bool(diag.duration_asymmetry.is_some(), op, value),
+        Field::LateMedia => compare_bool(diag.late_media.is_some(), op, value),
     }
 }
 
@@ -957,6 +992,11 @@ mod tests {
             "short-calls",
             "one-way",
             "nat-issues",
+            "codec-asym",
+            "ptime-asym",
+            "payload-asym",
+            "duration-asym",
+            "late-media",
         ];
         for alias in &aliases {
             let expanded =
