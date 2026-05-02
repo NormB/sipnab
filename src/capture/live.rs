@@ -69,28 +69,28 @@ pub fn capture_live(
     let start = std::time::Instant::now();
     let mut count: u64 = 0;
 
-    log::info!(
+    tracing::info!(
         "Capturing on '{device}' (link_type={link_type}, snaplen={})",
         config.snaplen
     );
 
     loop {
         if signals::shutdown_requested() {
-            log::debug!("Shutdown requested, stopping live capture");
+            tracing::debug!("Shutdown requested, stopping live capture");
             break;
         }
 
         if let Some(max_count) = config.count
             && count >= max_count
         {
-            log::debug!("Reached packet count limit ({max_count})");
+            tracing::debug!("Reached packet count limit ({max_count})");
             break;
         }
 
         if let Some(duration) = config.duration
             && start.elapsed() >= duration
         {
-            log::debug!("Reached duration limit ({duration:?})");
+            tracing::debug!("Reached duration limit ({duration:?})");
             break;
         }
 
@@ -107,7 +107,7 @@ pub fn capture_live(
                 );
 
                 if tx.send(packet).is_err() {
-                    log::debug!("Receiver dropped, stopping live capture");
+                    tracing::debug!("Receiver dropped, stopping live capture");
                     break;
                 }
 
@@ -118,14 +118,14 @@ pub fn capture_live(
                 continue;
             }
             Err(e) => {
-                log::error!("Capture error on '{device}': {e}");
+                tracing::error!("Capture error on '{device}': {e}");
                 // pcap errors on live devices are generally fatal
                 return Err(e).context("Fatal capture error");
             }
         }
     }
 
-    log::info!("Live capture on '{device}' finished: {count} packets");
+    tracing::info!("Live capture on '{device}' finished: {count} packets");
     Ok(())
 }
 

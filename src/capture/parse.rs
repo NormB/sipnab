@@ -356,7 +356,7 @@ fn extract_parsed_packet(
     // SCTP: etherparse does not parse SCTP, so it arrives with no transport slice.
     // Detect it via the IP protocol number and return a debug log rather than an error.
     if ip_protocol == 132 {
-        log::debug!("SCTP packet detected — not yet parsed");
+        tracing::debug!("SCTP packet detected — not yet parsed");
         let payload = net
             .ip_payload_ref()
             .map(|p| p.payload.to_vec())

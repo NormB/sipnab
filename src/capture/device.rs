@@ -74,7 +74,7 @@ mod tests {
         // Should not panic; may be empty in sandboxed CI environments.
         let devs = list_devices();
         // On most systems there is at least a loopback device.
-        log::info!("Available devices: {:?}", devs);
+        tracing::info!("Available devices: {:?}", devs);
     }
 
     #[test]

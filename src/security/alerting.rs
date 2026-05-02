@@ -14,7 +14,7 @@ use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "native")]
-use log::warn;
+use tracing::warn;
 
 /// A single alerting rule with threshold, window, and cooldown.
 #[derive(Debug, Clone)]
@@ -206,8 +206,14 @@ impl AlertEngine {
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
 
-        // Output to stderr
-        eprintln!("[ALERT] {alert_type} src={src_ip} {sanitized_detail}");
+        // Route through tracing so the subscriber controls destination
+        // (stderr by default). Phase 8.0b: bare eprintln! would corrupt
+        // stdio MCP if it ever fired during a session.
+        tracing::warn!(
+            target: "sipnab::alert",
+            alert_type, %src_ip, %sanitized_detail,
+            "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
+        );
 
         // Send to syslog if enabled (native only — requires libc)
         #[cfg(feature = "native")]
@@ -283,7 +289,7 @@ pub fn init_syslog() {
             libc::LOG_LOCAL0,
         );
     }
-    log::info!("Syslog output enabled (facility=LOCAL0)");
+    tracing::info!("Syslog output enabled (facility=LOCAL0)");
 }
 
 /// Send a message to syslog at LOG_WARNING priority.

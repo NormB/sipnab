@@ -85,7 +85,7 @@ impl ScannerKillHandle {
         if let Some(handle) = self.thread.take()
             && let Err(e) = handle.join()
         {
-            log::error!("Scanner-kill worker thread panicked: {e:?}");
+            tracing::error!("Scanner-kill worker thread panicked: {e:?}");
         }
     }
 }
@@ -193,7 +193,7 @@ impl ScannerKillWorker {
     /// Run the worker loop until a `Shutdown` request is received or the
     /// channel disconnects.
     fn run(mut self) {
-        log::info!(
+        tracing::info!(
             "Scanner-kill worker started (rate limit: {}/sec)",
             self.rate_limiter.max_per_second
         );
@@ -202,14 +202,14 @@ impl ScannerKillWorker {
             let request = match self.rx.recv() {
                 Ok(req) => req,
                 Err(_) => {
-                    log::debug!("Scanner-kill channel disconnected, worker exiting");
+                    tracing::debug!("Scanner-kill channel disconnected, worker exiting");
                     break;
                 }
             };
 
             match request {
                 KillRequest::Shutdown => {
-                    log::info!("Scanner-kill worker shutting down");
+                    tracing::info!("Scanner-kill worker shutting down");
                     break;
                 }
                 KillRequest::SendResponse {
@@ -235,7 +235,7 @@ impl ScannerKillWorker {
         // Reject broadcast addresses
         if is_broadcast_or_multicast(dst_addr) {
             let reason = format!("rejected broadcast/multicast destination: {dst_addr}");
-            log::warn!("Scanner-kill: {reason}");
+            tracing::warn!("Scanner-kill: {reason}");
             return KillResponse::Rejected { reason };
         }
 
@@ -248,13 +248,13 @@ impl ScannerKillWorker {
 
         // Apply global rate limit
         if !self.rate_limiter.allow() {
-            log::debug!("Scanner-kill: rate limited response to {dst_addr}:{dst_port}");
+            tracing::debug!("Scanner-kill: rate limited response to {dst_addr}:{dst_port}");
             return KillResponse::RateLimited;
         }
 
         // Apply per-destination-IP rate limit (M6: amplification mitigation)
         if !self.per_dst_limiter.allow(dst_addr) {
-            log::debug!("Scanner-kill: per-destination rate limited for {dst_addr}:{dst_port}");
+            tracing::debug!("Scanner-kill: per-destination rate limited for {dst_addr}:{dst_port}");
             return KillResponse::RateLimited;
         }
 
@@ -262,7 +262,7 @@ impl ScannerKillWorker {
         self.per_dst_limiter.cleanup();
 
         // Log the response (actual pcap injection is a future enhancement)
-        log::info!(
+        tracing::info!(
             "Scanner-kill: would send {} byte response to {dst_addr}:{dst_port}",
             response_bytes.len(),
         );

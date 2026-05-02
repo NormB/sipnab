@@ -225,7 +225,7 @@ pub async fn run_server(
     }
 
     if !bind_addr.ip().is_loopback() {
-        log::warn!(
+        tracing::warn!(
             "API server binding to non-loopback address {} without TLS — \
              consider using 127.0.0.1 or enabling TLS",
             bind_addr
@@ -238,7 +238,7 @@ pub async fn run_server(
     // Wrap with connection limiter if max_conn > 0
     let router = if max_conn > 0 {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(max_conn as usize));
-        log::info!("API server max concurrent connections: {}", max_conn);
+        tracing::info!("API server max concurrent connections: {}", max_conn);
         router.layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
                 let sem = Arc::clone(&semaphore);
@@ -259,7 +259,7 @@ pub async fn run_server(
         router
     };
 
-    log::info!("REST API listening on {}", bind_addr);
+    tracing::info!("REST API listening on {}", bind_addr);
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await

@@ -389,7 +389,7 @@ impl TlsDecryptor {
 
         let entry_count = keylog_entries.len();
         if entry_count > 0 {
-            log::info!("Loaded {} keylog entries", entry_count);
+            tracing::info!("Loaded {} keylog entries", entry_count);
         }
 
         let last_keylog_size = keylog_path
@@ -432,7 +432,7 @@ impl TlsDecryptor {
         let mut file = match std::fs::File::open(path) {
             Ok(f) => f,
             Err(e) => {
-                log::debug!("Failed to open keylog file: {e}");
+                tracing::debug!("Failed to open keylog file: {e}");
                 return Ok(0);
             }
         };
@@ -460,7 +460,7 @@ impl TlsDecryptor {
                     new_count += 1;
                 }
                 Err(e) => {
-                    log::debug!("Skipping invalid keylog line: {e}");
+                    tracing::debug!("Skipping invalid keylog line: {e}");
                 }
             }
         }
@@ -470,7 +470,7 @@ impl TlsDecryptor {
         if new_count > 0 {
             // Clear sessions cache so new entries are picked up
             self.sessions.clear();
-            log::info!("Keylog watch: loaded {new_count} new key(s)");
+            tracing::info!("Keylog watch: loaded {new_count} new key(s)");
         }
 
         Ok(new_count)
@@ -488,9 +488,9 @@ impl TlsDecryptor {
             .with_context(|| format!("Loading DTLS keylog from {}", path.display()))?;
         let count = entries.len();
         if count > 0 {
-            log::info!("DTLS keys loaded: {count} entries from {}", path.display());
+            tracing::info!("DTLS keys loaded: {count} entries from {}", path.display());
         } else {
-            log::info!(
+            tracing::info!(
                 "DTLS keylog file {} is empty (no entries loaded)",
                 path.display()
             );
@@ -506,7 +506,7 @@ impl TlsDecryptor {
         if record.content_type == TlsContentType::Handshake
             && let Some(info) = parse_server_hello(&record.payload)
         {
-            log::debug!(
+            tracing::debug!(
                 "Observed ServerHello: cipher=0x{:04X}",
                 info.cipher_suite_code.unwrap_or(0)
             );
@@ -549,7 +549,7 @@ impl TlsDecryptor {
             {
                 self.decrypted_count += 1;
                 if let Some(suite) = cipher {
-                    log::info!(
+                    tracing::info!(
                         "TLS session decrypted [session={}, cipher={}]",
                         hex_id(&key.client_random),
                         suite,
@@ -606,7 +606,7 @@ impl TlsDecryptor {
                     32 => CipherSuite::Aes128Gcm,
                     48 => CipherSuite::Aes256Gcm,
                     _ => {
-                        log::debug!(
+                        tracing::debug!(
                             "Skipping session with unsupported secret length: {}",
                             cs.len()
                         );
@@ -619,7 +619,7 @@ impl TlsDecryptor {
                     derive_key_iv(self.crypto.as_ref(), ss, suite),
                 ) {
                     (Ok((ck, civ)), Ok((sk, siv))) => {
-                        log::info!(
+                        tracing::info!(
                             "TLS session ready [session={}, cipher={}]",
                             hex_id(cr),
                             suite
@@ -639,7 +639,7 @@ impl TlsDecryptor {
                         );
                     }
                     (Err(e), _) | (_, Err(e)) => {
-                        log::debug!("Failed to derive keys for session {}: {e}", hex_id(cr));
+                        tracing::debug!("Failed to derive keys for session {}: {e}", hex_id(cr));
                     }
                 }
             }
@@ -662,7 +662,7 @@ impl TlsDecryptor {
                         continue;
                     };
                     let Some(suite) = CipherSuite::from_code_point(cipher_code) else {
-                        log::debug!(
+                        tracing::debug!(
                             "Unsupported TLS 1.2 cipher suite 0x{:04X} for session {}",
                             cipher_code,
                             hex_id(cr)
@@ -672,7 +672,7 @@ impl TlsDecryptor {
 
                     match derive_tls12_keys(self.crypto.as_ref(), ms, cr, &server_random, suite) {
                         Ok((ck, sk, civ, siv)) => {
-                            log::info!(
+                            tracing::info!(
                                 "TLS 1.2 session ready [session={}, cipher={}]",
                                 hex_id(cr),
                                 suite
@@ -693,7 +693,7 @@ impl TlsDecryptor {
                             break;
                         }
                         Err(e) => {
-                            log::debug!(
+                            tracing::debug!(
                                 "Failed to derive TLS 1.2 keys for session {}: {e}",
                                 hex_id(cr)
                             );

@@ -132,7 +132,7 @@ fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
                 }
             }
             Err(e) => {
-                log::debug!("Opus decode error (skipping frame): {e}");
+                tracing::debug!("Opus decode error (skipping frame): {e}");
             }
         }
     }

@@ -163,7 +163,7 @@ fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)
                 match decoder.decode_frame(payload) {
                     Ok(samples) => pcm.extend_from_slice(&samples),
                     Err(e) => {
-                        log::debug!("Opus decode error (skipping frame): {e}");
+                        tracing::debug!("Opus decode error (skipping frame): {e}");
                     }
                 }
             }

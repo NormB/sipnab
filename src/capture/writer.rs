@@ -140,7 +140,7 @@ impl PcapWriter {
             .components()
             .any(|c| matches!(c, std::path::Component::ParentDir))
         {
-            log::warn!(
+            tracing::warn!(
                 "Output path '{}' contains '..' components — verify this is intentional",
                 path.display()
             );
@@ -153,7 +153,7 @@ impl PcapWriter {
             WriterBackend::Pcap(create_savefile(path, linktype)?)
         };
 
-        log::info!(
+        tracing::info!(
             "Writing packets to '{}' ({}, mode={})",
             path.display(),
             if pcapng { "pcapng" } else { "pcap" },
@@ -261,20 +261,20 @@ impl PcapWriter {
             Ok(data) if !data.is_empty() => {
                 self.write_dsb(&data)?;
                 self.dsb_written = true;
-                log::info!(
+                tracing::info!(
                     "Wrote DSB ({} bytes of key material) to '{}'",
                     data.len(),
                     self.base_path.display(),
                 );
             }
             Ok(_) => {
-                log::debug!(
+                tracing::debug!(
                     "Keylog file '{}' is empty; skipping DSB",
                     keylog_path.display()
                 );
             }
             Err(e) => {
-                log::warn!(
+                tracing::warn!(
                     "Cannot read keylog '{}' for DSB: {e}",
                     keylog_path.display()
                 );
@@ -316,7 +316,7 @@ impl PcapWriter {
                 Ok(())
             }
             WriterBackend::Pcap(_) => {
-                log::warn!("DSB blocks require PCAP-NG format; skipping");
+                tracing::warn!("DSB blocks require PCAP-NG format; skipping");
                 Ok(())
             }
         }
@@ -335,7 +335,7 @@ impl PcapWriter {
         self.sequence += 1;
         let new_path = rotated_path(&self.base_path, self.sequence);
 
-        log::info!(
+        tracing::info!(
             "Rotating output to '{}' (seq={}, wrote {} bytes in {:?})",
             new_path.display(),
             self.sequence,
@@ -361,7 +361,7 @@ impl PcapWriter {
     fn should_rotate(&self) -> bool {
         // SIGUSR1-triggered rotation
         if signals::rotation_requested() {
-            log::debug!("Rotation triggered by SIGUSR1");
+            tracing::debug!("Rotation triggered by SIGUSR1");
             return true;
         }
 
@@ -369,7 +369,7 @@ impl PcapWriter {
         if let Some(max_bytes) = self.max_file_bytes
             && self.bytes_written >= max_bytes
         {
-            log::debug!(
+            tracing::debug!(
                 "Rotation triggered by size ({} >= {max_bytes})",
                 self.bytes_written,
             );
@@ -380,7 +380,7 @@ impl PcapWriter {
         if let Some(max_dur) = self.max_file_duration
             && self.file_opened_at.elapsed() >= max_dur
         {
-            log::debug!("Rotation triggered by duration ({:?})", max_dur);
+            tracing::debug!("Rotation triggered by duration ({:?})", max_dur);
             return true;
         }
 
