@@ -104,7 +104,7 @@ api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 mcp = ["native", "dep:tokio", "dep:rmcp"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http"]
 
 [lib]
 name = "sipnab"
