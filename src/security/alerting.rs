@@ -114,6 +114,19 @@ fn parse_duration(s: &str) -> Option<Duration> {
 /// Maximum entries in the cooldowns map before eviction.
 const MAX_COOLDOWN_ENTRIES: usize = 10_000;
 
+/// Default capacity of the in-memory findings ring buffer (Phase 8.3).
+pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;
+
+/// Single emitted finding — recorded in the ring buffer after the cooldown
+/// check passes (so deduplicated firings aren't double-counted).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Finding {
+    pub rule_name: String,
+    pub src_ip: IpAddr,
+    pub detail: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+}
+
 /// Alerting engine that manages rules, cooldowns, and command execution.
 pub struct AlertEngine {
     /// Configured alert rules.
@@ -131,6 +144,12 @@ pub struct AlertEngine {
     /// Tracked child processes from exec commands (for reaping).
     #[cfg(feature = "native")]
     children: Vec<std::process::Child>,
+    /// Phase 8.3 — bounded ring buffer of post-cooldown findings exposed
+    /// via the MCP `security_findings` tool and the future
+    /// `GET /v1/security/findings` REST endpoint. In-memory only.
+    findings: std::collections::VecDeque<Finding>,
+    /// Capacity of the findings ring buffer. Zero disables retention.
+    findings_capacity: usize,
 }
 
 impl AlertEngine {
@@ -151,7 +170,44 @@ impl AlertEngine {
             syslog_enabled: false,
             #[cfg(feature = "native")]
             children: Vec::new(),
+            findings: std::collections::VecDeque::with_capacity(DEFAULT_FINDINGS_HISTORY),
+            findings_capacity: DEFAULT_FINDINGS_HISTORY,
         }
+    }
+
+    /// Override the default findings-history capacity. Setting 0 disables
+    /// retention. Existing entries above the new cap are evicted oldest-first.
+    pub fn set_findings_capacity(&mut self, cap: usize) {
+        self.findings_capacity = cap;
+        while self.findings.len() > cap {
+            self.findings.pop_front();
+        }
+    }
+
+    /// Iterate stored findings filtered by rule kinds (empty = all) and
+    /// updated-since timestamp. Returns up to `limit` matches, newest first.
+    pub fn iter_findings(
+        &self,
+        kinds: &[&str],
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        limit: usize,
+    ) -> Vec<&Finding> {
+        let mut out = Vec::with_capacity(limit.min(self.findings.len()));
+        for f in self.findings.iter().rev() {
+            if !kinds.is_empty() && !kinds.iter().any(|k| *k == f.rule_name) {
+                continue;
+            }
+            if let Some(s) = since
+                && f.timestamp <= s
+            {
+                continue;
+            }
+            out.push(f);
+            if out.len() >= limit {
+                break;
+            }
+        }
+        out
     }
 
     /// Enable or disable syslog output for alerts.
@@ -205,6 +261,21 @@ impl AlertEngine {
 
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
+
+        // Phase 8.3 — store the finding in the ring buffer (after cooldown,
+        // before any logging/syslog/exec) so deduplicated firings are
+        // recorded once each.
+        if self.findings_capacity > 0 {
+            if self.findings.len() >= self.findings_capacity {
+                self.findings.pop_front();
+            }
+            self.findings.push_back(Finding {
+                rule_name: alert_type.to_string(),
+                src_ip,
+                detail: sanitized_detail.clone(),
+                timestamp: chrono::Utc::now(),
+            });
+        }
 
         // Route through tracing so the subscriber controls destination
         // (stderr by default). Phase 8.0b: bare eprintln! would corrupt
@@ -421,6 +492,81 @@ mod tests {
             !second,
             "second alert should be suppressed by default cooldown"
         );
+    }
+
+    // ── Phase 8.3 FindingsHistory ────────────────────────────────────
+
+    #[test]
+    fn findings_history_records_each_post_cooldown_fire() {
+        let mut engine = AlertEngine::new(vec![], None);
+        // Default cooldown is 60s; fire from different IPs so no cooldown.
+        engine.fire(
+            "scanner",
+            "10.0.0.1".parse().unwrap(),
+            "ua=friendly-scanner",
+        );
+        engine.fire("scanner", "10.0.0.2".parse().unwrap(), "ua=sipvicious");
+        engine.fire("fraud", "10.0.0.3".parse().unwrap(), "irsf");
+        let all = engine.iter_findings(&[], None, 100);
+        assert_eq!(all.len(), 3);
+        // Newest first
+        assert_eq!(all[0].rule_name, "fraud");
+        assert_eq!(all[2].rule_name, "scanner");
+    }
+
+    #[test]
+    fn findings_history_filter_by_kind() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "a");
+        engine.fire("fraud", "10.0.0.2".parse().unwrap(), "b");
+        engine.fire("scanner", "10.0.0.3".parse().unwrap(), "c");
+        let scanner_only = engine.iter_findings(&["scanner"], None, 100);
+        assert_eq!(scanner_only.len(), 2);
+        assert!(scanner_only.iter().all(|f| f.rule_name == "scanner"));
+    }
+
+    #[test]
+    fn findings_history_eviction_keeps_most_recent() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.set_findings_capacity(5);
+        for i in 0..2000u32 {
+            engine.fire(
+                "scanner",
+                IpAddr::V4(std::net::Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8)),
+                &format!("seq={i}"),
+            );
+        }
+        let all = engine.iter_findings(&[], None, 100);
+        assert_eq!(all.len(), 5, "ring buffer must hold exactly 5");
+        // The most recent entry should be seq=1999.
+        assert!(all[0].detail.contains("seq=1999"));
+    }
+
+    #[test]
+    fn findings_history_cooldown_suppression_does_not_record() {
+        let rule = AlertRule::parse("scanner:1/1s:10m").expect("parse");
+        let mut engine = AlertEngine::new(vec![rule], None);
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let first = engine.fire("scanner", ip, "first");
+        let second = engine.fire("scanner", ip, "second");
+        assert!(first);
+        assert!(!second, "cooldown should suppress");
+        let all = engine.iter_findings(&[], None, 100);
+        assert_eq!(
+            all.len(),
+            1,
+            "suppressed firings must NOT appear in history"
+        );
+        assert!(all[0].detail.contains("first"));
+    }
+
+    #[test]
+    fn findings_history_zero_capacity_disables_retention() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.set_findings_capacity(0);
+        engine.fire("scanner", "10.0.0.1".parse().unwrap(), "x");
+        let all = engine.iter_findings(&[], None, 100);
+        assert_eq!(all.len(), 0);
     }
 
     // ── Security regression tests ────────────────────────────────────
