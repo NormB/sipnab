@@ -1,0 +1,35 @@
+groups:
+  - name: sipnab
+    rules:
+      - alert: SipnabHighErrorRate
+        expr: rate(sipnab_responses_total{code="5xx"}[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High SIP 5xx error rate"
+          description: "sipnab is seeing {{ $value }} 5xx responses/sec"
+
+      - alert: SipnabLowMOS
+        expr: histogram_quantile(0.1, rate(sipnab_rtp_mos_bucket[5m])) < 3.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low RTP MOS quality detected"
+
+      - alert: SipnabHighPDD
+        expr: histogram_quantile(0.95, rate(sipnab_pdd_seconds_bucket[5m])) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High post-dial delay (p95 > 5s)"
+
+      - alert: SipnabScannerDetected
+        expr: rate(sipnab_security_alerts_total{type="scanner"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SIP scanner detected"
