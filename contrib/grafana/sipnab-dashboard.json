@@ -79,7 +79,7 @@
       },
       "targets": [
         {
-          "expr": "sipnab_active_dialogs",
+          "expr": "sum(sipnab_dialogs_total{state=~\"trying|ringing|incall\"})",
           "legendFormat": "dialogs",
           "refId": "A"
         }
@@ -159,17 +159,17 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.5, rate(sipnab_rtp_mos_bucket[5m]))",
+          "expr": "histogram_quantile(0.5, rate(sipnab_mos_bucket[5m]))",
           "legendFormat": "MOS p50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.1, rate(sipnab_rtp_mos_bucket[5m]))",
+          "expr": "histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))",
           "legendFormat": "MOS p10",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.9, rate(sipnab_rtp_mos_bucket[5m]))",
+          "expr": "histogram_quantile(0.9, rate(sipnab_mos_bucket[5m]))",
           "legendFormat": "MOS p90",
           "refId": "C"
         }
