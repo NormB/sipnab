@@ -257,6 +257,17 @@
 <tr><td><code>--hep-rate-limit</code></td><td><code>&lt;N&gt;</code></td><td><code>50000</code></td><td>Maximum HEP packets per second</td></tr>
 <tr><td><code>--syslog</code></td><td>–</td><td>off</td><td>Send alerts to syslog</td></tr>
 </tbody></table>
+<h2 id="mcp-server">MCP Server</h2>
+<p>Run sipnab as a Model Context Protocol server so an AI agent can drive
+it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full guide.</p>
+<table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
+<tr><td><code>--mcp</code></td><td>–</td><td>off</td><td>Run sipnab as an MCP server (implies <code>--no-tui</code>). Feature: <code>mcp</code></td></tr>
+<tr><td><code>--mcp-transport</code></td><td><code>&lt;TRANSPORT&gt;</code></td><td><code>stdio</code></td><td>Transport: <code>stdio</code> (default) or <code>http</code> (requires <code>mcp-http</code> feature)</td></tr>
+<tr><td><code>--mcp-bind</code></td><td><code>&lt;ADDR&gt;</code></td><td><code>127.0.0.1:8731</code></td><td>Bind address for the HTTP MCP transport</td></tr>
+<tr><td><code>--mcp-token</code></td><td><code>&lt;TOKEN&gt;</code></td><td>–</td><td>Bearer token for HTTP MCP. Required for non-loopback binds. Also reads <code>$SIPNAB_MCP_TOKEN</code></td></tr>
+<tr><td><code>--mcp-token-file</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>Read MCP bearer token from a file (preferred over env in systemd units)</td></tr>
+<tr><td><code>--mcp-allowed-host</code></td><td><code>&lt;HOST&gt;</code></td><td>–</td><td>Additional Host header values the HTTP MCP server will accept (repeatable). Use <code>*</code> to disable host checking entirely</td></tr>
+</tbody></table>
 <h2 id="tls-decryption">TLS / Decryption</h2>
 <table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>-k</code>, <code>--tls-key</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>TLS private key file for SIP-TLS decryption. Feature: <code>tls</code></td></tr>
@@ -415,6 +426,10 @@
         </li>
         
         <li><a href="#network-listeners">Network Listeners</a>
+          
+        </li>
+        
+        <li><a href="#mcp-server">MCP Server</a>
           
         </li>
         
