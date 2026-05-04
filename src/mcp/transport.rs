@@ -87,6 +87,7 @@ mod http {
         server: SipnabMcp,
         bind: SocketAddr,
         token: Option<String>,
+        extra_allowed_hosts: Vec<String>,
     ) -> anyhow::Result<()> {
         // Refuse non-loopback bind without auth (D18 + 8.2 rule).
         if !bind.ip().is_loopback() && token.is_none() {
@@ -108,6 +109,26 @@ mod http {
             token: token.map(Arc::new),
         };
 
+        // Apply --mcp-allowed-host overrides on top of rmcp's defaults
+        // (`localhost`, `127.0.0.1`, `::1`). A single literal `*` entry
+        // disables host checking entirely.
+        let mut http_config = StreamableHttpServerConfig::default();
+        if extra_allowed_hosts.iter().any(|h| h == "*") {
+            tracing::warn!(
+                "MCP HTTP host-header check disabled via --mcp-allowed-host '*' \
+                 — pair this with a network-level source-IP allowlist."
+            );
+            http_config.allowed_hosts.clear();
+        } else {
+            for host in extra_allowed_hosts {
+                http_config.allowed_hosts.push(host);
+            }
+        }
+        tracing::info!(
+            "MCP HTTP allowed Host headers: {:?}",
+            http_config.allowed_hosts
+        );
+
         let mcp_service: StreamableHttpService<SipnabMcp, LocalSessionManager> =
             StreamableHttpService::new(
                 {
@@ -115,7 +136,7 @@ mod http {
                     move || Ok(server.clone())
                 },
                 session_mgr,
-                StreamableHttpServerConfig::default(),
+                http_config,
             );
 
         let mcp_router = Router::new()

@@ -403,6 +403,15 @@ pub struct Cli {
     #[arg(long = "mcp-token-file", value_name = "FILE")]
     pub mcp_token_file: Option<String>,
 
+    /// Additional `Host` header values the HTTP MCP server will accept
+    /// (repeatable). rmcp's DNS-rebind protection defaults to allowing
+    /// only `localhost`, `127.0.0.1`, and `::1`. Add the public hostname
+    /// or bind IP here when clients connect via that name. Use `*` to
+    /// disable host checking entirely (not recommended; pair the
+    /// resulting open binding with a network-level allowlist).
+    #[arg(long = "mcp-allowed-host", value_name = "HOST")]
+    pub mcp_allowed_host: Vec<String>,
+
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(short = 'L', long = "hep-listen", value_name = "ADDR")]
     pub hep_listen: Option<String>,

@@ -2297,6 +2297,8 @@ fn start_mcp_http_server(
     }
     .filter(|s| !s.is_empty());
 
+    let extra_allowed_hosts = cli.mcp_allowed_host.clone();
+
     let server =
         sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
     let handle = std::thread::Builder::new()
@@ -2313,7 +2315,10 @@ fn start_mcp_http_server(
                 }
             };
             runtime.block_on(async move {
-                if let Err(e) = sipnab::mcp::transport::serve_http(server, bind, token).await {
+                if let Err(e) =
+                    sipnab::mcp::transport::serve_http(server, bind, token, extra_allowed_hosts)
+                        .await
+                {
                     tracing::error!("MCP HTTP server error: {e}");
                 }
             });
