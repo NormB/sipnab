@@ -239,6 +239,20 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second |
 | `--syslog` | -- | off | Send alerts to syslog |
 
+## MCP Server
+
+Run sipnab as a Model Context Protocol server so an AI agent can drive
+it. See [MCP Server](@/docs/mcp.md) for the full guide.
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--mcp` | -- | off | Run sipnab as an MCP server (implies `--no-tui`). Feature: `mcp` |
+| `--mcp-transport` | `<TRANSPORT>` | `stdio` | Transport: `stdio` (default) or `http` (requires `mcp-http` feature) |
+| `--mcp-bind` | `<ADDR>` | `127.0.0.1:8731` | Bind address for the HTTP MCP transport |
+| `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP. Required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN` |
+| `--mcp-token-file` | `<FILE>` | -- | Read MCP bearer token from a file (preferred over env in systemd units) |
+| `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). Use `*` to disable host checking entirely |
+
 ## TLS / Decryption
 
 | Flag | Value | Default | Description |
