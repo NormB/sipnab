@@ -19,7 +19,7 @@ pcap = { version = "2", optional = true }
 etherparse = "0.16"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 regex = "1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 log = "0.4"
 env_logger = { version = "0.11", optional = true }
 # Phase 8.0b: tracing facade is unconditional; subscriber is gated under
@@ -98,7 +98,7 @@ default = ["native", "tui", "audio"]
 native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
-hep = []
+hep = ["native"]
 audio = ["dep:rodio", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 mcp = ["native", "dep:tokio", "dep:rmcp"]
@@ -124,7 +124,9 @@ debug = "line-tables-only"
 [[bin]]
 name = "sipnab"
 path = "src/main.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "gen_fixture"
 path = "tools_gen_fixture.rs"
+required-features = ["native"]

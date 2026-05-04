@@ -1083,6 +1083,7 @@ fn writer_warns_on_path_traversal() {
 
 /// M6: Scanner kill per-destination rate limiter must cap responses to
 /// the same destination IP at 3 per minute.
+#[cfg(feature = "native")]
 #[test]
 fn scanner_kill_per_destination_rate_limit() {
     use sipnab::process_isolation::{KillRequest, KillResponse, spawn_scanner_kill_worker};

@@ -30,15 +30,15 @@ pub mod mcp;
 #[cfg(feature = "native")]
 pub mod output;
 #[doc(hidden)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod privilege;
 #[doc(hidden)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod process_isolation;
 pub mod rtp;
 pub mod security;
 #[doc(hidden)]
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;
 pub mod sip;
 
