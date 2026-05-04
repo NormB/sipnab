@@ -1,0 +1,63 @@
+[Unit]
+Description=sipnab HEP listener (lab soak target)
+Documentation=https://sipnab.com
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Surfaces:
+#   :9060/udp — HEP listener (SIP/RTP mirrors from upstream SIP servers)
+#   :9100/tcp — REST API + Prometheus /metrics
+#   :8731/tcp — MCP HTTP (loopback only by default; sipnab refuses to
+#               bind a non-loopback MCP socket without --mcp-token[-file])
+#
+# To expose MCP-HTTP on a non-loopback address (e.g. for a remote LLM
+# client over a private network), override ExecStart via a drop-in:
+#
+#   mkdir -p /etc/systemd/system/sipnab-hep.service.d
+#   echo "$(openssl rand -hex 32)" > /etc/sipnab/mcp-token
+#   chmod 0600 /etc/sipnab/mcp-token
+#   cat > /etc/systemd/system/sipnab-hep.service.d/network-mcp.conf <<'EOF'
+#   [Service]
+#   ExecStart=
+#   ExecStart=/usr/local/bin/sipnab \
+#       -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 \
+#       --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+#       --mcp-token-file /etc/sipnab/mcp-token \
+#       --no-priv-drop --syslog
+#   EOF
+#   systemctl daemon-reload && systemctl restart sipnab-hep
+#
+# Note: `--json` is intentionally absent. sipnab refuses `--mcp` together
+# with stdout-writing flags (the validation doesn't currently distinguish
+# stdio MCP from HTTP MCP). When MCP/API are exposing structured queries
+# anyway, the stdout JSON event stream is redundant.
+ExecStart=/usr/local/bin/sipnab \
+    -N \
+    --hep-listen 0.0.0.0:9060 \
+    --api 0.0.0.0:9100 \
+    --mcp \
+    --mcp-transport http \
+    --mcp-bind 127.0.0.1:8731 \
+    --no-priv-drop \
+    --syslog
+User=root
+Group=root
+
+# Privilege drop happens internally; HEP listen on :9060 (>1024) needs no caps.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/log
+CapabilityBoundingSet=
+
+LimitNOFILE=65535
+LimitMEMLOCK=infinity
+
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,80 @@
+# sipnab observability test stack: Prometheus, OTel Collector, Tempo, Grafana.
+#
+# Default: scrapes sipnab on the same host (Docker host-gateway alias).
+# Remote sipnab: set SIPNAB_HOST=<host-or-ip> in .env so prometheus
+# targets that host's :9100 instead. See README.md.
+
+x-sipnab-host: &sipnab-host
+  extra_hosts:
+    - "sipnab:${SIPNAB_HOST:-host-gateway}"
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    container_name: sipnab-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-30d}
+      - --web.enable-lifecycle
+    ports:
+      - "${PROM_PORT:-9090}:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    <<: *sipnab-host
+    networks: [observability]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.117.0
+    container_name: sipnab-otel-collector
+    restart: unless-stopped
+    command: [--config=/etc/otelcol/config.yaml]
+    ports:
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    depends_on: [tempo]
+    networks: [observability]
+
+  tempo:
+    image: grafana/tempo:2.7.0
+    container_name: sipnab-tempo
+    restart: unless-stopped
+    command: [-config.file=/etc/tempo/tempo.yaml]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: sipnab-grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "${GRAFANA_ANON:-false}"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus, tempo]
+    networks: [observability]
+
+networks:
+  observability:
+    name: sipnab-observability
+
+volumes:
+  prometheus-data:
+  tempo-data:
+  grafana-data:
