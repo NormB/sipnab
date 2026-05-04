@@ -29,7 +29,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use crossbeam_channel::Sender;
 
 use super::CaptureConfig;
-use super::packet::Packet;
+use super::packet::{Packet, PreParsed};
 use crate::signals;
 
 // ── HEP v3 chunk type constants (vendor 0x0000) ─────────────────────
@@ -75,11 +75,33 @@ const HEP2_VERSION: u8 = 0x02;
 /// Minimum HEP v2 header length for IPv4 (version + hdr_len + ports + IPs).
 const HEP2_MIN_HEADER: usize = 16;
 
-// ── DLT constant for raw IP ──────────────────────────────────────────
+// ── HEP→Packet conversion ────────────────────────────────────────────
 
-/// Pcap link type for raw IPv4/IPv6 (DLT_RAW). HEP packets have no
-/// link-layer framing, so we present them as raw IP to the parser.
-const DLT_RAW: i32 = 12;
+/// Convert a parsed [`HepPacket`] into a [`Packet`] tagged with
+/// `pre_parsed` metadata. The downstream parser short-circuits on
+/// `pre_parsed`, treating `data` as the transport-layer payload only
+/// — no link-layer or IP/UDP/TCP headers are fabricated. The HEP
+/// chunks (src/dst addr, src/dst port, IP protocol) flow straight
+/// into [`PreParsed`].
+///
+/// Without this, a HEP-sourced packet would arrive at the parser as
+/// `link_type = DLT_RAW` plus payload-only data, which `etherparse`
+/// would mis-interpret as an IPv4 header (e.g. `INVITE`'s first byte
+/// `0x49` parses as IPv4 IHL=9), silently dropping every HEP message.
+fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
+    Packet::with_pre_parsed(
+        hep.timestamp,
+        hep.payload,
+        Some(format!("hep:{source}")),
+        PreParsed {
+            src_addr: hep.src_addr,
+            dst_addr: hep.dst_addr,
+            src_port: hep.src_port,
+            dst_port: hep.dst_port,
+            ip_protocol: hep.ip_protocol,
+        },
+    )
+}
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -133,8 +155,13 @@ pub struct HepPacket {
     pub dst_port: u16,
     /// Timestamp of the captured packet.
     pub timestamp: DateTime<Utc>,
-    /// Protocol type (SIP, RTP, RTCP, etc.).
+    /// Application protocol type (SIP, RTP, RTCP, etc.) — from the HEP
+    /// `CHUNK_PROTO_TYPE` chunk. Distinct from `ip_protocol` below.
     pub protocol: HepProtocol,
+    /// IANA IP protocol number (17 = UDP, 6 = TCP, 132 = SCTP) — from
+    /// the HEP `CHUNK_IP_PROTO` chunk. Defaults to UDP when the chunk
+    /// is absent (the common case for SIP/RTP HEP traffic).
+    pub ip_protocol: u8,
     /// The encapsulated payload (SIP message, RTP packet, etc.).
     pub payload: Vec<u8>,
     /// Correlation ID (typically Call-ID), if present (v3 only).
@@ -189,6 +216,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     let mut ts_sec: u32 = 0;
     let mut ts_usec: u32 = 0;
     let mut protocol = HepProtocol::Unknown(0);
+    let mut ip_protocol: u8 = 17; // Default to UDP — most HEP traffic is SIP/UDP or RTP/UDP.
     let mut payload: Vec<u8> = Vec::new();
     let mut correlation_id: Option<String> = None;
     let mut capture_id: Option<u32> = None;
@@ -218,7 +246,8 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
                 // from dedicated chunks.
             }
             CHUNK_IP_PROTO => {
-                // 1 byte: 6=TCP, 17=UDP — informational for now.
+                ensure!(!chunk_data.is_empty(), "IP_PROTO chunk too short");
+                ip_protocol = chunk_data[0];
             }
             CHUNK_SRC_IPV4 => {
                 ensure!(chunk_data.len() >= 4, "SRC_IPV4 chunk too short");
@@ -323,6 +352,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         dst_port,
         timestamp,
         protocol,
+        ip_protocol,
         payload,
         correlation_id,
         capture_id,
@@ -367,6 +397,7 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
         dst_port,
         timestamp: Utc::now(),
         protocol: HepProtocol::Sip, // v2 was SIP-only
+        ip_protocol: 17,            // v2 carried only UDP-borne SIP
         payload,
         correlation_id: None,
         capture_id: None,
@@ -607,9 +638,10 @@ impl HepRateLimiter {
 
 /// HEP listener: binds a UDP socket and receives HEP packets.
 ///
-/// Each received HEP packet is parsed and converted into a [`Packet`] struct
-/// (using `DLT_RAW` since HEP carries no link-layer framing) and sent through
-/// the channel for downstream processing.
+/// Each received HEP packet is parsed and converted via [`hep_to_packet`]
+/// into a [`Packet`] carrying `pre_parsed` metadata (src/dst addr+port and
+/// IP protocol). The parser short-circuits on `pre_parsed`, treating the
+/// HEP payload as the transport-layer message bytes directly.
 ///
 /// The listener checks [`signals::shutdown_requested`] each iteration and
 /// respects the `count` and `duration` limits from `config`.
@@ -721,18 +753,9 @@ pub fn capture_hep(
         };
 
         // Convert to a Packet that the rest of the pipeline can process.
-        // HEP already provides parsed metadata, so we pass the *payload*
-        // (the inner SIP/RTP message) as the packet data. We use DLT_RAW
-        // because there's no Ethernet framing.
-        let payload_len = hep.payload.len();
-        let packet = Packet::new(
-            hep.timestamp,
-            hep.payload,
-            payload_len,
-            payload_len,
-            Some(format!("hep:{bind_addr}")),
-            DLT_RAW,
-        );
+        // The HEP chunks (src/dst addr+port, IP protocol) flow into
+        // PreParsed so the parser short-circuits the IP-header walk.
+        let packet = hep_to_packet(hep, bind_addr);
 
         if tx.send(packet).is_err() {
             tracing::debug!("Receiver dropped, stopping HEP listener");
@@ -1084,5 +1107,87 @@ mod tests {
         data.extend_from_slice(&100u16.to_be_bytes());
 
         assert!(parse_hep(&data).is_err());
+    }
+
+    /// Issue #5 regression: verify the HEP→Packet conversion preserves
+    /// addressing as `pre_parsed` metadata so the parser can short-circuit.
+    /// Previously the listener tagged DLT_RAW with payload-only data,
+    /// causing the parser to mis-read the SIP body as an IP header.
+    #[test]
+    fn hep_to_packet_attaches_pre_parsed_metadata() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
+        let hep = HepPacket {
+            version: 3,
+            src_addr: "192.0.2.10".parse().unwrap(),
+            dst_addr: "192.0.2.20".parse().unwrap(),
+            src_port: 5060,
+            dst_port: 5060,
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            protocol: HepProtocol::Sip,
+            payload: payload.to_vec(),
+            correlation_id: None,
+            capture_id: None,
+            ip_protocol: 17,
+        };
+        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let meta = packet
+            .pre_parsed
+            .as_ref()
+            .expect("pre_parsed must be set so parser short-circuits");
+        assert_eq!(meta.src_addr, "192.0.2.10".parse::<IpAddr>().unwrap());
+        assert_eq!(meta.dst_addr, "192.0.2.20".parse::<IpAddr>().unwrap());
+        assert_eq!(meta.src_port, 5060);
+        assert_eq!(meta.dst_port, 5060);
+        assert_eq!(meta.ip_protocol, 17);
+        assert_eq!(&packet.data, payload);
+    }
+
+    /// HEP packets that carry TCP-borne SIP must surface `ip_protocol = 6`
+    /// so downstream consumers see TransportProto::Tcp.
+    #[test]
+    fn hep_to_packet_preserves_tcp_protocol() {
+        let hep = HepPacket {
+            version: 3,
+            src_addr: "192.168.1.10".parse().unwrap(),
+            dst_addr: "192.168.1.20".parse().unwrap(),
+            src_port: 5060,
+            dst_port: 5061,
+            timestamp: Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            protocol: HepProtocol::Sip,
+            payload: b"REGISTER sip:carol SIP/2.0\r\n\r\n".to_vec(),
+            correlation_id: None,
+            capture_id: None,
+            ip_protocol: 6,
+        };
+        let packet = hep_to_packet(hep, "0.0.0.0:9060");
+        let meta = packet.pre_parsed.as_ref().unwrap();
+        assert_eq!(meta.ip_protocol, 6);
+    }
+
+    /// Default IP protocol when a HEP packet omits CHUNK_IP_PROTO is UDP,
+    /// matching the most common HEP payload (SIP/UDP, RTP/UDP).
+    #[test]
+    fn parse_hep_defaults_ip_protocol_to_udp_when_chunk_missing() {
+        // Build a HEP v3 packet that intentionally omits CHUNK_IP_PROTO.
+        let payload = b"OPTIONS sip:test SIP/2.0\r\n\r\n";
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_IP_FAMILY, &[2]);
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(&mut chunks, 0, CHUNK_SRC_PORT, &5060u16.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_DST_PORT, &5060u16.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_TS_SEC, &0u32.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_TS_USEC, &0u32.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_PROTO_TYPE, &[1]);
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, payload);
+
+        let mut data = Vec::new();
+        data.extend_from_slice(HEP3_MAGIC);
+        let total_len = (HEP3_HEADER_LEN + chunks.len()) as u16;
+        data.extend_from_slice(&total_len.to_be_bytes());
+        data.extend_from_slice(&chunks);
+
+        let parsed = parse_hep(&data).expect("HEP parse");
+        assert_eq!(parsed.ip_protocol, 17);
     }
 }
