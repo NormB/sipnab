@@ -125,6 +125,21 @@ const ETHERTYPE_IPV4: u16 = 0x0800;
 /// EtherType for IPv6 inside GRE.
 const ETHERTYPE_IPV6: u16 = 0x86DD;
 
+/// Map an IANA IP-protocol number to a [`TransportProto`].
+///
+/// Used by the pre-parsed short-circuit path; HEP and similar sources
+/// carry the IP protocol number, not the application-level transport
+/// like TLS or WS — so this only handles UDP / TCP / SCTP. Anything
+/// else falls back to UDP, matching the most common HEP payload type.
+fn ip_protocol_to_transport(p: u8) -> TransportProto {
+    match p {
+        6 => TransportProto::Tcp,
+        17 => TransportProto::Udp,
+        132 => TransportProto::Sctp,
+        _ => TransportProto::Udp,
+    }
+}
+
 // ── Public API ────────────────────────────────────────────────────────
 
 /// Parse a raw captured [`Packet`] into a [`ParsedPacket`].
@@ -141,6 +156,28 @@ const ETHERTYPE_IPV6: u16 = 0x86DD;
 /// Returns an error if the packet cannot be parsed (e.g., too short,
 /// unsupported link type, non-IP traffic like ARP).
 pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
+    // Short-circuit: when the packet's source already knows the
+    // addressing (e.g. HEP listener that reads it from HEP chunks),
+    // skip link/IP/transport parsing and produce a ParsedPacket
+    // directly. `data` is the transport-layer payload only.
+    if let Some(meta) = &packet.pre_parsed {
+        return Ok(ParsedPacket {
+            timestamp: packet.timestamp,
+            src_addr: meta.src_addr,
+            dst_addr: meta.dst_addr,
+            src_port: meta.src_port,
+            dst_port: meta.dst_port,
+            transport: ip_protocol_to_transport(meta.ip_protocol),
+            payload: packet.data.clone(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: meta.ip_protocol,
+        });
+    }
+
     let data = &packet.data;
 
     // First-pass parse based on link type
@@ -806,6 +843,62 @@ mod tests {
         let parsed = parse_packet(&pkt).expect("should parse raw IP");
         assert_eq!(parsed.src_port, 4000);
         assert_eq!(parsed.dst_port, 5000);
+        assert_eq!(parsed.payload, payload);
+    }
+
+    /// When a packet carries pre-parsed metadata (e.g. from a HEP listener
+    /// that already has the addressing from HEP chunks), `parse_packet`
+    /// must short-circuit the IP-header parse path and produce a
+    /// `ParsedPacket` from the metadata + payload directly. The payload
+    /// bytes do NOT contain link/IP/transport headers.
+    #[test]
+    fn parse_packet_short_circuits_when_pre_parsed_present_udp() {
+        let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec();
+        let pkt = Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            payload.clone(),
+            Some("hep:0.0.0.0:9060".to_string()),
+            super::super::packet::PreParsed {
+                src_addr: "192.0.2.10".parse().unwrap(),
+                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_port: 5060,
+                dst_port: 5060,
+                ip_protocol: 17, // UDP
+            },
+        );
+        let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
+
+        assert_eq!(parsed.src_addr, "192.0.2.10".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.dst_addr, "192.0.2.20".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_port, 5060);
+        assert_eq!(parsed.dst_port, 5060);
+        assert_eq!(parsed.transport, TransportProto::Udp);
+        assert_eq!(parsed.payload, payload);
+        assert!(parsed.tcp_seq.is_none());
+        assert!(parsed.tcp_flags.is_none());
+        assert_eq!(parsed.fragment_offset, None);
+        assert!(!parsed.more_fragments);
+        assert_eq!(parsed.ip_protocol, 17);
+    }
+
+    #[test]
+    fn parse_packet_short_circuits_when_pre_parsed_present_tcp() {
+        let payload = b"REGISTER sip:carol@example.com SIP/2.0\r\n\r\n".to_vec();
+        let pkt = Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            payload.clone(),
+            None,
+            super::super::packet::PreParsed {
+                src_addr: "192.168.1.10".parse().unwrap(),
+                dst_addr: "192.168.1.20".parse().unwrap(),
+                src_port: 5060,
+                dst_port: 5061,
+                ip_protocol: 6, // TCP
+            },
+        );
+        let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
+
+        assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.payload, payload);
     }
 }
