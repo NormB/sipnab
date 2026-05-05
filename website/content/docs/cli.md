@@ -248,7 +248,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 |------|-------|---------|-------------|
 | `--mcp` | -- | off | Run sipnab as an MCP server (implies `--no-tui`). Feature: `mcp` |
 | `--mcp-transport` | `<TRANSPORT>` | `stdio` | Transport: `stdio` (default) or `http` (requires `mcp-http` feature) |
-| `--mcp-bind` | `<ADDR>` | `127.0.0.1:8731` | Bind address for the HTTP MCP transport |
+| `--mcp-bind` | `<ADDR>` | -- (`127.0.0.1:8731` applied at runtime when `--mcp-transport http` is set without an explicit bind) | Bind address for the HTTP MCP transport |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP. Required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN` |
 | `--mcp-token-file` | `<FILE>` | -- | Read MCP bearer token from a file (preferred over env in systemd units) |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). Use `*` to disable host checking entirely |
@@ -291,7 +291,9 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 
 - Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
 - `--kill-response` accepts values 100-699 only.
-- Feature-gated flags (`tls`, `hep`, `api`) produce startup errors when the required feature is not compiled in.
+- Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`, `audio`, `tui`) produce startup errors when the required feature is not compiled in.
+- `--mcp` is incompatible with stdout-writing flags (`--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark`, `--tshark-filter`) when using stdio transport — sipnab refuses to start. Combine `--mcp` with `--quiet` to suppress text-mode capture output.
+- HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`; loopback binds need no token.
 
 ## Quick Reference Examples
 

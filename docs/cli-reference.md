@@ -135,7 +135,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections |
 | `--mcp` | -- | off | Run sipnab as an MCP server. Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. |
-| `--mcp-bind` | `<ADDR>` | `127.0.0.1:8731` | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
+| `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. |
 | `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (pair with a network-level source-IP allowlist). |

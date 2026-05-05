@@ -263,7 +263,7 @@ it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full g
 <table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
 <tr><td><code>--mcp</code></td><td>–</td><td>off</td><td>Run sipnab as an MCP server (implies <code>--no-tui</code>). Feature: <code>mcp</code></td></tr>
 <tr><td><code>--mcp-transport</code></td><td><code>&lt;TRANSPORT&gt;</code></td><td><code>stdio</code></td><td>Transport: <code>stdio</code> (default) or <code>http</code> (requires <code>mcp-http</code> feature)</td></tr>
-<tr><td><code>--mcp-bind</code></td><td><code>&lt;ADDR&gt;</code></td><td><code>127.0.0.1:8731</code></td><td>Bind address for the HTTP MCP transport</td></tr>
+<tr><td><code>--mcp-bind</code></td><td><code>&lt;ADDR&gt;</code></td><td>– (<code>127.0.0.1:8731</code> applied at runtime when <code>--mcp-transport http</code> is set without an explicit bind)</td><td>Bind address for the HTTP MCP transport</td></tr>
 <tr><td><code>--mcp-token</code></td><td><code>&lt;TOKEN&gt;</code></td><td>–</td><td>Bearer token for HTTP MCP. Required for non-loopback binds. Also reads <code>$SIPNAB_MCP_TOKEN</code></td></tr>
 <tr><td><code>--mcp-token-file</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>Read MCP bearer token from a file (preferred over env in systemd units)</td></tr>
 <tr><td><code>--mcp-allowed-host</code></td><td><code>&lt;HOST&gt;</code></td><td>–</td><td>Additional Host header values the HTTP MCP server will accept (repeatable). Use <code>*</code> to disable host checking entirely</td></tr>
@@ -298,7 +298,9 @@ it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full g
 <ul>
 <li>Output flags (<code>--json</code>, <code>--json-pretty</code>, <code>--report</code>, <code>--hexdump</code>, <code>--fail2ban</code>) require <code>-N</code> / <code>--no-tui</code> mode, unless <code>--call-report</code> is also specified.</li>
 <li><code>--kill-response</code> accepts values 100-699 only.</li>
-<li>Feature-gated flags (<code>tls</code>, <code>hep</code>, <code>api</code>) produce startup errors when the required feature is not compiled in.</li>
+<li>Feature-gated flags (<code>tls</code>, <code>hep</code>, <code>api</code>, <code>mcp</code>, <code>mcp-http</code>, <code>audio</code>, <code>tui</code>) produce startup errors when the required feature is not compiled in.</li>
+<li><code>--mcp</code> is incompatible with stdout-writing flags (<code>--json</code>, <code>--json-pretty</code>, <code>--report</code>, <code>--call-report</code>, <code>--hexdump</code>, <code>--wireshark</code>, <code>--tshark-filter</code>) when using stdio transport — sipnab refuses to start. Combine <code>--mcp</code> with <code>--quiet</code> to suppress text-mode capture output.</li>
+<li>HTTP MCP transport (<code>--mcp --mcp-transport http</code>) on a non-loopback <code>--mcp-bind</code> requires <code>--mcp-token</code> / <code>--mcp-token-file</code> / <code>SIPNAB_MCP_TOKEN</code>; loopback binds need no token.</li>
 </ul>
 <h2 id="quick-reference-examples">Quick Reference Examples</h2>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture on eth0</span></span>
