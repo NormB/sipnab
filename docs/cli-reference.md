@@ -46,7 +46,7 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 | `--to` | `<PATTERN>` | -- | Filter by SIP To header (regex pattern) |
 | `--contact` | `<PATTERN>` | -- | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | Filter by User-Agent header (regex pattern) |
-| `--filter` | `<EXPR>` | -- | Advanced filter DSL expression (see [filter-dsl.md](filter-dsl.md)) |
+| `--filter` | `<EXPR>` | -- | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md) |
 
 ## Diagnostic Aliases
 
@@ -77,6 +77,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--payload-limit` | `<BYTES>` | -- | Maximum payload bytes to display |
 | `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like sipgrep `-T`) |
+| `--no-cli-print` | -- | off | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--wireshark` | -- | off | Launch Wireshark with a display filter for the current capture |
 | `--tshark-filter` | `<EXPR>` | -- | Generate a tshark-compatible display filter string |
 | `--fail2ban` | -- | off | Output in fail2ban-compatible format for SIP security events. Requires `-N` |

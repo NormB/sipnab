@@ -178,3 +178,12 @@ Should build and run. Live capture support depends on platform pcap implementati
 sipnab --version
 sipnab --help
 ```
+
+`--version` lists the Cargo features compiled into the binary, e.g.
+
+```
+sipnab 0.3.1 (a7cf953d) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+```
+
+This is the fastest way to confirm a build was produced with the feature set
+you expected (e.g. that `mcp-http` is present on a server build).

@@ -5,6 +5,23 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- `--filter` now accepts diagnostic alias names (`codec-asym`,
+  `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`, plus the
+  five existing `--problems`/`--slow-setup`/`--short-calls`/`--one-way`/
+  `--nat-issues` aliases) directly. Raw DSL expressions still parse as
+  before — alias resolution is tried first and falls back to the parser.
+- `--no-cli-print` flag: suppress per-message CLI output so only the
+  post-capture summary (`--report` / `--call-report`) reaches stdout.
+- `--version` now lists the Cargo features compiled into the binary,
+  e.g. `sipnab 0.3.2 (abc12345) features: native,tui,audio,tls,hep,api,mcp,mcp-http`,
+  making it trivial to confirm a server build was produced with the
+  expected feature set (e.g. that `mcp-http` is present).
+
+### Changed
+- Documentation refreshed for the three flag changes above (filter-DSL
+  reference, CLI reference, install verification, cookbook recipes 11
+  and 12).
+
 - **MCP server mode (Phase 8).** Run sipnab as a Model Context Protocol
   server so an AI agent (Claude Code, Claude Desktop, …) can drive
   read-only analysis. Two transports:
