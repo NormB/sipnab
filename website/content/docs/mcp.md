@@ -189,13 +189,14 @@ Restart Claude Desktop. The agent will list `sipnab` under "Connected" — ask i
 From your project directory:
 
 ```bash
-# Stdio against a fixed pcap
+# Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the
+# trailing `sipnab --mcp ...` is treated as the launched command)
 claude mcp add sipnab -- sipnab --mcp -I "$PWD/capture.pcap" --quiet
 
-# HTTP against a remote sipnab
-claude mcp add sipnab-remote --transport http \
-       http://capture.example.com:8731/mcp \
-       --header "Authorization: Bearer $(cat ~/.config/sipnab/token)"
+# HTTP against a remote sipnab — flags before the positional name + URL
+claude mcp add --transport http \
+       --header "Authorization: Bearer $(cat ~/.config/sipnab/token)" \
+       sipnab-remote https://capture.example.com/mcp
 
 # Verify
 claude mcp list

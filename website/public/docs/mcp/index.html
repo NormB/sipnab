@@ -210,13 +210,14 @@ expose the MCP surface pay zero binary size for it.</p>
 <p>Restart Claude Desktop. The agent will list <code>sipnab</code> under “Connected” — ask it “what dialogs failed in this capture?” and watch it call <code>find_problems</code> for you.</p>
 <h3 id="claude-code">Claude Code</h3>
 <p>From your project directory:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Stdio against a fixed pcap</span></span>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># trailing `sipnab --mcp ...` is treated as the launched command)</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add sipnab</span><span style="color: #95E6CB;"> --</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> &quot;</span><span>$PWD</span><span style="color: #AAD94C;">/capture.pcap&quot;</span><span style="color: #95E6CB;"> --quiet</span></span>
 <span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># HTTP against a remote sipnab</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add sipnab-remote</span><span style="color: #95E6CB;"> --transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">       http://capture.example.com:8731/mcp</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --header</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer $(</span><span style="color: #59C2FF;">cat</span><span style="color: #AAD94C;"> ~/.config/sipnab/token)&quot;</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># HTTP against a remote sipnab — flags before the positional name + URL</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add</span><span style="color: #95E6CB;"> --transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --header</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer $(</span><span style="color: #59C2FF;">cat</span><span style="color: #AAD94C;"> ~/.config/sipnab/token)&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">       sipnab-remote https://capture.example.com/mcp</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Verify</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp list</span></span></code></pre><h3 id="raw-stdio-json-rpc-test-for-client-developers">Raw stdio JSON-RPC test (for client developers)</h3>
