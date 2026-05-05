@@ -709,7 +709,13 @@ The following metric *names* are declared in source (and will be formatted when 
 
 ## Client Examples
 
-End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs with a filter, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs filtered by state, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+
+> **Filter parameters:** the REST API accepts `state` (e.g. `Failed`, `Completed`, `InCall`) and `from` (regex on the From header) as query parameters on `/v1/dialogs`, plus `orphaned` and `mos_below` on `/v1/streams`. Full DSL filtering — anything more complex than a single state/from match — is **not** available over REST. For arbitrary DSL queries, use the [MCP server](@/docs/mcp.md)'s `list_dialogs` tool, which accepts a `filter` argument that runs through the same evaluator as `sipnab --filter`.
+
+> **Status codes:** the REST API returns **503 Service Unavailable** when a request is rejected by the rate limiter or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
+
+> **Per-call response code:** dialog summaries (`/v1/dialogs`) and full dialogs (`/v1/dialogs/{id}` summary block) do not have a top-level `status_code` field — that's a per-message field, available inside `/v1/dialogs/{id}.messages[]` or in CLI `--json` per-message output. Examples below build per-call response-code histograms by walking the messages of each failed dialog.
 
 ### curl + jq one-liners
 
@@ -722,10 +728,11 @@ H="-H 'Authorization: Bearer $KEY'"
 # Health check (no auth required)
 curl -fsS $API/health
 
-# List dialogs with a filter
-curl -fsS $API/v1/dialogs $H \
-     --get --data-urlencode "filter=state == 'Failed'" \
-     --data "limit=20" | jq
+# List failed dialogs (state= query param)
+curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq
+
+# List dialogs from a specific user (from= regex)
+curl -fsS "$API/v1/dialogs?from=alice&limit=20" $H | jq
 
 # Get one dialog with full SIP messages
 curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
@@ -734,29 +741,35 @@ curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
 curl -fsS "$API/v1/dialogs/abc123@host/report" $H \
      -H 'Accept: text/markdown'
 
-# Streams currently active
-curl -fsS "$API/v1/streams?status=established" $H | jq
+# Non-orphaned streams (orphaned=false)
+curl -fsS "$API/v1/streams?orphaned=false" $H | jq
+
+# Streams below a MOS threshold
+curl -fsS "$API/v1/streams?mos_below=3.5" $H | jq
 
 # Aggregate counters
 curl -fsS "$API/v1/stats" $H | jq
 
-# Histogram of failure codes (jq pipeline)
-curl -fsS "$API/v1/dialogs?limit=1000" $H \
-     --get --data-urlencode "filter=state == 'Failed'" \
-   | jq -r '.dialogs[].status_code' \
-   | sort | uniq -c | sort -rn
+# Per-call final-response histogram for failed dialogs (walk messages)
+curl -fsS "$API/v1/dialogs?state=Failed&limit=1000" $H \
+  | jq -r '.dialogs[].call_id' \
+  | while read -r cid; do
+      curl -fsS "$API/v1/dialogs/$(jq -rn --arg c "$cid" '$c|@uri')" $H \
+        | jq -r '[.messages[] | select(.is_request == false) | .status_code] | last'
+    done \
+  | sort | uniq -c | sort -rn
 
 # Prometheus metrics
 curl -fsS "$API/metrics" $H | grep '^sipnab_'
 
-# Error handling: distinguish 401 (bad token) from 404 (no dialog)
+# Error handling — server returns 503 (not 429) on rate-limit + conn-cap
 http_code=$(curl -s -o /dev/null -w '%{http_code}' \
             "$API/v1/dialogs/no-such-call" $H)
 case "$http_code" in
   200) echo "found" ;;
   401) echo "auth failed — check --api-key" ;;
   404) echo "dialog not found" ;;
-  429) echo "rate-limited (100 req/s/IP default)" ;;
+  503) echo "rate-limited or connection cap reached" ;;
   *)   echo "unexpected $http_code" ;;
 esac
 ```
@@ -796,8 +809,8 @@ class SipnabClient:
                              timeout=self.timeout)
         if r.status_code == 401:
             raise SipnabError("authentication failed")
-        if r.status_code == 429:
-            raise SipnabError("rate-limited (100 req/s/IP default)")
+        if r.status_code == 503:
+            raise SipnabError("rate-limited or connection cap reached")
         r.raise_for_status()
         return r.json()
 
@@ -805,24 +818,39 @@ class SipnabClient:
         r = self.session.get(f"{self.base}/health", timeout=self.timeout)
         return r.ok
 
-    def list_dialogs(self, *, filter_expr: str | None = None,
+    def list_dialogs(self, *, state: str | None = None,
+                     from_regex: str | None = None,
                      limit: int = 50, offset: int = 0) -> list[dict]:
+        """List dialog summaries.
+
+        The REST API supports filtering by `state` (exact match against
+        DialogState e.g. 'Failed', 'Completed', 'InCall') and `from` (regex).
+        For full DSL filtering use the MCP server's list_dialogs tool.
+        """
         params: dict[str, Any] = {"limit": limit, "offset": offset}
-        if filter_expr:
-            params["filter"] = filter_expr
+        if state:
+            params["state"] = state
+        if from_regex:
+            params["from"] = from_regex
         return self._get("/v1/dialogs", **params)["dialogs"]
 
     def get_dialog(self, call_id: str) -> dict:
-        return self._get(f"/v1/dialogs/{call_id}")
+        from urllib.parse import quote
+        return self._get(f"/v1/dialogs/{quote(call_id, safe='')}")
 
     def call_report(self, call_id: str) -> dict:
-        return self._get(f"/v1/dialogs/{call_id}/report")
+        from urllib.parse import quote
+        return self._get(f"/v1/dialogs/{quote(call_id, safe='')}/report")
 
     def stats(self) -> dict:
         return self._get("/v1/stats")
 
     def metrics(self) -> str:
         r = self.session.get(f"{self.base}/metrics", timeout=self.timeout)
+        if r.status_code == 401:
+            raise SipnabError("authentication failed")
+        if r.status_code == 503:
+            raise SipnabError("rate-limited")
         r.raise_for_status()
         return r.text
 
@@ -840,17 +868,21 @@ if __name__ == "__main__":
     failed: list[dict] = []
     offset = 0
     while True:
-        page = c.list_dialogs(
-            filter_expr="state == 'Failed'", limit=100, offset=offset)
+        page = c.list_dialogs(state="Failed", limit=100, offset=offset)
         if not page:
             break
         failed.extend(page)
         offset += len(page)
     print(f"{len(failed)} failed dialogs")
 
-    # Histogram of response codes
+    # Per-call final response code (walk each dialog's messages)
     from collections import Counter
-    codes = Counter(d.get("status_code") for d in failed)
+    codes: Counter[int] = Counter()
+    for d in failed:
+        full = c.get_dialog(d["call_id"])
+        responses = [m for m in full.get("messages", []) if not m.get("is_request")]
+        if responses:
+            codes[responses[-1].get("status_code")] += 1
     for code, n in codes.most_common():
         print(f"  {code}: {n}")
 ```
@@ -924,8 +956,8 @@ interface DialogSummary {
   method: string;
   from: string;
   to: string;
-  status_code?: number;
   duration_sec: number;
+  msg_count: number;
 }
 
 interface DialogsPage {
@@ -947,20 +979,20 @@ async function api<T>(
     headers: { Authorization: `Bearer ${KEY}` },
   });
   if (r.status === 401) throw new Error("auth failed");
-  if (r.status === 429) throw new Error("rate-limited");
+  if (r.status === 503) throw new Error("rate-limited or conn cap reached");
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return (await r.json()) as T;
 }
 
 async function listDialogs(
-  filter: string | null = null,
+  state: string | null = null,
   limit = 50,
 ): Promise<DialogSummary[]> {
   const all: DialogSummary[] = [];
   let offset = 0;
   for (;;) {
     const params: Record<string, string | number> = { limit, offset };
-    if (filter) params.filter = filter;
+    if (state) params.state = state;
     const page = await api<DialogsPage>("/v1/dialogs", params);
     if (page.dialogs.length === 0) break;
     all.push(...page.dialogs);
@@ -970,13 +1002,24 @@ async function listDialogs(
   return all;
 }
 
+// Per-call final response code requires fetching the full dialog
+interface SipMessage { is_request: boolean; status_code?: number; }
+interface FullDialog { messages: SipMessage[]; }
+
+async function finalStatusCode(call_id: string): Promise<number | undefined> {
+  const d = await api<FullDialog>(`/v1/dialogs/${encodeURIComponent(call_id)}`);
+  const responses = d.messages.filter((m) => !m.is_request);
+  return responses.at(-1)?.status_code;
+}
+
 // ── Demo ──────────────────────────────────────────────────────────
-const failed = await listDialogs("state == 'Failed'");
+const failed = await listDialogs("Failed");
 console.log(`${failed.length} failed dialogs`);
 
 const histogram = new Map<number | undefined, number>();
 for (const d of failed) {
-  histogram.set(d.status_code, (histogram.get(d.status_code) ?? 0) + 1);
+  const code = await finalStatusCode(d.call_id);
+  histogram.set(code, (histogram.get(code) ?? 0) + 1);
 }
 for (const [code, n] of [...histogram].sort((a, b) => b[1] - a[1])) {
   console.log(`  ${code ?? "(none)"}: ${n}`);
@@ -1010,8 +1053,8 @@ struct DialogSummary {
     state: String,
     from: String,
     to: String,
-    status_code: Option<u16>,
     duration_sec: f64,
+    msg_count: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1044,20 +1087,20 @@ impl Sipnab {
         Ok(Self { base, client })
     }
 
-    fn list_dialogs(&self, filter: Option<&str>) -> Result<Vec<DialogSummary>> {
+    fn list_dialogs(&self, state: Option<&str>) -> Result<Vec<DialogSummary>> {
         let mut all = Vec::new();
         let mut offset = 0usize;
         loop {
             let mut req = self.client
                 .get(format!("{}/v1/dialogs", self.base))
                 .query(&[("limit", "100"), ("offset", &offset.to_string())]);
-            if let Some(f) = filter {
-                req = req.query(&[("filter", f)]);
+            if let Some(s) = state {
+                req = req.query(&[("state", s)]);
             }
             let resp = req.send()?;
             match resp.status().as_u16() {
                 401 => return Err(anyhow!("auth failed")),
-                429 => return Err(anyhow!("rate-limited")),
+                503 => return Err(anyhow!("rate-limited or conn cap reached")),
                 code if code >= 400 => return Err(anyhow!("HTTP {code}")),
                 _ => {}
             }
@@ -1070,17 +1113,35 @@ impl Sipnab {
         }
         Ok(all)
     }
+
+    /// Fetch one full dialog and return the final response code, if any.
+    fn final_status_code(&self, call_id: &str) -> Result<Option<u16>> {
+        #[derive(Deserialize)]
+        struct Msg { is_request: bool, status_code: Option<u16> }
+        #[derive(Deserialize)]
+        struct Full { messages: Vec<Msg> }
+        let cid = urlencoding::encode(call_id);
+        let resp = self.client
+            .get(format!("{}/v1/dialogs/{}", self.base, cid))
+            .send()?;
+        let full: Full = resp.json()?;
+        Ok(full.messages.iter()
+            .filter(|m| !m.is_request)
+            .last()
+            .and_then(|m| m.status_code))
+    }
 }
 
 fn main() -> Result<()> {
     let s = Sipnab::new()?;
-    let failed = s.list_dialogs(Some("state == 'Failed'"))?;
+    let failed = s.list_dialogs(Some("Failed"))?;
     println!("{} failed dialogs", failed.len());
 
     use std::collections::BTreeMap;
     let mut hist: BTreeMap<Option<u16>, usize> = BTreeMap::new();
     for d in &failed {
-        *hist.entry(d.status_code).or_default() += 1;
+        let code = s.final_status_code(&d.call_id).unwrap_or(None);
+        *hist.entry(code).or_default() += 1;
     }
     let mut sorted: Vec<_> = hist.into_iter().collect();
     sorted.sort_by(|a, b| b.1.cmp(&a.1));
@@ -1114,8 +1175,17 @@ type DialogSummary struct {
     State       string  `json:"state"`
     From        string  `json:"from"`
     To          string  `json:"to"`
-    StatusCode  *int    `json:"status_code"`
     DurationSec float64 `json:"duration_sec"`
+    MsgCount    int     `json:"msg_count"`
+}
+
+type SipMessage struct {
+    IsRequest  bool `json:"is_request"`
+    StatusCode *int `json:"status_code"`
+}
+
+type FullDialog struct {
+    Messages []SipMessage `json:"messages"`
 }
 
 type DialogsPage struct {
@@ -1160,8 +1230,8 @@ func (s *Sipnab) get(path string, params url.Values, out any) error {
     switch resp.StatusCode {
     case 401:
         return fmt.Errorf("auth failed")
-    case 429:
-        return fmt.Errorf("rate-limited")
+    case 503:
+        return fmt.Errorf("rate-limited or conn cap reached")
     }
     if resp.StatusCode >= 400 {
         return fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -1169,13 +1239,13 @@ func (s *Sipnab) get(path string, params url.Values, out any) error {
     return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (s *Sipnab) ListDialogs(filter string) ([]DialogSummary, error) {
+func (s *Sipnab) ListDialogs(state string) ([]DialogSummary, error) {
     var all []DialogSummary
     offset := 0
     for {
         params := url.Values{"limit": {"100"}, "offset": {fmt.Sprint(offset)}}
-        if filter != "" {
-            params.Set("filter", filter)
+        if state != "" {
+            params.Set("state", state)
         }
         var page DialogsPage
         if err := s.get("/v1/dialogs", params, &page); err != nil {
@@ -1193,13 +1263,28 @@ func (s *Sipnab) ListDialogs(filter string) ([]DialogSummary, error) {
     return all, nil
 }
 
+// FinalStatusCode fetches the dialog and returns the last response code.
+func (s *Sipnab) FinalStatusCode(callID string) (*int, error) {
+    var full FullDialog
+    if err := s.get("/v1/dialogs/"+url.PathEscape(callID), nil, &full); err != nil {
+        return nil, err
+    }
+    var last *int
+    for _, m := range full.Messages {
+        if !m.IsRequest && m.StatusCode != nil {
+            last = m.StatusCode
+        }
+    }
+    return last, nil
+}
+
 func main() {
     s, err := newSipnab()
     if err != nil {
         fmt.Fprintln(os.Stderr, err)
         os.Exit(1)
     }
-    failed, err := s.ListDialogs("state == 'Failed'")
+    failed, err := s.ListDialogs("Failed")
     if err != nil {
         fmt.Fprintln(os.Stderr, err)
         os.Exit(1)
@@ -1208,9 +1293,11 @@ func main() {
 
     hist := map[int]int{}
     for _, d := range failed {
-        if d.StatusCode != nil {
-            hist[*d.StatusCode]++
+        code, err := s.FinalStatusCode(d.CallID)
+        if err != nil || code == nil {
+            continue
         }
+        hist[*code]++
     }
     type kv struct{ k, v int }
     var sorted []kv

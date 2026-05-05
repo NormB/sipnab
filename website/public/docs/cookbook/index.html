@@ -98,7 +98,7 @@
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems --json</span></span></code></pre>
 <p><strong>What to look for:</strong></p>
 <ul>
-<li><code>--problems</code> matches <code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true</code>. If it’s empty, the capture is probably clean.</li>
+<li><code>--problems</code> matches <code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true</code>. If it’s empty, the capture is probably clean.</li>
 <li>The end-of-capture summary distinguishes RTP packets from RTP streams: <code>852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams</code>. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).</li>
 </ul>
 <p><strong>Pitfalls:</strong></p>
@@ -129,13 +129,15 @@
 <h2 id="3-find-every-failed-call-grouped-by-response-code">3. Find every failed call, grouped by response code</h2>
 <p><strong>Problem:</strong> “We had a spike in failures around 14:00. What was it?”</p>
 <p><strong>Commands:</strong></p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Every failed call with Call-ID and final response code</span></span>
+<p><code>sipnab -N --json</code> emits per-message records (one JSON line per SIP message), not per-dialog summaries. The <code>status_code</code> field is on response messages; combined with <code>--filter</code> (which evaluates against the dialog so all messages from matched dialogs flow through), you get a histogram of every response code seen during failed dialogs:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Every failed call&#39;s response messages (Call-ID + status_code + reason)</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
-<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;{call_id, status_code, from, to}&#39;</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;select(.is_request == false) | {call_id, status_code, reason}&#39;</span></span>
 <span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Histogram of failure codes (highest first)</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Histogram of response codes seen in failed dialogs</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
-<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.status_code&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;select(.is_request == false) | .status_code&#39;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detailed report for one failure (Markdown, paste into a ticket)</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> failure-report.md</span></span></code></pre>
@@ -144,6 +146,11 @@
 <li>A 401/407 spike usually means a credential-rotation push hit the wrong realm.</li>
 <li>A 408 spike on outbound is upstream timeout — check rtpengine / SBC.</li>
 <li>A 488 spike (Not Acceptable Here) usually means a codec mismatch — combine with Recipe 11.</li>
+</ul>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>The histogram counts <em>all</em> response codes seen in messages of failed dialogs (so a single failed call with <code>100 Trying → 488</code> contributes both 100 and 488). For just the final response per call, use <code>--call-report &lt;id&gt;</code> per dialog.</li>
+<li>The dialog summary returned by the REST API (<code>/v1/dialogs</code>) has no <code>status_code</code> field; that’s a per-message field only available in CLI <code>--json</code> output or via <code>/v1/dialogs/{id}</code> (which includes the full message list).</li>
 </ul>
 <hr />
 <h2 id="4-diagnose-a-one-way-audio-complaint">4. Diagnose a one-way audio complaint</h2>
@@ -256,11 +263,14 @@
 <h2 id="7-decrypt-sip-tls-via-sslkeylogfile">7. Decrypt SIP/TLS via SSLKEYLOGFILE</h2>
 <p><strong>Problem:</strong> TLS-encrypted SIP captures are unreadable without keys.</p>
 <h3 id="7a-live-decryption-ua-produces-keys-sipnab-follows">7a. Live decryption (UA produces keys, sipnab follows)</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1. On the SIP user agent, set SSLKEYLOGFILE in its environment</span></span>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 0. Build sipnab with the tls feature (or use --features full)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> tls,hep,api</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1. On the SIP user agent, set SSLKEYLOGFILE in its environment</span></span>
 <span class="giallo-l"><span>SSLKEYLOGFILE</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">/tmp/sipua.keylog</span><span style="color: #59C2FF;"> /opt/myua/bin/start</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 2. Start sipnab watching the keylog file (live updates)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --features</span><span style="color: #AAD94C;"> tls</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> \</span></span>
 <span class="giallo-l"><span style="color: #95E6CB;">            --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> --keylog-watch</span></span></code></pre><h3 id="7b-offline-decryption-capture-once-decrypt-later">7b. Offline decryption (capture once, decrypt later)</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture the encrypted pcap normally</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -O</span><span style="color: #AAD94C;"> encrypted.pcap</span></span>
@@ -271,15 +281,16 @@
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> encrypted.pcap</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> \</span></span>
 <span class="giallo-l"><span style="color: #95E6CB;">       -O</span><span style="color: #AAD94C;"> decrypted.pcap</span><span style="color: #95E6CB;"> --pcap-export-mode</span><span style="color: #AAD94C;"> decrypted</span></span>
 <span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Wired mode: keep encrypted bytes + add a Decryption Secrets Block so</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Wireshark itself can decrypt</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># encrypted+dsb mode: keep encrypted bytes + add a Decryption Secrets</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Block so Wireshark itself can decrypt</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> encrypted.pcap</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       -O</span><span style="color: #AAD94C;"> wireshark-friendly.pcap</span><span style="color: #95E6CB;"> --pcap-export-mode</span><span style="color: #AAD94C;"> wired</span></span></code></pre><h3 id="7d-srtp-via-dtls-srtp-keylog">7d. SRTP via DTLS-SRTP keylog</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --features</span><span style="color: #AAD94C;"> tls</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --dtls-keylog</span><span style="color: #AAD94C;"> /tmp/dtls.keylog</span></span></code></pre>
+<span class="giallo-l"><span style="color: #95E6CB;">       -O</span><span style="color: #AAD94C;"> wireshark-friendly.pcap</span><span style="color: #95E6CB;"> --pcap-export-mode</span><span style="color: #AAD94C;"> encrypted+dsb</span></span></code></pre>
+<p>Accepted values for <code>--pcap-export-mode</code>: <code>decrypted</code> (default), <code>encrypted+dsb</code>, <code>raw</code>.</p>
+<h3 id="7d-srtp-via-dtls-srtp-keylog">7d. SRTP via DTLS-SRTP keylog</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --dtls-keylog</span><span style="color: #AAD94C;"> /tmp/dtls.keylog</span></span></code></pre>
 <p><strong>Pitfalls:</strong></p>
 <ul>
-<li><code>tls</code> feature must be compiled in. Check with <code>sipnab --version</code> — should show <code>tls</code> in the feature list.</li>
+<li><code>tls</code> is a <strong>build-time</strong> feature, not a runtime flag. There is no <code>sipnab --features tls</code> invocation; pass <code>--features</code> to <code>cargo build</code> and use the resulting binary. <code>sipnab --version</code> only prints the version string and a commit hash — it does <em>not</em> enumerate compiled-in features. To verify support, <code>sipnab --help | grep -E '\-\-keylog|\-\-tls-key'</code> — if the flags appear, <code>tls</code> was compiled in.</li>
 <li>The keylog format is the standard NSS <code>SSLKEYLOGFILE</code> (one line per session). Same format Firefox/Chrome/curl produce.</li>
 <li>TLS 1.3 + ECDH ephemeral handshakes are fully supported via the <code>ring</code> backend.</li>
 </ul>
@@ -399,12 +410,17 @@
 <span class="giallo-l"><span style="color: #95E6CB;">            --json</span></span></code></pre>
 <p><code>--kill-scanner</code> actively responds 403 to known scanner User-Agents (uses the isolated kill-child process). <code>--alert syslog</code> writes alerts to <code>LOCAL0</code> so you can pick them up from <code>/var/log/syslog</code>.</p>
 <h3 id="10b-wire-to-fail2ban">10b. Wire to fail2ban</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run sipnab with fail2ban-format output</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fail2ban</span><span style="color: #AAD94C;"> /var/log/sipnab/fail2ban.log</span></span></code></pre>
+<p><code>--fail2ban</code> is a boolean flag — it switches sipnab’s stdout to fail2ban-friendly log lines. Pipe to a file (or run under systemd and capture the unit’s stdout).</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run sipnab with fail2ban-format output, write to a logfile</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fail2ban \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">     &gt;&gt;</span><span style="color: #AAD94C;"> /var/log/sipnab/fail2ban.log</span><span style="color: #F29668;"> 2&gt;&amp;1</span></span></code></pre>
+<p>Sample log line shape (from <code>src/output/fail2ban.rs</code>):</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua=friendly-scanner method=OPTIONS</span></span>
+<span class="giallo-l"><span>2026-05-05 12:34:57 sipnab[12345]: reg_flood src=203.0.113.42 count=37</span></span></code></pre>
 <p><code>/etc/fail2ban/filter.d/sipnab.conf</code>:</p>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="ini"><span class="giallo-l"><span style="color: #59C2FF;">[Definition]</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">failregex</span><span style="color: #BFBDB6B3;"> =</span><span> ^.*sipnab.*scanner.*from &lt;HOST&gt;.*$</span></span>
-<span class="giallo-l"><span>            ^.*sipnab.*reg-flood.*from &lt;HOST&gt;.*$</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">failregex</span><span style="color: #BFBDB6B3;"> =</span><span> ^.*sipnab\[\d+\]: scanner_detected </span><span style="color: #FF8F40;">src</span><span style="color: #BFBDB6B3;">=</span><span>&lt;HOST&gt;.*$</span></span>
+<span class="giallo-l"><span>            ^.*sipnab\[\d+\]: reg_flood </span><span style="color: #FF8F40;">src</span><span style="color: #BFBDB6B3;">=</span><span>&lt;HOST&gt;.*$</span></span>
 <span class="giallo-l"><span style="color: #FF8F40;">ignoreregex</span><span style="color: #BFBDB6B3;"> =</span></span></code></pre>
 <p><code>/etc/fail2ban/jail.d/sipnab.local</code>:</p>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="ini"><span class="giallo-l"><span style="color: #59C2FF;">[sipnab]</span></span>
@@ -427,27 +443,32 @@
 <hr />
 <h2 id="11-per-call-asymmetry-diagnosis">11. Per-call asymmetry diagnosis</h2>
 <p><strong>Problem:</strong> A call sounds bad in one direction. The codec/ptime might differ between legs.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># All the asymmetry signals at once (Phase 8.7)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;select(</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.codec_asymmetry == true or</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.ptime_asymmetry == true or</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.payload_asymmetry == true or</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.duration_asymmetry == true or</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.late_media == true</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">) | {call_id, diagnosis}&#39;</span></span>
+<p>The asymmetry signals (Phase 8.7) live on sipnab’s internal <code>MediaDiagnosis</code> struct and are exposed through the filter DSL — not the dialog JSON output’s <code>diagnosis</code> block. Reach for them via filter aliases:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># All five asymmetry checks at once via the &#39;problems&#39; alias</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems --json</span></span>
 <span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Targeted aliases via the filter DSL</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> codec-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # different codecs A vs B</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> ptime-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # different packetization</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> payload-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;"> # different dynamic PT, same codec</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Targeted, one signal at a time</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> codec-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">    # different codecs A vs B</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> ptime-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">    # different packetization</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> payload-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">  # different dynamic PT, same codec</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> duration-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;"> # one leg materially shorter</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> late-media</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # RTP starts well after 200 OK</span></span></code></pre>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> late-media</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">    # RTP starts well after 200 OK</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Combine with raw DSL when you want multiple signals OR&#39;d</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --filter</span><span style="color: #AAD94C;"> &quot;codec_asymmetry == true OR ptime_asymmetry == true OR late_media == true&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --json</span></span></code></pre>
 <p><strong>What to look for:</strong></p>
 <ul>
 <li><code>codec_asymmetry: true</code> on a call from PSTN to internal: usually a transcoding policy that fired in one direction only.</li>
 <li><code>ptime_asymmetry: true</code> between two SIP UAs: one is using <code>ptime=20</code>, the other <code>ptime=30</code>. Some downstream jitter buffers can’t handle the mismatch.</li>
 <li><code>payload_asymmetry: true</code>: same codec, but each side picked a different dynamic payload type number. Causes audio cut-out on RFC-strict implementations.</li>
 <li><code>late_media: true</code>: media starts noticeably after the answering 200 OK. Usually means an SBC is doing late-attach NAT — first real RTP arrives only after media-binding.</li>
+</ul>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li><code>--filter codec-asym --json</code> (and the four sibling aliases) emits <strong>per-message</strong> records for messages of dialogs that match. Pipe through <code>jq -s 'unique_by(.call_id)'</code> if you want one record per affected call.</li>
+<li>The <code>diagnosis</code> block in CLI <code>--json</code> output and in the REST API today only exposes <code>one_way_audio</code>, <code>nat_mismatch</code>, <code>no_media</code>, and free-form <code>hints</code>. The five asymmetry booleans are filterable via the DSL but aren’t in the JSON shape — if you need them in your output, generate a <code>--call-report</code> per dialog (which does include them) or use the MCP <code>find_problems</code> tool.</li>
 </ul>
 <hr />
 <h2 id="12-generate-a-call-report-text-markdown-json">12. Generate a call report (text / Markdown / JSON)</h2>

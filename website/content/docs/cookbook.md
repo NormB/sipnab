@@ -30,7 +30,7 @@ sipnab -N -I capture.pcap --problems --json
 
 **What to look for:**
 
-- `--problems` matches `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true`. If it's empty, the capture is probably clean.
+- `--problems` matches `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. If it's empty, the capture is probably clean.
 - The end-of-capture summary distinguishes RTP packets from RTP streams: `852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams`. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).
 
 **Pitfalls:**
@@ -72,14 +72,17 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Commands:**
 
-```bash
-# Every failed call with Call-ID and final response code
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq '{call_id, status_code, from, to}'
+`sipnab -N --json` emits per-message records (one JSON line per SIP message), not per-dialog summaries. The `status_code` field is on response messages; combined with `--filter` (which evaluates against the dialog so all messages from matched dialogs flow through), you get a histogram of every response code seen during failed dialogs:
 
-# Histogram of failure codes (highest first)
+```bash
+# Every failed call's response messages (Call-ID + status_code + reason)
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.status_code' | sort | uniq -c | sort -rn
+  | jq 'select(.is_request == false) | {call_id, status_code, reason}'
+
+# Histogram of response codes seen in failed dialogs
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+  | jq -r 'select(.is_request == false) | .status_code' \
+  | sort | uniq -c | sort -rn
 
 # Detailed report for one failure (Markdown, paste into a ticket)
 sipnab -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.md
@@ -90,6 +93,11 @@ sipnab -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.m
 - A 401/407 spike usually means a credential-rotation push hit the wrong realm.
 - A 408 spike on outbound is upstream timeout — check rtpengine / SBC.
 - A 488 spike (Not Acceptable Here) usually means a codec mismatch — combine with Recipe 11.
+
+**Pitfalls:**
+
+- The histogram counts *all* response codes seen in messages of failed dialogs (so a single failed call with `100 Trying → 488` contributes both 100 and 488). For just the final response per call, use `--call-report <id>` per dialog.
+- The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field; that's a per-message field only available in CLI `--json` output or via `/v1/dialogs/{id}` (which includes the full message list).
 
 ---
 
@@ -253,11 +261,14 @@ watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | 
 ### 7a. Live decryption (UA produces keys, sipnab follows)
 
 ```bash
+# 0. Build sipnab with the tls feature (or use --features full)
+cargo build --release --features tls,hep,api
+
 # 1. On the SIP user agent, set SSLKEYLOGFILE in its environment
 SSLKEYLOGFILE=/tmp/sipua.keylog /opt/myua/bin/start
 
 # 2. Start sipnab watching the keylog file (live updates)
-sudo sipnab --features tls -N -d eth0 \
+sudo sipnab -N -d eth0 \
             --keylog /tmp/sipua.keylog --keylog-watch
 ```
 
@@ -278,22 +289,23 @@ sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
        -O decrypted.pcap --pcap-export-mode decrypted
 
-# Wired mode: keep encrypted bytes + add a Decryption Secrets Block so
-# Wireshark itself can decrypt
+# encrypted+dsb mode: keep encrypted bytes + add a Decryption Secrets
+# Block so Wireshark itself can decrypt
 sipnab -I encrypted.pcap --keylog /tmp/sipua.keylog \
-       -O wireshark-friendly.pcap --pcap-export-mode wired
+       -O wireshark-friendly.pcap --pcap-export-mode encrypted+dsb
 ```
+
+Accepted values for `--pcap-export-mode`: `decrypted` (default), `encrypted+dsb`, `raw`.
 
 ### 7d. SRTP via DTLS-SRTP keylog
 
 ```bash
-sipnab --features tls -I capture.pcap \
-       --dtls-keylog /tmp/dtls.keylog
+sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 ```
 
 **Pitfalls:**
 
-- `tls` feature must be compiled in. Check with `sipnab --version` — should show `tls` in the feature list.
+- `tls` is a **build-time** feature, not a runtime flag. There is no `sipnab --features tls` invocation; pass `--features` to `cargo build` and use the resulting binary. `sipnab --version` only prints the version string and a commit hash — it does *not* enumerate compiled-in features. To verify support, `sipnab --help | grep -E '\-\-keylog|\-\-tls-key'` — if the flags appear, `tls` was compiled in.
 - The keylog format is the standard NSS `SSLKEYLOGFILE` (one line per session). Same format Firefox/Chrome/curl produce.
 - TLS 1.3 + ECDH ephemeral handshakes are fully supported via the `ring` backend.
 
@@ -469,17 +481,27 @@ sudo sipnab -N -d eth0 \
 
 ### 10b. Wire to fail2ban
 
+`--fail2ban` is a boolean flag — it switches sipnab's stdout to fail2ban-friendly log lines. Pipe to a file (or run under systemd and capture the unit's stdout).
+
 ```bash
-# Run sipnab with fail2ban-format output
-sudo sipnab -N -d eth0 --kill-scanner --fail2ban /var/log/sipnab/fail2ban.log
+# Run sipnab with fail2ban-format output, write to a logfile
+sudo sipnab -N -d eth0 --kill-scanner --fail2ban \
+     >> /var/log/sipnab/fail2ban.log 2>&1
+```
+
+Sample log line shape (from `src/output/fail2ban.rs`):
+
+```
+2026-05-05 12:34:56 sipnab[12345]: scanner_detected src=203.0.113.42 ua=friendly-scanner method=OPTIONS
+2026-05-05 12:34:57 sipnab[12345]: reg_flood src=203.0.113.42 count=37
 ```
 
 `/etc/fail2ban/filter.d/sipnab.conf`:
 
 ```ini
 [Definition]
-failregex = ^.*sipnab.*scanner.*from <HOST>.*$
-            ^.*sipnab.*reg-flood.*from <HOST>.*$
+failregex = ^.*sipnab\[\d+\]: scanner_detected src=<HOST>.*$
+            ^.*sipnab\[\d+\]: reg_flood src=<HOST>.*$
 ignoreregex =
 ```
 
@@ -518,22 +540,23 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Problem:** A call sounds bad in one direction. The codec/ptime might differ between legs.
 
-```bash
-# All the asymmetry signals at once (Phase 8.7)
-sipnab -N -I capture.pcap --json | jq 'select(
-    .diagnosis.codec_asymmetry == true or
-    .diagnosis.ptime_asymmetry == true or
-    .diagnosis.payload_asymmetry == true or
-    .diagnosis.duration_asymmetry == true or
-    .diagnosis.late_media == true
-) | {call_id, diagnosis}'
+The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. Reach for them via filter aliases:
 
-# Targeted aliases via the filter DSL
-sipnab -N -I capture.pcap --filter codec-asym --json   # different codecs A vs B
-sipnab -N -I capture.pcap --filter ptime-asym --json   # different packetization
-sipnab -N -I capture.pcap --filter payload-asym --json # different dynamic PT, same codec
+```bash
+# All five asymmetry checks at once via the 'problems' alias
+sipnab -N -I capture.pcap --problems --json
+
+# Targeted, one signal at a time
+sipnab -N -I capture.pcap --filter codec-asym --json    # different codecs A vs B
+sipnab -N -I capture.pcap --filter ptime-asym --json    # different packetization
+sipnab -N -I capture.pcap --filter payload-asym --json  # different dynamic PT, same codec
 sipnab -N -I capture.pcap --filter duration-asym --json # one leg materially shorter
-sipnab -N -I capture.pcap --filter late-media --json   # RTP starts well after 200 OK
+sipnab -N -I capture.pcap --filter late-media --json    # RTP starts well after 200 OK
+
+# Combine with raw DSL when you want multiple signals OR'd
+sipnab -N -I capture.pcap \
+       --filter "codec_asymmetry == true OR ptime_asymmetry == true OR late_media == true" \
+       --json
 ```
 
 **What to look for:**
@@ -542,6 +565,11 @@ sipnab -N -I capture.pcap --filter late-media --json   # RTP starts well after 2
 - `ptime_asymmetry: true` between two SIP UAs: one is using `ptime=20`, the other `ptime=30`. Some downstream jitter buffers can't handle the mismatch.
 - `payload_asymmetry: true`: same codec, but each side picked a different dynamic payload type number. Causes audio cut-out on RFC-strict implementations.
 - `late_media: true`: media starts noticeably after the answering 200 OK. Usually means an SBC is doing late-attach NAT — first real RTP arrives only after media-binding.
+
+**Pitfalls:**
+
+- `--filter codec-asym --json` (and the four sibling aliases) emits **per-message** records for messages of dialogs that match. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
+- The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, generate a `--call-report` per dialog (which does include them) or use the MCP `find_problems` tool.
 
 ---
 
