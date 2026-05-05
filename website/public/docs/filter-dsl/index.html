@@ -178,12 +178,15 @@
 <tr><td><code>short-calls</code></td><td><code>--short-calls</code></td><td><code>duration &lt; 5.0 AND state == 'Completed'</code></td></tr>
 <tr><td><code>one-way</code></td><td><code>--one-way</code></td><td><code>one_way == true</code></td></tr>
 <tr><td><code>nat-issues</code></td><td><code>--nat-issues</code></td><td><code>nat_mismatch == true</code></td></tr>
-<tr><td><code>codec-asym</code></td><td><code>--filter codec-asym</code></td><td><code>codec_asymmetry == true</code></td></tr>
-<tr><td><code>ptime-asym</code></td><td><code>--filter ptime-asym</code></td><td><code>ptime_asymmetry == true</code></td></tr>
-<tr><td><code>payload-asym</code></td><td><code>--filter payload-asym</code></td><td><code>payload_asymmetry == true</code></td></tr>
-<tr><td><code>duration-asym</code></td><td><code>--filter duration-asym</code></td><td><code>duration_asymmetry == true</code></td></tr>
-<tr><td><code>late-media</code></td><td><code>--filter late-media</code></td><td><code>late_media == true</code></td></tr>
+<tr><td><code>codec-asym</code></td><td>(no dedicated CLI flag — use <code>--filter "codec_asymmetry == true"</code> or <code>--problems</code>, or <code>find_problems</code> over MCP with <code>kinds: ["codec-asym"]</code>)</td><td><code>codec_asymmetry == true</code></td></tr>
+<tr><td><code>ptime-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>ptime_asymmetry == true</code></td></tr>
+<tr><td><code>payload-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>payload_asymmetry == true</code></td></tr>
+<tr><td><code>duration-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>duration_asymmetry == true</code></td></tr>
+<tr><td><code>late-media</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>late_media == true</code></td></tr>
 </tbody></table>
+<blockquote>
+<p><strong>CLI <code>--filter</code> does not accept alias names.</strong> The DSL parser rejects bare identifiers; you must write the full expression (e.g. <code>--filter "codec_asymmetry == true"</code>). Alias-name shorthand (<code>codec-asym</code>, <code>late-media</code>, etc.) only works inside MCP’s <code>find_problems</code> tool’s <code>kinds</code> array.</p>
+</blockquote>
 <h2 id="examples">Examples</h2>
 <h3 id="basic-field-matching">Basic field matching</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;INVITE&#39;</span></span>

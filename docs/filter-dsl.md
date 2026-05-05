@@ -113,11 +113,13 @@ These preset expressions are available as CLI flags (`--problems`, etc.) and exp
 | `short-calls` | `--short-calls` | `duration < 5.0 AND state == 'Completed'` |
 | `one-way` | `--one-way` | `one_way == true` |
 | `nat-issues` | `--nat-issues` | `nat_mismatch == true` |
-| `codec-asym` | `--filter codec-asym` | `codec_asymmetry == true` |
-| `ptime-asym` | `--filter ptime-asym` | `ptime_asymmetry == true` |
-| `payload-asym` | `--filter payload-asym` | `payload_asymmetry == true` |
-| `duration-asym` | `--filter duration-asym` | `duration_asymmetry == true` |
-| `late-media` | `--filter late-media` | `late_media == true` |
+| `codec-asym` | (no dedicated CLI flag — use `--filter "codec_asymmetry == true"` or `--problems`, or MCP `find_problems` with `kinds: ["codec-asym"]`) | `codec_asymmetry == true` |
+| `ptime-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `ptime_asymmetry == true` |
+| `payload-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `payload_asymmetry == true` |
+| `duration-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `duration_asymmetry == true` |
+| `late-media` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `late_media == true` |
+
+> **Note:** the CLI `--filter` flag takes a DSL expression only — it does not accept alias names like `codec-asym`. Alias-name shorthand works in MCP's `find_problems` tool's `kinds` array.
 
 ## Examples
 

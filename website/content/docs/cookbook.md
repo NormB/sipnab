@@ -540,23 +540,27 @@ The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxe
 
 **Problem:** A call sounds bad in one direction. The codec/ptime might differ between legs.
 
-The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. Reach for them via filter aliases:
+The asymmetry signals (Phase 8.7) live on sipnab's internal `MediaDiagnosis` struct and are exposed through the filter DSL — not the dialog JSON output's `diagnosis` block. The CLI `--filter` flag takes a raw DSL expression (alias *names* like `codec-asym` only work in MCP's `find_problems` tool, not on the CLI). Reach for the asymmetry signals from CLI by writing the DSL directly:
 
 ```bash
-# All five asymmetry checks at once via the 'problems' alias
+# All five asymmetry checks at once via the 'problems' alias (CLI flag)
 sipnab -N -I capture.pcap --problems --json
 
-# Targeted, one signal at a time
-sipnab -N -I capture.pcap --filter codec-asym --json    # different codecs A vs B
-sipnab -N -I capture.pcap --filter ptime-asym --json    # different packetization
-sipnab -N -I capture.pcap --filter payload-asym --json  # different dynamic PT, same codec
-sipnab -N -I capture.pcap --filter duration-asym --json # one leg materially shorter
-sipnab -N -I capture.pcap --filter late-media --json    # RTP starts well after 200 OK
+# Targeted, one signal at a time — use raw DSL (not alias names)
+sipnab -N -I capture.pcap --filter "codec_asymmetry == true" --json
+sipnab -N -I capture.pcap --filter "ptime_asymmetry == true" --json
+sipnab -N -I capture.pcap --filter "payload_asymmetry == true" --json
+sipnab -N -I capture.pcap --filter "duration_asymmetry == true" --json
+sipnab -N -I capture.pcap --filter "late_media == true" --json
 
-# Combine with raw DSL when you want multiple signals OR'd
+# Multiple signals OR'd
 sipnab -N -I capture.pcap \
        --filter "codec_asymmetry == true OR ptime_asymmetry == true OR late_media == true" \
        --json
+
+# From an MCP client, the alias-name form works through find_problems:
+#   tools/call find_problems {"kinds": ["codec-asym", "ptime-asym", "late-media"]}
+# See the MCP docs for the full client-side syntax.
 ```
 
 **What to look for:**
@@ -568,7 +572,7 @@ sipnab -N -I capture.pcap \
 
 **Pitfalls:**
 
-- `--filter codec-asym --json` (and the four sibling aliases) emits **per-message** records for messages of dialogs that match. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
+- `sipnab -N --filter '<expr>' --json` emits **per-message** records for every message of every matching dialog. Pipe through `jq -s 'unique_by(.call_id)'` if you want one record per affected call.
 - The `diagnosis` block in CLI `--json` output and in the REST API today only exposes `one_way_audio`, `nat_mismatch`, `no_media`, and free-form `hints`. The five asymmetry booleans are filterable via the DSL but aren't in the JSON shape — if you need them in your output, generate a `--call-report` per dialog (which does include them) or use the MCP `find_problems` tool.
 
 ---
@@ -577,28 +581,35 @@ sipnab -N -I capture.pcap \
 
 **Problem:** A support ticket needs full call details attached.
 
+In `-N` (non-interactive) mode, sipnab prints each captured SIP message to stdout *and then* emits the report. To get just the report into a file, filter the stream by the report's leading marker. (`-N` is required: without it sipnab tries to start the TUI and the report output never reaches stdout.)
+
 ```bash
 # Markdown — paste into a ticket or markdown editor
-sipnab -I capture.pcap --call-report 'abc123@host' --markdown > ticket.md
+sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown 2>/dev/null \
+  | sed -n '/^# Call Report:/,$p' > ticket.md
 
 # Plain text
-sipnab -I capture.pcap --call-report 'abc123@host' --text > ticket.txt
+sipnab -N -I capture.pcap --call-report 'abc123@host' --text 2>/dev/null \
+  | sed -n '/^Call Report:/,$p' > ticket.txt
 
-# JSON — feed to your ticketing system or LLM
-sipnab -I capture.pcap --call-report 'abc123@host' --json > ticket.json
+# JSON — pretty-printed multi-line JSON; awk extracts from the first
+# `{` to EOF so the leading per-message text dump is dropped
+sipnab -N -I capture.pcap --call-report 'abc123@host' --json 2>/dev/null \
+  | awk '/^{$/{found=1} found' > ticket.json
 ```
 
 The report covers: SIP message timeline, SDP offers/answers, RTP stream stats per direction, computed timing (PDD, setup time, retransmits), and the diagnosis engine's findings.
 
-**Tip:** combine with Recipe 4's filter to bulk-generate reports for every failed call:
+**Tip:** combine with Recipe 3's filter to bulk-generate reports for every failed call. The CLI `--filter` outputs per-message records, so deduplicate to call_ids first:
 
 ```bash
 mkdir -p /tmp/reports
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.call_id' \
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
+  | jq -r '.call_id' | sort -u \
   | while read cid; do
-      sipnab -I capture.pcap --call-report "$cid" --markdown \
-        > "/tmp/reports/${cid//\//_}.md"
+      sipnab -N -I capture.pcap --call-report "$cid" --markdown 2>/dev/null \
+        | sed -n '/^# Call Report:/,$p' \
+        > "/tmp/reports/$(echo "$cid" | tr '/' '_').md"
     done
 ```
 

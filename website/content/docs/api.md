@@ -715,7 +715,7 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 
 > **Status codes:** the REST API returns **503 Service Unavailable** when a request is rejected by the rate limiter or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
 
-> **Per-call response code:** dialog summaries (`/v1/dialogs`) and full dialogs (`/v1/dialogs/{id}` summary block) do not have a top-level `status_code` field — that's a per-message field, available inside `/v1/dialogs/{id}.messages[]` or in CLI `--json` per-message output. Examples below build per-call response-code histograms by walking the messages of each failed dialog.
+> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from`, `to`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (see [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
 
 ### curl + jq one-liners
 
@@ -750,14 +750,15 @@ curl -fsS "$API/v1/streams?mos_below=3.5" $H | jq
 # Aggregate counters
 curl -fsS "$API/v1/stats" $H | jq
 
-# Per-call final-response histogram for failed dialogs (walk messages)
+# Count failed calls by state (REST has no per-message field)
 curl -fsS "$API/v1/dialogs?state=Failed&limit=1000" $H \
-  | jq -r '.dialogs[].call_id' \
-  | while read -r cid; do
-      curl -fsS "$API/v1/dialogs/$(jq -rn --arg c "$cid" '$c|@uri')" $H \
-        | jq -r '[.messages[] | select(.is_request == false) | .status_code] | last'
-    done \
-  | sort | uniq -c | sort -rn
+  | jq '.total'
+
+# For per-call response-code histograms, run the CLI variant —
+# `sipnab -N --json` emits per-message records with status_code:
+#   sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+#     | jq -r 'select(.is_request == false) | .status_code' \
+#     | sort | uniq -c | sort -rn
 
 # Prometheus metrics
 curl -fsS "$API/metrics" $H | grep '^sipnab_'
@@ -875,16 +876,14 @@ if __name__ == "__main__":
         offset += len(page)
     print(f"{len(failed)} failed dialogs")
 
-    # Per-call final response code (walk each dialog's messages)
-    from collections import Counter
-    codes: Counter[int] = Counter()
-    for d in failed:
+    # Show the first few — note the REST shape doesn't expose
+    # per-message status_code. See module-level note above for how to
+    # build a response-code histogram via CLI or MCP.
+    for d in failed[:5]:
         full = c.get_dialog(d["call_id"])
-        responses = [m for m in full.get("messages", []) if not m.get("is_request")]
-        if responses:
-            codes[responses[-1].get("status_code")] += 1
-    for code, n in codes.most_common():
-        print(f"  {code}: {n}")
+        diag = full.get("diagnosis", {})
+        print(f"  {d['call_id']:30s}  state={d['state']:10s}  "
+              f"diagnosis={ {k: v for k, v in diag.items() if v} }")
 ```
 
 Run it:
@@ -1002,27 +1001,26 @@ async function listDialogs(
   return all;
 }
 
-// Per-call final response code requires fetching the full dialog
-interface SipMessage { is_request: boolean; status_code?: number; }
-interface FullDialog { messages: SipMessage[]; }
-
-async function finalStatusCode(call_id: string): Promise<number | undefined> {
-  const d = await api<FullDialog>(`/v1/dialogs/${encodeURIComponent(call_id)}`);
-  const responses = d.messages.filter((m) => !m.is_request);
-  return responses.at(-1)?.status_code;
+// REST API doesn't expose per-message data — see the note at the top of
+// "Client Examples" for how to build per-call response-code histograms
+// via the CLI or MCP. Here we just summarize what REST exposes:
+interface FullDialog {
+  call_id: string;
+  state: string;
+  msg_count: number;
+  timing: { pdd_ms: number | null; setup_ms: number | null; retransmits: number };
+  diagnosis: { one_way_audio: boolean; nat_mismatch: boolean; no_media: boolean };
 }
 
 // ── Demo ──────────────────────────────────────────────────────────
 const failed = await listDialogs("Failed");
 console.log(`${failed.length} failed dialogs`);
 
-const histogram = new Map<number | undefined, number>();
-for (const d of failed) {
-  const code = await finalStatusCode(d.call_id);
-  histogram.set(code, (histogram.get(code) ?? 0) + 1);
-}
-for (const [code, n] of [...histogram].sort((a, b) => b[1] - a[1])) {
-  console.log(`  ${code ?? "(none)"}: ${n}`);
+for (const d of failed.slice(0, 5)) {
+  const full = await api<FullDialog>(`/v1/dialogs/${encodeURIComponent(d.call_id)}`);
+  console.log(`  ${d.call_id}  state=${d.state}  ` +
+              `pdd=${full.timing.pdd_ms ?? "—"}ms  ` +
+              `nat_mismatch=${full.diagnosis.nat_mismatch}`);
 }
 ```
 
@@ -1114,21 +1112,15 @@ impl Sipnab {
         Ok(all)
     }
 
-    /// Fetch one full dialog and return the final response code, if any.
-    fn final_status_code(&self, call_id: &str) -> Result<Option<u16>> {
-        #[derive(Deserialize)]
-        struct Msg { is_request: bool, status_code: Option<u16> }
-        #[derive(Deserialize)]
-        struct Full { messages: Vec<Msg> }
+    /// Fetch one full dialog (aggregated; no per-message data).
+    /// REST does not expose individual messages — for that, use the
+    /// CLI `sipnab -N --json` mode or the MCP `get_dialog` tool.
+    fn get_dialog(&self, call_id: &str) -> Result<serde_json::Value> {
         let cid = urlencoding::encode(call_id);
         let resp = self.client
             .get(format!("{}/v1/dialogs/{}", self.base, cid))
             .send()?;
-        let full: Full = resp.json()?;
-        Ok(full.messages.iter()
-            .filter(|m| !m.is_request)
-            .last()
-            .and_then(|m| m.status_code))
+        Ok(resp.json()?)
     }
 }
 
@@ -1137,16 +1129,12 @@ fn main() -> Result<()> {
     let failed = s.list_dialogs(Some("Failed"))?;
     println!("{} failed dialogs", failed.len());
 
-    use std::collections::BTreeMap;
-    let mut hist: BTreeMap<Option<u16>, usize> = BTreeMap::new();
-    for d in &failed {
-        let code = s.final_status_code(&d.call_id).unwrap_or(None);
-        *hist.entry(code).or_default() += 1;
-    }
-    let mut sorted: Vec<_> = hist.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
-    for (code, n) in sorted {
-        println!("  {:?}: {}", code, n);
+    for d in failed.iter().take(5) {
+        let full = s.get_dialog(&d.call_id)?;
+        let pdd = full["timing"]["pdd_ms"].as_i64();
+        let nat_mismatch = full["diagnosis"]["nat_mismatch"].as_bool().unwrap_or(false);
+        println!("  {}  state={}  pdd={:?}ms  nat_mismatch={}",
+                 d.call_id, d.state, pdd, nat_mismatch);
     }
     Ok(())
 }
@@ -1179,13 +1167,23 @@ type DialogSummary struct {
     MsgCount    int     `json:"msg_count"`
 }
 
-type SipMessage struct {
-    IsRequest  bool `json:"is_request"`
-    StatusCode *int `json:"status_code"`
+type DialogTiming struct {
+    PddMs      *int64 `json:"pdd_ms"`
+    SetupMs    *int64 `json:"setup_ms"`
+    Retransmits int   `json:"retransmits"`
+}
+
+type DialogDiagnosis struct {
+    OneWayAudio  bool `json:"one_way_audio"`
+    NatMismatch  bool `json:"nat_mismatch"`
+    NoMedia      bool `json:"no_media"`
 }
 
 type FullDialog struct {
-    Messages []SipMessage `json:"messages"`
+    CallID    string          `json:"call_id"`
+    State     string          `json:"state"`
+    Timing    DialogTiming    `json:"timing"`
+    Diagnosis DialogDiagnosis `json:"diagnosis"`
 }
 
 type DialogsPage struct {
@@ -1263,19 +1261,15 @@ func (s *Sipnab) ListDialogs(state string) ([]DialogSummary, error) {
     return all, nil
 }
 
-// FinalStatusCode fetches the dialog and returns the last response code.
-func (s *Sipnab) FinalStatusCode(callID string) (*int, error) {
+// GetDialog fetches the full (aggregated) dialog. REST has no
+// per-message detail — for that, use the CLI --json mode or the
+// MCP get_dialog tool.
+func (s *Sipnab) GetDialog(callID string) (*FullDialog, error) {
     var full FullDialog
     if err := s.get("/v1/dialogs/"+url.PathEscape(callID), nil, &full); err != nil {
         return nil, err
     }
-    var last *int
-    for _, m := range full.Messages {
-        if !m.IsRequest && m.StatusCode != nil {
-            last = m.StatusCode
-        }
-    }
-    return last, nil
+    return &full, nil
 }
 
 func main() {
@@ -1291,23 +1285,23 @@ func main() {
     }
     fmt.Printf("%d failed dialogs\n", len(failed))
 
-    hist := map[int]int{}
-    for _, d := range failed {
-        code, err := s.FinalStatusCode(d.CallID)
-        if err != nil || code == nil {
+    for i, d := range failed {
+        if i >= 5 {
+            break
+        }
+        full, err := s.GetDialog(d.CallID)
+        if err != nil {
             continue
         }
-        hist[*code]++
+        pdd := "—"
+        if full.Timing.PddMs != nil {
+            pdd = fmt.Sprintf("%dms", *full.Timing.PddMs)
+        }
+        fmt.Printf("  %s  state=%s  pdd=%s  nat_mismatch=%t\n",
+            d.CallID, d.State, pdd, full.Diagnosis.NatMismatch)
     }
-    type kv struct{ k, v int }
-    var sorted []kv
-    for k, v := range hist {
-        sorted = append(sorted, kv{k, v})
-    }
-    sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
-    for _, e := range sorted {
-        fmt.Printf("  %d: %d\n", e.k, e.v)
-    }
+    // sort import no longer needed
+    _ = sort.Strings
 }
 ```
 
