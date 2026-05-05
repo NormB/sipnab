@@ -707,6 +707,531 @@ Metric names emitted by `src/output/prometheus.rs`:
 
 The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
+## Client Examples
+
+End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs with a filter, fetching a single dialog with pagination, scraping `/metrics`, and error handling. Adapt to your environment.
+
+### curl + jq one-liners
+
+```bash
+# Setup
+API="http://localhost:8080"
+KEY="my-secret-token"
+H="-H 'Authorization: Bearer $KEY'"
+
+# Health check (no auth required)
+curl -fsS $API/health
+
+# List dialogs with a filter
+curl -fsS $API/v1/dialogs $H \
+     --get --data-urlencode "filter=state == 'Failed'" \
+     --data "limit=20" | jq
+
+# Get one dialog with full SIP messages
+curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
+
+# Get a Markdown call report
+curl -fsS "$API/v1/dialogs/abc123@host/report" $H \
+     -H 'Accept: text/markdown'
+
+# Streams currently active
+curl -fsS "$API/v1/streams?status=established" $H | jq
+
+# Aggregate counters
+curl -fsS "$API/v1/stats" $H | jq
+
+# Histogram of failure codes (jq pipeline)
+curl -fsS "$API/v1/dialogs?limit=1000" $H \
+     --get --data-urlencode "filter=state == 'Failed'" \
+   | jq -r '.dialogs[].status_code' \
+   | sort | uniq -c | sort -rn
+
+# Prometheus metrics
+curl -fsS "$API/metrics" $H | grep '^sipnab_'
+
+# Error handling: distinguish 401 (bad token) from 404 (no dialog)
+http_code=$(curl -s -o /dev/null -w '%{http_code}' \
+            "$API/v1/dialogs/no-such-call" $H)
+case "$http_code" in
+  200) echo "found" ;;
+  401) echo "auth failed — check --api-key" ;;
+  404) echo "dialog not found" ;;
+  429) echo "rate-limited (100 req/s/IP default)" ;;
+  *)   echo "unexpected $http_code" ;;
+esac
+```
+
+---
+
+### Python (sync, `requests`)
+
+```python
+"""sipnab REST client — sync version using requests."""
+from __future__ import annotations
+
+import os
+import sys
+from typing import Any
+
+import requests
+
+API = os.environ.get("SIPNAB_API", "http://localhost:8080")
+KEY = os.environ["SIPNAB_API_KEY"]  # raises KeyError if unset
+
+
+class SipnabError(Exception):
+    pass
+
+
+class SipnabClient:
+    def __init__(self, base_url: str = API, token: str = KEY,
+                 timeout: float = 10.0) -> None:
+        self.base = base_url.rstrip("/")
+        self.session = requests.Session()
+        self.session.headers["Authorization"] = f"Bearer {token}"
+        self.timeout = timeout
+
+    def _get(self, path: str, **params: Any) -> Any:
+        r = self.session.get(f"{self.base}{path}", params=params,
+                             timeout=self.timeout)
+        if r.status_code == 401:
+            raise SipnabError("authentication failed")
+        if r.status_code == 429:
+            raise SipnabError("rate-limited (100 req/s/IP default)")
+        r.raise_for_status()
+        return r.json()
+
+    def health(self) -> bool:
+        r = self.session.get(f"{self.base}/health", timeout=self.timeout)
+        return r.ok
+
+    def list_dialogs(self, *, filter_expr: str | None = None,
+                     limit: int = 50, offset: int = 0) -> list[dict]:
+        params: dict[str, Any] = {"limit": limit, "offset": offset}
+        if filter_expr:
+            params["filter"] = filter_expr
+        return self._get("/v1/dialogs", **params)["dialogs"]
+
+    def get_dialog(self, call_id: str) -> dict:
+        return self._get(f"/v1/dialogs/{call_id}")
+
+    def call_report(self, call_id: str) -> dict:
+        return self._get(f"/v1/dialogs/{call_id}/report")
+
+    def stats(self) -> dict:
+        return self._get("/v1/stats")
+
+    def metrics(self) -> str:
+        r = self.session.get(f"{self.base}/metrics", timeout=self.timeout)
+        r.raise_for_status()
+        return r.text
+
+
+# ── Usage ─────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    c = SipnabClient()
+
+    if not c.health():
+        sys.exit("sipnab not reachable")
+
+    print("Stats:", c.stats())
+
+    # Pull every failed call, page through
+    failed: list[dict] = []
+    offset = 0
+    while True:
+        page = c.list_dialogs(
+            filter_expr="state == 'Failed'", limit=100, offset=offset)
+        if not page:
+            break
+        failed.extend(page)
+        offset += len(page)
+    print(f"{len(failed)} failed dialogs")
+
+    # Histogram of response codes
+    from collections import Counter
+    codes = Counter(d.get("status_code") for d in failed)
+    for code, n in codes.most_common():
+        print(f"  {code}: {n}")
+```
+
+Run it:
+
+```bash
+SIPNAB_API_KEY=my-secret-token python3 sipnab_client.py
+```
+
+---
+
+### Python (async, `httpx`)
+
+For tailing dialogs in near-real-time without blocking:
+
+```python
+"""sipnab REST client — async, periodic polling."""
+import asyncio
+import os
+from datetime import datetime, timezone
+
+import httpx
+
+API = os.environ.get("SIPNAB_API", "http://localhost:8080")
+KEY = os.environ["SIPNAB_API_KEY"]
+
+
+async def tail_dialogs(poll_interval: float = 2.0) -> None:
+    """Poll /v1/dialogs every `poll_interval` and print newly-completed calls."""
+    seen: set[str] = set()
+    headers = {"Authorization": f"Bearer {KEY}"}
+
+    async with httpx.AsyncClient(base_url=API, headers=headers,
+                                  timeout=10.0) as client:
+        while True:
+            try:
+                r = await client.get("/v1/dialogs",
+                                     params={"limit": 100})
+                r.raise_for_status()
+                for d in r.json()["dialogs"]:
+                    if d["call_id"] in seen:
+                        continue
+                    seen.add(d["call_id"])
+                    if d["state"] in ("Completed", "Failed", "Cancelled"):
+                        print(f"{datetime.now(timezone.utc).isoformat()}  "
+                              f"{d['state']:10s}  {d['call_id']}  "
+                              f"{d.get('from')} → {d.get('to')}")
+            except httpx.HTTPError as e:
+                print(f"warning: {e}")
+            await asyncio.sleep(poll_interval)
+
+
+if __name__ == "__main__":
+    asyncio.run(tail_dialogs())
+```
+
+---
+
+### Node.js / TypeScript
+
+```typescript
+// sipnab-client.ts — runs on Node 18+ (built-in fetch)
+const API = process.env.SIPNAB_API ?? "http://localhost:8080";
+const KEY = process.env.SIPNAB_API_KEY;
+if (!KEY) throw new Error("SIPNAB_API_KEY not set");
+
+interface DialogSummary {
+  call_id: string;
+  state: string;
+  method: string;
+  from: string;
+  to: string;
+  status_code?: number;
+  duration_sec: number;
+}
+
+interface DialogsPage {
+  dialogs: DialogSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+async function api<T>(
+  path: string,
+  params: Record<string, string | number> = {},
+): Promise<T> {
+  const url = new URL(`${API}${path}`);
+  for (const [k, v] of Object.entries(params)) {
+    url.searchParams.set(k, String(v));
+  }
+  const r = await fetch(url, {
+    headers: { Authorization: `Bearer ${KEY}` },
+  });
+  if (r.status === 401) throw new Error("auth failed");
+  if (r.status === 429) throw new Error("rate-limited");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return (await r.json()) as T;
+}
+
+async function listDialogs(
+  filter: string | null = null,
+  limit = 50,
+): Promise<DialogSummary[]> {
+  const all: DialogSummary[] = [];
+  let offset = 0;
+  for (;;) {
+    const params: Record<string, string | number> = { limit, offset };
+    if (filter) params.filter = filter;
+    const page = await api<DialogsPage>("/v1/dialogs", params);
+    if (page.dialogs.length === 0) break;
+    all.push(...page.dialogs);
+    if (all.length >= page.total) break;
+    offset += page.dialogs.length;
+  }
+  return all;
+}
+
+// ── Demo ──────────────────────────────────────────────────────────
+const failed = await listDialogs("state == 'Failed'");
+console.log(`${failed.length} failed dialogs`);
+
+const histogram = new Map<number | undefined, number>();
+for (const d of failed) {
+  histogram.set(d.status_code, (histogram.get(d.status_code) ?? 0) + 1);
+}
+for (const [code, n] of [...histogram].sort((a, b) => b[1] - a[1])) {
+  console.log(`  ${code ?? "(none)"}: ${n}`);
+}
+```
+
+Run:
+
+```bash
+SIPNAB_API_KEY=my-secret-token npx tsx sipnab-client.ts
+```
+
+---
+
+### Rust (`reqwest`)
+
+```rust
+// Cargo.toml deps:
+//   reqwest = { version = "0.12", features = ["json", "blocking"] }
+//   serde   = { version = "1", features = ["derive"] }
+//   anyhow  = "1"
+
+use anyhow::{anyhow, Result};
+use reqwest::blocking::Client;
+use serde::Deserialize;
+use std::env;
+
+#[derive(Debug, Deserialize)]
+struct DialogSummary {
+    call_id: String,
+    state: String,
+    from: String,
+    to: String,
+    status_code: Option<u16>,
+    duration_sec: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct DialogsPage {
+    dialogs: Vec<DialogSummary>,
+    total: usize,
+    limit: usize,
+    offset: usize,
+}
+
+struct Sipnab {
+    base: String,
+    client: Client,
+}
+
+impl Sipnab {
+    fn new() -> Result<Self> {
+        let base = env::var("SIPNAB_API")
+            .unwrap_or_else(|_| "http://localhost:8080".into());
+        let key = env::var("SIPNAB_API_KEY")?;
+        let client = Client::builder()
+            .default_headers({
+                let mut h = reqwest::header::HeaderMap::new();
+                h.insert(reqwest::header::AUTHORIZATION,
+                    format!("Bearer {key}").parse()?);
+                h
+            })
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        Ok(Self { base, client })
+    }
+
+    fn list_dialogs(&self, filter: Option<&str>) -> Result<Vec<DialogSummary>> {
+        let mut all = Vec::new();
+        let mut offset = 0usize;
+        loop {
+            let mut req = self.client
+                .get(format!("{}/v1/dialogs", self.base))
+                .query(&[("limit", "100"), ("offset", &offset.to_string())]);
+            if let Some(f) = filter {
+                req = req.query(&[("filter", f)]);
+            }
+            let resp = req.send()?;
+            match resp.status().as_u16() {
+                401 => return Err(anyhow!("auth failed")),
+                429 => return Err(anyhow!("rate-limited")),
+                code if code >= 400 => return Err(anyhow!("HTTP {code}")),
+                _ => {}
+            }
+            let page: DialogsPage = resp.json()?;
+            if page.dialogs.is_empty() { break; }
+            offset += page.dialogs.len();
+            let total = page.total;
+            all.extend(page.dialogs);
+            if all.len() >= total { break; }
+        }
+        Ok(all)
+    }
+}
+
+fn main() -> Result<()> {
+    let s = Sipnab::new()?;
+    let failed = s.list_dialogs(Some("state == 'Failed'"))?;
+    println!("{} failed dialogs", failed.len());
+
+    use std::collections::BTreeMap;
+    let mut hist: BTreeMap<Option<u16>, usize> = BTreeMap::new();
+    for d in &failed {
+        *hist.entry(d.status_code).or_default() += 1;
+    }
+    let mut sorted: Vec<_> = hist.into_iter().collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    for (code, n) in sorted {
+        println!("  {:?}: {}", code, n);
+    }
+    Ok(())
+}
+```
+
+---
+
+### Go (`net/http` + `encoding/json`)
+
+```go
+// sipnab-client.go
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "net/url"
+    "os"
+    "sort"
+    "time"
+)
+
+type DialogSummary struct {
+    CallID      string  `json:"call_id"`
+    State       string  `json:"state"`
+    From        string  `json:"from"`
+    To          string  `json:"to"`
+    StatusCode  *int    `json:"status_code"`
+    DurationSec float64 `json:"duration_sec"`
+}
+
+type DialogsPage struct {
+    Dialogs []DialogSummary `json:"dialogs"`
+    Total   int             `json:"total"`
+    Limit   int             `json:"limit"`
+    Offset  int             `json:"offset"`
+}
+
+type Sipnab struct {
+    Base   string
+    Token  string
+    Client *http.Client
+}
+
+func newSipnab() (*Sipnab, error) {
+    base := os.Getenv("SIPNAB_API")
+    if base == "" {
+        base = "http://localhost:8080"
+    }
+    token := os.Getenv("SIPNAB_API_KEY")
+    if token == "" {
+        return nil, fmt.Errorf("SIPNAB_API_KEY not set")
+    }
+    return &Sipnab{
+        Base:   base,
+        Token:  token,
+        Client: &http.Client{Timeout: 10 * time.Second},
+    }, nil
+}
+
+func (s *Sipnab) get(path string, params url.Values, out any) error {
+    u, _ := url.Parse(s.Base + path)
+    u.RawQuery = params.Encode()
+    req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
+    req.Header.Set("Authorization", "Bearer "+s.Token)
+    resp, err := s.Client.Do(req)
+    if err != nil {
+        return err
+    }
+    defer resp.Body.Close()
+    switch resp.StatusCode {
+    case 401:
+        return fmt.Errorf("auth failed")
+    case 429:
+        return fmt.Errorf("rate-limited")
+    }
+    if resp.StatusCode >= 400 {
+        return fmt.Errorf("HTTP %d", resp.StatusCode)
+    }
+    return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func (s *Sipnab) ListDialogs(filter string) ([]DialogSummary, error) {
+    var all []DialogSummary
+    offset := 0
+    for {
+        params := url.Values{"limit": {"100"}, "offset": {fmt.Sprint(offset)}}
+        if filter != "" {
+            params.Set("filter", filter)
+        }
+        var page DialogsPage
+        if err := s.get("/v1/dialogs", params, &page); err != nil {
+            return nil, err
+        }
+        if len(page.Dialogs) == 0 {
+            break
+        }
+        all = append(all, page.Dialogs...)
+        offset += len(page.Dialogs)
+        if len(all) >= page.Total {
+            break
+        }
+    }
+    return all, nil
+}
+
+func main() {
+    s, err := newSipnab()
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    failed, err := s.ListDialogs("state == 'Failed'")
+    if err != nil {
+        fmt.Fprintln(os.Stderr, err)
+        os.Exit(1)
+    }
+    fmt.Printf("%d failed dialogs\n", len(failed))
+
+    hist := map[int]int{}
+    for _, d := range failed {
+        if d.StatusCode != nil {
+            hist[*d.StatusCode]++
+        }
+    }
+    type kv struct{ k, v int }
+    var sorted []kv
+    for k, v := range hist {
+        sorted = append(sorted, kv{k, v})
+    }
+    sort.Slice(sorted, func(i, j int) bool { return sorted[i].v > sorted[j].v })
+    for _, e := range sorted {
+        fmt.Printf("  %d: %d\n", e.k, e.v)
+    }
+}
+```
+
+Run:
+
+```bash
+SIPNAB_API_KEY=my-secret-token go run sipnab-client.go
+```
+
+---
+
 ## Common Patterns
 
 ### Monitor failed calls in real-time (Python)

@@ -559,6 +559,486 @@
 <tr><td><code>sipnab_loss_percent</code></td><td>histogram</td><td>RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%).</td></tr>
 </tbody></table>
 <p>The following metric <em>names</em> are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: <code>sipnab_responses_total{code}</code>, <code>sipnab_security_alerts_total{type}</code>, <code>sipnab_diagnosis_total{kind}</code>. Track-via PR / dashboard authors: don’t depend on these in alerts yet.</p>
+<h2 id="client-examples">Client Examples</h2>
+<p>End-to-end examples in five languages. Each one covers: bearer-token auth, listing dialogs with a filter, fetching a single dialog with pagination, scraping <code>/metrics</code>, and error handling. Adapt to your environment.</p>
+<h3 id="curl-jq-one-liners">curl + jq one-liners</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Setup</span></span>
+<span class="giallo-l"><span>API</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;http://localhost:8080&quot;</span></span>
+<span class="giallo-l"><span>KEY</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;my-secret-token&quot;</span></span>
+<span class="giallo-l"><span>H</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;-H &#39;Authorization: Bearer </span><span>$KEY</span><span style="color: #AAD94C;">&#39;&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Health check (no auth required)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span> $API</span><span style="color: #AAD94C;">/health</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># List dialogs with a filter</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span> $API</span><span style="color: #AAD94C;">/v1/dialogs</span><span> $H</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     --get --data-urlencode</span><span style="color: #AAD94C;"> &quot;filter=state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     --data</span><span style="color: #AAD94C;"> &quot;limit=20&quot;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Get one dialog with full SIP messages</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/dialogs/abc123@host&quot;</span><span> $H</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Get a Markdown call report</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/dialogs/abc123@host/report&quot;</span><span> $H</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &#39;Accept: text/markdown&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Streams currently active</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/streams?status=established&quot;</span><span> $H</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Aggregate counters</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/stats&quot;</span><span> $H</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Histogram of failure codes (jq pipeline)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/dialogs?limit=1000&quot;</span><span> $H</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     --get --data-urlencode</span><span style="color: #AAD94C;"> &quot;filter=state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">   |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.dialogs[].status_code&#39;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">   |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Prometheus metrics</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -fsS</span><span style="color: #AAD94C;"> &quot;</span><span>$API</span><span style="color: #AAD94C;">/metrics&quot;</span><span> $H</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> grep</span><span style="color: #AAD94C;"> &#39;^sipnab_&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Error handling: distinguish 401 (bad token) from 404 (no dialog)</span></span>
+<span class="giallo-l"><span>http_code</span><span style="color: #F29668;">=</span><span>$(</span><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -s -o</span><span style="color: #AAD94C;"> /dev/null</span><span style="color: #95E6CB;"> -w</span><span style="color: #AAD94C;"> &#39;%{http_code}&#39;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">            &quot;</span><span>$API</span><span style="color: #AAD94C;">/v1/dialogs/no-such-call&quot;</span><span> $H)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">case</span><span style="color: #AAD94C;"> &quot;</span><span>$http_code</span><span style="color: #AAD94C;">&quot;</span><span style="color: #FF8F40;"> in</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">  200</span><span style="color: #F29668;">)</span><span style="color: #F07178;"> echo</span><span style="color: #AAD94C;"> &quot;found&quot;</span><span style="color: #BFBDB6B3;"> ;;</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">  401</span><span style="color: #F29668;">)</span><span style="color: #F07178;"> echo</span><span style="color: #AAD94C;"> &quot;auth failed — check --api-key&quot;</span><span style="color: #BFBDB6B3;"> ;;</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">  404</span><span style="color: #F29668;">)</span><span style="color: #F07178;"> echo</span><span style="color: #AAD94C;"> &quot;dialog not found&quot;</span><span style="color: #BFBDB6B3;"> ;;</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">  429</span><span style="color: #F29668;">)</span><span style="color: #F07178;"> echo</span><span style="color: #AAD94C;"> &quot;rate-limited (100 req/s/IP default)&quot;</span><span style="color: #BFBDB6B3;"> ;;</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  *)</span><span style="color: #F07178;">   echo</span><span style="color: #AAD94C;"> &quot;unexpected </span><span>$http_code</span><span style="color: #AAD94C;">&quot;</span><span style="color: #BFBDB6B3;"> ;;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">esac</span></span></code></pre>
+<hr />
+<h3 id="python-sync-requests">Python (sync, <code>requests</code>)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="python"><span class="giallo-l"><span style="color: #AAD94C;">&quot;&quot;&quot;sipnab REST client — sync version using requests.&quot;&quot;&quot;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">from</span><span> __future__</span><span style="color: #FF8F40;"> import</span><span> annotations</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> os</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> sys</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">from</span><span> typing</span><span style="color: #FF8F40;"> import</span><span> Any</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> requests</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #95E6CB;">API</span><span style="color: #F29668;"> =</span><span> os</span><span style="color: #BFBDB6B3;">.</span><span>environ</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;http://localhost:8080&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">KEY</span><span style="color: #F29668;"> =</span><span> os</span><span style="color: #BFBDB6B3;">.</span><span>environ[</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY&quot;</span><span>]</span><span style="color: #5A6673;font-style: italic;">  # raises KeyError if unset</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">class</span><span style="color: #59C2FF;"> SipnabError</span><span>(</span><span style="color: #39BAE6;">Exception</span><span>):</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    pass</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">class</span><span style="color: #59C2FF;"> SipnabClient</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #F07178;"> __init__</span><span>(</span><span style="color: #D2A6FF;">self</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> base_url</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span style="color: #F29668;"> =</span><span style="color: #95E6CB;"> API</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> token</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span style="color: #F29668;"> =</span><span style="color: #95E6CB;"> KEY</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">                 timeout</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> float</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 10.0</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #D2A6FF;"> None</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;font-style: italic;">        self</span><span style="color: #BFBDB6B3;">.</span><span>base</span><span style="color: #F29668;"> =</span><span> base_url</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">rstrip</span><span>(</span><span style="color: #AAD94C;">&quot;/&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;font-style: italic;">        self</span><span style="color: #BFBDB6B3;">.</span><span>session</span><span style="color: #F29668;"> =</span><span> requests</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">Session</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;font-style: italic;">        self</span><span style="color: #BFBDB6B3;">.</span><span>session</span><span style="color: #BFBDB6B3;">.</span><span>headers[</span><span style="color: #AAD94C;">&quot;Authorization&quot;</span><span>]</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> f</span><span style="color: #AAD94C;">&quot;Bearer </span><span style="color: #95E6CB;">{</span><span>token</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;font-style: italic;">        self</span><span style="color: #BFBDB6B3;">.</span><span>timeout</span><span style="color: #F29668;"> =</span><span> timeout</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> _get</span><span>(</span><span style="color: #D2A6FF;">self</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> path</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span style="color: #BFBDB6B3;">,</span><span style="color: #F29668;"> **</span><span style="color: #D2A6FF;">params</span><span style="color: #BFBDB6B3;">:</span><span> Any)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span> Any:</span></span>
+<span class="giallo-l"><span>        r</span><span style="color: #F29668;"> =</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span>session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>base</span><span style="color: #95E6CB;">}{</span><span>path</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span style="color: #BFBDB6B3;">,</span><span> params</span><span style="color: #F29668;">=</span><span>params</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>                             timeout</span><span style="color: #F29668;">=</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>timeout)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span>status_code</span><span style="color: #F29668;"> ==</span><span style="color: #D2A6FF;"> 401</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            raise</span><span style="color: #FFB454;"> SipnabError</span><span>(</span><span style="color: #AAD94C;">&quot;authentication failed&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span>status_code</span><span style="color: #F29668;"> ==</span><span style="color: #D2A6FF;"> 429</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            raise</span><span style="color: #FFB454;"> SipnabError</span><span>(</span><span style="color: #AAD94C;">&quot;rate-limited (100 req/s/IP default)&quot;</span><span>)</span></span>
+<span class="giallo-l"><span>        r</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">raise_for_status</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">json</span><span>()</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> health</span><span>(</span><span style="color: #D2A6FF;">self</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #39BAE6;"> bool</span><span>:</span></span>
+<span class="giallo-l"><span>        r</span><span style="color: #F29668;"> =</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span>session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>base</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">/health&quot;</span><span style="color: #BFBDB6B3;">,</span><span> timeout</span><span style="color: #F29668;">=</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>timeout)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span>ok</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> list_dialogs</span><span>(</span><span style="color: #D2A6FF;">self</span><span style="color: #BFBDB6B3;">,</span><span style="color: #F29668;"> *</span><span>, </span><span style="color: #D2A6FF;">filter_expr</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span style="color: #F29668;"> |</span><span style="color: #D2A6FF;"> None</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> None</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">                     limit</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> int</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 50</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> offset</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> int</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 0</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span> list[</span><span style="color: #39BAE6;">dict</span><span>]:</span></span>
+<span class="giallo-l"><span>        params</span><span style="color: #BFBDB6B3;">:</span><span> dict[</span><span style="color: #39BAE6;">str</span><span style="color: #BFBDB6B3;">,</span><span> Any]</span><span style="color: #F29668;"> =</span><span> {</span><span style="color: #AAD94C;">&quot;limit&quot;</span><span style="color: #BFBDB6B3;">:</span><span> limit</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;offset&quot;</span><span style="color: #BFBDB6B3;">:</span><span> offset}</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> filter_expr</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>            params[</span><span style="color: #AAD94C;">&quot;filter&quot;</span><span>]</span><span style="color: #F29668;"> =</span><span> filter_expr</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">_get</span><span>(</span><span style="color: #AAD94C;">&quot;/v1/dialogs&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #F29668;"> **</span><span>params)[</span><span style="color: #AAD94C;">&quot;dialogs&quot;</span><span>]</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> get_dialog</span><span>(</span><span style="color: #D2A6FF;">self</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> call_id</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #39BAE6;"> dict</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">_get</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;/v1/dialogs/</span><span style="color: #95E6CB;">{</span><span>call_id</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> call_report</span><span>(</span><span style="color: #D2A6FF;">self</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> call_id</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #39BAE6;"> dict</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">_get</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;/v1/dialogs/</span><span style="color: #95E6CB;">{</span><span>call_id</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">/report&quot;</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> stats</span><span>(</span><span style="color: #D2A6FF;">self</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #39BAE6;"> dict</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">_get</span><span>(</span><span style="color: #AAD94C;">&quot;/v1/stats&quot;</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    def</span><span style="color: #FFB454;"> metrics</span><span>(</span><span style="color: #D2A6FF;">self</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #39BAE6;"> str</span><span>:</span></span>
+<span class="giallo-l"><span>        r</span><span style="color: #F29668;"> =</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #BFBDB6B3;">.</span><span>session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>base</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">/metrics&quot;</span><span style="color: #BFBDB6B3;">,</span><span> timeout</span><span style="color: #F29668;">=</span><span style="color: #39BAE6;font-style: italic;">self</span><span style="color: #BFBDB6B3;">.</span><span>timeout)</span></span>
+<span class="giallo-l"><span>        r</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">raise_for_status</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span>text</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># ── Usage ─────────────────────────────────────────────────────────</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">if</span><span> __name__</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;__main__&quot;</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>    c</span><span style="color: #F29668;"> =</span><span style="color: #FFB454;"> SipnabClient</span><span>()</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span style="color: #F29668;"> not</span><span> c</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">health</span><span>()</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>        sys</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">exit</span><span>(</span><span style="color: #AAD94C;">&quot;sipnab not reachable&quot;</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #F07178;">    print</span><span>(</span><span style="color: #AAD94C;">&quot;Stats:&quot;</span><span style="color: #BFBDB6B3;">,</span><span> c</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">stats</span><span>())</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">    # Pull every failed call, page through</span></span>
+<span class="giallo-l"><span>    failed</span><span style="color: #BFBDB6B3;">:</span><span> list[</span><span style="color: #39BAE6;">dict</span><span>]</span><span style="color: #F29668;"> =</span><span> []</span></span>
+<span class="giallo-l"><span>    offset</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 0</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    while</span><span style="color: #D2A6FF;"> True</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>        page</span><span style="color: #F29668;"> =</span><span> c</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">list_dialogs</span><span>(</span></span>
+<span class="giallo-l"><span>            filter_expr</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;state == &#39;Failed&#39;&quot;</span><span style="color: #BFBDB6B3;">,</span><span> limit</span><span style="color: #F29668;">=</span><span style="color: #D2A6FF;">100</span><span style="color: #BFBDB6B3;">,</span><span> offset</span><span style="color: #F29668;">=</span><span>offset)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span style="color: #F29668;"> not</span><span> page</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            break</span></span>
+<span class="giallo-l"><span>        failed</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">extend</span><span>(page)</span></span>
+<span class="giallo-l"><span>        offset</span><span style="color: #F29668;"> +=</span><span style="color: #F07178;"> len</span><span>(page)</span></span>
+<span class="giallo-l"><span style="color: #F07178;">    print</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span style="color: #F07178;">len</span><span>(failed)</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;"> failed dialogs&quot;</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">    # Histogram of response codes</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    from</span><span> collections</span><span style="color: #FF8F40;"> import</span><span> Counter</span></span>
+<span class="giallo-l"><span>    codes</span><span style="color: #F29668;"> =</span><span style="color: #FFB454;"> Counter</span><span>(d</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&quot;status_code&quot;</span><span>)</span><span style="color: #FF8F40;"> for</span><span> d</span><span style="color: #FF8F40;"> in</span><span> failed)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> code</span><span style="color: #BFBDB6B3;">,</span><span> n</span><span style="color: #FF8F40;"> in</span><span> codes</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">most_common</span><span>()</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #F07178;">        print</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">  {</span><span>code</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">: </span><span style="color: #95E6CB;">{</span><span>n</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span>)</span></span></code></pre>
+<p>Run it:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>SIPNAB_API_KEY</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">my-secret-token</span><span style="color: #59C2FF;"> python3</span><span style="color: #AAD94C;"> sipnab_client.py</span></span></code></pre>
+<hr />
+<h3 id="python-async-httpx">Python (async, <code>httpx</code>)</h3>
+<p>For tailing dialogs in near-real-time without blocking:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="python"><span class="giallo-l"><span style="color: #AAD94C;">&quot;&quot;&quot;sipnab REST client — async, periodic polling.&quot;&quot;&quot;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> asyncio</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> os</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">from</span><span> datetime</span><span style="color: #FF8F40;"> import</span><span> datetime</span><span style="color: #BFBDB6B3;">,</span><span> timezone</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> httpx</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #95E6CB;">API</span><span style="color: #F29668;"> =</span><span> os</span><span style="color: #BFBDB6B3;">.</span><span>environ</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;http://localhost:8080&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">KEY</span><span style="color: #F29668;"> =</span><span> os</span><span style="color: #BFBDB6B3;">.</span><span>environ[</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY&quot;</span><span>]</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">async def</span><span style="color: #FFB454;"> tail_dialogs</span><span>(</span><span style="color: #D2A6FF;">poll_interval</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> float</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 2.0</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #D2A6FF;"> None</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;&quot;&quot;Poll /v1/dialogs every `poll_interval` and print newly-completed calls.&quot;&quot;&quot;</span></span>
+<span class="giallo-l"><span>    seen</span><span style="color: #BFBDB6B3;">:</span><span> set[</span><span style="color: #39BAE6;">str</span><span>]</span><span style="color: #F29668;"> =</span><span style="color: #39BAE6;"> set</span><span>()</span></span>
+<span class="giallo-l"><span>    headers</span><span style="color: #F29668;"> =</span><span> {</span><span style="color: #AAD94C;">&quot;Authorization&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #FF8F40;"> f</span><span style="color: #AAD94C;">&quot;Bearer </span><span style="color: #95E6CB;">{KEY}</span><span style="color: #AAD94C;">&quot;</span><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    async with</span><span> httpx</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">AsyncClient</span><span>(base_url</span><span style="color: #F29668;">=</span><span style="color: #95E6CB;">API</span><span style="color: #BFBDB6B3;">,</span><span> headers</span><span style="color: #F29668;">=</span><span>headers</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>                                  timeout</span><span style="color: #F29668;">=</span><span style="color: #D2A6FF;">10.0</span><span>)</span><span style="color: #FF8F40;"> as</span><span> client</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        while</span><span style="color: #D2A6FF;"> True</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            try</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>                r</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span> client</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&quot;/v1/dialogs&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>                                     params</span><span style="color: #F29668;">=</span><span>{</span><span style="color: #AAD94C;">&quot;limit&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 100</span><span>})</span></span>
+<span class="giallo-l"><span>                r</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">raise_for_status</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                for</span><span> d</span><span style="color: #FF8F40;"> in</span><span> r</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">json</span><span>()[</span><span style="color: #AAD94C;">&quot;dialogs&quot;</span><span>]</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                    if</span><span> d[</span><span style="color: #AAD94C;">&quot;call_id&quot;</span><span>]</span><span style="color: #F29668;"> in</span><span> seen</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                        continue</span></span>
+<span class="giallo-l"><span>                    seen</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">add</span><span>(d[</span><span style="color: #AAD94C;">&quot;call_id&quot;</span><span>])</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                    if</span><span> d[</span><span style="color: #AAD94C;">&quot;state&quot;</span><span>]</span><span style="color: #F29668;"> in</span><span> (</span><span style="color: #AAD94C;">&quot;Completed&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;Failed&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;Cancelled&quot;</span><span>)</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #F07178;">                        print</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span>datetime</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">now</span><span>(timezone</span><span style="color: #BFBDB6B3;">.</span><span>utc)</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">isoformat</span><span>()</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">  &quot;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                              f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span>d[</span><span style="color: #AAD94C;">&#39;state&#39;</span><span>]</span><span style="color: #FF8F40;">:10s</span><span style="color: #95E6CB;">}  {</span><span>d[</span><span style="color: #AAD94C;">&#39;call_id&#39;</span><span>]</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">  &quot;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                              f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span>d</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&#39;from&#39;</span><span>)</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;"> → </span><span style="color: #95E6CB;">{</span><span>d</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&#39;to&#39;</span><span>)</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            except</span><span> httpx</span><span style="color: #BFBDB6B3;">.</span><span>HTTPError</span><span style="color: #FF8F40;"> as</span><span> e</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span style="color: #F07178;">                print</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;warning: </span><span style="color: #95E6CB;">{</span><span>e</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            await</span><span> asyncio</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">sleep</span><span>(poll_interval)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">if</span><span> __name__</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;__main__&quot;</span><span style="color: #BFBDB6B3;">:</span></span>
+<span class="giallo-l"><span>    asyncio</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">run</span><span>(</span><span style="color: #FFB454;">tail_dialogs</span><span>())</span></span></code></pre>
+<hr />
+<h3 id="node-js-typescript">Node.js / TypeScript</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;">// sipnab-client.ts — runs on Node 18+ (built-in fetch)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> API</span><span style="color: #F29668;"> =</span><span> process</span><span style="color: #F29668;">.</span><span>env</span><span style="color: #F29668;">.</span><span>SIPNAB_API</span><span style="color: #F29668;"> ??</span><span style="color: #AAD94C;"> &quot;http://localhost:8080&quot;</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> KEY</span><span style="color: #F29668;"> =</span><span> process</span><span style="color: #F29668;">.</span><span>env</span><span style="color: #F29668;">.</span><span>SIPNAB_API_KEY</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">if</span><span> (</span><span style="color: #F29668;">!</span><span>KEY)</span><span style="color: #FF8F40;"> throw</span><span style="color: #F29668;"> new</span><span style="color: #FFB454;"> Error</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY not set&quot;</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">interface</span><span style="color: #59C2FF;"> DialogSummary</span><span> {</span></span>
+<span class="giallo-l"><span>  call_id</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  state</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  method</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  from</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  to</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  status_code</span><span style="color: #F29668;">?:</span><span style="color: #39BAE6;"> number</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  duration_sec</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> number</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">interface</span><span style="color: #59C2FF;"> DialogsPage</span><span> {</span></span>
+<span class="giallo-l"><span>  dialogs</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> DialogSummary</span><span>[]</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  total</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> number</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  limit</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> number</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  offset</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> number</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">async function</span><span style="color: #FFB454;"> api</span><span>&lt;</span><span style="color: #59C2FF;">T</span><span>&gt;(</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">  path</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">  params</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Record</span><span>&lt;</span><span style="color: #39BAE6;">string</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;"> string</span><span style="color: #F29668;"> |</span><span style="color: #39BAE6;"> number</span><span>&gt;</span><span style="color: #F29668;"> =</span><span> {}</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>)</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Promise</span><span>&lt;</span><span style="color: #59C2FF;">T</span><span>&gt; {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  const</span><span> url</span><span style="color: #F29668;"> = new</span><span style="color: #FFB454;"> URL</span><span>(</span><span style="color: #AAD94C;">`</span><span style="color: #FF8F40;">${</span><span>API</span><span style="color: #FF8F40;">}${</span><span>path</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;">`</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  for</span><span> (</span><span style="color: #FF8F40;">const</span><span> [k</span><span style="color: #BFBDB6B3;">,</span><span> v]</span><span style="color: #F29668;"> of</span><span> Object</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">entries</span><span>(params)) {</span></span>
+<span class="giallo-l"><span>    url</span><span style="color: #F29668;">.</span><span>searchParams</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">set</span><span>(k</span><span style="color: #BFBDB6B3;">,</span><span style="color: #FFB454;"> String</span><span>(v))</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  const</span><span> r</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span style="color: #FFB454;"> fetch</span><span>(url</span><span style="color: #BFBDB6B3;">,</span><span> {</span></span>
+<span class="giallo-l"><span>    headers</span><span style="color: #BFBDB6B3;">:</span><span> { Authorization</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> `Bearer </span><span style="color: #FF8F40;">${</span><span>KEY</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;">`</span><span> }</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>  })</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  if</span><span> (r</span><span style="color: #F29668;">.</span><span>status</span><span style="color: #F29668;"> ===</span><span style="color: #D2A6FF;"> 401</span><span>)</span><span style="color: #FF8F40;"> throw</span><span style="color: #F29668;"> new</span><span style="color: #FFB454;"> Error</span><span>(</span><span style="color: #AAD94C;">&quot;auth failed&quot;</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  if</span><span> (r</span><span style="color: #F29668;">.</span><span>status</span><span style="color: #F29668;"> ===</span><span style="color: #D2A6FF;"> 429</span><span>)</span><span style="color: #FF8F40;"> throw</span><span style="color: #F29668;"> new</span><span style="color: #FFB454;"> Error</span><span>(</span><span style="color: #AAD94C;">&quot;rate-limited&quot;</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  if</span><span> (</span><span style="color: #F29668;">!</span><span>r</span><span style="color: #F29668;">.</span><span>ok)</span><span style="color: #FF8F40;"> throw</span><span style="color: #F29668;"> new</span><span style="color: #FFB454;"> Error</span><span>(</span><span style="color: #AAD94C;">`HTTP </span><span style="color: #FF8F40;">${</span><span>r</span><span style="color: #F29668;">.</span><span>status</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;">`</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  return</span><span> (</span><span style="color: #FF8F40;">await</span><span> r</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">json</span><span>())</span><span style="color: #FF8F40;"> as</span><span style="color: #59C2FF;"> T</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">async function</span><span style="color: #FFB454;"> listDialogs</span><span>(</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">  filter</span><span style="color: #F29668;">:</span><span style="color: #39BAE6;"> string</span><span style="color: #F29668;"> |</span><span style="color: #39BAE6;"> null</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> null</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">  limit</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 50</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span>)</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Promise</span><span>&lt;</span><span style="color: #59C2FF;">DialogSummary</span><span>[]&gt; {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  const</span><span> all</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> DialogSummary</span><span>[]</span><span style="color: #F29668;"> =</span><span> []</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  let</span><span> offset</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 0</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  for</span><span> (</span><span style="color: #BFBDB6B3;">;;</span><span>) {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    const</span><span> params</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Record</span><span>&lt;</span><span style="color: #39BAE6;">string</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;"> string</span><span style="color: #F29668;"> |</span><span style="color: #39BAE6;"> number</span><span>&gt;</span><span style="color: #F29668;"> =</span><span> { limit</span><span style="color: #BFBDB6B3;">,</span><span> offset }</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> (filter) params</span><span style="color: #F29668;">.</span><span>filter</span><span style="color: #F29668;"> =</span><span> filter</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    const</span><span> page</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span style="color: #FFB454;"> api</span><span>&lt;</span><span style="color: #59C2FF;">DialogsPage</span><span>&gt;(</span><span style="color: #AAD94C;">&quot;/v1/dialogs&quot;</span><span style="color: #BFBDB6B3;">,</span><span> params)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> (page</span><span style="color: #F29668;">.</span><span>dialogs</span><span style="color: #F29668;">.</span><span>length</span><span style="color: #F29668;"> ===</span><span style="color: #D2A6FF;"> 0</span><span>)</span><span style="color: #FF8F40;"> break</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>    all</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">push</span><span>(</span><span style="color: #F29668;">...</span><span>page</span><span style="color: #F29668;">.</span><span>dialogs)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> (all</span><span style="color: #F29668;">.</span><span>length</span><span style="color: #F29668;"> &gt;=</span><span> page</span><span style="color: #F29668;">.</span><span>total)</span><span style="color: #FF8F40;"> break</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>    offset</span><span style="color: #F29668;"> +=</span><span> page</span><span style="color: #F29668;">.</span><span>dialogs</span><span style="color: #F29668;">.</span><span>length</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>  }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">  return</span><span> all</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">// ── Demo ──────────────────────────────────────────────────────────</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> failed</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span style="color: #FFB454;"> listDialogs</span><span>(</span><span style="color: #AAD94C;">&quot;state == &#39;Failed&#39;&quot;</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>console</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">log</span><span>(</span><span style="color: #AAD94C;">`</span><span style="color: #FF8F40;">${</span><span>failed</span><span style="color: #F29668;">.</span><span>length</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;"> failed dialogs`</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> histogram</span><span style="color: #F29668;"> = new</span><span style="color: #FFB454;"> Map</span><span>&lt;</span><span style="color: #39BAE6;">number</span><span style="color: #F29668;"> |</span><span style="color: #39BAE6;"> undefined</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;"> number</span><span>&gt;()</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">for</span><span> (</span><span style="color: #FF8F40;">const</span><span> d</span><span style="color: #F29668;"> of</span><span> failed) {</span></span>
+<span class="giallo-l"><span>  histogram</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">set</span><span>(d</span><span style="color: #F29668;">.</span><span>status_code</span><span style="color: #BFBDB6B3;">,</span><span> (histogram</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">get</span><span>(d</span><span style="color: #F29668;">.</span><span>status_code)</span><span style="color: #F29668;"> ??</span><span style="color: #D2A6FF;"> 0</span><span>)</span><span style="color: #F29668;"> +</span><span style="color: #D2A6FF;"> 1</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">for</span><span> (</span><span style="color: #FF8F40;">const</span><span> [code</span><span style="color: #BFBDB6B3;">,</span><span> n]</span><span style="color: #F29668;"> of</span><span> [</span><span style="color: #F29668;">...</span><span>histogram]</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">sort</span><span>((</span><span style="color: #D2A6FF;">a</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> b</span><span>)</span><span style="color: #FF8F40;"> =&gt;</span><span> b[</span><span style="color: #D2A6FF;">1</span><span>]</span><span style="color: #F29668;"> -</span><span> a[</span><span style="color: #D2A6FF;">1</span><span>])) {</span></span>
+<span class="giallo-l"><span>  console</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">log</span><span>(</span><span style="color: #AAD94C;">`</span><span style="color: #FF8F40;">  ${</span><span>code</span><span style="color: #F29668;"> ??</span><span style="color: #AAD94C;"> &quot;(none)&quot;</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;">: </span><span style="color: #FF8F40;">${</span><span>n</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;">`</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p>Run:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>SIPNAB_API_KEY</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">my-secret-token</span><span style="color: #59C2FF;"> npx</span><span style="color: #AAD94C;"> tsx sipnab-client.ts</span></span></code></pre>
+<hr />
+<h3 id="rust-reqwest">Rust (<code>reqwest</code>)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="rust"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;">// Cargo.toml deps:</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">//   reqwest = { version = &quot;0.12&quot;, features = [&quot;json&quot;, &quot;blocking&quot;] }</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">//   serde   = { version = &quot;1&quot;, features = [&quot;derive&quot;] }</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">//   anyhow  = &quot;1&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">use</span><span style="color: #59C2FF;"> anyhow</span><span style="color: #F29668;">::</span><span>{anyhow,</span><span style="color: #59C2FF;"> Result</span><span>};</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">use</span><span style="color: #59C2FF;"> reqwest</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">blocking</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">Client</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">use</span><span style="color: #59C2FF;"> serde</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">Deserialize</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">use</span><span style="color: #59C2FF;"> std</span><span style="color: #F29668;">::</span><span>env;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>#[derive(</span><span style="color: #59C2FF;">Debug</span><span>,</span><span style="color: #59C2FF;"> Deserialize</span><span>)]</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">struct</span><span style="color: #59C2FF;"> DialogSummary</span><span> {</span></span>
+<span class="giallo-l"><span>    call_id</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> String</span><span>,</span></span>
+<span class="giallo-l"><span>    state</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> String</span><span>,</span></span>
+<span class="giallo-l"><span>    from</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> String</span><span>,</span></span>
+<span class="giallo-l"><span>    to</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> String</span><span>,</span></span>
+<span class="giallo-l"><span>    status_code</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Option</span><span>&lt;</span><span style="color: #59C2FF;">u16</span><span>&gt;,</span></span>
+<span class="giallo-l"><span>    duration_sec</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> f64</span><span>,</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>#[derive(</span><span style="color: #59C2FF;">Debug</span><span>,</span><span style="color: #59C2FF;"> Deserialize</span><span>)]</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">struct</span><span style="color: #59C2FF;"> DialogsPage</span><span> {</span></span>
+<span class="giallo-l"><span>    dialogs</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Vec</span><span>&lt;</span><span style="color: #59C2FF;">DialogSummary</span><span>&gt;,</span></span>
+<span class="giallo-l"><span>    total</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> usize</span><span>,</span></span>
+<span class="giallo-l"><span>    limit</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> usize</span><span>,</span></span>
+<span class="giallo-l"><span>    offset</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> usize</span><span>,</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">struct</span><span style="color: #59C2FF;"> Sipnab</span><span> {</span></span>
+<span class="giallo-l"><span>    base</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> String</span><span>,</span></span>
+<span class="giallo-l"><span>    client</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Client</span><span>,</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">impl</span><span style="color: #59C2FF;"> Sipnab</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    fn</span><span style="color: #FFB454;"> new</span><span>()</span><span style="color: #F29668;"> -&gt;</span><span style="color: #59C2FF;"> Result</span><span>&lt;</span><span style="color: #39BAE6;font-style: italic;">Self</span><span>&gt; {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        let</span><span> base</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> env</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">var</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #F29668;">            .</span><span style="color: #FFB454;">unwrap_or_else</span><span>(</span><span style="color: #F29668;">|</span><span>_</span><span style="color: #F29668;">|</span><span style="color: #AAD94C;"> &quot;http://localhost:8080&quot;</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">into</span><span>());</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        let</span><span> key</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> env</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">var</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY&quot;</span><span>)</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        let</span><span> client</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> Client</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">builder</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #F29668;">            .</span><span style="color: #FFB454;">default_headers</span><span>({</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">                let mut</span><span> h</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> reqwest</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">header</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">HeaderMap</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">new</span><span>();</span></span>
+<span class="giallo-l"><span>                h</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">insert</span><span>(</span><span style="color: #59C2FF;">reqwest</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">header</span><span style="color: #F29668;">::</span><span style="color: #95E6CB;">AUTHORIZATION</span><span>,</span></span>
+<span class="giallo-l"><span style="color: #FFB454;">                    format!</span><span>(</span><span style="color: #AAD94C;">&quot;Bearer {key}&quot;</span><span>)</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">parse</span><span>()</span><span style="color: #F29668;">?</span><span>);</span></span>
+<span class="giallo-l"><span>                h</span></span>
+<span class="giallo-l"><span>            })</span></span>
+<span class="giallo-l"><span style="color: #F29668;">            .</span><span style="color: #FFB454;">timeout</span><span>(</span><span style="color: #59C2FF;">std</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">time</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">Duration</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">from_secs</span><span>(</span><span style="color: #D2A6FF;">10</span><span>))</span></span>
+<span class="giallo-l"><span style="color: #F29668;">            .</span><span style="color: #FFB454;">build</span><span>()</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">        Ok</span><span>(</span><span style="color: #39BAE6;font-style: italic;">Self</span><span> { base, client })</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    fn</span><span style="color: #FFB454;"> list_dialogs</span><span>(</span><span style="color: #F29668;">&amp;</span><span style="color: #39BAE6;font-style: italic;">self</span><span>, filter</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Option</span><span>&lt;</span><span style="color: #F29668;">&amp;</span><span style="color: #59C2FF;">str</span><span>&gt;)</span><span style="color: #F29668;"> -&gt;</span><span style="color: #59C2FF;"> Result</span><span>&lt;</span><span style="color: #59C2FF;">Vec</span><span>&lt;</span><span style="color: #59C2FF;">DialogSummary</span><span>&gt;&gt; {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        let mut</span><span> all</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> Vec</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">new</span><span>();</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        let mut</span><span> offset</span><span style="color: #F29668;"> =</span><span style="color: #D2A6FF;"> 0</span><span style="color: #59C2FF;">usize</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        loop</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            let mut</span><span> req</span><span style="color: #F29668;"> =</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #F29668;">.</span><span>client</span></span>
+<span class="giallo-l"><span style="color: #F29668;">                .</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #FFB454;">format!</span><span>(</span><span style="color: #AAD94C;">&quot;{}/v1/dialogs&quot;</span><span>,</span><span style="color: #39BAE6;font-style: italic;"> self</span><span style="color: #F29668;">.</span><span>base))</span></span>
+<span class="giallo-l"><span style="color: #F29668;">                .</span><span style="color: #FFB454;">query</span><span>(</span><span style="color: #F29668;">&amp;</span><span>[(</span><span style="color: #AAD94C;">&quot;limit&quot;</span><span>,</span><span style="color: #AAD94C;"> &quot;100&quot;</span><span>), (</span><span style="color: #AAD94C;">&quot;offset&quot;</span><span>,</span><span style="color: #F29668;"> &amp;</span><span>offset</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">to_string</span><span>())]);</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            if let</span><span style="color: #59C2FF;"> Some</span><span>(f)</span><span style="color: #F29668;"> =</span><span> filter {</span></span>
+<span class="giallo-l"><span>                req</span><span style="color: #F29668;"> =</span><span> req</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">query</span><span>(</span><span style="color: #F29668;">&amp;</span><span>[(</span><span style="color: #AAD94C;">&quot;filter&quot;</span><span>, f)]);</span></span>
+<span class="giallo-l"><span>            }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            let</span><span> resp</span><span style="color: #F29668;"> =</span><span> req</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">send</span><span>()</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            match</span><span> resp</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">status</span><span>()</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">as_u16</span><span>() {</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">                401</span><span style="color: #F29668;"> =&gt;</span><span style="color: #FF8F40;"> return</span><span style="color: #59C2FF;"> Err</span><span>(</span><span style="color: #FFB454;">anyhow!</span><span>(</span><span style="color: #AAD94C;">&quot;auth failed&quot;</span><span>)),</span></span>
+<span class="giallo-l"><span style="color: #D2A6FF;">                429</span><span style="color: #F29668;"> =&gt;</span><span style="color: #FF8F40;"> return</span><span style="color: #59C2FF;"> Err</span><span>(</span><span style="color: #FFB454;">anyhow!</span><span>(</span><span style="color: #AAD94C;">&quot;rate-limited&quot;</span><span>)),</span></span>
+<span class="giallo-l"><span>                code</span><span style="color: #FF8F40;"> if</span><span> code</span><span style="color: #F29668;"> &gt;=</span><span style="color: #D2A6FF;"> 400</span><span style="color: #F29668;"> =&gt;</span><span style="color: #FF8F40;"> return</span><span style="color: #59C2FF;"> Err</span><span>(</span><span style="color: #FFB454;">anyhow!</span><span>(</span><span style="color: #AAD94C;">&quot;HTTP {code}&quot;</span><span>)),</span></span>
+<span class="giallo-l"><span>                _</span><span style="color: #F29668;"> =&gt;</span><span> {}</span></span>
+<span class="giallo-l"><span>            }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            let</span><span> page</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> DialogsPage</span><span style="color: #F29668;"> =</span><span> resp</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">json</span><span>()</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            if</span><span> page</span><span style="color: #F29668;">.</span><span>dialogs</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">is_empty</span><span>() {</span><span style="color: #FF8F40;"> break</span><span>; }</span></span>
+<span class="giallo-l"><span>            offset</span><span style="color: #F29668;"> +=</span><span> page</span><span style="color: #F29668;">.</span><span>dialogs</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">len</span><span>();</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            let</span><span> total</span><span style="color: #F29668;"> =</span><span> page</span><span style="color: #F29668;">.</span><span>total;</span></span>
+<span class="giallo-l"><span>            all</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">extend</span><span>(page</span><span style="color: #F29668;">.</span><span>dialogs);</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            if</span><span> all</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">len</span><span>()</span><span style="color: #F29668;"> &gt;=</span><span> total {</span><span style="color: #FF8F40;"> break</span><span>; }</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">        Ok</span><span>(all)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">fn</span><span style="color: #FFB454;"> main</span><span>()</span><span style="color: #F29668;"> -&gt;</span><span style="color: #59C2FF;"> Result</span><span>&lt;()&gt; {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    let</span><span> s</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> Sipnab</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">new</span><span>()</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    let</span><span> failed</span><span style="color: #F29668;"> =</span><span> s</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">list_dialogs</span><span>(</span><span style="color: #59C2FF;">Some</span><span>(</span><span style="color: #AAD94C;">&quot;state == &#39;Failed&#39;&quot;</span><span>))</span><span style="color: #F29668;">?</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FFB454;">    println!</span><span>(</span><span style="color: #AAD94C;">&quot;{} failed dialogs&quot;</span><span>, failed</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">len</span><span>());</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    use</span><span style="color: #59C2FF;"> std</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">collections</span><span style="color: #F29668;">::</span><span style="color: #59C2FF;">BTreeMap</span><span>;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    let mut</span><span> hist</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> BTreeMap</span><span>&lt;</span><span style="color: #59C2FF;">Option</span><span>&lt;</span><span style="color: #59C2FF;">u16</span><span>&gt;,</span><span style="color: #59C2FF;"> usize</span><span>&gt;</span><span style="color: #F29668;"> =</span><span style="color: #59C2FF;"> BTreeMap</span><span style="color: #F29668;">::</span><span style="color: #FFB454;">new</span><span>();</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> d</span><span style="color: #FF8F40;"> in</span><span style="color: #F29668;"> &amp;</span><span>failed {</span></span>
+<span class="giallo-l"><span style="color: #F29668;">        *</span><span>hist</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">entry</span><span>(d</span><span style="color: #F29668;">.</span><span>status_code)</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">or_default</span><span>()</span><span style="color: #F29668;"> +=</span><span style="color: #D2A6FF;"> 1</span><span>;</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    let mut</span><span> sorted</span><span style="color: #F29668;">:</span><span style="color: #59C2FF;"> Vec</span><span>&lt;_&gt;</span><span style="color: #F29668;"> =</span><span> hist</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">into_iter</span><span>()</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">collect</span><span>();</span></span>
+<span class="giallo-l"><span>    sorted</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">sort_by</span><span>(</span><span style="color: #F29668;">|</span><span>a, b</span><span style="color: #F29668;">|</span><span> b</span><span style="color: #F29668;">.</span><span style="color: #D2A6FF;">1</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">cmp</span><span>(</span><span style="color: #F29668;">&amp;</span><span>a</span><span style="color: #F29668;">.</span><span style="color: #D2A6FF;">1</span><span>));</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> (code, n)</span><span style="color: #FF8F40;"> in</span><span> sorted {</span></span>
+<span class="giallo-l"><span style="color: #FFB454;">        println!</span><span>(</span><span style="color: #AAD94C;">&quot;  {:?}: {}&quot;</span><span>, code, n);</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">    Ok</span><span>(())</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<hr />
+<h3 id="go-net-http-encoding-json">Go (<code>net/http</code> + <code>encoding/json</code>)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="go"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;">// sipnab-client.go</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">package</span><span style="color: #59C2FF;"> main</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> (</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;encoding/json&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;fmt&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;net/http&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;net/url&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;os&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;sort&quot;</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    &quot;time&quot;</span></span>
+<span class="giallo-l"><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">type</span><span style="color: #59C2FF;"> DialogSummary</span><span style="color: #FF8F40;"> struct</span><span> {</span></span>
+<span class="giallo-l"><span>    CallID</span><span style="color: #39BAE6;">      string</span><span style="color: #AAD94C;">  `json:&quot;call_id&quot;`</span></span>
+<span class="giallo-l"><span>    State</span><span style="color: #39BAE6;">       string</span><span style="color: #AAD94C;">  `json:&quot;state&quot;`</span></span>
+<span class="giallo-l"><span>    From</span><span style="color: #39BAE6;">        string</span><span style="color: #AAD94C;">  `json:&quot;from&quot;`</span></span>
+<span class="giallo-l"><span>    To</span><span style="color: #39BAE6;">          string</span><span style="color: #AAD94C;">  `json:&quot;to&quot;`</span></span>
+<span class="giallo-l"><span>    StatusCode</span><span style="color: #F29668;">  *</span><span style="color: #39BAE6;">int</span><span style="color: #AAD94C;">    `json:&quot;status_code&quot;`</span></span>
+<span class="giallo-l"><span>    DurationSec</span><span style="color: #39BAE6;"> float64</span><span style="color: #AAD94C;"> `json:&quot;duration_sec&quot;`</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">type</span><span style="color: #59C2FF;"> DialogsPage</span><span style="color: #FF8F40;"> struct</span><span> {</span></span>
+<span class="giallo-l"><span>    Dialogs []</span><span style="color: #59C2FF;">DialogSummary</span><span style="color: #AAD94C;"> `json:&quot;dialogs&quot;`</span></span>
+<span class="giallo-l"><span>    Total</span><span style="color: #39BAE6;">   int</span><span style="color: #AAD94C;">             `json:&quot;total&quot;`</span></span>
+<span class="giallo-l"><span>    Limit</span><span style="color: #39BAE6;">   int</span><span style="color: #AAD94C;">             `json:&quot;limit&quot;`</span></span>
+<span class="giallo-l"><span>    Offset</span><span style="color: #39BAE6;">  int</span><span style="color: #AAD94C;">             `json:&quot;offset&quot;`</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">type</span><span style="color: #59C2FF;"> Sipnab</span><span style="color: #FF8F40;"> struct</span><span> {</span></span>
+<span class="giallo-l"><span>    Base</span><span style="color: #39BAE6;">   string</span></span>
+<span class="giallo-l"><span>    Token</span><span style="color: #39BAE6;">  string</span></span>
+<span class="giallo-l"><span>    Client</span><span style="color: #F29668;"> *</span><span style="color: #59C2FF;">http</span><span>.</span><span style="color: #59C2FF;">Client</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">func</span><span style="color: #FFB454;"> newSipnab</span><span>() (</span><span style="color: #F29668;">*</span><span style="color: #59C2FF;">Sipnab</span><span>,</span><span style="color: #39BAE6;"> error</span><span>) {</span></span>
+<span class="giallo-l"><span>    base</span><span style="color: #F29668;"> :=</span><span> os.</span><span style="color: #FFB454;">Getenv</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> base</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;&quot;</span><span> {</span></span>
+<span class="giallo-l"><span>        base</span><span style="color: #F29668;"> =</span><span style="color: #AAD94C;"> &quot;http://localhost:8080&quot;</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>    token</span><span style="color: #F29668;"> :=</span><span> os.</span><span style="color: #FFB454;">Getenv</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> token</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;&quot;</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span style="color: #D2A6FF;"> nil</span><span>, fmt.</span><span style="color: #FFB454;">Errorf</span><span>(</span><span style="color: #AAD94C;">&quot;SIPNAB_API_KEY not set&quot;</span><span>)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    return</span><span style="color: #F29668;"> &amp;</span><span style="color: #59C2FF;">Sipnab</span><span>{</span></span>
+<span class="giallo-l"><span>        Base:   base,</span></span>
+<span class="giallo-l"><span>        Token:  token,</span></span>
+<span class="giallo-l"><span>        Client:</span><span style="color: #F29668;"> &amp;</span><span style="color: #59C2FF;">http</span><span>.</span><span style="color: #59C2FF;">Client</span><span>{Timeout:</span><span style="color: #D2A6FF;"> 10</span><span style="color: #F29668;"> *</span><span> time.Second},</span></span>
+<span class="giallo-l"><span>    },</span><span style="color: #D2A6FF;"> nil</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">func</span><span> (</span><span style="color: #D2A6FF;">s </span><span style="color: #F29668;">*</span><span style="color: #59C2FF;">Sipnab</span><span>)</span><span style="color: #FFB454;"> get</span><span>(</span><span style="color: #D2A6FF;">path</span><span style="color: #39BAE6;"> string</span><span>,</span><span style="color: #D2A6FF;"> params</span><span style="color: #59C2FF;"> url</span><span>.</span><span style="color: #59C2FF;">Values</span><span>,</span><span style="color: #D2A6FF;"> out</span><span style="color: #59C2FF;"> any</span><span>)</span><span style="color: #39BAE6;"> error</span><span> {</span></span>
+<span class="giallo-l"><span>    u, _</span><span style="color: #F29668;"> :=</span><span> url.</span><span style="color: #FFB454;">Parse</span><span>(s.Base</span><span style="color: #F29668;"> +</span><span> path)</span></span>
+<span class="giallo-l"><span>    u.RawQuery</span><span style="color: #F29668;"> =</span><span> params.</span><span style="color: #FFB454;">Encode</span><span>()</span></span>
+<span class="giallo-l"><span>    req, _</span><span style="color: #F29668;"> :=</span><span> http.</span><span style="color: #FFB454;">NewRequest</span><span>(http.MethodGet, u.</span><span style="color: #FFB454;">String</span><span>(),</span><span style="color: #D2A6FF;"> nil</span><span>)</span></span>
+<span class="giallo-l"><span>    req.Header.</span><span style="color: #FFB454;">Set</span><span>(</span><span style="color: #AAD94C;">&quot;Authorization&quot;</span><span>,</span><span style="color: #AAD94C;"> &quot;Bearer &quot;</span><span style="color: #F29668;">+</span><span>s.Token)</span></span>
+<span class="giallo-l"><span>    resp, err</span><span style="color: #F29668;"> :=</span><span> s.Client.</span><span style="color: #FFB454;">Do</span><span>(req)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> err</span><span style="color: #F29668;"> !=</span><span style="color: #D2A6FF;"> nil</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> err</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    defer</span><span> resp.Body.</span><span style="color: #FFB454;">Close</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    switch</span><span> resp.StatusCode {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    case</span><span style="color: #D2A6FF;"> 401</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> fmt.</span><span style="color: #FFB454;">Errorf</span><span>(</span><span style="color: #AAD94C;">&quot;auth failed&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    case</span><span style="color: #D2A6FF;"> 429</span><span>:</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> fmt.</span><span style="color: #FFB454;">Errorf</span><span>(</span><span style="color: #AAD94C;">&quot;rate-limited&quot;</span><span>)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> resp.StatusCode</span><span style="color: #F29668;"> &gt;=</span><span style="color: #D2A6FF;"> 400</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        return</span><span> fmt.</span><span style="color: #FFB454;">Errorf</span><span>(</span><span style="color: #AAD94C;">&quot;HTTP </span><span style="color: #95E6CB;">%d</span><span style="color: #AAD94C;">&quot;</span><span>, resp.StatusCode)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    return</span><span> json.</span><span style="color: #FFB454;">NewDecoder</span><span>(resp.Body).</span><span style="color: #FFB454;">Decode</span><span>(out)</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">func</span><span> (</span><span style="color: #D2A6FF;">s </span><span style="color: #F29668;">*</span><span style="color: #59C2FF;">Sipnab</span><span>)</span><span style="color: #FFB454;"> ListDialogs</span><span>(</span><span style="color: #D2A6FF;">filter</span><span style="color: #39BAE6;"> string</span><span>) ([]</span><span style="color: #59C2FF;">DialogSummary</span><span>,</span><span style="color: #39BAE6;"> error</span><span>) {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    var</span><span> all []</span><span style="color: #59C2FF;">DialogSummary</span></span>
+<span class="giallo-l"><span>    offset</span><span style="color: #F29668;"> :=</span><span style="color: #D2A6FF;"> 0</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> {</span></span>
+<span class="giallo-l"><span>        params</span><span style="color: #F29668;"> :=</span><span style="color: #59C2FF;"> url</span><span>.</span><span style="color: #59C2FF;">Values</span><span>{</span><span style="color: #AAD94C;">&quot;limit&quot;</span><span>: {</span><span style="color: #AAD94C;">&quot;100&quot;</span><span>},</span><span style="color: #AAD94C;"> &quot;offset&quot;</span><span>: {fmt.</span><span style="color: #FFB454;">Sprint</span><span>(offset)}}</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> filter</span><span style="color: #F29668;"> !=</span><span style="color: #AAD94C;"> &quot;&quot;</span><span> {</span></span>
+<span class="giallo-l"><span>            params.</span><span style="color: #FFB454;">Set</span><span>(</span><span style="color: #AAD94C;">&quot;filter&quot;</span><span>, filter)</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        var</span><span> page</span><span style="color: #59C2FF;"> DialogsPage</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> err</span><span style="color: #F29668;"> :=</span><span> s.</span><span style="color: #FFB454;">get</span><span>(</span><span style="color: #AAD94C;">&quot;/v1/dialogs&quot;</span><span>, params,</span><span style="color: #F29668;"> &amp;</span><span>page)</span><span style="color: #BFBDB6B3;">;</span><span> err</span><span style="color: #F29668;"> !=</span><span style="color: #D2A6FF;"> nil</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            return</span><span style="color: #D2A6FF;"> nil</span><span>, err</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span style="color: #FFB454;"> len</span><span>(page.Dialogs)</span><span style="color: #F29668;"> ==</span><span style="color: #D2A6FF;"> 0</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            break</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span>        all</span><span style="color: #F29668;"> =</span><span style="color: #FFB454;"> append</span><span>(all, page.Dialogs</span><span style="color: #F29668;">...</span><span>)</span></span>
+<span class="giallo-l"><span>        offset</span><span style="color: #F29668;"> +=</span><span style="color: #FFB454;"> len</span><span>(page.Dialogs)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span style="color: #FFB454;"> len</span><span>(all)</span><span style="color: #F29668;"> &gt;=</span><span> page.Total {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">            break</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    return</span><span> all,</span><span style="color: #D2A6FF;"> nil</span></span>
+<span class="giallo-l"><span>}</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #FF8F40;">func</span><span style="color: #FFB454;"> main</span><span>() {</span></span>
+<span class="giallo-l"><span>    s, err</span><span style="color: #F29668;"> :=</span><span style="color: #FFB454;"> newSipnab</span><span>()</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> err</span><span style="color: #F29668;"> !=</span><span style="color: #D2A6FF;"> nil</span><span> {</span></span>
+<span class="giallo-l"><span>        fmt.</span><span style="color: #FFB454;">Fprintln</span><span>(os.Stderr, err)</span></span>
+<span class="giallo-l"><span>        os.</span><span style="color: #FFB454;">Exit</span><span>(</span><span style="color: #D2A6FF;">1</span><span>)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>    failed, err</span><span style="color: #F29668;"> :=</span><span> s.</span><span style="color: #FFB454;">ListDialogs</span><span>(</span><span style="color: #AAD94C;">&quot;state == &#39;Failed&#39;&quot;</span><span>)</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    if</span><span> err</span><span style="color: #F29668;"> !=</span><span style="color: #D2A6FF;"> nil</span><span> {</span></span>
+<span class="giallo-l"><span>        fmt.</span><span style="color: #FFB454;">Fprintln</span><span>(os.Stderr, err)</span></span>
+<span class="giallo-l"><span>        os.</span><span style="color: #FFB454;">Exit</span><span>(</span><span style="color: #D2A6FF;">1</span><span>)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>    fmt.</span><span style="color: #FFB454;">Printf</span><span>(</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">%d</span><span style="color: #AAD94C;"> failed dialogs</span><span style="color: #95E6CB;">\n</span><span style="color: #AAD94C;">&quot;</span><span>,</span><span style="color: #FFB454;"> len</span><span>(failed))</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>    hist</span><span style="color: #F29668;"> :=</span><span style="color: #FF8F40;"> map</span><span>[</span><span style="color: #39BAE6;">int</span><span>]</span><span style="color: #39BAE6;">int</span><span>{}</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> _, d</span><span style="color: #F29668;"> :=</span><span style="color: #FF8F40;"> range</span><span> failed {</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">        if</span><span> d.StatusCode</span><span style="color: #F29668;"> !=</span><span style="color: #D2A6FF;"> nil</span><span> {</span></span>
+<span class="giallo-l"><span>            hist[</span><span style="color: #F29668;">*</span><span>d.StatusCode]</span><span style="color: #F29668;">++</span></span>
+<span class="giallo-l"><span>        }</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    type</span><span style="color: #59C2FF;"> kv</span><span style="color: #FF8F40;"> struct</span><span>{ k, v</span><span style="color: #39BAE6;"> int</span><span> }</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    var</span><span> sorted []</span><span style="color: #59C2FF;">kv</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> k, v</span><span style="color: #F29668;"> :=</span><span style="color: #FF8F40;"> range</span><span> hist {</span></span>
+<span class="giallo-l"><span>        sorted</span><span style="color: #F29668;"> =</span><span style="color: #FFB454;"> append</span><span>(sorted,</span><span style="color: #59C2FF;"> kv</span><span>{k, v})</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>    sort.</span><span style="color: #FFB454;">Slice</span><span>(sorted,</span><span style="color: #FF8F40;"> func</span><span>(</span><span style="color: #D2A6FF;">i</span><span>,</span><span style="color: #D2A6FF;"> j</span><span style="color: #39BAE6;"> int</span><span>)</span><span style="color: #39BAE6;"> bool</span><span> {</span><span style="color: #FF8F40;"> return</span><span> sorted[i].v</span><span style="color: #F29668;"> &gt;</span><span> sorted[j].v })</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    for</span><span> _, e</span><span style="color: #F29668;"> :=</span><span style="color: #FF8F40;"> range</span><span> sorted {</span></span>
+<span class="giallo-l"><span>        fmt.</span><span style="color: #FFB454;">Printf</span><span>(</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">  %d</span><span style="color: #AAD94C;">: </span><span style="color: #95E6CB;">%d\n</span><span style="color: #AAD94C;">&quot;</span><span>, e.k, e.v)</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p>Run:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>SIPNAB_API_KEY</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">my-secret-token</span><span style="color: #59C2FF;"> go</span><span style="color: #AAD94C;"> run sipnab-client.go</span></span></code></pre>
+<hr />
 <h2 id="common-patterns">Common Patterns</h2>
 <h3 id="monitor-failed-calls-in-real-time-python">Monitor failed calls in real-time (Python)</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="python"><span class="giallo-l"><span style="color: #FF8F40;">import</span><span> time</span></span>
@@ -741,6 +1221,26 @@
             <li><a href="#get-v1-stats">GET &#x2F;v1&#x2F;stats</a></li>
             
             <li><a href="#get-metrics">GET &#x2F;metrics</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#client-examples">Client Examples</a>
+          
+          <ul>
+            
+            <li><a href="#curl-jq-one-liners">curl + jq one-liners</a></li>
+            
+            <li><a href="#python-sync-requests">Python (sync, requests)</a></li>
+            
+            <li><a href="#python-async-httpx">Python (async, httpx)</a></li>
+            
+            <li><a href="#node-js-typescript">Node.js &#x2F; TypeScript</a></li>
+            
+            <li><a href="#rust-reqwest">Rust (reqwest)</a></li>
+            
+            <li><a href="#go-net-http-encoding-json">Go (net&#x2F;http + encoding&#x2F;json)</a></li>
             
           </ul>
           
