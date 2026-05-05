@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-05
+
 ### Added
 - `--filter` now accepts diagnostic alias names (`codec-asym`,
   `ptime-asym`, `payload-asym`, `duration-asym`, `late-media`, plus the
