@@ -1966,6 +1966,11 @@ fn dispatch_sip_output(
     if cli.mcp {
         return;
     }
+    // --no-cli-print suppresses every per-message dump (text/JSON/fail2ban/raw)
+    // so post-capture reports (--call-report, --report) aren't drowned out.
+    if cli.no_cli_print {
+        return;
+    }
     if cli.json || cli.json_pretty {
         let json = output::json::message_to_json(msg);
         print!("{json}");
@@ -2038,9 +2043,12 @@ fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &Stream
 
 /// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or config fallback.
 fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
-    // Explicit --filter takes precedence
+    // Explicit --filter takes precedence. Try alias expansion first
+    // (so `--filter codec-asym` works the same as MCP find_problems'
+    // kinds shorthand); fall back to raw DSL parsing.
     if let Some(ref expr) = cli.filter {
-        match FilterExpr::parse(expr) {
+        let resolved = sipnab::sip::dsl::expand_alias(expr).unwrap_or(expr.as_str());
+        match FilterExpr::parse(resolved) {
             Ok(f) => return Some(f),
             Err(e) => {
                 tracing::error!("Invalid --filter expression: {e}");

@@ -116,20 +116,30 @@ Parentheses `( )` group sub-expressions to override default precedence.
 
 These preset expressions are available as CLI flags (`--problems`, etc.) and expand to DSL expressions internally.
 
-| Alias | CLI Flag | Expansion |
-|-------|----------|-----------|
+Aliases are accepted by `--filter` directly (`--filter codec-asym`), as
+dedicated CLI flags where they exist (`--problems`, etc.), and as `kinds`
+entries in the MCP `find_problems` tool.
+
+| Alias | Dedicated CLI Flag | Expansion |
+|-------|--------------------|-----------|
 | `problems` | `--problems` | `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true` |
 | `slow-setup` | `--slow-setup` | `pdd > 3.0` |
 | `short-calls` | `--short-calls` | `duration < 5.0 AND state == 'Completed'` |
 | `one-way` | `--one-way` | `one_way == true` |
 | `nat-issues` | `--nat-issues` | `nat_mismatch == true` |
-| `codec-asym` | (no dedicated CLI flag — use `--filter "codec_asymmetry == true"` or `--problems`, or `find_problems` over MCP with `kinds: ["codec-asym"]`) | `codec_asymmetry == true` |
-| `ptime-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `ptime_asymmetry == true` |
-| `payload-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `payload_asymmetry == true` |
-| `duration-asym` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `duration_asymmetry == true` |
-| `late-media` | (no dedicated CLI flag — use raw DSL or `find_problems`) | `late_media == true` |
+| `codec-asym` | — (use `--filter codec-asym`) | `codec_asymmetry == true` |
+| `ptime-asym` | — (use `--filter ptime-asym`) | `ptime_asymmetry == true` |
+| `payload-asym` | — (use `--filter payload-asym`) | `payload_asymmetry == true` |
+| `duration-asym` | — (use `--filter duration-asym`) | `duration_asymmetry == true` |
+| `late-media` | — (use `--filter late-media`) | `late_media == true` |
 
-> **CLI `--filter` does not accept alias names.** The DSL parser rejects bare identifiers; you must write the full expression (e.g. `--filter "codec_asymmetry == true"`). Alias-name shorthand (`codec-asym`, `late-media`, etc.) only works inside MCP's `find_problems` tool's `kinds` array.
+`--filter` first tries to resolve its argument as an alias name, then falls
+back to parsing it as a DSL expression. Both forms below are equivalent:
+
+```
+sipnab -N -I capture.pcap --filter codec-asym
+sipnab -N -I capture.pcap --filter "codec_asymmetry == true"
+```
 
 ## Examples
 

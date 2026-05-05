@@ -6,17 +6,27 @@
 
 use clap::Parser;
 
-/// Build a version string including git commit hash and optional tag.
+/// Build a version string including git commit hash, optional tag,
+/// and the list of compile-time features that were enabled.
 ///
-/// Examples: "0.1.0-alpha.1 (abc12345)", "0.1.0-alpha.1 (v0.1.0 abc12345-dirty)"
+/// Examples:
+/// - `0.3.1 (abc12345) features: native,tui,audio`
+/// - `0.3.1 (v0.3.1 abc12345-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http`
 pub fn build_version() -> String {
     let version = env!("CARGO_PKG_VERSION");
     let commit = env!("SIPNAB_GIT_COMMIT");
     let tag = env!("SIPNAB_GIT_TAG");
     let dirty = env!("SIPNAB_GIT_DIRTY");
 
+    let features = compiled_features();
+    let features_part = if features.is_empty() {
+        String::new()
+    } else {
+        format!(" features: {}", features.join(","))
+    };
+
     if commit.is_empty() {
-        return version.to_string();
+        return format!("{version}{features_part}").trim_end().to_string();
     }
     let mut parts = String::new();
     if !tag.is_empty() {
@@ -25,7 +35,25 @@ pub fn build_version() -> String {
     }
     parts.push_str(commit);
     parts.push_str(dirty);
-    format!("{version} ({parts})")
+    format!("{version} ({parts}){features_part}")
+}
+
+/// List of Cargo features compiled into this binary.
+///
+/// Walked statically via `cfg!(feature = "...")`. Feature names match
+/// the `[features]` block in `Cargo.toml`.
+fn compiled_features() -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if cfg!(feature = "native") { out.push("native"); }
+    if cfg!(feature = "tui") { out.push("tui"); }
+    if cfg!(feature = "audio") { out.push("audio"); }
+    if cfg!(feature = "tls") { out.push("tls"); }
+    if cfg!(feature = "hep") { out.push("hep"); }
+    if cfg!(feature = "api") { out.push("api"); }
+    if cfg!(feature = "mcp") { out.push("mcp"); }
+    if cfg!(feature = "mcp-http") { out.push("mcp-http"); }
+    if cfg!(feature = "wasm") { out.push("wasm"); }
+    out
 }
 
 /// SIP & RTP capture, analysis, and security tool.
@@ -243,6 +271,11 @@ pub struct Cli {
     /// Dump raw SIP message text (like sipgrep -T).
     #[arg(short = 'T', long = "text-dump")]
     pub text_dump: bool,
+
+    /// Suppress per-message CLI output. Useful with `--call-report` or `--report`
+    /// when you only want the post-capture summary, not every message.
+    #[arg(long = "no-cli-print")]
+    pub no_cli_print: bool,
 
     /// Launch Wireshark with a display filter for the current capture.
     #[arg(long)]
