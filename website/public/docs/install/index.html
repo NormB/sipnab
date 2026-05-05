@@ -117,29 +117,86 @@
 <span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> cp target/release/sipnab /usr/local/bin/</span></span></code></pre><h3 id="full-features-build">Full-features build</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span></span></code></pre><h3 id="debug-build-with-logging">Debug build with logging</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>SIPNAB_LOG</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">trace</span><span style="color: #59C2FF;"> cargo</span><span style="color: #AAD94C;"> run</span><span style="color: #95E6CB;"> -- -N -I</span><span style="color: #AAD94C;"> test.pcap</span></span></code></pre><h2 id="feature-flags">Feature Flags</h2>
-<p>sipnab uses Cargo feature flags to control optional functionality. The <code>default</code> feature includes <code>tui</code> only.</p>
+<p>sipnab uses Cargo feature flags to control optional functionality. The default build includes <code>native</code>, <code>tui</code>, and <code>audio</code>.</p>
 <table><thead><tr><th>Feature</th><th>Description</th><th>Dependencies</th></tr></thead><tbody>
-<tr><td><code>tui</code></td><td>Interactive terminal UI (ratatui + crossterm). <strong>Included by default.</strong></td><td><code>ratatui</code>, <code>crossterm</code>, <code>unicode-width</code></td></tr>
+<tr><td><code>native</code></td><td>Live capture, file capture, output writers, signal handling, CLI parser. <strong>Required by every other feature except <code>wasm</code>.</strong> Included by default.</td><td><code>pcap</code>, <code>clap</code>, <code>crossbeam-channel</code>, <code>libc</code>, <code>pcap-file</code>, <code>tracing-subscriber</code></td></tr>
+<tr><td><code>tui</code></td><td>Interactive terminal UI (ratatui + crossterm). Included by default.</td><td><code>native</code>, <code>ratatui</code>, <code>crossterm</code>, <code>unicode-width</code></td></tr>
+<tr><td><code>audio</code></td><td>RTP audio playback in the TUI + WAV export. Included by default. Adds a runtime dependency on <code>libasound.so.2</code>.</td><td><code>rodio</code>, <code>libc</code></td></tr>
 <tr><td><code>tls</code></td><td>TLS/DTLS decryption and SRTP key extraction (pure Rust)</td><td><code>ring</code>, <code>rustls</code>, <code>aes</code>, <code>cbc</code>, <code>zeroize</code></td></tr>
-<tr><td><code>hep</code></td><td>HEP v2/v3 support (Homer Encapsulation Protocol)</td><td>– (no extra deps)</td></tr>
-<tr><td><code>api</code></td><td>REST API + Prometheus metrics endpoint (runs in isolated child process)</td><td><code>axum</code>, <code>tokio</code></td></tr>
-<tr><td><code>full</code></td><td>All of the above: <code>tui</code> + <code>tls</code> + <code>hep</code> + <code>api</code></td><td>all</td></tr>
+<tr><td><code>hep</code></td><td>HEP v2/v3 send + receive (Homer Encapsulation Protocol)</td><td><code>native</code></td></tr>
+<tr><td><code>api</code></td><td>REST API + Prometheus metrics endpoint (runs in isolated child process)</td><td><code>native</code>, <code>axum</code>, <code>tokio</code></td></tr>
+<tr><td><code>mcp</code></td><td>Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab.</td><td><code>native</code>, <code>tokio</code>, <code>rmcp</code></td></tr>
+<tr><td><code>mcp-http</code></td><td>MCP server over HTTP (Streamable-HTTP). Adds the <code>--mcp-transport http</code> option.</td><td><code>mcp</code>, <code>api</code>, <code>rmcp/transport-streamable-http-server</code></td></tr>
+<tr><td><code>full</code></td><td>Everything: <code>native</code> + <code>tui</code> + <code>audio</code> + <code>tls</code> + <code>hep</code> + <code>api</code> + <code>mcp</code> + <code>mcp-http</code></td><td>all</td></tr>
+<tr><td><code>wasm</code></td><td>WebAssembly target for in-browser pcap analysis</td><td>wasm-bindgen toolchain</td></tr>
 </tbody></table>
 <p>Build with specific features:</p>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># TUI + TLS only</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> tui,tls</span></span>
 <span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Headless with HEP (no TUI)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features --features</span><span style="color: #AAD94C;"> hep</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Headless capture host with HEP listener + REST API + MCP HTTP</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features --features</span><span style="color: #AAD94C;"> native,hep,api,mcp,mcp-http</span></span>
 <span class="giallo-l"></span>
 <span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Everything</span></span>
 <span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span></span></code></pre><h3 id="what-features-do-you-need">What Features Do You Need?</h3>
 <ul>
-<li><strong>Most users:</strong> <code>cargo build --release</code> – default features (<code>native</code> + <code>tui</code>) give you interactive analysis and CLI mode.</li>
+<li><strong>Most users (interactive analysis):</strong> <code>cargo build --release</code> – default features (<code>native</code> + <code>tui</code> + <code>audio</code>) give you interactive TUI, CLI mode, and audio playback of captured RTP.</li>
 <li><strong>CI/scripting only (no TUI):</strong> <code>cargo build --release --no-default-features --features native</code> – headless binary for automation pipelines.</li>
-<li><strong>Full installation:</strong> <code>cargo build --release --features full</code> – everything: TUI, TLS decryption, HEP, REST API.</li>
+<li><strong>MCP / AI-agent server:</strong> add <code>mcp</code> (stdio) or <code>mcp,mcp-http</code> (HTTP). See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the runtime configuration.</li>
+<li><strong>Headless capture host with HEP + Prometheus + MCP:</strong> <code>cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http</code> – the typical “fleet capture server” feature set, leaves out the TUI and audio playback you don’t need on a server.</li>
+<li><strong>Full installation:</strong> <code>cargo build --release --features full</code> – everything.</li>
 <li><strong>WASM/browser analysis:</strong> <code>cargo build --release --features wasm</code> – WebAssembly target for in-browser pcap analysis (see Analyze page).</li>
 </ul>
+<h3 id="runtime-dependencies">Runtime dependencies</h3>
+<p>When you build with <code>--features full</code> (or <code>--features audio</code>), the resulting binary dynamically links <code>libasound.so.2</code> and refuses to start if it’s missing – even on a headless server where audio playback is never invoked. On Debian/Ubuntu hosts that means installing the runtime library alongside <code>libpcap0.8</code>:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">apt-get</span><span style="color: #AAD94C;"> install</span><span style="color: #95E6CB;"> -y</span><span style="color: #AAD94C;"> libpcap0.8 libasound2</span></span></code></pre>
+<p>If you don’t need TUI audio playback on the host (typical for a <code>--hep-listen</code> / <code>--api</code> / <code>--mcp</code> server), build without the <code>audio</code> feature to drop the libasound dependency entirely:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">    --features</span><span style="color: #AAD94C;"> native,tui,tls,hep,api,mcp,mcp-http</span></span></code></pre><h3 id="cross-glibc-compatibility">Cross-glibc compatibility</h3>
+<p>If you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), the binary will refuse to start with <code>version 'GLIBC_2.39' not found</code>. Build inside a container matching the target’s glibc – for example, <code>rust:1-bookworm</code> for Debian 12 deploys, or use musl (the static <code>--target x86_64-unknown-linux-musl</code> builds the release CI publishes).</p>
+<h2 id="enabling-mcp">Enabling MCP</h2>
+<p>The Model Context Protocol server lets an AI agent (Claude Code, Claude Desktop, any MCP-capable client) drive sipnab. Two transports:</p>
+<ul>
+<li><strong>stdio</strong> (default, requires <code>mcp</code> feature) – the agent launches sipnab as a subprocess and communicates over stdin/stdout. Best for local agents.</li>
+<li><strong>HTTP</strong> (requires <code>mcp-http</code> feature) – sipnab listens on a TCP port for JSON-RPC requests. Best for remote agents.</li>
+</ul>
+<h3 id="quick-start-stdio-local-agent">Quick start (stdio, local agent)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Build with mcp support</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --features</span><span style="color: #AAD94C;"> full</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Or, if you only want MCP without TUI/audio:</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features --features</span><span style="color: #AAD94C;"> native,api,mcp</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run sipnab in MCP stdio mode against a pcap file</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --quiet</span></span></code></pre>
+<p>For Claude Desktop, add to your MCP servers config:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">  &quot;mcpServers&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">    &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">      &quot;command&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">      &quot;args&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;/path/to/capture.pcap&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>  }</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p><code>--quiet</code> is recommended in stdio mode so log output doesn’t interfere with the JSON-RPC wire on stdout.</p>
+<h3 id="quick-start-http-remote-agent">Quick start (HTTP, remote agent)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Build with mcp-http support</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features --features</span><span style="color: #AAD94C;"> native,api,mcp,mcp-http</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate a token (any random secret)</span></span>
+<span class="giallo-l"><span style="color: #F07178;">echo</span><span style="color: #AAD94C;"> &quot;$(</span><span style="color: #59C2FF;">openssl</span><span style="color: #AAD94C;"> rand</span><span style="color: #95E6CB;"> -hex</span><span style="color: #D2A6FF;"> 32</span><span style="color: #AAD94C;">)&quot;</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">chmod</span><span style="color: #D2A6FF;"> 0600</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run with HTTP transport bound to all interfaces</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp --mcp-transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-bind</span><span style="color: #AAD94C;"> 0.0.0.0:8731</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-token-file</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-allowed-host</span><span style="color: #AAD94C;"> capture.example.com</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --quiet</span></span></code></pre>
+<p>The agent then connects to <code>http://capture.example.com:8731/mcp</code> with header <code>Authorization: Bearer &lt;token&gt;</code>. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full protocol/security model, the list of available tools, and the systemd unit pattern for running MCP alongside an HEP listener.</p>
+<blockquote>
+<p><strong>Security note:</strong> The HTTP transport refuses to start on a non-loopback bind without a token. The default Host-header allowlist is <code>localhost</code>, <code>127.0.0.1</code>, <code>::1</code> only – add your real hostname / IP via <code>--mcp-allowed-host</code> (repeatable). For TLS, terminate it in nginx in front of sipnab; sipnab itself doesn’t serve HTTPS for MCP.</p>
+</blockquote>
 <h2 id="release-profile">Release Profile</h2>
 <p>The release build uses LTO, single codegen unit, and symbol stripping for a small binary:</p>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">profile</span><span>.</span><span style="color: #59C2FF;">release</span><span>]</span></span>
@@ -184,7 +241,7 @@
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.3.1 (features: tui,tls,hep,api)
+sipnab 0.3.1 (features: tui,audio,tls,hep,api,mcp,mcp-http)
 <p><span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -&gt; bob  10.0.0.1:5060 -&gt; 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms
 <span class="t-accent">REGISTER</span> admin -&gt; –  10.0.0.5:5060 -&gt; 10.0.0.1:5060  <span class="t-good">Registered</span>
@@ -272,6 +329,22 @@ sipnab 0.3.1 (features: tui,tls,hep,api)
           <ul>
             
             <li><a href="#what-features-do-you-need">What Features Do You Need?</a></li>
+            
+            <li><a href="#runtime-dependencies">Runtime dependencies</a></li>
+            
+            <li><a href="#cross-glibc-compatibility">Cross-glibc compatibility</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#enabling-mcp">Enabling MCP</a>
+          
+          <ul>
+            
+            <li><a href="#quick-start-stdio-local-agent">Quick start (stdio, local agent)</a></li>
+            
+            <li><a href="#quick-start-http-remote-agent">Quick start (HTTP, remote agent)</a></li>
             
           </ul>
           

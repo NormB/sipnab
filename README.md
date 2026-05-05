@@ -119,23 +119,30 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 
 ## Feature Flags
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `tui` | Interactive terminal UI (ratatui) | yes |
-| `tls` | TLS/SRTP decryption (ring, zeroize) | no |
-| `tls-wolfssl` | TLS via wolfSSL backend | no |
-| `tls-openssl` | TLS via OpenSSL backend | no |
-| `hep` | Homer Encapsulation Protocol support | no |
-| `grpc` | gRPC streaming interface (tonic) | no |
-| `api` | REST API and Prometheus metrics (axum) | no |
-| `full` | All of the above | no |
+| Flag       | Description                                                          | Default |
+|------------|----------------------------------------------------------------------|---------|
+| `native`   | Live capture, file capture, output writers, signal handling, CLI     | yes     |
+| `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
+| `audio`    | RTP audio playback in TUI + WAV export (rodio)                       | yes     |
+| `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
+| `hep`      | HEP v2/v3 send + receive (Homer Encapsulation Protocol)              | no      |
+| `api`      | REST API + Prometheus metrics endpoint (axum, tokio)                 | no      |
+| `mcp`      | Model Context Protocol server, stdio transport (rmcp)                | no      |
+| `mcp-http` | MCP server over HTTP (Streamable-HTTP). Implies `mcp` + `api`.       | no      |
+| `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
+| `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` | no      |
 
 Build with specific features:
 
 ```bash
 cargo build --release --features tls,hep
 cargo build --release --features full
+
+# Headless capture host with HEP listener + REST API + MCP HTTP
+cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
+
+A `--features full` build adds a runtime dependency on `libasound.so.2` (because of `audio`) -- on Debian/Ubuntu install `libasound2` alongside `libpcap0.8`. Drop the `audio` feature if you don't need TUI playback on the deploy host.
 
 ## Documentation
 
