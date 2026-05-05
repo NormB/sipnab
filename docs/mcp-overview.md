@@ -58,6 +58,21 @@ sipnab --mcp --mcp-transport http \
   sipnab refuses to start (D18).
 - For TLS, terminate it in nginx in front of sipnab. Bind sipnab to
   `127.0.0.1:8731` and let nginx handle the public 443 endpoint.
+- When clients reach sipnab by hostname or non-loopback IP, add that
+  name to the host-header allowlist with `--mcp-allowed-host`
+  (repeatable). The default allowlist is `localhost`, `127.0.0.1`, `::1`
+  only; rmcp will return `403 Forbidden: Host header is not allowed`
+  for any other `Host` value otherwise. A literal `*` disables host
+  checking entirely — pair with a network-level source-IP allowlist.
+
+```bash
+# Network-bound, with the actual public hostname accepted
+sipnab --mcp --mcp-transport http \
+       --mcp-bind 0.0.0.0:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-allowed-host capture.example.com \
+       -I capture.pcap
+```
 
 The agent then connects to `https://your-host/mcp` with a `Bearer
 <token>` header.

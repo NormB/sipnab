@@ -93,7 +93,7 @@
 <span class="giallo-l"><span>comparison  = field operator value</span></span></code></pre>
 <p>Operator precedence (highest to lowest): <code>NOT</code>, <code>AND</code>, <code>OR</code>. Use parentheses to override.</p>
 <h2 id="fields">Fields</h2>
-<p>All 24 addressable fields, organized by type.</p>
+<p>All 30 addressable fields, organized by type.</p>
 <h3 id="string-fields">String Fields</h3>
 <table><thead><tr><th>Field</th><th>Description</th><th>Example Values</th></tr></thead><tbody>
 <tr><td><code>from.user</code></td><td>User part of the SIP From header</td><td><code>"1001"</code>, <code>"alice"</code></td></tr>
@@ -128,6 +128,11 @@
 <tr><td><code>one_way</code></td><td>True if one-way audio detected (via diagnosis engine)</td></tr>
 <tr><td><code>nat_mismatch</code></td><td>True if NAT mismatch detected (Contact/Via IP discrepancy)</td></tr>
 <tr><td><code>no_media</code></td><td>True if no media detected for established call</td></tr>
+<tr><td><code>codec_asymmetry</code></td><td>True if A and B legs negotiated different RTP codecs</td></tr>
+<tr><td><code>ptime_asymmetry</code></td><td>True if the two legs use different <code>ptime</code> (packetization interval)</td></tr>
+<tr><td><code>payload_asymmetry</code></td><td>True if dynamic payload type numbers differ across legs (with the same codec)</td></tr>
+<tr><td><code>duration_asymmetry</code></td><td>True if one leg’s media duration is materially shorter than the other’s</td></tr>
+<tr><td><code>late_media</code></td><td>True if RTP starts noticeably later than the answering 200 OK</td></tr>
 </tbody></table>
 <h2 id="operators">Operators</h2>
 <table><thead><tr><th>Operator</th><th>Applies To</th><th>Description</th></tr></thead><tbody>
@@ -173,6 +178,11 @@
 <tr><td><code>short-calls</code></td><td><code>--short-calls</code></td><td><code>duration &lt; 5.0 AND state == 'Completed'</code></td></tr>
 <tr><td><code>one-way</code></td><td><code>--one-way</code></td><td><code>one_way == true</code></td></tr>
 <tr><td><code>nat-issues</code></td><td><code>--nat-issues</code></td><td><code>nat_mismatch == true</code></td></tr>
+<tr><td><code>codec-asym</code></td><td><code>--filter codec-asym</code></td><td><code>codec_asymmetry == true</code></td></tr>
+<tr><td><code>ptime-asym</code></td><td><code>--filter ptime-asym</code></td><td><code>ptime_asymmetry == true</code></td></tr>
+<tr><td><code>payload-asym</code></td><td><code>--filter payload-asym</code></td><td><code>payload_asymmetry == true</code></td></tr>
+<tr><td><code>duration-asym</code></td><td><code>--filter duration-asym</code></td><td><code>duration_asymmetry == true</code></td></tr>
+<tr><td><code>late-media</code></td><td><code>--filter late-media</code></td><td><code>late_media == true</code></td></tr>
 </tbody></table>
 <h2 id="examples">Examples</h2>
 <h3 id="basic-field-matching">Basic field matching</h3>

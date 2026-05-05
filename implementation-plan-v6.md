@@ -3,8 +3,25 @@
 **Project:** sipnab — The definitive SIP analysis tool, built in Rust
 **Repository:** github.com/NormB/sipnab
 **Domain:** sipnab.com
-**License:** GPLv3
+**License:** MIT OR Apache-2.0
 **Author:** Norm Brandinger
+
+> **⚠ Living document — superseded in places by `implementation-plan-phases-8-10.md`.**
+> The Phase 8–10 plan's "Resolved Decisions" section formally drops several
+> v6 designs that this document still describes as active. As of 2026-05-05:
+>
+> - **gRPC API (D11 RPC slot, `grpc` feature flag) was dropped.** Replaced by
+>   REST + OpenAPI (Phase 9) + MCP (Phase 8). The `grpc` flag has never
+>   existed in `Cargo.toml`.
+> - **Pluggable crypto backend (D14) was dropped.** Only the pure-Rust `tls`
+>   feature (`ring` + `rustls`) ever shipped; `tls-wolfssl` and `tls-openssl`
+>   were never implemented and remain phantom flags in this document's
+>   feature/dependency tables. There is no FIPS 140-3 path today.
+> - **Lab-internal SIP server fleet** assumptions in some risk-register
+>   entries are not reflective of current public release scope.
+>
+> Use `Cargo.toml`'s `[features]` block as the authoritative feature list.
+> Use `implementation-plan-phases-8-10.md` for current phase status.
 
 **Changes from v5:** Added threat model, risk register, security hardening throughout all phases, privilege separation model, process isolation for daemon mode, MVP release milestones, tightened exit criteria, dependency audit strategy, testing pyramid. Replaced Lua scripting with Filter DSL + NDJSON pipeline + event exec hooks. Added VoIP engineering workflow features: SIP response code intelligence, transaction timing/PDD analysis, one-way audio diagnosis, multi-leg call correlation, structured call diagnosis reports, SDP negotiation timeline tracking, per-endpoint concurrent call tracking, and built-in diagnostic filter aliases. Adjusted timeline estimates for single-developer reality.
 

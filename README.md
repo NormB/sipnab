@@ -39,19 +39,16 @@ security analysis.
 sipnab dynamically links to system libraries. These must be present on the
 target system:
 
-| Library | Package (Debian/Ubuntu) | Package (Fedora/RHEL) | Required |
-|---------|------------------------|-----------------------|----------|
-| `libpcap.so.1` | `libpcap0.8` | `libpcap` | always |
+| Library            | Package (Debian/Ubuntu) | Package (Fedora/RHEL)   | When required                                  |
+|--------------------|-------------------------|-------------------------|------------------------------------------------|
+| `libpcap.so.1`     | `libpcap0.8`            | `libpcap`               | Any build that includes the `native` feature   |
+| `libasound.so.2`   | `libasound2`            | `alsa-lib`              | Any build that includes the `audio` feature (in default) |
 
-Future feature flags may add additional runtime dependencies:
-
-| Feature | Library | Package (Debian/Ubuntu) | Package (Fedora/RHEL) |
-|---------|---------|------------------------|-----------------------|
-| `tls-openssl` | `libssl.so`, `libcrypto.so` | `libssl3` | `openssl-libs` |
-| `tls-wolfssl` | `libwolfssl.so` | -- | -- |
-
-The default `tls` feature uses pure-Rust cryptography (`ring`/`rustls`) and
-requires no additional system libraries.
+`tls`, `hep`, `api`, `mcp`, `mcp-http`, and `wasm` are pure-Rust and need no
+additional system libraries. To drop the libasound runtime dependency on a
+headless capture/MCP host, build without the `audio` feature — see the
+`--no-default-features --features native,hep,api,mcp,mcp-http` recipe in the
+Feature Flags section below.
 
 ## Build
 
@@ -142,7 +139,7 @@ cargo build --release --features full
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-A `--features full` build adds a runtime dependency on `libasound.so.2` (because of `audio`) -- on Debian/Ubuntu install `libasound2` alongside `libpcap0.8`. Drop the `audio` feature if you don't need TUI playback on the deploy host.
+Note: `audio` is in the default feature set, so the `libasound2` runtime dependency applies to plain `cargo build --release` too — not just `--features full`. Drop `audio` (e.g. `--no-default-features --features native,tui` or the headless recipe above) if your deploy host won't have libasound.
 
 ## Documentation
 

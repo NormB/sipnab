@@ -132,8 +132,10 @@ error" from your MCP client after a sipnab log line, that's a
 regression — please file an issue on GitHub.
 
 A consequence: `--mcp` is incompatible with stdout-writing flags such
-as `--json` and `--cli-print`. Combine `--mcp` with `--quiet` if you
-want the surrounding logs suppressed entirely.
+as `--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`,
+`--wireshark`, and `--tshark-filter`. Combine `--mcp` with `--quiet`
+if you want the surrounding text-mode capture output suppressed
+entirely.
 
 ## Build flags
 

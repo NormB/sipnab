@@ -540,22 +540,25 @@
 <span class="giallo-l"><span>sipnab_dialogs_total{state=&quot;completed&quot;} 1180</span></span>
 <span class="giallo-l"><span>sipnab_dialogs_total{state=&quot;failed&quot;} 32</span></span>
 <span class="giallo-l"><span>sipnab_dialogs_total{state=&quot;incall&quot;} 23</span></span>
-<span class="giallo-l"><span># HELP sipnab_rtp_streams_total RTP streams by type</span></span>
-<span class="giallo-l"><span># TYPE sipnab_rtp_streams_total gauge</span></span>
-<span class="giallo-l"><span>sipnab_rtp_streams_total{type=&quot;established&quot;} 43</span></span>
-<span class="giallo-l"><span>sipnab_rtp_streams_total{type=&quot;orphaned&quot;} 3</span></span>
+<span class="giallo-l"><span># HELP sipnab_rtp_streams_total RTP streams by status</span></span>
+<span class="giallo-l"><span># TYPE sipnab_rtp_streams_total counter</span></span>
+<span class="giallo-l"><span>sipnab_rtp_streams_total{status=&quot;established&quot;} 43</span></span>
+<span class="giallo-l"><span>sipnab_rtp_streams_total{status=&quot;orphaned&quot;} 3</span></span>
 <span class="giallo-l"><span>...</span></span></code></pre>
-<p>Available metrics include:</p>
-<ul>
-<li><strong>sipnab_dialogs_total</strong> – Total number of tracked dialogs by state</li>
-<li><strong>sipnab_rtp_streams_total</strong> – Total RTP streams by type (established/orphaned)</li>
-<li><strong>sipnab_rtp_streams_active</strong> – Currently active RTP streams</li>
-<li><strong>sipnab_messages_total</strong> – SIP messages by method</li>
-<li><strong>sipnab_rtp_mos_histogram</strong> – MOS score distribution</li>
-<li><strong>sipnab_rtp_jitter_histogram</strong> – Jitter distribution</li>
-<li><strong>sipnab_rtp_loss_histogram</strong> – Packet loss distribution</li>
-<li><strong>sipnab_pdd_histogram</strong> – Post-dial delay distribution</li>
-</ul>
+<p>Metric names emitted by <code>src/output/prometheus.rs</code>:</p>
+<table><thead><tr><th>Metric</th><th>Type</th><th>Notes</th></tr></thead><tbody>
+<tr><td><code>sipnab_dialogs_total{state}</code></td><td>counter</td><td>Tracked dialogs grouped by <code>DialogState</code> (<code>Trying</code>, <code>Ringing</code>, <code>InCall</code>, <code>Completed</code>, <code>Cancelled</code>, <code>Failed</code>, <code>Registered</code>, <code>Expired</code>, <code>Pending</code>, <code>Active</code>, <code>Terminated</code>, <code>Transferring</code>). The <code>--api</code> server emits state values lowercased; the standalone <code>--metrics</code> server emits them as-cased — pick the right form for your queries.</td></tr>
+<tr><td><code>sipnab_messages_total{method}</code></td><td>counter</td><td>SIP messages by method (<code>INVITE</code>, <code>REGISTER</code>, …).</td></tr>
+<tr><td><code>sipnab_rtp_streams_active</code></td><td>gauge</td><td>RTP streams currently in the <code>Established</code> state.</td></tr>
+<tr><td><code>sipnab_rtp_streams_total{status}</code></td><td>counter</td><td>RTP streams by status (<code>established</code>, <code>orphaned</code>).</td></tr>
+<tr><td><code>sipnab_capture_packets_total</code></td><td>counter</td><td>Total packets captured.</td></tr>
+<tr><td><code>sipnab_reassembly_timeouts_total</code></td><td>counter</td><td>TCP/IP reassembly sessions that timed out.</td></tr>
+<tr><td><code>sipnab_pdd_seconds</code></td><td>histogram</td><td>Post-dial delay distribution (buckets at 0.5/1/2/3/5/10s). Emits <code>sipnab_pdd_seconds_bucket{le}</code>, <code>_count</code>, <code>_sum</code>.</td></tr>
+<tr><td><code>sipnab_mos</code></td><td>histogram</td><td>RTP MOS distribution (buckets at 1/2/2.5/3/3.5/4/4.5).</td></tr>
+<tr><td><code>sipnab_jitter_ms</code></td><td>histogram</td><td>RTP jitter distribution (buckets at 5/10/20/50/100/200ms).</td></tr>
+<tr><td><code>sipnab_loss_percent</code></td><td>histogram</td><td>RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%).</td></tr>
+</tbody></table>
+<p>The following metric <em>names</em> are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: <code>sipnab_responses_total{code}</code>, <code>sipnab_security_alerts_total{type}</code>, <code>sipnab_diagnosis_total{kind}</code>. Track-via PR / dashboard authors: don’t depend on these in alerts yet.</p>
 <h2 id="common-patterns">Common Patterns</h2>
 <h3 id="monitor-failed-calls-in-real-time-python">Monitor failed calls in real-time (Python)</h3>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="python"><span class="giallo-l"><span style="color: #FF8F40;">import</span><span> time</span></span>
