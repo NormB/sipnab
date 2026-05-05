@@ -81,6 +81,9 @@
   <article class="doc-content">
     <h1>REST API &amp; Metrics</h1>
     <p>sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the <code>api</code> feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.</p>
+<blockquote>
+<p><strong>Looking for AI-agent access?</strong> sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> – the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.</p>
+</blockquote>
 <h2 id="getting-started">Getting Started</h2>
 <h3 id="step-1-build-with-api-support">Step 1: Build with API support</h3>
 <p>sipnab’s REST API requires the <code>api</code> feature flag:</p>

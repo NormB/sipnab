@@ -6,6 +6,8 @@ description = "REST API endpoints, Prometheus metrics, and HEP protocol integrat
 
 sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.
 
+> **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](@/docs/mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
+
 ## Getting Started
 
 ### Step 1: Build with API support
