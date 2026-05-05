@@ -12,7 +12,7 @@ Find every call that never established, then triage by response code.
 
 ```bash
 # All failed calls with Call-ID and response code
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json | jq '.call_id, .status'
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json | jq '.call_id, .status_code'
 
 # Detailed report for one call (Markdown, ready for a ticket)
 sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
@@ -194,7 +194,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json > failed_calls.jso
 
 # Count failures by response code
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.status' | sort | uniq -c | sort -rn
+  | jq -r '.status_code' | sort | uniq -c | sort -rn
 ```
 
 ---

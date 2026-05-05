@@ -92,7 +92,7 @@ sipnab -I capture.pcap --tshark-filter "from.user == '1001'"
 ```bash
 # Count failures by response code
 sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
-  | jq -r '.status' | sort | uniq -c | sort -rn
+  | jq -r '.status_code' | sort | uniq -c | sort -rn
 
 # Find all unique User-Agents
 sipnab -N -I capture.pcap --json \

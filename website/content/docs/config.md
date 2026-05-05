@@ -60,14 +60,14 @@ Output and TUI display settings.
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"` |
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
-| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values: `"method"`, `"from"`, `"to"`, `"src_ip"`, `"dst_ip"`, `"state"`, `"msgs"`, `"date"`, `"pdd"`, `"duration"`, `"codec"`, `"mos"` |
+| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive, must match `COLUMN_LABELS` in `src/tui/call_list.rs`): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"` |
 
 ```toml
 [display]
 color = "always"
 payload_limit = 4096
 delta_time = true
-visible_columns = ["method", "from", "to", "state", "msgs", "pdd", "mos"]
+visible_columns = ["method", "from", "to", "source", "destination", "state", "msgs", "pdd"]
 ```
 
 ### \[filter\]

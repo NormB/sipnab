@@ -17,7 +17,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 24 addressable fields, organized by type.
+All 30 addressable fields, organized by type.
 
 ### String Fields
 
@@ -60,6 +60,11 @@ All 24 addressable fields, organized by type.
 | `one_way` | True if one-way audio detected (via diagnosis engine) |
 | `nat_mismatch` | True if NAT mismatch detected (Contact/Via IP discrepancy) |
 | `no_media` | True if no media detected for established call |
+| `codec_asymmetry` | True if A and B legs negotiated different RTP codecs |
+| `ptime_asymmetry` | True if the two legs use different `ptime` (packetization interval) |
+| `payload_asymmetry` | True if dynamic payload type numbers differ across legs (with the same codec) |
+| `duration_asymmetry` | True if one leg's media duration is materially shorter than the other's |
+| `late_media` | True if RTP starts noticeably later than the answering 200 OK |
 
 ## Operators
 
@@ -108,6 +113,11 @@ These preset expressions are available as CLI flags (`--problems`, etc.) and exp
 | `short-calls` | `--short-calls` | `duration < 5.0 AND state == 'Completed'` |
 | `one-way` | `--one-way` | `one_way == true` |
 | `nat-issues` | `--nat-issues` | `nat_mismatch == true` |
+| `codec-asym` | `--filter codec-asym` | `codec_asymmetry == true` |
+| `ptime-asym` | `--filter ptime-asym` | `ptime_asymmetry == true` |
+| `payload-asym` | `--filter payload-asym` | `payload_asymmetry == true` |
+| `duration-asym` | `--filter duration-asym` | `duration_asymmetry == true` |
+| `late-media` | `--filter late-media` | `late_media == true` |
 
 ## Examples
 

@@ -683,23 +683,29 @@ console.log(await resp.text()); // Prometheus text format
 sipnab_dialogs_total{state="completed"} 1180
 sipnab_dialogs_total{state="failed"} 32
 sipnab_dialogs_total{state="incall"} 23
-# HELP sipnab_rtp_streams_total RTP streams by type
-# TYPE sipnab_rtp_streams_total gauge
-sipnab_rtp_streams_total{type="established"} 43
-sipnab_rtp_streams_total{type="orphaned"} 3
+# HELP sipnab_rtp_streams_total RTP streams by status
+# TYPE sipnab_rtp_streams_total counter
+sipnab_rtp_streams_total{status="established"} 43
+sipnab_rtp_streams_total{status="orphaned"} 3
 ...
 ```
 
-Available metrics include:
+Metric names emitted by `src/output/prometheus.rs`:
 
-- **sipnab_dialogs_total** -- Total number of tracked dialogs by state
-- **sipnab_rtp_streams_total** -- Total RTP streams by type (established/orphaned)
-- **sipnab_rtp_streams_active** -- Currently active RTP streams
-- **sipnab_messages_total** -- SIP messages by method
-- **sipnab_rtp_mos_histogram** -- MOS score distribution
-- **sipnab_rtp_jitter_histogram** -- Jitter distribution
-- **sipnab_rtp_loss_histogram** -- Packet loss distribution
-- **sipnab_pdd_histogram** -- Post-dial delay distribution
+| Metric | Type | Notes |
+|---|---|---|
+| `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). The `--api` server emits state values lowercased; the standalone `--metrics` server emits them as-cased — pick the right form for your queries. |
+| `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
+| `sipnab_rtp_streams_active` | gauge | RTP streams currently in the `Established` state. |
+| `sipnab_rtp_streams_total{status}` | counter | RTP streams by status (`established`, `orphaned`). |
+| `sipnab_capture_packets_total` | counter | Total packets captured. |
+| `sipnab_reassembly_timeouts_total` | counter | TCP/IP reassembly sessions that timed out. |
+| `sipnab_pdd_seconds` | histogram | Post-dial delay distribution (buckets at 0.5/1/2/3/5/10s). Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
+| `sipnab_mos` | histogram | RTP MOS distribution (buckets at 1/2/2.5/3/3.5/4/4.5). |
+| `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
+| `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
+
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Common Patterns
 

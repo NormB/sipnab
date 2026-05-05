@@ -73,15 +73,20 @@ SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 
 ## Feature Flags
 
-sipnab uses Cargo feature flags to control optional functionality. The `default` feature includes `tui` only.
+sipnab uses Cargo feature flags to control optional functionality. The default build includes `native`, `tui`, and `audio`.
 
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
-| `tui` | Interactive terminal UI (ratatui + crossterm). **Included by default.** | `ratatui`, `crossterm`, `unicode-width` |
+| `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required by every other feature except `wasm`.** Included by default. | `pcap`, `clap`, `crossbeam-channel`, `libc`, `pcap-file`, `tracing-subscriber`, `tracing-log` |
+| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width` |
+| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Adds a runtime dependency on `libasound.so.2`. | `rodio`, `libc` |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `aes`, `cbc`, `zeroize` |
-| `hep` | HEP v2/v3 support (Homer Encapsulation Protocol) | -- (no extra deps) |
-| `api` | REST API + Prometheus metrics endpoint (runs in isolated child process) | `axum`, `tokio` |
-| `full` | All of the above: `tui` + `tls` + `hep` + `api` | all |
+| `hep` | HEP v2/v3 send + receive (Homer Encapsulation Protocol) | `native` |
+| `api` | REST API + Prometheus metrics endpoint | `native`, `axum`, `tokio` |
+| `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent (Claude Code, Claude Desktop, …) drive sipnab. | `native`, `tokio`, `rmcp` |
+| `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
+| `full` | Everything: `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` | all |
+| `wasm` | WebAssembly target for in-browser pcap analysis | wasm-bindgen toolchain |
 
 Build with specific features:
 
@@ -89,12 +94,16 @@ Build with specific features:
 # TUI + TLS only
 cargo build --release --features tui,tls
 
-# Headless with HEP (no TUI)
-cargo build --release --no-default-features --features hep
+# Headless capture host with HEP listener + REST API + MCP HTTP
+cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 
 # Everything
 cargo build --release --features full
 ```
+
+A `--features full` (or any build with `audio`) dynamically links `libasound.so.2` and refuses to start without it — install `libasound2` alongside `libpcap0.8` on Debian/Ubuntu, or drop the `audio` feature for headless servers.
+
+See the website install guide ([www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
 
 ## Release Profile
 

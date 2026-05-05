@@ -175,8 +175,10 @@ verifies that no log line ever leaks to stdout. If you see “Parse
 error” from your MCP client after a sipnab log line, that’s a
 regression — please file an issue on GitHub.</p>
 <p>A consequence: <code>--mcp</code> is incompatible with stdout-writing flags such
-as <code>--json</code> and <code>--cli-print</code>. Combine <code>--mcp</code> with <code>--quiet</code> if you
-want the surrounding logs suppressed entirely.</p>
+as <code>--json</code>, <code>--json-pretty</code>, <code>--report</code>, <code>--call-report</code>, <code>--hexdump</code>,
+<code>--wireshark</code>, and <code>--tshark-filter</code>. Combine <code>--mcp</code> with <code>--quiet</code>
+if you want the surrounding text-mode capture output suppressed
+entirely.</p>
 <h2 id="build-flags">Build flags</h2>
 <pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span style="color: #D95757;">mcp       </span><span style="color: #5A6673;font-style: italic;"># stdio transport (rmcp dep, ~3 MB binary cost)</span></span>
 <span class="giallo-l"><span style="color: #D95757;">mcp-http  </span><span style="color: #5A6673;font-style: italic;"># HTTP transport (mcp + api; rmcp/transport-streamable-http-server)</span></span>
