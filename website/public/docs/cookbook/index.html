@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cookbook -- sipnab</title>
+  <meta name="description" content="Step-by-step recipes for every major sipnab feature: triage, filtering, HEP, TLS decryption, MCP, observability, security, audio export.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cookbook&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  
+</head>
+<body>
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" >Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" >Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" >Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main>
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <h1>Cookbook</h1>
+    <p>Recipe-style walkthroughs for the things people actually want to do. Each recipe states the problem, gives exact commands, tells you what to look for in the output, and flags common pitfalls.</p>
+<p>If you’re new, start with <strong>Recipe 1</strong>. If you have a specific symptom, jump to the matching one.</p>
+<h2 id="1-triage-a-pcap-fast">1. Triage a pcap fast</h2>
+<p><strong>Problem:</strong> Someone handed you a <code>capture.pcap</code> and asked “is anything wrong?”</p>
+<p><strong>Commands:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1. Interactive: open the call list, scan visually</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 2. Headless overview: dialog count, methods, average PDD</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 3. One-flag diagnostic sweep — surfaces every likely-bad call</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 4. Same in JSON for piping</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems --json</span></span></code></pre>
+<p><strong>What to look for:</strong></p>
+<ul>
+<li><code>--problems</code> matches <code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true</code>. If it’s empty, the capture is probably clean.</li>
+<li>The end-of-capture summary distinguishes RTP packets from RTP streams: <code>852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams</code>. A capture with media but no SIP usually means the SIP signaling happened off-pcap (different VLAN, different host, different port).</li>
+</ul>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>The TUI requires a tty. If you’re SSH’d in without <code>-t</code>, force <code>-N</code> mode.</li>
+<li>For large pcaps (&gt;1 GB), prefer <code>-N</code> first; the TUI loads everything into memory.</li>
+</ul>
+<hr />
+<h2 id="2-live-capture-narrow-to-a-single-user">2. Live capture, narrow to a single user</h2>
+<p><strong>Problem:</strong> A user reports their calls are flaky. Capture only their traffic in real time.</p>
+<p><strong>Commands:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture on eth0, only this user&#39;s calls (matches From or To)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39; OR to.user == &#39;1001&#39;&quot;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Same, with a CLI summary line per dialog (not the TUI)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39; OR to.user == &#39;1001&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre>
+<p><strong>What to look for:</strong></p>
+<ul>
+<li>The TUI’s call list updates as new dialogs appear. Press <code>Tab</code> to switch to the RTP stream view; press <code>Enter</code> on a stream to see jitter/loss/MOS history.</li>
+<li>In CLI mode, each completed dialog is one line of JSON. Pipe to <code>jq</code> or <code>tee</code> to a log.</li>
+</ul>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>Live capture needs <code>CAP_NET_RAW</code> (Linux) or root. <code>setcap cap_net_raw,cap_net_admin=eip $(which sipnab)</code> lets you skip <code>sudo</code> after the first run.</li>
+<li>The filter DSL evaluates against complete dialog records — once the dialog state machine has enough information (typically after the first response, or earlier for fields that only depend on the request). For per-header regex filtering on individual messages, use the older <code>--from</code>, <code>--to</code>, <code>--contact</code>, <code>--ua</code> flags listed in <code>sipnab --help</code>.</li>
+</ul>
+<hr />
+<h2 id="3-find-every-failed-call-grouped-by-response-code">3. Find every failed call, grouped by response code</h2>
+<p><strong>Problem:</strong> “We had a spike in failures around 14:00. What was it?”</p>
+<p><strong>Commands:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Every failed call with Call-ID and final response code</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;{call_id, status_code, from, to}&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Histogram of failure codes (highest first)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.status_code&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detailed report for one failure (Markdown, paste into a ticket)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> failure-report.md</span></span></code></pre>
+<p><strong>What to look for:</strong></p>
+<ul>
+<li>A 401/407 spike usually means a credential-rotation push hit the wrong realm.</li>
+<li>A 408 spike on outbound is upstream timeout — check rtpengine / SBC.</li>
+<li>A 488 spike (Not Acceptable Here) usually means a codec mismatch — combine with Recipe 11.</li>
+</ul>
+<hr />
+<h2 id="4-diagnose-a-one-way-audio-complaint">4. Diagnose a one-way audio complaint</h2>
+<p><strong>Problem:</strong> A user said “I can hear them but they can’t hear me.” There’s a Call-ID in the ticket.</p>
+<p><strong>Commands:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1. Confirm the diagnosis engine flagged it</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;call_id == &#39;abc123@host&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;{call_id, state, diagnosis: .diagnosis}&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 2. Get the call report — surfaces NAT mismatch, SDP offer/answer, media path</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --markdown</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 3. Inspect the actual RTP streams for that call (TUI)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → press &#39;/&#39; to filter, type &#39;abc123&#39;, Enter</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → Tab to switch to RTP streams view</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → Enter on each stream to see packet count, jitter, loss</span></span></code></pre>
+<p><strong>What to look for:</strong></p>
+<ul>
+<li><code>diagnosis.one_way_audio: true</code> confirms the engine saw RTP in only one direction for ≥6s after call establishment.</li>
+<li><code>diagnosis.nat_mismatch: true</code> is the usual root cause — the Contact header / Via address differs from the SDP <code>c=</code> line. Common when the upstream SBC isn’t rewriting Contact.</li>
+<li>In the TUI’s RTP stream view, look for one stream with packets and one with <code>0 packets received</code> — that’s the silenced direction.</li>
+</ul>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>If both streams show packets but the user still reports silence, the issue is downstream of sipnab (codec mismatch, jitter buffer underflow, bad headset). Use Recipe 11 for codec asymmetry checks.</li>
+</ul>
+<hr />
+<h2 id="5-five-filter-dsl-queries-that-pay-rent">5. Five Filter-DSL queries that pay rent</h2>
+<p>The filter DSL has 30 fields and 7 operators. These five cover most operational triage:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># A. Slow setup — anything over 3 seconds INVITE→200 OK</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;pdd &gt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># B. REGISTER failures</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;REGISTER&#39; AND state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># C. Short calls — under 10s, completed (likely UX or cancellation problem)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;duration &lt; 10.0 AND state == &#39;Completed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># D. Heavy retransmits — packet loss on the SIP path</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;retransmits &gt; 5&quot;</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># E. Specific User-Agent (regex)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;ua =~ &#39;(?i)friendly.*scanner|sipvicious&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre>
+<p>For per-call asymmetry checks (different codec on each leg, late media, etc.), see Recipe 11.</p>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>String comparisons are case-sensitive. State names must match exactly (<code>'Completed'</code>, not <code>'completed'</code>). Use <code>=~ '(?i)...'</code> if you want case-insensitive.</li>
+<li>Boolean fields only support <code>==</code> and <code>!=</code> — <code>one_way &gt; true</code> is a parse error.</li>
+</ul>
+<hr />
+<h2 id="6-wire-hep-from-your-sip-stack-to-a-central-sipnab">6. Wire HEP from your SIP stack to a central sipnab</h2>
+<p><strong>Problem:</strong> You want one sipnab box collecting traffic mirrors from multiple SIP servers.</p>
+<h3 id="6a-set-up-the-listener">6a. Set up the listener</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Build sipnab with HEP support</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cargo</span><span style="color: #AAD94C;"> build</span><span style="color: #95E6CB;"> --release --no-default-features \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">    --features</span><span style="color: #AAD94C;"> native,hep,api,mcp,mcp-http</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run as a daemon. UDP :9060 receives HEP, TCP :9100 serves REST + Prometheus</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N --hep-listen</span><span style="color: #AAD94C;"> 0.0.0.0:9060</span><span style="color: #95E6CB;"> --api</span><span style="color: #AAD94C;"> 0.0.0.0:9100</span><span style="color: #95E6CB;"> --no-priv-drop --syslog</span></span></code></pre>
+<p>A ready-to-deploy systemd unit lives at <code>contrib/observability/sipnab-hep.service</code> — see <a rel="external" href="https://www.sipnab.com/docs/install/">Remote-sipnab deployment</a> in the install guide.</p>
+<h3 id="6b-configure-the-sip-server-to-mirror">6b. Configure the SIP server to mirror</h3>
+<p><strong>OpenSIPS:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>loadmodule &quot;proto_hep.so&quot;</span></span>
+<span class="giallo-l"><span>modparam(&quot;proto_hep&quot;, &quot;hep_id&quot;, &quot;[hep_central]udp:capture.example.com:9060;version=3&quot;)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>loadmodule &quot;siptrace.so&quot;</span></span>
+<span class="giallo-l"><span>modparam(&quot;siptrace&quot;, &quot;trace_id&quot;, &quot;[hep_central]uri=hep:hep_central&quot;)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>route {</span></span>
+<span class="giallo-l"><span>    sip_trace(&quot;hep_central&quot;, &quot;d&quot;, &quot;sip&quot;);</span></span>
+<span class="giallo-l"><span>    ...</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p>Reload with <code>opensipsctl restart</code> (or <code>systemctl reload opensips</code> for graceful reload).</p>
+<p><strong>rtpengine:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="ini"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># /etc/rtpengine/rtpengine.conf</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">homer</span><span style="color: #BFBDB6B3;"> =</span><span> capture.example.com:9060</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">homer-protocol</span><span style="color: #BFBDB6B3;"> =</span><span> udp</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">homer-id</span><span style="color: #BFBDB6B3;"> =</span><span> 1</span></span></code></pre>
+<p>Restart with <code>systemctl restart rtpengine</code>.</p>
+<p><strong>Kamailio:</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>loadmodule &quot;siptrace.so&quot;</span></span>
+<span class="giallo-l"><span>modparam(&quot;siptrace&quot;, &quot;duplicate_uri&quot;, &quot;sip:capture.example.com:9060&quot;)</span></span>
+<span class="giallo-l"><span>modparam(&quot;siptrace&quot;, &quot;hep_mode_on&quot;, 1)</span></span>
+<span class="giallo-l"><span>modparam(&quot;siptrace&quot;, &quot;hep_version&quot;, 3)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span>route {</span></span>
+<span class="giallo-l"><span>    sip_trace();</span></span>
+<span class="giallo-l"><span>    ...</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p><strong>FreeSWITCH (mod_sofia):</strong></p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="xml"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;">&lt;!-- conf/sip_profiles/external.xml --&gt;</span></span>
+<span class="giallo-l"><span style="color: #39BAE680;">&lt;</span><span style="color: #39BAE6;">param</span><span style="color: #FFB454;"> name</span><span>=</span><span style="color: #AAD94C;">&quot;capture-server&quot;</span><span style="color: #FFB454;"> value</span><span>=</span><span style="color: #AAD94C;">&quot;udp:capture.example.com:9060;hep=3&quot;</span><span style="color: #39BAE680;">/&gt;</span></span>
+<span class="giallo-l"><span style="color: #39BAE680;">&lt;</span><span style="color: #39BAE6;">param</span><span style="color: #FFB454;"> name</span><span>=</span><span style="color: #AAD94C;">&quot;sip-capture&quot;</span><span style="color: #FFB454;"> value</span><span>=</span><span style="color: #AAD94C;">&quot;yes&quot;</span><span style="color: #39BAE680;">/&gt;</span></span></code></pre><h3 id="6c-verify-packets-are-arriving">6c. Verify packets are arriving</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># On the sipnab host, tcpdump the HEP socket</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> tcpdump</span><span style="color: #95E6CB;"> -i</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -n</span><span style="color: #AAD94C;"> udp port</span><span style="color: #D2A6FF;"> 9060</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Confirm dialogs are being created from the HEP feed</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -s</span><span style="color: #AAD94C;"> http://localhost:9100/v1/stats</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Watch dialogs accumulate live</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">watch</span><span style="color: #95E6CB;"> -n</span><span style="color: #D2A6FF;"> 1</span><span style="color: #AAD94C;"> &#39;curl -s http://localhost:9100/v1/dialogs?limit=5 | jq &quot;.dialogs[] | {call_id, state}&quot;&#39;</span></span></code></pre>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>HEP is UDP — silently drops if the listener can’t keep up. The <code>--hep-rate-limit 50000</code> default lets you tune.</li>
+<li>The default HEP listener accepts from any source. Add <code>--hep-allow 10.0.0.0/24</code> (repeatable) to lock it down to your SIP-server subnet.</li>
+<li>If your central host is reachable by hostname only, set <code>--mcp-allowed-host</code> for the MCP transport too (see Recipe 8).</li>
+</ul>
+<hr />
+<h2 id="7-decrypt-sip-tls-via-sslkeylogfile">7. Decrypt SIP/TLS via SSLKEYLOGFILE</h2>
+<p><strong>Problem:</strong> TLS-encrypted SIP captures are unreadable without keys.</p>
+<h3 id="7a-live-decryption-ua-produces-keys-sipnab-follows">7a. Live decryption (UA produces keys, sipnab follows)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1. On the SIP user agent, set SSLKEYLOGFILE in its environment</span></span>
+<span class="giallo-l"><span>SSLKEYLOGFILE</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">/tmp/sipua.keylog</span><span style="color: #59C2FF;"> /opt/myua/bin/start</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 2. Start sipnab watching the keylog file (live updates)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --features</span><span style="color: #AAD94C;"> tls</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">            --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> --keylog-watch</span></span></code></pre><h3 id="7b-offline-decryption-capture-once-decrypt-later">7b. Offline decryption (capture once, decrypt later)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture the encrypted pcap normally</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -O</span><span style="color: #AAD94C;"> encrypted.pcap</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Later, decrypt using the keylog the UA wrote during the call</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> encrypted.pcap</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span></span></code></pre><h3 id="7c-export-decrypted-pcap-for-wireshark">7c. Export decrypted pcap for Wireshark</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Default mode: write decrypted plaintext payloads to the output pcap</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> encrypted.pcap</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       -O</span><span style="color: #AAD94C;"> decrypted.pcap</span><span style="color: #95E6CB;"> --pcap-export-mode</span><span style="color: #AAD94C;"> decrypted</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Wired mode: keep encrypted bytes + add a Decryption Secrets Block so</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Wireshark itself can decrypt</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> encrypted.pcap</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sipua.keylog</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       -O</span><span style="color: #AAD94C;"> wireshark-friendly.pcap</span><span style="color: #95E6CB;"> --pcap-export-mode</span><span style="color: #AAD94C;"> wired</span></span></code></pre><h3 id="7d-srtp-via-dtls-srtp-keylog">7d. SRTP via DTLS-SRTP keylog</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --features</span><span style="color: #AAD94C;"> tls</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --dtls-keylog</span><span style="color: #AAD94C;"> /tmp/dtls.keylog</span></span></code></pre>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li><code>tls</code> feature must be compiled in. Check with <code>sipnab --version</code> — should show <code>tls</code> in the feature list.</li>
+<li>The keylog format is the standard NSS <code>SSLKEYLOGFILE</code> (one line per session). Same format Firefox/Chrome/curl produce.</li>
+<li>TLS 1.3 + ECDH ephemeral handshakes are fully supported via the <code>ring</code> backend.</li>
+</ul>
+<hr />
+<h2 id="8-run-sipnab-as-an-mcp-server">8. Run sipnab as an MCP server</h2>
+<p><strong>Problem:</strong> You want an AI agent (Claude Code, Claude Desktop, anything MCP-capable) to query a capture without you typing CLI flags.</p>
+<h3 id="8a-stdio-local-agent">8a. Stdio (local agent)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># One-shot, agent reads a pcap</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --quiet</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live capture</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --mcp -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --quiet</span></span></code></pre>
+<p><strong>Claude Desktop config</strong> (<code>~/Library/Application Support/Claude/claude_desktop_config.json</code> on macOS):</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">  &quot;mcpServers&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">    &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">      &quot;command&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
+<span class="giallo-l"><span style="color: #39BAE6;">      &quot;args&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;/path/to/capture.pcap&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span></span>
+<span class="giallo-l"><span>    }</span></span>
+<span class="giallo-l"><span>  }</span></span>
+<span class="giallo-l"><span>}</span></span></code></pre>
+<p><strong>Claude Code</strong> (in your project directory):</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add sipnab</span><span style="color: #95E6CB;"> --</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> &quot;</span><span>$PWD</span><span style="color: #AAD94C;">/capture.pcap&quot;</span><span style="color: #95E6CB;"> --quiet</span></span></code></pre><h3 id="8b-http-remote-agent-single-user">8b. HTTP (remote agent, single user)</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate a token</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">mkdir</span><span style="color: #95E6CB;"> -p</span><span style="color: #AAD94C;"> /etc/sipnab</span><span style="color: #BFBDB6B3;"> &amp;&amp;</span><span style="color: #59C2FF;"> chmod</span><span style="color: #D2A6FF;"> 0755</span><span style="color: #AAD94C;"> /etc/sipnab</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">openssl</span><span style="color: #AAD94C;"> rand</span><span style="color: #95E6CB;"> -hex</span><span style="color: #D2A6FF;"> 32</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">chmod</span><span style="color: #D2A6FF;"> 0600</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run sipnab listening on a private network interface</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp --mcp-transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-bind</span><span style="color: #AAD94C;"> 0.0.0.0:8731</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-token-file</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-allowed-host</span><span style="color: #AAD94C;"> capture.example.com</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">       --hep-listen</span><span style="color: #AAD94C;"> 0.0.0.0:9060</span><span style="color: #95E6CB;"> --quiet</span></span></code></pre>
+<p>The agent connects to <code>http://capture.example.com:8731/mcp</code> with <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+<h3 id="8c-test-the-json-rpc-handshake-from-a-shell">8c. Test the JSON-RPC handshake from a shell</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>TOKEN</span><span style="color: #F29668;">=</span><span>$(</span><span style="color: #59C2FF;">cat</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span><span>)</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Initialize (pretend to be an MCP client)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> http://capture.example.com:8731/mcp</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">          &quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">                    &quot;capabilities&quot;:{},</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">                    &quot;clientInfo&quot;:{&quot;name&quot;:&quot;curl&quot;,&quot;version&quot;:&quot;0&quot;}}}&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># List the 11 read-only tools</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> http://capture.example.com:8731/mcp</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools/list&quot;}&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Call find_problems and get JSON of problematic dialogs</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> http://capture.example.com:8731/mcp</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">     -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:3,&quot;method&quot;:&quot;tools/call&quot;,</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">          &quot;params&quot;:{&quot;name&quot;:&quot;find_problems&quot;,</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">                    &quot;arguments&quot;:{&quot;kinds&quot;:[&quot;one-way&quot;,&quot;nat-issues&quot;]}}}&#39;</span></span></code></pre>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>Stdout is the JSON-RPC wire in stdio mode. Use <code>--quiet</code> and don’t combine with <code>--json</code>/<code>--report</code>/etc. — sipnab refuses to start.</li>
+<li>Non-loopback bind without a token: refused at startup. Loopback bind needs no token.</li>
+<li><code>--mcp-allowed-host</code> is required when the client connects via the actual hostname (rmcp’s default Host allowlist is just <code>localhost</code>/<code>127.0.0.1</code>/<code>::1</code>).</li>
+</ul>
+<hr />
+<h2 id="9-prometheus-grafana-end-to-end">9. Prometheus + Grafana end-to-end</h2>
+<p><strong>Problem:</strong> You want a dashboard tracking call rate, response codes, and PDD over time.</p>
+<h3 id="9a-use-the-bundled-stack">9a. Use the bundled stack</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">git</span><span style="color: #AAD94C;"> clone https://github.com/NormB/sipnab.git</span></span>
+<span class="giallo-l"><span style="color: #F07178;">cd</span><span style="color: #AAD94C;"> sipnab/contrib/observability</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">cp</span><span style="color: #AAD94C;"> .env.example .env</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># If sipnab runs on a different host, point at it:</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># echo &#39;SIPNAB_HOST=192.0.2.10&#39; &gt;&gt; .env       # or capture.example.com</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #59C2FF;">docker</span><span style="color: #AAD94C;"> compose up</span><span style="color: #95E6CB;"> -d</span></span></code></pre>
+<p>This boots Prometheus (<code>:9090</code>), Grafana (<code>:3000</code>, admin/admin), an OTel Collector (<code>:4317</code>/<code>:4318</code>), and Tempo. The included Grafana dashboard provisions automatically — log in and look for the <code>sipnab</code> folder.</p>
+<h3 id="9b-run-sipnab-so-prometheus-can-scrape-it">9b. Run sipnab so Prometheus can scrape it</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Standalone metrics endpoint</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --metrics</span><span style="color: #AAD94C;"> 0.0.0.0:9100</span><span style="color: #95E6CB;"> --json</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Or as part of the REST API (single port for both)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --api</span><span style="color: #AAD94C;"> 0.0.0.0:9100</span></span></code></pre><h3 id="9c-verify-the-scrape">9c. Verify the scrape</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># From the Prometheus host</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -s</span><span style="color: #AAD94C;"> http://localhost:9090/api/v1/query?query=up{job=</span><span style="color: #95E6CB;">\&quot;</span><span style="color: #AAD94C;">sipnab</span><span style="color: #95E6CB;">\&quot;</span><span style="color: #AAD94C;">}</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Spot-check a metric value</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -s</span><span style="color: #AAD94C;"> &#39;http://localhost:9090/api/v1/query?query=rate(sipnab_messages_total[1m])&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span></span></code></pre><h3 id="9d-useful-promql-queries">9d. Useful PromQL queries</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span># Call rate (per method)</span></span>
+<span class="giallo-l"><span>rate(sipnab_messages_total[5m])</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Active dialogs (in-progress)</span></span>
+<span class="giallo-l"><span>sum(sipnab_dialogs_total{state=~&quot;trying|ringing|incall&quot;})</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># Setup time p95</span></span>
+<span class="giallo-l"><span>histogram_quantile(0.95, rate(sipnab_pdd_seconds_bucket[5m]))</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span># RTP MOS p10 (worst 10%)</span></span>
+<span class="giallo-l"><span>histogram_quantile(0.1, rate(sipnab_mos_bucket[5m]))</span></span></code></pre>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>The dashboard ships with the metric names sipnab actually emits. If you wrote a custom panel using older docs, double-check against <a href="https://www.sipnab.com/docs/api/">the metrics list in the API page</a>.</li>
+<li>Some metrics (<code>sipnab_responses_total</code>, <code>sipnab_security_alerts_total</code>) are declared but not yet wired — they’ll stay empty until upstream populates them. Don’t put alerts on them today.</li>
+</ul>
+<hr />
+<h2 id="10-detect-sip-scanners-and-auto-block-via-fail2ban">10. Detect SIP scanners and auto-block via fail2ban</h2>
+<p><strong>Problem:</strong> Your honeypot or edge box is getting probed by <code>friendly-scanner</code>, <code>sipvicious</code>, etc.</p>
+<h3 id="10a-detect-log">10a. Detect + log</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">            --kill-scanner \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">            --alert</span><span style="color: #AAD94C;"> syslog</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">            --json</span></span></code></pre>
+<p><code>--kill-scanner</code> actively responds 403 to known scanner User-Agents (uses the isolated kill-child process). <code>--alert syslog</code> writes alerts to <code>LOCAL0</code> so you can pick them up from <code>/var/log/syslog</code>.</p>
+<h3 id="10b-wire-to-fail2ban">10b. Wire to fail2ban</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Run sipnab with fail2ban-format output</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fail2ban</span><span style="color: #AAD94C;"> /var/log/sipnab/fail2ban.log</span></span></code></pre>
+<p><code>/etc/fail2ban/filter.d/sipnab.conf</code>:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="ini"><span class="giallo-l"><span style="color: #59C2FF;">[Definition]</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">failregex</span><span style="color: #BFBDB6B3;"> =</span><span> ^.*sipnab.*scanner.*from &lt;HOST&gt;.*$</span></span>
+<span class="giallo-l"><span>            ^.*sipnab.*reg-flood.*from &lt;HOST&gt;.*$</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">ignoreregex</span><span style="color: #BFBDB6B3;"> =</span></span></code></pre>
+<p><code>/etc/fail2ban/jail.d/sipnab.local</code>:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="ini"><span class="giallo-l"><span style="color: #59C2FF;">[sipnab]</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">enabled</span><span style="color: #BFBDB6B3;"> =</span><span> true</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">filter</span><span style="color: #BFBDB6B3;"> =</span><span> sipnab</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">logpath</span><span style="color: #BFBDB6B3;"> =</span><span> /var/log/sipnab/fail2ban.log</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">findtime</span><span style="color: #BFBDB6B3;"> =</span><span> 600</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">maxretry</span><span style="color: #BFBDB6B3;"> =</span><span> 1</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">bantime</span><span style="color: #BFBDB6B3;"> =</span><span> 86400</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">action</span><span style="color: #BFBDB6B3;"> =</span><span> iptables-allports</span></span></code></pre><h3 id="10c-custom-alert-handler">10c. Custom alert handler</h3>
+<p>For exec hooks instead of syslog/fail2ban:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner \</span></span>
+<span class="giallo-l"><span style="color: #95E6CB;">            --alert-exec</span><span style="color: #AAD94C;"> &#39;/usr/local/bin/notify-slack.sh &quot;%type%&quot; &quot;%source_ip%&quot; &quot;%detail%&quot;&#39;</span></span></code></pre>
+<p>The hook is rate-limited (<code>--exec-rate-limit 10</code> default) and runs in a sandboxed process.</p>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>The kill-child process needs <code>CAP_NET_RAW</code> to forge SIP responses. Run sipnab as root or with capabilities — privilege drop happens after the kill-child is spawned.</li>
+<li><code>--kill-ua "&lt;regex&gt;"</code> adds a custom User-Agent pattern beyond the built-in scanner list.</li>
+</ul>
+<hr />
+<h2 id="11-per-call-asymmetry-diagnosis">11. Per-call asymmetry diagnosis</h2>
+<p><strong>Problem:</strong> A call sounds bad in one direction. The codec/ptime might differ between legs.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># All the asymmetry signals at once (Phase 8.7)</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;select(</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.codec_asymmetry == true or</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.ptime_asymmetry == true or</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.payload_asymmetry == true or</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.duration_asymmetry == true or</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">    .diagnosis.late_media == true</span></span>
+<span class="giallo-l"><span style="color: #AAD94C;">) | {call_id, diagnosis}&#39;</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Targeted aliases via the filter DSL</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> codec-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # different codecs A vs B</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> ptime-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # different packetization</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> payload-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;"> # different dynamic PT, same codec</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> duration-asym</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;"> # one leg materially shorter</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> late-media</span><span style="color: #95E6CB;"> --json</span><span style="color: #5A6673;font-style: italic;">   # RTP starts well after 200 OK</span></span></code></pre>
+<p><strong>What to look for:</strong></p>
+<ul>
+<li><code>codec_asymmetry: true</code> on a call from PSTN to internal: usually a transcoding policy that fired in one direction only.</li>
+<li><code>ptime_asymmetry: true</code> between two SIP UAs: one is using <code>ptime=20</code>, the other <code>ptime=30</code>. Some downstream jitter buffers can’t handle the mismatch.</li>
+<li><code>payload_asymmetry: true</code>: same codec, but each side picked a different dynamic payload type number. Causes audio cut-out on RFC-strict implementations.</li>
+<li><code>late_media: true</code>: media starts noticeably after the answering 200 OK. Usually means an SBC is doing late-attach NAT — first real RTP arrives only after media-binding.</li>
+</ul>
+<hr />
+<h2 id="12-generate-a-call-report-text-markdown-json">12. Generate a call report (text / Markdown / JSON)</h2>
+<p><strong>Problem:</strong> A support ticket needs full call details attached.</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Markdown — paste into a ticket or markdown editor</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> ticket.md</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Plain text</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --text</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> ticket.txt</span></span>
+<span class="giallo-l"></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># JSON — feed to your ticketing system or LLM</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &#39;abc123@host&#39;</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> ticket.json</span></span></code></pre>
+<p>The report covers: SIP message timeline, SDP offers/answers, RTP stream stats per direction, computed timing (PDD, setup time, retransmits), and the diagnosis engine’s findings.</p>
+<p><strong>Tip:</strong> combine with Recipe 4’s filter to bulk-generate reports for every failed call:</p>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">mkdir</span><span style="color: #95E6CB;"> -p</span><span style="color: #AAD94C;"> /tmp/reports</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.call_id&#39;</span><span style="color: #95E6CB;"> \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #FF8F40;"> while</span><span style="color: #F07178;"> read</span><span style="color: #AAD94C;"> cid</span><span style="color: #BFBDB6B3;">;</span><span style="color: #FF8F40;"> do</span></span>
+<span class="giallo-l"><span style="color: #59C2FF;">      sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;</span><span>$cid</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> --markdown \</span></span>
+<span class="giallo-l"><span style="color: #F29668;">        &gt;</span><span style="color: #AAD94C;"> &quot;/tmp/reports/$</span><span>{cid</span><span style="color: #F29668;">//</span><span style="color: #95E6CB;">\/</span><span style="color: #F29668;">/</span><span>_}</span><span style="color: #AAD94C;">.md&quot;</span></span>
+<span class="giallo-l"><span style="color: #FF8F40;">    done</span></span></code></pre>
+<hr />
+<h2 id="13-export-rtp-audio-as-wav">13. Export RTP audio as WAV</h2>
+<p><strong>Problem:</strong> A call sounds bad. You want the actual audio to listen to or share.</p>
+<h3 id="from-the-tui">From the TUI</h3>
+<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → select the call in the call list (Up/Down)</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → press &#39;r&#39; or Tab to switch to the RTP stream view</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → highlight a stream</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → F2 to open the Save dialog</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → cycle the format (Left/Right) until you reach &quot;WAV — Decoded G.711 audio per RTP stream&quot;</span></span>
+<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">#   → Enter to save</span></span></code></pre>
+<p>A timestamped <code>.wav</code> lands at the path you choose. The Save dialog also exposes PCAP, PCAP-NG, TXT, JSON, NDJSON, CSV, HTML, Markdown, RTP JSON, and SIPp XML formats — WAV is the format you want for audio.</p>
+<h3 id="live-audio-playback-tui">Live audio playback (TUI)</h3>
+<p>If you’ve built with the <code>audio</code> feature (in default), <code>P</code> in the RTP stream view plays the highlighted stream through your local audio device.</p>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>Supported codecs for WAV decode and playback: G.711 µ-law (PT 0), G.711 A-law (PT 8), Opus (dynamic PT). Other codecs (G.729, AMR, etc.) aren’t decoded today.</li>
+<li>A failed audio device (headless servers, Tegra without ALSA) no longer crashes the TUI — it disables playback gracefully and surfaces a message suggesting F2 → WAV as an offline alternative.</li>
+<li>A CLI batch <code>--export-audio /dir</code> flag does <strong>not</strong> exist today. The library functions (<code>rtp::audio_export::export_stream_to_wav</code>, <code>export_dialog_to_wav</code>) are available if you want to build it; until then, scripted batch export means driving the TUI under <code>expect</code>/<code>tmux</code> or writing a small Rust binary that links the library.</li>
+</ul>
+<hr />
+<h2 id="14-browser-pcap-analysis-no-install">14. Browser pcap analysis (no install)</h2>
+<p><strong>Problem:</strong> You don’t want to install anything. The pcap is on your laptop. You want to look at it.</p>
+<p>Open <a rel="external" href="https://www.sipnab.com/analyze/">https://www.sipnab.com/analyze/</a> in any modern browser. Drag-and-drop a pcap or <code>.pcapng</code> file. Everything runs locally via WebAssembly — the pcap never leaves your machine.</p>
+<p>The analyze page supports <code>.pcap</code>, <code>.pcapng</code>, <code>.cap</code> (NetMon), and gives you the same call list, ladder diagram, RTP stream view, search, and filter DSL as the native TUI. Keyboard shortcuts match the TUI (<code>?</code> opens the help popup).</p>
+<p><strong>Pitfalls:</strong></p>
+<ul>
+<li>WASM has no network access — live capture is native-only.</li>
+<li>Very large pcaps (&gt;200 MB) may strain browser memory. Use the native <code>sipnab -N</code> for those.</li>
+</ul>
+
+
+    <!-- Prev/Next nav -->
+    
+    <nav class="doc-prevnext">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;mcp&#x2F;" class="doc-prev">&larr; MCP Server</a>
+      
+      
+      <span></span>
+      
+    </nav>
+    
+  </article>
+
+  <!-- Mini TOC -->
+  
+  <aside class="doc-toc">
+    <div class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
+      <ul>
+        
+        <li><a href="#1-triage-a-pcap-fast">1. Triage a pcap fast</a>
+          
+        </li>
+        
+        <li><a href="#2-live-capture-narrow-to-a-single-user">2. Live capture, narrow to a single user</a>
+          
+        </li>
+        
+        <li><a href="#3-find-every-failed-call-grouped-by-response-code">3. Find every failed call, grouped by response code</a>
+          
+        </li>
+        
+        <li><a href="#4-diagnose-a-one-way-audio-complaint">4. Diagnose a one-way audio complaint</a>
+          
+        </li>
+        
+        <li><a href="#5-five-filter-dsl-queries-that-pay-rent">5. Five Filter-DSL queries that pay rent</a>
+          
+        </li>
+        
+        <li><a href="#6-wire-hep-from-your-sip-stack-to-a-central-sipnab">6. Wire HEP from your SIP stack to a central sipnab</a>
+          
+          <ul>
+            
+            <li><a href="#6a-set-up-the-listener">6a. Set up the listener</a></li>
+            
+            <li><a href="#6b-configure-the-sip-server-to-mirror">6b. Configure the SIP server to mirror</a></li>
+            
+            <li><a href="#6c-verify-packets-are-arriving">6c. Verify packets are arriving</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#7-decrypt-sip-tls-via-sslkeylogfile">7. Decrypt SIP&#x2F;TLS via SSLKEYLOGFILE</a>
+          
+          <ul>
+            
+            <li><a href="#7a-live-decryption-ua-produces-keys-sipnab-follows">7a. Live decryption (UA produces keys, sipnab follows)</a></li>
+            
+            <li><a href="#7b-offline-decryption-capture-once-decrypt-later">7b. Offline decryption (capture once, decrypt later)</a></li>
+            
+            <li><a href="#7c-export-decrypted-pcap-for-wireshark">7c. Export decrypted pcap for Wireshark</a></li>
+            
+            <li><a href="#7d-srtp-via-dtls-srtp-keylog">7d. SRTP via DTLS-SRTP keylog</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#8-run-sipnab-as-an-mcp-server">8. Run sipnab as an MCP server</a>
+          
+          <ul>
+            
+            <li><a href="#8a-stdio-local-agent">8a. Stdio (local agent)</a></li>
+            
+            <li><a href="#8b-http-remote-agent-single-user">8b. HTTP (remote agent, single user)</a></li>
+            
+            <li><a href="#8c-test-the-json-rpc-handshake-from-a-shell">8c. Test the JSON-RPC handshake from a shell</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#9-prometheus-grafana-end-to-end">9. Prometheus + Grafana end-to-end</a>
+          
+          <ul>
+            
+            <li><a href="#9a-use-the-bundled-stack">9a. Use the bundled stack</a></li>
+            
+            <li><a href="#9b-run-sipnab-so-prometheus-can-scrape-it">9b. Run sipnab so Prometheus can scrape it</a></li>
+            
+            <li><a href="#9c-verify-the-scrape">9c. Verify the scrape</a></li>
+            
+            <li><a href="#9d-useful-promql-queries">9d. Useful PromQL queries</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#10-detect-sip-scanners-and-auto-block-via-fail2ban">10. Detect SIP scanners and auto-block via fail2ban</a>
+          
+          <ul>
+            
+            <li><a href="#10a-detect-log">10a. Detect + log</a></li>
+            
+            <li><a href="#10b-wire-to-fail2ban">10b. Wire to fail2ban</a></li>
+            
+            <li><a href="#10c-custom-alert-handler">10c. Custom alert handler</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#11-per-call-asymmetry-diagnosis">11. Per-call asymmetry diagnosis</a>
+          
+        </li>
+        
+        <li><a href="#12-generate-a-call-report-text-markdown-json">12. Generate a call report (text &#x2F; Markdown &#x2F; JSON)</a>
+          
+        </li>
+        
+        <li><a href="#13-export-rtp-audio-as-wav">13. Export RTP audio as WAV</a>
+          
+          <ul>
+            
+            <li><a href="#from-the-tui">From the TUI</a></li>
+            
+            <li><a href="#live-audio-playback-tui">Live audio playback (TUI)</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#14-browser-pcap-analysis-no-install">14. Browser pcap analysis (no install)</a>
+          
+        </li>
+        
+      </ul>
+    </div>
+  </aside>
+  
+</div>
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.3.1</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">License (MIT/Apache-2.0)</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
+  });
+
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
+
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+    }
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
+
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
+
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
+
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();
+  </script>
+</body>
+</html>
