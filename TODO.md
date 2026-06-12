@@ -154,9 +154,11 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   copies for 64 KB reassembled/HEP payloads, no cross-thread alloc/free
   pair per packet, and it enables SipMessage.raw buffer sharing (P2).
   Design + measurements: docs/internals/zero-copy-payloads.md.
-- [ ] **M1. Split src/tui/mod.rs (5,342 lines)** — into state machine /
-  widgets / event handler / renderer modules. Behavior-preserving;
-  tui_state_test.rs (224 tests) + snapshot tests are the safety net.
+- [x] **M1. Split src/tui/mod.rs (5,342 lines)** — done: theme.rs
+  (theme/keymap), render.rs (view + popup rendering, 1.6k), events.rs
+  (key handling + file dialogs, 1.6k), save.rs (all exporters, 0.7k);
+  mod.rs keeps state + App + entry point + tests at 1.3k lines.
+  Behavior-preserving; 224 state tests + 43 snapshots unchanged.
 
 ## Noted, not scheduled (needs a decision)
 
