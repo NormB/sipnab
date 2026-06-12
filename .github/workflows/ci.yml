@@ -55,6 +55,60 @@ jobs:
         run: cargo test --features tui --test tui_e2e_test -- --ignored
         continue-on-error: true  # PTY tests can be flaky in CI
 
+  # Reduced feature combinations must keep compiling (lib AND test code).
+  # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
+  # reduced combos failed to build. `cargo check --tests` is enough to
+  # catch that class; the full test suite still runs under `check`.
+  features:
+    name: Features (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features:
+          - native
+          - tls
+          - api
+          - mcp
+          - hep
+          - "tls,api"
+          - "native,tui,audio"
+          - "native,tui,tls,hep,api"
+          - wasm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-features-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-features-${{ matrix.features }}-
+            ${{ runner.os }}-cargo-
+
+      # wasm is lib-only: its test/bin targets are meaningless on the host.
+      - name: Check (lib only, wasm)
+        if: matrix.features == 'wasm'
+        run: cargo check --no-default-features --features wasm --lib
+
+      - name: Check (with tests)
+        if: matrix.features != 'wasm'
+        run: cargo check --no-default-features --features "${{ matrix.features }}" --tests
+
+      # The headless recipe is the documented server build; run its full
+      # test suite, not just a compile check.
+      - name: Test (headless recipe)
+        if: matrix.features == 'native,tui,tls,hep,api'
+        run: cargo test --no-default-features --features "${{ matrix.features }}"
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest
