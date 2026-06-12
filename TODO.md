@@ -35,7 +35,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **S1. HEP receiver idle timeout** — UDP recv loop blocks forever if the
   upstream sender dies; capture stalls silently. Add idle timeout
   (default 30 s) → rate-limited warning + stat counter.
-- [ ] **S3. Worker-thread death is invisible** — scanner-kill worker
+- [x] **S3. Worker-thread death is invisible** — scanner-kill worker
   (src/process_isolation.rs:82-90) can panic and the main loop never knows;
   defense silently disabled. Add health check (dead-worker detection on the
   handle) + loud error; audit other spawned workers for the same pattern.
