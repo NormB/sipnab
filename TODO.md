@@ -166,5 +166,8 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   times/audit surface become a problem; not worth churn now.
 - **Prometheus label-cardinality guard** — theoretical until metrics gain
   user-controlled labels; add a cap if/when that happens.
-- **Privilege-drop regression guard** — current startup `bail!` is correct;
-  add a CI assertion that capture never runs as root (folds into M4/CI work).
+- ~~**Privilege-drop regression guard**~~ — DONE:
+  tests/privilege_drop_test.rs runs the real binary as root (passwordless
+  sudo; skips with a note where unavailable) and asserts a failed drop
+  aborts with exit 1 instead of continuing capture as root, and that a
+  successful drop to `nobody` still processes the capture.
