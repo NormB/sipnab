@@ -14,6 +14,24 @@ fn main() {
     println!("cargo:rustc-env=SIPNAB_GIT_COMMIT={commit}");
     println!("cargo:rustc-env=SIPNAB_GIT_TAG={tag}");
     println!("cargo:rustc-env=SIPNAB_GIT_DIRTY={dirty}");
+
+    // The `audio` feature is in the default set and dynamically links
+    // libasound on Linux: a binary built on a dev box with ALSA present
+    // fails at startup on a headless server without it. Warn at build
+    // time so the runtime dependency is impossible to miss.
+    if std::env::var_os("CARGO_FEATURE_AUDIO").is_some()
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux")
+    {
+        println!(
+            "cargo:warning=sipnab: built with the `audio` feature (in the default set) — \
+             the binary needs libasound.so.2 at runtime (Debian/Ubuntu: libasound2, \
+             Fedora/RHEL: alsa-lib)"
+        );
+        println!(
+            "cargo:warning=sipnab: for headless hosts, drop it: \
+             cargo build --release --no-default-features --features native,tui,tls,hep,api"
+        );
+    }
 }
 
 fn git(args: &[&str]) -> Option<String> {
