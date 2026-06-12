@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;filter-dsl&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -85,12 +92,13 @@
 </blockquote>
 <p>sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the <code>--filter</code> CLI flag or the <code>expression</code> key in the <code>[filter]</code> config section.</p>
 <h2 id="grammar">Grammar</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>expr        = or_expr</span></span>
-<span class="giallo-l"><span>or_expr     = and_expr (&quot;OR&quot; and_expr)*</span></span>
-<span class="giallo-l"><span>and_expr    = not_expr (&quot;AND&quot; not_expr)*</span></span>
-<span class="giallo-l"><span>not_expr    = &quot;NOT&quot; atom | atom</span></span>
-<span class="giallo-l"><span>atom        = comparison | &quot;(&quot; expr &quot;)&quot;</span></span>
-<span class="giallo-l"><span>comparison  = field operator value</span></span></code></pre>
+<pre><code>expr        = or_expr
+or_expr     = and_expr (&quot;OR&quot; and_expr)*
+and_expr    = not_expr (&quot;AND&quot; not_expr)*
+not_expr    = &quot;NOT&quot; atom | atom
+atom        = comparison | &quot;(&quot; expr &quot;)&quot;
+comparison  = field operator value
+</code></pre>
 <p>Operator precedence (highest to lowest): <code>NOT</code>, <code>AND</code>, <code>OR</code>. Use parentheses to override.</p>
 <h2 id="fields">Fields</h2>
 <p>All 30 addressable fields, organized by type.</p>
@@ -172,82 +180,111 @@
 <p>Parentheses <code>( )</code> group sub-expressions to override default precedence.</p>
 <h2 id="named-aliases">Named Aliases</h2>
 <p>These preset expressions are available as CLI flags (<code>--problems</code>, etc.) and expand to DSL expressions internally.</p>
-<table><thead><tr><th>Alias</th><th>CLI Flag</th><th>Expansion</th></tr></thead><tbody>
-<tr><td><code>problems</code></td><td><code>--problems</code></td><td><code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true</code></td></tr>
+<p>Aliases are accepted by <code>--filter</code> directly (<code>--filter codec-asym</code>), as
+dedicated CLI flags where they exist (<code>--problems</code>, etc.), and as <code>kinds</code>
+entries in the MCP <code>find_problems</code> tool.</p>
+<table><thead><tr><th>Alias</th><th>Dedicated CLI Flag</th><th>Expansion</th></tr></thead><tbody>
+<tr><td><code>problems</code></td><td><code>--problems</code></td><td><code>state == 'Failed' OR one_way == true OR rtp.loss &gt; 2.0 OR rtp.jitter &gt; 50.0 OR nat_mismatch == true OR retransmits &gt; 3 OR pdd &gt; 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true</code></td></tr>
 <tr><td><code>slow-setup</code></td><td><code>--slow-setup</code></td><td><code>pdd &gt; 3.0</code></td></tr>
 <tr><td><code>short-calls</code></td><td><code>--short-calls</code></td><td><code>duration &lt; 5.0 AND state == 'Completed'</code></td></tr>
 <tr><td><code>one-way</code></td><td><code>--one-way</code></td><td><code>one_way == true</code></td></tr>
 <tr><td><code>nat-issues</code></td><td><code>--nat-issues</code></td><td><code>nat_mismatch == true</code></td></tr>
-<tr><td><code>codec-asym</code></td><td>(no dedicated CLI flag — use <code>--filter "codec_asymmetry == true"</code> or <code>--problems</code>, or <code>find_problems</code> over MCP with <code>kinds: ["codec-asym"]</code>)</td><td><code>codec_asymmetry == true</code></td></tr>
-<tr><td><code>ptime-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>ptime_asymmetry == true</code></td></tr>
-<tr><td><code>payload-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>payload_asymmetry == true</code></td></tr>
-<tr><td><code>duration-asym</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>duration_asymmetry == true</code></td></tr>
-<tr><td><code>late-media</code></td><td>(no dedicated CLI flag — use raw DSL or <code>find_problems</code>)</td><td><code>late_media == true</code></td></tr>
+<tr><td><code>codec-asym</code></td><td>— (use <code>--filter codec-asym</code>)</td><td><code>codec_asymmetry == true</code></td></tr>
+<tr><td><code>ptime-asym</code></td><td>— (use <code>--filter ptime-asym</code>)</td><td><code>ptime_asymmetry == true</code></td></tr>
+<tr><td><code>payload-asym</code></td><td>— (use <code>--filter payload-asym</code>)</td><td><code>payload_asymmetry == true</code></td></tr>
+<tr><td><code>duration-asym</code></td><td>— (use <code>--filter duration-asym</code>)</td><td><code>duration_asymmetry == true</code></td></tr>
+<tr><td><code>late-media</code></td><td>— (use <code>--filter late-media</code>)</td><td><code>late_media == true</code></td></tr>
 </tbody></table>
-<blockquote>
-<p><strong>CLI <code>--filter</code> does not accept alias names.</strong> The DSL parser rejects bare identifiers; you must write the full expression (e.g. <code>--filter "codec_asymmetry == true"</code>). Alias-name shorthand (<code>codec-asym</code>, <code>late-media</code>, etc.) only works inside MCP’s <code>find_problems</code> tool’s <code>kinds</code> array.</p>
-</blockquote>
+<p><code>--filter</code> first tries to resolve its argument as an alias name, then falls
+back to parsing it as a DSL expression. Both forms below are equivalent:</p>
+<pre><code>sipnab -N -I capture.pcap --filter codec-asym
+sipnab -N -I capture.pcap --filter &quot;codec_asymmetry == true&quot;
+</code></pre>
 <h2 id="examples">Examples</h2>
 <h3 id="basic-field-matching">Basic field matching</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;INVITE&#39;</span></span>
-<span class="giallo-l"><span>from.user == &#39;1001&#39;</span></span>
-<span class="giallo-l"><span>state == &#39;InCall&#39;</span></span></code></pre><h3 id="regex-matching">Regex matching</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>ua =~ &#39;friendly-scanner&#39;</span></span>
-<span class="giallo-l"><span>from.user =~ &#39;^100[0-9]&#39;</span></span>
-<span class="giallo-l"><span>call_id =~ &#39;abc.*@&#39;</span></span></code></pre><h3 id="numeric-comparisons">Numeric comparisons</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>pdd &gt; 3.0</span></span>
-<span class="giallo-l"><span>rtp.mos &lt; 3.0</span></span>
-<span class="giallo-l"><span>rtp.loss &gt; 2.0</span></span>
-<span class="giallo-l"><span>duration &lt; 5.0</span></span>
-<span class="giallo-l"><span>retransmits &gt; 3</span></span>
-<span class="giallo-l"><span>rtp.jitter &gt; 50.0</span></span></code></pre><h3 id="boolean-fields-1">Boolean fields</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>one_way == true</span></span>
-<span class="giallo-l"><span>nat_mismatch == true</span></span>
-<span class="giallo-l"><span>rtp.orphaned == true</span></span>
-<span class="giallo-l"><span>no_media == true</span></span></code></pre><h3 id="compound-expressions">Compound expressions</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;INVITE&#39; AND rtp.mos &lt; 3.0</span></span>
-<span class="giallo-l"><span>from.user =~ &#39;^1001&#39; AND state == &#39;Failed&#39;</span></span>
-<span class="giallo-l"><span>pdd &gt; 3.0 OR retransmits &gt; 5</span></span>
-<span class="giallo-l"><span>NOT ua =~ &#39;friendly-scanner&#39;</span></span>
-<span class="giallo-l"><span>(state == &#39;Failed&#39; OR state == &#39;Cancelled&#39;) AND duration &lt; 1.0</span></span></code></pre><h3 id="real-world-diagnostic-queries">Real-world diagnostic queries</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span># Find calls with poor quality from a specific extension</span></span>
-<span class="giallo-l"><span>from.user =~ &#39;^1001&#39; AND rtp.mos &lt; 3.0</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span># Find failed registrations from a subnet</span></span>
-<span class="giallo-l"><span>method == &#39;REGISTER&#39; AND state == &#39;Failed&#39; AND src.ip =~ &#39;^10\.0\.1\.&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span># Find short calls that completed (possible robocalls)</span></span>
-<span class="giallo-l"><span>duration &lt; 5.0 AND state == &#39;Completed&#39; AND method == &#39;INVITE&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span># Find calls with audio issues</span></span>
-<span class="giallo-l"><span>one_way == true OR no_media == true OR rtp.jitter &gt; 100.0</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span># Find scanner activity by User-Agent</span></span>
-<span class="giallo-l"><span>ua =~ &#39;sipvicious|friendly-scanner|sipcli&#39;</span></span></code></pre><h2 id="real-world-scenarios">Real-World Scenarios</h2>
+<pre><code>method == &#x27;INVITE&#x27;
+from.user == &#x27;1001&#x27;
+state == &#x27;InCall&#x27;
+</code></pre>
+<h3 id="regex-matching">Regex matching</h3>
+<pre><code>ua =~ &#x27;friendly-scanner&#x27;
+from.user =~ &#x27;^100[0-9]&#x27;
+call_id =~ &#x27;abc.*@&#x27;
+</code></pre>
+<h3 id="numeric-comparisons">Numeric comparisons</h3>
+<pre><code>pdd &gt; 3.0
+rtp.mos &lt; 3.0
+rtp.loss &gt; 2.0
+duration &lt; 5.0
+retransmits &gt; 3
+rtp.jitter &gt; 50.0
+</code></pre>
+<h3 id="boolean-fields-1">Boolean fields</h3>
+<pre><code>one_way == true
+nat_mismatch == true
+rtp.orphaned == true
+no_media == true
+</code></pre>
+<h3 id="compound-expressions">Compound expressions</h3>
+<pre><code>method == &#x27;INVITE&#x27; AND rtp.mos &lt; 3.0
+from.user =~ &#x27;^1001&#x27; AND state == &#x27;Failed&#x27;
+pdd &gt; 3.0 OR retransmits &gt; 5
+NOT ua =~ &#x27;friendly-scanner&#x27;
+(state == &#x27;Failed&#x27; OR state == &#x27;Cancelled&#x27;) AND duration &lt; 1.0
+</code></pre>
+<h3 id="real-world-diagnostic-queries">Real-world diagnostic queries</h3>
+<pre><code># Find calls with poor quality from a specific extension
+from.user =~ &#x27;^1001&#x27; AND rtp.mos &lt; 3.0
+
+# Find failed registrations from a subnet
+method == &#x27;REGISTER&#x27; AND state == &#x27;Failed&#x27; AND src.ip =~ &#x27;^10\.0\.1\.&#x27;
+
+# Find short calls that completed (possible robocalls)
+duration &lt; 5.0 AND state == &#x27;Completed&#x27; AND method == &#x27;INVITE&#x27;
+
+# Find calls with audio issues
+one_way == true OR no_media == true OR rtp.jitter &gt; 100.0
+
+# Find scanner activity by User-Agent
+ua =~ &#x27;sipvicious|friendly-scanner|sipcli&#x27;
+</code></pre>
+<h2 id="real-world-scenarios">Real-World Scenarios</h2>
 <p>Scenario-based examples showing how to combine filter expressions with CLI flags for common operational tasks.</p>
 <h3 id="find-calls-with-poor-audio-quality">Find calls with poor audio quality</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>rtp.mos &lt; 3.0 AND state == &#39;Completed&#39;</span></span></code></pre>
+<pre><code>rtp.mos &lt; 3.0 AND state == &#x27;Completed&#x27;
+</code></pre>
 <p>Only completed calls – in-progress calls may not have enough RTP data for an accurate MOS calculation.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0 AND state == &#39;Completed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="find-all-failed-international-calls">Find all failed international calls</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>from.user =~ &#39;^\+&#39; AND (state == &#39;Failed&#39; OR state == &#39;Cancelled&#39;)</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab -N -I capture.pcap --filter &quot;rtp.mos &lt; 3.0 AND state == &#x27;Completed&#x27;&quot; --json
+</code></pre>
+<h3 id="find-all-failed-international-calls">Find all failed international calls</h3>
+<pre><code>from.user =~ &#x27;^\+&#x27; AND (state == &#x27;Failed&#x27; OR state == &#x27;Cancelled&#x27;)
+</code></pre>
 <p>The <code>^\+</code> regex matches E.164 formatted numbers (international prefix).</p>
 <h3 id="find-registration-storms">Find registration storms</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;REGISTER&#39; AND retransmits &gt; 5</span></span></code></pre>
+<pre><code>method == &#x27;REGISTER&#x27; AND retransmits &gt; 5
+</code></pre>
 <p>High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Combine with source IP filtering to isolate a specific endpoint:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>method == &#39;REGISTER&#39; AND retransmits &gt; 5 AND src.ip == &#39;10.0.0.50&#39;</span></span></code></pre><h3 id="find-calls-with-nat-issues">Find calls with NAT issues</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>nat_mismatch == true AND method == &#39;INVITE&#39;</span></span></code></pre>
+<pre><code>method == &#x27;REGISTER&#x27; AND retransmits &gt; 5 AND src.ip == &#x27;10.0.0.50&#x27;
+</code></pre>
+<h3 id="find-calls-with-nat-issues">Find calls with NAT issues</h3>
+<pre><code>nat_mismatch == true AND method == &#x27;INVITE&#x27;
+</code></pre>
 <p>NAT mismatch means the Contact header IP/port doesn’t match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT.</p>
 <h3 id="find-one-way-audio-after-call-establishment">Find one-way audio after call establishment</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>one_way == true AND duration &gt; 10.0</span></span></code></pre>
+<pre><code>one_way == true AND duration &gt; 10.0
+</code></pre>
 <p>The duration check avoids false positives during early call setup when RTP hasn’t started flowing yet.</p>
 <h3 id="complex-b2bua-debugging">Complex B2BUA debugging</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>(from.user == &#39;1001&#39; OR to.user == &#39;1001&#39;) AND rtp.loss &gt; 1.0</span></span></code></pre>
+<pre><code>(from.user == &#x27;1001&#x27; OR to.user == &#x27;1001&#x27;) AND rtp.loss &gt; 1.0
+</code></pre>
 <p>Track a specific user’s calls that have packet loss, regardless of call direction.</p>
 <h3 id="find-chatty-dialogs-debugging-retransmissions">Find chatty dialogs (debugging retransmissions)</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>msg_count &gt; 20 AND method == &#39;INVITE&#39;</span></span></code></pre>
+<pre><code>msg_count &gt; 20 AND method == &#x27;INVITE&#x27;
+</code></pre>
 <p>Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).</p>
 <h3 id="monitor-for-sip-trunk-failures">Monitor for SIP trunk failures</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="plain"><span class="giallo-l"><span>dst.ip == &#39;192.168.1.100&#39; AND state == &#39;Failed&#39; AND method == &#39;INVITE&#39;</span></span></code></pre>
+<pre><code>dst.ip == &#x27;192.168.1.100&#x27; AND state == &#x27;Failed&#x27; AND method == &#x27;INVITE&#x27;
+</code></pre>
 <p>Filter for failures targeting a specific SIP trunk IP.</p>
 <blockquote>
 <p><strong>Note:</strong> The filter DSL evaluates against dialogs, not individual messages. A filter like <code>method == 'INVITE'</code> matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).</p>
@@ -255,48 +292,54 @@
 <h2 id="rtp-quality-media-queries">RTP Quality &amp; Media Queries</h2>
 <p>The filter DSL provides direct access to RTP stream metrics. These fields query the aggregate quality of all RTP streams associated with a dialog.</p>
 <h3 id="mos-based-quality-monitoring">MOS-Based Quality Monitoring</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with MOS below carrier threshold</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.5&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with excellent quality (verify your codecs are performing)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &gt; 4.0 AND state == &#39;Completed&#39;&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live alert: MOS drops below 3.0 on any active call</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> tee</span><span style="color: #AAD94C;"> /var/log/sipnab/quality.ndjson</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find calls with MOS below carrier threshold
+sipnab -N -I capture.pcap --filter &quot;rtp.mos &lt; 3.5&quot; --json
+
+# Find calls with excellent quality (verify your codecs are performing)
+sipnab -N -I capture.pcap --filter &quot;rtp.mos &gt; 4.0 AND state == &#x27;Completed&#x27;&quot;
+
+# Live alert: MOS drops below 3.0 on any active call
+sudo sipnab -N -d eth0 --filter &quot;rtp.mos &lt; 3.0&quot; --json | tee &#x2F;var&#x2F;log&#x2F;sipnab&#x2F;quality.ndjson
+</code></pre>
 <p>MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.</p>
 <h3 id="jitter-packet-loss">Jitter &amp; Packet Loss</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># High jitter (network congestion indicator)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.jitter &gt; 50.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Packet loss above 1% (codec-dependent threshold)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.loss &gt; 1.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Combined: calls where quality is degraded by both jitter AND loss</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.jitter &gt; 30.0 AND rtp.loss &gt; 0.5&quot;</span><span style="color: #95E6CB;"> --report</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># High jitter (network congestion indicator)
+sipnab -N -I capture.pcap --filter &quot;rtp.jitter &gt; 50.0&quot; --json
+
+# Packet loss above 1% (codec-dependent threshold)
+sipnab -N -I capture.pcap --filter &quot;rtp.loss &gt; 1.0&quot; --json
+
+# Combined: calls where quality is degraded by both jitter AND loss
+sipnab -N -I capture.pcap --filter &quot;rtp.jitter &gt; 30.0 AND rtp.loss &gt; 0.5&quot; --report
+</code></pre>
 <p>Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm). Loss is a percentage (0.0–100.0).</p>
 <h3 id="rtp-stream-investigation">RTP Stream Investigation</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with orphaned RTP streams (no matching SDP)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.orphaned == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by codec (useful for codec-specific quality analysis)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.codec == &#39;PCMU&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with specific SSRC (trace a specific media stream)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.ssrc == &#39;12345678&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># High packet count calls (long duration or high-rate codecs)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.packets &gt; 10000&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="one-way-audio-media-path-issues">One-Way Audio &amp; Media Path Issues</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect one-way audio (one direction has zero RTP packets)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Calls with no media at all (SDP negotiated but no RTP ever flowed)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;no_media == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># NAT mismatch + one-way audio (the classic NAT problem)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;nat_mismatch == true AND one_way == true&quot;</span><span style="color: #95E6CB;"> --report</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># One-way audio after call establishment (filter out early-media false positives)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true AND duration &gt; 10.0&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre><h3 id="rtcp-extended-reports">RTCP Extended Reports</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find calls with orphaned RTP streams (no matching SDP)
+sipnab -N -I capture.pcap --filter &quot;rtp.orphaned == true&quot; --json
+
+# Filter by codec (useful for codec-specific quality analysis)
+sipnab -N -I capture.pcap --filter &quot;rtp.codec == &#x27;PCMU&#x27;&quot; --json
+
+# Find calls with specific SSRC (trace a specific media stream)
+sipnab -N -I capture.pcap --filter &quot;rtp.ssrc == &#x27;12345678&#x27;&quot; --json
+
+# High packet count calls (long duration or high-rate codecs)
+sipnab -N -I capture.pcap --filter &quot;rtp.packets &gt; 10000&quot; --json
+</code></pre>
+<h3 id="one-way-audio-media-path-issues">One-Way Audio &amp; Media Path Issues</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Detect one-way audio (one direction has zero RTP packets)
+sipnab -N -I capture.pcap --filter &quot;one_way == true&quot; --json
+
+# Calls with no media at all (SDP negotiated but no RTP ever flowed)
+sipnab -N -I capture.pcap --filter &quot;no_media == true&quot; --json
+
+# NAT mismatch + one-way audio (the classic NAT problem)
+sipnab -N -I capture.pcap --filter &quot;nat_mismatch == true AND one_way == true&quot; --report
+
+# One-way audio after call establishment (filter out early-media false positives)
+sipnab -N -I capture.pcap --filter &quot;one_way == true AND duration &gt; 10.0&quot; --json
+</code></pre>
+<h3 id="rtcp-extended-reports">RTCP Extended Reports</h3>
 <p>When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (RFC 3611 Section 4.7) including:</p>
 <ul>
 <li>Round-trip delay, end-system delay</li>
@@ -307,17 +350,19 @@
 </ul>
 <p>These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.</p>
 <h3 id="combining-rtp-with-sip-filters">Combining RTP with SIP Filters</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Failed calls that also had quality issues (correlate signaling + media)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39; AND rtp.mos &lt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Calls from a specific user with packet loss</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39; AND rtp.loss &gt; 0.5&quot;</span><span style="color: #95E6CB;"> --report</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Trunk monitoring: all calls to a specific destination with quality metrics</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;dst.ip == &#39;10.0.0.100&#39; AND rtp.mos &lt; 4.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Registration + quality correlation (find endpoints with both reg and quality issues)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39; AND retransmits &gt; 3 AND rtp.jitter &gt; 30&quot;</span></span></code></pre><h2 id="parser-constraints">Parser Constraints</h2>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Failed calls that also had quality issues (correlate signaling + media)
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27; AND rtp.mos &lt; 3.0&quot; --json
+
+# Calls from a specific user with packet loss
+sipnab -N -I capture.pcap --filter &quot;from.user == &#x27;1001&#x27; AND rtp.loss &gt; 0.5&quot; --report
+
+# Trunk monitoring: all calls to a specific destination with quality metrics
+sipnab -N -I capture.pcap --filter &quot;dst.ip == &#x27;10.0.0.100&#x27; AND rtp.mos &lt; 4.0&quot; --json
+
+# Registration + quality correlation (find endpoints with both reg and quality issues)
+sipnab -N -I capture.pcap --filter &quot;method == &#x27;INVITE&#x27; AND retransmits &gt; 3 AND rtp.jitter &gt; 30&quot;
+</code></pre>
+<h2 id="parser-constraints">Parser Constraints</h2>
 <ul>
 <li>Maximum parenthesis nesting depth: <strong>50 levels</strong></li>
 <li>Maximum regex pattern size: <strong>1 MB</strong> (1,000,000 bytes)</li>
@@ -463,7 +508,7 @@
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>

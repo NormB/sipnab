@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;theme&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -118,17 +125,19 @@
 <p>Each theme below includes a TOML config block and a live preview showing how it renders in sipnab’s TUI.</p>
 <h3 id="default-ayu-mirage">Default (Ayu Mirage)</h3>
 <p>The built-in theme works on dark terminal backgrounds without any configuration.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;magenta&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;green&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;yellow&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;red&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;reset&quot;
+foreground = &quot;white&quot;
+header = &quot;cyan&quot;
+selected = &quot;yellow&quot;
+accent = &quot;magenta&quot;
+good = &quot;green&quot;
+warning = &quot;yellow&quot;
+bad = &quot;red&quot;
+muted = &quot;dark_gray&quot;
+border = &quot;white&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Default Theme</span>
@@ -142,17 +151,19 @@
 </div>
 <h3 id="catppuccin-mocha">Catppuccin Mocha</h3>
 <p>Pastel palette inspired by the Catppuccin color scheme.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#1e1e2e&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cdd6f4&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#89b4fa&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f9e2af&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cba6f7&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a6e3a1&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fab387&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#f38ba8&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#585b70&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#6c7086&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;#1e1e2e&quot;
+foreground = &quot;#cdd6f4&quot;
+header = &quot;#89b4fa&quot;
+selected = &quot;#f9e2af&quot;
+accent = &quot;#cba6f7&quot;
+good = &quot;#a6e3a1&quot;
+warning = &quot;#fab387&quot;
+bad = &quot;#f38ba8&quot;
+muted = &quot;#585b70&quot;
+border = &quot;#6c7086&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Catppuccin Mocha</span>
@@ -166,17 +177,19 @@
 </div>
 <h3 id="nord">Nord</h3>
 <p>Low-contrast theme based on the Nord palette. Easy on the eyes for long monitoring sessions.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#2e3440&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d8dee9&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#88c0d0&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b48ead&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#a3be8c&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebcb8b&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#bf616a&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#4c566a&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#616e88&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;#2e3440&quot;
+foreground = &quot;#d8dee9&quot;
+header = &quot;#88c0d0&quot;
+selected = &quot;#ebcb8b&quot;
+accent = &quot;#b48ead&quot;
+good = &quot;#a3be8c&quot;
+warning = &quot;#ebcb8b&quot;
+bad = &quot;#bf616a&quot;
+muted = &quot;#4c566a&quot;
+border = &quot;#616e88&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Nord</span>
@@ -189,17 +202,19 @@
   <span style="color:#b48ead">5  INVITE     1005           1006           </span><span style="color:#a3be8c">Completed</span></pre>
 </div>
 <h3 id="solarized-dark">Solarized Dark</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#002b36&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#839496&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#268bd2&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b58900&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d33682&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#859900&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cb4b16&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#dc322f&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#586e75&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#657b83&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;#002b36&quot;
+foreground = &quot;#839496&quot;
+header = &quot;#268bd2&quot;
+selected = &quot;#b58900&quot;
+accent = &quot;#d33682&quot;
+good = &quot;#859900&quot;
+warning = &quot;#cb4b16&quot;
+bad = &quot;#dc322f&quot;
+muted = &quot;#586e75&quot;
+border = &quot;#657b83&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Solarized Dark</span>
@@ -213,17 +228,19 @@
 </div>
 <h3 id="gruvbox-dark">Gruvbox Dark</h3>
 <p>Warm, retro-inspired color scheme.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#282828&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ebdbb2&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#83a598&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fabd2f&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#d3869b&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b8bb26&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fe8019&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#fb4934&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#665c54&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#7c6f64&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;#282828&quot;
+foreground = &quot;#ebdbb2&quot;
+header = &quot;#83a598&quot;
+selected = &quot;#fabd2f&quot;
+accent = &quot;#d3869b&quot;
+good = &quot;#b8bb26&quot;
+warning = &quot;#fe8019&quot;
+bad = &quot;#fb4934&quot;
+muted = &quot;#665c54&quot;
+border = &quot;#7c6f64&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Gruvbox Dark</span>
@@ -237,17 +254,19 @@
 </div>
 <h3 id="light-terminal">Light Terminal</h3>
 <p>For light terminal backgrounds (white/cream). Uses darker colors for readability.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;reset&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;blue&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b35900&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#8b008b&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#006400&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#b8860b&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#cc0000&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;dark_gray&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;reset&quot;
+foreground = &quot;black&quot;
+header = &quot;blue&quot;
+selected = &quot;#b35900&quot;
+accent = &quot;#8b008b&quot;
+good = &quot;#006400&quot;
+warning = &quot;#b8860b&quot;
+bad = &quot;#cc0000&quot;
+muted = &quot;gray&quot;
+border = &quot;dark_gray&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Light Terminal</span>
@@ -261,17 +280,19 @@
 </div>
 <h3 id="high-contrast">High Contrast</h3>
 <p>Maximum readability for accessibility or bright environments.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span>[</span><span style="color: #59C2FF;">theme</span><span>]</span></span>
-<span class="giallo-l"><span>background</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;black&quot;</span></span>
-<span class="giallo-l"><span>foreground</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span>
-<span class="giallo-l"><span>header</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;cyan&quot;</span></span>
-<span class="giallo-l"><span>selected</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffff00&quot;</span></span>
-<span class="giallo-l"><span>accent</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff00ff&quot;</span></span>
-<span class="giallo-l"><span>good</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#00ff00&quot;</span></span>
-<span class="giallo-l"><span>warning</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ffaa00&quot;</span></span>
-<span class="giallo-l"><span>bad</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;#ff0000&quot;</span></span>
-<span class="giallo-l"><span>muted</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;gray&quot;</span></span>
-<span class="giallo-l"><span>border</span><span style="color: #BFBDB6B3;"> =</span><span style="color: #AAD94C;"> &quot;white&quot;</span></span></code></pre><div class="terminal">
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">[theme]
+background = &quot;black&quot;
+foreground = &quot;white&quot;
+header = &quot;cyan&quot;
+selected = &quot;#ffff00&quot;
+accent = &quot;#ff00ff&quot;
+good = &quot;#00ff00&quot;
+warning = &quot;#ffaa00&quot;
+bad = &quot;#ff0000&quot;
+muted = &quot;gray&quot;
+border = &quot;white&quot;
+</code></pre>
+<div class="terminal">
 <div class="terminal-bar">
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">High Contrast</span>
@@ -371,7 +392,7 @@
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>

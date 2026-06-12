@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;troubleshooting&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;troubleshooting&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -85,11 +92,12 @@
 </blockquote>
 <h2 id="failed-calls">Failed Calls</h2>
 <p>Find every call that never established, then triage by response code.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># All failed calls with Call-ID and response code</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> jq</span><span style="color: #AAD94C;"> &#39;.call_id, .status_code&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detailed report for one call (Markdown, ready for a ticket)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> report.md</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># All failed calls with Call-ID and response code
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27;&quot; --json | jq &#x27;.call_id, .status_code&#x27;
+
+# Detailed report for one call (Markdown, ready for a ticket)
+sipnab -I capture.pcap --call-report &quot;abc123@host&quot; --markdown &gt; report.md
+</code></pre>
 <p><strong>What to look for:</strong> sipnab includes response code intelligence – the status field tells you why:</p>
 <table><thead><tr><th>Code</th><th>Meaning</th><th>Typical fix</th></tr></thead><tbody>
 <tr><td>401/407</td><td>Authentication required</td><td>Check credentials, realm mismatch, nonce expiry</td></tr>
@@ -104,11 +112,12 @@
 <hr />
 <h2 id="one-way-audio">One-Way Audio</h2>
 <p>One direction of RTP has zero packets. The caller can hear the callee (or vice versa) but not both.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls flagged for one-way audio</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Full diagnostic output</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;one_way == true&quot;</span><span style="color: #95E6CB;"> --report</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find calls flagged for one-way audio
+sipnab -N -I capture.pcap --filter &quot;one_way == true&quot; --json
+
+# Full diagnostic output
+sipnab -N -I capture.pcap --filter &quot;one_way == true&quot; --report
+</code></pre>
 <p><strong>What to look for:</strong></p>
 <ul>
 <li><code>nat_mismatch == true</code> alongside <code>one_way</code> – the Contact/Via IP doesn’t match the packet source. This is the most common cause.</li>
@@ -124,11 +133,12 @@
 <hr />
 <h2 id="poor-call-quality">Poor Call Quality</h2>
 <p>MOS below 3.0 means quality degradation users will notice. Below 2.5, calls are unusable.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find completed calls with poor MOS</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live monitoring -- alert on quality or jitter spikes</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0 OR rtp.jitter &gt; 50&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find completed calls with poor MOS
+sipnab -N -I capture.pcap --filter &quot;rtp.mos &lt; 3.0&quot; --json
+
+# Live monitoring -- alert on quality or jitter spikes
+sudo sipnab -N -d eth0 --filter &quot;rtp.mos &lt; 3.0 OR rtp.jitter &gt; 50&quot; --json
+</code></pre>
 <p><strong>What to look for:</strong></p>
 <table><thead><tr><th>Metric</th><th>Threshold</th><th>Likely cause</th></tr></thead><tbody>
 <tr><td><code>rtp.mos</code> &lt; 3.0</td><td>Quality degradation</td><td>Aggregated impairment – check jitter and loss</td></tr>
@@ -144,15 +154,16 @@
 <li><strong>Burst/gap analysis</strong> (RFC 3611) – distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.</li>
 <li><strong>Silence detection</strong> – identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.</li>
 </ul>
-<p>This same data is available in the browser analyzer at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> under the <strong>Streams</strong> tab.</p>
+<p>This same data is available in the browser analyzer at <a href="/analyze/">sipnab.com/analyze/</a> under the <strong>Streams</strong> tab.</p>
 <hr />
 <h2 id="slow-call-setup-post-dial-delay">Slow Call Setup (Post-Dial Delay)</h2>
 <p>PDD over 3 seconds is perceptible to users. Over 5 seconds and they’ll hang up.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with excessive PDD</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;pdd &gt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Built-in alias with summary report</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --slow-setup --report</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find calls with excessive PDD
+sipnab -N -I capture.pcap --filter &quot;pdd &gt; 3.0&quot; --json
+
+# Built-in alias with summary report
+sipnab -N -I capture.pcap --slow-setup --report
+</code></pre>
 <p><strong>What to look for:</strong></p>
 <ul>
 <li>High <code>retransmits</code> alongside high PDD – the INVITE is being retransmitted because the first one was lost or the remote side is slow to respond.</li>
@@ -163,11 +174,12 @@
 <hr />
 <h2 id="nat-traversal-issues">NAT Traversal Issues</h2>
 <p>The Contact or Via header advertises a private IP that doesn’t match the actual packet source.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find NAT mismatches</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;nat_mismatch == true&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Built-in alias</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --nat-issues</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find NAT mismatches
+sipnab -N -I capture.pcap --filter &quot;nat_mismatch == true&quot; --json
+
+# Built-in alias
+sipnab -N -I capture.pcap --nat-issues
+</code></pre>
 <p><strong>What to look for:</strong> <code>nat_mismatch == true</code> means the SIP headers contain an IP/port that differs from where the packet actually came from. This breaks return routing for SIP responses and RTP media.</p>
 <p><strong>Next steps:</strong></p>
 <ol>
@@ -178,11 +190,12 @@
 <hr />
 <h2 id="sip-scanner-detection">SIP Scanner Detection</h2>
 <p>Scanners probe for open registrations and try credential stuffing. Detect them early and feed the IPs to fail2ban.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live detection with fail2ban-compatible output</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fail2ban</span><span style="color: #F29668;"> &gt;&gt;</span><span style="color: #AAD94C;"> /var/log/sipnab/scanners.log</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find scanner User-Agents in a pcap</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;ua =~ &#39;friendly-scanner|sipcli|sipvicious&#39;&quot;</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Live detection with fail2ban-compatible output
+sudo sipnab -N -d eth0 --kill-scanner --fail2ban &gt;&gt; &#x2F;var&#x2F;log&#x2F;sipnab&#x2F;scanners.log
+
+# Find scanner User-Agents in a pcap
+sipnab -N -I capture.pcap --filter &quot;ua =~ &#x27;friendly-scanner|sipcli|sipvicious&#x27;&quot;
+</code></pre>
 <p><strong>What to look for:</strong> Known scanner fingerprints (<code>friendly-scanner</code>, <code>sipvicious</code>, <code>sipcli</code>), high REGISTER rates from a single source, sequential extension enumeration (INVITE to 100, 101, 102…).</p>
 <p><strong>Next steps:</strong></p>
 <ol>
@@ -193,7 +206,8 @@
 <hr />
 <h2 id="registration-failures">Registration Failures</h2>
 <p>Phones not registering means no inbound calls and potentially no outbound.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;REGISTER&#39; AND state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab -N -I capture.pcap --filter &quot;method == &#x27;REGISTER&#x27; AND state == &#x27;Failed&#x27;&quot; --json
+</code></pre>
 <p><strong>What to look for:</strong></p>
 <table><thead><tr><th>Code</th><th>Meaning</th><th>Typical fix</th></tr></thead><tbody>
 <tr><td>401/407</td><td>Auth challenge</td><td>Normal first response – check if the phone retries with credentials. If it doesn’t, credentials are misconfigured.</td></tr>
@@ -204,19 +218,20 @@
 <hr />
 <h2 id="generating-reports">Generating Reports</h2>
 <p>Export call data for tickets, post-mortems, or automated pipelines.</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Markdown report for a specific call (attach to a ticket)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> report.md</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># JSON export of all failed calls (feed to your monitoring system)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> failed_calls.json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Count failures by response code</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
-<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.status_code&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Markdown report for a specific call (attach to a ticket)
+sipnab -I capture.pcap --call-report &quot;abc123@host&quot; --markdown &gt; report.md
+
+# JSON export of all failed calls (feed to your monitoring system)
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27;&quot; --json &gt; failed_calls.json
+
+# Count failures by response code
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27;&quot; --json \
+  | jq -r &#x27;.status_code&#x27; | sort | uniq -c | sort -rn
+</code></pre>
 <hr />
 <h2 id="quick-browser-analysis">Quick Browser Analysis</h2>
 <p>No install, no upload, no data leaves your machine.</p>
-<p>Drop a pcap file at <a rel="external" href="https://sipnab.com/analyze/">sipnab.com/analyze/</a> – the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: <strong>Dialogs</strong> (SIP call list with flow diagrams) and <strong>Streams</strong> (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can’t install the CLI, or for sharing a link with a colleague who doesn’t have sipnab.</p>
+<p>Drop a pcap file at <a href="/analyze/">sipnab.com/analyze/</a> – the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: <strong>Dialogs</strong> (SIP call list with flow diagrams) and <strong>Streams</strong> (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can’t install the CLI, or for sharing a link with a colleague who doesn’t have sipnab.</p>
 <hr />
 <h2 id="export-call-audio">Export Call Audio</h2>
 <p>When metrics aren’t enough — export the actual audio to hear what the caller heard.</p>
@@ -316,7 +331,7 @@
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>

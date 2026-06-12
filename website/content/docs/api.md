@@ -126,7 +126,7 @@ List all tracked SIP dialogs with optional filtering and pagination.
 
 | Parameter | Type   | Default | Description |
 |-----------|--------|---------|-------------|
-| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled`) |
+| `state`   | string | --      | Filter by dialog state (`Trying`, `Ringing`, `InCall`, `Completed`, `Failed`, `Cancelled`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`) |
 | `from`    | string | --      | Filter by From user (regex pattern) |
 | `limit`   | int    | 50      | Maximum results (capped at 1000) |
 | `offset`  | int    | 0       | Pagination offset |

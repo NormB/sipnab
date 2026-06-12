@@ -209,7 +209,7 @@ Toggle display options without leaving the TUI.
 | Key | Action |
 |-----|--------|
 | Ctrl+C | Force quit |
-| Ctrl+L | Redraw screen |
+| Ctrl+L | Clear all calls (same as F5) |
 
 ## Call List
 

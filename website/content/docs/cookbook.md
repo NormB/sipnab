@@ -179,7 +179,7 @@ cargo build --release --no-default-features \
 sipnab -N --hep-listen 0.0.0.0:9060 --api 0.0.0.0:9100 --no-priv-drop --syslog
 ```
 
-A ready-to-deploy systemd unit lives at `contrib/observability/sipnab-hep.service` — see [Remote-sipnab deployment](https://www.sipnab.com/docs/install/) in the install guide.
+A ready-to-deploy systemd unit lives at `contrib/observability/sipnab-hep.service` — see [Remote-sipnab deployment](/docs/install/) in the install guide.
 
 ### 6b. Configure the SIP server to mirror
 
@@ -645,7 +645,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 - Supported codecs for WAV decode and playback: G.711 µ-law (PT 0), G.711 A-law (PT 8), Opus (dynamic PT). Other codecs (G.729, AMR, etc.) aren't decoded today.
 - A failed audio device (headless servers, Tegra without ALSA) no longer crashes the TUI — it disables playback gracefully and surfaces a message suggesting F2 → WAV as an offline alternative.
-- A CLI batch `--export-audio /dir` flag does **not** exist today. The library functions (`rtp::audio_export::export_stream_to_wav`, `export_dialog_to_wav`) are available if you want to build it; until then, scripted batch export means driving the TUI under `expect`/`tmux` or writing a small Rust binary that links the library.
+- A CLI batch audio-export flag does **not** exist today. The library functions (`rtp::audio_export::export_stream_to_wav`, `export_dialog_to_wav`) are available if you want to build it; until then, scripted batch export means driving the TUI under `expect`/`tmux` or writing a small Rust binary that links the library.
 
 ---
 
@@ -653,7 +653,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 **Problem:** You don't want to install anything. The pcap is on your laptop. You want to look at it.
 
-Open <https://www.sipnab.com/analyze/> in any modern browser. Drag-and-drop a pcap or `.pcapng` file. Everything runs locally via WebAssembly — the pcap never leaves your machine.
+Open </analyze/> in any modern browser. Drag-and-drop a pcap or `.pcapng` file. Everything runs locally via WebAssembly — the pcap never leaves your machine.
 
 The analyze page supports `.pcap`, `.pcapng`, `.cap` (NetMon), and gives you the same call list, ladder diagram, RTP stream view, search, and filter DSL as the native TUI. Keyboard shortcuts match the TUI (`?` opens the help popup).
 

@@ -23,6 +23,9 @@ const FOREIGN_FLAGS: &[&str] = &[
     "rm",
     // systemctl (docs/mcp-setup.md)
     "now",
+    // claude mcp add (website/mcp.md)
+    "transport",
+    "header",
 ];
 
 /// All long flag names (including aliases) the real CLI accepts.
@@ -69,6 +72,43 @@ fn readme_long_flags_exist_in_cli() {
         (
             "docs/config-reference.md",
             include_str!("../docs/config-reference.md"),
+        ),
+        // Website documentation (Zola content) — same zero-drift contract.
+        ("website/cli.md", include_str!("../website/content/docs/cli.md")),
+        (
+            "website/cookbook.md",
+            include_str!("../website/content/docs/cookbook.md"),
+        ),
+        (
+            "website/filter-dsl.md",
+            include_str!("../website/content/docs/filter-dsl.md"),
+        ),
+        (
+            "website/install.md",
+            include_str!("../website/content/docs/install.md"),
+        ),
+        ("website/api.md", include_str!("../website/content/docs/api.md")),
+        ("website/mcp.md", include_str!("../website/content/docs/mcp.md")),
+        (
+            "website/troubleshooting.md",
+            include_str!("../website/content/docs/troubleshooting.md"),
+        ),
+        (
+            "website/config.md",
+            include_str!("../website/content/docs/config.md"),
+        ),
+        (
+            "website/keybindings.md",
+            include_str!("../website/content/docs/keybindings.md"),
+        ),
+        ("website/theme.md", include_str!("../website/content/docs/theme.md")),
+        (
+            "website/landing.md",
+            include_str!("../website/content/_index.md"),
+        ),
+        (
+            "website/analyze.md",
+            include_str!("../website/content/analyze/_index.md"),
         ),
     ];
 
