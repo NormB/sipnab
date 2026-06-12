@@ -194,7 +194,10 @@ pub struct Cli {
     #[arg(long, value_name = "PATTERN")]
     pub ua: Option<String>,
 
-    /// Advanced filter DSL expression.
+    /// Filter DSL expression OR a diagnostic alias. Accepts full
+    /// expressions (e.g. "method == 'INVITE' and rtp.mos < 3.5") and
+    /// alias names like "problems" or "codec-asym" — see
+    /// docs/filter-dsl.md.
     #[arg(long, value_name = "EXPR")]
     pub filter: Option<String>,
 
@@ -220,7 +223,8 @@ pub struct Cli {
     pub nat_issues: bool,
 
     // ── Output ───────────────────────────────────────────────────────
-    /// Output results as JSON (one object per line).
+    /// Output NDJSON: one JSON object per SIP message, pipeable to jq.
+    /// Schema in docs/output-formats.md.
     #[arg(long)]
     pub json: bool,
 
@@ -272,8 +276,9 @@ pub struct Cli {
     #[arg(short = 'T', long = "text-dump")]
     pub text_dump: bool,
 
-    /// Suppress per-message CLI output. Useful with `--call-report` or `--report`
-    /// when you only want the post-capture summary, not every message.
+    /// Suppress the per-message stream (reports still print). Combine
+    /// with --report or --call-report for summary-only output:
+    /// `sipnab -N -I file.pcap --report --no-cli-print`.
     #[arg(long = "no-cli-print")]
     pub no_cli_print: bool,
 

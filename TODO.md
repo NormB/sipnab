@@ -89,14 +89,14 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **U5. Filter-DSL error messages** — "unexpected token at position N"
   with no caret, no operator list, no hint for unquoted values
   (`method == INVITE`). Add caret line + suggestions.
-- [ ] **U2. Document `--filter` alias acceptance** — `--filter problems`
+- [x] **U2. Document `--filter` alias acceptance** — `--filter problems`
   works (main.rs:2050 expansion) but --help and cli-reference.md don't
   say so.
-- [ ] **U7. Document JSON/NDJSON output** — schema + jq piping examples
+- [x] **U7. Document JSON/NDJSON output** — schema + jq piping examples
   (README + docs/output-formats.md).
-- [ ] **U8. Clarify `--no-cli-print` + `--report` interaction** — help text
+- [x] **U8. Clarify `--no-cli-print` + `--report` interaction** — help text
   + cli-reference.md example for summary-only mode.
-- [ ] **U9. docs/examples.md cookbook** — top 10-15 real workflows (failed
+- [x] **U9. docs/examples.md cookbook** — top 10-15 real workflows (failed
   calls, export one call's audio, detect scanners, …), linked from README.
 - [x] **U6. docs/mcp-setup.md** — token generation, stdio vs HTTP quick
   start, systemd unit.
