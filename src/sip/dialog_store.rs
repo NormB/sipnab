@@ -425,9 +425,19 @@ impl DialogStore {
             .collect()
     }
 
-    /// Evict the oldest dialog (first entry in insertion order).
+    /// Evict the oldest dialogs (front of insertion order) in a batch.
+    ///
+    /// `shift_remove_index(0)` is O(n) — under cap pressure (a unique
+    /// Call-ID flood) that made EVERY insert pay a full-store shift,
+    /// a CPU-DoS ceiling of a few thousand inserts/sec at the 10k cap.
+    /// Draining ~1% of capacity at once pays one O(n) shift per batch:
+    /// amortized O(100) per insert, insertion-order iteration preserved
+    /// (the TUI call list's default sort is store order). The store may
+    /// briefly sit up to cap/100 below the cap; the cap remains a hard
+    /// upper bound.
     fn evict_oldest(&mut self) {
-        self.dialogs.shift_remove_index(0);
+        let batch = (self.max_dialogs / 100).max(1).min(self.dialogs.len());
+        self.dialogs.drain(0..batch);
     }
 }
 
@@ -712,6 +722,45 @@ mod tests {
         assert!(store.get("call-1@test").is_none());
         assert!(store.get("call-2@test").is_some());
         assert!(store.get("call-3@test").is_some());
+    }
+
+    /// At large caps, eviction is batched (cap/100 at a time) so cap
+    /// pressure costs one O(n) drain per ~1% of capacity instead of an
+    /// O(n) shift per insert. After the 1001st insert into a 1000-cap
+    /// store, a batch of 10 was evicted and the new dialog added.
+    #[test]
+    fn large_cap_eviction_is_batched() {
+        let mut store = DialogStore::new(1000, true);
+        for i in 0..1001 {
+            store.process_message(make_invite_msg(&format!("b-{i:04}@test"), base_ts()));
+            assert!(store.len() <= 1000, "cap is a hard upper bound");
+        }
+        assert_eq!(
+            store.len(),
+            991,
+            "1001st insert evicts a batch of cap/100 = 10, then inserts"
+        );
+        assert!(store.get("b-0000@test").is_none(), "oldest evicted");
+        assert!(store.get("b-1000@test").is_some(), "newest present");
+    }
+
+    /// Batch eviction must preserve insertion-order iteration — the TUI
+    /// call list's default sort IS store iteration order.
+    #[test]
+    fn batch_eviction_preserves_insertion_order() {
+        let mut store = DialogStore::new(200, true);
+        for i in 0..500 {
+            store.process_message(make_invite_msg(&format!("o-{i:04}@test"), base_ts()));
+        }
+        let ids: Vec<&str> = store.iter().map(|d| d.call_id.as_str()).collect();
+        assert!(!ids.is_empty());
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            ids, sorted,
+            "iteration must remain in insertion order after batched evictions"
+        );
+        assert_eq!(*ids.last().unwrap(), "o-0499@test");
     }
 
     #[test]

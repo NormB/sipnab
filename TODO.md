@@ -69,7 +69,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   (`timing.retransmit_counts` already keys by `cseq_key`).
 - [x] **P6. O(n) RTCP→stream lookup** — stream_store.rs:110-117 linear-scans
   all streams per RTCP report. Add `ssrc → key` secondary index.
-- [ ] **P7. O(n) dialog eviction** — `shift_remove_index(0)`
+- [x] **P7. O(n) dialog eviction** — `shift_remove_index(0)`
   (dialog_store.rs:356) shifts every entry; visible pause at 10k dialogs.
   O(1)-amortized eviction preserving insertion-order semantics.
 - [ ] **P5. Audio payload buffered for every RTP packet** —
