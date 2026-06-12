@@ -65,6 +65,31 @@ pub struct DialogStore {
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
     rotate: bool,
+    /// Lifetime count of messages dropped by [`compact_idle`]
+    /// (DialogStore::compact_idle) — observability for long-run memory
+    /// behaviour.
+    idle_messages_evicted: u64,
+}
+
+/// A dialog idle longer than this has its stored messages compacted.
+///
+/// Per-dialog message Vecs are capped in *count* but never shrank: with
+/// the default `rotate=false`, a weeks-long capture accumulates idle
+/// dialogs each pinning up to `MAX_MESSAGES_PER_DIALOG` full messages
+/// (raw bytes + bodies) forever. Ten minutes of silence on a dialog
+/// means the call is over or stale; the message tail is enough context.
+pub const IDLE_COMPACT_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
+
+/// How many of the most recent messages an idle dialog keeps.
+pub const KEEP_MESSAGES_PER_IDLE_DIALOG: usize = 20;
+
+/// What one [`DialogStore::compact_idle`] sweep did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CompactStats {
+    /// Dialogs that had messages evicted this sweep.
+    pub dialogs_compacted: usize,
+    /// Messages evicted this sweep.
+    pub messages_evicted: usize,
 }
 
 impl DialogStore {
@@ -81,7 +106,45 @@ impl DialogStore {
             dialogs: IndexMap::with_capacity(max_dialogs.min(1024)),
             max_dialogs,
             rotate,
+            idle_messages_evicted: 0,
         }
+    }
+
+    /// Compact dialogs that have been idle longer than
+    /// [`IDLE_COMPACT_AFTER`]: keep only the last
+    /// [`KEEP_MESSAGES_PER_IDLE_DIALOG`] messages of each (and release the
+    /// Vec's excess capacity). Bounds long-run memory: an idle dialog can
+    /// otherwise pin hundreds of full SIP messages forever.
+    ///
+    /// Intended to be called from the existing periodic sweep. Idempotent:
+    /// a compacted dialog is skipped until it grows past the keep limit
+    /// again.
+    pub fn compact_idle(&mut self, now: chrono::DateTime<chrono::Utc>) -> CompactStats {
+        let mut stats = CompactStats::default();
+        for dialog in self.dialogs.values_mut() {
+            if now - dialog.updated_at <= IDLE_COMPACT_AFTER {
+                continue;
+            }
+            let excess = dialog
+                .messages
+                .len()
+                .saturating_sub(KEEP_MESSAGES_PER_IDLE_DIALOG);
+            if excess == 0 {
+                continue;
+            }
+            dialog.messages.drain(..excess);
+            dialog.messages.shrink_to_fit();
+            stats.dialogs_compacted += 1;
+            stats.messages_evicted += excess;
+        }
+        self.idle_messages_evicted += stats.messages_evicted as u64;
+        stats
+    }
+
+    /// Lifetime count of messages evicted by [`compact_idle`]
+    /// (DialogStore::compact_idle).
+    pub fn total_idle_messages_evicted(&self) -> u64 {
+        self.idle_messages_evicted
     }
 
     /// Process an incoming SIP message.
@@ -473,6 +536,100 @@ mod tests {
             2,
             "200 OK for an existing dialog must be stored even at capacity"
         );
+    }
+
+    // ── compact_idle: long-run memory bound for idle dialogs ─────────
+
+    /// Build a dialog with `n` stored messages by feeding distinct CSeqs.
+    fn store_with_messages(call_id: &str, n: usize) -> DialogStore {
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_msg(call_id, base_ts()));
+        for i in 2..=n {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: {call_id}"),
+                    &format!("CSeq: {i} INVITE"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = parse_sip(
+                &raw,
+                base_ts(),
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse");
+            store.process_message(msg);
+        }
+        store
+    }
+
+    fn idle_now() -> DateTime<Utc> {
+        base_ts() + IDLE_COMPACT_AFTER + TimeDelta::seconds(1)
+    }
+
+    #[test]
+    fn compact_idle_truncates_idle_dialog_to_keep_limit() {
+        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let mut store = store_with_messages("idle-1", n);
+        assert_eq!(store.get("idle-1").unwrap().messages.len(), n);
+
+        let stats = store.compact_idle(idle_now());
+        assert_eq!(stats.dialogs_compacted, 1);
+        assert_eq!(stats.messages_evicted, 10);
+
+        let d = store.get("idle-1").unwrap();
+        assert_eq!(d.messages.len(), KEEP_MESSAGES_PER_IDLE_DIALOG);
+        // The LAST messages are kept (the most recent context), so the
+        // first surviving message is the 11th fed in (CSeq 11).
+        assert_eq!(d.messages[0].cseq().map(|(seq, _)| seq), Some(11));
+    }
+
+    #[test]
+    fn compact_idle_leaves_active_dialogs_alone() {
+        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let mut store = store_with_messages("active-1", n);
+        // "now" is within the idle window — dialog is still active.
+        let stats = store.compact_idle(base_ts() + TimeDelta::seconds(30));
+        assert_eq!(stats.dialogs_compacted, 0);
+        assert_eq!(stats.messages_evicted, 0);
+        assert_eq!(store.get("active-1").unwrap().messages.len(), n);
+    }
+
+    #[test]
+    fn compact_idle_is_idempotent() {
+        let mut store = store_with_messages("idle-2", KEEP_MESSAGES_PER_IDLE_DIALOG + 5);
+        let first = store.compact_idle(idle_now());
+        assert_eq!(first.messages_evicted, 5);
+        let second = store.compact_idle(idle_now());
+        assert_eq!(second.dialogs_compacted, 0, "second pass must be a no-op");
+        assert_eq!(second.messages_evicted, 0);
+    }
+
+    #[test]
+    fn compact_idle_skips_small_idle_dialogs() {
+        // Idle but already under the keep limit: nothing to evict, and it
+        // must not be counted as compacted.
+        let mut store = store_with_messages("small-idle", 3);
+        let stats = store.compact_idle(idle_now());
+        assert_eq!(stats.dialogs_compacted, 0);
+        assert_eq!(stats.messages_evicted, 0);
+        assert_eq!(store.get("small-idle").unwrap().messages.len(), 3);
+    }
+
+    #[test]
+    fn compact_idle_accumulates_lifetime_counter() {
+        let mut store = store_with_messages("idle-3", KEEP_MESSAGES_PER_IDLE_DIALOG + 4);
+        assert_eq!(store.total_idle_messages_evicted(), 0);
+        store.compact_idle(idle_now());
+        assert_eq!(store.total_idle_messages_evicted(), 4);
     }
 
     fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
