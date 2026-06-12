@@ -98,9 +98,9 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   + cli-reference.md example for summary-only mode.
 - [ ] **U9. docs/examples.md cookbook** — top 10-15 real workflows (failed
   calls, export one call's audio, detect scanners, …), linked from README.
-- [ ] **U6. docs/mcp-setup.md** — token generation, stdio vs HTTP quick
+- [x] **U6. docs/mcp-setup.md** — token generation, stdio vs HTTP quick
   start, systemd unit.
-- [ ] **U10. contrib/sipnabrc.example** — shipped example config.
+- [x] **U10. contrib/sipnabrc.example** — shipped example config.
 - [x] **U4. TUI help discoverability** — F1 help exists (tui/help.rs) but
   nothing on screen says so. "Press F1 for help" hint in the empty
   call-list state.
