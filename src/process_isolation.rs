@@ -59,6 +59,9 @@ pub struct ScannerKillHandle {
     tx: Sender<KillRequest>,
     resp_rx: Receiver<KillResponse>,
     thread: Option<std::thread::JoinHandle<()>>,
+    /// Set on the first failed send so a dead worker is reported exactly
+    /// once, loudly, instead of every kill attempt silently vanishing.
+    defense_disabled: std::sync::atomic::AtomicBool,
 }
 
 impl ScannerKillHandle {
@@ -66,11 +69,41 @@ impl ScannerKillHandle {
     ///
     /// Returns `Ok(())` if the request was queued. The actual send result
     /// can be retrieved via [`recv_response`](ScannerKillHandle::recv_response).
+    ///
+    /// If the worker thread has died (panic or unexpected exit), the send
+    /// fails, an error is logged once, and [`defense_disabled`]
+    /// (ScannerKillHandle::defense_disabled) reports `true` from then on —
+    /// the kill defense is gone for the rest of the run.
     pub fn send_kill(
         &self,
         request: KillRequest,
     ) -> Result<(), crossbeam_channel::SendError<KillRequest>> {
-        self.tx.send(request)
+        let result = self.tx.send(request);
+        if result.is_err()
+            && !self
+                .defense_disabled
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            tracing::error!(
+                "scanner-kill worker thread is dead (panicked or exited \
+                 unexpectedly); the --kill-scanner defense is DISABLED for \
+                 the rest of this run — scanners will be detected but no \
+                 longer answered"
+            );
+        }
+        result
+    }
+
+    /// Whether the worker thread is still running.
+    pub fn is_alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
+    }
+
+    /// Whether the kill defense has been marked dead (a send failed because
+    /// the worker exited). Once true, stays true.
+    pub fn defense_disabled(&self) -> bool {
+        self.defense_disabled
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Try to receive a response from the worker (non-blocking).
@@ -319,6 +352,7 @@ pub fn spawn_scanner_kill_worker(
         tx,
         resp_rx,
         thread: Some(thread),
+        defense_disabled: std::sync::atomic::AtomicBool::new(false),
     })
 }
 
@@ -502,6 +536,59 @@ mod tests {
             assert!(limiter.allow());
         }
         assert!(!limiter.allow(), "6th request should be rejected");
+    }
+
+    #[test]
+    fn is_alive_true_for_running_worker() {
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        assert!(handle.is_alive(), "freshly spawned worker must be alive");
+        assert!(!handle.defense_disabled());
+        handle.shutdown();
+        assert!(!handle.is_alive(), "after shutdown the worker is gone");
+    }
+
+    #[test]
+    fn worker_panic_is_detected_and_send_fails_loudly() {
+        // Build a handle around a worker thread that dies immediately
+        // (simulating a panic in the worker loop): its rx end drops on
+        // unwind, exactly like a real panic in ScannerKillWorker::run.
+        let (tx, rx) = crossbeam_channel::bounded::<KillRequest>(256);
+        let (_resp_tx, resp_rx) = crossbeam_channel::bounded::<KillResponse>(256);
+        let thread = std::thread::Builder::new()
+            .name("scanner-kill-test".to_string())
+            .spawn(move || {
+                let _owned = rx;
+                panic!("simulated worker crash");
+            })
+            .expect("spawn");
+
+        // Wait for the thread to finish dying.
+        while !thread.is_finished() {
+            std::thread::yield_now();
+        }
+
+        let mut handle = ScannerKillHandle {
+            tx,
+            resp_rx,
+            thread: Some(thread),
+            defense_disabled: std::sync::atomic::AtomicBool::new(false),
+        };
+
+        assert!(!handle.is_alive(), "dead worker must report not-alive");
+
+        let result = handle.send_kill(KillRequest::SendResponse {
+            dst_addr: localhost_v4(),
+            dst_port: 5060,
+            response_bytes: sample_response(),
+        });
+        assert!(result.is_err(), "send to dead worker must fail, not vanish");
+        assert!(
+            handle.defense_disabled(),
+            "failed send must mark the defense as disabled"
+        );
+
+        // shutdown() joins the panicked thread without propagating the panic.
+        handle.shutdown();
     }
 
     #[test]
