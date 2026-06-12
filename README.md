@@ -146,6 +146,8 @@ Note: `audio` is in the default feature set, so the `libasound2` runtime depende
 - [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
 - [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
 - [Config Reference](docs/config-reference.md) -- TOML config file format
+  (starter file: [contrib/sipnabrc.example](contrib/sipnabrc.example))
+- [MCP Setup](docs/mcp-setup.md) -- token bootstrap, systemd unit, troubleshooting
 - [Implementation Plan](implementation-plan-v6.md) -- architecture and roadmap
 
 ## License

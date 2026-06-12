@@ -1,0 +1,58 @@
+# sipnab configuration — starter example
+#
+# Copy to one of the locations sipnab searches (first match wins):
+#   ./sipnab.toml
+#   ~/.config/sipnab/sipnab.toml
+#   ~/.sipnabrc
+# or pass explicitly:  sipnab -f /path/to/this/file
+#
+# Every key is optional; CLI flags override config values.
+# Full reference: docs/config-reference.md
+
+[capture]
+# Default interface for live capture (overridden by -d).
+device = "eth0"
+# SIP signaling port range used to build the default BPF filter.
+portrange = "5060-5080"
+# Snapshot length in bytes; 65535 captures full packets.
+snaplen = 65535
+# Kernel capture buffer in MiB — raise on busy links if you see drops.
+buffer = 16
+# Set true to ignore RTP and track signaling only (cheaper).
+no_rtp = false
+
+[display]
+# "auto" (default), "always", or "never".
+color = "auto"
+# Show inter-message delta times in the call flow by default.
+delta_time = false
+
+[filter]
+# Default filters applied at startup (same as --from / --to / --filter).
+# from = "^1001@"
+# to = "^180055512"
+# expression = "method == 'INVITE' and rtp.mos < 3.5"
+
+[security]
+# Answer detected scanners with a SIP response (--kill-scanner).
+kill_scanner = false
+# Response code used for scanner kills.
+kill_response = 403
+# Enable fraud heuristics.
+fraud_detect = false
+# Alert sinks: any of "syslog", "json", "exec".
+# alert = ["syslog"]
+# Command run for alert = ["exec"]; alert fields arrive as env vars.
+# alert_exec = "/usr/local/bin/sipnab-alert-hook"
+
+[limits]
+# Maximum concurrently tracked dialogs.
+dialog_limit = 10000
+# Maximum concurrently tracked RTP streams.
+max_streams = 4096
+# Maximum in-flight reassembly sessions.
+max_reassembly = 10000
+# HEP listener inbound rate limit (packets/second).
+hep_rate_limit = 50000
+# Audio frames retained per stream for WAV export (TUI mode).
+max_audio_frames = 1500
