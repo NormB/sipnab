@@ -10,7 +10,7 @@ Set Padding 8
 Set Framerate 10
 
 Hide
-Type "cd /Users/gator/Development/sipnab"
+Type "cd ~/sipnab"
 Enter
 Sleep 500ms
 Show
