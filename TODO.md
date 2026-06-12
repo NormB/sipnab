@@ -45,7 +45,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [ ] **P3. Up to 4 stream_store write-locks per RTP packet** —
   main.rs:943-979 (link/RTCP/RTP/heuristic paths). Merge into one lock
   scope. Bench-verified.
-- [ ] **P8. Store-layer criterion benchmark** — criterion covers parsers
+- [x] **P8. Store-layer criterion benchmark** — criterion covers parsers
   only; add dialog_store/stream_store throughput bench so P3/P4/P7/P1
   wins are measurable. (Do BEFORE the store optimizations.)
 - [ ] **U3. Audio/libasound2 build footgun** — default `audio` feature
