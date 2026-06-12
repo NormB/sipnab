@@ -84,7 +84,7 @@ pub struct ParsedPacket {
     /// Transport-layer protocol.
     pub transport: TransportProto,
     /// Transport-layer payload bytes (e.g., SIP message body, RTP packet).
-    pub payload: Vec<u8>,
+    pub payload: bytes::Bytes,
     /// IPv4 identification field for fragment tracking (`None` for IPv6).
     pub ip_id: Option<u16>,
     /// TCP sequence number (present only for TCP packets).
@@ -141,6 +141,25 @@ fn ip_protocol_to_transport(p: u8) -> TransportProto {
 }
 
 // ── Public API ────────────────────────────────────────────────────────
+
+/// Byte range `child` occupies within `parent`, if `child` is a subslice.
+fn subslice_range(parent: &[u8], child: &[u8]) -> Option<std::ops::Range<usize>> {
+    let p = parent.as_ptr() as usize;
+    let c = child.as_ptr() as usize;
+    let start = c.checked_sub(p)?;
+    let end = start.checked_add(child.len())?;
+    (end <= parent.len()).then_some(start..end)
+}
+
+/// Zero-copy view of `child` (a slice derived from `data`) as `Bytes` —
+/// a refcount bump plus offset, no allocation. Falls back to a copy if
+/// `child` does not alias `data` (defensive; should not happen).
+fn slice_of(data: &bytes::Bytes, child: &[u8]) -> bytes::Bytes {
+    match subslice_range(data, child) {
+        Some(r) => data.slice(r),
+        None => bytes::Bytes::copy_from_slice(child),
+    }
+}
 
 /// Parse a raw captured [`Packet`] into a [`ParsedPacket`].
 ///
@@ -231,14 +250,14 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
     // IP-in-IP (protocol 4) or GRE (protocol 47) — strip and re-parse
     if ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
         // IP-in-IP encapsulation: inner packet is IPv4
-        return parse_inner_ip(packet.timestamp, ip_payload.payload, 0);
+        return parse_inner_ip(packet.timestamp, &packet.data, ip_payload.payload, 0);
     }
     if ip_number == IpNumber::GRE && !ip_payload.fragmented {
-        return parse_gre(packet.timestamp, ip_payload.payload, 0);
+        return parse_gre(packet.timestamp, &packet.data, ip_payload.payload, 0);
     }
 
     // Normal (non-encapsulated) packet — extract fields
-    extract_parsed_packet(packet.timestamp, net, &sliced.transport)
+    extract_parsed_packet(packet.timestamp, &packet.data, net, &sliced.transport)
 }
 
 // ── Encapsulation helpers ─────────────────────────────────────────────
@@ -250,7 +269,12 @@ const MAX_ENCAP_DEPTH: u8 = 5;
 ///
 /// The `depth` parameter tracks recursion depth to prevent stack exhaustion
 /// from maliciously crafted packets with deeply nested encapsulation.
-fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8], depth: u8) -> Result<ParsedPacket> {
+fn parse_inner_ip(
+    timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
+    ip_data: &[u8],
+    depth: u8,
+) -> Result<ParsedPacket> {
     if depth > MAX_ENCAP_DEPTH {
         anyhow::bail!("IP-in-IP encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
     }
@@ -268,20 +292,25 @@ fn parse_inner_ip(timestamp: DateTime<Utc>, ip_data: &[u8], depth: u8) -> Result
         .context("No IP payload in inner packet")?;
 
     if ip_payload.ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
-        return parse_inner_ip(timestamp, ip_payload.payload, depth + 1);
+        return parse_inner_ip(timestamp, data, ip_payload.payload, depth + 1);
     }
     if ip_payload.ip_number == IpNumber::GRE && !ip_payload.fragmented {
-        return parse_gre(timestamp, ip_payload.payload, depth + 1);
+        return parse_gre(timestamp, data, ip_payload.payload, depth + 1);
     }
 
-    extract_parsed_packet(timestamp, net, &sliced.transport)
+    extract_parsed_packet(timestamp, data, net, &sliced.transport)
 }
 
 /// Parse a GRE-encapsulated packet.
 ///
 /// Strips the GRE header (variable length based on flags) and re-parses
 /// the inner IP packet.
-fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8], depth: u8) -> Result<ParsedPacket> {
+fn parse_gre(
+    timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
+    gre_data: &[u8],
+    depth: u8,
+) -> Result<ParsedPacket> {
     if depth > MAX_ENCAP_DEPTH {
         anyhow::bail!("GRE encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
     }
@@ -317,7 +346,7 @@ fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8], depth: u8) -> Result<Par
     let inner = &gre_data[offset..];
 
     match protocol {
-        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => parse_inner_ip(timestamp, inner, depth),
+        ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => parse_inner_ip(timestamp, data, inner, depth),
         _ => anyhow::bail!("Unsupported GRE inner protocol: 0x{protocol:04X}"),
     }
 }
@@ -327,6 +356,7 @@ fn parse_gre(timestamp: DateTime<Utc>, gre_data: &[u8], depth: u8) -> Result<Par
 /// Extract a [`ParsedPacket`] from already-parsed network and transport slices.
 fn extract_parsed_packet(
     timestamp: DateTime<Utc>,
+    data: &bytes::Bytes,
     net: &NetSlice<'_>,
     transport: &Option<TransportSlice<'_>>,
 ) -> Result<ParsedPacket> {
@@ -370,7 +400,7 @@ fn extract_parsed_packet(
     if is_fragment {
         let payload = net
             .ip_payload_ref()
-            .map(|p| p.payload.to_vec())
+            .map(|p| slice_of(data, p.payload))
             .unwrap_or_default();
 
         return Ok(ParsedPacket {
@@ -396,7 +426,7 @@ fn extract_parsed_packet(
         tracing::debug!("SCTP packet detected — not yet parsed");
         let payload = net
             .ip_payload_ref()
-            .map(|p| p.payload.to_vec())
+            .map(|p| slice_of(data, p.payload))
             .unwrap_or_default();
         return Ok(ParsedPacket {
             timestamp,
@@ -428,7 +458,7 @@ fn extract_parsed_packet(
             src_port: udp.source_port(),
             dst_port: udp.destination_port(),
             transport: TransportProto::Udp,
-            payload: udp.payload().to_vec(),
+            payload: slice_of(data, udp.payload()),
             ip_id,
             tcp_seq: None,
             tcp_flags: None,
@@ -443,7 +473,7 @@ fn extract_parsed_packet(
             src_port: tcp.source_port(),
             dst_port: tcp.destination_port(),
             transport: TransportProto::Tcp,
-            payload: tcp.payload().to_vec(),
+            payload: slice_of(data, tcp.payload()),
             ip_id,
             tcp_seq: Some(tcp.sequence_number()),
             tcp_flags: Some(TcpFlags {
@@ -617,7 +647,7 @@ mod tests {
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.transport, TransportProto::Udp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
         assert!(parsed.tcp_seq.is_none());
         assert!(parsed.tcp_flags.is_none());
         assert_eq!(parsed.ip_id, Some(1));
@@ -643,7 +673,7 @@ mod tests {
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5061);
         assert_eq!(parsed.transport, TransportProto::Tcp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(parsed.tcp_seq, Some(1000));
 
         let flags = parsed.tcp_flags.unwrap();
@@ -672,7 +702,7 @@ mod tests {
         assert_eq!(parsed.src_port, 10000);
         assert_eq!(parsed.dst_port, 20000);
         assert_eq!(parsed.transport, TransportProto::Udp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
         assert!(parsed.ip_id.is_none()); // IPv6 has no identification
     }
 
@@ -740,7 +770,7 @@ mod tests {
         assert_eq!(parsed.src_port, 8000);
         assert_eq!(parsed.dst_port, 9000);
         assert_eq!(parsed.transport, TransportProto::Udp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
     }
 
     #[test]
@@ -797,7 +827,7 @@ mod tests {
         assert_eq!(parsed.dst_addr, "192.168.10.2".parse::<IpAddr>().unwrap());
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
     }
 
     #[test]
@@ -843,7 +873,7 @@ mod tests {
         let parsed = parse_packet(&pkt).expect("should parse raw IP");
         assert_eq!(parsed.src_port, 4000);
         assert_eq!(parsed.dst_port, 5000);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
     }
 
     /// When a packet carries pre-parsed metadata (e.g. from a HEP listener
@@ -873,7 +903,7 @@ mod tests {
         assert_eq!(parsed.src_port, 5060);
         assert_eq!(parsed.dst_port, 5060);
         assert_eq!(parsed.transport, TransportProto::Udp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
         assert!(parsed.tcp_seq.is_none());
         assert!(parsed.tcp_flags.is_none());
         assert_eq!(parsed.fragment_offset, None);
@@ -899,6 +929,6 @@ mod tests {
         let parsed = parse_packet(&pkt).expect("should parse via pre-parsed path");
 
         assert_eq!(parsed.transport, TransportProto::Tcp);
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
     }
 }

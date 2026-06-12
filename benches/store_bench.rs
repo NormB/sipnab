@@ -69,7 +69,7 @@ fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
         src_port: 10000 + (ssrc & 0x7fff) as u16,
         dst_port: 4000,
         transport: TransportProto::Udp,
-        payload,
+        payload: payload.into(),
         ip_id: None,
         tcp_seq: None,
         tcp_flags: None,
