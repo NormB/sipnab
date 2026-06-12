@@ -71,6 +71,22 @@ fn readme_long_flags_exist_in_cli() {
 }
 
 #[test]
+fn readme_documents_audio_runtime_dependency_and_headless_recipe() {
+    // The `audio` default feature needs libasound at runtime; README must
+    // keep saying so AND keep showing a no-audio recipe for headless hosts
+    // (same warning build.rs emits — keep the two in sync).
+    let readme = include_str!("../README.md");
+    assert!(
+        readme.contains("libasound"),
+        "README must document the libasound runtime dependency of the audio feature"
+    );
+    assert!(
+        readme.contains("--no-default-features"),
+        "README must show a --no-default-features recipe to drop the audio feature"
+    );
+}
+
+#[test]
 fn extraction_ignores_table_rules_and_em_dashes() {
     let md = "| a |\n|----|\n**Bold** -- prose with -- dashes\n`--real-flag` and ---triple";
     let got = extract_long_flags(md);
