@@ -78,10 +78,12 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **M5. Consolidate `Result<_, String>` into structured errors** — 26
   occurrences (config.rs, output/wireshark.rs, rtp/audio_export.rs,
   rtp/playback.rs). Single `thiserror` enum; no stringly-typed errors.
-- [ ] **M6. Unwrap/expect audit in risk modules** — rtp/srtp.rs (53, crypto),
-  sip/dsl.rs (45), output/api.rs (45), sip/matcher.rs (38). Replace
-  network/file-reachable ones with proper errors; document the invariants
-  behind the rest.
+- [x] ~~**M6. Unwrap/expect audit in risk modules**~~ — INVALID FINDING
+  (verified 2026-06-12): every flagged file (srtp, dsl, api, matcher,
+  crypto, parse, dialog, pcap_reader, parser, config) has ZERO
+  unwrap/expect in production code — the analysis counted `#[cfg(test)]`
+  modules, where unwrap is idiomatic. Hostile-input panic-freedom is
+  separately enforced by tests/smoke_fuzz_test.rs. No change needed.
 - [x] **M7. De-flake timing-based tests** — 14 `sleep()` calls
   (security_test.rs ×13, parse_path_test.rs ×2 [agent counts overlap],
   tui_e2e_test.rs ×1). Replace with channel `recv_timeout` / condition
@@ -122,7 +124,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P3 — larger, after P0–P2
 
-- [ ] **M3. Move synthetic-packet building out of the TUI** —
+- [x] **M3. Move synthetic-packet building out of the TUI** —
   tui/mod.rs:4236-4276 `build_synthetic_packet` → output layer
   (src/output/synthetic.rs); removes TUI→capture layering violation.
 - [ ] **M2. Extract packet pipeline from main.rs** — `process_parsed_packet`,
