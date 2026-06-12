@@ -101,7 +101,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [ ] **U6. docs/mcp-setup.md** — token generation, stdio vs HTTP quick
   start, systemd unit.
 - [ ] **U10. contrib/sipnabrc.example** — shipped example config.
-- [ ] **U4. TUI help discoverability** — F1 help exists (tui/help.rs) but
+- [x] **U4. TUI help discoverability** — F1 help exists (tui/help.rs) but
   nothing on screen says so. "Press F1 for help" hint in the empty
   call-list state.
 - [ ] **S6. Disk-full (ENOSPC) handling test** — verify a mid-capture write
