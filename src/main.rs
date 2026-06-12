@@ -854,6 +854,14 @@ fn run_tui_mode(
                     break;
                 }
             }
+
+            // Flush the output writer explicitly: BufWriter's Drop
+            // discards flush errors (silent truncation on ENOSPC).
+            if let Some(ref mut w) = writer
+                && let Err(e) = w.finish()
+            {
+                tracing::error!("Output file may be incomplete: {e}");
+            }
         });
     let processing_thread = match processing_thread {
         Ok(handle) => handle,
@@ -1417,6 +1425,15 @@ fn run_batch_mode(
             );
             break;
         }
+    }
+
+    // Flush the output writer explicitly: BufWriter's Drop discards
+    // flush errors, so without this an ENOSPC at end of capture would
+    // truncate the file silently with exit code 0.
+    if let Some(ref mut w) = writer
+        && let Err(e) = w.finish()
+    {
+        tracing::error!("Output file may be incomplete: {e}");
     }
 
     // 19. Shut down scanner-kill worker (D16)

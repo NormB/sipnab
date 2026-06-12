@@ -327,6 +327,29 @@ impl PcapWriter {
         self.bytes_written
     }
 
+    /// Flush buffered output to disk, surfacing any deferred write error.
+    ///
+    /// The PCAP-NG backend buffers through a `BufWriter`, whose `Drop`
+    /// flushes but silently DISCARDS errors — without an explicit
+    /// `finish()` at end of capture, the tail of the file can be lost
+    /// (ENOSPC, revoked permissions, dead NFS mount) with exit code 0
+    /// and no operator signal. Call this when capture ends and report
+    /// the error.
+    pub fn finish(&mut self) -> Result<()> {
+        match &mut self.backend {
+            WriterBackend::Pcap(savefile) => savefile
+                .flush()
+                .context("flushing pcap output at end of capture"),
+            WriterBackend::PcapNg(writer) => {
+                use std::io::Write;
+                writer
+                    .get_mut()
+                    .flush()
+                    .context("flushing pcapng output at end of capture")
+            }
+        }
+    }
+
     /// Force rotation to a new output file.
     ///
     /// Closes the current file and opens a new one with an incremented
@@ -461,6 +484,72 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ENOSPC regression tests using /dev/full, which fails every write
+    /// with "No space left on device" without filling a real disk.
+    #[cfg(target_os = "linux")]
+    mod write_failure {
+        use super::*;
+        use crate::capture::packet::Packet;
+
+        fn small_packet() -> Packet {
+            Packet::new(
+                chrono::Utc::now(),
+                vec![0u8; 64],
+                64,
+                64,
+                Some("test0".to_string()),
+                1, // LINKTYPE_ETHERNET
+            )
+        }
+
+        /// Sustained writes to a full disk must surface as an Err from
+        /// write(), never a panic or silent success forever.
+        #[test]
+        fn sustained_writes_to_full_disk_error_out() {
+            let mut w = PcapWriter::with_format(
+                Path::new("/dev/full"),
+                1,
+                None,
+                None,
+                true, // pcapng (buffered) — the interesting backend
+                PcapExportMode::Raw,
+            )
+            .expect("open /dev/full (writes are buffered)");
+
+            let pkt = small_packet();
+            // BufWriter defaults to 8 KiB; well under 4096 × 64B writes
+            // the buffer must spill to the device and hit ENOSPC.
+            let failed = (0..4096).any(|_| w.write(&pkt).is_err());
+            assert!(failed, "writing 256 KiB to /dev/full must surface an error");
+        }
+
+        /// A small tail of packets can sit in the BufWriter when capture
+        /// ends; Drop discards flush errors silently. finish() must
+        /// surface the deferred failure so the operator learns the file
+        /// is incomplete.
+        #[test]
+        fn finish_surfaces_deferred_flush_error() {
+            let mut w = PcapWriter::with_format(
+                Path::new("/dev/full"),
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+            )
+            .expect("open /dev/full");
+
+            // One small packet: stays buffered, write() reports Ok.
+            let _ = w.write(&small_packet());
+
+            let result = w.finish();
+            assert!(
+                result.is_err(),
+                "finish() must report the deferred ENOSPC, got Ok"
+            );
+        }
+    }
 
     #[test]
     fn rotated_path_with_extension() {
