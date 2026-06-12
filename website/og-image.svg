@@ -1,0 +1,137 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <!-- ===== sipnab.com Open Graph card 1200x630 ===== -->
+  <!-- palette: bg #0a0e14 surface #1f2430 border #2d3640 text #cbccc6
+       dim #707a8c amber #ffcc66 blue #73d0ff green #bae67e red #ff6666 -->
+
+  <!-- canvas -->
+  <rect width="1200" height="630" fill="#0a0e14"/>
+
+  <!-- terminal window frame (generous outer margin) -->
+  <rect x="40" y="40" width="1120" height="550" rx="14" ry="14"
+        fill="#0a0e14" stroke="#2d3640" stroke-width="1"/>
+  <!-- title bar -->
+  <path d="M40 54 a14 14 0 0 1 14 -14 h1092 a14 14 0 0 1 14 14 v28 h-1120 z"
+        fill="#1f2430"/>
+  <line x1="40" y1="82" x2="1160" y2="82" stroke="#2d3640" stroke-width="1"/>
+  <!-- window dots -->
+  <circle cx="68"  cy="61" r="6" fill="#2d3640"/>
+  <circle cx="90"  cy="61" r="6" fill="#2d3640"/>
+  <circle cx="112" cy="61" r="6" fill="#2d3640"/>
+  <!-- title bar label -->
+  <text x="600" y="66" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="400" font-size="15"
+        fill="#707a8c">sipnab — call flow</text>
+
+  <!-- ============ LEFT TWO-THIRDS : brand ============ -->
+
+  <!-- logo mark: amber rounded square with lowercase s -->
+  <rect x="96" y="140" width="64" height="64" rx="8" ry="8" fill="#ffcc66"/>
+  <text x="128" y="190" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="700" font-size="52"
+        fill="#0a0e14">s</text>
+
+  <!-- wordmark -->
+  <text x="178" y="194"
+        font-family="JetBrains Mono" font-weight="700" font-size="118"
+        fill="#ffcc66" letter-spacing="-2">sipnab</text>
+
+  <!-- tagline (Inter) -->
+  <text x="98" y="300"
+        font-family="Inter" font-weight="600" font-size="33"
+        fill="#cbccc6">The SIP &amp; RTP analysis tool for people</text>
+  <text x="98" y="344"
+        font-family="Inter" font-weight="600" font-size="33"
+        fill="#cbccc6">who ship voice infrastructure.</text>
+
+  <!-- supporting line -->
+  <text x="98" y="412"
+        font-family="JetBrains Mono" font-weight="400" font-size="20"
+        fill="#707a8c">One binary.<tspan fill="#cbccc6"> Terminal UI</tspan> · <tspan fill="#cbccc6">CLI</tspan> · <tspan fill="#cbccc6">REST API</tspan> · <tspan fill="#cbccc6">WebAssembly</tspan>.</text>
+  <text x="98" y="444"
+        font-family="JetBrains Mono" font-weight="400" font-size="20"
+        fill="#707a8c">Built in <tspan fill="#ffcc66">Rust</tspan>.</text>
+
+  <!-- domain bottom-left -->
+  <text x="98" y="552"
+        font-family="JetBrains Mono" font-weight="500" font-size="20"
+        fill="#707a8c">sipnab.com</text>
+
+  <!-- ============ RIGHT THIRD : call-flow ladder ============ -->
+  <!-- lifelines at x=778 (left) and x=1092 (right) -->
+
+  <!-- big, clearly-visible arrowheads, color-matched per message -->
+  <defs>
+    <marker id="hGray" markerWidth="13" markerHeight="12" refX="11" refY="6"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L13 6 L0 12 Z" fill="#9aa3b2"/>
+    </marker>
+    <marker id="hGreen" markerWidth="13" markerHeight="12" refX="11" refY="6"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L13 6 L0 12 Z" fill="#bae67e"/>
+    </marker>
+    <marker id="hAmber" markerWidth="12" markerHeight="11" refX="10" refY="5.5"
+            orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0 0 L12 5.5 L0 11 Z" fill="#ffcc66"/>
+    </marker>
+  </defs>
+
+  <!-- endpoint pills -->
+  <rect x="716" y="128" width="124" height="36" rx="7" ry="7"
+        fill="#1f2430" stroke="#2d3640" stroke-width="1"/>
+  <text x="778" y="152" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#73d0ff">10.0.0.1</text>
+  <rect x="1030" y="128" width="124" height="36" rx="7" ry="7"
+        fill="#1f2430" stroke="#2d3640" stroke-width="1"/>
+  <text x="1092" y="152" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#73d0ff">10.0.0.2</text>
+
+  <!-- lifelines (dashed, like a real sequence diagram) -->
+  <line x1="778"  y1="164" x2="778"  y2="544" stroke="#2d3640" stroke-width="2"
+        stroke-dasharray="2 7" stroke-linecap="round"/>
+  <line x1="1092" y1="164" x2="1092" y2="544" stroke="#2d3640" stroke-width="2"
+        stroke-dasharray="2 7" stroke-linecap="round"/>
+
+  <!-- INVITE  -> -->
+  <text x="935" y="216" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#cbccc6">INVITE</text>
+  <line x1="778" y1="232" x2="1088" y2="232" stroke="#9aa3b2" stroke-width="2.5"
+        marker-end="url(#hGray)"/>
+
+  <!-- 180 Ringing <- -->
+  <text x="935" y="278" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#707a8c">180 Ringing</text>
+  <line x1="1092" y1="294" x2="782" y2="294" stroke="#9aa3b2" stroke-width="2.5"
+        marker-end="url(#hGray)"/>
+
+  <!-- 200 OK <-  (green) -->
+  <text x="935" y="340" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="700" font-size="18"
+        fill="#bae67e">200 OK</text>
+  <line x1="1092" y1="356" x2="782" y2="356" stroke="#bae67e" stroke-width="2.5"
+        marker-end="url(#hGreen)"/>
+
+  <!-- ACK  -> -->
+  <text x="935" y="402" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#cbccc6">ACK</text>
+  <line x1="778" y1="418" x2="1088" y2="418" stroke="#9aa3b2" stroke-width="2.5"
+        marker-end="url(#hGray)"/>
+
+  <!-- RTP  thick amber media stream, bidirectional -->
+  <text x="935" y="466" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="700" font-size="18"
+        fill="#ffcc66">RTP media</text>
+  <line x1="780" y1="482" x2="1090" y2="482" stroke="#ffcc66" stroke-width="6"
+        stroke-linecap="round"/>
+
+  <!-- BYE -> -->
+  <text x="935" y="528" text-anchor="middle"
+        font-family="JetBrains Mono" font-weight="500" font-size="18"
+        fill="#707a8c">BYE</text>
+  <line x1="778" y1="544" x2="1088" y2="544" stroke="#9aa3b2" stroke-width="2.5"
+        marker-end="url(#hGray)"/>
+</svg>
