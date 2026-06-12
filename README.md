@@ -15,7 +15,7 @@ security analysis.
 - **SIP header matching** -- From, To, Contact, User-Agent, filter DSL
 - **RTP quality monitoring** -- jitter, loss, MOS scoring, one-way audio detection
 - **Per-call asymmetry signals** -- codec, ptime, payload-type, duration, late-media (Phase 8.7)
-- **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues`, `--codec-asym`, `--ptime-asym`, `--payload-asym`, `--duration-asym`, `--late-media`
+- **Diagnostic aliases** -- `--problems`, `--slow-setup`, `--short-calls`, `--one-way`, `--nat-issues` as flags; `codec-asym`, `ptime-asym`, `payload-asym`, `duration-asym`, `late-media` via `--filter` (e.g. `sipnab -N -I capture.pcap --filter codec-asym`)
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
 - **HEP v3** -- send/receive Homer Encapsulation Protocol
