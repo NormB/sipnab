@@ -21,7 +21,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   `--ptime-asym`, `--payload-asym`, `--duration-asym`, `--late-media`
   (README.md:18) are filter-DSL aliases, not flags. Fix README, add a
   drift test asserting every `--flag` named in README exists in cli.rs.
-- [ ] **S7. Silent timestamp fallback corrupts capture timing** —
+- [x] **S7. Silent timestamp fallback corrupts capture timing** —
   `pcap_ts_to_chrono` (src/capture/live.rs:134) substitutes `Utc::now()` for
   unconvertible timestamps with no log. Warn loudly (rate-limited) and count.
 
