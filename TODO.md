@@ -42,13 +42,15 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **P4. Call-ID allocated per message just for lookup** —
   dialog_store.rs:101 does `id.to_string()` before `get_mut`. Use
   `Borrow<str>` lookup; allocate only on insert. Bench-verified.
-- [ ] **P3. Up to 4 stream_store write-locks per RTP packet** —
-  main.rs:943-979 (link/RTCP/RTP/heuristic paths). Merge into one lock
-  scope. Bench-verified.
+- [x] ~~**P3. Up to 4 stream_store write-locks per RTP packet**~~ —
+  INVALID FINDING (verified 2026-06-12): the four `stream_store.write()`
+  sites in main.rs are mutually exclusive branches, each ending in
+  `return`; every packet takes at most ONE stream-store lock, and parsing
+  already happens outside the lock by design. No change needed.
 - [x] **P8. Store-layer criterion benchmark** — criterion covers parsers
   only; add dialog_store/stream_store throughput bench so P3/P4/P7/P1
   wins are measurable. (Do BEFORE the store optimizations.)
-- [ ] **U3. Audio/libasound2 build footgun** — default `audio` feature
+- [x] **U3. Audio/libasound2 build footgun** — default `audio` feature
   fails at runtime on headless servers with no warning. Add
   `cargo:warning` in build.rs naming the headless recipe; prominent
   README note.
