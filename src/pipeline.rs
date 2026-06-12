@@ -94,17 +94,22 @@ pub fn process_packet(
 ) {
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
-    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
     let effective_transport = if ws_payload.is_some() {
         TransportProto::Ws
     } else {
         pp.transport
     };
+    // Owned ws frames become Bytes; otherwise share the packet buffer.
+    let effective_payload: bytes::Bytes = match ws_payload {
+        Some(v) => v.into(),
+        None => pp.payload.clone(),
+    };
+    let effective_payload = &effective_payload;
 
     // Try SIP detection first — parse OUTSIDE the lock, then do a quick
     // write-lock-and-release to minimize contention with the TUI render thread.
     if sip::is_sip_message(effective_payload) {
-        if let Ok(sip_msg) = sip::parse_sip(
+        if let Ok(sip_msg) = sip::parser::parse_sip_bytes(
             effective_payload,
             pp.timestamp,
             pp.src_addr,

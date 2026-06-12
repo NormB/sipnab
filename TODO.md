@@ -133,9 +133,14 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   mode's richer orchestration (output/security interleaving) remains in
   main.rs by design — unifying the two modes is future work, the
   testability gap is closed.
-- [ ] **P2. `Cow<'a, str>` SIP header values** — parser.rs allocates a String
-  per header value plus full `data.to_vec()`; borrow from the raw buffer.
-  (Pairs with P1; do after P1's lifetime design.)
+- [x] **P2. SIP message buffer sharing** — shipped as `SipMessage.raw` and
+  `.body` becoming zero-copy `Bytes` views of the packet payload (new
+  `parse_sip_bytes`; hot paths use it, `parse_sip(&[u8])` unchanged for
+  tests/fuzzers/wasm). Side win: the batch path's per-message
+  `msg.clone()` into the dialog store no longer copies the raw bytes.
+  The original "Cow header values" idea is REJECTED: headers borrowing
+  from a sibling `raw` field is a self-referential struct, and P1's A/B
+  showed the copies it would save are cost-neutral at SIP header sizes.
 - [x] **M8. Rustdoc on public API** — lib.rs re-exports have no docs;
   add rustdoc + `#![warn(missing_docs)]` for the library surface.
 
