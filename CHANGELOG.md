@@ -4,7 +4,11 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-12
+## [0.4.1] - 2026-06-12
+
+(Version 0.4.0 was skipped: its tag name was consumed and then
+invalidated by an immutable-release deletion during the release
+process; no 0.4.0 artifacts were ever published.)
 
 Hardening, performance, and maintainability pass driven by a
 four-dimension project analysis (maintainability, survivability,
