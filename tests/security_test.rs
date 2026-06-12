@@ -2,6 +2,7 @@
 //!
 //! Each test validates that a specific audit finding is fixed and cannot
 //! regress. Tests are organized by audit finding ID (C1, H1, M2, etc.).
+#![cfg(feature = "native")]
 
 use std::net::{IpAddr, Ipv4Addr};
 

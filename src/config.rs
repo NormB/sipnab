@@ -679,6 +679,7 @@ filter = "/"
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
     }
 
+    #[cfg(feature = "tui")]
     #[test]
     fn parse_color_names() {
         use ratatui::style::Color;
@@ -691,6 +692,7 @@ filter = "/"
         assert_eq!(parse_color("bogus"), None);
     }
 
+    #[cfg(feature = "tui")]
     #[test]
     fn parse_keycode_values() {
         use crossterm::event::KeyCode;

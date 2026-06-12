@@ -3,6 +3,7 @@
 //! Each test parses a minimal argument list (`["sipnab", "-N"]`) and asserts the
 //! default for one field.  This catches documentation drift — if a default
 //! changes in `src/cli.rs`, the corresponding test here will fail.
+#![cfg(feature = "native")]
 
 use clap::Parser;
 use sipnab::cli::Cli;

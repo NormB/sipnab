@@ -238,6 +238,7 @@ fn fuzz_rtcp_parser_no_panic() {
     });
 }
 
+#[cfg(feature = "hep")]
 #[test]
 fn fuzz_hep_parser_no_panic() {
     pound("hep_parser", &[], ITERS, |d| {
@@ -290,6 +291,11 @@ fn fuzz_text_entry_points_no_panic() {
         }
     });
 
+}
+
+#[cfg(feature = "tls")]
+#[test]
+fn fuzz_tls_text_entry_points_no_panic() {
     let id_seed =
         b"eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.sig;info=<https://x/c.cer>;alg=ES256;ppt=shaken"
             .to_vec();
