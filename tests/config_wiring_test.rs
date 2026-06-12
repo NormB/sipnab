@@ -413,3 +413,32 @@ fn cargo_toml_release_profile_optimized() {
         "Release profile should use single codegen unit"
     );
 }
+
+/// contrib/sipnabrc.example is the shipped starter config: it must stay
+/// parseable by the real loader and its values must land, or the first
+/// thing a new user copies breaks.
+#[test]
+fn contrib_example_config_parses_with_real_loader() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/contrib/sipnabrc.example");
+    // skip_default=false: with `true` the loader returns defaults without
+    // reading even the explicit path.
+    let loaded = sipnab::config::Config::load(Some(path), false)
+        .expect("contrib/sipnabrc.example must parse with the real config loader");
+    // Spot-check a value from each section so a renamed key can't slip by
+    // as silently-ignored TOML.
+    assert_eq!(
+        loaded.config.capture.portrange.as_deref(),
+        Some("5060-5080"),
+        "capture.portrange from the example must land"
+    );
+    assert_eq!(
+        loaded.config.display.color.as_deref(),
+        Some("auto"),
+        "display.color from the example must land"
+    );
+    assert_eq!(
+        loaded.config.limits.max_streams,
+        Some(4096),
+        "limits.max_streams from the example must land"
+    );
+}
