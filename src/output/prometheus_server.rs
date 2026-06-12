@@ -191,7 +191,14 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Parse a bind address string into a [`SocketAddr`].
 ///
 /// Same logic as the API bind address parser: accepts `:port`, `port`, or `addr:port`.
-pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, String> {
+pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
+    parse_metrics_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
+        input: addr.to_string(),
+        reason,
+    })
+}
+
+fn parse_metrics_addr_inner(addr: &str) -> Result<SocketAddr, String> {
     // Just a port number
     if let Ok(port) = addr.parse::<u16>() {
         return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));

@@ -44,8 +44,15 @@ impl AlertRule {
     ///
     /// # Errors
     ///
-    /// Returns an error string if the rule grammar is invalid.
-    pub fn parse(rule_str: &str) -> Result<Self, String> {
+    /// Returns [`crate::Error::InvalidAlertRule`] if the grammar is invalid.
+    pub fn parse(rule_str: &str) -> Result<Self, crate::Error> {
+        Self::parse_inner(rule_str).map_err(|reason| crate::Error::InvalidAlertRule {
+            input: rule_str.to_string(),
+            reason,
+        })
+    }
+
+    fn parse_inner(rule_str: &str) -> Result<Self, String> {
         // Split into name:rest
         let (name, rest) = rule_str
             .split_once(':')
@@ -532,7 +539,12 @@ mod tests {
         for i in 0..2000u32 {
             engine.fire(
                 "scanner",
-                IpAddr::V4(std::net::Ipv4Addr::new(10, 0, (i / 256) as u8, (i % 256) as u8)),
+                IpAddr::V4(std::net::Ipv4Addr::new(
+                    10,
+                    0,
+                    (i / 256) as u8,
+                    (i % 256) as u8,
+                )),
                 &format!("seq={i}"),
             );
         }
