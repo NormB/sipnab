@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;mcp&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;mcp&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -93,24 +100,29 @@ local agent the ability to query live captures in natural language,
 without you having to memorize CLI flags.</p>
 <h2 id="quick-start-stdio">Quick start (stdio)</h2>
 <p>The simplest way to drive sipnab from a local agent:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #5A6673;font-style: italic;">            # stdio is the default transport</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab --mcp -I capture.pcap            # stdio is the default transport
+</code></pre>
 <p>Add this server to your MCP client. For Claude Desktop, the config block
 looks like:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;mcpServers&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;command&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;args&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;/path/to/capture.pcap&quot;</span><span>]</span></span>
-<span class="giallo-l"><span>    }</span></span>
-<span class="giallo-l"><span>  }</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre>
+<pre data-lang="json" class="language-json "><code class="language-json" data-lang="json">{
+  &quot;mcpServers&quot;: {
+    &quot;sipnab&quot;: {
+      &quot;command&quot;: &quot;sipnab&quot;,
+      &quot;args&quot;: [&quot;--mcp&quot;, &quot;-I&quot;, &quot;&#x2F;path&#x2F;to&#x2F;capture.pcap&quot;]
+    }
+  }
+}
+</code></pre>
 <p>For a live capture against an interface (root or <code>CAP_NET_RAW</code>):</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --mcp -d</span><span style="color: #AAD94C;"> eth0</span></span></code></pre><h2 id="quick-start-http-remote-agent">Quick start (HTTP — remote agent)</h2>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sudo sipnab --mcp -d eth0
+</code></pre>
+<h2 id="quick-start-http-remote-agent">Quick start (HTTP — remote agent)</h2>
 <p>When the agent runs on a different host, switch to the HTTP transport:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp --mcp-transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-bind</span><span style="color: #AAD94C;"> 127.0.0.1:8731</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-token-file</span><span style="color: #AAD94C;"> /etc/sipnab/mcp.token</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       -I</span><span style="color: #AAD94C;"> capture.pcap</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab --mcp --mcp-transport http \
+       --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file &#x2F;etc&#x2F;sipnab&#x2F;mcp.token \
+       -I capture.pcap
+</code></pre>
 <ul>
 <li>The default bind is loopback. Non-loopback binds <strong>must</strong> supply
 <code>--mcp-token</code> / <code>--mcp-token-file</code> / <code>SIPNAB_MCP_TOKEN</code>; otherwise
@@ -124,12 +136,13 @@ sipnab refuses to start.</li>
 allowlist. The default set is <code>localhost</code>, <code>127.0.0.1</code>, <code>::1</code>. When
 clients reach sipnab via a hostname or non-loopback IP, add it to the
 allowlist:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --mcp --mcp-transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-bind</span><span style="color: #AAD94C;"> 0.0.0.0:8731</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-token-file</span><span style="color: #AAD94C;"> /etc/sipnab/mcp.token</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-allowed-host</span><span style="color: #AAD94C;"> capture.example.com</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --mcp-allowed-host</span><span style="color: #D2A6FF;"> 203.0.113.7</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       -I</span><span style="color: #AAD94C;"> capture.pcap</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab --mcp --mcp-transport http \
+       --mcp-bind 0.0.0.0:8731 \
+       --mcp-token-file &#x2F;etc&#x2F;sipnab&#x2F;mcp.token \
+       --mcp-allowed-host capture.example.com \
+       --mcp-allowed-host 203.0.113.7 \
+       -I capture.pcap
+</code></pre>
 <p>The literal <code>*</code> disables host checking entirely (paired with a
 network-level source-IP allowlist as the substitute defense).</p>
 <h2 id="available-tools">Available tools</h2>
@@ -180,93 +193,102 @@ as <code>--json</code>, <code>--json-pretty</code>, <code>--report</code>, <code
 if you want the surrounding text-mode capture output suppressed
 entirely.</p>
 <h2 id="build-flags">Build flags</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="toml"><span class="giallo-l"><span style="color: #D95757;">mcp       </span><span style="color: #5A6673;font-style: italic;"># stdio transport (rmcp dep, ~3 MB binary cost)</span></span>
-<span class="giallo-l"><span style="color: #D95757;">mcp-http  </span><span style="color: #5A6673;font-style: italic;"># HTTP transport (mcp + api; rmcp/transport-streamable-http-server)</span></span>
-<span class="giallo-l"><span style="color: #D95757;">full      </span><span style="color: #5A6673;font-style: italic;"># native + tui + tls + hep + api + audio + mcp + mcp-http</span></span></code></pre>
+<pre data-lang="toml" class="language-toml "><code class="language-toml" data-lang="toml">mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
+mcp-http  # HTTP transport (mcp + api; rmcp&#x2F;transport-streamable-http-server)
+full      # native + tui + tls + hep + api + audio + mcp + mcp-http
+</code></pre>
 <p>The default build does not include <code>mcp</code> — operators who’ll never
 expose the MCP surface pay zero binary size for it.</p>
 <h2 id="client-cookbook">Client cookbook</h2>
 <p>Concrete examples for the MCP clients people actually use.</p>
 <h3 id="claude-desktop">Claude Desktop</h3>
 <p>Edit <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> (macOS) or <code>%APPDATA%\Claude\claude_desktop_config.json</code> (Windows):</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;mcpServers&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;command&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;args&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;/path/to/capture.pcap&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span></span>
-<span class="giallo-l"><span>    }</span></span>
-<span class="giallo-l"><span>  }</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre>
+<pre data-lang="json" class="language-json "><code class="language-json" data-lang="json">{
+  &quot;mcpServers&quot;: {
+    &quot;sipnab&quot;: {
+      &quot;command&quot;: &quot;sipnab&quot;,
+      &quot;args&quot;: [&quot;--mcp&quot;, &quot;-I&quot;, &quot;&#x2F;path&#x2F;to&#x2F;capture.pcap&quot;, &quot;--quiet&quot;]
+    }
+  }
+}
+</code></pre>
 <p>For a live capture (requires <code>CAP_NET_RAW</code> or root — Claude Desktop won’t grant either, so this is for environments where you’ll manually <code>setcap</code> the binary):</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">  &quot;mcpServers&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">    &quot;sipnab-live&quot;</span><span style="color: #BFBDB6B3;">:</span><span> {</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;command&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sudo&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span style="color: #39BAE6;">      &quot;args&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;-n&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-d&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;eth0&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span></span>
-<span class="giallo-l"><span>    }</span></span>
-<span class="giallo-l"><span>  }</span></span>
-<span class="giallo-l"><span>}</span></span></code></pre>
+<pre data-lang="json" class="language-json "><code class="language-json" data-lang="json">{
+  &quot;mcpServers&quot;: {
+    &quot;sipnab-live&quot;: {
+      &quot;command&quot;: &quot;sudo&quot;,
+      &quot;args&quot;: [&quot;-n&quot;, &quot;sipnab&quot;, &quot;--mcp&quot;, &quot;-d&quot;, &quot;eth0&quot;, &quot;--quiet&quot;]
+    }
+  }
+}
+</code></pre>
 <p>(<code>sudo -n</code> fails fast if no NOPASSWD rule is in place — keeps the agent from hanging on a password prompt.)</p>
 <p>Restart Claude Desktop. The agent will list <code>sipnab</code> under “Connected” — ask it “what dialogs failed in this capture?” and watch it call <code>find_problems</code> for you.</p>
 <h3 id="claude-code">Claude Code</h3>
 <p>From your project directory:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># trailing `sipnab --mcp ...` is treated as the launched command)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add sipnab</span><span style="color: #95E6CB;"> --</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> &quot;</span><span>$PWD</span><span style="color: #AAD94C;">/capture.pcap&quot;</span><span style="color: #95E6CB;"> --quiet</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># HTTP against a remote sipnab — flags before the positional name + URL</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp add</span><span style="color: #95E6CB;"> --transport</span><span style="color: #AAD94C;"> http</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">       --header</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer $(</span><span style="color: #59C2FF;">cat</span><span style="color: #AAD94C;"> ~/.config/sipnab/token)&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">       sipnab-remote https://capture.example.com/mcp</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Verify</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">claude</span><span style="color: #AAD94C;"> mcp list</span></span></code></pre><h3 id="raw-stdio-json-rpc-test-for-client-developers">Raw stdio JSON-RPC test (for client developers)</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the
+# trailing `sipnab --mcp ...` is treated as the launched command)
+claude mcp add sipnab -- sipnab --mcp -I &quot;$PWD&#x2F;capture.pcap&quot; --quiet
+
+# HTTP against a remote sipnab — flags before the positional name + URL
+claude mcp add --transport http \
+       --header &quot;Authorization: Bearer $(cat ~&#x2F;.config&#x2F;sipnab&#x2F;token)&quot; \
+       sipnab-remote https:&#x2F;&#x2F;capture.example.com&#x2F;mcp
+
+# Verify
+claude mcp list
+</code></pre>
+<h3 id="raw-stdio-json-rpc-test-for-client-developers">Raw stdio JSON-RPC test (for client developers)</h3>
 <p>The simplest way to confirm the server is alive without an MCP client:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>{</span></span>
-<span class="giallo-l"><span style="color: #F07178;">  echo</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;0&quot;}}}&#39;</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">  sleep</span><span style="color: #D2A6FF;"> 0.3</span></span>
-<span class="giallo-l"><span style="color: #F07178;">  echo</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;notifications/initialized&quot;}&#39;</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">  sleep</span><span style="color: #D2A6FF;"> 0.1</span></span>
-<span class="giallo-l"><span style="color: #F07178;">  echo</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools/list&quot;}&#39;</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">  sleep</span><span style="color: #D2A6FF;"> 0.5</span></span>
-<span class="giallo-l"><span>}</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sipnab</span><span style="color: #95E6CB;"> --mcp -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --quiet</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> head</span><span style="color: #95E6CB;"> -c</span><span style="color: #D2A6FF;"> 2000</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">{
+  echo &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;test&quot;,&quot;version&quot;:&quot;0&quot;}}}&#x27;
+  sleep 0.3
+  echo &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;method&quot;:&quot;notifications&#x2F;initialized&quot;}&#x27;
+  sleep 0.1
+  echo &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools&#x2F;list&quot;}&#x27;
+  sleep 0.5
+} | sipnab --mcp -I capture.pcap --quiet | head -c 2000
+</code></pre>
 <p>Expected first line of response:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="json"><span class="giallo-l"><span>{</span><span style="color: #39BAE6;">&quot;jsonrpc&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;">&quot;2.0&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;id&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;">1</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;result&quot;</span><span style="color: #BFBDB6B3;">:</span><span>{</span><span style="color: #39BAE6;">&quot;protocolVersion&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;">&quot;2025-06-18&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;capabilities&quot;</span><span style="color: #BFBDB6B3;">:</span><span>{</span><span style="color: #39BAE6;">&quot;tools&quot;</span><span style="color: #BFBDB6B3;">:</span><span>{}}</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;serverInfo&quot;</span><span style="color: #BFBDB6B3;">:</span><span>{</span><span style="color: #39BAE6;">&quot;name&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;">&quot;rmcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;version&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;">&quot;1.6.0&quot;</span><span>}</span><span style="color: #BFBDB6B3;">,</span><span style="color: #39BAE6;">&quot;instructions&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;">&quot;sipnab MCP server — read-only access ...&quot;</span><span>}}</span></span></code></pre><h3 id="raw-http-test">Raw HTTP test</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span>TOKEN</span><span style="color: #F29668;">=</span><span>$(</span><span style="color: #59C2FF;">cat</span><span style="color: #AAD94C;"> /etc/sipnab/mcp-token</span><span>)</span></span>
-<span class="giallo-l"><span>URL</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;http://capture.example.com:8731/mcp&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Initialize</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> &quot;</span><span>$URL</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;curl&quot;,&quot;version&quot;:&quot;0&quot;}}}&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># tools/call — find_problems with multiple aliases</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> &quot;</span><span>$URL</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools/call&quot;,</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">       &quot;params&quot;:{&quot;name&quot;:&quot;find_problems&quot;,</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">                 &quot;arguments&quot;:{&quot;kinds&quot;:[&quot;one-way&quot;,&quot;late-media&quot;,&quot;codec-asym&quot;]}}}&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># tools/call — get_dialog with pagination</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> &quot;</span><span>$URL</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:3,&quot;method&quot;:&quot;tools/call&quot;,</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">       &quot;params&quot;:{&quot;name&quot;:&quot;get_dialog&quot;,</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">                 &quot;arguments&quot;:{&quot;call_id&quot;:&quot;abc123@host&quot;,&quot;cursor&quot;:0,&quot;max_messages&quot;:50}}}&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># tools/call — security_findings</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">curl</span><span style="color: #95E6CB;"> -sS</span><span style="color: #AAD94C;"> &quot;</span><span>$URL</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Content-Type: application/json&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Accept: application/json, text/event-stream&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -H</span><span style="color: #AAD94C;"> &quot;Authorization: Bearer </span><span>$TOKEN</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  -d</span><span style="color: #AAD94C;"> &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:4,&quot;method&quot;:&quot;tools/call&quot;,</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">       &quot;params&quot;:{&quot;name&quot;:&quot;security_findings&quot;,&quot;arguments&quot;:{&quot;limit&quot;:20}}}&#39;</span></span></code></pre>
+<pre data-lang="json" class="language-json "><code class="language-json" data-lang="json">{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;result&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{&quot;tools&quot;:{}},&quot;serverInfo&quot;:{&quot;name&quot;:&quot;rmcp&quot;,&quot;version&quot;:&quot;1.6.0&quot;},&quot;instructions&quot;:&quot;sipnab MCP server — read-only access ...&quot;}}
+</code></pre>
+<h3 id="raw-http-test">Raw HTTP test</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">TOKEN=$(cat &#x2F;etc&#x2F;sipnab&#x2F;mcp-token)
+URL=&quot;http:&#x2F;&#x2F;capture.example.com:8731&#x2F;mcp&quot;
+
+# Initialize
+curl -sS &quot;$URL&quot; \
+  -H &quot;Content-Type: application&#x2F;json&quot; \
+  -H &quot;Accept: application&#x2F;json, text&#x2F;event-stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -d &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;initialize&quot;,&quot;params&quot;:{&quot;protocolVersion&quot;:&quot;2025-06-18&quot;,&quot;capabilities&quot;:{},&quot;clientInfo&quot;:{&quot;name&quot;:&quot;curl&quot;,&quot;version&quot;:&quot;0&quot;}}}&#x27;
+
+# tools&#x2F;call — find_problems with multiple aliases
+curl -sS &quot;$URL&quot; \
+  -H &quot;Content-Type: application&#x2F;json&quot; \
+  -H &quot;Accept: application&#x2F;json, text&#x2F;event-stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -d &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:2,&quot;method&quot;:&quot;tools&#x2F;call&quot;,
+       &quot;params&quot;:{&quot;name&quot;:&quot;find_problems&quot;,
+                 &quot;arguments&quot;:{&quot;kinds&quot;:[&quot;one-way&quot;,&quot;late-media&quot;,&quot;codec-asym&quot;]}}}&#x27;
+
+# tools&#x2F;call — get_dialog with pagination
+curl -sS &quot;$URL&quot; \
+  -H &quot;Content-Type: application&#x2F;json&quot; \
+  -H &quot;Accept: application&#x2F;json, text&#x2F;event-stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -d &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:3,&quot;method&quot;:&quot;tools&#x2F;call&quot;,
+       &quot;params&quot;:{&quot;name&quot;:&quot;get_dialog&quot;,
+                 &quot;arguments&quot;:{&quot;call_id&quot;:&quot;abc123@host&quot;,&quot;cursor&quot;:0,&quot;max_messages&quot;:50}}}&#x27;
+
+# tools&#x2F;call — security_findings
+curl -sS &quot;$URL&quot; \
+  -H &quot;Content-Type: application&#x2F;json&quot; \
+  -H &quot;Accept: application&#x2F;json, text&#x2F;event-stream&quot; \
+  -H &quot;Authorization: Bearer $TOKEN&quot; \
+  -d &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:4,&quot;method&quot;:&quot;tools&#x2F;call&quot;,
+       &quot;params&quot;:{&quot;name&quot;:&quot;security_findings&quot;,&quot;arguments&quot;:{&quot;limit&quot;:20}}}&#x27;
+</code></pre>
 <p>Common failure modes:</p>
 <table><thead><tr><th>Status</th><th>Cause</th></tr></thead><tbody>
 <tr><td><code>401</code></td><td>Missing or wrong <code>Authorization: Bearer ...</code></td></tr>
@@ -275,65 +297,70 @@ expose the MCP surface pay zero binary size for it.</p>
 <tr><td><code>406 Not Acceptable</code></td><td>Missing <code>Accept: application/json, text/event-stream</code></td></tr>
 </tbody></table>
 <h3 id="python-mcp-client-using-the-mcp-sdk">Python MCP client (using the <code>mcp</code> SDK)</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="python"><span class="giallo-l"><span style="color: #AAD94C;">&quot;&quot;&quot;Minimal MCP client driving sipnab over stdio.&quot;&quot;&quot;</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> asyncio</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">from</span><span> mcp</span><span style="color: #FF8F40;"> import</span><span> ClientSession</span><span style="color: #BFBDB6B3;">,</span><span> StdioServerParameters</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">from</span><span> mcp</span><span style="color: #BFBDB6B3;">.</span><span>client</span><span style="color: #BFBDB6B3;">.</span><span>stdio</span><span style="color: #FF8F40;"> import</span><span> stdio_client</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">async def</span><span style="color: #FFB454;"> main</span><span>(</span><span style="color: #D2A6FF;">pcap</span><span style="color: #BFBDB6B3;">:</span><span style="color: #39BAE6;"> str</span><span>)</span><span style="color: #BFBDB6B3;"> -&gt;</span><span style="color: #D2A6FF;"> None</span><span>:</span></span>
-<span class="giallo-l"><span>    params</span><span style="color: #F29668;"> =</span><span style="color: #FFB454;"> StdioServerParameters</span><span>(</span></span>
-<span class="giallo-l"><span>        command</span><span style="color: #F29668;">=</span><span style="color: #AAD94C;">&quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>        args</span><span style="color: #F29668;">=</span><span>[</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span> pcap</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>    )</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">    async with</span><span style="color: #FFB454;"> stdio_client</span><span>(params)</span><span style="color: #FF8F40;"> as</span><span> (read</span><span style="color: #BFBDB6B3;">,</span><span> write)</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">        async with</span><span style="color: #FFB454;"> ClientSession</span><span>(read</span><span style="color: #BFBDB6B3;">,</span><span> write)</span><span style="color: #FF8F40;"> as</span><span> session</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">            await</span><span> session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">initialize</span><span>()</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">            # 1. List tools</span></span>
-<span class="giallo-l"><span>            tools</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span> session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">list_tools</span><span>()</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">            for</span><span> t</span><span style="color: #FF8F40;"> in</span><span> tools</span><span style="color: #BFBDB6B3;">.</span><span>tools</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #F07178;">                print</span><span>(</span><span style="color: #FF8F40;">f</span><span style="color: #AAD94C;">&quot;</span><span style="color: #95E6CB;">{</span><span>t</span><span style="color: #BFBDB6B3;">.</span><span>name</span><span style="color: #FF8F40;">:20s</span><span style="color: #95E6CB;">}  {</span><span>t</span><span style="color: #BFBDB6B3;">.</span><span>description[</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;">60</span><span>]</span><span style="color: #95E6CB;">}</span><span style="color: #AAD94C;">&quot;</span><span>)</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;">            # 2. Find one-way audio + late-media problems</span></span>
-<span class="giallo-l"><span>            res</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span> session</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">call_tool</span><span>(</span></span>
-<span class="giallo-l"><span style="color: #AAD94C;">                &quot;find_problems&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>                {</span><span style="color: #AAD94C;">&quot;kinds&quot;</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;one-way&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;late-media&quot;</span><span>]</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;limit&quot;</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 50</span><span>}</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>            )</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">            for</span><span> content</span><span style="color: #FF8F40;"> in</span><span> res</span><span style="color: #BFBDB6B3;">.</span><span>content</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">                if</span><span> content</span><span style="color: #BFBDB6B3;">.</span><span>type</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;text&quot;</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #F07178;">                    print</span><span>(content</span><span style="color: #BFBDB6B3;">.</span><span>text[</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;">500</span><span>])</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">if</span><span> __name__</span><span style="color: #F29668;"> ==</span><span style="color: #AAD94C;"> &quot;__main__&quot;</span><span style="color: #BFBDB6B3;">:</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">    import</span><span> sys</span></span>
-<span class="giallo-l"><span>    asyncio</span><span style="color: #BFBDB6B3;">.</span><span style="color: #FFB454;">run</span><span>(</span><span style="color: #FFB454;">main</span><span>(sys</span><span style="color: #BFBDB6B3;">.</span><span>argv[</span><span style="color: #D2A6FF;">1</span><span>]</span><span style="color: #FF8F40;"> if</span><span style="color: #F07178;"> len</span><span>(sys</span><span style="color: #BFBDB6B3;">.</span><span>argv)</span><span style="color: #F29668;"> &gt;</span><span style="color: #D2A6FF;"> 1</span><span style="color: #FF8F40;"> else</span><span style="color: #AAD94C;"> &quot;capture.pcap&quot;</span><span>))</span></span></code></pre>
+<pre data-lang="python" class="language-python "><code class="language-python" data-lang="python">&quot;&quot;&quot;Minimal MCP client driving sipnab over stdio.&quot;&quot;&quot;
+import asyncio
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
+
+async def main(pcap: str) -&gt; None:
+    params = StdioServerParameters(
+        command=&quot;sipnab&quot;,
+        args=[&quot;--mcp&quot;, &quot;-I&quot;, pcap, &quot;--quiet&quot;],
+    )
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            # 1. List tools
+            tools = await session.list_tools()
+            for t in tools.tools:
+                print(f&quot;{t.name:20s}  {t.description[:60]}&quot;)
+
+            # 2. Find one-way audio + late-media problems
+            res = await session.call_tool(
+                &quot;find_problems&quot;,
+                {&quot;kinds&quot;: [&quot;one-way&quot;, &quot;late-media&quot;], &quot;limit&quot;: 50},
+            )
+            for content in res.content:
+                if content.type == &quot;text&quot;:
+                    print(content.text[:500])
+
+
+if __name__ == &quot;__main__&quot;:
+    import sys
+    asyncio.run(main(sys.argv[1] if len(sys.argv) &gt; 1 else &quot;capture.pcap&quot;))
+</code></pre>
 <p>Install + run:</p>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #59C2FF;">pip</span><span style="color: #AAD94C;"> install &#39;mcp&gt;=1.0&#39;</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">python</span><span style="color: #AAD94C;"> sipnab_mcp.py /path/to/capture.pcap</span></span></code></pre><h3 id="typescript-mcp-client">TypeScript MCP client</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="typescript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;">// npm i @modelcontextprotocol/sdk</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> { Client }</span><span style="color: #FF8F40;"> from</span><span style="color: #AAD94C;"> &quot;@modelcontextprotocol/sdk/client/index.js&quot;</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">import</span><span> { StdioClientTransport }</span><span style="color: #FF8F40;"> from</span><span style="color: #AAD94C;"> &quot;@modelcontextprotocol/sdk/client/stdio.js&quot;</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> transport</span><span style="color: #F29668;"> = new</span><span style="color: #FFB454;"> StdioClientTransport</span><span>({</span></span>
-<span class="giallo-l"><span>  command</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>  args</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;--mcp&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;-I&quot;</span><span style="color: #BFBDB6B3;">,</span><span> process</span><span style="color: #F29668;">.</span><span>argv[</span><span style="color: #D2A6FF;">2</span><span>]</span><span style="color: #F29668;"> ??</span><span style="color: #AAD94C;"> &quot;capture.pcap&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;--quiet&quot;</span><span>]</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>})</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> client</span><span style="color: #F29668;"> = new</span><span style="color: #FFB454;"> Client</span><span>({ name</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;sipnab-demo&quot;</span><span style="color: #BFBDB6B3;">,</span><span> version</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;0.1&quot;</span><span> })</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"><span style="color: #FF8F40;">await</span><span> client</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">connect</span><span>(transport)</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> tools</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span> client</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">listTools</span><span>()</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"><span>console</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">log</span><span>(</span><span style="color: #AAD94C;">`</span><span style="color: #FF8F40;">${</span><span>tools</span><span style="color: #F29668;">.</span><span>tools</span><span style="color: #F29668;">.</span><span>length</span><span style="color: #FF8F40;">}</span><span style="color: #AAD94C;"> tools available`</span><span>)</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">const</span><span> result</span><span style="color: #F29668;"> =</span><span style="color: #FF8F40;"> await</span><span> client</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">callTool</span><span>({</span></span>
-<span class="giallo-l"><span>  name</span><span style="color: #BFBDB6B3;">:</span><span style="color: #AAD94C;"> &quot;find_problems&quot;</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>  arguments</span><span style="color: #BFBDB6B3;">:</span><span> { kinds</span><span style="color: #BFBDB6B3;">:</span><span> [</span><span style="color: #AAD94C;">&quot;nat-issues&quot;</span><span style="color: #BFBDB6B3;">,</span><span style="color: #AAD94C;"> &quot;one-way&quot;</span><span>]</span><span style="color: #BFBDB6B3;">,</span><span> limit</span><span style="color: #BFBDB6B3;">:</span><span style="color: #D2A6FF;"> 20</span><span> }</span><span style="color: #BFBDB6B3;">,</span></span>
-<span class="giallo-l"><span>})</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"><span>console</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">log</span><span>(JSON</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">stringify</span><span>(result</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> null</span><span style="color: #BFBDB6B3;">,</span><span style="color: #D2A6FF;"> 2</span><span>))</span><span style="color: #BFBDB6B3;">;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #FF8F40;">await</span><span> client</span><span style="color: #F29668;">.</span><span style="color: #FFB454;">close</span><span>()</span><span style="color: #BFBDB6B3;">;</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">pip install &#x27;mcp&gt;=1.0&#x27;
+python sipnab_mcp.py &#x2F;path&#x2F;to&#x2F;capture.pcap
+</code></pre>
+<h3 id="typescript-mcp-client">TypeScript MCP client</h3>
+<pre data-lang="typescript" class="language-typescript "><code class="language-typescript" data-lang="typescript">&#x2F;&#x2F; npm i @modelcontextprotocol&#x2F;sdk
+import { Client } from &quot;@modelcontextprotocol&#x2F;sdk&#x2F;client&#x2F;index.js&quot;;
+import { StdioClientTransport } from &quot;@modelcontextprotocol&#x2F;sdk&#x2F;client&#x2F;stdio.js&quot;;
+
+const transport = new StdioClientTransport({
+  command: &quot;sipnab&quot;,
+  args: [&quot;--mcp&quot;, &quot;-I&quot;, process.argv[2] ?? &quot;capture.pcap&quot;, &quot;--quiet&quot;],
+});
+
+const client = new Client({ name: &quot;sipnab-demo&quot;, version: &quot;0.1&quot; });
+await client.connect(transport);
+
+const tools = await client.listTools();
+console.log(`${tools.tools.length} tools available`);
+
+const result = await client.callTool({
+  name: &quot;find_problems&quot;,
+  arguments: { kinds: [&quot;nat-issues&quot;, &quot;one-way&quot;], limit: 20 },
+});
+console.log(JSON.stringify(result, null, 2));
+
+await client.close();
+</code></pre>
+
 
     <!-- Prev/Next nav -->
     
@@ -422,7 +449,7 @@ expose the MCP surface pay zero binary size for it.</p>
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>
