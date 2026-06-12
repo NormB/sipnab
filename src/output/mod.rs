@@ -22,6 +22,7 @@ pub mod json;
 pub mod prometheus;
 #[cfg(feature = "api")]
 pub mod prometheus_server;
+pub mod synthetic;
 pub mod wireshark;
 
 pub use call_report::{ReportFormat, generate_call_report};
