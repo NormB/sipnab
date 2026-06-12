@@ -60,7 +60,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P2 — medium
 
-- [ ] **P9. Retransmission check is O(messages) with per-message header
+- [x] **P9. Retransmission check is O(messages) with per-message header
   re-parse** — `is_retransmission` (dialog_store.rs:385) scans every stored
   message and calls `existing.cseq()` (header parse) on each: ~16 µs per
   in-dialog message at the 500-message cap — this dominates the dialog hot

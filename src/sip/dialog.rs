@@ -107,6 +107,29 @@ pub struct SipDialog {
     pub refer_to: Option<String>,
     /// SIPREC recording metadata, if present.
     pub siprec_metadata: Option<super::siprec::SirecMetadata>,
+    /// CSeq identities seen in this dialog, for O(1) retransmission
+    /// detection independent of message retention (capped; see
+    /// [`MAX_SEEN_CSEQ_PER_DIALOG`]). Key format:
+    /// `"<R|r><status> <seq> <method>"`.
+    pub(crate) seen_cseq: std::collections::HashSet<String>,
+}
+
+/// Cap on per-dialog seen-CSeq entries: a hostile peer cycling CSeq
+/// numbers must not grow memory without bound. Past the cap, new CSeq
+/// identities are no longer remembered (their later retransmissions go
+/// undetected — same degraded mode the old stored-message scan had past
+/// the message cap).
+pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
+
+/// Build the seen-set key identifying a message for retransmission
+/// purposes: direction, status code (responses), CSeq number and method.
+pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
+    let (seq, method) = msg.cseq()?;
+    Some(if msg.is_request {
+        format!("R {seq} {method}")
+    } else {
+        format!("r{} {seq} {method}", msg.status_code.unwrap_or(0))
+    })
 }
 
 impl SipDialog {
@@ -160,6 +183,7 @@ impl SipDialog {
             sdp_timeline: Vec::new(),
             refer_to: None,
             siprec_metadata: None,
+            seen_cseq: seen_cseq_key(msg).into_iter().collect(),
         })
     }
 }

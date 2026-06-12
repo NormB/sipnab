@@ -172,8 +172,21 @@ impl DialogStore {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
                 return; // unreachable: idx came from get_index_of
             };
-            // Retransmission detection: same CSeq number + method already seen
-            if is_retransmission(dialog, &msg) {
+            // Retransmission detection: same CSeq identity already seen.
+            // O(1) set probe that survives message capping and compaction
+            // (the old stored-message scan went amnesiac past the cap).
+            // First sighting is remembered, capped against CSeq cycling.
+            let seen_key = crate::sip::dialog::seen_cseq_key(&msg);
+            let retransmission = seen_key
+                .as_ref()
+                .is_some_and(|k| dialog.seen_cseq.contains(k));
+            if !retransmission
+                && dialog.seen_cseq.len() < crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG
+                && let Some(key) = seen_key
+            {
+                dialog.seen_cseq.insert(key);
+            }
+            if retransmission {
                 let cseq_key = cseq_key(&msg);
                 if let Some(key) = cseq_key {
                     *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
@@ -455,28 +468,6 @@ fn extract_via_branch(via_header: &str) -> Option<&str> {
 /// same CSeq number, CSeq method, and request/response type already
 /// exists in the dialog's message list. For responses, the status code
 /// must also match.
-fn is_retransmission(dialog: &SipDialog, msg: &SipMessage) -> bool {
-    let (new_seq, new_method) = match msg.cseq() {
-        Some(cseq) => cseq,
-        None => return false,
-    };
-
-    dialog.messages.iter().any(|existing| {
-        if existing.is_request != msg.is_request {
-            return false;
-        }
-        // For responses, also match by status code
-        if !msg.is_request && existing.status_code != msg.status_code {
-            return false;
-        }
-        if let Some((seq, method)) = existing.cseq() {
-            seq == new_seq && method == new_method
-        } else {
-            false
-        }
-    })
-}
-
 /// Build a CSeq key string (`"<num> <method>"`) from a SIP message for
 /// retransmission counting.
 fn cseq_key(msg: &SipMessage) -> Option<String> {
@@ -632,6 +623,27 @@ mod tests {
         assert_eq!(stats.dialogs_compacted, 0);
         assert_eq!(stats.messages_evicted, 0);
         assert_eq!(store.get("small-idle").unwrap().messages.len(), 3);
+    }
+
+    /// Retransmission detection must survive message compaction: the old
+    /// implementation scanned the STORED messages, so once compact_idle
+    /// dropped a message, a retransmission of it was misclassified as new
+    /// (wrong flag, state churn, memory regrowth). Detection is keyed on
+    /// a per-dialog seen-CSeq set, independent of message retention.
+    #[test]
+    fn retransmission_detected_after_compaction() {
+        let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
+        let mut store = store_with_messages("retx-c", n);
+        store.compact_idle(idle_now());
+        // CSeq 1 (the initial INVITE) was compacted away; retransmit it.
+        let retx = make_invite_msg("retx-c", idle_now());
+        store.process_message(retx);
+        let d = store.get("retx-c").unwrap();
+        let last = d.messages.last().unwrap();
+        assert!(
+            last.is_retransmission,
+            "retransmission of a compacted-away message must still be flagged"
+        );
     }
 
     #[test]
