@@ -67,7 +67,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   path (found while benchmarking P4; the Call-ID alloc was noise by
   comparison). Maintain a per-dialog set of seen CSeq keys instead
   (`timing.retransmit_counts` already keys by `cseq_key`).
-- [ ] **P6. O(n) RTCP→stream lookup** — stream_store.rs:110-117 linear-scans
+- [x] **P6. O(n) RTCP→stream lookup** — stream_store.rs:110-117 linear-scans
   all streams per RTCP report. Add `ssrc → key` secondary index.
 - [ ] **P7. O(n) dialog eviction** — `shift_remove_index(0)`
   (dialog_store.rs:356) shifts every entry; visible pause at 10k dialogs.
