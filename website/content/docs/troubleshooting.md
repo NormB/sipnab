@@ -91,7 +91,7 @@ In the TUI, navigate to a call's flow view and press `Enter` on an RTP bar (or p
 - **Burst/gap analysis** (RFC 3611) -- distinguishes between bursty loss (congestion events) and gap loss (steady-state impairment). Bursty loss points to queue overflow; gap loss points to a consistently lossy link.
 - **Silence detection** -- identifies periods where no RTP was flowing, which can indicate hold events, codec DTX, or network black holes.
 
-This same data is available in the browser analyzer at [sipnab.com/analyze/](https://sipnab.com/analyze/) under the **Streams** tab.
+This same data is available in the browser analyzer at [sipnab.com/analyze/](/analyze/) under the **Streams** tab.
 
 ---
 
@@ -203,7 +203,7 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 
 No install, no upload, no data leaves your machine.
 
-Drop a pcap file at [sipnab.com/analyze/](https://sipnab.com/analyze/) -- the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
+Drop a pcap file at [sipnab.com/analyze/](/analyze/) -- the file is processed entirely in your browser via WebAssembly. The analyzer provides two tabs: **Dialogs** (SIP call list with flow diagrams) and **Streams** (full RTP quality data including MOS, jitter, loss, and per-stream detail). Useful for quick triage when you can't install the CLI, or for sharing a link with a colleague who doesn't have sipnab.
 
 ---
 

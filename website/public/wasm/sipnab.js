@@ -1,3 +1,5 @@
+/* @ts-self-types="./sipnab.d.ts" */
+
 /**
  * A browser-side sipnab analysis session.
  * All data stays in WASM linear memory -- nothing is uploaded.

@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;cli&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -88,56 +95,69 @@
 <h2 id="common-recipes">Common Recipes</h2>
 <p>Real-world examples to get productive fast. Each recipe combines flags that work well together.</p>
 <h3 id="debug-a-failed-call">Debug a failed call</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find all failed calls in a pcap</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Show just the call flow for a specific Call-ID</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Get a Markdown-formatted report for a ticket</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span><span style="color: #95E6CB;"> --markdown</span><span style="color: #F29668;"> &gt;</span><span style="color: #AAD94C;"> report.md</span></span></code></pre><h3 id="monitor-live-sip-quality">Monitor live SIP quality</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Watch for poor quality calls in real-time</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;rtp.mos &lt; 3.0 OR one_way == true&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Export problems as NDJSON for your monitoring pipeline</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --problems --json</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> tee</span><span style="color: #AAD94C;"> /var/log/sipnab/problems.ndjson</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Alert when quality drops below threshold</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --on-quality-exec</span><span style="color: #AAD94C;"> &quot;/usr/local/bin/pagerduty-alert.sh&quot;</span><span style="color: #95E6CB;"> \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  --quality-threshold</span><span style="color: #D2A6FF;"> 3.0</span><span style="color: #95E6CB;"> --exec-rate-limit</span><span style="color: #D2A6FF;"> 5</span></span></code></pre><h3 id="measure-post-dial-delay-across-calls">Measure post-dial delay across calls</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find calls with slow setup (PDD &gt; 3 seconds)</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;pdd &gt; 3.0&quot;</span><span style="color: #95E6CB;"> --json</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Use the built-in alias for quick PDD checks</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --slow-setup --report</span></span></code></pre><h3 id="security-monitoring">Security monitoring</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect SIP scanners and log for fail2ban</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fail2ban</span><span style="color: #F29668;"> &gt;&gt;</span><span style="color: #AAD94C;"> /var/log/sipnab/scanners.log</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find digest authentication leaks</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --digest-leak</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Full security sweep: scanners + fraud + registration floods</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --kill-scanner --fraud-detect --reg-flood \</span></span>
-<span class="giallo-l"><span style="color: #95E6CB;">  --alert</span><span style="color: #AAD94C;"> syslog</span><span style="color: #95E6CB;"> --alert</span><span style="color: #AAD94C;"> json</span><span style="color: #95E6CB;"> --syslog</span></span></code></pre><h3 id="export-for-wireshark-analysis">Export for Wireshark analysis</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate a Wireshark display filter for a specific user</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --wireshark</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate a tshark command filtered by caller</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --tshark-filter</span><span style="color: #AAD94C;"> &quot;from.user == &#39;1001&#39;&quot;</span></span></code></pre><h3 id="export-call-audio-as-wav">Export call audio as WAV</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># In TUI: select a dialog → F2 → Tab to WAV → Enter → filename.wav</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># The WAV contains decoded G.711 (mu-law/A-law) audio from the RTP streams.</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># 1 stream = mono, 2 streams (caller + callee) = stereo.</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Supported codecs: PCMU (G.711 mu-law), PCMA (G.711 A-law)</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Audio is captured in a ring buffer (~30 seconds by default).</span></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Configure with: [limits] max_audio_frames = 1500</span></span></code></pre><h3 id="pipe-through-jq-for-custom-analysis">Pipe through jq for custom analysis</h3>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Count failures by response code</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;state == &#39;Failed&#39;&quot;</span><span style="color: #95E6CB;"> --json \</span></span>
-<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.status_code&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> uniq</span><span style="color: #95E6CB;"> -c</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -rn</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find all unique User-Agents</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --json \</span></span>
-<span class="giallo-l"><span style="color: #F29668;">  |</span><span style="color: #59C2FF;"> jq</span><span style="color: #95E6CB;"> -r</span><span style="color: #AAD94C;"> &#39;.user_agent // empty&#39;</span><span style="color: #F29668;"> |</span><span style="color: #59C2FF;"> sort</span><span style="color: #95E6CB;"> -u</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find all failed calls in a pcap
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27;&quot;
+
+# Show just the call flow for a specific Call-ID
+sipnab -I capture.pcap --call-report &quot;abc123@host&quot;
+
+# Get a Markdown-formatted report for a ticket
+sipnab -I capture.pcap --call-report &quot;abc123@host&quot; --markdown &gt; report.md
+</code></pre>
+<h3 id="monitor-live-sip-quality">Monitor live SIP quality</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Watch for poor quality calls in real-time
+sudo sipnab -N -d eth0 --filter &quot;rtp.mos &lt; 3.0 OR one_way == true&quot;
+
+# Export problems as NDJSON for your monitoring pipeline
+sudo sipnab -N -d eth0 --problems --json | tee &#x2F;var&#x2F;log&#x2F;sipnab&#x2F;problems.ndjson
+
+# Alert when quality drops below threshold
+sudo sipnab -d eth0 --on-quality-exec &quot;&#x2F;usr&#x2F;local&#x2F;bin&#x2F;pagerduty-alert.sh&quot; \
+  --quality-threshold 3.0 --exec-rate-limit 5
+</code></pre>
+<h3 id="measure-post-dial-delay-across-calls">Measure post-dial delay across calls</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Find calls with slow setup (PDD &gt; 3 seconds)
+sipnab -N -I capture.pcap --filter &quot;pdd &gt; 3.0&quot; --json
+
+# Use the built-in alias for quick PDD checks
+sipnab -N -I capture.pcap --slow-setup --report
+</code></pre>
+<h3 id="security-monitoring">Security monitoring</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Detect SIP scanners and log for fail2ban
+sudo sipnab -N -d eth0 --kill-scanner --fail2ban &gt;&gt; &#x2F;var&#x2F;log&#x2F;sipnab&#x2F;scanners.log
+
+# Find digest authentication leaks
+sipnab -N -I capture.pcap --digest-leak
+
+# Full security sweep: scanners + fraud + registration floods
+sudo sipnab -N -d eth0 --kill-scanner --fraud-detect --reg-flood \
+  --alert syslog --alert json --syslog
+</code></pre>
+<h3 id="export-for-wireshark-analysis">Export for Wireshark analysis</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Generate a Wireshark display filter for a specific user
+sipnab -I capture.pcap --wireshark
+
+# Generate a tshark command filtered by caller
+sipnab -I capture.pcap --tshark-filter &quot;from.user == &#x27;1001&#x27;&quot;
+</code></pre>
+<h3 id="export-call-audio-as-wav">Export call audio as WAV</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># In TUI: select a dialog → F2 → Tab to WAV → Enter → filename.wav
+# The WAV contains decoded G.711 (mu-law&#x2F;A-law) audio from the RTP streams.
+# 1 stream = mono, 2 streams (caller + callee) = stereo.
+
+# Supported codecs: PCMU (G.711 mu-law), PCMA (G.711 A-law)
+# Audio is captured in a ring buffer (~30 seconds by default).
+# Configure with: [limits] max_audio_frames = 1500
+</code></pre>
+<h3 id="pipe-through-jq-for-custom-analysis">Pipe through jq for custom analysis</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Count failures by response code
+sipnab -N -I capture.pcap --filter &quot;state == &#x27;Failed&#x27;&quot; --json \
+  | jq -r &#x27;.status_code&#x27; | sort | uniq -c | sort -rn
+
+# Find all unique User-Agents
+sipnab -N -I capture.pcap --json \
+  | jq -r &#x27;.user_agent &#x2F;&#x2F; empty&#x27; | sort -u
+</code></pre>
 <blockquote>
 <p><strong>Tip:</strong> The <code>-N</code> flag is required for any output flag (<code>--json</code>, <code>--report</code>, <code>--fail2ban</code>, etc.). Think of it as “non-interactive mode” – it disables the TUI and writes to stdout instead.</p>
 </blockquote>
@@ -197,6 +217,7 @@
 <tr><td><code>--call-report</code></td><td><code>&lt;CALL-ID&gt;</code></td><td>–</td><td>Generate a detailed report for a specific Call-ID. Implies non-interactive</td></tr>
 <tr><td><code>--markdown</code></td><td>–</td><td>off</td><td>Format report output as Markdown</td></tr>
 <tr><td><code>--hexdump</code></td><td>–</td><td>off</td><td>Include hex dump of SIP payloads. Requires <code>-N</code></td></tr>
+<tr><td><code>--no-cli-print</code></td><td>–</td><td>off</td><td>Suppress per-message CLI output (use with <code>--report</code> / <code>--call-report</code> so only the post-capture summary reaches stdout)</td></tr>
 <tr><td><code>--delta-time</code></td><td>–</td><td>off</td><td>Show delta time between consecutive messages</td></tr>
 <tr><td><code>-A</code>, <code>--after</code></td><td><code>&lt;N&gt;</code></td><td>–</td><td>Show N messages after each match (like <code>grep -A</code>)</td></tr>
 <tr><td><code>--show-empty</code></td><td>–</td><td>off</td><td>Show messages with empty bodies</td></tr>
@@ -266,7 +287,7 @@ it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full g
 <tr><td><code>--mcp-bind</code></td><td><code>&lt;ADDR&gt;</code></td><td>– (<code>127.0.0.1:8731</code> applied at runtime when <code>--mcp-transport http</code> is set without an explicit bind)</td><td>Bind address for the HTTP MCP transport</td></tr>
 <tr><td><code>--mcp-token</code></td><td><code>&lt;TOKEN&gt;</code></td><td>–</td><td>Bearer token for HTTP MCP. Required for non-loopback binds. Also reads <code>$SIPNAB_MCP_TOKEN</code></td></tr>
 <tr><td><code>--mcp-token-file</code></td><td><code>&lt;FILE&gt;</code></td><td>–</td><td>Read MCP bearer token from a file (preferred over env in systemd units)</td></tr>
-<tr><td><code>--mcp-allowed-host</code></td><td><code>&lt;HOST&gt;</code></td><td>–</td><td>Additional Host header values the HTTP MCP server will accept (repeatable). Use <code>*</code> to disable host checking entirely</td></tr>
+<tr><td><code>--mcp-allowed-host</code></td><td><code>&lt;HOST&gt;</code></td><td>–</td><td>Additional Host header values the HTTP MCP server will accept (repeatable). rmcp’s DNS-rebind protection defaults to allowing only <code>localhost</code>, <code>127.0.0.1</code>, and <code>::1</code>; add the public hostname or bind IP clients actually use. <code>*</code> disables host checking entirely (not recommended; pair the resulting open binding with a network-level allowlist)</td></tr>
 </tbody></table>
 <h2 id="tls-decryption">TLS / Decryption</h2>
 <table><thead><tr><th>Flag</th><th>Value</th><th>Default</th><th>Description</th></tr></thead><tbody>
@@ -303,47 +324,48 @@ it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full g
 <li>HTTP MCP transport (<code>--mcp --mcp-transport http</code>) on a non-loopback <code>--mcp-bind</code> requires <code>--mcp-token</code> / <code>--mcp-token-file</code> / <code>SIPNAB_MCP_TOKEN</code>; loopback binds need no token.</li>
 </ul>
 <h2 id="quick-reference-examples">Quick Reference Examples</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture on eth0</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Read from pcap file</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Non-interactive JSON output</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N --json -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Show problematic calls</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --problems</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Detect SIP scanners</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --kill-scanner -d</span><span style="color: #AAD94C;"> eth0</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Filter by From/To headers</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --from</span><span style="color: #AAD94C;"> alice</span><span style="color: #95E6CB;"> --to</span><span style="color: #AAD94C;"> bob</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># BPF display filter</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #AAD94C;"> &#39;host 10.0.0.1 and port 5060&#39;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Advanced filter DSL</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> --filter</span><span style="color: #AAD94C;"> &quot;method == &#39;INVITE&#39; AND rtp.mos &lt; 3.0&quot;</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Generate detailed report for a call</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --call-report</span><span style="color: #AAD94C;"> &quot;abc123@host&quot;</span><span style="color: #95E6CB;"> --markdown</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture with HEP mirror</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -H</span><span style="color: #AAD94C;"> 10.0.0.50:9060</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live TLS decryption</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> --keylog</span><span style="color: #AAD94C;"> /tmp/sslkeys.log</span><span style="color: #95E6CB;"> --keylog-watch</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Capture first 1000 packets, then generate a report</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -n</span><span style="color: #D2A6FF;"> 1000</span><span style="color: #95E6CB;"> --report</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Split capture files at 50 MiB and write as pcapng</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span><span style="color: #95E6CB;"> -O</span><span style="color: #AAD94C;"> /var/captures/sip.pcapng</span><span style="color: #95E6CB;"> --pcapng --split</span><span style="color: #AAD94C;"> filesize:50</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Monitor all interfaces with delta timestamps</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> any</span><span style="color: #95E6CB;"> --multi-device --delta-time</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Capture on eth0
+sipnab -d eth0
+
+# Read from pcap file
+sipnab -I capture.pcap
+
+# Non-interactive JSON output
+sipnab -N --json -I capture.pcap
+
+# Show problematic calls
+sipnab --problems
+
+# Detect SIP scanners
+sipnab --kill-scanner -d eth0
+
+# Filter by From&#x2F;To headers
+sipnab --from alice --to bob
+
+# BPF display filter
+sipnab &#x27;host 10.0.0.1 and port 5060&#x27;
+
+# Advanced filter DSL
+sipnab --filter &quot;method == &#x27;INVITE&#x27; AND rtp.mos &lt; 3.0&quot;
+
+# Generate detailed report for a call
+sipnab -I capture.pcap --call-report &quot;abc123@host&quot; --markdown
+
+# Capture with HEP mirror
+sipnab -d eth0 -H 10.0.0.50:9060
+
+# Live TLS decryption
+sipnab -d eth0 --keylog &#x2F;tmp&#x2F;sslkeys.log --keylog-watch
+
+# Capture first 1000 packets, then generate a report
+sipnab -N -d eth0 -n 1000 --report
+
+# Split capture files at 50 MiB and write as pcapng
+sipnab -d eth0 -O &#x2F;var&#x2F;captures&#x2F;sip.pcapng --pcapng --split filesize:50
+
+# Monitor all interfaces with delta timestamps
+sipnab -d any --multi-device --delta-time
+</code></pre>
 <blockquote>
 <p><strong>Note:</strong> Output flags (<code>--json</code>, <code>--report</code>, <code>--hexdump</code>, <code>--fail2ban</code>) require <code>-N</code> / <code>--no-tui</code>. Feature-gated flags (<code>--tls-key</code>, <code>--hep-listen</code>, <code>--api</code>) require the corresponding feature to be compiled in.</p>
 </blockquote>
@@ -472,7 +494,7 @@ it. See <a href="https://www.sipnab.com/docs/mcp/">MCP Server</a> for the full g
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>

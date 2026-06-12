@@ -11,6 +11,13 @@
   <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+
+  <!-- Twitter / X (summary card renders from title + description) -->
+  <meta name="twitter:card" content="summary">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;">
 
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
@@ -96,14 +103,16 @@
 <li><a href="https://www.sipnab.com/docs/cookbook/"><strong>Cookbook</strong></a> – Step-by-step recipes for triage, filtering, HEP wiring, TLS decryption, MCP, observability, security, and audio export</li>
 </ul>
 <h2 id="quick-start">Quick Start</h2>
-<pre class="giallo" style="color: #BFBDB6; background-color: #0D1017;"><code data-lang="shellscript"><span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Analyze a pcap file</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -I</span><span style="color: #AAD94C;"> capture.pcap</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Live capture on eth0</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sudo</span><span style="color: #AAD94C;"> sipnab</span><span style="color: #95E6CB;"> -d</span><span style="color: #AAD94C;"> eth0</span></span>
-<span class="giallo-l"></span>
-<span class="giallo-l"><span style="color: #5A6673;font-style: italic;"># Find problematic calls</span></span>
-<span class="giallo-l"><span style="color: #59C2FF;">sipnab</span><span style="color: #95E6CB;"> -N -I</span><span style="color: #AAD94C;"> capture.pcap</span><span style="color: #95E6CB;"> --problems --json</span></span></code></pre>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Analyze a pcap file
+sipnab -I capture.pcap
+
+# Live capture on eth0
+sudo sipnab -d eth0
+
+# Find problematic calls
+sipnab -N -I capture.pcap --problems --json
+</code></pre>
+
 
     
     <div class="doc-index">
@@ -188,7 +197,7 @@
     <div class="footer-inner">
       <div class="footer-col">
         <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v0.3.1</span>
+        <span class="footer-version">v0.4.1</span>
       </div>
       <div class="footer-col footer-links">
         <a href="https://www.sipnab.com/docs/">Documentation</a>

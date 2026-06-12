@@ -60,13 +60,13 @@ cargo install sipnab --features full
 ### Debian/Ubuntu (.deb)
 
 ```bash
-sudo dpkg -i sipnab_0.3.1_amd64.deb  # replace 0.3.1 with latest version from releases page
+sudo dpkg -i sipnab_0.4.1_amd64.deb  # replace 0.4.1 with latest version from releases page
 ```
 
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-0.3.1-1.x86_64.rpm  # replace 0.3.1 with latest version from releases page
+sudo rpm -i sipnab-0.4.1-1.x86_64.rpm  # replace 0.4.1 with latest version from releases page
 ```
 
 ### Homebrew (macOS)
@@ -282,7 +282,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.3.1 (a7cf953d) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.4.1 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms
