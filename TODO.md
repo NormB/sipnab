@@ -107,10 +107,18 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **S6. Disk-full (ENOSPC) handling test** — verify a mid-capture write
   failure produces a loud error and sane file state, not a silently
   truncated pcap.
-- [ ] **S4. HEP cumulative memory cap / source rate limit** — per-chunk 64KB
-  bound exists but no cumulative cap per source under flood.
-- [ ] **S5. TCP reassembly fragment-count budget** — byte-cap + TTL exist;
-  add per-flow entry budget against many-tiny-fragment amplification.
+- [x] ~~**S4. HEP cumulative memory cap / source rate limit**~~ — INVALID
+  FINDING (verified 2026-06-12): HEP is bounded at every stage — per-chunk
+  u16 lengths validated against the recv buffer (hep.rs), all parse
+  allocations are per-packet transient, the listener has a token-bucket
+  rate limiter (default 50k pps, `--hep-rate-limit`) + CIDR allowlist,
+  and the packet channel is bounded at 10k (main.rs). No change needed.
+- [x] **S5. TCP reassembly fragment-count budget** — original memory claim
+  INVALID (per-entry 64KB byte-cap + 10k entry cap + 30s TTL already
+  bound both reassemblers). Verification found the REAL issue: eviction
+  at capacity was an O(n) min-scan + a warn! line PER incoming fragment —
+  CPU-DoS + log flood under fragment flood. Fixed with batched eviction
+  (cap/100 per O(n log n) sort, one summary log line), same pattern as P7.
 
 ## P3 — larger, after P0–P2
 
