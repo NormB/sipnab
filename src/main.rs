@@ -11,7 +11,6 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use sipnab::capture::parse::TransportProto;
-use sipnab::capture::websocket;
 use sipnab::capture::{
     self, CaptureConfig, CaptureSource, ParsedPacket, PcapExportMode, PcapWriter,
 };
@@ -1230,7 +1229,7 @@ fn run_batch_mode(
                     .ok()
                     .map(|hep| {
                         let mut unwrapped = pp.clone();
-                        unwrapped.payload = hep.payload;
+                        unwrapped.payload = hep.payload.into();
                         unwrapped.src_addr = hep.src_addr;
                         unwrapped.dst_addr = hep.dst_addr;
                         unwrapped.src_port = hep.src_port;
@@ -1844,7 +1843,7 @@ fn try_tls_decrypt(
             // The transport string "TLS" is set during SIP message construction
             // in process_parsed_packet via the tls_decrypted flag.
             let mut decrypted_pp = pp.clone();
-            decrypted_pp.payload = plaintext;
+            decrypted_pp.payload = plaintext.into();
             return Some(decrypted_pp);
         }
     }

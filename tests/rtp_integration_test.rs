@@ -72,7 +72,7 @@ fn make_rtp_parsed(
         src_port,
         dst_port,
         transport: TransportProto::Udp,
-        payload,
+        payload: payload.into(),
         ip_id: None,
         tcp_seq: None,
         tcp_flags: None,

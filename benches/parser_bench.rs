@@ -237,6 +237,48 @@ fn build_rtp_packet() -> Vec<u8> {
     pkt
 }
 
+// ── Full decap chain (link → IP → UDP → payload extraction) ─────────
+
+fn bench_packet_decap(c: &mut Criterion) {
+    // Ethernet + IPv4 + UDP + a 160-byte payload: the per-packet path
+    // every captured frame walks, including payload extraction into
+    // ParsedPacket.
+    let mut frame = vec![
+        0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00, // eth
+    ];
+    let ip: [u8; 20] = [
+        0x45, 0x00, 0x00, 0xbc, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00, 10, 0, 0, 1, 10, 0,
+        0, 2,
+    ];
+    frame.extend_from_slice(&ip);
+    frame.extend_from_slice(&[0x4e, 0x20, 0x75, 0x30, 0x00, 0xa8, 0x00, 0x00]); // udp 20000->30000
+    frame.extend_from_slice(&[0xaa; 160]);
+
+    let packet = sipnab::capture::Packet::new(
+        chrono::Utc::now(),
+        frame,
+        202,
+        202,
+        None,
+        1, // DLT_EN10MB
+    );
+
+    let mut group = c.benchmark_group("packet_decap");
+    group.throughput(Throughput::Elements(1));
+    group.bench_function("eth_ipv4_udp_160b", |b| {
+        b.iter(|| sipnab::capture::parse::parse_packet(&packet).unwrap())
+    });
+
+    // Isolate the changed operation: refcounted slice vs heap copy of the
+    // same 160-byte payload, measured in the same run (same noise floor).
+    let data = bytes::Bytes::from(vec![0xaau8; 202]);
+    group.bench_function("payload_slice_zero_copy", |b| {
+        b.iter(|| data.slice(42..202))
+    });
+    group.bench_function("payload_copy_to_vec", |b| b.iter(|| data[42..202].to_vec()));
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_sip_parser,
@@ -246,5 +288,6 @@ criterion_group!(
     bench_filter_dsl,
     bench_sip_detection,
     bench_rtp_detection,
+    bench_packet_decap,
 );
 criterion_main!(benches);

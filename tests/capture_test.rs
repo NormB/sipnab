@@ -268,3 +268,28 @@ fn packet_processor_handles_fixture() {
         "All 10 UDP packets should pass through processor immediately"
     );
 }
+
+/// Zero-copy contract: a parsed packet's payload must be a VIEW into the
+/// captured frame's buffer (refcounted slice), not a fresh allocation —
+/// per-packet payload copies were the top hot-path cost.
+#[test]
+fn parsed_payload_shares_packet_buffer() {
+    // Ethernet + IPv4 + UDP + 160-byte payload
+    let mut frame = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00];
+    frame.extend_from_slice(&[
+        0x45, 0x00, 0x00, 0xbc, 0x00, 0x00, 0x40, 0x00, 0x40, 0x11, 0x00, 0x00, 10, 0, 0, 1, 10, 0,
+        0, 2,
+    ]);
+    frame.extend_from_slice(&[0x4e, 0x20, 0x75, 0x30, 0x00, 0xa8, 0x00, 0x00]);
+    frame.extend_from_slice(&[0xaa; 160]);
+
+    let packet = Packet::new(chrono::Utc::now(), frame, 202, 202, None, 1);
+    let pp = parse_packet(&packet).expect("frame parses");
+
+    assert_eq!(pp.payload.len(), 160);
+    let buf = packet.data.as_ptr_range();
+    assert!(
+        buf.contains(&pp.payload.as_ptr()),
+        "payload must point into the packet buffer (zero-copy), not a new allocation"
+    );
+}

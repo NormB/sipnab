@@ -38,6 +38,7 @@ toml = "0.8"
 pcap-file = { version = "2", optional = true }
 nom = "7"
 indexmap = "2"
+bytes = "1"
 
 # Phase 2: Error handling
 anyhow = "1"

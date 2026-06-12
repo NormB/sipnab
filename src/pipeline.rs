@@ -5,7 +5,6 @@
 //! heuristic, WebSocket unwrapping, port-range gating) is exercisable
 //! as a library API instead of only through the binary.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use parking_lot::RwLock;

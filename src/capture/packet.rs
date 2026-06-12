@@ -36,10 +36,10 @@ pub struct PreParsed {
 pub struct Packet {
     /// When the packet was captured (UTC).
     pub timestamp: DateTime<Utc>,
-    /// Raw packet bytes. Starts at the link layer when `pre_parsed` is
-    /// `None`; is the transport-layer payload only when `pre_parsed` is
-    /// `Some`.
-    pub data: Vec<u8>,
+    /// Raw packet bytes (refcounted; payload slices view this buffer).
+    /// Starts at the link layer when `pre_parsed` is `None`; is the
+    /// transport-layer payload only when `pre_parsed` is `Some`.
+    pub data: bytes::Bytes,
     /// Number of bytes actually captured (may be less than `origlen`).
     pub caplen: usize,
     /// Original length of the packet on the wire.
@@ -67,7 +67,7 @@ impl Packet {
     ) -> Self {
         Self {
             timestamp,
-            data,
+            data: data.into(),
             caplen,
             origlen,
             interface,
@@ -90,7 +90,7 @@ impl Packet {
         let len = data.len();
         Self {
             timestamp,
-            data,
+            data: data.into(),
             caplen: len,
             origlen: len,
             interface,

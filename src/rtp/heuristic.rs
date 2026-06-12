@@ -155,7 +155,7 @@ mod tests {
             src_port: 50000,
             dst_port,
             transport: TransportProto::Udp,
-            payload,
+            payload: payload.into(),
             ip_id: None,
             tcp_seq: None,
             tcp_flags: None,
@@ -214,7 +214,9 @@ mod tests {
 
         // Non-RTP payload (version != 2)
         let mut pkt = make_rtp_parsed(100, 0xABCD, 0, 20000);
-        pkt.payload[0] = 0x00; // V=0
+        let mut bad = pkt.payload.to_vec();
+        bad[0] = 0x00; // V=0
+        pkt.payload = bad.into();
         assert!(heuristic.check(&pkt).is_none());
     }
 
