@@ -42,7 +42,10 @@ pub enum SdpEvent {
     /// Media anchor (IP address or port) changed.
     MediaAnchorChange,
     /// Call transfer initiated via REFER.
-    Transfer { target: String },
+    Transfer {
+        /// Refer-To target URI.
+        target: String,
+    },
 }
 
 /// Whether an SDP body is an offer or an answer in the offer/answer model.

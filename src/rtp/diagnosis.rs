@@ -15,29 +15,38 @@ use crate::sip::sdp::{SdpSession, effective_address};
 /// Codec asymmetry — A leg uses one codec, B leg uses another.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CodecAsymmetry {
+    /// Codec on the A (caller) leg.
     pub a_codec: String,
+    /// Codec on the B (callee) leg.
     pub b_codec: String,
 }
 
 /// Packetization-time asymmetry — A leg sends 20 ms frames, B leg 30 ms (etc.).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PtimeAsymmetry {
+    /// Packetization time on the A leg, in milliseconds.
     pub a_ptime_ms: u32,
+    /// Packetization time on the B leg, in milliseconds.
     pub b_ptime_ms: u32,
 }
 
 /// Payload-type asymmetry — same negotiated codec, different RTP PTs.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PayloadTypeAsymmetry {
+    /// RTP payload type seen on the A leg.
     pub a_pt: u8,
+    /// RTP payload type seen on the B leg.
     pub b_pt: u8,
 }
 
 /// Duration asymmetry — one leg's stream lasted noticeably longer than the other.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DurationAsymmetry {
+    /// A-leg stream duration in seconds.
     pub a_duration_sec: f64,
+    /// B-leg stream duration in seconds.
     pub b_duration_sec: f64,
+    /// Absolute duration difference in seconds.
     pub delta_sec: f64,
 }
 
@@ -46,6 +55,7 @@ pub struct DurationAsymmetry {
 pub struct LateMedia {
     /// "a" or "b" identifying which leg was late.
     pub leg: String,
+    /// How long after the 200 OK the first RTP arrived, in ms.
     pub delay_after_200_ok_ms: i64,
 }
 

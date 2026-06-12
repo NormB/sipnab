@@ -408,9 +408,13 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
 
 /// Network endpoint pair for HEP packet construction.
 pub struct HepEndpoint {
+    /// Source IP address of the original packet.
     pub src_addr: IpAddr,
+    /// Destination IP address of the original packet.
     pub dst_addr: IpAddr,
+    /// Source transport port.
     pub src_port: u16,
+    /// Destination transport port.
     pub dst_port: u16,
 }
 

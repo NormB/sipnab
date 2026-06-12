@@ -133,7 +133,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [ ] **P2. `Cow<'a, str>` SIP header values** — parser.rs allocates a String
   per header value plus full `data.to_vec()`; borrow from the raw buffer.
   (Pairs with P1; do after P1's lifetime design.)
-- [ ] **M8. Rustdoc on public API** — lib.rs re-exports have no docs;
+- [x] **M8. Rustdoc on public API** — lib.rs re-exports have no docs;
   add rustdoc + `#![warn(missing_docs)]` for the library surface.
 
 ## P4 — major refactors (in scope, queued last)

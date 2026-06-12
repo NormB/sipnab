@@ -3,10 +3,15 @@
 
 use anyhow::{Result, bail, ensure};
 
+/// A single packet read from a pcap/pcapng file.
 pub struct PcapPacket {
+    /// Capture timestamp, whole seconds since the epoch.
     pub timestamp_secs: u32,
+    /// Sub-second microseconds of the capture timestamp.
     pub timestamp_usecs: u32,
+    /// Captured packet bytes (possibly truncated to the snap length).
     pub data: Vec<u8>,
+    /// Original on-the-wire packet length.
     pub orig_len: u32,
 }
 
@@ -14,6 +19,7 @@ pub struct PcapPacket {
 #[derive(Debug)]
 pub struct PcapReader<'a> {
     inner: ReaderInner<'a>,
+    /// Link-layer type from the file header (pcap DLT value).
     pub link_type: u32,
 }
 
@@ -229,6 +235,8 @@ impl<'a> NgReader<'a> {
 // ── PcapReader public API ─────────────────────────────────────────────
 
 impl<'a> PcapReader<'a> {
+    /// Open a reader over an in-memory pcap or pcapng file (detected by
+    /// magic number).
     #[must_use = "parsing result must be handled"]
     pub fn new(data: &'a [u8]) -> Result<Self> {
         ensure!(data.len() >= 12, "capture file too short");
