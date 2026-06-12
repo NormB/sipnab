@@ -72,7 +72,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **P7. O(n) dialog eviction** — `shift_remove_index(0)`
   (dialog_store.rs:356) shifts every entry; visible pause at 10k dialogs.
   O(1)-amortized eviction preserving insertion-order semantics.
-- [ ] **P5. Audio payload buffered for every RTP packet** —
+- [x] **P5. Audio payload buffered for every RTP packet** —
   stream_store.rs:73,88 clones payload per packet to support an export most
   captures never use. Buffer only when export is possible/requested.
 - [ ] **M5. Consolidate `Result<_, String>` into structured errors** — 26

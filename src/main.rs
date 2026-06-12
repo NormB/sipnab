@@ -1048,6 +1048,9 @@ fn run_batch_mode(
         if let Some(max_frames) = config.limits.max_audio_frames {
             ss.set_max_audio_frames(max_frames as usize);
         }
+        // Batch mode has no audio export/playback path; don't pay a
+        // per-packet payload clone for buffers nothing will read.
+        ss.set_audio_capture(false);
         Arc::new(RwLock::new(ss))
     };
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
