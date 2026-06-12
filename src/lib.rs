@@ -28,6 +28,8 @@ pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod error;
+#[cfg(feature = "native")]
+pub mod pipeline;
 pub use error::Error;
 #[cfg(feature = "mcp")]
 pub mod mcp;

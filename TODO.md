@@ -127,9 +127,12 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **M3. Move synthetic-packet building out of the TUI** —
   tui/mod.rs:4236-4276 `build_synthetic_packet` → output layer
   (src/output/synthetic.rs); removes TUI→capture layering violation.
-- [ ] **M2. Extract packet pipeline from main.rs** — `process_parsed_packet`,
-  TLS/WebSocket unwrap, batch orchestration (2,335-line main.rs) behind a
-  testable PacketProcessor abstraction.
+- [x] **M2. Extract packet pipeline from main.rs** — protocol-routing core
+  (process_packet, try_websocket_unwrap, is_rtcp_packet, port_in_range)
+  extracted to `sipnab::pipeline` with direct integration tests; batch
+  mode's richer orchestration (output/security interleaving) remains in
+  main.rs by design — unifying the two modes is future work, the
+  testability gap is closed.
 - [ ] **P2. `Cow<'a, str>` SIP header values** — parser.rs allocates a String
   per header value plus full `data.to_vec()`; borrow from the raw buffer.
   (Pairs with P1; do after P1's lifetime design.)
