@@ -4,6 +4,99 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+Hardening, performance, and maintainability pass driven by a
+four-dimension project analysis (maintainability, survivability,
+performance, usability); roadmap and per-item status in `TODO.md`.
+
+### Added
+- Feature-combination CI matrix: each reduced feature set (`native`,
+  `tls`, `api`, `mcp`, `hep`, combinations, `wasm` lib-only) is compiled
+  with its tests; the documented headless recipe runs the full suite.
+  Fixed the cfg-gating rot this exposed — 7 of 8 reduced combos no
+  longer built their test code.
+- HEP listener idle-stall detection: one rate-limited warning when no
+  packets arrive for 30 s (a dead UDP sender produces no error), one
+  recovery line when traffic resumes.
+- `DialogStore::compact_idle`: dialogs idle >10 min keep only their last
+  20 messages, bounding long-run memory; wired into the periodic sweeps
+  with a lifetime eviction counter.
+- `PcapWriter::finish()`: flushes buffered output at end of capture and
+  reports the error — previously a deferred ENOSPC was discarded in
+  `Drop`, silently truncating the output file with exit code 0.
+- Scanner-kill worker health reporting: a dead worker thread now logs a
+  one-time error and latches `defense_disabled()` instead of silently
+  dropping every kill request.
+- Invalid pcap timestamps are counted (`INVALID_PCAP_TIMESTAMPS`) and
+  warned about instead of being silently replaced with the wall clock;
+  a corrupt `tv_usec` no longer overflows in debug builds.
+- Structured `sipnab::Error` (thiserror) across the library surface
+  (config loading/validation, CIDR, alert rules, bind addresses, CLI
+  validation) replacing `Result<_, String>`.
+- `sipnab::pipeline`: the per-packet protocol-routing core extracted
+  from `main.rs` as a testable library API.
+- Store-layer criterion benchmarks (`store_bench`) and a full-decap
+  benchmark, so per-packet costs are measured rather than asserted.
+- Filter-DSL parse errors now render the expression with a caret at the
+  failing position, a quoting hint for the classic `method == INVITE`
+  mistake, the operator list, and a docs pointer.
+- Docs: `docs/examples.md` cookbook (19 recipes), `docs/output-formats.md`
+  (NDJSON schema + jq recipes), `docs/mcp-setup.md` (token bootstrap,
+  systemd unit, troubleshooting), `contrib/sipnabrc.example` (validated
+  by a test against the real config loader), and
+  `docs/internals/zero-copy-payloads.md` (design + honest measurements).
+- Doc-wide drift guard: a test extracts every `--flag` mentioned across
+  all ten user-facing markdown files and asserts it exists in the CLI;
+  README no longer advertises the five filter-DSL aliases as standalone
+  flags.
+- Build-time warning when the default `audio` feature is enabled for a
+  Linux target, naming the libasound2 runtime dependency and the
+  headless build recipe.
+- "F1 Help" advertised in the call-list f-key bar at every terminal
+  width (the help overlay was undiscoverable once calls appeared).
+- Rustdoc on every public item, enforced with `#![warn(missing_docs)]`.
+
+### Changed
+- Zero-copy packet payloads: `Packet.data` and `ParsedPacket.payload`
+  are refcounted `bytes::Bytes`; payloads are slice views of the
+  captured frame. `SipMessage.raw`/`.body` share the same buffer via
+  `parse_sip_bytes`, and `SipMessage::clone` (dialog-store insertion)
+  no longer copies message bytes. Measured honestly: cost-neutral at
+  typical packet sizes (the copies it removes were already ~15 ns);
+  shipped for large-payload behaviour, allocator pressure, and the
+  structural simplification — see `docs/internals/zero-copy-payloads.md`.
+- `src/tui/mod.rs` (5,278 lines) split into `theme.rs`, `render.rs`,
+  `events.rs`, `save.rs`, with state/App/entry point remaining; pure
+  code motion, all TUI state tests and snapshots unchanged.
+- Synthetic-packet construction moved from the TUI to
+  `output::synthetic`, removing a TUI→capture layering violation.
+- Dialog-store and reassembler eviction is batched (max(1, cap/100) per
+  O(n) pass): under a unique-Call-ID or fragment flood at capacity,
+  per-insert cost drops ~50x and the per-fragment warn! log flood
+  becomes one summary line per batch. Stores may sit up to one batch
+  below the cap; the cap remains a hard upper bound.
+- Audio payload buffering is disabled in batch mode (nothing there can
+  read it); TUI on-demand WAV export/playback unchanged.
+- Test suites no longer use fixed sleeps: deadline polling replaces the
+  13 timing-dependent waits in the security and process-isolation tests.
+
+### Fixed
+- Retransmission detection is O(1) via a per-dialog seen-CSeq set
+  (~25x faster per in-dialog message) and survives message compaction —
+  the previous stored-message scan re-parsed every CSeq header and
+  forgot history once messages were capped or compacted.
+- RTCP report matching is O(1) via an SSRC index (~10x at 1000 streams),
+  preserving first-match insertion-order semantics across eviction.
+- Dialog lookup no longer allocates a Call-ID `String` per message.
+- `--filter`/`--json`/`--no-cli-print` help text documents alias
+  acceptance, NDJSON, and summary-only usage.
+
+### Analysis notes
+- Several externally-reported findings were verified as invalid and are
+  recorded with evidence in `TODO.md`: the multiple-stream-store-locks
+  claim, HEP cumulative-memory exhaustion, the unwrap-density audit
+  (all flagged unwraps are in test code), and the projected 20-30%
+  hot-path win from payload copies (refuted by A/B measurement).
+
 ## [0.3.2] - 2026-05-05
 
 ### Added
