@@ -168,7 +168,14 @@ pub fn build_router(state: ApiState) -> Router {
 /// - Any valid `addr:port` pair
 ///
 /// Returns an error string if parsing fails.
-pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, String> {
+pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
+    parse_bind_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
+        input: addr.to_string(),
+        reason,
+    })
+}
+
+fn parse_bind_addr_inner(addr: &str) -> Result<SocketAddr, String> {
     // Just a port number
     if let Ok(port) = addr.parse::<u16>() {
         return Ok(SocketAddr::new(
@@ -213,15 +220,15 @@ pub async fn run_server(
     bind_addr: SocketAddr,
     state: ApiState,
     server_config: ApiServerConfig,
-) -> Result<(), String> {
+) -> Result<(), crate::Error> {
     let has_tls = server_config.tls_cert.is_some() && server_config.tls_key.is_some();
 
     if has_tls {
-        return Err(
+        return Err(crate::Error::Server(
             "API TLS (--api-tls-cert/--api-tls-key) requires the axum-server crate \
              which is not yet integrated. Use a TLS-terminating reverse proxy instead."
                 .to_string(),
-        );
+        ));
     }
 
     if !bind_addr.ip().is_loopback() {
@@ -263,14 +270,14 @@ pub async fn run_server(
 
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
-        .map_err(|e| format!("failed to bind API to {bind_addr}: {e}"))?;
+        .map_err(|e| crate::Error::Server(format!("failed to bind API to {bind_addr}: {e}")))?;
 
     axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .await
-    .map_err(|e| format!("API server error: {e}"))
+    .map_err(|e| crate::Error::Server(format!("API server error: {e}")))
 }
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
