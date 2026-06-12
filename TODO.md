@@ -17,7 +17,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P0 — correctness of what users see
 
-- [ ] **U1. README advertises CLI flags that don't exist** — `--codec-asym`,
+- [x] **U1. README advertises CLI flags that don't exist** — `--codec-asym`,
   `--ptime-asym`, `--payload-asym`, `--duration-asym`, `--late-media`
   (README.md:18) are filter-DSL aliases, not flags. Fix README, add a
   drift test asserting every `--flag` named in README exists in cli.rs.
