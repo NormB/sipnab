@@ -12,11 +12,17 @@ use std::collections::BTreeSet;
 /// Long flags mentioned in README.md that belong to other tools
 /// (cargo, cross, xcode-select), not to sipnab itself.
 const FOREIGN_FLAGS: &[&str] = &[
+    // cargo / cross / xcode-select
     "release",
     "target",
     "features",
     "no-default-features",
     "install",
+    // docker (docs/install.md)
+    "net",
+    "rm",
+    // systemctl (docs/mcp-setup.md)
+    "now",
 ];
 
 /// All long flag names (including aliases) the real CLI accepts.
@@ -33,6 +39,9 @@ fn cli_long_flags() -> BTreeSet<String> {
             }
         }
     }
+    // clap provides these automatically; get_arguments() doesn't list them.
+    flags.insert("help".to_string());
+    flags.insert("version".to_string());
     flags
 }
 
@@ -45,28 +54,53 @@ fn extract_long_flags(text: &str) -> BTreeSet<String> {
 
 #[test]
 fn readme_long_flags_exist_in_cli() {
-    let readme = include_str!("../README.md");
-    let mentioned = extract_long_flags(readme);
-
-    // Sanity: extraction must find known-good flags, so this test can never
-    // pass vacuously on a broken regex or an empty README.
-    assert!(
-        mentioned.contains("problems") && mentioned.contains("from"),
-        "flag extraction is broken: expected to find --problems and --from in README"
-    );
+    // Every user-facing markdown file that shows commands. include_str!
+    // means a deleted file fails the build, not silently skips.
+    let docs: &[(&str, &str)] = &[
+        ("README.md", include_str!("../README.md")),
+        ("docs/cli-reference.md", include_str!("../docs/cli-reference.md")),
+        ("docs/filter-dsl.md", include_str!("../docs/filter-dsl.md")),
+        ("docs/install.md", include_str!("../docs/install.md")),
+        ("docs/mcp-overview.md", include_str!("../docs/mcp-overview.md")),
+        ("docs/mcp-setup.md", include_str!("../docs/mcp-setup.md")),
+        ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
+        ("docs/output-formats.md", include_str!("../docs/output-formats.md")),
+        ("docs/examples.md", include_str!("../docs/examples.md")),
+        (
+            "docs/config-reference.md",
+            include_str!("../docs/config-reference.md"),
+        ),
+    ];
 
     let known = cli_long_flags();
-    let phantom: Vec<&String> = mentioned
-        .iter()
-        .filter(|f| !known.contains(*f) && !FOREIGN_FLAGS.contains(&f.as_str()))
-        .collect();
+    let mut all_mentioned = BTreeSet::new();
+    let mut failures = Vec::new();
+    for (name, text) in docs {
+        let mentioned = extract_long_flags(text);
+        let phantom: Vec<&String> = mentioned
+            .iter()
+            .filter(|f| !known.contains(*f) && !FOREIGN_FLAGS.contains(&f.as_str()))
+            .collect();
+        if !phantom.is_empty() {
+            failures.push(format!("{name}: {phantom:?}"));
+        }
+        all_mentioned.extend(mentioned);
+    }
+
+    // Sanity: extraction must find known-good flags, so this test can never
+    // pass vacuously on a broken regex or empty docs.
+    assert!(
+        all_mentioned.contains("problems") && all_mentioned.contains("from"),
+        "flag extraction is broken: expected to find --problems and --from"
+    );
 
     assert!(
-        phantom.is_empty(),
-        "README.md advertises flags that do not exist in src/cli.rs: {phantom:?}\n\
+        failures.is_empty(),
+        "docs advertise flags that do not exist in src/cli.rs:\n  {}\n\
          If a name is a --filter DSL alias, document it as `--filter <alias>`, \
          not as a standalone flag. If it belongs to a foreign tool (cargo etc.), \
-         add it to FOREIGN_FLAGS in tests/docs_drift_test.rs."
+         add it to FOREIGN_FLAGS in tests/docs_drift_test.rs.",
+        failures.join("\n  ")
     );
 }
 

@@ -144,6 +144,8 @@ Note: `audio` is in the default feature set, so the `libasound2` runtime depende
 ## Documentation
 
 - [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
+- [Cookbook](docs/examples.md) -- copy-paste recipes for common workflows
+- [Output Formats](docs/output-formats.md) -- NDJSON schema, jq recipes, pcap export
 - [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
 - [Config Reference](docs/config-reference.md) -- TOML config file format
   (starter file: [contrib/sipnabrc.example](contrib/sipnabrc.example))
