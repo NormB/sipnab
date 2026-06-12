@@ -377,7 +377,7 @@ impl PacketProcessor {
                     // so we need to create a synthetic packet for re-parsing.
                     // For now, emit the parsed packet with the reassembled payload.
                     let mut completed = parsed;
-                    completed.payload = reassembled;
+                    completed.payload = reassembled.into();
                     completed.fragment_offset = Some(0);
                     completed.more_fragments = false;
                     vec![completed]
@@ -396,7 +396,7 @@ impl PacketProcessor {
                 .into_iter()
                 .map(|payload| {
                     let mut p = parsed.clone();
-                    p.payload = payload;
+                    p.payload = payload.into();
                     p
                 })
                 .collect();

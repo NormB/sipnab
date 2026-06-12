@@ -141,10 +141,14 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P4 — major refactors (in scope, queued last)
 
-- [ ] **P1. Zero-copy packet payloads** — `ParsedPacket.payload: Vec<u8>`
-  cloned per packet (capture/parse.rs:431,446); biggest hot-path win
-  (~20-30%). Lifetime/`Cow` design through ParsedPacket and all consumers.
-  Design doc first; bench before/after (depends on P8).
+- [x] **P1. Zero-copy packet payloads** — DONE, but the claimed 20-30%
+  hot-path win was REFUTED by same-binary A/B (slice 15.6 ns vs copy
+  15.1 ns at 160 B): cost-neutral at typical packet sizes. Shipped as
+  `bytes::Bytes` through Packet/ParsedPacket (lifetimes were impossible:
+  packets cross thread channels) for the structural wins — no linear
+  copies for 64 KB reassembled/HEP payloads, no cross-thread alloc/free
+  pair per packet, and it enables SipMessage.raw buffer sharing (P2).
+  Design + measurements: docs/internals/zero-copy-payloads.md.
 - [ ] **M1. Split src/tui/mod.rs (5,342 lines)** — into state machine /
   widgets / event handler / renderer modules. Behavior-preserving;
   tui_state_test.rs (224 tests) + snapshot tests are the safety net.
