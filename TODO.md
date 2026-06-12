@@ -32,7 +32,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   `native,tui,audio`, `tls,api`, and the headless recipe
   `native,tui,tls,hep,api`. (Test = the CI run itself; local pre-check
   via `cargo check` per combo.)
-- [ ] **S1. HEP receiver idle timeout** — UDP recv loop blocks forever if the
+- [x] **S1. HEP receiver idle timeout** — UDP recv loop blocks forever if the
   upstream sender dies; capture stalls silently. Add idle timeout
   (default 30 s) → rate-limited warning + stat counter.
 - [ ] **S3. Worker-thread death is invisible** — scanner-kill worker
