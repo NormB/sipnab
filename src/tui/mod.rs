@@ -14,7 +14,6 @@ pub mod stream_list;
 
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};

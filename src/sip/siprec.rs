@@ -8,23 +8,35 @@ use anyhow::{Result, bail};
 /// Parsed SIPREC recording metadata.
 #[derive(Debug, Clone, Default)]
 pub struct SirecMetadata {
+    /// Recording session identifier.
     pub session_id: Option<String>,
+    /// Participants captured in the recording metadata.
     pub participants: Vec<SirecParticipant>,
+    /// Media streams described by the metadata.
     pub streams: Vec<SirecStream>,
+    /// Recording mode (e.g. "complete").
     pub mode: Option<String>,
 }
 
+/// A participant in a SIPREC-recorded session.
 #[derive(Debug, Clone)]
 pub struct SirecParticipant {
+    /// Participant identifier from the metadata XML.
     pub participant_id: Option<String>,
+    /// Address-of-record (SIP URI) of the participant.
     pub aor: Option<String>,
+    /// Display name of the participant.
     pub name: Option<String>,
 }
 
+/// A media stream described by SIPREC metadata.
 #[derive(Debug, Clone)]
 pub struct SirecStream {
+    /// Stream identifier from the metadata XML.
     pub stream_id: Option<String>,
+    /// SDP label associating the stream with an m-line.
     pub label: Option<String>,
+    /// Participant this stream belongs to.
     pub participant_id: Option<String>,
 }
 
