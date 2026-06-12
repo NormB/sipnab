@@ -404,18 +404,13 @@ impl SipnabMcp {
         Parameters(params): Parameters<FindProblemsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
-        let kinds = params
-            .kinds
-            .unwrap_or_else(|| vec!["problems".to_string()]);
+        let kinds = params.kinds.unwrap_or_else(|| vec!["problems".to_string()]);
 
         // Compile each kind individually so a bad alias is reported by name.
         let mut compiled: Vec<FilterExpr> = Vec::with_capacity(kinds.len());
         for k in &kinds {
             let expr_str = expand_alias(k).ok_or_else(|| {
-                rmcp::ErrorData::invalid_params(
-                    format!("unknown alias '{k}'"),
-                    None,
-                )
+                rmcp::ErrorData::invalid_params(format!("unknown alias '{k}'"), None)
             })?;
             match FilterExpr::parse(expr_str) {
                 Ok(expr) => compiled.push(expr),
@@ -635,8 +630,7 @@ impl SipnabMcp {
                 &dialog_streams,
                 &AsymmetryThresholds::default(),
             );
-            let diag_json =
-                serde_json::to_value(&diag).unwrap_or(serde_json::Value::Null);
+            let diag_json = serde_json::to_value(&diag).unwrap_or(serde_json::Value::Null);
             drop(ss);
             drop(ds);
             serde_json::json!({
@@ -875,7 +869,10 @@ mod tests {
         let content = &result.content[0];
         let raw = content.as_text().expect("should be text-able").text.clone();
         // Empty list → "[]"
-        assert!(raw.contains("[]"), "empty store should return [], got: {raw}");
+        assert!(
+            raw.contains("[]"),
+            "empty store should return [], got: {raw}"
+        );
     }
 
     #[tokio::test]

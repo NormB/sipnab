@@ -25,6 +25,8 @@ pub mod capture;
 pub mod cli;
 pub mod config;
 pub mod crypto;
+pub mod error;
+pub use error::Error;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "native")]
