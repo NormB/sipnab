@@ -363,6 +363,24 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    /// Poll the response channel until a response arrives or `deadline`
+    /// expires — replaces fixed sleeps (fast when fast, CI-tolerant).
+    fn recv_response_within(
+        handle: &ScannerKillHandle,
+        deadline: std::time::Duration,
+    ) -> Option<KillResponse> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(r) = handle.try_recv_response() {
+                return Some(r);
+            }
+            if start.elapsed() > deadline {
+                return None;
+            }
+            std::thread::yield_now();
+        }
+    }
+
     fn localhost_v4() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
@@ -383,10 +401,7 @@ mod tests {
             })
             .expect("send should succeed");
 
-        // Give the worker a moment to process
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let resp = handle.try_recv_response();
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
         assert_eq!(resp, Some(KillResponse::Sent));
 
         handle.shutdown();
@@ -407,17 +422,23 @@ mod tests {
             });
         }
 
-        // Give the worker time to process all
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
+        // Drain until all 15 responses have arrived.
         let mut sent_count = 0u32;
         let mut limited_count = 0u32;
-
-        while let Some(resp) = handle.try_recv_response() {
-            match resp {
-                KillResponse::Sent => sent_count += 1,
-                KillResponse::RateLimited => limited_count += 1,
-                _ => {}
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while sent_count + limited_count < 15 {
+            match handle.try_recv_response() {
+                Some(KillResponse::Sent) => sent_count += 1,
+                Some(KillResponse::RateLimited) => limited_count += 1,
+                Some(_) => {}
+                None => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "worker should answer all 15 requests within 5s \
+                         (got {sent_count} sent / {limited_count} limited)"
+                    );
+                    std::thread::yield_now();
+                }
             }
         }
 
@@ -439,9 +460,7 @@ mod tests {
             })
             .expect("send should succeed");
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let resp = handle.try_recv_response();
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
         assert!(
             matches!(resp, Some(KillResponse::Rejected { .. })),
             "broadcast should be rejected"
@@ -463,9 +482,7 @@ mod tests {
             })
             .expect("send should succeed");
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let resp = handle.try_recv_response();
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
         assert!(
             matches!(resp, Some(KillResponse::Rejected { .. })),
             "multicast should be rejected"
@@ -488,9 +505,7 @@ mod tests {
             })
             .expect("send should succeed");
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let resp = handle.try_recv_response();
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
         assert!(
             matches!(resp, Some(KillResponse::Rejected { .. })),
             "IPv6 multicast should be rejected"
@@ -518,9 +533,7 @@ mod tests {
             })
             .expect("send should succeed");
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let resp = handle.try_recv_response();
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
         assert!(
             matches!(resp, Some(KillResponse::Rejected { .. })),
             "empty response should be rejected"
