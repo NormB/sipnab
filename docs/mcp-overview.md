@@ -93,7 +93,9 @@ The agent then connects to `https://your-host/mcp` with a `Bearer
 | `security_findings` | Recent scanner / fraud / digest / reg-flood alerts |
 | `stats` | Aggregate counters (dialog_count, stream_count, etc.) |
 
-See [`mcp-tools.md`](./mcp-tools.md) for parameter / response details.
+See [`mcp-tools.md`](./mcp-tools.md) for parameter / response details, and
+[`mcp-setup.md`](./mcp-setup.md) for token bootstrap, a systemd unit, and
+troubleshooting.
 
 ## Security model
 
