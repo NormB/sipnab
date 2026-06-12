@@ -40,9 +40,7 @@ fn cli_long_flags() -> BTreeSet<String> {
 /// dashes so table rules (`|----|`) and `--` used as an em-dash don't match.
 fn extract_long_flags(text: &str) -> BTreeSet<String> {
     let re = regex::Regex::new(r"--([A-Za-z][A-Za-z0-9-]*)").unwrap();
-    re.captures_iter(text)
-        .map(|c| c[1].to_string())
-        .collect()
+    re.captures_iter(text).map(|c| c[1].to_string()).collect()
 }
 
 #[test]

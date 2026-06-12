@@ -129,9 +129,104 @@ pub fn capture_live(
     Ok(())
 }
 
+/// Packets whose pcap timestamp could not be converted and were stamped
+/// with the wall clock instead. A non-zero value means capture timing
+/// analysis (PDD, delta times, call duration) is unreliable for this run.
+pub static INVALID_PCAP_TIMESTAMPS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
+///
+/// A corrupt timeval (out-of-range seconds, or microseconds outside
+/// `0..1_000_000`) falls back to the current wall clock — but loudly:
+/// the event is counted in [`INVALID_PCAP_TIMESTAMPS`] and warned about
+/// (rate-limited), because silently substituted timestamps corrupt every
+/// downstream timing computation.
 fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
-    Utc.timestamp_opt(ts.tv_sec, (ts.tv_usec as u32) * 1000)
-        .single()
-        .unwrap_or_else(Utc::now)
+    let sec = ts.tv_sec as i64;
+    let usec = ts.tv_usec as i64;
+    let converted = if (0..1_000_000).contains(&usec) {
+        Utc.timestamp_opt(sec, usec as u32 * 1000).single()
+    } else {
+        None
+    };
+    converted.unwrap_or_else(|| {
+        let n = INVALID_PCAP_TIMESTAMPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if n == 1 || n.is_multiple_of(10_000) {
+            tracing::warn!(
+                "invalid pcap timestamp (tv_sec={sec}, tv_usec={usec}); \
+                 stamping packet with current time ({n} occurrence(s) so far) — \
+                 timing analysis for this capture is unreliable"
+            );
+        }
+        Utc::now()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn tv(sec: i64, usec: i64) -> libc::timeval {
+        libc::timeval {
+            tv_sec: sec as _,
+            tv_usec: usec as _,
+        }
+    }
+
+    #[test]
+    fn valid_timestamp_converts_exactly() {
+        let dt = pcap_ts_to_chrono(tv(1_700_000_000, 123_456));
+        assert_eq!(dt.timestamp(), 1_700_000_000);
+        assert_eq!(dt.timestamp_subsec_micros(), 123_456);
+    }
+
+    #[test]
+    fn usec_boundary_999_999_is_valid() {
+        let dt = pcap_ts_to_chrono(tv(0, 999_999));
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_micros(), 999_999);
+    }
+
+    #[test]
+    fn zero_timestamp_is_valid_epoch() {
+        // A pcap with tv_sec = 0 is a real (if odd) timestamp, not an error:
+        // it must convert to the epoch, not fall back to "now".
+        let dt = pcap_ts_to_chrono(tv(0, 0));
+        assert_eq!(dt.timestamp(), 0);
+        assert_eq!(dt.timestamp_subsec_micros(), 0);
+    }
+
+    #[test]
+    fn negative_usec_does_not_panic_and_is_counted() {
+        // Corrupted tv_usec: `as u32` wraps -1 to u32::MAX, and the old
+        // `* 1000` overflowed (panic in debug builds). Must instead fall
+        // back cleanly and count the event.
+        let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        let dt = pcap_ts_to_chrono(tv(1_700_000_000, -1));
+        let after = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        assert!(after > before, "invalid timestamp must be counted");
+        // Fallback stamps with "now" (within a generous window).
+        assert!((Utc::now() - dt).num_seconds().abs() < 60);
+    }
+
+    #[test]
+    fn oversized_usec_falls_back_and_is_counted() {
+        // tv_usec must be < 1_000_000; 5_000_000 is corrupt.
+        let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        let dt = pcap_ts_to_chrono(tv(1_700_000_000, 5_000_000));
+        let after = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        assert!(after > before, "invalid timestamp must be counted");
+        assert!((Utc::now() - dt).num_seconds().abs() < 60);
+    }
+
+    #[test]
+    fn out_of_range_sec_falls_back_and_is_counted() {
+        let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        let dt = pcap_ts_to_chrono(tv(i64::MAX, 0));
+        let after = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);
+        assert!(after > before, "invalid timestamp must be counted");
+        assert!((Utc::now() - dt).num_seconds().abs() < 60);
+    }
 }
