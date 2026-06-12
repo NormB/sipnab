@@ -1519,7 +1519,12 @@ fn process_parsed_packet(
 
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = sipnab::pipeline::try_websocket_unwrap(pp);
-    let effective_payload = ws_payload.as_deref().unwrap_or(&pp.payload);
+    let was_ws = ws_payload.is_some();
+    let effective_payload: bytes::Bytes = match ws_payload {
+        Some(v) => v.into(),
+        None => pp.payload.clone(),
+    };
+    let effective_payload = &effective_payload;
 
     // Try SIP detection first — only on packets matching the SIP port range.
     // RTP uses dynamic ports negotiated via SDP and is detected below without
@@ -1528,12 +1533,12 @@ fn process_parsed_packet(
         && sip::is_sip_message(effective_payload)
     {
         let effective_transport = match pp.transport {
-            TransportProto::Tcp if ws_payload.is_some() => TransportProto::Ws,
+            TransportProto::Tcp if was_ws => TransportProto::Ws,
             TransportProto::Tcp if tls_decrypted => TransportProto::Tls,
             other => other,
         };
 
-        match sip::parse_sip(
+        match sip::parser::parse_sip_bytes(
             effective_payload,
             pp.timestamp,
             pp.src_addr,

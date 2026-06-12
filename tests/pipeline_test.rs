@@ -139,3 +139,31 @@ fn rtcp_detection_requires_odd_port_and_valid_header() {
     );
     assert!(!pipeline::is_rtcp_packet(&[0x80, 200], 30001), "too short");
 }
+
+/// Buffer-sharing contract: a SIP message parsed from a packet payload
+/// must keep `raw` as a VIEW of that payload's buffer (refcounted), not
+/// a second copy — and storing it in the dialog store must not copy
+/// either.
+#[test]
+fn sip_message_raw_shares_payload_buffer() {
+    let payload: bytes::Bytes = invite().into();
+    let msg = sipnab::sip::parser::parse_sip_bytes(
+        &payload,
+        Utc::now(),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+        5060,
+        5060,
+        TransportProto::Udp,
+    )
+    .expect("INVITE parses");
+    let range = payload.as_ptr_range();
+    assert!(
+        range.contains(&msg.raw.as_ptr()),
+        "SipMessage.raw must view the payload buffer (zero-copy)"
+    );
+    assert!(
+        msg.body.is_empty() || range.contains(&msg.body.as_ptr()),
+        "SipMessage.body must view the payload buffer too"
+    );
+}

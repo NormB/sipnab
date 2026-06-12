@@ -53,6 +53,31 @@ pub fn parse_sip(
     dst_port: u16,
     transport: TransportProto,
 ) -> Result<SipMessage> {
+    parse_sip_bytes(
+        &bytes::Bytes::copy_from_slice(data),
+        timestamp,
+        src_addr,
+        dst_addr,
+        src_port,
+        dst_port,
+        transport,
+    )
+}
+
+/// Like [`parse_sip`], but `raw` and `body` of the returned message are
+/// zero-copy views of `data`'s buffer (refcount bumps, no allocation).
+/// Use this on the capture hot path where the payload is already a
+/// [`bytes::Bytes`]; `parse_sip` copies once and delegates here.
+#[must_use = "parsing result must be handled"]
+pub fn parse_sip_bytes(
+    data: &bytes::Bytes,
+    timestamp: DateTime<Utc>,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+    src_port: u16,
+    dst_port: u16,
+    transport: TransportProto,
+) -> Result<SipMessage> {
     if data.is_empty() {
         anyhow::bail!("Empty data is not a SIP message");
     }
@@ -70,17 +95,17 @@ pub fn parse_sip(
 
     // Parse headers and body
     let header_start = first_crlf + 2; // skip past \r\n
-    let (headers, body, parse_error) = parse_headers_and_body(data, header_start);
+    let (headers, body_range, parse_error) = parse_headers_and_body(data, header_start);
 
     Ok(SipMessage {
-        raw: data.to_vec(),
+        raw: data.clone(),
         is_request: first.is_request,
         method: first.method,
         status_code: first.status_code,
         reason: first.reason,
         request_uri: first.request_uri,
         headers,
-        body,
+        body: body_range.map(|r| data.slice(r)).unwrap_or_default(),
         parse_error,
         timestamp,
         src_addr,
@@ -164,8 +189,11 @@ pub fn set_parser_limits(max_header_line: usize, max_headers: usize) {
 
 /// Parse SIP headers (with folding and compact form expansion) and extract body.
 ///
-/// Returns `(headers, body, parse_error)`.
-fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>, bool) {
+/// Returns `(headers, body byte-range within `data`, parse_error)`.
+fn parse_headers_and_body(
+    data: &[u8],
+    start: usize,
+) -> (Vec<SipHeader>, Option<std::ops::Range<usize>>, bool) {
     let max_header_line = MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed);
     let max_headers = MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed);
     let mut headers = Vec::new();
@@ -280,12 +308,12 @@ fn parse_headers_and_body(data: &[u8], start: usize) -> (Vec<SipHeader>, Vec<u8>
                 parse_error = true;
             }
             // Take at most expected_len bytes
-            body_bytes[..body_bytes.len().min(expected_len)].to_vec()
+            Some(pos..pos + body_bytes.len().min(expected_len))
         } else {
-            body_bytes.to_vec()
+            Some(pos..data.len())
         }
     } else {
-        Vec::new()
+        None
     };
 
     (headers, body, parse_error)
@@ -394,7 +422,7 @@ mod tests {
         assert_eq!(sip.to_header(), Some("Bob <sip:bob@biloxi.example.com>"));
         assert_eq!(sip.contact(), Some("<sip:alice@pc33.atlanta.example.com>"));
         assert_eq!(sip.content_type(), Some("application/sdp"));
-        assert_eq!(sip.body, b"test");
+        assert_eq!(sip.body[..], b"test"[..]);
         assert!(!sip.parse_error);
     }
 
@@ -581,7 +609,7 @@ Content-Length: 0\r\n\
         )
         .expect("should parse body");
 
-        assert_eq!(sip.body, body);
+        assert_eq!(sip.body[..], body[..]);
         assert!(!sip.parse_error);
     }
 
@@ -833,7 +861,7 @@ Content-Length: 0\r\n\
         .expect("should parse with error flag");
 
         assert!(sip.parse_error);
-        assert_eq!(sip.body, b"short");
+        assert_eq!(sip.body[..], b"short"[..]);
     }
 
     // ── Security regression tests ────────────────────────────────────

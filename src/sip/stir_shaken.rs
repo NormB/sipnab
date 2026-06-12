@@ -359,14 +359,14 @@ mod tests {
     fn sip_message_stir_shaken_missing_header() {
         use std::net::{IpAddr, Ipv4Addr};
         let msg = SipMessage {
-            raw: Vec::new(),
+            raw: Default::default(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
             reason: None,
             request_uri: Some("sip:bob@example.com".to_string()),
             headers: vec![],
-            body: Vec::new(),
+            body: Default::default(),
             parse_error: false,
             timestamp: chrono::Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -389,7 +389,7 @@ mod tests {
         let identity_value = build_identity_header(payload);
 
         let msg = SipMessage {
-            raw: Vec::new(),
+            raw: Default::default(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
@@ -399,7 +399,7 @@ mod tests {
                 name: "Identity".into(),
                 value: identity_value,
             }],
-            body: Vec::new(),
+            body: Default::default(),
             parse_error: false,
             timestamp: chrono::Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),

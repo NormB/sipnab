@@ -632,8 +632,8 @@ mod tests {
                 mk_hdr("To", "<sip:b@10.0.0.2>"),
                 mk_hdr("CSeq", "1 INVITE"),
             ],
-            body: Vec::new(),
-            raw: Vec::new(),
+            body: Default::default(),
+            raw: Default::default(),
             parse_error: false,
             is_retransmission: false,
         };
