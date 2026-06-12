@@ -97,12 +97,18 @@ impl DialogStore {
     ///
     /// Messages without a Call-ID header are silently dropped.
     pub fn process_message(&mut self, mut msg: SipMessage) {
-        let call_id = match msg.call_id() {
-            Some(id) => id.to_string(),
+        // Look up by the borrowed Call-ID (str is Equivalent<String> for
+        // IndexMap); the owned key is allocated only when a new dialog is
+        // actually inserted — not once per message on the hot path.
+        let dialog_idx = match msg.call_id() {
+            Some(id) => self.dialogs.get_index_of(id),
             None => return,
         };
 
-        if let Some(dialog) = self.dialogs.get_mut(&call_id) {
+        if let Some(idx) = dialog_idx {
+            let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
+                return; // unreachable: idx came from get_index_of
+            };
             // Retransmission detection: same CSeq number + method already seen
             if is_retransmission(dialog, &msg) {
                 let cseq_key = cseq_key(&msg);
@@ -175,6 +181,10 @@ impl DialogStore {
                 // Track SDP for the initial message
                 track_sdp(&mut dialog.sdp_timeline, &msg);
 
+                let call_id = match msg.call_id() {
+                    Some(id) => id.to_string(),
+                    None => return, // unreachable: checked at function entry
+                };
                 self.dialogs.insert(call_id, dialog);
             }
         }
@@ -443,6 +453,26 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("should parse INVITE")
+    }
+
+    /// A message for an EXISTING dialog must be processed even when the
+    /// store is at capacity — capacity only gates NEW dialogs. Guards the
+    /// lookup-before-capacity-check ordering in process_message.
+    #[test]
+    fn existing_dialog_updated_at_capacity() {
+        let mut store = DialogStore::new(2, false);
+        store.process_message(make_invite_msg("at-cap-1", base_ts()));
+        store.process_message(make_invite_msg("at-cap-2", base_ts()));
+        assert_eq!(store.len(), 2);
+
+        // Store is full; an update to dialog 1 must still land.
+        store.process_message(make_200_ok("at-cap-1", base_ts()));
+        let d = store.get("at-cap-1").expect("dialog must exist");
+        assert_eq!(
+            d.messages.len(),
+            2,
+            "200 OK for an existing dialog must be stored even at capacity"
+        );
     }
 
     fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
