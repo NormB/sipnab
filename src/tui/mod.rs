@@ -1543,29 +1543,16 @@ fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     frame.render_widget(line3, area);
 }
 
-/// Render the sngrep-style F-key bar at the bottom of the screen.
-///
-/// Format: `Esc Quit  Enter Show  F2 Save  ...`
-/// Key names in bold white, labels in default. Full-width dark background.
-/// The bar is context-sensitive based on the current view. On narrow
-/// terminals, lower-priority items are dropped to avoid truncation.
-fn render_fkey_bar(
-    frame: &mut ratatui::Frame,
-    area: Rect,
+/// Build the f-key bar item list for the current view/popup at the
+/// given terminal width. Items near the end are lower priority and
+/// dropped first on narrow terminals. Extracted from the renderer so
+/// the visible key hints are unit-testable.
+fn fkey_bar_items(
     view: &View,
     popup: &Option<Popup>,
-    theme: &Theme,
-) {
-    let key_style = Style::default()
-        .fg(theme.foreground)
-        .add_modifier(Modifier::BOLD);
-    let label_style = Style::default().fg(theme.foreground);
-
-    let width = area.width;
-
-    // Full item sets per view; items near the end are lower priority.
-    // Popup-specific bars take precedence.
-    let items: Vec<(&str, &str)> = if let Some(p) = popup {
+    width: u16,
+) -> Vec<(&'static str, &'static str)> {
+    if let Some(p) = popup {
         match p {
             Popup::SaveDialog => vec![("Enter", "Save"), ("Tab", "Format"), ("Esc", "Cancel")],
             Popup::FilterDialog => {
@@ -1598,6 +1585,7 @@ fn render_fkey_bar(
                 if width < 80 {
                     vec![
                         ("Esc", "Quit"),
+                        ("F1", "Help"),
                         ("Enter", "Show"),
                         ("Tab", "Streams"),
                         ("F2", "Save"),
@@ -1606,6 +1594,7 @@ fn render_fkey_bar(
                 } else if width < 100 {
                     vec![
                         ("Esc", "Quit"),
+                        ("F1", "Help"),
                         ("Enter", "Show"),
                         ("Tab", "Streams"),
                         ("F2", "Save"),
@@ -1617,6 +1606,7 @@ fn render_fkey_bar(
                 } else {
                     vec![
                         ("Esc", "Quit"),
+                        ("F1", "Help"),
                         ("Enter", "Show"),
                         ("Tab", "Streams"),
                         ("O", "Open"),
@@ -1710,7 +1700,32 @@ fn render_fkey_bar(
             }
             _ => vec![("Esc", "Back")],
         }
-    };
+    }
+}
+
+/// Render the sngrep-style F-key bar at the bottom of the screen.
+///
+/// Format: `Esc Quit  Enter Show  F2 Save  ...`
+/// Key names in bold white, labels in default. Full-width dark background.
+/// The bar is context-sensitive based on the current view. On narrow
+/// terminals, lower-priority items are dropped to avoid truncation.
+fn render_fkey_bar(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    view: &View,
+    popup: &Option<Popup>,
+    theme: &Theme,
+) {
+    let key_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::BOLD);
+    let label_style = Style::default().fg(theme.foreground);
+
+    let width = area.width;
+
+    // Full item sets per view; items near the end are lower priority.
+    // Popup-specific bars take precedence.
+    let items = fkey_bar_items(view, popup, width);
 
     let mut spans: Vec<Span> = Vec::new();
     for (i, (key, label)) in items.iter().enumerate() {
@@ -1954,7 +1969,9 @@ fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, app: &App) 
             Style::default().fg(app.theme.muted),
         )));
     } else {
-        let scroll_offset = app.open_selected.saturating_sub(list_rows.saturating_sub(1));
+        let scroll_offset = app
+            .open_selected
+            .saturating_sub(list_rows.saturating_sub(1));
         for (idx, entry) in app
             .open_entries
             .iter()
@@ -3922,9 +3939,7 @@ fn load_pcap_file(app: &mut App, path_str: &str) -> String {
                             .filter_map(|media| {
                                 crate::sip::sdp::effective_address(media, &sdp)
                                     .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                                    .map(|ip| {
-                                        (ip, media.port, call_id.to_string(), media.clone())
-                                    })
+                                    .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
                             })
                             .collect()
                     } else {
@@ -5217,6 +5232,20 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F1 opens the help overlay, but nothing on a POPULATED call list
+    /// said so (only the empty-state message did) — the f-key bar listed
+    /// F2..F10 but never F1. Help must be advertised at every width.
+    #[test]
+    fn fkey_bar_advertises_help_on_call_list_at_all_widths() {
+        for width in [60u16, 90, 120] {
+            let items = fkey_bar_items(&View::CallList, &None, width);
+            assert!(
+                items.contains(&("F1", "Help")),
+                "width {width}: F1 Help missing from f-key bar: {items:?}"
+            );
+        }
+    }
 
     #[test]
     fn app_default_view_is_call_list() {

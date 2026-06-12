@@ -1,5 +1,6 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 755
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
@@ -16,4 +17,4 @@ expression: output
 
 
 
-Esc Quit  Enter Show  Tab Streams  F2 Save  F7 Filter
+Esc Quit  F1 Help  Enter Show  Tab Streams  F2 Save  F7 Filt
