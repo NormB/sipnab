@@ -1022,7 +1022,7 @@ mod tests {
         assert_eq!(hep.src_port, 5060);
         assert_eq!(hep.dst_port, 5061);
         assert_eq!(hep.protocol, HepProtocol::Sip);
-        assert_eq!(hep.payload, sip_payload);
+        assert_eq!(hep.payload[..], sip_payload[..]);
         assert_eq!(hep.capture_id, Some(42));
         assert_eq!(hep.timestamp.timestamp(), 1700000000);
     }
@@ -1061,7 +1061,7 @@ mod tests {
         assert_eq!(hep.src_port, 5060);
         assert_eq!(hep.dst_port, 5060);
         assert_eq!(hep.protocol, HepProtocol::Sip);
-        assert_eq!(hep.payload, payload);
+        assert_eq!(hep.payload[..], payload[..]);
     }
 
     #[test]
@@ -1138,7 +1138,7 @@ mod tests {
         assert_eq!(parsed.dst_port, 5061);
         assert_eq!(parsed.protocol, HepProtocol::Sip);
         assert_eq!(parsed.capture_id, Some(99));
-        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.payload[..], payload[..]);
         assert_eq!(parsed.timestamp.timestamp(), 1700000000);
         // Microsecond precision: 500_000_000 ns = 500_000 us
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 500_000);
@@ -1227,7 +1227,7 @@ mod tests {
         assert_eq!(meta.src_port, 5060);
         assert_eq!(meta.dst_port, 5060);
         assert_eq!(meta.ip_protocol, 17);
-        assert_eq!(&packet.data, payload);
+        assert_eq!(&packet.data[..], &payload[..]);
     }
 
     /// HEP packets that carry TCP-borne SIP must surface `ip_protocol = 6`

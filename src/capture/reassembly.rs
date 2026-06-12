@@ -40,7 +40,7 @@ struct FragmentKey {
 /// State for an in-progress fragment reassembly.
 struct FragmentEntry {
     /// Collected fragments: (byte offset, data).
-    fragments: Vec<(usize, Vec<u8>)>,
+    fragments: Vec<(usize, bytes::Bytes)>,
     /// Total datagram length, known once the final fragment arrives.
     total_len: Option<usize>,
     /// When this entry was created (for TTL eviction).
@@ -157,7 +157,7 @@ impl FragmentReassembler {
         }
 
         // Sort fragments by offset and check contiguity
-        let mut sorted: Vec<&(usize, Vec<u8>)> = entry.fragments.iter().collect();
+        let mut sorted: Vec<&(usize, bytes::Bytes)> = entry.fragments.iter().collect();
         sorted.sort_by_key(|(off, _)| *off);
 
         let mut cursor = 0;
@@ -260,7 +260,7 @@ struct TcpStream {
     /// Next expected sequence number.
     expected_seq: u32,
     /// Out-of-order segment buffer, keyed by sequence number.
-    buffer: BTreeMap<u32, Vec<u8>>,
+    buffer: BTreeMap<u32, bytes::Bytes>,
     /// When this stream was first seen.
     #[allow(dead_code)]
     created: Instant,
@@ -548,7 +548,7 @@ mod tests {
             src_port: 0,
             dst_port: 0,
             transport: TransportProto::Udp,
-            payload: payload.to_vec(),
+            payload: bytes::Bytes::copy_from_slice(payload),
             ip_id: Some(ip_id),
             tcp_seq: None,
             tcp_flags: None,
@@ -575,7 +575,7 @@ mod tests {
             src_port,
             dst_port,
             transport: TransportProto::Tcp,
-            payload: payload.to_vec(),
+            payload: bytes::Bytes::copy_from_slice(payload),
             ip_id: None,
             tcp_seq: Some(seq),
             tcp_flags: Some(flags),

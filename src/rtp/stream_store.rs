@@ -295,7 +295,7 @@ mod tests {
             src_port,
             dst_port,
             transport: TransportProto::Udp,
-            payload: vec![0u8; 12 + payload_len], // 12 for RTP header
+            payload: vec![0u8; 12 + payload_len].into(), // 12 for RTP header
             ip_id: None,
             tcp_seq: None,
             tcp_flags: None,
