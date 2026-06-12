@@ -39,7 +39,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   (src/process_isolation.rs:82-90) can panic and the main loop never knows;
   defense silently disabled. Add health check (dead-worker detection on the
   handle) + loud error; audit other spawned workers for the same pattern.
-- [ ] **P4. Call-ID allocated per message just for lookup** —
+- [x] **P4. Call-ID allocated per message just for lookup** —
   dialog_store.rs:101 does `id.to_string()` before `get_mut`. Use
   `Borrow<str>` lookup; allocate only on insert. Bench-verified.
 - [ ] **P3. Up to 4 stream_store write-locks per RTP packet** —
@@ -58,6 +58,13 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P2 — medium
 
+- [ ] **P9. Retransmission check is O(messages) with per-message header
+  re-parse** — `is_retransmission` (dialog_store.rs:385) scans every stored
+  message and calls `existing.cseq()` (header parse) on each: ~16 µs per
+  in-dialog message at the 500-message cap — this dominates the dialog hot
+  path (found while benchmarking P4; the Call-ID alloc was noise by
+  comparison). Maintain a per-dialog set of seen CSeq keys instead
+  (`timing.retransmit_counts` already keys by `cseq_key`).
 - [ ] **P6. O(n) RTCP→stream lookup** — stream_store.rs:110-117 linear-scans
   all streams per RTCP report. Add `ssrc → key` secondary index.
 - [ ] **P7. O(n) dialog eviction** — `shift_remove_index(0)`
