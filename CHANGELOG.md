@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-12
+
 Hardening, performance, and maintainability pass driven by a
 four-dimension project analysis (maintainability, survivability,
 performance, usability); roadmap and per-item status in `TODO.md`.
