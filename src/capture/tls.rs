@@ -257,16 +257,33 @@ pub fn parse_keylog_line(line: &str) -> Result<KeyLogEntry> {
 }
 
 /// Decode a hex string into bytes.
+///
+/// Operates on raw bytes, not str slices: the input is attacker-derived
+/// (a keylog line), so a multi-byte UTF-8 char split by a 2-character
+/// window must NOT panic on a non-char-boundary str slice. Any non-ASCII
+/// or non-hex byte is a clean parse error.
 fn decode_hex(hex: &str) -> Result<Vec<u8>> {
-    if !hex.len().is_multiple_of(2) {
+    let bytes = hex.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
         anyhow::bail!("Odd-length hex string: {hex}");
     }
 
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .with_context(|| format!("Invalid hex byte at position {i}: {}", &hex[i..i + 2]))
+    fn nibble(b: u8, pos: usize) -> Result<u8> {
+        match b {
+            b'0'..=b'9' => Ok(b - b'0'),
+            b'a'..=b'f' => Ok(b - b'a' + 10),
+            b'A'..=b'F' => Ok(b - b'A' + 10),
+            _ => anyhow::bail!("Invalid hex byte at position {pos}: 0x{b:02x}"),
+        }
+    }
+
+    bytes
+        .chunks_exact(2)
+        .enumerate()
+        .map(|(idx, pair)| {
+            let hi = nibble(pair[0], idx * 2)?;
+            let lo = nibble(pair[1], idx * 2 + 1)?;
+            Ok((hi << 4) | lo)
         })
         .collect()
 }
@@ -417,6 +434,23 @@ mod tests {
     fn parse_keylog_invalid_hex() {
         let line = "CLIENT_RANDOM ZZZZ 0011";
         assert!(parse_keylog_line(line).is_err());
+    }
+
+    #[test]
+    fn decode_hex_multibyte_utf8_does_not_panic() {
+        // Regression: decode_hex checked BYTE-length parity then sliced
+        // `&hex[i..i+2]` as a str. A multi-byte UTF-8 char (here '€',
+        // 3 bytes) split by the 2-byte window panicked with "byte index
+        // is not a char boundary" — a remote DoS via a crafted keylog
+        // line. Must return Err, never panic. (Found by the smoke-fuzz
+        // harness; the keylog_line fuzz target never ran here.)
+        assert!(decode_hex("€a").is_err());
+        assert!(decode_hex("a€").is_err());
+        assert!(parse_keylog_line("CLIENT_RANDOM €€€€€€ 0011").is_err());
+        // A pile of assorted multibyte chars must all fail cleanly.
+        for s in ["ü", "ünf", "🔑🔑", "a🔑", "\u{80}\u{80}"] {
+            let _ = decode_hex(s); // must not panic
+        }
     }
 
     // ── Security regression tests ────────────────────────────────────
