@@ -169,6 +169,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--markdown` | -- | off | Format report output as Markdown |
 | `--hexdump` | -- | off | Include hex dump of SIP payloads. Requires `-N` |
+| `--no-cli-print` | -- | off | Suppress per-message CLI output (use with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
 | `--show-empty` | -- | off | Show messages with empty bodies |
@@ -251,7 +252,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--mcp-bind` | `<ADDR>` | -- (`127.0.0.1:8731` applied at runtime when `--mcp-transport http` is set without an explicit bind) | Bind address for the HTTP MCP transport |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP. Required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN` |
 | `--mcp-token-file` | `<FILE>` | -- | Read MCP bearer token from a file (preferred over env in systemd units) |
-| `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). Use `*` to disable host checking entirely |
+| `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to allowing only `localhost`, `127.0.0.1`, and `::1`; add the public hostname or bind IP clients actually use. `*` disables host checking entirely (not recommended; pair the resulting open binding with a network-level allowlist) |
 
 ## TLS / Decryption
 
