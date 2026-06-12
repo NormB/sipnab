@@ -778,6 +778,14 @@ fn run_tui_mode(
                 if last_sweep.elapsed() >= sweep_interval {
                     processor.sweep();
                     ss.write().mark_orphaned(std::time::Duration::from_secs(30));
+                    let compacted = ds.write().compact_idle(chrono::Utc::now());
+                    if compacted.messages_evicted > 0 {
+                        tracing::debug!(
+                            "idle-dialog compaction: dropped {} messages from {} dialogs",
+                            compacted.messages_evicted,
+                            compacted.dialogs_compacted
+                        );
+                    }
                     last_sweep = std::time::Instant::now();
                 }
 
@@ -1215,6 +1223,14 @@ fn run_batch_mode(
             stream_store
                 .write()
                 .mark_orphaned(std::time::Duration::from_secs(30));
+            let compacted = dialog_store.write().compact_idle(chrono::Utc::now());
+            if compacted.messages_evicted > 0 {
+                tracing::debug!(
+                    "idle-dialog compaction: dropped {} messages from {} dialogs",
+                    compacted.messages_evicted,
+                    compacted.dialogs_compacted
+                );
+            }
             let security_max_age = std::time::Duration::from_secs(120);
             if let Some(det) = engines.scanner.as_mut() {
                 det.sweep(security_max_age);
@@ -2226,8 +2242,8 @@ fn start_mcp_server(
     let transport = cli.mcp_transport.as_str();
     match transport {
         "stdio" => {
-            let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store)
-                .with_alert_engine(alerts);
+            let server =
+                sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
             let handle = std::thread::Builder::new()
                 .name("mcp-stdio".into())
                 .spawn(move || {
@@ -2277,10 +2293,7 @@ fn start_mcp_http_server(
     stream_store: Arc<RwLock<StreamStore>>,
     alerts: Arc<RwLock<AlertEngine>>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let bind_str = cli
-        .mcp_bind
-        .as_deref()
-        .unwrap_or("127.0.0.1:8731");
+    let bind_str = cli.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
     let bind = match output::api::parse_bind_addr(bind_str) {
         Ok(addr) => addr,
         Err(e) => {
@@ -2307,8 +2320,7 @@ fn start_mcp_http_server(
 
     let extra_allowed_hosts = cli.mcp_allowed_host.clone();
 
-    let server =
-        sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
+    let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
     let handle = std::thread::Builder::new()
         .name("mcp-http".into())
         .spawn(move || {
