@@ -93,6 +93,10 @@ libc = "0.2"
 name = "parser_bench"
 harness = false
 
+[[bench]]
+name = "store_bench"
+harness = false
+
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
