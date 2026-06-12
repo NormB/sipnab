@@ -636,6 +636,64 @@ impl HepRateLimiter {
 
 // ── HEP capture (receiver) ──────────────────────────────────────────
 
+/// How long the HEP listener may go without receiving a packet before
+/// it warns the operator. UDP is connectionless: a dead upstream sender
+/// produces no error, just silence — without this, a stalled feed is
+/// indistinguishable from a quiet one.
+pub const HEP_IDLE_WARN_AFTER: Duration = Duration::from_secs(30);
+
+/// Detects silent stalls in a packet feed.
+///
+/// Pure state machine over caller-supplied [`Instant`]s so it is testable
+/// without sleeping: [`IdleWatch::check`] returns `Some(idle)` exactly once
+/// per idle period when the threshold is crossed, and
+/// [`IdleWatch::on_packet`] returns `Some(outage)` on the first packet
+/// after a warned period. A zero threshold disables the watch.
+pub struct IdleWatch {
+    threshold: Duration,
+    last_packet: Instant,
+    warned: bool,
+}
+
+impl IdleWatch {
+    /// Create a watch; `now` starts the first idle period.
+    pub fn new(threshold: Duration, now: Instant) -> Self {
+        Self {
+            threshold,
+            last_packet: now,
+            warned: false,
+        }
+    }
+
+    /// Record traffic. Returns `Some(outage_duration)` if this packet ends
+    /// a previously-warned idle period (i.e., the feed recovered).
+    pub fn on_packet(&mut self, now: Instant) -> Option<Duration> {
+        let idle = now.duration_since(self.last_packet);
+        self.last_packet = now;
+        if std::mem::take(&mut self.warned) {
+            Some(idle)
+        } else {
+            None
+        }
+    }
+
+    /// Poll the watch. Returns `Some(idle_duration)` the first time the
+    /// idle threshold is crossed; `None` on subsequent polls until traffic
+    /// resumes (no log spam).
+    pub fn check(&mut self, now: Instant) -> Option<Duration> {
+        if self.threshold.is_zero() || self.warned {
+            return None;
+        }
+        let idle = now.duration_since(self.last_packet);
+        if idle >= self.threshold {
+            self.warned = true;
+            Some(idle)
+        } else {
+            None
+        }
+    }
+}
+
 /// HEP listener: binds a UDP socket and receives HEP packets.
 ///
 /// Each received HEP packet is parsed and converted via [`hep_to_packet`]
@@ -700,6 +758,8 @@ pub fn capture_hep(
 
     tracing::info!("HEP listener started on {bind_addr}");
 
+    let mut idle_watch = IdleWatch::new(HEP_IDLE_WARN_AFTER, std::time::Instant::now());
+
     loop {
         if signals::shutdown_requested() {
             tracing::debug!("Shutdown requested, stopping HEP listener");
@@ -722,13 +782,32 @@ pub fn capture_hep(
 
         let (n, peer) = match socket.recv_from(&mut buf) {
             Ok((n, peer)) => (n, peer),
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
-            Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => continue,
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                if let Some(idle) = idle_watch.check(std::time::Instant::now()) {
+                    tracing::warn!(
+                        "HEP listener on {bind_addr}: no packets for {}s — \
+                         upstream sender may be down (UDP gives no error for \
+                         a dead peer); capture is still listening",
+                        idle.as_secs()
+                    );
+                }
+                continue;
+            }
             Err(e) => {
                 tracing::error!("HEP socket recv error: {e}");
                 return Err(e).context("Fatal HEP socket error");
             }
         };
+
+        if let Some(outage) = idle_watch.on_packet(std::time::Instant::now()) {
+            tracing::info!(
+                "HEP listener on {bind_addr}: traffic resumed after {}s idle",
+                outage.as_secs()
+            );
+        }
 
         // Check allowlist
         if !allowlist.is_empty() {
@@ -1189,5 +1268,72 @@ mod tests {
 
         let parsed = parse_hep(&data).expect("HEP parse");
         assert_eq!(parsed.ip_protocol, 17);
+    }
+
+    // ── IdleWatch: silent-stall detection ────────────────────────────
+
+    use std::time::Instant;
+
+    fn t0() -> Instant {
+        Instant::now()
+    }
+
+    #[test]
+    fn idle_watch_quiet_below_threshold() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::from_secs(30), start);
+        assert_eq!(w.check(start + Duration::from_secs(29)), None);
+    }
+
+    #[test]
+    fn idle_watch_warns_once_when_threshold_crossed() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::from_secs(30), start);
+        let idle = w.check(start + Duration::from_secs(31));
+        assert_eq!(idle, Some(Duration::from_secs(31)));
+        // Repeated checks while still idle must NOT warn again (no log spam).
+        assert_eq!(w.check(start + Duration::from_secs(60)), None);
+        assert_eq!(w.check(start + Duration::from_secs(600)), None);
+    }
+
+    #[test]
+    fn idle_watch_reports_recovery_with_total_idle_time() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::from_secs(30), start);
+        assert!(w.check(start + Duration::from_secs(40)).is_some());
+        // First packet after a warned idle period reports the outage length.
+        let recovered = w.on_packet(start + Duration::from_secs(100));
+        assert_eq!(recovered, Some(Duration::from_secs(100)));
+        // Steady traffic afterwards is silent.
+        assert_eq!(w.on_packet(start + Duration::from_secs(101)), None);
+    }
+
+    #[test]
+    fn idle_watch_packet_resets_idle_clock() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::from_secs(30), start);
+        assert_eq!(w.on_packet(start + Duration::from_secs(20)), None);
+        // 29s after the last packet (49s after start): still quiet.
+        assert_eq!(w.check(start + Duration::from_secs(49)), None);
+        // 31s after the last packet: warn.
+        assert!(w.check(start + Duration::from_secs(51)).is_some());
+    }
+
+    #[test]
+    fn idle_watch_can_warn_again_after_recovery() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::from_secs(30), start);
+        assert!(w.check(start + Duration::from_secs(31)).is_some());
+        assert!(w.on_packet(start + Duration::from_secs(40)).is_some());
+        // A second outage warns again.
+        assert!(w.check(start + Duration::from_secs(80)).is_some());
+    }
+
+    #[test]
+    fn idle_watch_zero_threshold_is_disabled() {
+        let start = t0();
+        let mut w = IdleWatch::new(Duration::ZERO, start);
+        assert_eq!(w.check(start + Duration::from_secs(3600)), None);
+        assert_eq!(w.on_packet(start + Duration::from_secs(7200)), None);
     }
 }
