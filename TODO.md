@@ -86,7 +86,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   (security_test.rs ×13, parse_path_test.rs ×2 [agent counts overlap],
   tui_e2e_test.rs ×1). Replace with channel `recv_timeout` / condition
   polling.
-- [ ] **U5. Filter-DSL error messages** — "unexpected token at position N"
+- [x] **U5. Filter-DSL error messages** — "unexpected token at position N"
   with no caret, no operator list, no hint for unquoted values
   (`method == INVITE`). Add caret line + suggestions.
 - [ ] **U2. Document `--filter` alias acceptance** — `--filter problems`

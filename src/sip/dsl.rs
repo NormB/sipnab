@@ -204,21 +204,18 @@ impl FilterExpr {
 
         let (remaining, expr) = parse_or_expr(trimmed).map_err(|e| match e {
             nom::Err::Error(err) | nom::Err::Failure(err) => {
-                let pos = input.len() - err.input.len();
-                anyhow::anyhow!(
-                    "parse error at position {pos}: unexpected '{snippet}'",
-                    snippet = &err.input[..err.input.len().min(20)]
-                )
+                let pos = trimmed.len() - err.input.len();
+                anyhow::anyhow!("{}", render_parse_error(trimmed, pos, "unexpected input"))
             }
             nom::Err::Incomplete(_) => anyhow::anyhow!("incomplete filter expression"),
         })?;
 
-        let remaining = remaining.trim();
-        if !remaining.is_empty() {
-            let pos = input.len() - remaining.len();
+        if !remaining.trim().is_empty() {
+            // Position of the first non-space char of the unparsed tail.
+            let pos = trimmed.len() - remaining.trim_start().len();
             bail!(
-                "parse error at position {pos}: unexpected trailing input '{snippet}'",
-                snippet = &remaining[..remaining.len().min(20)]
+                "{}",
+                render_parse_error(trimmed, pos, "unexpected trailing input")
             );
         }
 
@@ -407,6 +404,72 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     };
 
     Ok((rest, field))
+}
+
+/// Render a filter parse error as a multi-line diagnostic: the (possibly
+/// windowed) expression, a caret under the offending position, a quoting
+/// hint when a bare word follows an operator (the classic mistake:
+/// `method == INVITE`), the operator list, and a docs pointer.
+fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
+    // Clamp to a char boundary (nom positions are byte offsets).
+    let mut pos = pos.min(expr.len());
+    while pos > 0 && !expr.is_char_boundary(pos) {
+        pos -= 1;
+    }
+
+    let offending: String = expr[pos..]
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(20)
+        .collect();
+
+    // Window the expression around the error so the caret line stays
+    // readable for very long inputs.
+    const WINDOW: usize = 80;
+    let col = expr[..pos].chars().count();
+    let total = expr.chars().count();
+    let (shown, caret_col) = if total <= WINDOW {
+        (expr.to_string(), col)
+    } else {
+        let start = col.saturating_sub(WINDOW / 2);
+        let windowed: String = expr.chars().skip(start).take(WINDOW).collect();
+        let prefix = if start > 0 { "…" } else { "" };
+        let suffix = if start + WINDOW < total { "…" } else { "" };
+        (
+            format!("{prefix}{windowed}{suffix}"),
+            col - start + if start > 0 { 1 } else { 0 },
+        )
+    };
+
+    let mut out = format!(
+        "{problem} at position {pos}{}\n  {shown}\n  {caret:>width$}",
+        if offending.is_empty() {
+            String::new()
+        } else {
+            format!(": '{offending}'")
+        },
+        caret = '^',
+        width = caret_col + 1,
+    );
+
+    // Quoting hint: bare word right after a comparison operator.
+    let before = expr[..pos].trim_end();
+    if let Some(op) = ["=~", "==", "!=", "<=", ">=", "<", ">"]
+        .iter()
+        .find(|op| before.ends_with(**op))
+        && offending.chars().next().is_some_and(|c| c.is_alphabetic())
+        && !["and", "or", "true", "false"].contains(&offending.as_str())
+    {
+        out.push_str(&format!(
+            "\nhint: string values must be quoted: {op} '{offending}'"
+        ));
+    }
+
+    out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
+    out.push_str("\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases");
+    out
 }
 
 /// Parse a comparison operator.
@@ -980,6 +1043,93 @@ mod tests {
     fn parse_error_unknown_field() {
         let result = FilterExpr::parse("bogus_field == '1001'");
         assert!(result.is_err());
+    }
+
+    // ── Rich parse-error rendering ──────────────────────────────────
+
+    #[test]
+    fn parse_error_shows_expression_with_caret_at_position() {
+        let err = FilterExpr::parse("method == INVITE")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("method == INVITE"),
+            "error must echo the expression, got:\n{err}"
+        );
+        // Caret under column 10 (0-based) where the unquoted value starts.
+        let caret_line = err
+            .lines()
+            .find(|l| l.trim_end().ends_with('^'))
+            .unwrap_or_else(|| panic!("error must contain a caret line, got:\n{err}"));
+        assert_eq!(
+            caret_line.find('^'),
+            err.lines()
+                .find(|l| l.contains("method == INVITE"))
+                .and_then(|l| l.find("INVITE")),
+            "caret must align under the offending token, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_hints_quoting_for_unquoted_value() {
+        let err = FilterExpr::parse("method == INVITE")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("== 'INVITE'"),
+            "error must show the corrected, quoted form, got:\n{err}"
+        );
+        assert!(
+            err.to_lowercase().contains("quot"),
+            "error must explain that values need quotes, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_lists_operators() {
+        let err = FilterExpr::parse("from.user @@ 'alice'")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("==") && err.contains("=~"),
+            "error must list valid operators, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_caret_correct_with_multibyte_prefix() {
+        // 'é' is 2 bytes / 1 column: caret math must use chars, not bytes.
+        let err = FilterExpr::parse("from.user == 'é' and method == INVITE")
+            .unwrap_err()
+            .to_string();
+        let expr_line = err
+            .lines()
+            .find(|l| l.contains("from.user"))
+            .expect("expression echoed");
+        let caret_line = err
+            .lines()
+            .find(|l| l.trim_end().ends_with('^'))
+            .expect("caret line present");
+        let caret_col = caret_line.chars().take_while(|c| *c == ' ').count();
+        let invite_col = expr_line
+            .find("INVITE")
+            .map(|byte_idx| expr_line[..byte_idx].chars().count())
+            .expect("INVITE present in echoed expression");
+        assert_eq!(
+            caret_col, invite_col,
+            "caret column must be measured in characters, not bytes, got:\n{err}"
+        );
+    }
+
+    #[test]
+    fn parse_error_long_input_is_windowed_not_panicking() {
+        let long = format!("from.user == '{}' and method == INVITE", "x".repeat(200));
+        let err = FilterExpr::parse(&long).unwrap_err().to_string();
+        assert!(
+            err.lines().all(|l| l.chars().count() <= 120),
+            "long expressions must be windowed around the error, got:\n{err}"
+        );
+        assert!(err.contains('^'), "caret still present, got:\n{err}");
     }
 
     // ── Diagnostic aliases ──────────────────────────────────────────
