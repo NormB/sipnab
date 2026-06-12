@@ -11,7 +11,7 @@ Set Padding 8
 Set Framerate 10
 
 Hide
-Type "cd /Users/gator/Development/sipnab && export PATH=$PWD/target/release:$PATH"
+Type "cd ~/sipnab && export PATH=$PWD/target/release:$PATH"
 Enter
 Sleep 500ms
 Show
