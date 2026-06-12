@@ -54,7 +54,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   fails at runtime on headless servers with no warning. Add
   `cargo:warning` in build.rs naming the headless recipe; prominent
   README note.
-- [ ] **S2. Idle-dialog memory creep** — per-dialog message Vec (cap 500)
+- [x] **S2. Idle-dialog memory creep** — per-dialog message Vec (cap 500)
   never shrinks; with default rotate=false, weeks-long runs accumulate GBs.
   Add age-based message eviction + "idle dialog cleanup" stat.
 
