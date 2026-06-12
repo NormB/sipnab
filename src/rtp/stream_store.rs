@@ -34,6 +34,11 @@ pub struct StreamStore {
     max_streams: usize,
     /// Maximum number of audio frames to retain per stream for WAV export.
     max_audio_frames: usize,
+    /// Whether G.711/Opus payloads are cloned into per-stream buffers for
+    /// WAV export / playback. On by default (the TUI exports on demand);
+    /// batch mode turns it off — nothing there ever reads the buffers, so
+    /// buffering was a per-packet allocation for nothing.
+    audio_capture: bool,
 }
 
 impl StreamStore {
@@ -44,7 +49,13 @@ impl StreamStore {
             ssrc_index: std::collections::HashMap::new(),
             max_streams,
             max_audio_frames: 1500,
+            audio_capture: true,
         }
+    }
+
+    /// Enable or disable audio payload buffering (see the field docs).
+    pub fn set_audio_capture(&mut self, enabled: bool) {
+        self.audio_capture = enabled;
     }
 
     /// Set the maximum number of audio frames retained per stream for WAV export.
@@ -73,7 +84,7 @@ impl StreamStore {
         if let Some(stream) = self.streams.get_mut(&key) {
             stream.update(rtp, timestamp, payload_len);
             // Capture G.711 payload for audio export (ring buffer, capped)
-            if is_audio_capturable(stream.codec.as_deref()) {
+            if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
                 if payload_start < parsed.payload.len() {
                     let audio = parsed.payload[payload_start..].to_vec();
@@ -88,7 +99,7 @@ impl StreamStore {
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
             // Capture G.711 payload for audio export (first packet)
-            if is_audio_capturable(stream.codec.as_deref()) {
+            if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
                 if payload_start < parsed.payload.len() {
                     let audio = parsed.payload[payload_start..].to_vec();
@@ -476,6 +487,40 @@ mod tests {
         let stream = store.get(&key).expect("stream should exist");
         assert_eq!(stream.jitter, 42.0);
         assert_eq!(stream.lost_packets, 10);
+    }
+
+    /// With audio capture disabled (batch mode: nothing ever reads the
+    /// buffer), G.711 payloads must not be cloned into payload_buffer.
+    #[test]
+    fn no_audio_buffering_when_capture_disabled() {
+        let mut store = StreamStore::new(100);
+        store.set_audio_capture(false);
+        let parsed = make_parsed(20000, 30000, 160);
+        // PT=0 (PCMU): codec is known from the static payload type, so
+        // this is exactly the packet that would otherwise be buffered.
+        store.process_rtp(&parsed, &make_rtp_header(0xA0D1, 1), ts(0));
+        store.process_rtp(&parsed, &make_rtp_header(0xA0D1, 2), ts(1));
+        let stream = store.iter().next().expect("stream exists");
+        assert!(
+            stream.payload_buffer.is_empty(),
+            "audio payloads must not be buffered when capture is disabled"
+        );
+        assert_eq!(stream.packet_count, 2, "stats still update normally");
+    }
+
+    /// Default (TUI / library use): G.711 payloads ARE buffered so
+    /// on-demand WAV export and playback keep working.
+    #[test]
+    fn audio_buffering_on_by_default_for_g711() {
+        let mut store = StreamStore::new(100);
+        let parsed = make_parsed(20000, 30000, 160);
+        store.process_rtp(&parsed, &make_rtp_header(0xA0D2, 1), ts(0));
+        let stream = store.iter().next().expect("stream exists");
+        assert_eq!(
+            stream.payload_buffer.len(),
+            1,
+            "default behaviour must keep buffering for TUI export/playback"
+        );
     }
 
     fn rr_for(ssrc: u32, jitter: u32) -> Vec<RtcpPacket> {
