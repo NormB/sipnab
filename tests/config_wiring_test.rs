@@ -378,6 +378,7 @@ fn sip_method_all_variants_have_display() {
 }
 
 /// Verify PcapExportMode parse round-trips all variants
+#[cfg(feature = "native")]
 #[test]
 fn pcap_export_mode_all_variants_round_trip() {
     use sipnab::capture::PcapExportMode;

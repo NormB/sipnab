@@ -27,7 +27,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 
 ## P1 — high value, tractable
 
-- [ ] **M4. CI feature-combination matrix** — CI only builds
+- [x] **M4. CI feature-combination matrix** — CI only builds
   `--all-features`. Add matrix: `native`, `tls`, `api`, `mcp`,
   `native,tui,audio`, `tls,api`, and the headless recipe
   `native,tui,tls,hep,api`. (Test = the CI run itself; local pre-check

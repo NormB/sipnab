@@ -3,6 +3,7 @@
 //! These tests exercise pcap file reading, packet count limits, BPF filtering,
 //! and the pcap writer roundtrip. All tests use file-based capture (no root
 //! privileges required).
+#![cfg(feature = "native")]
 
 use std::path::PathBuf;
 
