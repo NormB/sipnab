@@ -44,15 +44,33 @@ pub fn build_version() -> String {
 /// the `[features]` block in `Cargo.toml`.
 fn compiled_features() -> Vec<&'static str> {
     let mut out = Vec::new();
-    if cfg!(feature = "native") { out.push("native"); }
-    if cfg!(feature = "tui") { out.push("tui"); }
-    if cfg!(feature = "audio") { out.push("audio"); }
-    if cfg!(feature = "tls") { out.push("tls"); }
-    if cfg!(feature = "hep") { out.push("hep"); }
-    if cfg!(feature = "api") { out.push("api"); }
-    if cfg!(feature = "mcp") { out.push("mcp"); }
-    if cfg!(feature = "mcp-http") { out.push("mcp-http"); }
-    if cfg!(feature = "wasm") { out.push("wasm"); }
+    if cfg!(feature = "native") {
+        out.push("native");
+    }
+    if cfg!(feature = "tui") {
+        out.push("tui");
+    }
+    if cfg!(feature = "audio") {
+        out.push("audio");
+    }
+    if cfg!(feature = "tls") {
+        out.push("tls");
+    }
+    if cfg!(feature = "hep") {
+        out.push("hep");
+    }
+    if cfg!(feature = "api") {
+        out.push("api");
+    }
+    if cfg!(feature = "mcp") {
+        out.push("mcp");
+    }
+    if cfg!(feature = "mcp-http") {
+        out.push("mcp-http");
+    }
+    if cfg!(feature = "wasm") {
+        out.push("wasm");
+    }
     out
 }
 
@@ -424,7 +442,11 @@ pub struct Cli {
     pub mcp: bool,
 
     /// MCP transport: "stdio" (default) or "http".
-    #[arg(long = "mcp-transport", value_name = "TRANSPORT", default_value = "stdio")]
+    #[arg(
+        long = "mcp-transport",
+        value_name = "TRANSPORT",
+        default_value = "stdio"
+    )]
     pub mcp_transport: String,
 
     /// Bind address for the HTTP MCP transport (default 127.0.0.1:8731).
@@ -560,7 +582,7 @@ impl Cli {
     /// Checks that output-only flags (`--json`, `--report`, `--hexdump`,
     /// `--fail2ban`) require non-interactive mode (`-N`) unless `--call-report`
     /// is specified (which implies non-interactive output).
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         let output_flags_used: Vec<&str> = [
             (self.json, "--json"),
             (self.json_pretty, "--json-pretty"),
@@ -574,20 +596,19 @@ impl Cli {
         .collect();
 
         if !output_flags_used.is_empty() && !self.no_tui && self.call_report.is_none() {
-            return Err(format!(
+            return Err(crate::Error::CliValidation(format!(
                 "Output flags ({}) require -N/--no-tui mode (or --call-report)",
                 output_flags_used.join(", ")
-            ));
+            )));
         }
 
         // Phase 8.1 — MCP mode owns stdout (JSON-RPC wire); reject any flag
         // combination that would also try to write to stdout.
         if self.mcp {
             if !self.no_tui {
-                return Err(
-                    "--mcp implies non-interactive mode; pass -N/--no-tui as well"
-                        .to_string(),
-                );
+                return Err(crate::Error::CliValidation(
+                    "--mcp implies non-interactive mode; pass -N/--no-tui as well".to_string(),
+                ));
             }
             let stdout_flags: Vec<&str> = [
                 (self.json, "--json"),
@@ -603,20 +624,20 @@ impl Cli {
             .map(|(_, name)| *name)
             .collect();
             if !stdout_flags.is_empty() {
-                return Err(format!(
+                return Err(crate::Error::CliValidation(format!(
                     "--mcp uses stdout for the JSON-RPC wire and cannot be combined with \
                      stdout-writing flags ({})",
                     stdout_flags.join(", ")
-                ));
+                )));
             }
             // Token + bind validation for non-loopback HTTP transport happens
             // in the http transport module (Phase 8.2); for stdio there is no
             // network surface to validate.
             if self.mcp_transport != "stdio" && self.mcp_transport != "http" {
-                return Err(format!(
+                return Err(crate::Error::CliValidation(format!(
                     "--mcp-transport must be 'stdio' or 'http', got '{}'",
                     self.mcp_transport
-                ));
+                )));
             }
         }
 
@@ -731,8 +752,8 @@ mod tests {
     fn validate_multiple_output_flags() {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--report", "--fail2ban"]);
         let err = cli.validate().unwrap_err();
-        assert!(err.contains("--json"));
-        assert!(err.contains("--report"));
-        assert!(err.contains("--fail2ban"));
+        assert!(err.to_string().contains("--json"));
+        assert!(err.to_string().contains("--report"));
+        assert!(err.to_string().contains("--fail2ban"));
     }
 }

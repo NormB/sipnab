@@ -247,29 +247,43 @@ pub struct LimitsConfig {
 
 impl LimitsConfig {
     /// Validate limit values are within sane ranges.
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), crate::Error> {
         if let Some(0) = self.dialog_limit {
-            return Err("[limits] dialog_limit must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] dialog_limit must be > 0".into(),
+            ));
         }
         if let Some(0) = self.max_streams {
-            return Err("[limits] max_streams must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_streams must be > 0".into(),
+            ));
         }
         if let Some(0) = self.max_reassembly {
-            return Err("[limits] max_reassembly must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_reassembly must be > 0".into(),
+            ));
         }
         if let Some(v) = self.max_header_line
             && v < 256
         {
-            return Err("[limits] max_header_line must be >= 256".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_header_line must be >= 256".into(),
+            ));
         }
         if let Some(0) = self.max_headers_per_message {
-            return Err("[limits] max_headers_per_message must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_headers_per_message must be > 0".into(),
+            ));
         }
         if let Some(0) = self.max_messages_per_dialog {
-            return Err("[limits] max_messages_per_dialog must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_messages_per_dialog must be > 0".into(),
+            ));
         }
         if let Some(0) = self.max_audio_frames {
-            return Err("[limits] max_audio_frames must be > 0".into());
+            return Err(crate::Error::ConfigInvalid(
+                "[limits] max_audio_frames must be > 0".into(),
+            ));
         }
         Ok(())
     }
@@ -433,7 +447,10 @@ impl Config {
     ///
     /// If `skip_default` is true (from `--no-config`), returns defaults
     /// without searching any files.
-    pub fn load(explicit_path: Option<&str>, skip_default: bool) -> Result<LoadedConfig, String> {
+    pub fn load(
+        explicit_path: Option<&str>,
+        skip_default: bool,
+    ) -> Result<LoadedConfig, crate::Error> {
         if skip_default {
             tracing::debug!("Config loading skipped (--no-config)");
             return Ok(LoadedConfig {
@@ -446,7 +463,9 @@ impl Config {
         if let Some(path) = explicit_path {
             let p = PathBuf::from(path);
             if !p.exists() {
-                return Err(format!("Config file not found: {}", p.display()));
+                return Err(crate::Error::ConfigNotFound {
+                    path: p.display().to_string(),
+                });
             }
             let config = Self::load_file(&p)?;
             return Ok(LoadedConfig {
@@ -495,9 +514,11 @@ impl Config {
     /// Parses TOML into a generic `toml::Value` first, walks the keys against
     /// the known valid set (warning on unknowns), then deserializes leniently
     /// into `Config`.
-    fn load_file(path: &Path) -> Result<Config, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+    fn load_file(path: &Path) -> Result<Config, crate::Error> {
+        let content = std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        })?;
 
         Self::parse_toml(&content, Some(path))
     }
@@ -505,27 +526,31 @@ impl Config {
     /// Parse TOML content, warn about unknown keys, and deserialize leniently.
     ///
     /// Separated from `load_file` so unit tests can call it without a real file.
-    fn parse_toml(content: &str, path: Option<&Path>) -> Result<Config, String> {
+    fn parse_toml(content: &str, path: Option<&Path>) -> Result<Config, crate::Error> {
         let display = path
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<inline>".to_string());
 
         // Parse into generic TOML value to walk keys
-        let value: toml::Value = content
-            .parse()
-            .map_err(|e| format!("Failed to parse {display}: {e}"))?;
+        let value: toml::Value = content.parse().map_err(|e| crate::Error::ConfigParse {
+            path: display.clone(),
+            reason: format!("{e}"),
+        })?;
 
         warn_unknown_keys(&value);
 
         // Deserialize leniently into Config
-        toml::from_str::<Config>(content).map_err(|e| format!("Failed to parse {display}: {e}"))
+        toml::from_str::<Config>(content).map_err(|e| crate::Error::ConfigParse {
+            path: display.clone(),
+            reason: format!("{e}"),
+        })
     }
 
     /// Dump the effective configuration as TOML.
     ///
     /// Used by `--dump-config` to show what sipnab would use.
-    pub fn dump(&self) -> Result<String, String> {
-        toml::to_string_pretty(self).map_err(|e| format!("Failed to serialize config: {e}"))
+    pub fn dump(&self) -> Result<String, crate::Error> {
+        toml::to_string_pretty(self).map_err(|e| crate::Error::ConfigSerialize(e.to_string()))
     }
 }
 
@@ -646,7 +671,7 @@ filter = "/"
     fn missing_explicit_file_errors() {
         let result = Config::load(Some("/nonexistent/sipnab.toml"), false);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("not found"));
+        assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
     #[test]
@@ -795,7 +820,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("dialog_limit"));
+        assert!(err.to_string().contains("dialog_limit"));
     }
 
     #[test]
@@ -805,7 +830,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_streams"));
+        assert!(err.to_string().contains("max_streams"));
     }
 
     #[test]
@@ -815,7 +840,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_reassembly"));
+        assert!(err.to_string().contains("max_reassembly"));
     }
 
     #[test]
@@ -825,7 +850,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_header_line"));
+        assert!(err.to_string().contains("max_header_line"));
     }
 
     #[test]
@@ -844,7 +869,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_headers_per_message"));
+        assert!(err.to_string().contains("max_headers_per_message"));
     }
 
     #[test]
@@ -854,7 +879,7 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_messages_per_dialog"));
+        assert!(err.to_string().contains("max_messages_per_dialog"));
     }
 
     #[test]
@@ -864,6 +889,6 @@ column_selector = "F10"
             ..Default::default()
         };
         let err = limits.validate().unwrap_err();
-        assert!(err.contains("max_audio_frames"));
+        assert!(err.to_string().contains("max_audio_frames"));
     }
 }

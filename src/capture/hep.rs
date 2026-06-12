@@ -519,19 +519,24 @@ impl CidrRange {
     ///
     /// # Errors
     ///
-    /// Returns an error string if the CIDR notation is invalid.
-    pub fn parse(cidr: &str) -> Result<Self, String> {
+    /// Returns [`crate::Error::InvalidCidr`] if the notation is invalid.
+    pub fn parse(cidr: &str) -> Result<Self, crate::Error> {
+        Self::parse_inner(cidr).map_err(|reason| crate::Error::InvalidCidr {
+            input: cidr.to_string(),
+            reason,
+        })
+    }
+
+    fn parse_inner(cidr: &str) -> Result<Self, String> {
         let (addr_str, prefix_str) = cidr
             .split_once('/')
-            .ok_or_else(|| format!("invalid CIDR '{cidr}': missing /prefix"))?;
+            .ok_or_else(|| "missing /prefix".to_string())?;
 
         let prefix_len: u8 = prefix_str
             .parse()
-            .map_err(|e| format!("invalid prefix length in '{cidr}': {e}"))?;
+            .map_err(|e| format!("invalid prefix length: {e}"))?;
 
-        let addr: IpAddr = addr_str
-            .parse()
-            .map_err(|e| format!("invalid IP in '{cidr}': {e}"))?;
+        let addr: IpAddr = addr_str.parse().map_err(|e| format!("invalid IP: {e}"))?;
 
         let (ip_bits, is_v4, max_prefix) = match addr {
             IpAddr::V4(v4) => {

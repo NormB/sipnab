@@ -75,7 +75,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
 - [x] **P5. Audio payload buffered for every RTP packet** —
   stream_store.rs:73,88 clones payload per packet to support an export most
   captures never use. Buffer only when export is possible/requested.
-- [ ] **M5. Consolidate `Result<_, String>` into structured errors** — 26
+- [x] **M5. Consolidate `Result<_, String>` into structured errors** — 26
   occurrences (config.rs, output/wireshark.rs, rtp/audio_export.rs,
   rtp/playback.rs). Single `thiserror` enum; no stringly-typed errors.
 - [ ] **M6. Unwrap/expect audit in risk modules** — rtp/srtp.rs (53, crypto),

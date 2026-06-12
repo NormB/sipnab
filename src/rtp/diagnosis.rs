@@ -257,10 +257,7 @@ pub fn diagnose_asymmetry(
     // ── Payload-type asymmetry ─────────────────────────────────────
     // Only meaningful when codecs match but PTs differ (otherwise a codec
     // asymmetry already explains the PT mismatch).
-    if a.payload_type != b.payload_type
-        && a.codec.is_some()
-        && a.codec == b.codec
-    {
+    if a.payload_type != b.payload_type && a.codec.is_some() && a.codec == b.codec {
         diag.payload_type_asymmetry = Some(PayloadTypeAsymmetry {
             a_pt: a.payload_type,
             b_pt: b.payload_type,
@@ -295,9 +292,7 @@ pub fn diagnose_asymmetry(
     let delta = (a_dur - b_dur).abs();
     let max_dur = a_dur.max(b_dur).max(0.001); // avoid div-by-zero
     let pct_delta = (delta / max_dur) * 100.0;
-    if delta >= thresholds.duration_min_delta_sec
-        && pct_delta >= thresholds.duration_pct_delta
-    {
+    if delta >= thresholds.duration_min_delta_sec && pct_delta >= thresholds.duration_pct_delta {
         diag.duration_asymmetry = Some(DurationAsymmetry {
             a_duration_sec: a_dur,
             b_duration_sec: b_dur,
@@ -317,7 +312,11 @@ pub fn diagnose_asymmetry(
         let media_start = a.first_seen.min(b.first_seen);
         let delay_ms = (media_start - answered).num_milliseconds();
         if delay_ms > thresholds.late_media_threshold_ms {
-            let leg = if a.first_seen <= b.first_seen { "a" } else { "b" };
+            let leg = if a.first_seen <= b.first_seen {
+                "a"
+            } else {
+                "b"
+            };
             diag.late_media = Some(LateMedia {
                 leg: leg.to_string(),
                 delay_after_200_ok_ms: delay_ms,
@@ -667,7 +666,9 @@ mod tests {
 
         let mut diag = diagnose_media(&streams, None);
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
-        let asym = diag.payload_type_asymmetry.expect("PT asymmetry should be set");
+        let asym = diag
+            .payload_type_asymmetry
+            .expect("PT asymmetry should be set");
         assert_eq!((asym.a_pt, asym.b_pt), (8, 96));
     }
 
@@ -712,17 +713,17 @@ mod tests {
     #[test]
     fn duration_asymmetry_detected_when_above_thresholds() {
         // A leg: 30s, B leg: 25s → 5s delta, ~17% pct delta. Above 5%/2s default.
-        let mut a =
-            make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
+        let mut a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
-        let mut b =
-            make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1250);
+        let mut b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1250);
         b.last_seen = b.first_seen + chrono::Duration::seconds(25);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
         let mut diag = diagnose_media(&streams, None);
         diagnose_asymmetry(&mut diag, None, &streams, &AsymmetryThresholds::default());
-        let dur = diag.duration_asymmetry.expect("duration asymmetry should be set");
+        let dur = diag
+            .duration_asymmetry
+            .expect("duration asymmetry should be set");
         assert!((dur.a_duration_sec - 30.0).abs() < 0.01);
         assert!((dur.b_duration_sec - 25.0).abs() < 0.01);
         assert!((dur.delta_sec - 5.0).abs() < 0.01);
@@ -731,11 +732,9 @@ mod tests {
     #[test]
     fn duration_asymmetry_negative_below_minimum_delta() {
         // 30s vs 29.5s — delta 0.5s, below 2.0s minimum.
-        let mut a =
-            make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
+        let mut a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 1500);
         a.last_seen = a.first_seen + chrono::Duration::seconds(30);
-        let mut b =
-            make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1475);
+        let mut b = make_stream_with_pt([10, 0, 0, 2], [10, 0, 0, 1], 0, "PCMU", 8000, 20, 0, 1475);
         b.last_seen = b.first_seen + chrono::Duration::milliseconds(29_500);
         let streams: Vec<&RtpStream> = vec![&a, &b];
 
