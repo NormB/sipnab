@@ -42,6 +42,34 @@ fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
 // C1+C2: Command Injection Prevention
 // =====================================================================
 
+/// Poll `cond` every 10ms until it returns Some or `deadline` expires.
+/// Replaces fixed sleeps: returns as soon as the condition holds (fast on
+/// fast machines) while tolerating slow CI runners (generous deadline).
+fn wait_until<T>(deadline: std::time::Duration, mut cond: impl FnMut() -> Option<T>) -> Option<T> {
+    let start = std::time::Instant::now();
+    loop {
+        if let Some(v) = cond() {
+            return Some(v);
+        }
+        if start.elapsed() > deadline {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Wait for a spawned event-exec child to write non-empty file content.
+fn wait_for_file(path: &str) -> String {
+    wait_until(
+        std::time::Duration::from_secs(10),
+        || match std::fs::read_to_string(path) {
+            Ok(s) if !s.is_empty() => Some(s),
+            _ => None,
+        },
+    )
+    .expect("event-exec child should write the file within 10s")
+}
+
 /// C1/C2: Verify that command injection via SIP Call-ID is not possible.
 /// Attacker crafts Call-ID with `$(id)` shell metacharacter -- the spawned
 /// command receives the value via env var, not interpolated into the shell
@@ -88,10 +116,7 @@ fn exec_template_no_command_injection_via_call_id() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    // Wait for child to complete
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert_eq!(
         contents, malicious_call_id,
         "env var should contain the literal malicious string, not its shell expansion"
@@ -140,12 +165,10 @@ fn exec_template_no_injection_via_from_header() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
     // SIPNAB_FROM contains the user part extracted from the From URI, not
     // the full header. The key point: the shell did not execute $(rm -rf /).
     // If it had, the file would be missing or contain different content.
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert!(
         !contents.is_empty(),
         "command should have written env var content"
@@ -185,9 +208,7 @@ fn exec_template_no_injection_via_backticks() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert_eq!(
         contents, "`whoami`@evil.com",
         "backticks must be preserved literally, not executed"
@@ -227,9 +248,7 @@ fn exec_template_no_injection_via_semicolon() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert_eq!(
         contents, "innocent; rm -rf /",
         "semicolons must be preserved literally, not interpreted by shell"
@@ -269,9 +288,7 @@ fn exec_template_no_injection_via_pipe() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert_eq!(
         contents, "innocent | curl evil.com",
         "pipe characters must be preserved literally, not interpreted by shell"
@@ -329,9 +346,7 @@ fn template_migration_converts_percent_to_env_vars() {
     let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
     engine.fire_dialog_event(&dialog);
 
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    let contents = std::fs::read_to_string(&tmp_path).unwrap_or_default();
+    let contents = wait_for_file(&tmp_path);
     assert_eq!(
         contents, "migration-test@example.com",
         "%call_id should have been migrated to $SIPNAB_CALL_ID and resolved via env var"
@@ -595,24 +610,15 @@ fn event_exec_reaps_completed_children() {
     engine.fire_dialog_event(&dialog);
     assert!(engine.queue_depth() > 0, "should have a child process");
 
-    // Wait for the child to complete
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Fire another event which triggers reap_children internally
-    engine.fire_dialog_event(&dialog);
-
-    // After reaping, the first child should be gone
-    // (the second might still be running, but queue_depth should be <= 1)
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // Fire one more to trigger another reap cycle
-    engine.fire_dialog_event(&dialog);
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // At this point, most or all children should have been reaped.
-    // The key invariant: queue_depth does not grow without bound.
+    // The key invariant: reaping (triggered by each fire) keeps queue
+    // depth bounded. Poll fire-then-check until it converges; each fire
+    // both spawns one child and reaps all completed ones.
+    let bounded = wait_until(std::time::Duration::from_secs(10), || {
+        engine.fire_dialog_event(&dialog);
+        (engine.queue_depth() <= 2).then_some(engine.queue_depth())
+    });
     assert!(
-        engine.queue_depth() <= 2,
+        bounded.is_some(),
         "completed children should be reaped, got queue_depth={}",
         engine.queue_depth()
     );
@@ -654,16 +660,15 @@ fn event_exec_queue_depth_recovers_after_reaping() {
     let depth_before = engine.queue_depth();
     assert!(depth_before > 0, "should have spawned children");
 
-    // Wait for all to complete
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
-    // Fire one more to trigger reaping
-    engine.fire_dialog_event(&dialog);
-
-    // Queue depth should be much lower than depth_before + 1
-    // because completed children were reaped
+    // Poll fire-then-check until reaping has dropped the depth below
+    // depth_before + 1 (each fire spawns one child and reaps completed
+    // ones, so once the originals exit this converges immediately).
+    let recovered = wait_until(std::time::Duration::from_secs(10), || {
+        engine.fire_dialog_event(&dialog);
+        (engine.queue_depth() < depth_before + 1).then_some(())
+    });
     assert!(
-        engine.queue_depth() < depth_before + 1,
+        recovered.is_some(),
         "queue depth should decrease after reaping: before={depth_before}, after={}",
         engine.queue_depth()
     );
@@ -1105,18 +1110,21 @@ fn scanner_kill_per_destination_rate_limit() {
             .expect("send");
     }
 
-    // Wait for processing
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
+    // Drain until all 5 responses have arrived (the worker processes
+    // them asynchronously).
     let mut sent = 0u32;
     let mut limited = 0u32;
-    while let Some(resp) = handle.try_recv_response() {
-        match resp {
-            KillResponse::Sent => sent += 1,
-            KillResponse::RateLimited => limited += 1,
-            _ => {}
+    wait_until(std::time::Duration::from_secs(5), || {
+        while let Some(resp) = handle.try_recv_response() {
+            match resp {
+                KillResponse::Sent => sent += 1,
+                KillResponse::RateLimited => limited += 1,
+                _ => {}
+            }
         }
-    }
+        (sent + limited >= 5).then_some(())
+    })
+    .expect("worker should answer all 5 requests within 5s");
 
     assert_eq!(sent, 3, "per-dest limit is 3/min: sent={sent}");
     assert_eq!(
