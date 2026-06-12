@@ -70,14 +70,14 @@ mod tests {
 
         let large_body = vec![b'X'; 70_000]; // > u16::MAX (65535)
         let msg = SipMessage {
-            raw: large_body,
+            raw: large_body.into(),
             is_request: true,
             method: Some(crate::sip::SipMethod::Invite),
             status_code: None,
             reason: None,
             request_uri: Some("sip:test@example.com".to_string()),
             headers: vec![],
-            body: vec![],
+            body: Default::default(),
             parse_error: false,
             timestamp: Utc::now(),
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),

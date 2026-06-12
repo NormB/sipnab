@@ -30,8 +30,9 @@ pub struct SipHeader {
 /// via the accessor methods.
 #[derive(Debug, Clone)]
 pub struct SipMessage {
-    /// Full raw message bytes as captured.
-    pub raw: Vec<u8>,
+    /// Full raw message bytes as captured (refcounted view of the
+    /// packet payload buffer — cloning a SipMessage does not copy it).
+    pub raw: bytes::Bytes,
     /// `true` for requests (INVITE, REGISTER, ...), `false` for responses.
     pub is_request: bool,
     /// Request method (e.g., `SipMethod::Invite`). `None` for responses.
@@ -44,8 +45,9 @@ pub struct SipMessage {
     pub request_uri: Option<String>,
     /// All headers in message order, with compact forms expanded.
     pub headers: Vec<SipHeader>,
-    /// Message body (SDP or other payload after the blank line).
-    pub body: Vec<u8>,
+    /// Message body (SDP or other payload after the blank line); a
+    /// view of the same buffer as `raw`.
+    pub body: bytes::Bytes,
     /// `true` if the message was only partially parseable.
     #[allow(dead_code)] // Read in parser tests and available for future use
     pub(crate) parse_error: bool,

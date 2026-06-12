@@ -58,5 +58,6 @@ What the design actually buys:
 - No per-packet allocate/free pair crossing the capture -> processing
   thread boundary (cross-thread free is the allocator's worst case;
   invisible to a single-threaded benchmark).
-- Enables `SipMessage.raw` to share the packet buffer (follow-up),
-  removing the second copy of every SIP message.
+- Enables `SipMessage.raw`/`.body` to share the packet buffer (done:
+  `parse_sip_bytes`), removing the second copy of every SIP message and
+  making `SipMessage::clone` (dialog-store insertion) copy-free.

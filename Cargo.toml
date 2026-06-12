@@ -80,6 +80,7 @@ web-sys = { version = "0.3", features = ["console"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 
 [dev-dependencies]
+bytes = "1"
 parking_lot = "0.12"
 clap = { version = "4", features = ["derive", "env", "string"] }
 criterion = { version = "0.5", features = ["html_reports"] }
