@@ -82,7 +82,7 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` merged
   sip/dsl.rs (45), output/api.rs (45), sip/matcher.rs (38). Replace
   network/file-reachable ones with proper errors; document the invariants
   behind the rest.
-- [ ] **M7. De-flake timing-based tests** — 14 `sleep()` calls
+- [x] **M7. De-flake timing-based tests** — 14 `sleep()` calls
   (security_test.rs ×13, parse_path_test.rs ×2 [agent counts overlap],
   tui_e2e_test.rs ×1). Replace with channel `recv_timeout` / condition
   polling.
