@@ -19,6 +19,8 @@
 //! }
 //! ```
 
+// Every public item must be documented; keeps the library surface usable.
+#![warn(missing_docs)]
 pub mod capture;
 #[doc(hidden)]
 #[cfg(feature = "native")]

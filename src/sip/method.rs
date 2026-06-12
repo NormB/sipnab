@@ -13,19 +13,33 @@
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize)]
 #[non_exhaustive]
 pub enum SipMethod {
+    /// INVITE — initiate or modify a session.
     Invite,
+    /// ACK — confirm a final INVITE response.
     Ack,
+    /// BYE — terminate an established session.
     Bye,
+    /// CANCEL — abort a pending INVITE.
     Cancel,
+    /// REGISTER — bind a contact to an address-of-record.
     Register,
+    /// OPTIONS — query capabilities.
     Options,
+    /// PRACK — acknowledge a provisional response (RFC 3262).
     Prack,
+    /// SUBSCRIBE — request event notification (RFC 6665).
     Subscribe,
+    /// NOTIFY — deliver an event notification (RFC 6665).
     Notify,
+    /// PUBLISH — publish event state (RFC 3903).
     Publish,
+    /// INFO — mid-session information (RFC 6086).
     Info,
+    /// REFER — request a call transfer (RFC 3515).
     Refer,
+    /// MESSAGE — instant message (RFC 3428).
     Message,
+    /// UPDATE — modify session state before answer (RFC 3311).
     Update,
     /// Non-standard method (e.g., proprietary extensions).
     Custom(Box<str>),

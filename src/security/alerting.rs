@@ -128,9 +128,13 @@ pub const DEFAULT_FINDINGS_HISTORY: usize = 1000;
 /// check passes (so deduplicated firings aren't double-counted).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Finding {
+    /// Name of the rule that fired.
     pub rule_name: String,
+    /// Source IP the finding is about.
     pub src_ip: IpAddr,
+    /// Human-readable detail line.
     pub detail: String,
+    /// When the finding fired.
     pub timestamp: chrono::DateTime<chrono::Utc>,
 }
 
