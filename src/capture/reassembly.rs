@@ -213,20 +213,28 @@ impl FragmentReassembler {
         self.entries.is_empty()
     }
 
-    /// Evict the oldest entry when the cap is reached.
+    /// Evict the oldest entries (a batch of cap/100) when the cap is
+    /// reached. One-at-a-time eviction cost an O(n) min-scan plus a
+    /// warn! line per incoming fragment at capacity — a CPU-DoS and log
+    /// flood under a deliberate fragment flood. One sort per batch is
+    /// amortized across the next cap/100 inserts, and one summary line
+    /// replaces per-fragment spam.
     fn evict_oldest(&mut self) {
-        if let Some(oldest_key) = self
+        let batch = (self.max_entries / 100).max(1).min(self.entries.len());
+        let mut by_age: Vec<(Instant, FragmentKey)> = self
             .entries
             .iter()
-            .min_by_key(|(_, e)| e.created)
-            .map(|(k, _)| k.clone())
-        {
-            tracing::warn!(
-                "Fragment reassembler at capacity ({}); evicting oldest entry",
-                self.max_entries,
-            );
-            self.entries.remove(&oldest_key);
+            .map(|(k, e)| (e.created, k.clone()))
+            .collect();
+        by_age.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (_, key) in by_age.into_iter().take(batch) {
+            self.entries.remove(&key);
         }
+        tracing::warn!(
+            "Fragment reassembler at capacity ({}); evicted {batch} oldest \
+             entries (possible fragment flood)",
+            self.max_entries,
+        );
     }
 }
 
@@ -487,20 +495,25 @@ impl TcpReassembler {
         self.streams.is_empty()
     }
 
-    /// Evict the oldest stream when the cap is reached.
+    /// Evict the oldest streams (a batch of cap/100) when the cap is
+    /// reached — same amortization and log-flood rationale as
+    /// [`FragmentReassembler::evict_oldest`].
     fn evict_oldest(&mut self) {
-        if let Some(oldest_key) = self
+        let batch = (self.max_entries / 100).max(1).min(self.streams.len());
+        let mut by_age: Vec<(Instant, TcpStreamKey)> = self
             .streams
             .iter()
-            .min_by_key(|(_, s)| s.last_seen)
-            .map(|(k, _)| k.clone())
-        {
-            tracing::warn!(
-                "TCP reassembler at capacity ({}); evicting oldest stream",
-                self.max_entries,
-            );
-            self.streams.remove(&oldest_key);
+            .map(|(k, s)| (s.last_seen, k.clone()))
+            .collect();
+        by_age.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (_, key) in by_age.into_iter().take(batch) {
+            self.streams.remove(&key);
         }
+        tracing::warn!(
+            "TCP reassembler at capacity ({}); evicted {batch} oldest \
+             streams (possible connection flood)",
+            self.max_entries,
+        );
     }
 }
 
@@ -580,6 +593,44 @@ mod tests {
             rst: false,
             psh: false,
         }
+    }
+
+    /// At large caps, eviction is batched (cap/100 at a time): the old
+    /// one-at-a-time eviction did an O(n) min-scan PLUS a warn! line per
+    /// incoming fragment once at capacity — a CPU-DoS and log flood
+    /// under a deliberate fragment flood.
+    #[test]
+    fn fragment_eviction_batches_at_large_cap() {
+        let mut r = FragmentReassembler::with_limits(1000, DEFAULT_TTL);
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        for i in 0..1001u16 {
+            // Unique ip_id per fragment → unique reassembly key.
+            let f = make_fragment(src, dst, i, 0, true, &[0xAA; 8]);
+            r.insert(&f);
+            assert!(r.len() <= 1000, "cap is a hard upper bound");
+        }
+        assert_eq!(
+            r.len(),
+            991,
+            "1001st insert evicts a batch of cap/100 = 10, then inserts"
+        );
+    }
+
+    #[test]
+    fn tcp_eviction_batches_at_large_cap() {
+        let mut r = TcpReassembler::with_limits(1000, DEFAULT_TTL);
+        for i in 0..1001u16 {
+            // Unique src_port per segment → unique stream key.
+            let seg = make_tcp_segment(10000 + i, 5060, 1, default_tcp_flags(), b"x");
+            r.insert(&seg);
+            assert!(r.len() <= 1000, "cap is a hard upper bound");
+        }
+        assert_eq!(
+            r.len(),
+            991,
+            "1001st insert evicts a batch of cap/100 = 10, then inserts"
+        );
     }
 
     // ── Fragment reassembly tests ─────────────────────────────────────
