@@ -25,6 +25,11 @@ use crate::sip::sdp::SdpMedia;
 pub struct StreamStore {
     /// All tracked streams, keyed by [`StreamKey`] in insertion order.
     streams: IndexMap<StreamKey, RtpStream>,
+    /// SSRC → keys of streams carrying it, in insertion order. RTCP
+    /// reports identify streams by SSRC only; without this, every report
+    /// block linear-scanned the whole store. Kept consistent on
+    /// insert/evict/clear.
+    ssrc_index: std::collections::HashMap<u32, Vec<StreamKey>>,
     /// Maximum number of concurrent streams before eviction.
     max_streams: usize,
     /// Maximum number of audio frames to retain per stream for WAV export.
@@ -36,6 +41,7 @@ impl StreamStore {
     pub fn new(max_streams: usize) -> Self {
         Self {
             streams: IndexMap::with_capacity(max_streams.min(1024)),
+            ssrc_index: std::collections::HashMap::new(),
             max_streams,
             max_audio_frames: 1500,
         }
@@ -89,6 +95,10 @@ impl StreamStore {
                     stream.payload_buffer.push_back((rtp.timestamp, audio));
                 }
             }
+            self.ssrc_index
+                .entry(key.ssrc)
+                .or_default()
+                .push(key.clone());
             self.streams.insert(key, stream);
         }
     }
@@ -106,11 +116,13 @@ impl StreamStore {
             };
 
             for report in reports {
-                // Find any stream with this SSRC and update it
+                // O(1) via the SSRC index; first key = earliest surviving
+                // stream, matching the previous insertion-order scan.
                 if let Some(stream) = self
-                    .streams
-                    .values_mut()
-                    .find(|s| s.key.ssrc == report.ssrc)
+                    .ssrc_index
+                    .get(&report.ssrc)
+                    .and_then(|keys| keys.first())
+                    .and_then(|key| self.streams.get_mut(key))
                 {
                     stream.jitter = report.jitter as f64;
                     stream.lost_packets = u64::from(report.cumulative_lost);
@@ -221,6 +233,7 @@ impl StreamStore {
     /// Remove all streams from the store.
     pub fn clear(&mut self) {
         self.streams.clear();
+        self.ssrc_index.clear();
     }
 
     /// Count of streams flagged as orphaned.
@@ -230,8 +243,16 @@ impl StreamStore {
 
     /// Evict the oldest stream (first entry in insertion order) if at capacity.
     fn ensure_capacity(&mut self) {
-        if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
-            self.streams.shift_remove_index(0);
+        if self.streams.len() >= self.max_streams
+            && !self.streams.is_empty()
+            && let Some((evicted, _)) = self.streams.shift_remove_index(0)
+        {
+            if let Some(keys) = self.ssrc_index.get_mut(&evicted.ssrc) {
+                keys.retain(|k| k != &evicted);
+                if keys.is_empty() {
+                    self.ssrc_index.remove(&evicted.ssrc);
+                }
+            }
         }
     }
 }
@@ -455,6 +476,107 @@ mod tests {
         let stream = store.get(&key).expect("stream should exist");
         assert_eq!(stream.jitter, 42.0);
         assert_eq!(stream.lost_packets, 10);
+    }
+
+    fn rr_for(ssrc: u32, jitter: u32) -> Vec<RtcpPacket> {
+        use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
+        vec![RtcpPacket::ReceiverReport(ReceiverReport {
+            ssrc: 0x9999,
+            reports: vec![ReceptionReport {
+                ssrc,
+                fraction_lost: 0,
+                cumulative_lost: 3,
+                highest_seq: 100,
+                jitter,
+                last_sr: 0,
+                delay_since_sr: 0,
+            }],
+        })]
+    }
+
+    /// Two streams can share an SSRC (same source re-keyed by 5-tuple).
+    /// An RTCP report updates the FIRST-inserted matching stream only —
+    /// pins the insertion-order semantics any SSRC index must preserve.
+    #[test]
+    fn rtcp_updates_first_inserted_stream_for_shared_ssrc() {
+        let mut store = StreamStore::new(100);
+        let p1 = make_parsed(20000, 30000, 160);
+        let p2 = make_parsed(21000, 30000, 160);
+        let rtp = make_rtp_header(0xCAFE, 1);
+        store.process_rtp(&p1, &rtp, ts(0));
+        store.process_rtp(&p2, &rtp, ts(1));
+
+        store.process_rtcp(&rr_for(0xCAFE, 77));
+
+        let first = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let second = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert_eq!(store.get(&first).unwrap().jitter, 77.0);
+        assert_eq!(
+            store.get(&second).unwrap().jitter,
+            0.0,
+            "only the first-inserted stream receives the RTCP update"
+        );
+    }
+
+    /// After the first-inserted stream with a shared SSRC is evicted, an
+    /// RTCP report must update the earliest SURVIVING stream — a stale
+    /// SSRC index would miss or update a ghost.
+    #[test]
+    fn rtcp_after_eviction_updates_surviving_stream() {
+        let mut store = StreamStore::new(2);
+        let p1 = make_parsed(20000, 30000, 160);
+        let p2 = make_parsed(21000, 30000, 160);
+        let p3 = make_parsed(22000, 30000, 160);
+        store.process_rtp(&p1, &make_rtp_header(0xCAFE, 1), ts(0));
+        store.process_rtp(&p2, &make_rtp_header(0xCAFE, 1), ts(1));
+        // Third stream evicts the first (cap 2).
+        store.process_rtp(&p3, &make_rtp_header(0xBEEF, 1), ts(2));
+        assert_eq!(store.len(), 2);
+
+        store.process_rtcp(&rr_for(0xCAFE, 55));
+
+        let survivor = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert_eq!(
+            store.get(&survivor).unwrap().jitter,
+            55.0,
+            "RTCP must reach the earliest surviving stream after eviction"
+        );
+    }
+
+    #[test]
+    fn rtcp_after_clear_is_noop() {
+        let mut store = StreamStore::new(100);
+        let p = make_parsed(20000, 30000, 160);
+        store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
+        store.clear();
+        store.process_rtcp(&rr_for(0xCAFE, 11)); // must not panic
+        assert!(store.is_empty());
+    }
+
+    #[test]
+    fn rtcp_unknown_ssrc_is_noop() {
+        let mut store = StreamStore::new(100);
+        let p = make_parsed(20000, 30000, 160);
+        store.process_rtp(&p, &make_rtp_header(0xCAFE, 1), ts(0));
+        store.process_rtcp(&rr_for(0xD00D, 99));
+        let key = StreamKey {
+            ssrc: 0xCAFE,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert_eq!(store.get(&key).unwrap().jitter, 0.0);
     }
 
     #[test]
