@@ -64,7 +64,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--json` | -- | off | Output as NDJSON (one JSON object per line). Requires `-N` |
+| `--json` | -- | off | Output as NDJSON (one JSON object per line, schema in [output-formats.md](output-formats.md)). Requires `-N` |
 | `--json-pretty` | -- | off | Output as pretty-printed JSON. Requires `-N` |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
