@@ -385,6 +385,9 @@ fn extract_parsed_packet(
                 v6.payload().ip_number.0,
             )
         }
+        // ARP (added as a NetSlice variant in etherparse 0.20) carries no IP
+        // layer; sipnab only parses SIP/RTP over IP, so reject it here.
+        NetSlice::Arp(_) => anyhow::bail!("ARP packet has no IP layer to parse"),
     };
 
     // Check if this is a fragment (non-first fragment has no transport header)
@@ -394,6 +397,8 @@ fn extract_parsed_packet(
             // etherparse sets fragmented in the payload slice
             net.ip_payload_ref().map(|p| p.fragmented).unwrap_or(false)
         }
+        // Unreachable: the IP-address match above already bails on ARP.
+        NetSlice::Arp(_) => false,
     };
 
     // For non-first fragments, there's no transport header
