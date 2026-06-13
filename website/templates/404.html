@@ -4,8 +4,9 @@
 
 {% block content %}
 <div class="error-page">
-  <h1>404</h1>
-  <p>This page doesn't exist. Maybe it was a phantom INVITE.</p>
+  <div class="error-code">404</div>
+  <div class="error-prompt"><span class="error-sigil">$</span>sipnab /this/page<span class="error-cursor"></span></div>
+  <p>No match for this route. Maybe it was a phantom INVITE &mdash; the page never sent a 200&nbsp;OK.</p>
   <a href="{{ config.base_url }}" class="btn btn-primary">Back to Home</a>
 </div>
 {% endblock content %}
