@@ -31,7 +31,7 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: llvm-tools-preview
 
@@ -101,7 +101,7 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy
 

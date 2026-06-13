@@ -38,7 +38,7 @@ jobs:
         # need are in the main Ubuntu archives, which still refresh.
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy, rustfmt
 
@@ -98,7 +98,7 @@ jobs:
         # need are in the main Ubuntu archives, which still refresh.
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - uses: actions/cache@v4
         with:
@@ -137,7 +137,7 @@ jobs:
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
