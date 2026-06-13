@@ -134,16 +134,22 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
+          # Debian versions must start with a digit; for non-tag (dev) builds,
+          # base it on the crate version so dpkg-deb accepts it (e.g. 0.4.1~dev).
+          case "$version" in
+            [0-9]*) deb_version="$version" ;;
+            *) deb_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)~$version" ;;
+          esac
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-gnu)  deb_arch=amd64 ;;
             aarch64-unknown-linux-gnu) deb_arch=arm64 ;;
             *) echo "unexpected target ${{ matrix.target }}" >&2; exit 1 ;;
           esac
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
-            bash contrib/deb/build-deb.sh "$version" "$deb_arch"
+            bash contrib/deb/build-deb.sh "$deb_version" "$deb_arch"
           mkdir -p dist
           suffix="${{ steps.features.outputs.suffix }}"
-          mv "sipnab_${version}_${deb_arch}.deb" "dist/sipnab_${version}_${deb_arch}${suffix}.deb"
+          mv "sipnab_${deb_version}_${deb_arch}.deb" "dist/sipnab_${deb_version}_${deb_arch}${suffix}.deb"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
