@@ -7,7 +7,7 @@ $bg:          #0a0e14;
 $surface:     #1f2430;
 $surface-2:   #242936;
 $text:        #cbccc6;
-$text-dim:    #707a8c;
+$text-dim:    #8a93a3; // WCAG AA: 6.25:1 on bg, 5.01:1 on surface (was #707a8c)
 $accent:      #ffcc66;
 $accent-glow: rgba(255, 204, 102, 0.12);
 $link:        #73d0ff;
@@ -63,6 +63,62 @@ a {
 }
 
 img { max-width: 100%; height: auto; }
+
+// =============================================================================
+// Accessibility
+// =============================================================================
+
+// Skip-to-content link: visually hidden until focused, then slides in top-left.
+.skip-link {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 2000;
+  padding: 0.6rem 1rem;
+  font-family: $font-mono;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: $bg;
+  background: $accent;
+  border-radius: 0 0 6px 0;
+  transform: translateY(-120%);
+  transition: transform 0.15s ease;
+  &:focus {
+    transform: translateY(0);
+    color: $bg;
+  }
+}
+
+// Clear, consistent keyboard-focus indicator. Mouse clicks stay clean.
+:focus-visible {
+  outline: 2px solid $accent;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+[tabindex]:focus-visible,
+.nav-logo:focus-visible,
+.nav-links a:focus-visible,
+.nav-toggle:focus-visible,
+.search-trigger:focus-visible,
+.nav-github:focus-visible,
+.nav-sponsor:focus-visible,
+.nav-gh-sponsor:focus-visible {
+  outline: 2px solid $accent;
+  outline-offset: 2px;
+}
+
+// Respect users who prefer reduced motion.
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 // =============================================================================
 // Navigation
@@ -310,25 +366,80 @@ img { max-width: 100%; height: auto; }
 // Hero
 // =============================================================================
 
-.hero {
-  padding: 6rem 1.5rem 3rem;
+// =============================================================================
+// Homepage section rhythm & shared primitives
+// =============================================================================
+
+// Consistent vertical spacing scale for every homepage section below the hero.
+%home-section {
+  padding: 5.5rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+// Section header block: kicker + title, centered, with consistent spacing.
+.section-head {
   text-align: center;
-  background: radial-gradient(ellipse at 50% 0%, rgba(255,204,102,0.06) 0%, transparent 60%);
+  margin-bottom: 3rem;
+}
+
+.section-kicker {
+  font-family: $font-mono;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: $accent;
+  margin: 0 0 0.6rem;
+}
+
+.hero {
+  position: relative;
+  padding: 7rem 1.5rem 3rem;
+  text-align: center;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% -10%, rgba(255,204,102,0.10) 0%, transparent 55%);
+}
+
+// Subtle grid + glow wash behind the hero copy. Decorative only.
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(115,208,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(115,208,255,0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 0%, transparent 75%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 0%, transparent 75%);
 }
 
 .hero-inner {
+  position: relative;
+  z-index: 1;
   max-width: 720px;
   margin: 0 auto;
 }
 
+.hero-kicker {
+  font-family: $font-mono;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: $accent;
+  margin: 0 0 1.1rem;
+}
+
 .hero-title {
   font-family: $font-mono;
-  font-size: 4.5rem;
+  font-size: clamp(3rem, 8vw, 4.75rem);
   font-weight: 700;
   color: $accent;
   letter-spacing: -0.03em;
-  line-height: 1.1;
-  margin-bottom: 1rem;
+  line-height: 1.05;
+  margin-bottom: 1.1rem;
+  text-shadow: 0 0 60px rgba($accent, 0.25);
 }
 
 .version-badge {
@@ -343,15 +454,16 @@ img { max-width: 100%; height: auto; }
   padding: 0.2rem 0.6rem;
   vertical-align: middle;
   position: relative;
-  top: -0.15em;
+  top: -0.35em;
 }
 
 .hero-tagline {
-  font-size: 1.35rem;
+  font-size: clamp(1.15rem, 2.5vw, 1.4rem);
   font-weight: 500;
   color: $text;
   line-height: 1.4;
-  margin-bottom: 0.75rem;
+  margin: 0 auto 0.85rem;
+  max-width: 34rem;
 }
 
 // Inline reference to a standards document (e.g. "SIP", "RTP" -> RFC).
@@ -365,8 +477,9 @@ img { max-width: 100%; height: auto; }
 .hero-sub {
   font-size: 1.05rem;
   color: $text-dim;
-  line-height: 1.6;
-  margin-bottom: 2rem;
+  line-height: 1.65;
+  margin: 0 auto 2.25rem;
+  max-width: 36rem;
 }
 
 .hero-actions {
@@ -377,34 +490,37 @@ img { max-width: 100%; height: auto; }
 }
 
 .btn {
-  display: inline-block;
-  font-size: 0.925rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
   font-weight: 600;
   font-family: $font-sans;
-  padding: 0.65rem 1.5rem;
+  padding: 0.72rem 1.6rem;
   border-radius: 8px;
-  transition: transform 0.1s, box-shadow 0.15s, background 0.15s;
-  &:hover { transform: translateY(-1px); }
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+  &:hover { transform: translateY(-2px); }
 }
 
 .btn-primary {
   background: $accent;
   color: $bg;
+  box-shadow: 0 4px 14px rgba($accent, 0.18);
   &:hover {
     color: $bg;
     background: lighten($accent, 5%);
-    box-shadow: 0 4px 16px rgba($accent, 0.3);
+    box-shadow: 0 8px 26px rgba($accent, 0.35);
   }
 }
 
 .btn-secondary {
-  background: transparent;
+  background: rgba($surface, 0.6);
   color: $text;
   border: 1px solid $border-light;
   &:hover {
     color: $text;
-    border-color: $text-dim;
-    background: rgba($text, 0.04);
+    border-color: $accent;
+    background: rgba($accent, 0.06);
   }
 }
 
@@ -415,18 +531,21 @@ img { max-width: 100%; height: auto; }
 }
 
 .terminal-wrap {
-  max-width: 900px;
-  margin: 3rem auto 0;
+  position: relative;
+  z-index: 1;
+  max-width: 920px;
+  margin: 3.5rem auto 0;
   padding: 0 1.5rem;
 }
 
 .hero-screenshot {
   width: 100%;
-  border-radius: 10px;
-  border: 2px solid $border-light;
-  outline: 1px solid rgba($accent, 0.15);
-  outline-offset: 2px;
-  box-shadow: 0 20px 80px rgba($accent, 0.08), 0 0 0 1px rgba($accent, 0.1);
+  border-radius: 12px;
+  border: 1px solid $border-light;
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba($accent, 0.10),
+    0 0 80px rgba($accent, 0.07);
 }
 
 .terminal {
@@ -501,78 +620,82 @@ img { max-width: 100%; height: auto; }
 }
 
 // =============================================================================
-// Features (3 columns)
+// Demos (single panel with tabs)
 // =============================================================================
 
-// -- Demo video (single panel with tabs) --
 .demos {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .demos-inner {
   max-width: 960px;
   margin: 0 auto;
 
-  h2 {
-    font-size: 1.75rem;
+  > h2 {
+    font-size: clamp(1.6rem, 3vw, 2rem);
     font-weight: 700;
     color: $text;
-    margin-bottom: 1.5rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 1.75rem;
     text-align: center;
   }
+
+  .section-kicker { text-align: center; }
 }
 
 .demo-tabs {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.4rem;
   justify-content: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.75rem;
   flex-wrap: wrap;
 }
 
 .demo-tab {
-  background: none;
+  background: rgba($surface, 0.5);
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: 7px;
   color: $text-dim;
   font-family: $font-sans;
   font-size: 0.875rem;
   font-weight: 500;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 1.05rem;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.12s;
 
   &:hover {
     color: $text;
-    border-color: $text-dim;
+    border-color: $border-light;
+    transform: translateY(-1px);
   }
 
   &.active {
-    color: $accent;
+    color: $bg;
     border-color: $accent;
-    background: $accent-glow;
+    background: $accent;
+    font-weight: 600;
   }
 }
 
 .demo-panel {
   display: none;
 
-  &.active { display: block; }
+  &.active { display: block; animation: fadeInUp 0.4s ease both; }
 }
 
 .demo-desc {
   font-size: 0.95rem;
   color: $text-dim;
-  margin-bottom: 1rem;
+  margin-bottom: 1.1rem;
   text-align: center;
-  line-height: 1.5;
+  line-height: 1.55;
 
   kbd {
     font-family: $font-mono;
     font-size: 0.85em;
+    color: $text;
     background: $surface;
-    border: 1px solid $border;
+    border: 1px solid $border-light;
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 0.1em 0.4em;
@@ -583,9 +706,9 @@ img { max-width: 100%; height: auto; }
 
 .demo-panel img {
   width: 100%;
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid $border;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 204, 102, 0.06);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 204, 102, 0.06);
 }
 
 // =============================================================================
@@ -593,30 +716,34 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .features {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .features-inner {
   max-width: $max-width;
   margin: 0 auto;
+}
+
+.features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
+  gap: 1.5rem;
 }
 
 .feature-card {
+  position: relative;
   background: $surface;
   border: 1px solid $border;
   border-top: 3px solid transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 2rem;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 
   &:hover {
     border-color: $border-light;
     border-top-color: inherit;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
   }
 
   &--amber { border-top-color: $accent; }
@@ -628,16 +755,18 @@ img { max-width: 100%; height: auto; }
   &--blue:hover  { border-top-color: $link; }
 
   h3 {
-    font-size: 1.125rem;
+    font-size: 1.2rem;
     font-weight: 700;
     color: $text;
-    margin: 1rem 0 0.5rem;
+    margin: 1.1rem 0 0.55rem;
+    letter-spacing: -0.01em;
   }
 
   p {
     font-size: 0.9rem;
     color: $text-dim;
-    line-height: 1.65;
+    line-height: 1.7;
+    margin: 0;
   }
 }
 
@@ -647,9 +776,12 @@ img { max-width: 100%; height: auto; }
   align-items: center;
   justify-content: center;
   background: rgba($accent, 0.08);
-  border-radius: 50%;
+  border-radius: 14px;
   width: 56px;
   height: 56px;
+  transition: transform 0.2s ease, background 0.2s ease;
+
+  .feature-card:hover & { transform: scale(1.06); }
 
   .feature-card--green & { color: $code-green; background: rgba($code-green, 0.08); }
   .feature-card--blue &  { color: $link; background: rgba($link, 0.08); }
@@ -660,68 +792,70 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .quickstart {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .quickstart-inner {
   max-width: $doc-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    text-align: center;
-  }
 }
 
 .code-block-wrap {
   background: $surface;
   border: 1px solid $border;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   position: relative;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.3);
 
   pre {
     font-family: $font-mono;
     font-size: 0.85rem;
-    line-height: 1.65;
+    line-height: 1.7;
     padding: 1.5rem;
+    margin: 0;
     overflow-x: auto;
     color: $code-green;
 
     .t-muted { color: $text-dim; }
-    .t-comment { color: lighten($text-dim, 10%); }
-  }
-
-  // Line numbers via CSS counter
-  pre.line-numbers {
-    counter-reset: line;
-    padding-left: 3.5rem;
-
-    code {
-      display: block;
-    }
-
-    code > span,
-    code > br {
-      // Handled via wrapping below
-    }
-  }
-
-  pre.line-numbers code::before {
-    // Not practical with inline HTML — use wrapper approach
+    .t-comment { color: lighten($text-dim, 12%); }
   }
 }
 
-// Copy button
-.copy-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
+// macOS-style window header on the quickstart terminal — matches the download page.
+.code-block-head {
   display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background: darken($surface, 3%);
+  border-bottom: 1px solid $border;
+}
+
+.code-block-dots {
+  display: inline-flex;
+  gap: 0.4rem;
+  i {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    display: block;
+    &:nth-child(1) { background: #ff5f57; }
+    &:nth-child(2) { background: #febc2e; }
+    &:nth-child(3) { background: #28c840; }
+  }
+}
+
+.code-block-title {
+  flex: 1;
+  font-family: $font-mono;
+  font-size: 0.74rem;
+  color: $text-dim;
+}
+
+// Copy button — sits inside the window header at the right.
+.copy-btn {
+  display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   background: $surface-2;
@@ -732,134 +866,75 @@ img { max-width: 100%; height: auto; }
   font-size: 0.75rem;
   padding: 0.3rem 0.6rem;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  z-index: 2;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 
   &:hover {
     color: $text;
-    border-color: $text-dim;
+    border-color: $border-light;
+    background: lighten($surface-2, 3%);
   }
 }
 
 // =============================================================================
-// Comparison table
+// What sipnab does (reference table)
 // =============================================================================
 
 .comparison {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .comparison-inner {
   max-width: $doc-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    text-align: center;
-  }
 }
 
 .comparison-table-wrap {
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid $border;
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.25);
 }
 
 .comparison-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
 
   th, td {
-    padding: 0.75rem 1rem;
+    padding: 0.9rem 1.15rem;
     text-align: left;
     border-bottom: 1px solid $border;
-    white-space: nowrap;
+    vertical-align: top;
   }
 
   th {
     font-weight: 600;
     color: $text;
     background: darken($surface, 2%);
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
 
-  td { color: $text-dim; }
-  td:first-child { color: $text; font-weight: 500; }
-
-  td.yes { color: $good; font-weight: 600; }
-  td.no { color: $text-dim; }
-  td.lang { color: $text; font-weight: 500; font-family: $font-mono; font-size: 0.8rem; }
-
-  // sipnab column highlight
-  th.col-sipnab,
-  td.col-sipnab {
-    background: rgba($accent, 0.04);
+  // Capability column: emphasized, never wraps awkwardly.
+  td:first-child {
+    color: $text;
+    font-weight: 600;
+    width: 34%;
+    white-space: nowrap;
   }
 
-  // Checkmark/cross sizing
-  td.yes span { font-size: 1.1em; }
-  td.no span { font-size: 1.0em; opacity: 0.5; }
+  td:last-child {
+    color: $text-dim;
+    line-height: 1.55;
+  }
 
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba($text, 0.02); }
-  tr:hover td.col-sipnab { background: rgba($accent, 0.07); }
-}
-
-// =============================================================================
-// Architecture callout
-// =============================================================================
-
-.arch-callout {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
-}
-
-.arch-inner {
-  max-width: $max-width;
-  margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 2rem;
-    text-align: center;
+  tbody tr {
+    transition: background 0.12s ease;
+    &:hover td { background: rgba($accent, 0.03); }
+    &:hover td:first-child { color: $accent; }
   }
-}
-
-.arch-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 1.5rem;
-}
-
-.arch-item {
-  text-align: center;
-  padding: 1.75rem 1rem;
-  background: $surface;
-  border: 1px solid $border;
-  border-radius: 10px;
-}
-
-.arch-stat {
-  display: block;
-  font-family: $font-mono;
-  font-size: 2.5rem;
-  font-weight: 700;
-  color: $accent;
-  line-height: 1.2;
-}
-
-.arch-label {
-  display: block;
-  font-size: 0.825rem;
-  color: $text-dim;
-  margin-top: 0.5rem;
-  line-height: 1.4;
 }
 
 // =============================================================================
@@ -867,30 +942,21 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .metrics {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .metrics-inner {
   max-width: $max-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 0.75rem;
-    text-align: center;
-  }
 }
 
 .metrics-sub {
   max-width: 640px;
-  margin: 0 auto 2.5rem;
+  margin: 1rem auto 0;
   text-align: center;
   color: $text-dim;
   font-size: 0.95rem;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .metrics-grid {
@@ -900,15 +966,16 @@ img { max-width: 100%; height: auto; }
 }
 
 .metric-card {
-  padding: 1.5rem;
+  padding: 1.6rem;
   background: $surface;
   border: 1px solid $border;
-  border-radius: 10px;
-  transition: border-color 0.2s ease, transform 0.2s ease;
+  border-radius: 12px;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 
   &:hover {
     border-color: $border-light;
-    transform: translateY(-2px);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -935,123 +1002,279 @@ img { max-width: 100%; height: auto; }
 }
 
 .metric-name {
-  font-size: 1.2rem;
+  font-size: 1.25rem;
   font-weight: 700;
   color: $text;
   margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
 }
 
 .metric-desc {
   font-size: 0.875rem;
   color: $text-dim;
-  line-height: 1.55;
+  line-height: 1.6;
   margin: 0;
 }
+
+// =============================================================================
+// Architecture callout (stat band)
+// =============================================================================
+
+.arch-callout {
+  @extend %home-section;
+}
+
+.arch-inner {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.arch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.arch-item {
+  text-align: center;
+  padding: 2.25rem 1rem;
+  background: linear-gradient(180deg, $surface 0%, darken($surface, 1.5%) 100%);
+  border: 1px solid $border;
+  border-radius: 12px;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: rgba($accent, 0.35);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.arch-stat {
+  display: block;
+  font-family: $font-mono;
+  font-size: clamp(2.2rem, 5vw, 2.75rem);
+  font-weight: 700;
+  color: $accent;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.arch-label {
+  display: block;
+  font-size: 0.84rem;
+  color: $text-dim;
+  margin-top: 0.6rem;
+  line-height: 1.45;
+}
+
 
 // =============================================================================
 // Doc layout (single-column + floating TOC)
 // =============================================================================
 
+// =============================================================================
+// Documentation
+// =============================================================================
+
 .doc-layout {
   max-width: $max-width;
   margin: 0 auto;
-  padding: 2rem 1.5rem 4rem;
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  gap: 3rem;
+  padding: 2.5rem 1.5rem 5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) $toc-width;
+  align-items: start;
+  gap: 3.5rem;
 }
 
 .doc-content {
-  flex: 1;
   min-width: 0;
   max-width: $doc-width;
-  overflow: hidden;
+  font-size: 1rem;
 
   // Heading anchors: offset for sticky nav
   h1, h2, h3, h4 {
-    scroll-margin-top: 80px;
+    scroll-margin-top: calc(#{$nav-height} + 1.25rem);
+  }
+
+  // -- Document header --
+  .doc-header {
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.75rem;
+    border-bottom: 1px solid $border;
+  }
+
+  .doc-kicker {
+    font-family: $font-mono;
+    font-size: 0.72rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: $accent;
+    margin: 0 0 0.6rem;
+  }
+
+  .doc-lead {
+    margin: 0.9rem 0 0;
+    max-width: 64ch;
+    font-size: 1.075rem;
+    line-height: 1.6;
+    color: $text-dim;
+  }
+
+  .doc-header h1 { margin: 0; }
+
+  // -- Body measure --
+  .doc-body {
+    p, ul, ol, blockquote, table, .table-wrapper {
+      max-width: 70ch;
+    }
   }
 
   // kbd styling for keybindings
   kbd {
     display: inline-block;
     font-family: $font-mono;
-    font-size: 0.8em;
+    font-size: 0.78em;
     background: $surface-2;
     color: $text;
     border: 1px solid $border-light;
     border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 0.1em 0.45em;
+    border-radius: 5px;
+    padding: 0.12em 0.5em;
     line-height: 1.4;
+    white-space: nowrap;
   }
 
+  // -- Headings --
   h1 {
-    font-size: 2rem;
+    font-size: clamp(1.9rem, 1.4rem + 1.8vw, 2.4rem);
     font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    line-height: 1.2;
+    color: lighten($text, 6%);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
   }
 
   h2 {
-    font-size: 1.35rem;
+    font-size: 1.5rem;
     font-weight: 700;
-    color: $text;
-    margin: 2.5rem 0 1rem;
-    padding-bottom: 0.4rem;
+    color: lighten($text, 6%);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    margin: 3rem 0 1.1rem;
+    padding-bottom: 0.5rem;
     border-bottom: 1px solid $border;
   }
 
   h3 {
-    font-size: 1.1rem;
+    font-size: 1.2rem;
     font-weight: 600;
-    color: $text;
-    margin: 2rem 0 0.75rem;
+    color: lighten($text, 4%);
+    line-height: 1.3;
+    margin: 2.25rem 0 0.85rem;
   }
 
   h4 {
-    font-size: 0.95rem;
+    font-size: 1rem;
     font-weight: 600;
     color: $text;
-    margin: 1.5rem 0 0.5rem;
+    margin: 1.75rem 0 0.6rem;
+  }
+
+  // Anchor links inside headings (Zola inserts these when configured)
+  h2 a, h3 a, h4 a {
+    color: inherit;
+    &:hover { color: $accent; }
   }
 
   p {
-    margin-bottom: 1rem;
+    margin-bottom: 1.15rem;
+    line-height: 1.75;
   }
 
-  ul, ol {
-    margin-bottom: 1rem;
-    padding-left: 1.5rem;
-
-    li {
-      margin-bottom: 0.25rem;
+  a {
+    color: $link;
+    text-decoration: none;
+    border-bottom: 1px solid rgba($link, 0.28);
+    transition: color 0.15s ease, border-color 0.15s ease;
+    &:hover {
+      color: lighten($link, 10%);
+      border-bottom-color: rgba($link, 0.7);
     }
   }
 
-  // Inline code
-  code {
-    font-family: $font-mono;
-    font-size: 0.85em;
-    background: $surface;
-    color: $code-green;
-    padding: 0.15em 0.4em;
-    border-radius: 4px;
-    border: 1px solid $border;
+  ul, ol {
+    margin-bottom: 1.15rem;
+    padding-left: 1.4rem;
+    line-height: 1.75;
+
+    li {
+      margin-bottom: 0.4rem;
+      padding-left: 0.25rem;
+
+      &::marker { color: $text-dim; }
+    }
+
+    ul, ol {
+      margin: 0.4rem 0 0.5rem;
+    }
   }
 
-  // Code blocks
+  ul li::marker { color: $border-light; }
+
+  // -- Inline code --
+  code {
+    font-family: $font-mono;
+    font-size: 0.84em;
+    background: rgba($code-green, 0.08);
+    color: $code-green;
+    padding: 0.16em 0.42em;
+    border-radius: 5px;
+    border: 1px solid rgba($code-green, 0.16);
+    word-break: break-word;
+  }
+
+  a code {
+    color: inherit;
+    background: rgba($link, 0.1);
+    border-color: rgba($link, 0.18);
+  }
+
+  // -- Code blocks --
   pre {
-    background: $surface;
+    position: relative;
+    background: $bg;
     border: 1px solid $border;
-    border-radius: 8px;
-    padding: 1rem 1.25rem;
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
     overflow-x: auto;
-    margin-bottom: 1.5rem;
-    font-size: 0.85rem;
-    line-height: 1.6;
+    margin: 0 0 1.6rem;
+    font-size: 0.86rem;
+    line-height: 1.7;
+    -webkit-overflow-scrolling: touch;
+    tab-size: 2;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+
+    // Language badge from Zola's data-lang
+    &[data-lang]::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 0;
+      right: 0;
+      font-family: $font-mono;
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: $text-dim;
+      background: $surface;
+      border-left: 1px solid $border;
+      border-bottom: 1px solid $border;
+      border-radius: 0 10px 0 8px;
+      padding: 0.25rem 0.65rem;
+      pointer-events: none;
+    }
+
+    &[data-lang="text"]::before,
+    &[data-lang=""]::before { content: none; }
 
     code {
       background: none;
@@ -1059,43 +1282,68 @@ img { max-width: 100%; height: auto; }
       padding: 0;
       color: $text;
       font-size: inherit;
+      word-break: normal;
+      // Ensure ayu-dark token spans (when present) keep their colors
+      span { background: transparent !important; }
     }
+
+    // Custom scrollbar
+    &::-webkit-scrollbar { height: 9px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb {
+      background: $border-light;
+      border-radius: 6px;
+    }
+    &::-webkit-scrollbar-thumb:hover { background: lighten($border-light, 10%); }
   }
 
-  // Tables
+  // -- Tables --
   table {
     width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 1.5rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin-bottom: 1.6rem;
     font-size: 0.875rem;
-    display: block;
-    overflow-x: auto;
+    line-height: 1.6;
+    border: 1px solid $border;
+    border-radius: 10px;
+    overflow: hidden;
 
-    th, td {
-      padding: 0.6rem 0.75rem;
-      text-align: left;
-      border: 1px solid $border;
+    thead th {
+      font-weight: 600;
+      color: lighten($text, 6%);
+      background: $surface;
+      white-space: nowrap;
     }
 
-    th {
-      font-weight: 600;
-      color: $text;
-      background: darken($surface, 2%);
+    th, td {
+      padding: 0.65rem 0.9rem;
+      text-align: left;
+      border-bottom: 1px solid $border;
+      border-right: 1px solid $border;
+      vertical-align: top;
+
+      &:last-child { border-right: none; }
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    tbody tr {
+      transition: background 0.12s ease;
+      &:hover { background: rgba($surface, 0.5); }
     }
 
     td {
       color: $text-dim;
-
-      code {
-        font-size: 0.8em;
-      }
+      code { font-size: 0.82em; white-space: nowrap; }
     }
   }
 
-  // Overflow wrapper for wide tables
+  // Overflow wrapper for wide tables (scrolls without breaking radius)
   .table-wrapper {
     overflow-x: auto;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.6rem;
+    border-radius: 10px;
     -webkit-overflow-scrolling: touch;
 
     table {
@@ -1103,41 +1351,56 @@ img { max-width: 100%; height: auto; }
     }
   }
 
-  // Blockquote
+  // -- Blockquote --
   blockquote {
     border-left: 3px solid $accent;
-    padding: 0.5rem 1rem;
-    margin: 1rem 0 1.5rem;
-    background: rgba($accent, 0.04);
-    border-radius: 0 6px 6px 0;
-    color: $text-dim;
-    font-size: 0.925rem;
+    padding: 0.85rem 1.1rem;
+    margin: 0 0 1.6rem;
+    background: rgba($accent, 0.05);
+    border-radius: 0 8px 8px 0;
+    color: $text;
 
-    p { margin-bottom: 0.5rem; }
-    p:last-child { margin-bottom: 0; }
+    p {
+      margin-bottom: 0.6rem;
+      color: $text-dim;
+      &:last-child { margin-bottom: 0; }
+    }
     strong { color: $accent; }
+    code { background: rgba($accent, 0.1); color: $accent; border-color: rgba($accent, 0.2); }
   }
 
-  // Horizontal rule
+  // -- Horizontal rule --
   hr {
     border: none;
     border-top: 1px solid $border;
-    margin: 2rem 0;
+    margin: 2.5rem 0;
   }
 
-  // Strong
-  strong { color: lighten($text, 8%); }
+  // -- Images --
+  img {
+    border-radius: 8px;
+    border: 1px solid $border;
+  }
+
+  strong { color: lighten($text, 10%); font-weight: 650; }
+
+  // Tighten the first heading after the header divider
+  .doc-body > h2:first-child,
+  .doc-body > h3:first-child { margin-top: 0; }
 }
 
-// -- Mini TOC --
+// -- Mini TOC (sticky sidebar) --
 .doc-toc {
-  width: $toc-width;
-  flex-shrink: 0;
   position: sticky;
-  top: calc($nav-height + 2rem);
-  align-self: flex-start;
-  max-height: calc(100vh - $nav-height - 4rem);
+  top: calc(#{$nav-height} + 2rem);
+  align-self: start;
+  max-height: calc(100vh - #{$nav-height} - 4rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb { background: $border; border-radius: 6px; }
 }
 
 .doc-toc-inner {
@@ -1147,12 +1410,12 @@ img { max-width: 100%; height: auto; }
 
 .doc-toc-title {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: $text-dim;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.75rem;
+  letter-spacing: 0.09em;
+  margin-bottom: 0.9rem;
 }
 
 .doc-toc ul {
@@ -1160,84 +1423,143 @@ img { max-width: 100%; height: auto; }
   padding: 0;
   margin: 0;
 
-  li {
-    margin-bottom: 0.125rem;
-  }
+  li { margin: 0; }
 
   a {
     display: block;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     color: $text-dim;
-    padding: 0.2rem 0 0.2rem 0.5rem;
+    padding: 0.32rem 0 0.32rem 0.85rem;
     margin-left: -1rem;
     border-left: 2px solid transparent;
-    line-height: 1.4;
-    transition: color 0.15s, border-color 0.15s;
+    line-height: 1.45;
+    transition: color 0.15s ease, border-color 0.15s ease;
+
     &:hover {
+      color: $text;
+      border-left-color: $border-light;
+    }
+
+    &.active {
       color: $accent;
       border-left-color: $accent;
+      font-weight: 500;
     }
   }
 
   ul {
-    padding-left: 0.75rem;
-    a { font-size: 0.75rem; }
+    a {
+      font-size: 0.78rem;
+      padding-left: 1.7rem;
+    }
   }
 }
 
 // -- Doc index (section listing) --
 .doc-index {
   display: grid;
-  gap: 1rem;
-  margin-top: 2rem;
+  gap: 0.85rem;
+  margin-top: 2.5rem;
 }
 
 .doc-index-item {
-  display: block;
-  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.15rem 1.35rem;
   background: $surface;
   border: 1px solid $border;
-  border-radius: 8px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  border-radius: 10px;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
 
   &:hover {
     border-color: $accent;
-    box-shadow: 0 2px 12px rgba($accent, 0.08);
+    background: lighten($surface, 2%);
+    transform: translateY(-2px);
+
+    .doc-index-arrow {
+      color: $accent;
+      transform: translateX(3px);
+    }
+    .doc-index-title { color: $accent; }
   }
 
-  h3 {
+  .doc-index-text { flex: 1; min-width: 0; }
+
+  .doc-index-title {
+    display: block;
     font-size: 1rem;
     font-weight: 600;
     color: $text;
-    margin-bottom: 0.25rem;
+    line-height: 1.3;
+    transition: color 0.18s ease;
   }
 
-  p {
-    font-size: 0.85rem;
+  .doc-index-desc {
+    display: block;
+    font-size: 0.875rem;
     color: $text-dim;
-    margin: 0;
+    margin-top: 0.3rem;
     line-height: 1.5;
+  }
+
+  .doc-index-arrow {
+    flex-shrink: 0;
+    color: $text-dim;
+    transition: color 0.18s ease, transform 0.18s ease;
+    svg { width: 18px; height: 18px; display: block; }
   }
 }
 
 // -- Prev/Next --
 .doc-prevnext {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  margin-top: 3rem;
-  padding-top: 1.5rem;
+  margin-top: 3.5rem;
+  padding-top: 2rem;
   border-top: 1px solid $border;
-  font-size: 0.9rem;
+}
 
-  a {
-    color: $link;
-    font-weight: 500;
-    &:hover { color: $accent; }
+.doc-pn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.15rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  transition: border-color 0.18s ease, background 0.18s ease;
+
+  &:hover {
+    border-color: $accent;
+    background: lighten($surface, 2%);
+    .doc-pn-title { color: $accent; }
   }
 
-  .doc-next { margin-left: auto; }
+  .doc-pn-dir {
+    font-family: $font-mono;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: $text-dim;
+  }
+
+  .doc-pn-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: $text;
+    line-height: 1.35;
+    transition: color 0.18s ease;
+  }
 }
+
+.doc-next {
+  grid-column: 2;
+  text-align: right;
+  align-items: flex-end;
+}
+
+.doc-pn-spacer { display: block; }
 
 // =============================================================================
 // Animations
@@ -1354,23 +1676,55 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .error-page {
+  max-width: 560px;
+  margin: 0 auto;
   text-align: center;
   padding: 8rem 1.5rem;
 
-  h1 {
+  .error-code {
     font-family: $font-mono;
-    font-size: 5rem;
+    font-size: clamp(4rem, 14vw, 7rem);
     font-weight: 700;
     color: $accent;
     line-height: 1;
-    margin-bottom: 1rem;
+    letter-spacing: -0.04em;
+    margin-bottom: 0.5rem;
+  }
+
+  .error-prompt {
+    display: inline-block;
+    font-family: $font-mono;
+    font-size: 0.95rem;
+    color: $code-green;
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: 8px;
+    padding: 0.6rem 1rem;
+    margin-bottom: 1.75rem;
+
+    .error-sigil { color: $accent; margin-right: 0.5rem; }
+    .error-cursor {
+      display: inline-block;
+      width: 0.55em;
+      height: 1.05em;
+      margin-left: 0.15em;
+      vertical-align: text-bottom;
+      background: $code-green;
+      animation: error-blink 1.1s step-end infinite;
+    }
   }
 
   p {
     font-size: 1.1rem;
     color: $text-dim;
+    line-height: 1.6;
     margin-bottom: 2rem;
   }
+}
+
+@keyframes error-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 // =============================================================================
@@ -1387,14 +1741,18 @@ img { max-width: 100%; height: auto; }
 
   .doc-content {
     max-width: 100%;
+    .doc-kicker { color: #555; }
+    .doc-lead { color: #333; }
     h1, h2, h3, h4 { color: #111; }
     code { border-color: #ddd; background: #f5f5f5; color: #333; }
-    pre { border-color: #ddd; background: #f5f5f5; }
+    pre { border-color: #ddd; background: #f5f5f5; box-shadow: none; }
     pre code { color: #333; }
+    pre[data-lang]::before { color: #888; background: #eee; border-color: #ddd; }
     table th, table td { border-color: #ccc; }
-    table th { background: #eee; }
-    a { color: #111; text-decoration: underline; }
-    blockquote { border-left-color: #ccc; background: #f9f9f9; }
+    table th { background: #eee; color: #111; }
+    table td { color: #333; }
+    a { color: #111; text-decoration: underline; border-bottom: none; }
+    blockquote { border-left-color: #ccc; background: #f9f9f9; p { color: #333; } }
   }
 }
 
@@ -1404,12 +1762,17 @@ img { max-width: 100%; height: auto; }
 
 @media (max-width: 1140px) {
   .doc-toc { display: none; }
-  .doc-layout { max-width: $doc-width; }
+  .doc-layout {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: $doc-width;
+  }
+  .doc-content { max-width: none; }
   .arch-grid { grid-template-columns: repeat(3, 1fr); }
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
-@media (max-width: 768px) {
+// Collapse the (wide) nav into the hamburger before it can clip the right-side actions.
+@media (max-width: 1200px) {
   .nav-links {
     display: none;
     position: absolute;
@@ -1432,26 +1795,45 @@ img { max-width: 100%; height: auto; }
 
   .nav-toggle { display: flex; }
 
-  .hero { padding: 3rem 1rem 2rem; }
-  .hero-title { font-size: 2.75rem; }
-  .hero-tagline { font-size: 1.1rem; }
+}
 
-  .features-inner { grid-template-columns: 1fr; gap: 1rem; }
-  .arch-grid { grid-template-columns: repeat(2, 1fr); }
+@media (max-width: 768px) {
+  .hero { padding: 4rem 1.25rem 2rem; }
+
+  // Tighter vertical rhythm on small screens (sections use 5.5rem on desktop).
+  .demos, .features, .quickstart, .comparison, .metrics, .arch-callout {
+    padding: 3.5rem 1.25rem;
+  }
+  .section-head { margin-bottom: 2rem; }
+
+  .features-grid { grid-template-columns: 1fr; gap: 1rem; }
+  .arch-grid { grid-template-columns: repeat(3, 1fr); gap: 1rem; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 
-  .doc-layout { padding: 1.5rem 1rem 3rem; }
-  .doc-content {
-    h1 { font-size: 1.5rem; }
-    h2 { font-size: 1.15rem; }
+  .terminal-wrap { margin-top: 2.5rem; padding: 0 1rem; }
 
-    // Allow tables to scroll
+  .doc-layout { padding: 1.75rem 1rem 3.5rem; gap: 2rem; }
+  .doc-content {
+    font-size: 0.96rem;
+
+    .doc-header { margin-bottom: 1.75rem; padding-bottom: 1.25rem; }
+    .doc-lead { font-size: 1rem; }
+
+    h2 { margin-top: 2.25rem; }
+
+    // Allow tables to scroll on narrow screens
     table {
       display: block;
       overflow-x: auto;
+      white-space: nowrap;
       -webkit-overflow-scrolling: touch;
     }
+
+    pre { border-radius: 8px; font-size: 0.8rem; }
   }
+
+  .doc-prevnext { grid-template-columns: 1fr; }
+  .doc-next { grid-column: 1; text-align: left; align-items: flex-start; }
 
   .footer-inner { flex-direction: column; text-align: center; }
   .footer-col { justify-content: center; }
@@ -1461,12 +1843,23 @@ img { max-width: 100%; height: auto; }
 }
 
 @media (max-width: 480px) {
-  .hero-title { font-size: 2.25rem; }
-  .hero-actions { flex-direction: column; align-items: center; }
+  .hero { padding: 3.25rem 1rem 1.5rem; }
+  .hero-kicker { font-size: 0.66rem; letter-spacing: 0.18em; }
+  .hero-actions { flex-direction: column; align-items: stretch; }
+  .hero-actions .btn { justify-content: center; }
   .arch-grid { grid-template-columns: 1fr; }
   .metrics-grid { grid-template-columns: 1fr; }
-  .arch-stat { font-size: 2rem; }
   .version-badge { font-size: 0.7rem; }
+
+  .demo-tabs { gap: 0.3rem; }
+  .demo-tab { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+
+  // Keep the reference table readable on narrow screens.
+  .comparison-table { font-size: 0.82rem; }
+  .comparison-table th, .comparison-table td { padding: 0.7rem 0.8rem; }
+  .comparison-table td:first-child { width: auto; white-space: normal; }
+
+  .code-block-wrap pre { font-size: 0.78rem; padding: 1.1rem; }
 }
 
 // Download page

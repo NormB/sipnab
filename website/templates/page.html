@@ -6,21 +6,36 @@
 {% block content %}
 <div class="doc-layout">
   <article class="doc-content">
-    <h1>{{ page.title }}</h1>
-    {{ page.content | safe }}
+    <header class="doc-header">
+      <p class="doc-kicker">Documentation</p>
+      <h1>{{ page.title }}</h1>
+      {% if page.description %}
+      <p class="doc-lead">{{ page.description }}</p>
+      {% endif %}
+    </header>
+
+    <div class="doc-body">
+      {{ page.content | safe }}
+    </div>
 
     <!-- Prev/Next nav -->
     {% if page.lower or page.higher %}
-    <nav class="doc-prevnext">
+    <nav class="doc-prevnext" aria-label="Documentation pages">
       {% if page.lower %}
-      <a href="{{ page.lower.permalink }}" class="doc-prev">&larr; {{ page.lower.title }}</a>
+      <a href="{{ page.lower.permalink }}" class="doc-pn doc-prev">
+        <span class="doc-pn-dir">&larr; Previous</span>
+        <span class="doc-pn-title">{{ page.lower.title }}</span>
+      </a>
       {% else %}
-      <span></span>
+      <span class="doc-pn-spacer"></span>
       {% endif %}
       {% if page.higher %}
-      <a href="{{ page.higher.permalink }}" class="doc-next">{{ page.higher.title }} &rarr;</a>
+      <a href="{{ page.higher.permalink }}" class="doc-pn doc-next">
+        <span class="doc-pn-dir">Next &rarr;</span>
+        <span class="doc-pn-title">{{ page.higher.title }}</span>
+      </a>
       {% else %}
-      <span></span>
+      <span class="doc-pn-spacer"></span>
       {% endif %}
     </nav>
     {% endif %}
@@ -28,24 +43,57 @@
 
   <!-- Mini TOC -->
   {% if page.toc | length > 0 %}
-  <aside class="doc-toc">
-    <div class="doc-toc-inner">
+  <aside class="doc-toc" aria-label="Table of contents">
+    <nav class="doc-toc-inner">
       <span class="doc-toc-title">On this page</span>
       <ul>
         {% for h2 in page.toc %}
-        <li><a href="#{{ h2.id }}">{{ h2.title }}</a>
+        <li><a href="#{{ h2.id }}" class="doc-toc-link">{{ h2.title }}</a>
           {% if h2.children | length > 0 %}
           <ul>
             {% for h3 in h2.children %}
-            <li><a href="#{{ h3.id }}">{{ h3.title }}</a></li>
+            <li><a href="#{{ h3.id }}" class="doc-toc-link">{{ h3.title }}</a></li>
             {% endfor %}
           </ul>
           {% endif %}
         </li>
         {% endfor %}
       </ul>
-    </div>
+    </nav>
   </aside>
   {% endif %}
 </div>
+
+{% if page.toc | length > 0 %}
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll(".doc-toc-link"));
+  if (!links.length) return;
+  var map = {};
+  var targets = [];
+  links.forEach(function (link) {
+    var id = decodeURIComponent((link.getAttribute("href") || "").slice(1));
+    var el = id && document.getElementById(id);
+    if (el) { map[id] = link; targets.push(el); }
+  });
+  if (!targets.length) return;
+
+  var current = null;
+  function setActive(id) {
+    if (id === current) return;
+    current = id;
+    links.forEach(function (l) { l.classList.remove("active"); });
+    if (map[id]) map[id].classList.add("active");
+  }
+
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting) setActive(entry.target.id);
+    });
+  }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
+
+  targets.forEach(function (t) { observer.observe(t); });
+})();
+</script>
+{% endif %}
 {% endblock content %}

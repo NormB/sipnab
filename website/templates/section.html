@@ -4,22 +4,36 @@
 {% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
 
 {% block content %}
-<div class="doc-layout">
+<div class="doc-layout doc-layout--section">
   <article class="doc-content">
-    <h1>{{ section.title }}</h1>
-    {{ section.content | safe }}
+    <header class="doc-header">
+      <p class="doc-kicker">Documentation</p>
+      <h1>{{ section.title }}</h1>
+      {% if section.description %}
+      <p class="doc-lead">{{ section.description }}</p>
+      {% endif %}
+    </header>
+
+    <div class="doc-body">
+      {{ section.content | safe }}
+    </div>
 
     {% if section.pages | length > 0 %}
-    <div class="doc-index">
+    <nav class="doc-index" aria-label="Documentation sections">
       {% for page in section.pages %}
       <a href="{{ page.permalink }}" class="doc-index-item">
-        <h3>{{ page.title }}</h3>
-        {% if page.description %}
-        <p>{{ page.description }}</p>
-        {% endif %}
+        <span class="doc-index-text">
+          <span class="doc-index-title">{{ page.title }}</span>
+          {% if page.description %}
+          <span class="doc-index-desc">{{ page.description }}</span>
+          {% endif %}
+        </span>
+        <span class="doc-index-arrow" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </span>
       </a>
       {% endfor %}
-    </div>
+    </nav>
     {% endif %}
   </article>
 </div>

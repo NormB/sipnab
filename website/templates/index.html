@@ -7,7 +7,9 @@
 {% block content %}
 <!-- Hero -->
 <section class="hero">
+  <div class="hero-bg" aria-hidden="true"></div>
   <div class="hero-inner">
+    <p class="hero-kicker">SIP &middot; RTP &middot; built in Rust</p>
     <h1 class="hero-title">sipnab <span class="version-badge">v{{ config.extra.version }}</span></h1>
     <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
     <p class="hero-sub">One binary. One dependency (libpcap). Interactive TUI + CLI + REST API.<br>Built in Rust for speed, safety, and correctness.</p>
@@ -26,6 +28,7 @@
 <!-- Demo Video -->
 <section class="demos" id="demos">
   <div class="demos-inner">
+    <p class="section-kicker">Demos</p>
     <h2>See It In Action</h2>
     <div class="demo-tabs">
       <button class="demo-tab active" onclick="showDemo(0, this)">Interactive TUI</button>
@@ -62,26 +65,32 @@
 <!-- Why sipnab -->
 <section class="features" id="features">
   <div class="features-inner">
-    <div class="feature-card feature-card--amber fade-in-up">
-      <div class="feature-icon">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+    <header class="section-head">
+      <p class="section-kicker">Capabilities</p>
+      <h2>Everything, in one binary</h2>
+    </header>
+    <div class="features-grid">
+      <div class="feature-card feature-card--amber fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+        </div>
+        <h3>See Everything</h3>
+        <p>Interactive TUI with multi-participant ladder diagrams, auth collapse, retransmit folding, mark+delta timing. Four timestamp modes, message diff, split view with resizable panels.</p>
       </div>
-      <h3>See Everything</h3>
-      <p>Interactive TUI with multi-participant ladder diagrams, auth collapse, retransmit folding, mark+delta timing. Four timestamp modes, message diff, split view with resizable panels.</p>
-    </div>
-    <div class="feature-card feature-card--green fade-in-up">
-      <div class="feature-icon">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+      <div class="feature-card feature-card--green fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+        </div>
+        <h3>Analyze Everything</h3>
+        <p>First-class RTP: jitter, loss, MOS per stream. RTCP XR. Comfort noise detection. One-way audio diagnosis. NAT mismatch detection. SDP offer/answer timeline. Post-dial delay and setup time measurement.</p>
       </div>
-      <h3>Analyze Everything</h3>
-      <p>First-class RTP: jitter, loss, MOS per stream. RTCP XR. Comfort noise detection. One-way audio diagnosis. NAT mismatch detection. SDP offer/answer timeline. Post-dial delay and setup time measurement.</p>
-    </div>
-    <div class="feature-card feature-card--blue fade-in-up">
-      <div class="feature-icon">
-        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      <div class="feature-card feature-card--blue fade-in-up">
+        <div class="feature-icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        </div>
+        <h3>Export Everything</h3>
+        <p>PCAP, PCAP-NG, TXT, Mermaid sequence diagrams, JSON, NDJSON, Markdown call reports, fail2ban format, Wireshark filters, tshark display filters. Pipe NDJSON to jq for custom pipelines.</p>
       </div>
-      <h3>Export Everything</h3>
-      <p>PCAP, PCAP-NG, TXT, Mermaid sequence diagrams, JSON, NDJSON, Markdown call reports, fail2ban format, Wireshark filters, tshark display filters. Pipe NDJSON to jq for custom pipelines.</p>
     </div>
   </div>
 </section>
@@ -89,12 +98,19 @@
 <!-- Quick Start -->
 <section class="quickstart" id="quickstart">
   <div class="quickstart-inner">
-    <h2>Quick Start</h2>
+    <header class="section-head">
+      <p class="section-kicker">Quick Start</p>
+      <h2>Up and running in one command</h2>
+    </header>
     <div class="code-block-wrap">
-      <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy to clipboard">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
-        <span>Copy</span>
-      </button>
+      <div class="code-block-head">
+        <span class="code-block-dots"><i></i><i></i><i></i></span>
+        <span class="code-block-title">bash</span>
+        <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy to clipboard">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+          <span>Copy</span>
+        </button>
+      </div>
       <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Build from source</span>
 git clone https://github.com/NormB/sipnab.git
 cd sipnab && cargo build --release
@@ -123,7 +139,10 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
 <!-- sipnab features (no competitor comparison — only claim what we can prove) -->
 <section class="comparison" id="features-list">
   <div class="comparison-inner">
-    <h2>What sipnab Does</h2>
+    <header class="section-head">
+      <p class="section-kicker">Reference</p>
+      <h2>What sipnab Does</h2>
+    </header>
     <div class="comparison-table-wrap">
       <table class="comparison-table">
         <thead>
@@ -154,8 +173,11 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
 <!-- Standards-based quality metrics -->
 <section class="metrics" id="metrics">
   <div class="metrics-inner">
-    <h2>Standards-Based Quality Metrics</h2>
-    <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; grounded in the relevant ITU-T and IETF standards. Every figure is computed from the packets, never guessed.</p>
+    <header class="section-head">
+      <p class="section-kicker">Standards-based</p>
+      <h2>Quality Metrics</h2>
+      <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; grounded in the relevant ITU-T and IETF standards. Every figure is computed from the packets, never guessed.</p>
+    </header>
     <div class="metrics-grid">
       <div class="metric-card fade-in-up">
         <a class="metric-std" href="https://www.itu.int/rec/T-REC-G.107" target="_blank" rel="noopener noreferrer">ITU-T G.107</a>
@@ -194,7 +216,10 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
 <!-- Architecture callout -->
 <section class="arch-callout">
   <div class="arch-inner">
-    <h2>Engineered for Production</h2>
+    <header class="section-head">
+      <p class="section-kicker">Production-ready</p>
+      <h2>Engineered for Production</h2>
+    </header>
     <div class="arch-grid">
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="5" data-suffix=" MB">5 MB</span>
@@ -256,7 +281,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Copy code button
 function copyCode(btn) {
-  var pre = btn.parentElement.querySelector('pre');
+  var pre = btn.closest('.code-block-wrap').querySelector('pre');
   var text = pre.textContent;
   navigator.clipboard.writeText(text).then(function() {
     btn.querySelector('span').textContent = 'Copied!';

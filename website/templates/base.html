@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0e14">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
 
@@ -39,9 +40,30 @@
   <script src="{{ get_url(path='elasticlunr.min.js') }}" defer></script>
   {% endif %}
 
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": {{ config.title | json_encode | safe }},
+    "applicationCategory": "DeveloperApplication",
+    "applicationSubCategory": "SecurityApplication",
+    "operatingSystem": "macOS, Linux",
+    "url": {{ config.base_url | json_encode | safe }},
+    "description": {{ config.description | json_encode | safe }},
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+
   {% block head_extra %}{% endblock head_extra %}
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
   {% block nav %}
   <nav class="topnav" id="topnav">
     <div class="nav-inner">
@@ -93,7 +115,7 @@
     </div>
   </div>
 
-  <main>
+  <main id="main">
     {% block content %}{% endblock content %}
   </main>
 
