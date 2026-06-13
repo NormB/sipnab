@@ -1,69 +1,190 @@
 {% extends "base.html" %}
 
 {% block title %}Download -- {{ config.title }}{% endblock title %}
-{% block og_title %}Download sipnab{% endblock og_title %}
-{% block description %}Download sipnab {{ config.extra.version }} -- macOS (Homebrew), Debian/Ubuntu .deb, and static Linux binaries for x86-64 and ARM64.{% endblock description %}
+{% block og_title %}Install sipnab{% endblock og_title %}
+{% block description %}Install sipnab {{ config.extra.version }} -- Homebrew for macOS, .deb for Debian/Ubuntu, static binaries for Linux. Intel and ARM64.{% endblock description %}
 
 {% block content %}
 {% set v = config.extra.version %}
 {% set rel = config.extra.github_url ~ "/releases/download/v" ~ v %}
-<section class="download">
-  <div class="download-inner">
-    <header class="download-head">
-      <h1>Download <span class="version-badge">v{{ v }}</span></h1>
-      <p class="download-sub">One binary, one dependency (libpcap). Every build is produced by CI and checksummed. Pick your platform, or browse the <a href="{{ config.extra.github_url }}/releases/latest">full release</a>.</p>
-    </header>
+<section class="dl">
+  <header class="dl-hero">
+    <p class="dl-kicker">Install</p>
+    <h1>Get sipnab running</h1>
+    <p class="dl-sub">One binary, one dependency. <a href="{{ config.extra.github_url }}/releases/latest">v{{ v }}</a> &mdash; built and checksummed by CI for every platform below.</p>
+  </header>
 
-    <div class="download-grid">
-
-      <article class="dl-card dl-card--amber">
-        <div class="dl-card-head"><h2>macOS</h2><span class="dl-tag">Intel &amp; Apple Silicon</span></div>
-        <p>Install with Homebrew &mdash; recommended.</p>
-        <pre class="dl-cmd"><code>brew install NormB/tap/sipnab</code></pre>
-        <p class="dl-alt">Or a binary tarball:
-          <a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz">Apple&nbsp;Silicon</a> &middot;
-          <a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz">Intel</a>
-        </p>
-      </article>
-
-      <article class="dl-card dl-card--green">
-        <div class="dl-card-head"><h2>Debian / Ubuntu</h2><span class="dl-tag">.deb &middot; x86-64 &amp; ARM64</span></div>
-        <ul class="dl-files">
-          <li><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb">sipnab_{{ v }}_amd64.deb</a><span>x86-64</span></li>
-          <li><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb">sipnab_{{ v }}_arm64.deb</a><span>ARM64</span></li>
-        </ul>
-        <pre class="dl-cmd"><code>sudo apt install ./sipnab_{{ v }}_amd64.deb</code></pre>
-      </article>
-
-      <article class="dl-card dl-card--blue">
-        <div class="dl-card-head"><h2>Linux &mdash; static</h2><span class="dl-tag">musl &middot; no dependencies</span></div>
-        <p>Self-contained; runs on any distro.</p>
-        <ul class="dl-files">
-          <li><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">sipnab-{{ v }}-x86_64-musl.tar.gz</a><span>x86-64</span></li>
-          <li><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz">sipnab-{{ v }}-aarch64-musl.tar.gz</a><span>ARM64</span></li>
-        </ul>
-      </article>
-
-      <article class="dl-card">
-        <div class="dl-card-head"><h2>Linux &mdash; glibc</h2><span class="dl-tag">dynamic &middot; needs libpcap</span></div>
-        <ul class="dl-files">
-          <li><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">sipnab-{{ v }}-x86_64-gnu.tar.gz</a><span>x86-64</span></li>
-          <li><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz">sipnab-{{ v }}-aarch64-gnu.tar.gz</a><span>ARM64</span></li>
-        </ul>
-      </article>
-
-      <article class="dl-card">
-        <div class="dl-card-head"><h2>From source</h2><span class="dl-tag">Rust 1.92+</span></div>
-        <pre class="dl-cmd"><code>git clone {{ config.extra.github_url }}.git
-cd sipnab &amp;&amp; cargo build --release --features full</code></pre>
-      </article>
-
-    </div>
-
-    <p class="download-foot">
-      Verify downloads against <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a>.
-      Need setup help? See the <a href="{{ get_url(path='@/docs/install.md') }}">install guide</a>.
-    </p>
+  <div class="dl-tabs" role="tablist" aria-label="Platform">
+    <button class="dl-tab" data-os="mac" role="tab"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg><span>macOS</span></button>
+    <button class="dl-tab" data-os="debian" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span>Debian</span></button>
+    <button class="dl-tab" data-os="linux" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg><span>Linux</span></button>
+    <button class="dl-tab" data-os="source" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span>Source</span></button>
   </div>
+
+  <!-- macOS -->
+  <div class="dl-panel" data-os="mac" role="tabpanel">
+    <div class="dl-method-head"><h2>Homebrew</h2><span class="dl-rec">recommended</span></div>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; Intel &amp; Apple Silicon</span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>brew install NormB/tap/sipnab</code>
+        <button class="dl-copy" data-copy="brew install NormB/tap/sipnab" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <div class="dl-direct">
+      <span class="dl-direct-label">Prefer a raw binary?</span>
+      <div class="dl-tiles">
+        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">Apple Silicon</span><span class="dl-tile-sub">arm64 &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">Intel</span><span class="dl-tile-sub">x86-64 &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Debian / Ubuntu -->
+  <div class="dl-panel" data-os="debian" role="tabpanel">
+    <div class="dl-method-head"><h2>Debian / Ubuntu package</h2><span class="dl-rec">recommended</span></div>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">apt &middot; resolves libpcap automatically</span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>sudo apt install ./sipnab_{{ v }}_amd64.deb</code>
+        <button class="dl-copy" data-copy="sudo apt install ./sipnab_{{ v }}_amd64.deb" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <div class="dl-direct">
+      <span class="dl-direct-label">Download the .deb</span>
+      <div class="dl-tiles">
+        <a class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_amd64.deb">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">amd64 &middot; .deb</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+        <a class="dl-tile" href="{{ rel }}/sipnab_{{ v }}_arm64.deb">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">arm64 &middot; .deb</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Linux (static + glibc) -->
+  <div class="dl-panel" data-os="linux" role="tabpanel">
+    <div class="dl-method-head"><h2>Static binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
+    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, Alpine included. Download, extract, run.</p>
+    <div class="dl-direct">
+      <div class="dl-tiles">
+        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">musl static &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+        <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz">
+          <span class="dl-tile-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></span>
+          <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">musl static &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+      </div>
+    </div>
+    <div class="dl-direct">
+      <span class="dl-direct-label">glibc build (dynamic, needs libpcap)</span>
+      <div class="dl-tiles">
+        <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">
+          <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+        <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz">
+          <span class="dl-tile-txt"><span class="dl-tile-name">ARM64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Source -->
+  <div class="dl-panel" data-os="source" role="tabpanel">
+    <div class="dl-method-head"><h2>Build from source</h2><span class="dl-rec dl-rec--dim">Rust 1.92+</span></div>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">cargo</span></div>
+      <div class="dl-term-body dl-term-body--multi">
+        <code><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git
+<span class="dl-prompt">$</span>cd sipnab &amp;&amp; cargo build --release --features full</code>
+        <button class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>.</p>
+  </div>
+
+  <section class="dl-verify">
+    <div class="dl-verify-head">
+      <span class="dl-verify-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
+      <div>
+        <h2>Verify your download</h2>
+        <p>sipnab is a security tool &mdash; always confirm integrity before running. Every artifact is checksummed by CI.</p>
+      </div>
+    </div>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">sha-256 &middot; run in your download folder</span></div>
+      <div class="dl-term-body dl-term-body--multi">
+        <code><span class="dl-cmt"># macOS</span>
+<span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+<span class="dl-cmt"># Linux</span>
+<span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
+        <button class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing&#10;sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. A <code>OK</code> line means it&rsquo;s authentic. Each artifact also ships an individual <code>.sha256</code> file.</p>
+  </section>
+
+  <footer class="dl-meta">
+    <a href="{{ config.extra.github_url }}/releases">All releases</a>
+    <span class="dl-dot">&middot;</span>
+    <a href="{{ get_url(path='@/docs/install.md') }}">Install guide</a>
+    <span class="dl-dot">&middot;</span>
+    <a href="{{ config.extra.github_url }}">Source on GitHub</a>
+  </footer>
 </section>
+
+<script>
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.dl-tab'));
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.dl-panel'));
+  function show(os) {
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('data-os') === os;
+      t.classList.toggle('active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    panels.forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-os') === os); });
+  }
+  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.getAttribute('data-os')); }); });
+
+  var ua = navigator.userAgent || '';
+  var os = 'mac';
+  if (/Macintosh|Mac OS X/.test(ua)) os = 'mac';
+  else if (/Android/.test(ua)) os = 'linux';
+  else if (/Linux/.test(ua)) os = 'debian';
+  else if (/Windows/.test(ua)) os = 'source';
+  var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
+  if (dt) dt.classList.add('dl-tab--detected');
+  show(os);
+
+  document.querySelectorAll('.dl-copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = (btn.getAttribute('data-copy') || '').replace(/&amp;/g, '&');
+      navigator.clipboard.writeText(text).then(function () {
+        btn.classList.add('copied');
+        setTimeout(function () { btn.classList.remove('copied'); }, 1600);
+      });
+    });
+  });
+})();
+</script>
 {% endblock content %}

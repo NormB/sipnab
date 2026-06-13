@@ -1469,38 +1469,145 @@ img { max-width: 100%; height: auto; }
   .version-badge { font-size: 0.7rem; }
 }
 
-
 // Download page
-.download { max-width: $max-width; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
-.download-head { text-align: center; margin-bottom: 3rem; }
-.download-head h1 { font-size: 2.5rem; margin: 0; }
-.download-sub { color: $text-dim; max-width: 640px; margin: 1rem auto 0; line-height: 1.6; }
-.download-sub a, .download-foot a, .dl-alt a, .dl-files a { color: $link; }
-.download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
-.dl-card {
-  background: $surface; border: 1px solid $border; border-top: 3px solid $border-light;
-  border-radius: 10px; padding: 1.5rem;
-  h2 { font-size: 1.2rem; margin: 0; }
-  p { color: $text-dim; font-size: 0.9rem; margin: 0.5rem 0 0; }
+.dl { max-width: 840px; margin: 0 auto; padding: 5rem 1.5rem 6rem; }
+
+.dl-hero { text-align: center; margin-bottom: 2.75rem; animation: dlUp 0.6s ease both; }
+.dl-kicker { font-family: $font-mono; font-size: 0.74rem; letter-spacing: 0.22em; text-transform: uppercase; color: $accent; margin: 0; }
+.dl-hero h1 { font-size: clamp(2.1rem, 5vw, 3rem); margin: 0.6rem 0 0; letter-spacing: -0.02em; }
+.dl-sub { color: $text-dim; margin: 0.95rem auto 0; max-width: 32rem; line-height: 1.6; }
+.dl-sub a { color: $accent; text-decoration: none; border-bottom: 1px solid rgba(255, 204, 102, 0.3); }
+
+.dl-tabs {
+  display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap;
+  background: $surface; border: 1px solid $border; border-radius: 12px;
+  padding: 0.3rem; margin: 0 auto 2.25rem; width: fit-content; max-width: 100%;
+  animation: dlUp 0.6s 0.05s ease both;
 }
-.dl-card--amber { border-top-color: $accent; }
-.dl-card--green { border-top-color: $code-green; }
-.dl-card--blue  { border-top-color: $link; }
-.dl-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
-.dl-tag { font-family: $font-mono; font-size: 0.72rem; color: $text-dim; white-space: nowrap; }
-.dl-cmd {
-  background: $bg; border: 1px solid $border; border-radius: 6px; padding: 0.75rem 1rem;
-  overflow-x: auto; margin: 1rem 0 0;
-  code { font-family: $font-mono; font-size: 0.82rem; color: $code-green; white-space: pre; background: none; padding: 0; }
+.dl-tab {
+  display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.55rem 1rem;
+  border: none; background: none; color: $text-dim; font-family: $font-sans;
+  font-size: 0.9rem; font-weight: 500; border-radius: 9px; cursor: pointer;
+  transition: background 0.15s, color 0.15s; position: relative;
 }
-.dl-alt { font-size: 0.85rem; margin-top: 1rem !important; }
-.dl-files {
-  list-style: none; padding: 0; margin: 0.75rem 0 0;
-  li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;
-       border-bottom: 1px solid $border; font-family: $font-mono; font-size: 0.82rem; }
-  li:last-child { border-bottom: none; }
-  a { word-break: break-all; }
-  span { color: $text-dim; font-size: 0.72rem; margin-left: 1rem; white-space: nowrap; }
+.dl-tab svg { width: 17px; height: 17px; opacity: 0.85; }
+.dl-tab:hover { color: $text; }
+.dl-tab.active { background: $accent; color: $bg; }
+.dl-tab.active svg { opacity: 1; }
+.dl-tab--detected:not(.active)::after {
+  content: ""; position: absolute; top: 0.45rem; right: 0.55rem;
+  width: 5px; height: 5px; border-radius: 50%; background: $code-green;
 }
-.download-foot { text-align: center; color: $text-dim; margin-top: 3rem; font-size: 0.9rem; line-height: 1.7; }
-@media (max-width: 600px) { .download-grid { grid-template-columns: 1fr; } }
+
+.dl-panel { display: none; }
+.dl-panel.active { display: block; animation: dlUp 0.4s ease both; }
+
+.dl-method-head { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1rem; }
+.dl-method-head h2 { font-size: 1.15rem; margin: 0; }
+.dl-rec {
+  font-family: $font-mono; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: $code-green; border: 1px solid rgba(186, 230, 126, 0.4); border-radius: 5px; padding: 0.14rem 0.42rem;
+}
+.dl-rec--blue { color: $link; border-color: rgba(115, 208, 255, 0.4); }
+.dl-rec--dim { color: $text-dim; border-color: $border-light; }
+.dl-lead { color: $text-dim; line-height: 1.6; margin: 0 0 1.5rem; max-width: 38rem; }
+
+.dl-term {
+  background: $bg; border: 1px solid $border; border-radius: 11px; overflow: hidden;
+  box-shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.7);
+}
+.dl-term-head {
+  display: flex; align-items: center; gap: 0.65rem; padding: 0.6rem 0.95rem;
+  border-bottom: 1px solid $border; background: rgba(255, 255, 255, 0.02);
+}
+.dl-dots { display: inline-flex; gap: 0.4rem; }
+.dl-dots i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.dl-dots i:nth-child(1) { background: #ff5f57; }
+.dl-dots i:nth-child(2) { background: #febc2e; }
+.dl-dots i:nth-child(3) { background: #28c840; }
+.dl-term-title { font-family: $font-mono; font-size: 0.74rem; color: $text-dim; }
+.dl-term-body {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  padding: 1.05rem 1.15rem;
+}
+.dl-term-body code {
+  font-family: $font-mono; font-size: 0.92rem; color: $text; overflow-x: auto;
+  white-space: nowrap; flex: 1;
+}
+.dl-term-body--multi code { white-space: pre; line-height: 1.7; }
+.dl-prompt { color: $accent; user-select: none; margin-right: 0.6rem; }
+.dl-copy {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 0.3rem;
+  background: $surface; border: 1px solid $border; color: $text-dim;
+  border-radius: 8px; padding: 0.45rem 0.55rem; cursor: pointer; transition: all 0.15s; align-self: flex-start;
+}
+.dl-copy:hover { color: $text; border-color: $border-light; }
+.dl-copy svg { width: 15px; height: 15px; }
+.dl-copy.copied { color: $code-green; border-color: rgba(186, 230, 126, 0.45); }
+.dl-copy.copied::after { content: "Copied"; font-size: 0.72rem; font-family: $font-sans; }
+
+.dl-note { color: $text-dim; font-size: 0.85rem; margin: 1rem 0 0; }
+.dl-note code, .dl-lead code {
+  font-family: $font-mono; font-size: 0.8rem; background: $surface;
+  padding: 0.1rem 0.36rem; border-radius: 4px; color: $code-green;
+}
+
+.dl-direct { margin-top: 1.75rem; }
+.dl-direct-label {
+  display: block; font-family: $font-mono; font-size: 0.72rem; letter-spacing: 0.04em;
+  text-transform: uppercase; color: $text-dim; margin-bottom: 0.8rem;
+}
+.dl-tiles { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem; }
+.dl-tile {
+  display: flex; align-items: center; gap: 0.85rem; padding: 0.9rem 1rem;
+  background: $surface; border: 1px solid $border; border-radius: 10px;
+  text-decoration: none; transition: border-color 0.15s, transform 0.15s, background 0.15s;
+}
+.dl-tile:hover { border-color: $accent; transform: translateY(-2px); background: lighten($surface, 2%); }
+.dl-tile-ico {
+  flex-shrink: 0; width: 36px; height: 36px; display: grid; place-items: center;
+  border-radius: 9px; background: $bg; color: $accent;
+}
+.dl-tile-ico svg { width: 19px; height: 19px; }
+.dl-tile-txt { flex: 1; min-width: 0; }
+.dl-tile-name { display: block; color: $text; font-weight: 600; font-size: 0.92rem; }
+.dl-tile-sub { display: block; color: $text-dim; font-family: $font-mono; font-size: 0.72rem; margin-top: 0.12rem; }
+.dl-tile-dl { flex-shrink: 0; color: $text-dim; transition: color 0.15s, transform 0.15s; }
+.dl-tile-dl svg { width: 18px; height: 18px; display: block; }
+.dl-tile:hover .dl-tile-dl { color: $accent; transform: translateY(2px); }
+.dl-tile--sm { padding: 0.7rem 1rem; }
+
+.dl-meta {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: center;
+  gap: 0.55rem 1rem; margin-top: 3.5rem; padding-top: 1.85rem;
+  border-top: 1px solid $border; color: $text-dim; font-size: 0.86rem;
+}
+.dl-meta a { color: $text-dim; text-decoration: none; border-bottom: 1px solid transparent; transition: color 0.15s, border-color 0.15s; }
+.dl-meta a:hover { color: $accent; border-color: rgba(255, 204, 102, 0.4); }
+.dl-meta svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 0.35rem; }
+.dl-dot { opacity: 0.5; }
+
+.dl-verify {
+  margin-top: 3.5rem; padding: 1.75rem 1.75rem 1.6rem; border: 1px solid $border;
+  border-radius: 12px; background: linear-gradient(180deg, rgba(255, 204, 102, 0.045), rgba(255, 204, 102, 0));
+}
+.dl-verify-head { display: flex; align-items: flex-start; gap: 0.9rem; margin-bottom: 1.25rem; }
+.dl-verify-ico {
+  flex-shrink: 0; width: 38px; height: 38px; display: grid; place-items: center;
+  border-radius: 10px; background: rgba(255, 204, 102, 0.1); color: $accent;
+}
+.dl-verify-ico svg { width: 20px; height: 20px; }
+.dl-verify-head h2 { font-size: 1.1rem; margin: 0; }
+.dl-verify-head p { color: $text-dim; font-size: 0.88rem; margin: 0.3rem 0 0; line-height: 1.55; max-width: 40rem; }
+.dl-cmt { color: $text-dim; user-select: none; }
+
+@keyframes dlUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+@media (max-width: 560px) {
+  .dl { padding: 3.25rem 1.1rem 4rem; }
+  .dl-tiles { grid-template-columns: 1fr; }
+  .dl-tabs { width: 100%; }
+  .dl-tab { flex: 1; justify-content: center; padding: 0.55rem 0.3rem; }
+  .dl-term-body { flex-direction: column; align-items: stretch; }
+  .dl-copy { align-self: flex-end; }
+}
