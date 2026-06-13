@@ -161,3 +161,23 @@ jobs:
         run: cargo install cargo-fuzz
       - name: Check fuzz targets
         run: cd fuzz && cargo check
+
+  # Single aggregate gate for branch protection: green only if every other
+  # job succeeded. Require just this check so the protection rule survives
+  # matrix changes without re-listing per-job contexts.
+  ci-success:
+    name: CI success
+    if: always()
+    needs: [check, features, audit, fuzz-check]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all required jobs succeeded
+        run: |
+          results="${{ join(needs.*.result, ' ') }}"
+          echo "dependency results: $results"
+          for r in $results; do
+            if [ "$r" != "success" ]; then
+              echo "::error::a required CI job did not succeed ($r)"
+              exit 1
+            fi
+          done
