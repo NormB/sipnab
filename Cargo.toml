@@ -89,7 +89,7 @@ insta = "1"
 tokio = { version = "1", features = ["rt", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-expectrl = "0.8"
+expectrl = "0.9"
 libc = "0.2"
 
 [[bench]]
