@@ -30,9 +30,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install libpcap (Linux)
+      - name: Install system deps (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        # --all-features pulls in `audio` -> alsa-sys, which needs the ALSA headers.
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libasound2-dev
 
       - uses: dtolnay/rust-toolchain@1.94.1
         with:
