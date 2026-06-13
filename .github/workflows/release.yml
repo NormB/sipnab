@@ -88,6 +88,22 @@ jobs:
             ( cd dist && shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256" )
           fi
 
+      - name: Build .deb (gnu Linux targets)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)  deb_arch=amd64 ;;
+            aarch64-unknown-linux-gnu) deb_arch=arm64 ;;
+            *) echo "unexpected target ${{ matrix.target }}" >&2; exit 1 ;;
+          esac
+          SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
+            bash contrib/deb/build-deb.sh "$version" "$deb_arch"
+          mkdir -p dist
+          mv "sipnab_${version}_${deb_arch}.deb" dist/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -111,7 +127,7 @@ jobs:
       - name: Generate combined checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz > SHA256SUMS.txt
+          sha256sum *.tar.gz *.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release
@@ -121,4 +137,5 @@ jobs:
           files: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
+            artifacts/*.deb
             artifacts/SHA256SUMS.txt

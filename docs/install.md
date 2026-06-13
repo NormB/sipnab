@@ -32,9 +32,19 @@ cargo install sipnab --features full
 
 ### Debian/Ubuntu (.deb)
 
+Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency):
+
 ```bash
-sudo dpkg -i sipnab_0.3.1_amd64.deb
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.4.1
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
+sudo apt install ./sipnab_<version>_amd64.deb
+
+# arm64 (aarch64)
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64.deb
+sudo apt install ./sipnab_<version>_arm64.deb
 ```
+
+On Ubuntu 24.04+ the dependency is satisfied by `libpcap0.8t64`.
 
 ### RHEL/Fedora (.rpm)
 
