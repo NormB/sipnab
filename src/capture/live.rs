@@ -143,8 +143,8 @@ pub static INVALID_PCAP_TIMESTAMPS: std::sync::atomic::AtomicU64 =
 /// (rate-limited), because silently substituted timestamps corrupt every
 /// downstream timing computation.
 fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
-    let sec = ts.tv_sec as i64;
-    let usec = ts.tv_usec as i64;
+    let sec = ts.tv_sec;
+    let usec = ts.tv_usec;
     let converted = if (0..1_000_000).contains(&usec) {
         Utc.timestamp_opt(sec, usec as u32 * 1000).single()
     } else {

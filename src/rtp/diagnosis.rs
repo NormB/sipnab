@@ -567,6 +567,7 @@ mod tests {
 
     /// Build a stream with explicit codec / payload type / timestamp progression
     /// so the asymmetry tests can assemble realistic-looking pairs.
+    #[allow(clippy::too_many_arguments)]
     fn make_stream_with_pt(
         src_ip: [u8; 4],
         dst_ip: [u8; 4],

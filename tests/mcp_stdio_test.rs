@@ -135,10 +135,7 @@ fn stdio_mcp_round_trips_three_tools() {
     let tools = list_resp["result"]["tools"]
         .as_array()
         .expect("tools array");
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
+    let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     assert!(
         names.contains(&"list_dialogs"),
         "list_dialogs must be advertised; got: {names:?}"
@@ -172,8 +169,7 @@ fn stdio_mcp_round_trips_three_tools() {
     // The result.content[0].text is a JSON-encoded array of summaries.
     let content = &result["content"][0];
     let body = content["text"].as_str().expect("text content");
-    let parsed: serde_json::Value =
-        serde_json::from_str(body).expect("inner JSON parses");
+    let parsed: serde_json::Value = serde_json::from_str(body).expect("inner JSON parses");
     let arr = parsed.as_array().expect("dialog summaries array");
     assert!(
         !arr.is_empty(),
@@ -272,8 +268,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "clientInfo": {"name": "sipnab-test", "version": "0"}}
         }),
     );
-    let _ = read_response_with_id(&mut reader, 1, Duration::from_secs(5))
-        .expect("initialize response");
+    let _ =
+        read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize response");
     send(
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
@@ -284,8 +280,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         &mut child,
         &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
     );
-    let list_resp = read_response_with_id(&mut reader, 2, Duration::from_secs(5))
-        .expect("tools/list response");
+    let list_resp =
+        read_response_with_id(&mut reader, 2, Duration::from_secs(5)).expect("tools/list response");
     let names: Vec<String> = list_resp["result"]["tools"]
         .as_array()
         .unwrap()
@@ -333,8 +329,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id, "max_messages": 100}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 4, Duration::from_secs(5))
-        .expect("get_dialog response");
+    let resp =
+        read_response_with_id(&mut reader, 4, Duration::from_secs(5)).expect("get_dialog response");
     let payload_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let payload: serde_json::Value = serde_json::from_str(payload_text).unwrap();
     assert!(
@@ -394,8 +390,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
                        "arguments": {"call_id": call_id}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 8, Duration::from_secs(5))
-        .expect("rtp_stats response");
+    let resp =
+        read_response_with_id(&mut reader, 8, Duration::from_secs(5)).expect("rtp_stats response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
     assert!(body["streams"].is_array());
@@ -427,7 +423,12 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         .expect("tail_dialogs response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
-    assert!(body["dialogs"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+    assert!(
+        body["dialogs"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false)
+    );
     let next_cursor = body["next_cursor"].as_str().unwrap_or("").to_string();
     // tail again with the cursor — should produce an empty list
     send(
@@ -456,8 +457,8 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
             "params": {"name": "stats", "arguments": {}}
         }),
     );
-    let resp = read_response_with_id(&mut reader, 12, Duration::from_secs(5))
-        .expect("stats response");
+    let resp =
+        read_response_with_id(&mut reader, 12, Duration::from_secs(5)).expect("stats response");
     let body_text = resp["result"]["content"][0]["text"].as_str().unwrap();
     let body: serde_json::Value = serde_json::from_str(body_text).unwrap();
     assert!(body["dialog_count"].as_u64().unwrap_or(0) >= 1);

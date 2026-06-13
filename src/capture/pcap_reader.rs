@@ -577,7 +577,7 @@ mod tests {
     fn build_idb(link_type: u16, opts: &[u8]) -> Vec<u8> {
         // Fixed part: 8 (block header) + 4 (link_type + reserved) + 4 (snap_len)
         // + opts.len() + 4 (trailing length) — must be padded to 4-byte boundary
-        let opts_padded = if opts.len() % 4 != 0 {
+        let opts_padded = if !opts.len().is_multiple_of(4) {
             opts.len() + (4 - opts.len() % 4)
         } else {
             opts.len()
@@ -611,7 +611,7 @@ mod tests {
         orig_len: u32,
         pkt_data: &[u8],
     ) -> Vec<u8> {
-        let data_padded = if pkt_data.len() % 4 != 0 {
+        let data_padded = if !pkt_data.len().is_multiple_of(4) {
             pkt_data.len() + (4 - pkt_data.len() % 4)
         } else {
             pkt_data.len()

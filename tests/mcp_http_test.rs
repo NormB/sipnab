@@ -114,7 +114,11 @@ fn http_mcp_loopback_no_auth_initialize_succeeds() {
                    "clientInfo": {"name": "test", "version": "0"}}
     });
     let resp = ureq_post(&url, None, &payload);
-    assert_eq!(resp.status, 200, "initialize should succeed; body: {}", resp.body);
+    assert_eq!(
+        resp.status, 200,
+        "initialize should succeed; body: {}",
+        resp.body
+    );
 
     shutdown(child);
 }
@@ -122,8 +126,7 @@ fn http_mcp_loopback_no_auth_initialize_succeeds() {
 #[test]
 fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
     let token = "supersecret-test-token";
-    let (child, addr) = match spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token])
-    {
+    let (child, addr) = match spawn_http(&["--mcp-bind", "127.0.0.1:0", "--mcp-token", token]) {
         Some(p) => p,
         None => panic!("failed to start MCP HTTP server with token"),
     };
@@ -145,7 +148,11 @@ fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
 
     // Right token → 200
     let resp = ureq_post(&url, Some(token), &payload);
-    assert_eq!(resp.status, 200, "correct token must succeed; body: {}", resp.body);
+    assert_eq!(
+        resp.status, 200,
+        "correct token must succeed; body: {}",
+        resp.body
+    );
 
     shutdown(child);
 }
@@ -188,7 +195,9 @@ fn ureq_post(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> HttpR
     stream.write_all(req.as_bytes()).expect("write request");
 
     let mut response_bytes = Vec::new();
-    stream.read_to_end(&mut response_bytes).expect("read response");
+    stream
+        .read_to_end(&mut response_bytes)
+        .expect("read response");
     let s = String::from_utf8_lossy(&response_bytes).to_string();
     let mut parts = s.splitn(2, "\r\n\r\n");
     let head = parts.next().unwrap_or("");

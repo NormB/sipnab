@@ -61,20 +61,32 @@ fn readme_long_flags_exist_in_cli() {
     // means a deleted file fails the build, not silently skips.
     let docs: &[(&str, &str)] = &[
         ("README.md", include_str!("../README.md")),
-        ("docs/cli-reference.md", include_str!("../docs/cli-reference.md")),
+        (
+            "docs/cli-reference.md",
+            include_str!("../docs/cli-reference.md"),
+        ),
         ("docs/filter-dsl.md", include_str!("../docs/filter-dsl.md")),
         ("docs/install.md", include_str!("../docs/install.md")),
-        ("docs/mcp-overview.md", include_str!("../docs/mcp-overview.md")),
+        (
+            "docs/mcp-overview.md",
+            include_str!("../docs/mcp-overview.md"),
+        ),
         ("docs/mcp-setup.md", include_str!("../docs/mcp-setup.md")),
         ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
-        ("docs/output-formats.md", include_str!("../docs/output-formats.md")),
+        (
+            "docs/output-formats.md",
+            include_str!("../docs/output-formats.md"),
+        ),
         ("docs/examples.md", include_str!("../docs/examples.md")),
         (
             "docs/config-reference.md",
             include_str!("../docs/config-reference.md"),
         ),
         // Website documentation (Zola content) — same zero-drift contract.
-        ("website/cli.md", include_str!("../website/content/docs/cli.md")),
+        (
+            "website/cli.md",
+            include_str!("../website/content/docs/cli.md"),
+        ),
         (
             "website/cookbook.md",
             include_str!("../website/content/docs/cookbook.md"),
@@ -87,8 +99,14 @@ fn readme_long_flags_exist_in_cli() {
             "website/install.md",
             include_str!("../website/content/docs/install.md"),
         ),
-        ("website/api.md", include_str!("../website/content/docs/api.md")),
-        ("website/mcp.md", include_str!("../website/content/docs/mcp.md")),
+        (
+            "website/api.md",
+            include_str!("../website/content/docs/api.md"),
+        ),
+        (
+            "website/mcp.md",
+            include_str!("../website/content/docs/mcp.md"),
+        ),
         (
             "website/troubleshooting.md",
             include_str!("../website/content/docs/troubleshooting.md"),
@@ -101,7 +119,10 @@ fn readme_long_flags_exist_in_cli() {
             "website/keybindings.md",
             include_str!("../website/content/docs/keybindings.md"),
         ),
-        ("website/theme.md", include_str!("../website/content/docs/theme.md")),
+        (
+            "website/theme.md",
+            include_str!("../website/content/docs/theme.md"),
+        ),
         (
             "website/landing.md",
             include_str!("../website/content/_index.md"),

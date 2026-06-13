@@ -38,7 +38,9 @@ use super::shape::{HARD_LIMIT, resolve_limit};
 /// Holds the shared analysis state and the rmcp tool router.
 #[derive(Clone)]
 pub struct SipnabMcp {
+    /// Shared dialog store the read-only tools query.
     pub dialog_store: Arc<RwLock<DialogStore>>,
+    /// Shared RTP stream store the read-only tools query.
     pub stream_store: Arc<RwLock<StreamStore>>,
     /// Optional shared alert engine for `security_findings`. When None,
     /// the tool returns an empty list rather than erroring.
@@ -169,15 +171,21 @@ pub struct TailDialogsParams {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// One `search_messages` hit: the dialog and message that matched, with a snippet.
 pub struct SearchHit {
+    /// Call-ID of the dialog containing the matching message.
     pub call_id: String,
+    /// Zero-based index of the matching message within the dialog.
     pub message_index: usize,
+    /// Short excerpt of the matched text, for context.
     pub snippet: String,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// Response for `tail_dialogs`: a page of updated dialogs plus a continuation cursor.
 pub struct TailDialogsResponse {
+    /// Dialogs updated since the request cursor, oldest first.
     pub dialogs: Vec<DialogSummary>,
     /// Cursor to pass to the next call. Empty when no more updates exist
     /// at the moment.
@@ -190,11 +198,17 @@ pub struct TailDialogsResponse {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// Aggregate counts returned by the `stats` tool.
 pub struct StatsResponse {
+    /// Version of this response schema.
     pub schema_version: u32,
+    /// Number of dialogs currently tracked.
     pub dialog_count: usize,
+    /// Number of RTP streams currently tracked.
     pub stream_count: usize,
+    /// Streams not yet correlated to any dialog.
     pub orphaned_stream_count: usize,
+    /// Dialogs currently in an active (non-terminated) state.
     pub active_call_count: usize,
 }
 
@@ -213,10 +227,15 @@ pub struct SecurityFindingsParams {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
+/// A single security finding rendered for MCP clients.
 pub struct FindingJson {
+    /// Name of the detection rule that fired.
     pub rule_name: String,
+    /// Source IP associated with the finding.
     pub src_ip: String,
+    /// Human-readable detail describing the finding.
     pub detail: String,
+    /// RFC 3339 timestamp of when the finding was recorded.
     pub timestamp: String,
 }
 
@@ -226,13 +245,21 @@ pub struct FindingJson {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct DialogSummary {
+    /// Call-ID identifying the dialog.
     pub call_id: String,
+    /// Current dialog state (e.g. "Confirmed", "Terminated").
     pub state: String,
+    /// SIP method that initiated the dialog.
     pub method: String,
+    /// User portion of the From URI, if present.
     pub from_user: Option<String>,
+    /// User portion of the To URI, if present.
     pub to_user: Option<String>,
+    /// RFC 3339 timestamp of the first message.
     pub created_at: String,
+    /// RFC 3339 timestamp of the most recent message.
     pub updated_at: String,
+    /// Number of SIP messages in the dialog.
     pub message_count: usize,
 }
 
