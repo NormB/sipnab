@@ -4,7 +4,7 @@
 {% block description %}{{ section.description }}{% endblock description %}
 
 {% block head_extra %}
-<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=9">
+<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=10">
 {% endblock head_extra %}
 
 {% block content %}
@@ -13,14 +13,31 @@
   <!-- Drop zone (initial view) -->
   <div class="analyze-dropzone" id="dropzone">
     <div class="dropzone-inner">
+      <span class="dropzone-kicker">sipnab &middot; in-browser analyzer</span>
       <div class="dropzone-box">
-        <h1 class="dropzone-title">Drop a .pcap file here to analyze</h1>
-        <p class="dropzone-sub">or click to browse</p>
-        <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
-        <div class="dropzone-formats">Supports .pcap, .pcapng, .cap</div>
-        <div class="dropzone-privacy">
-          All processing in your browser -- nothing is uploaded
+        <div class="dropzone-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
+            <path d="M5 12V5a2 2 0 0 1 2-2h7l5 5v4"/>
+            <path d="M12 13v8"/>
+            <path d="m8.5 17.5 3.5 3.5 3.5-3.5"/>
+          </svg>
         </div>
+        <h1 class="dropzone-title">Drop a .pcap here to analyze</h1>
+        <p class="dropzone-sub">or <span class="dropzone-browse">click to browse</span></p>
+        <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+        <div class="dropzone-formats">
+          <span class="dropzone-fmt">.pcap</span>
+          <span class="dropzone-fmt">.pcapng</span>
+          <span class="dropzone-fmt">.cap</span>
+        </div>
+      </div>
+      <div class="dropzone-privacy">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6l7-3z"/>
+          <path d="m9 12 2 2 4-4"/>
+        </svg>
+        <span>All processing happens in your browser &mdash; nothing is uploaded</span>
       </div>
     </div>
   </div>
