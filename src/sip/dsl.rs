@@ -15,13 +15,13 @@
 
 use anyhow::{Result, bail};
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_while1},
     character::complete::{char, multispace0, multispace1},
     combinator::{map, opt, recognize},
     number::complete::double,
-    sequence::{preceded, tuple},
+    sequence::preceded,
 };
 
 use super::dialog::{DialogState, SipDialog};
@@ -274,7 +274,7 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     loop {
         let trimmed = remaining.trim_start();
         if let Ok((after_or, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("OR"), multispace1)(trimmed)
+            preceded(tag_no_case::<&str, &str, NomErr<'_>>("OR"), multispace1).parse(trimmed)
         {
             let (rest, right) = parse_and_expr(after_or)?;
             result = Expr::Or(Box::new(result), Box::new(right));
@@ -297,7 +297,7 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     loop {
         let trimmed = remaining.trim_start();
         if let Ok((after_and, _)) =
-            preceded(tag_no_case::<&str, &str, NomErr<'_>>("AND"), multispace1)(trimmed)
+            preceded(tag_no_case::<&str, &str, NomErr<'_>>("AND"), multispace1).parse(trimmed)
         {
             let (rest, right) = parse_not_expr(after_and)?;
             result = Expr::And(Box::new(result), Box::new(right));
@@ -316,7 +316,7 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     // Try "NOT" followed by whitespace
     if let Ok((after_not, _)) =
-        preceded(tag_no_case::<&str, &str, NomErr<'_>>("NOT"), multispace1)(input)
+        preceded(tag_no_case::<&str, &str, NomErr<'_>>("NOT"), multispace1).parse(input)
     {
         let (rest, inner) = parse_atom(after_not)?;
         return Ok((rest, Expr::Not(Box::new(inner))));
@@ -331,10 +331,10 @@ fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
     // Try parenthesized expression
     if input.starts_with('(') {
-        let (input, _) = char('(')(input)?;
+        let (input, _) = char('(').parse(input)?;
         let (input, expr) = parse_or_expr(input)?;
         let (input, _) = multispace0(input)?;
-        let (input, _) = char(')')(input)?;
+        let (input, _) = char(')').parse(input)?;
         return Ok((input, expr));
     }
 
@@ -356,13 +356,14 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 
 /// Parse a dotted field identifier.
 fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
-    let (rest, ident) = recognize(tuple((
+    let (rest, ident) = recognize((
         take_while1(|c: char| c.is_ascii_alphanumeric() || c == '_'),
         opt(preceded(
             char('.'),
             take_while1(|c: char| c.is_ascii_alphanumeric() || c == '_'),
         )),
-    )))(input)?;
+    ))
+    .parse(input)?;
 
     let field = match ident {
         "from.user" => Field::FromUser,
@@ -482,7 +483,8 @@ fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
         map(tag(">="), |_| Operator::Ge),
         map(tag("<"), |_| Operator::Lt),
         map(tag(">"), |_| Operator::Gt),
-    ))(input)
+    ))
+    .parse(input)
 }
 
 /// Parse a value literal (string, number, or boolean).
@@ -493,7 +495,7 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
     // Try boolean literals first
-    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("true")(input) {
+    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("true").parse(input) {
         // Ensure "true" is not a prefix of a longer identifier
         if rest.is_empty()
             || !rest
@@ -504,7 +506,7 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
             return Ok((rest, Value::Bool(true)));
         }
     }
-    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("false")(input)
+    if let Ok((rest, _)) = tag_no_case::<&str, &str, NomErr<'_>>("false").parse(input)
         && (rest.is_empty()
             || !rest
                 .chars()
