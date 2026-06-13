@@ -358,9 +358,11 @@ mod tests {
 
     #[test]
     fn histogram_buckets_are_cumulative() {
-        let mut metrics = PrometheusMetrics::default();
         // 5 observations: 0.3, 0.8, 1.5, 2.5, 4.0
-        metrics.pdd_histogram = vec![0.3, 0.8, 1.5, 2.5, 4.0];
+        let metrics = PrometheusMetrics {
+            pdd_histogram: vec![0.3, 0.8, 1.5, 2.5, 4.0],
+            ..Default::default()
+        };
         let output = format_metrics(&metrics);
 
         // Buckets for PDD: 0.5, 1.0, 2.0, 3.0, 5.0, 10.0
@@ -382,8 +384,10 @@ mod tests {
 
     #[test]
     fn histogram_sum_correct() {
-        let mut metrics = PrometheusMetrics::default();
-        metrics.pdd_histogram = vec![1.0, 2.0, 3.0];
+        let metrics = PrometheusMetrics {
+            pdd_histogram: vec![1.0, 2.0, 3.0],
+            ..Default::default()
+        };
         let output = format_metrics(&metrics);
 
         // Sum should be 6.0

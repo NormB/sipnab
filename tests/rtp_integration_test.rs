@@ -1561,13 +1561,12 @@ fn end_to_end_pcap_to_wav_export() {
         let caplen = pkt.data.len();
         let origlen = pkt.orig_len as usize;
         let packet = Packet::new(ts, pkt.data, caplen, origlen, None, link_type);
-        if let Ok(pp) = parse_packet(&packet) {
-            if sipnab::rtp::is_rtp_packet(&pp.payload) {
-                if let Ok(hdr) = parse_rtp_header(&pp.payload) {
-                    store.process_rtp(&pp, &hdr, ts);
-                    rtp_count += 1;
-                }
-            }
+        if let Ok(pp) = parse_packet(&packet)
+            && sipnab::rtp::is_rtp_packet(&pp.payload)
+            && let Ok(hdr) = parse_rtp_header(&pp.payload)
+        {
+            store.process_rtp(&pp, &hdr, ts);
+            rtp_count += 1;
         }
     }
 
@@ -1693,12 +1692,11 @@ fn wav_export_no_rtp_returns_error() {
         let caplen = pkt.data.len();
         let origlen = pkt.orig_len as usize;
         let packet = Packet::new(ts, pkt.data, caplen, origlen, None, link_type);
-        if let Ok(pp) = parse_packet(&packet) {
-            if sipnab::rtp::is_rtp_packet(&pp.payload) {
-                if let Ok(hdr) = parse_rtp_header(&pp.payload) {
-                    store.process_rtp(&pp, &hdr, ts);
-                }
-            }
+        if let Ok(pp) = parse_packet(&packet)
+            && sipnab::rtp::is_rtp_packet(&pp.payload)
+            && let Ok(hdr) = parse_rtp_header(&pp.payload)
+        {
+            store.process_rtp(&pp, &hdr, ts);
         }
     }
 

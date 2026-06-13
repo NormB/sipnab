@@ -290,7 +290,6 @@ fn fuzz_text_entry_points_no_panic() {
             let _ = sipnab::sip::dsl::FilterExpr::parse(s);
         }
     });
-
 }
 
 #[cfg(feature = "tls")]

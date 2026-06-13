@@ -55,6 +55,7 @@ pub mod tui;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
+/// Shared helpers for the test suite (fixtures and builders).
 #[cfg(test)]
 pub mod test_utils;
 

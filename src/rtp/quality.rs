@@ -8,6 +8,10 @@
 //! distinguish between random packet loss (tolerable) and bursty loss
 //! (perceptually severe at the same overall rate).
 
+// Index loops read more clearly than iterators in these numeric E-model and
+// burst/gap calculations, where the index itself is part of the arithmetic.
+#![allow(clippy::needless_range_loop)]
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Burst/gap analysis results following RFC 3611 concepts.

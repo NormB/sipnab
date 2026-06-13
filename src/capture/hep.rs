@@ -927,6 +927,7 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     /// Helper: build a minimal valid HEP v3 packet with the given fields.
+    #[allow(clippy::too_many_arguments)]
     fn make_hep_v3(
         src: IpAddr,
         dst: IpAddr,

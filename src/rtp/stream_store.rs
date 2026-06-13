@@ -257,12 +257,11 @@ impl StreamStore {
         if self.streams.len() >= self.max_streams
             && !self.streams.is_empty()
             && let Some((evicted, _)) = self.streams.shift_remove_index(0)
+            && let Some(keys) = self.ssrc_index.get_mut(&evicted.ssrc)
         {
-            if let Some(keys) = self.ssrc_index.get_mut(&evicted.ssrc) {
-                keys.retain(|k| k != &evicted);
-                if keys.is_empty() {
-                    self.ssrc_index.remove(&evicted.ssrc);
-                }
+            keys.retain(|k| k != &evicted);
+            if keys.is_empty() {
+                self.ssrc_index.remove(&evicted.ssrc);
             }
         }
     }

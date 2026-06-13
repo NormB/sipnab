@@ -108,10 +108,7 @@ fn batch_json_output_matches_batch_with_api_json_output() {
 
 /// Run sipnab with a wall-clock timeout. Sends SIGTERM first (graceful)
 /// to allow stdout flush; SIGKILLs as a last resort.
-fn run_sipnab_with_timeout(
-    args: &[&str],
-    timeout: std::time::Duration,
-) -> (String, String, i32) {
+fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (String, String, i32) {
     use std::io::Read;
 
     let binary = env!("CARGO_BIN_EXE_sipnab");
