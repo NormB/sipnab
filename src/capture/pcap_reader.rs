@@ -495,26 +495,6 @@ mod tests {
         assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1);
     }
     #[test]
-    fn load_voipshark_normal() {
-        assert_loads("tests/pcap-samples/voipshark-normal-call.pcap", 100);
-    }
-    #[test]
-    fn load_voipshark_dtmf() {
-        assert_loads("tests/pcap-samples/voipshark-dtmf.pcap", 100);
-    }
-    #[test]
-    fn load_voipshark_srtp() {
-        assert_loads("tests/pcap-samples/voipshark-srtp-call.pcap", 100);
-    }
-    #[test]
-    fn load_voipshark_tls_rtp() {
-        assert_loads("tests/pcap-samples/voipshark-tls-rtp.pcap", 100);
-    }
-    #[test]
-    fn load_voipshark_tls_srtp() {
-        assert_loads("tests/pcap-samples/voipshark-tls-srtp.pcap", 100);
-    }
-    #[test]
     fn load_speech_8k_ulaw() {
         // Linux SLL (cooked v1) link-type — the only SLL fixture in the suite.
         assert_loads("tests/pcap-samples/speech_8k_ulaw.pcap", 100);

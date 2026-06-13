@@ -29,7 +29,7 @@ Enter
 Type "# Find problematic calls with quality issues"
 Enter
 Sleep 800ms
-Type "sipnab -N -I tests/pcap-samples/voipshark-normal-call.pcap --problems 2>/dev/null | head -12"
+Type "sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --problems 2>/dev/null | head -12"
 Enter
 Sleep 4s
 
@@ -39,7 +39,7 @@ Enter
 Type "# Generate a detailed call report"
 Enter
 Sleep 800ms
-Type "sipnab -N -I tests/pcap-samples/voipshark-dtmf.pcap --report 2>/dev/null | head -20"
+Type "sipnab -N -I tests/pcap-samples/DTMFsipinfo.pcap --report 2>/dev/null | head -20"
 Enter
 Sleep 5s
 

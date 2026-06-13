@@ -16,7 +16,7 @@ Enter
 Sleep 500ms
 Show
 
-Type "sipnab -I tests/pcap-samples/voipshark-normal-call.pcap"
+Type "sipnab -I tests/pcap-samples/sip-rtp-g711.pcap"
 Enter
 Sleep 3s
 
