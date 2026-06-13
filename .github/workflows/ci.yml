@@ -10,6 +10,15 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -Dwarnings
 
+# Least privilege: CI only needs to read the repository contents.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Check (${{ matrix.os }})
@@ -24,7 +33,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: clippy, rustfmt
 
@@ -81,7 +90,7 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libpcap-dev libasound2-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
 
       - uses: actions/cache@v4
         with:
@@ -118,7 +127,7 @@ jobs:
       - name: Install libpcap
         run: sudo apt-get update && sudo apt-get install -y libpcap-dev
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@v2
