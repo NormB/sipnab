@@ -1,0 +1,136 @@
+name: Quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Test coverage via cargo-llvm-cov.
+  # Self-contained: prints a summary to the job summary and uploads an HTML
+  # report artifact (no account needed). Also uploads to Codecov *if* a
+  # CODECOV_TOKEN secret is configured (free for public/OSS repos) — the step
+  # is skipped cleanly when the secret is absent, so the job stays green.
+  # ---------------------------------------------------------------------------
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: llvm-tools-preview
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-coverage-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-coverage-
+            ${{ runner.os }}-cargo-
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Collect coverage
+        run: cargo llvm-cov --all-features --workspace --no-report
+
+      - name: Coverage summary
+        run: |
+          {
+            echo '### Test coverage'
+            echo '```'
+            cargo llvm-cov report --summary-only
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate lcov + HTML report
+        run: |
+          cargo llvm-cov report --lcov --output-path lcov.info
+          cargo llvm-cov report --html
+
+      - name: Upload HTML coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: target/llvm-cov/html
+          if-no-files-found: error
+
+      - name: Upload to Codecov
+        if: ${{ env.CODECOV_TOKEN != '' }}
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          token: ${{ env.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  # ---------------------------------------------------------------------------
+  # Surface Clippy lints as GitHub Code Scanning alerts (SARIF).
+  # CI already gates on `clippy -Dwarnings`; this makes the findings visible
+  # inline on PRs and in the Security tab. Lints here are reported, not gated,
+  # so this job does not fail the build.
+  # ---------------------------------------------------------------------------
+  clippy-sarif:
+    name: Clippy → Code Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
+
+      - uses: dtolnay/rust-toolchain@1.94.1
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-clippy-sarif-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-clippy-sarif-
+            ${{ runner.os }}-cargo-
+
+      - name: Install clippy-sarif tooling
+        uses: taiki-e/install-action@v2
+        with:
+          tool: clippy-sarif,sarif-fmt
+
+      - name: Run Clippy (SARIF)
+        # Report-only: collect lints as JSON->SARIF without -Dwarnings so a lint
+        # does not fail this job (CI's `check` job already enforces the gate).
+        run: |
+          cargo clippy --all-features --all-targets --message-format=json \
+            | clippy-sarif | tee clippy.sarif | sarif-fmt
+        continue-on-error: true
+
+      - name: Upload SARIF to Code Scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: clippy.sarif
+          category: clippy
