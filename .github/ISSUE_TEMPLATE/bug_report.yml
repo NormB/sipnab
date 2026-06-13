@@ -1,0 +1,64 @@
+name: Bug report
+description: Report incorrect behavior, a crash, or a wrong analysis result.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill in as much as you can.
+        If the issue involves a capture, a small redacted pcap that reproduces it is the single most helpful thing you can attach.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you observe, and what did you expect instead?
+      placeholder: "sipnab reported MOS 1.0 for a clean call; expected ~4.4."
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: The exact command line and inputs.
+      placeholder: |
+        1. sipnab -N -I capture.pcap --json
+        2. Observe the `mos` field for stream X
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: sipnab version
+      description: Output of `sipnab --version`.
+      placeholder: "sipnab 0.4.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - TUI
+        - CLI (-N)
+        - JSON
+        - MCP server
+        - Live capture
+        - Reading a pcap
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: OS / platform
+      placeholder: "Debian 13 x86_64 / macOS 14 arm64"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste any error output. Run with `-vv` for more detail if useful.
+      render: shell
+    validations:
+      required: false
