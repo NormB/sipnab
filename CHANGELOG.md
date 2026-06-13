@@ -4,6 +4,16 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-13
+
+### Added
+- Debian/Ubuntu `.deb` packages for amd64 and arm64, plus fully-static musl tarballs for both architectures.
+- Build-time audio include/exclude option for release binaries (gnu/macOS ship audio; musl stays static, no-audio).
+- Standards-based quality metrics section on the website (ITU-T G.107 / RFC 3550).
+
+### Fixed
+- Release pipeline now builds all six targets (Linux gnu/musl + macOS, x86_64/aarch64), including ALSA build deps and aarch64-musl static libpcap.
+
 ## [0.4.1] - 2026-06-12
 
 (Version 0.4.0 was skipped: its tag name was consumed and then
