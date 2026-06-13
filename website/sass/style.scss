@@ -845,6 +845,84 @@ img { max-width: 100%; height: auto; }
 }
 
 // =============================================================================
+// Standards-based quality metrics
+// =============================================================================
+
+.metrics {
+  padding: 4rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+.metrics-inner {
+  max-width: $max-width;
+  margin: 0 auto;
+
+  h2 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    color: $text;
+    margin-bottom: 0.75rem;
+    text-align: center;
+  }
+}
+
+.metrics-sub {
+  max-width: 640px;
+  margin: 0 auto 2.5rem;
+  text-align: center;
+  color: $text-dim;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.25rem;
+}
+
+.metric-card {
+  padding: 1.5rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  transition: border-color 0.2s ease, transform 0.2s ease;
+
+  &:hover {
+    border-color: $border-light;
+    transform: translateY(-2px);
+  }
+}
+
+.metric-std {
+  display: inline-block;
+  font-family: $font-mono;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: $accent;
+  background: $accent-glow;
+  border: 1px solid rgba($accent, 0.25);
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  margin-bottom: 0.85rem;
+}
+
+.metric-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: $text;
+  margin: 0 0 0.4rem;
+}
+
+.metric-desc {
+  font-size: 0.875rem;
+  color: $text-dim;
+  line-height: 1.55;
+  margin: 0;
+}
+
+// =============================================================================
 // Doc layout (single-column + floating TOC)
 // =============================================================================
 
@@ -1302,6 +1380,7 @@ img { max-width: 100%; height: auto; }
   .doc-toc { display: none; }
   .doc-layout { max-width: $doc-width; }
   .arch-grid { grid-template-columns: repeat(3, 1fr); }
+  .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
 @media (max-width: 768px) {
@@ -1333,6 +1412,7 @@ img { max-width: 100%; height: auto; }
 
   .features-inner { grid-template-columns: 1fr; gap: 1rem; }
   .arch-grid { grid-template-columns: repeat(2, 1fr); }
+  .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 
   .doc-layout { padding: 1.5rem 1rem 3rem; }
   .doc-content {
@@ -1358,6 +1438,7 @@ img { max-width: 100%; height: auto; }
   .hero-title { font-size: 2.25rem; }
   .hero-actions { flex-direction: column; align-items: center; }
   .arch-grid { grid-template-columns: 1fr; }
+  .metrics-grid { grid-template-columns: 1fr; }
   .arch-stat { font-size: 2rem; }
   .version-badge { font-size: 0.7rem; }
 }

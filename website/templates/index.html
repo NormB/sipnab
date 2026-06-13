@@ -134,7 +134,7 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
         </thead>
         <tbody>
           <tr><td>Interactive TUI + CLI</td><td>Both modes in one binary. TUI for interactive analysis, CLI for batch/scripting.</td></tr>
-          <tr><td>RTP quality analysis</td><td>Jitter, packet loss, MOS (ITU-T G.107 E-model) per stream. RTCP XR parsing.</td></tr>
+          <tr><td>RTP quality analysis</td><td>Jitter, packet loss, estimated MOS (ITU-T G.107 E-model) per stream. RTCP XR (RFC 3611) parsing.</td></tr>
           <tr><td>VoIP diagnosis</td><td>One-way audio detection, NAT mismatch, SDP timeline, PDD measurement.</td></tr>
           <tr><td>Filter DSL</td><td>30 fields, 7 operators, boolean combinators. Named aliases for common queries.</td></tr>
           <tr><td>Security</td><td>Scanner detection, toll fraud, digest leak, registration flood. Fail2ban output.</td></tr>
@@ -147,6 +147,46 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
           <tr><td>Built in Rust</td><td>Memory-safe by construction. 1,407 automated tests. 5 MB static binary.</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</section>
+
+<!-- Standards-based quality metrics -->
+<section class="metrics" id="metrics">
+  <div class="metrics-inner">
+    <h2>Standards-Based Quality Metrics</h2>
+    <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; grounded in the relevant ITU-T and IETF standards. Every figure is computed from the packets, never guessed.</p>
+    <div class="metrics-grid">
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">ITU-T G.107</span>
+        <h3 class="metric-name">MOS</h3>
+        <p class="metric-desc">Estimated Mean Opinion Score (1&ndash;5). The R-factor is mapped to MOS using the G.107 Annex&nbsp;B formula.</p>
+      </div>
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">ITU-T G.107</span>
+        <h3 class="metric-name">R-factor</h3>
+        <p class="metric-desc">E-model transmission rating (0&ndash;100), estimated from codec, jitter, and packet-loss impairments.</p>
+      </div>
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">RFC 3550</span>
+        <h3 class="metric-name">Jitter</h3>
+        <p class="metric-desc">RTP interarrival jitter, tracked per stream as defined by the RTP specification.</p>
+      </div>
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">RFC 3550</span>
+        <h3 class="metric-name">Packet Loss</h3>
+        <p class="metric-desc">Lost vs. expected RTP packets, derived from sequence-number gaps per stream.</p>
+      </div>
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">RFC 3611</span>
+        <h3 class="metric-name">Burst / Gap Loss</h3>
+        <p class="metric-desc">RFC&nbsp;3611-style burst/gap analysis separates bursty loss from tolerable random loss.</p>
+      </div>
+      <div class="metric-card fade-in-up">
+        <span class="metric-std">RFC 3611</span>
+        <h3 class="metric-name">RTCP XR</h3>
+        <p class="metric-desc">Parses RTCP Extended Reports (PT&nbsp;207), including the VoIP Metrics report block.</p>
+      </div>
     </div>
   </div>
 </section>
