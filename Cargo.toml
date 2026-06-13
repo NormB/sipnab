@@ -16,7 +16,7 @@ exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-sa
 [dependencies]
 # Phase 1: Capture & core
 pcap = { version = "2", optional = true }
-etherparse = "0.16"
+etherparse = "0.20"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
