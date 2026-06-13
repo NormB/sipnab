@@ -531,11 +531,14 @@ impl Config {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "<inline>".to_string());
 
-        // Parse into generic TOML value to walk keys
-        let value: toml::Value = content.parse().map_err(|e| crate::Error::ConfigParse {
-            path: display.clone(),
-            reason: format!("{e}"),
-        })?;
+        // Parse into a generic TOML value to walk keys. Use `from_str` (full
+        // document) rather than `str::parse`, which in toml 1.x parses a single
+        // value expression (so `[capture]` would be read as an array).
+        let value: toml::Value =
+            toml::from_str(content).map_err(|e| crate::Error::ConfigParse {
+                path: display.clone(),
+                reason: format!("{e}"),
+            })?;
 
         warn_unknown_keys(&value);
 
