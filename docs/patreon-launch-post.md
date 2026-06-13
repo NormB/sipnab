@@ -33,3 +33,7 @@ project independent.
 👉 **Support here on Patreon** to help shape the roadmap.
 
 Thank you for being here at the start. 🙏
+
+---
+
+_sipnab is dual-licensed under MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger._
