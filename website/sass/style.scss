@@ -1468,3 +1468,39 @@ img { max-width: 100%; height: auto; }
   .arch-stat { font-size: 2rem; }
   .version-badge { font-size: 0.7rem; }
 }
+
+
+// Download page
+.download { max-width: $max-width; margin: 0 auto; padding: 4rem 1.5rem 5rem; }
+.download-head { text-align: center; margin-bottom: 3rem; }
+.download-head h1 { font-size: 2.5rem; margin: 0; }
+.download-sub { color: $text-dim; max-width: 640px; margin: 1rem auto 0; line-height: 1.6; }
+.download-sub a, .download-foot a, .dl-alt a, .dl-files a { color: $link; }
+.download-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+.dl-card {
+  background: $surface; border: 1px solid $border; border-top: 3px solid $border-light;
+  border-radius: 10px; padding: 1.5rem;
+  h2 { font-size: 1.2rem; margin: 0; }
+  p { color: $text-dim; font-size: 0.9rem; margin: 0.5rem 0 0; }
+}
+.dl-card--amber { border-top-color: $accent; }
+.dl-card--green { border-top-color: $code-green; }
+.dl-card--blue  { border-top-color: $link; }
+.dl-card-head { display: flex; align-items: baseline; justify-content: space-between; gap: 0.5rem; }
+.dl-tag { font-family: $font-mono; font-size: 0.72rem; color: $text-dim; white-space: nowrap; }
+.dl-cmd {
+  background: $bg; border: 1px solid $border; border-radius: 6px; padding: 0.75rem 1rem;
+  overflow-x: auto; margin: 1rem 0 0;
+  code { font-family: $font-mono; font-size: 0.82rem; color: $code-green; white-space: pre; background: none; padding: 0; }
+}
+.dl-alt { font-size: 0.85rem; margin-top: 1rem !important; }
+.dl-files {
+  list-style: none; padding: 0; margin: 0.75rem 0 0;
+  li { display: flex; justify-content: space-between; align-items: center; padding: 0.5rem 0;
+       border-bottom: 1px solid $border; font-family: $font-mono; font-size: 0.82rem; }
+  li:last-child { border-bottom: none; }
+  a { word-break: break-all; }
+  span { color: $text-dim; font-size: 0.72rem; margin-left: 1rem; white-space: nowrap; }
+}
+.download-foot { text-align: center; color: $text-dim; margin-top: 3rem; font-size: 0.9rem; line-height: 1.7; }
+@media (max-width: 600px) { .download-grid { grid-template-columns: 1fr; } }
