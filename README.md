@@ -1,5 +1,7 @@
 # sipnab
 
+[![CI](https://github.com/NormB/sipnab/actions/workflows/ci.yml/badge.svg)](https://github.com/NormB/sipnab/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/NormB/sipnab/graph/badge.svg)](https://codecov.io/gh/NormB/sipnab)
 [![Patreon](https://img.shields.io/badge/Patreon-support-f96854?logo=patreon&logoColor=white)](https://www.patreon.com/c/NormB975)
 [![Sponsor](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/NormB)
 
