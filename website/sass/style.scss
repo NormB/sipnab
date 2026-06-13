@@ -1771,7 +1771,8 @@ input:focus-visible,
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
-@media (max-width: 768px) {
+// Collapse the (wide) nav into the hamburger before it can clip the right-side actions.
+@media (max-width: 1200px) {
   .nav-links {
     display: none;
     position: absolute;
@@ -1794,6 +1795,9 @@ input:focus-visible,
 
   .nav-toggle { display: flex; }
 
+}
+
+@media (max-width: 768px) {
   .hero { padding: 4rem 1.25rem 2rem; }
 
   // Tighter vertical rhythm on small screens (sections use 5.5rem on desktop).
