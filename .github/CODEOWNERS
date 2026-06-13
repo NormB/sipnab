@@ -1,0 +1,9 @@
+# Code owners for sipnab.
+# These owners are automatically requested for review on PRs that touch
+# matching paths, and (with "Require review from Code Owners" enabled on the
+# protected branch) their approval is required before merge.
+#
+# Syntax: https://docs.github.com/articles/about-code-owners
+
+# Default owner for everything in the repository.
+*       @NormB
