@@ -10,6 +10,14 @@ on:
         required: false
         default: 'true'
         type: boolean
+      audio:
+        description: 'Include the audio feature (ALSA/rodio) in gnu & macOS builds'
+        required: false
+        default: 'include'
+        type: choice
+        options:
+          - include
+          - exclude
 
 permissions:
   contents: write
@@ -56,17 +64,49 @@ jobs:
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Install libpcap (native Linux)
+      - name: Install libpcap + ALSA (native Linux)
         if: runner.os == 'Linux' && !matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libasound2-dev
+
+      - name: Compute feature set
+        id: features
+        shell: bash
+        run: |
+          # No-audio set = "full minus audio". musl is ALWAYS no-audio (static
+          # musl + ALSA is impractical). For gnu/macOS, audio is toggled by the
+          # workflow_dispatch `audio` input; tag pushes have no inputs, so an
+          # empty/missing value is treated as "include".
+          noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"
+          audio_input="${{ inputs.audio }}"
+          [ -z "$audio_input" ] && audio_input="include"
+
+          case "${{ matrix.target }}" in
+            *-linux-musl)
+              features="$noaudio_set"
+              suffix=""
+              ;;
+            *)
+              if [ "$audio_input" = "exclude" ]; then
+                features="$noaudio_set"
+                suffix="-noaudio"
+              else
+                features="full"
+                suffix=""
+              fi
+              ;;
+          esac
+
+          echo "features=$features" >> "$GITHUB_OUTPUT"
+          echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
+          echo "Target ${{ matrix.target }} -> features=$features suffix='$suffix'"
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} --features full --bin sipnab
+        run: cross build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       - name: Build (native)
         if: '!matrix.cross'
-        run: cargo build --release --target ${{ matrix.target }} --features full --bin sipnab
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
 
       - name: Strip binary
         run: strip "target/${{ matrix.target }}/release/sipnab" || true
@@ -76,7 +116,7 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
-          stage="sipnab-${version}-${{ matrix.target }}"
+          stage="sipnab-${version}-${{ matrix.target }}${{ steps.features.outputs.suffix }}"
           mkdir -p "dist/${stage}"
           cp "target/${{ matrix.target }}/release/sipnab" "dist/${stage}/"
           cp README.md LICENSE-MIT LICENSE-APACHE "dist/${stage}/"
@@ -102,12 +142,13 @@ jobs:
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
             bash contrib/deb/build-deb.sh "$version" "$deb_arch"
           mkdir -p dist
-          mv "sipnab_${version}_${deb_arch}.deb" dist/
+          suffix="${{ steps.features.outputs.suffix }}"
+          mv "sipnab_${version}_${deb_arch}.deb" "dist/sipnab_${version}_${deb_arch}${suffix}.deb"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sipnab-${{ matrix.target }}
+          name: sipnab-${{ matrix.target }}${{ steps.features.outputs.suffix }}
           path: dist/
 
   release:
