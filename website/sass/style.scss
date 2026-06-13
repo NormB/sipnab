@@ -344,6 +344,14 @@ img { max-width: 100%; height: auto; }
   margin-bottom: 0.75rem;
 }
 
+// Inline reference to a standards document (e.g. "SIP", "RTP" -> RFC).
+// Subtle in prose: inherits color, dotted underline, accent on hover.
+.std-ref {
+  color: inherit;
+  border-bottom: 1px dotted $text-dim;
+  &:hover { color: $accent; border-bottom-color: $accent; }
+}
+
 .hero-sub {
   font-size: 1.05rem;
   color: $text-dim;
@@ -906,6 +914,14 @@ img { max-width: 100%; height: auto; }
   border-radius: 999px;
   padding: 0.15rem 0.6rem;
   margin-bottom: 0.85rem;
+  // Now a link to the standard's document; keep the badge look, brighten on hover.
+  text-decoration: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  &:hover {
+    color: $accent;
+    background: rgba($accent, 0.22);
+    border-color: rgba($accent, 0.5);
+  }
 }
 
 .metric-name {
