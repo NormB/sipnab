@@ -57,7 +57,7 @@ zeroize = { version = "1", features = ["derive"], optional = true }
 ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
 aes = { version = "0.8", optional = true }
-cbc = { version = "0.1", features = ["alloc"], optional = true }
+cbc = { version = "0.2", features = ["alloc"], optional = true }
 
 # Audio playback (feature-gated)
 rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
