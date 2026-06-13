@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Download -- {{ config.title }}{% endblock title %}
+{% block og_title %}Download sipnab{% endblock og_title %}
+{% block description %}Download sipnab {{ config.extra.version }} -- macOS (Homebrew), Debian/Ubuntu .deb, and static Linux binaries for x86-64 and ARM64.{% endblock description %}
+
+{% block content %}
+{% set v = config.extra.version %}
+{% set rel = config.extra.github_url ~ "/releases/download/v" ~ v %}
+<section class="download">
+  <div class="download-inner">
+    <header class="download-head">
+      <h1>Download <span class="version-badge">v{{ v }}</span></h1>
+      <p class="download-sub">One binary, one dependency (libpcap). Every build is produced by CI and checksummed. Pick your platform, or browse the <a href="{{ config.extra.github_url }}/releases/latest">full release</a>.</p>
+    </header>
+
+    <div class="download-grid">
+
+      <article class="dl-card dl-card--amber">
+        <div class="dl-card-head"><h2>macOS</h2><span class="dl-tag">Intel &amp; Apple Silicon</span></div>
+        <p>Install with Homebrew &mdash; recommended.</p>
+        <pre class="dl-cmd"><code>brew install NormB/tap/sipnab</code></pre>
+        <p class="dl-alt">Or a binary tarball:
+          <a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz">Apple&nbsp;Silicon</a> &middot;
+          <a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz">Intel</a>
+        </p>
+      </article>
+
+      <article class="dl-card dl-card--green">
+        <div class="dl-card-head"><h2>Debian / Ubuntu</h2><span class="dl-tag">.deb &middot; x86-64 &amp; ARM64</span></div>
+        <ul class="dl-files">
+          <li><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb">sipnab_{{ v }}_amd64.deb</a><span>x86-64</span></li>
+          <li><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb">sipnab_{{ v }}_arm64.deb</a><span>ARM64</span></li>
+        </ul>
+        <pre class="dl-cmd"><code>sudo apt install ./sipnab_{{ v }}_amd64.deb</code></pre>
+      </article>
+
+      <article class="dl-card dl-card--blue">
+        <div class="dl-card-head"><h2>Linux &mdash; static</h2><span class="dl-tag">musl &middot; no dependencies</span></div>
+        <p>Self-contained; runs on any distro.</p>
+        <ul class="dl-files">
+          <li><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">sipnab-{{ v }}-x86_64-musl.tar.gz</a><span>x86-64</span></li>
+          <li><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz">sipnab-{{ v }}-aarch64-musl.tar.gz</a><span>ARM64</span></li>
+        </ul>
+      </article>
+
+      <article class="dl-card">
+        <div class="dl-card-head"><h2>Linux &mdash; glibc</h2><span class="dl-tag">dynamic &middot; needs libpcap</span></div>
+        <ul class="dl-files">
+          <li><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">sipnab-{{ v }}-x86_64-gnu.tar.gz</a><span>x86-64</span></li>
+          <li><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz">sipnab-{{ v }}-aarch64-gnu.tar.gz</a><span>ARM64</span></li>
+        </ul>
+      </article>
+
+      <article class="dl-card">
+        <div class="dl-card-head"><h2>From source</h2><span class="dl-tag">Rust 1.92+</span></div>
+        <pre class="dl-cmd"><code>git clone {{ config.extra.github_url }}.git
+cd sipnab &amp;&amp; cargo build --release --features full</code></pre>
+      </article>
+
+    </div>
+
+    <p class="download-foot">
+      Verify downloads against <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a>.
+      Need setup help? See the <a href="{{ get_url(path='@/docs/install.md') }}">install guide</a>.
+    </p>
+  </div>
+</section>
+{% endblock content %}
