@@ -1008,106 +1008,208 @@ input:focus-visible,
 // Doc layout (single-column + floating TOC)
 // =============================================================================
 
+// =============================================================================
+// Documentation
+// =============================================================================
+
 .doc-layout {
   max-width: $max-width;
   margin: 0 auto;
-  padding: 2rem 1.5rem 4rem;
-  display: flex;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  gap: 3rem;
+  padding: 2.5rem 1.5rem 5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) $toc-width;
+  align-items: start;
+  gap: 3.5rem;
 }
 
 .doc-content {
-  flex: 1;
   min-width: 0;
   max-width: $doc-width;
-  overflow: hidden;
+  font-size: 1rem;
 
   // Heading anchors: offset for sticky nav
   h1, h2, h3, h4 {
-    scroll-margin-top: 80px;
+    scroll-margin-top: calc(#{$nav-height} + 1.25rem);
+  }
+
+  // -- Document header --
+  .doc-header {
+    margin-bottom: 2.5rem;
+    padding-bottom: 1.75rem;
+    border-bottom: 1px solid $border;
+  }
+
+  .doc-kicker {
+    font-family: $font-mono;
+    font-size: 0.72rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: $accent;
+    margin: 0 0 0.6rem;
+  }
+
+  .doc-lead {
+    margin: 0.9rem 0 0;
+    max-width: 64ch;
+    font-size: 1.075rem;
+    line-height: 1.6;
+    color: $text-dim;
+  }
+
+  .doc-header h1 { margin: 0; }
+
+  // -- Body measure --
+  .doc-body {
+    p, ul, ol, blockquote, table, .table-wrapper {
+      max-width: 70ch;
+    }
   }
 
   // kbd styling for keybindings
   kbd {
     display: inline-block;
     font-family: $font-mono;
-    font-size: 0.8em;
+    font-size: 0.78em;
     background: $surface-2;
     color: $text;
     border: 1px solid $border-light;
     border-bottom-width: 2px;
-    border-radius: 4px;
-    padding: 0.1em 0.45em;
+    border-radius: 5px;
+    padding: 0.12em 0.5em;
     line-height: 1.4;
+    white-space: nowrap;
   }
 
+  // -- Headings --
   h1 {
-    font-size: 2rem;
+    font-size: clamp(1.9rem, 1.4rem + 1.8vw, 2.4rem);
     font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    line-height: 1.2;
+    color: lighten($text, 6%);
+    line-height: 1.15;
+    letter-spacing: -0.02em;
   }
 
   h2 {
-    font-size: 1.35rem;
+    font-size: 1.5rem;
     font-weight: 700;
-    color: $text;
-    margin: 2.5rem 0 1rem;
-    padding-bottom: 0.4rem;
+    color: lighten($text, 6%);
+    line-height: 1.25;
+    letter-spacing: -0.01em;
+    margin: 3rem 0 1.1rem;
+    padding-bottom: 0.5rem;
     border-bottom: 1px solid $border;
   }
 
   h3 {
-    font-size: 1.1rem;
+    font-size: 1.2rem;
     font-weight: 600;
-    color: $text;
-    margin: 2rem 0 0.75rem;
+    color: lighten($text, 4%);
+    line-height: 1.3;
+    margin: 2.25rem 0 0.85rem;
   }
 
   h4 {
-    font-size: 0.95rem;
+    font-size: 1rem;
     font-weight: 600;
     color: $text;
-    margin: 1.5rem 0 0.5rem;
+    margin: 1.75rem 0 0.6rem;
+  }
+
+  // Anchor links inside headings (Zola inserts these when configured)
+  h2 a, h3 a, h4 a {
+    color: inherit;
+    &:hover { color: $accent; }
   }
 
   p {
-    margin-bottom: 1rem;
+    margin-bottom: 1.15rem;
+    line-height: 1.75;
   }
 
-  ul, ol {
-    margin-bottom: 1rem;
-    padding-left: 1.5rem;
-
-    li {
-      margin-bottom: 0.25rem;
+  a {
+    color: $link;
+    text-decoration: none;
+    border-bottom: 1px solid rgba($link, 0.28);
+    transition: color 0.15s ease, border-color 0.15s ease;
+    &:hover {
+      color: lighten($link, 10%);
+      border-bottom-color: rgba($link, 0.7);
     }
   }
 
-  // Inline code
-  code {
-    font-family: $font-mono;
-    font-size: 0.85em;
-    background: $surface;
-    color: $code-green;
-    padding: 0.15em 0.4em;
-    border-radius: 4px;
-    border: 1px solid $border;
+  ul, ol {
+    margin-bottom: 1.15rem;
+    padding-left: 1.4rem;
+    line-height: 1.75;
+
+    li {
+      margin-bottom: 0.4rem;
+      padding-left: 0.25rem;
+
+      &::marker { color: $text-dim; }
+    }
+
+    ul, ol {
+      margin: 0.4rem 0 0.5rem;
+    }
   }
 
-  // Code blocks
+  ul li::marker { color: $border-light; }
+
+  // -- Inline code --
+  code {
+    font-family: $font-mono;
+    font-size: 0.84em;
+    background: rgba($code-green, 0.08);
+    color: $code-green;
+    padding: 0.16em 0.42em;
+    border-radius: 5px;
+    border: 1px solid rgba($code-green, 0.16);
+    word-break: break-word;
+  }
+
+  a code {
+    color: inherit;
+    background: rgba($link, 0.1);
+    border-color: rgba($link, 0.18);
+  }
+
+  // -- Code blocks --
   pre {
-    background: $surface;
+    position: relative;
+    background: $bg;
     border: 1px solid $border;
-    border-radius: 8px;
-    padding: 1rem 1.25rem;
+    border-radius: 10px;
+    padding: 1.1rem 1.25rem;
     overflow-x: auto;
-    margin-bottom: 1.5rem;
-    font-size: 0.85rem;
-    line-height: 1.6;
+    margin: 0 0 1.6rem;
+    font-size: 0.86rem;
+    line-height: 1.7;
+    -webkit-overflow-scrolling: touch;
+    tab-size: 2;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+
+    // Language badge from Zola's data-lang
+    &[data-lang]::before {
+      content: attr(data-lang);
+      position: absolute;
+      top: 0;
+      right: 0;
+      font-family: $font-mono;
+      font-size: 0.66rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: $text-dim;
+      background: $surface;
+      border-left: 1px solid $border;
+      border-bottom: 1px solid $border;
+      border-radius: 0 10px 0 8px;
+      padding: 0.25rem 0.65rem;
+      pointer-events: none;
+    }
+
+    &[data-lang="text"]::before,
+    &[data-lang=""]::before { content: none; }
 
     code {
       background: none;
@@ -1115,43 +1217,68 @@ input:focus-visible,
       padding: 0;
       color: $text;
       font-size: inherit;
+      word-break: normal;
+      // Ensure ayu-dark token spans (when present) keep their colors
+      span { background: transparent !important; }
     }
+
+    // Custom scrollbar
+    &::-webkit-scrollbar { height: 9px; }
+    &::-webkit-scrollbar-track { background: transparent; }
+    &::-webkit-scrollbar-thumb {
+      background: $border-light;
+      border-radius: 6px;
+    }
+    &::-webkit-scrollbar-thumb:hover { background: lighten($border-light, 10%); }
   }
 
-  // Tables
+  // -- Tables --
   table {
     width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 1.5rem;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin-bottom: 1.6rem;
     font-size: 0.875rem;
-    display: block;
-    overflow-x: auto;
+    line-height: 1.6;
+    border: 1px solid $border;
+    border-radius: 10px;
+    overflow: hidden;
 
-    th, td {
-      padding: 0.6rem 0.75rem;
-      text-align: left;
-      border: 1px solid $border;
+    thead th {
+      font-weight: 600;
+      color: lighten($text, 6%);
+      background: $surface;
+      white-space: nowrap;
     }
 
-    th {
-      font-weight: 600;
-      color: $text;
-      background: darken($surface, 2%);
+    th, td {
+      padding: 0.65rem 0.9rem;
+      text-align: left;
+      border-bottom: 1px solid $border;
+      border-right: 1px solid $border;
+      vertical-align: top;
+
+      &:last-child { border-right: none; }
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    tbody tr {
+      transition: background 0.12s ease;
+      &:hover { background: rgba($surface, 0.5); }
     }
 
     td {
       color: $text-dim;
-
-      code {
-        font-size: 0.8em;
-      }
+      code { font-size: 0.82em; white-space: nowrap; }
     }
   }
 
-  // Overflow wrapper for wide tables
+  // Overflow wrapper for wide tables (scrolls without breaking radius)
   .table-wrapper {
     overflow-x: auto;
-    margin-bottom: 1.5rem;
+    margin-bottom: 1.6rem;
+    border-radius: 10px;
     -webkit-overflow-scrolling: touch;
 
     table {
@@ -1159,41 +1286,56 @@ input:focus-visible,
     }
   }
 
-  // Blockquote
+  // -- Blockquote --
   blockquote {
     border-left: 3px solid $accent;
-    padding: 0.5rem 1rem;
-    margin: 1rem 0 1.5rem;
-    background: rgba($accent, 0.04);
-    border-radius: 0 6px 6px 0;
-    color: $text-dim;
-    font-size: 0.925rem;
+    padding: 0.85rem 1.1rem;
+    margin: 0 0 1.6rem;
+    background: rgba($accent, 0.05);
+    border-radius: 0 8px 8px 0;
+    color: $text;
 
-    p { margin-bottom: 0.5rem; }
-    p:last-child { margin-bottom: 0; }
+    p {
+      margin-bottom: 0.6rem;
+      color: $text-dim;
+      &:last-child { margin-bottom: 0; }
+    }
     strong { color: $accent; }
+    code { background: rgba($accent, 0.1); color: $accent; border-color: rgba($accent, 0.2); }
   }
 
-  // Horizontal rule
+  // -- Horizontal rule --
   hr {
     border: none;
     border-top: 1px solid $border;
-    margin: 2rem 0;
+    margin: 2.5rem 0;
   }
 
-  // Strong
-  strong { color: lighten($text, 8%); }
+  // -- Images --
+  img {
+    border-radius: 8px;
+    border: 1px solid $border;
+  }
+
+  strong { color: lighten($text, 10%); font-weight: 650; }
+
+  // Tighten the first heading after the header divider
+  .doc-body > h2:first-child,
+  .doc-body > h3:first-child { margin-top: 0; }
 }
 
-// -- Mini TOC --
+// -- Mini TOC (sticky sidebar) --
 .doc-toc {
-  width: $toc-width;
-  flex-shrink: 0;
   position: sticky;
-  top: calc($nav-height + 2rem);
-  align-self: flex-start;
-  max-height: calc(100vh - $nav-height - 4rem);
+  top: calc(#{$nav-height} + 2rem);
+  align-self: start;
+  max-height: calc(100vh - #{$nav-height} - 4rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+
+  &::-webkit-scrollbar { width: 6px; }
+  &::-webkit-scrollbar-thumb { background: $border; border-radius: 6px; }
 }
 
 .doc-toc-inner {
@@ -1203,12 +1345,12 @@ input:focus-visible,
 
 .doc-toc-title {
   display: block;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: $text-dim;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-bottom: 0.75rem;
+  letter-spacing: 0.09em;
+  margin-bottom: 0.9rem;
 }
 
 .doc-toc ul {
@@ -1216,84 +1358,143 @@ input:focus-visible,
   padding: 0;
   margin: 0;
 
-  li {
-    margin-bottom: 0.125rem;
-  }
+  li { margin: 0; }
 
   a {
     display: block;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     color: $text-dim;
-    padding: 0.2rem 0 0.2rem 0.5rem;
+    padding: 0.32rem 0 0.32rem 0.85rem;
     margin-left: -1rem;
     border-left: 2px solid transparent;
-    line-height: 1.4;
-    transition: color 0.15s, border-color 0.15s;
+    line-height: 1.45;
+    transition: color 0.15s ease, border-color 0.15s ease;
+
     &:hover {
+      color: $text;
+      border-left-color: $border-light;
+    }
+
+    &.active {
       color: $accent;
       border-left-color: $accent;
+      font-weight: 500;
     }
   }
 
   ul {
-    padding-left: 0.75rem;
-    a { font-size: 0.75rem; }
+    a {
+      font-size: 0.78rem;
+      padding-left: 1.7rem;
+    }
   }
 }
 
 // -- Doc index (section listing) --
 .doc-index {
   display: grid;
-  gap: 1rem;
-  margin-top: 2rem;
+  gap: 0.85rem;
+  margin-top: 2.5rem;
 }
 
 .doc-index-item {
-  display: block;
-  padding: 1.25rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.15rem 1.35rem;
   background: $surface;
   border: 1px solid $border;
-  border-radius: 8px;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  border-radius: 10px;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
 
   &:hover {
     border-color: $accent;
-    box-shadow: 0 2px 12px rgba($accent, 0.08);
+    background: lighten($surface, 2%);
+    transform: translateY(-2px);
+
+    .doc-index-arrow {
+      color: $accent;
+      transform: translateX(3px);
+    }
+    .doc-index-title { color: $accent; }
   }
 
-  h3 {
+  .doc-index-text { flex: 1; min-width: 0; }
+
+  .doc-index-title {
+    display: block;
     font-size: 1rem;
     font-weight: 600;
     color: $text;
-    margin-bottom: 0.25rem;
+    line-height: 1.3;
+    transition: color 0.18s ease;
   }
 
-  p {
-    font-size: 0.85rem;
+  .doc-index-desc {
+    display: block;
+    font-size: 0.875rem;
     color: $text-dim;
-    margin: 0;
+    margin-top: 0.3rem;
     line-height: 1.5;
+  }
+
+  .doc-index-arrow {
+    flex-shrink: 0;
+    color: $text-dim;
+    transition: color 0.18s ease, transform 0.18s ease;
+    svg { width: 18px; height: 18px; display: block; }
   }
 }
 
 // -- Prev/Next --
 .doc-prevnext {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 1rem;
-  margin-top: 3rem;
-  padding-top: 1.5rem;
+  margin-top: 3.5rem;
+  padding-top: 2rem;
   border-top: 1px solid $border;
-  font-size: 0.9rem;
+}
 
-  a {
-    color: $link;
-    font-weight: 500;
-    &:hover { color: $accent; }
+.doc-pn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 1rem 1.15rem;
+  background: $surface;
+  border: 1px solid $border;
+  border-radius: 10px;
+  transition: border-color 0.18s ease, background 0.18s ease;
+
+  &:hover {
+    border-color: $accent;
+    background: lighten($surface, 2%);
+    .doc-pn-title { color: $accent; }
   }
 
-  .doc-next { margin-left: auto; }
+  .doc-pn-dir {
+    font-family: $font-mono;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    color: $text-dim;
+  }
+
+  .doc-pn-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: $text;
+    line-height: 1.35;
+    transition: color 0.18s ease;
+  }
 }
+
+.doc-next {
+  grid-column: 2;
+  text-align: right;
+  align-items: flex-end;
+}
+
+.doc-pn-spacer { display: block; }
 
 // =============================================================================
 // Animations
@@ -1475,14 +1676,18 @@ input:focus-visible,
 
   .doc-content {
     max-width: 100%;
+    .doc-kicker { color: #555; }
+    .doc-lead { color: #333; }
     h1, h2, h3, h4 { color: #111; }
     code { border-color: #ddd; background: #f5f5f5; color: #333; }
-    pre { border-color: #ddd; background: #f5f5f5; }
+    pre { border-color: #ddd; background: #f5f5f5; box-shadow: none; }
     pre code { color: #333; }
+    pre[data-lang]::before { color: #888; background: #eee; border-color: #ddd; }
     table th, table td { border-color: #ccc; }
-    table th { background: #eee; }
-    a { color: #111; text-decoration: underline; }
-    blockquote { border-left-color: #ccc; background: #f9f9f9; }
+    table th { background: #eee; color: #111; }
+    table td { color: #333; }
+    a { color: #111; text-decoration: underline; border-bottom: none; }
+    blockquote { border-left-color: #ccc; background: #f9f9f9; p { color: #333; } }
   }
 }
 
@@ -1492,7 +1697,11 @@ input:focus-visible,
 
 @media (max-width: 1140px) {
   .doc-toc { display: none; }
-  .doc-layout { max-width: $doc-width; }
+  .doc-layout {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: $doc-width;
+  }
+  .doc-content { max-width: none; }
   .arch-grid { grid-template-columns: repeat(3, 1fr); }
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
@@ -1528,18 +1737,28 @@ input:focus-visible,
   .arch-grid { grid-template-columns: repeat(2, 1fr); }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 
-  .doc-layout { padding: 1.5rem 1rem 3rem; }
+  .doc-layout { padding: 1.75rem 1rem 3.5rem; gap: 2rem; }
   .doc-content {
-    h1 { font-size: 1.5rem; }
-    h2 { font-size: 1.15rem; }
+    font-size: 0.96rem;
 
-    // Allow tables to scroll
+    .doc-header { margin-bottom: 1.75rem; padding-bottom: 1.25rem; }
+    .doc-lead { font-size: 1rem; }
+
+    h2 { margin-top: 2.25rem; }
+
+    // Allow tables to scroll on narrow screens
     table {
       display: block;
       overflow-x: auto;
+      white-space: nowrap;
       -webkit-overflow-scrolling: touch;
     }
+
+    pre { border-radius: 8px; font-size: 0.8rem; }
   }
+
+  .doc-prevnext { grid-template-columns: 1fr; }
+  .doc-next { grid-column: 1; text-align: left; align-items: flex-start; }
 
   .footer-inner { flex-direction: column; text-align: center; }
   .footer-col { justify-content: center; }
