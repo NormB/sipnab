@@ -310,25 +310,80 @@ img { max-width: 100%; height: auto; }
 // Hero
 // =============================================================================
 
-.hero {
-  padding: 6rem 1.5rem 3rem;
+// =============================================================================
+// Homepage section rhythm & shared primitives
+// =============================================================================
+
+// Consistent vertical spacing scale for every homepage section below the hero.
+%home-section {
+  padding: 5.5rem 1.5rem;
+  border-top: 1px solid $border;
+}
+
+// Section header block: kicker + title, centered, with consistent spacing.
+.section-head {
   text-align: center;
-  background: radial-gradient(ellipse at 50% 0%, rgba(255,204,102,0.06) 0%, transparent 60%);
+  margin-bottom: 3rem;
+}
+
+.section-kicker {
+  font-family: $font-mono;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: $accent;
+  margin: 0 0 0.6rem;
+}
+
+.hero {
+  position: relative;
+  padding: 7rem 1.5rem 3rem;
+  text-align: center;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 50% -10%, rgba(255,204,102,0.10) 0%, transparent 55%);
+}
+
+// Subtle grid + glow wash behind the hero copy. Decorative only.
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(115,208,255,0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(115,208,255,0.035) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 0%, transparent 75%);
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 0%, transparent 75%);
 }
 
 .hero-inner {
+  position: relative;
+  z-index: 1;
   max-width: 720px;
   margin: 0 auto;
 }
 
+.hero-kicker {
+  font-family: $font-mono;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: $accent;
+  margin: 0 0 1.1rem;
+}
+
 .hero-title {
   font-family: $font-mono;
-  font-size: 4.5rem;
+  font-size: clamp(3rem, 8vw, 4.75rem);
   font-weight: 700;
   color: $accent;
   letter-spacing: -0.03em;
-  line-height: 1.1;
-  margin-bottom: 1rem;
+  line-height: 1.05;
+  margin-bottom: 1.1rem;
+  text-shadow: 0 0 60px rgba($accent, 0.25);
 }
 
 .version-badge {
@@ -343,15 +398,16 @@ img { max-width: 100%; height: auto; }
   padding: 0.2rem 0.6rem;
   vertical-align: middle;
   position: relative;
-  top: -0.15em;
+  top: -0.35em;
 }
 
 .hero-tagline {
-  font-size: 1.35rem;
+  font-size: clamp(1.15rem, 2.5vw, 1.4rem);
   font-weight: 500;
   color: $text;
   line-height: 1.4;
-  margin-bottom: 0.75rem;
+  margin: 0 auto 0.85rem;
+  max-width: 34rem;
 }
 
 // Inline reference to a standards document (e.g. "SIP", "RTP" -> RFC).
@@ -365,8 +421,9 @@ img { max-width: 100%; height: auto; }
 .hero-sub {
   font-size: 1.05rem;
   color: $text-dim;
-  line-height: 1.6;
-  margin-bottom: 2rem;
+  line-height: 1.65;
+  margin: 0 auto 2.25rem;
+  max-width: 36rem;
 }
 
 .hero-actions {
@@ -377,34 +434,37 @@ img { max-width: 100%; height: auto; }
 }
 
 .btn {
-  display: inline-block;
-  font-size: 0.925rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
   font-weight: 600;
   font-family: $font-sans;
-  padding: 0.65rem 1.5rem;
+  padding: 0.72rem 1.6rem;
   border-radius: 8px;
-  transition: transform 0.1s, box-shadow 0.15s, background 0.15s;
-  &:hover { transform: translateY(-1px); }
+  transition: transform 0.12s ease, box-shadow 0.18s ease, background 0.18s ease, border-color 0.18s ease;
+  &:hover { transform: translateY(-2px); }
 }
 
 .btn-primary {
   background: $accent;
   color: $bg;
+  box-shadow: 0 4px 14px rgba($accent, 0.18);
   &:hover {
     color: $bg;
     background: lighten($accent, 5%);
-    box-shadow: 0 4px 16px rgba($accent, 0.3);
+    box-shadow: 0 8px 26px rgba($accent, 0.35);
   }
 }
 
 .btn-secondary {
-  background: transparent;
+  background: rgba($surface, 0.6);
   color: $text;
   border: 1px solid $border-light;
   &:hover {
     color: $text;
-    border-color: $text-dim;
-    background: rgba($text, 0.04);
+    border-color: $accent;
+    background: rgba($accent, 0.06);
   }
 }
 
@@ -415,18 +475,21 @@ img { max-width: 100%; height: auto; }
 }
 
 .terminal-wrap {
-  max-width: 900px;
-  margin: 3rem auto 0;
+  position: relative;
+  z-index: 1;
+  max-width: 920px;
+  margin: 3.5rem auto 0;
   padding: 0 1.5rem;
 }
 
 .hero-screenshot {
   width: 100%;
-  border-radius: 10px;
-  border: 2px solid $border-light;
-  outline: 1px solid rgba($accent, 0.15);
-  outline-offset: 2px;
-  box-shadow: 0 20px 80px rgba($accent, 0.08), 0 0 0 1px rgba($accent, 0.1);
+  border-radius: 12px;
+  border: 1px solid $border-light;
+  box-shadow:
+    0 30px 90px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba($accent, 0.10),
+    0 0 80px rgba($accent, 0.07);
 }
 
 .terminal {
@@ -501,78 +564,82 @@ img { max-width: 100%; height: auto; }
 }
 
 // =============================================================================
-// Features (3 columns)
+// Demos (single panel with tabs)
 // =============================================================================
 
-// -- Demo video (single panel with tabs) --
 .demos {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .demos-inner {
   max-width: 960px;
   margin: 0 auto;
 
-  h2 {
-    font-size: 1.75rem;
+  > h2 {
+    font-size: clamp(1.6rem, 3vw, 2rem);
     font-weight: 700;
     color: $text;
-    margin-bottom: 1.5rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 1.75rem;
     text-align: center;
   }
+
+  .section-kicker { text-align: center; }
 }
 
 .demo-tabs {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.4rem;
   justify-content: center;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1.75rem;
   flex-wrap: wrap;
 }
 
 .demo-tab {
-  background: none;
+  background: rgba($surface, 0.5);
   border: 1px solid $border;
-  border-radius: 6px;
+  border-radius: 7px;
   color: $text-dim;
   font-family: $font-sans;
   font-size: 0.875rem;
   font-weight: 500;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 1.05rem;
   cursor: pointer;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  transition: color 0.15s, background 0.15s, border-color 0.15s, transform 0.12s;
 
   &:hover {
     color: $text;
-    border-color: $text-dim;
+    border-color: $border-light;
+    transform: translateY(-1px);
   }
 
   &.active {
-    color: $accent;
+    color: $bg;
     border-color: $accent;
-    background: $accent-glow;
+    background: $accent;
+    font-weight: 600;
   }
 }
 
 .demo-panel {
   display: none;
 
-  &.active { display: block; }
+  &.active { display: block; animation: fadeInUp 0.4s ease both; }
 }
 
 .demo-desc {
   font-size: 0.95rem;
   color: $text-dim;
-  margin-bottom: 1rem;
+  margin-bottom: 1.1rem;
   text-align: center;
-  line-height: 1.5;
+  line-height: 1.55;
 
   kbd {
     font-family: $font-mono;
     font-size: 0.85em;
+    color: $text;
     background: $surface;
-    border: 1px solid $border;
+    border: 1px solid $border-light;
     border-bottom-width: 2px;
     border-radius: 4px;
     padding: 0.1em 0.4em;
@@ -583,9 +650,9 @@ img { max-width: 100%; height: auto; }
 
 .demo-panel img {
   width: 100%;
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px solid $border;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 204, 102, 0.06);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 204, 102, 0.06);
 }
 
 // =============================================================================
@@ -593,30 +660,34 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .features {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .features-inner {
   max-width: $max-width;
   margin: 0 auto;
+}
+
+.features-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 2rem;
+  gap: 1.5rem;
 }
 
 .feature-card {
+  position: relative;
   background: $surface;
   border: 1px solid $border;
   border-top: 3px solid transparent;
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 2rem;
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 
   &:hover {
     border-color: $border-light;
     border-top-color: inherit;
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
   }
 
   &--amber { border-top-color: $accent; }
@@ -628,16 +699,18 @@ img { max-width: 100%; height: auto; }
   &--blue:hover  { border-top-color: $link; }
 
   h3 {
-    font-size: 1.125rem;
+    font-size: 1.2rem;
     font-weight: 700;
     color: $text;
-    margin: 1rem 0 0.5rem;
+    margin: 1.1rem 0 0.55rem;
+    letter-spacing: -0.01em;
   }
 
   p {
     font-size: 0.9rem;
     color: $text-dim;
-    line-height: 1.65;
+    line-height: 1.7;
+    margin: 0;
   }
 }
 
@@ -647,9 +720,12 @@ img { max-width: 100%; height: auto; }
   align-items: center;
   justify-content: center;
   background: rgba($accent, 0.08);
-  border-radius: 50%;
+  border-radius: 14px;
   width: 56px;
   height: 56px;
+  transition: transform 0.2s ease, background 0.2s ease;
+
+  .feature-card:hover & { transform: scale(1.06); }
 
   .feature-card--green & { color: $code-green; background: rgba($code-green, 0.08); }
   .feature-card--blue &  { color: $link; background: rgba($link, 0.08); }
@@ -660,68 +736,70 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .quickstart {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .quickstart-inner {
   max-width: $doc-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    text-align: center;
-  }
 }
 
 .code-block-wrap {
   background: $surface;
   border: 1px solid $border;
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
   position: relative;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.3);
 
   pre {
     font-family: $font-mono;
     font-size: 0.85rem;
-    line-height: 1.65;
+    line-height: 1.7;
     padding: 1.5rem;
+    margin: 0;
     overflow-x: auto;
     color: $code-green;
 
     .t-muted { color: $text-dim; }
-    .t-comment { color: lighten($text-dim, 10%); }
-  }
-
-  // Line numbers via CSS counter
-  pre.line-numbers {
-    counter-reset: line;
-    padding-left: 3.5rem;
-
-    code {
-      display: block;
-    }
-
-    code > span,
-    code > br {
-      // Handled via wrapping below
-    }
-  }
-
-  pre.line-numbers code::before {
-    // Not practical with inline HTML — use wrapper approach
+    .t-comment { color: lighten($text-dim, 12%); }
   }
 }
 
-// Copy button
-.copy-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
+// macOS-style window header on the quickstart terminal — matches the download page.
+.code-block-head {
   display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background: darken($surface, 3%);
+  border-bottom: 1px solid $border;
+}
+
+.code-block-dots {
+  display: inline-flex;
+  gap: 0.4rem;
+  i {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    display: block;
+    &:nth-child(1) { background: #ff5f57; }
+    &:nth-child(2) { background: #febc2e; }
+    &:nth-child(3) { background: #28c840; }
+  }
+}
+
+.code-block-title {
+  flex: 1;
+  font-family: $font-mono;
+  font-size: 0.74rem;
+  color: $text-dim;
+}
+
+// Copy button — sits inside the window header at the right.
+.copy-btn {
+  display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   background: $surface-2;
@@ -732,134 +810,75 @@ img { max-width: 100%; height: auto; }
   font-size: 0.75rem;
   padding: 0.3rem 0.6rem;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
-  z-index: 2;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
 
   &:hover {
     color: $text;
-    border-color: $text-dim;
+    border-color: $border-light;
+    background: lighten($surface-2, 3%);
   }
 }
 
 // =============================================================================
-// Comparison table
+// What sipnab does (reference table)
 // =============================================================================
 
 .comparison {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .comparison-inner {
   max-width: $doc-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 1.5rem;
-    text-align: center;
-  }
 }
 
 .comparison-table-wrap {
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid $border;
-  border-radius: 10px;
+  border-radius: 12px;
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.25);
 }
 
 .comparison-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.875rem;
+  font-size: 0.9rem;
 
   th, td {
-    padding: 0.75rem 1rem;
+    padding: 0.9rem 1.15rem;
     text-align: left;
     border-bottom: 1px solid $border;
-    white-space: nowrap;
+    vertical-align: top;
   }
 
   th {
     font-weight: 600;
     color: $text;
     background: darken($surface, 2%);
+    font-size: 0.82rem;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
 
-  td { color: $text-dim; }
-  td:first-child { color: $text; font-weight: 500; }
-
-  td.yes { color: $good; font-weight: 600; }
-  td.no { color: $text-dim; }
-  td.lang { color: $text; font-weight: 500; font-family: $font-mono; font-size: 0.8rem; }
-
-  // sipnab column highlight
-  th.col-sipnab,
-  td.col-sipnab {
-    background: rgba($accent, 0.04);
+  // Capability column: emphasized, never wraps awkwardly.
+  td:first-child {
+    color: $text;
+    font-weight: 600;
+    width: 34%;
+    white-space: nowrap;
   }
 
-  // Checkmark/cross sizing
-  td.yes span { font-size: 1.1em; }
-  td.no span { font-size: 1.0em; opacity: 0.5; }
+  td:last-child {
+    color: $text-dim;
+    line-height: 1.55;
+  }
 
   tr:last-child td { border-bottom: none; }
-  tr:hover td { background: rgba($text, 0.02); }
-  tr:hover td.col-sipnab { background: rgba($accent, 0.07); }
-}
-
-// =============================================================================
-// Architecture callout
-// =============================================================================
-
-.arch-callout {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
-}
-
-.arch-inner {
-  max-width: $max-width;
-  margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 2rem;
-    text-align: center;
+  tbody tr {
+    transition: background 0.12s ease;
+    &:hover td { background: rgba($accent, 0.03); }
+    &:hover td:first-child { color: $accent; }
   }
-}
-
-.arch-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 1.5rem;
-}
-
-.arch-item {
-  text-align: center;
-  padding: 1.75rem 1rem;
-  background: $surface;
-  border: 1px solid $border;
-  border-radius: 10px;
-}
-
-.arch-stat {
-  display: block;
-  font-family: $font-mono;
-  font-size: 2.5rem;
-  font-weight: 700;
-  color: $accent;
-  line-height: 1.2;
-}
-
-.arch-label {
-  display: block;
-  font-size: 0.825rem;
-  color: $text-dim;
-  margin-top: 0.5rem;
-  line-height: 1.4;
 }
 
 // =============================================================================
@@ -867,30 +886,21 @@ img { max-width: 100%; height: auto; }
 // =============================================================================
 
 .metrics {
-  padding: 4rem 1.5rem;
-  border-top: 1px solid $border;
+  @extend %home-section;
 }
 
 .metrics-inner {
   max-width: $max-width;
   margin: 0 auto;
-
-  h2 {
-    font-size: 1.75rem;
-    font-weight: 700;
-    color: $text;
-    margin-bottom: 0.75rem;
-    text-align: center;
-  }
 }
 
 .metrics-sub {
   max-width: 640px;
-  margin: 0 auto 2.5rem;
+  margin: 1rem auto 0;
   text-align: center;
   color: $text-dim;
   font-size: 0.95rem;
-  line-height: 1.6;
+  line-height: 1.65;
 }
 
 .metrics-grid {
@@ -900,15 +910,16 @@ img { max-width: 100%; height: auto; }
 }
 
 .metric-card {
-  padding: 1.5rem;
+  padding: 1.6rem;
   background: $surface;
   border: 1px solid $border;
-  border-radius: 10px;
-  transition: border-color 0.2s ease, transform 0.2s ease;
+  border-radius: 12px;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
 
   &:hover {
     border-color: $border-light;
-    transform: translateY(-2px);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
   }
 }
 
@@ -935,18 +946,72 @@ img { max-width: 100%; height: auto; }
 }
 
 .metric-name {
-  font-size: 1.2rem;
+  font-size: 1.25rem;
   font-weight: 700;
   color: $text;
   margin: 0 0 0.4rem;
+  letter-spacing: -0.01em;
 }
 
 .metric-desc {
   font-size: 0.875rem;
   color: $text-dim;
-  line-height: 1.55;
+  line-height: 1.6;
   margin: 0;
 }
+
+// =============================================================================
+// Architecture callout (stat band)
+// =============================================================================
+
+.arch-callout {
+  @extend %home-section;
+}
+
+.arch-inner {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.arch-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.arch-item {
+  text-align: center;
+  padding: 2.25rem 1rem;
+  background: linear-gradient(180deg, $surface 0%, darken($surface, 1.5%) 100%);
+  border: 1px solid $border;
+  border-radius: 12px;
+  transition: border-color 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+
+  &:hover {
+    border-color: rgba($accent, 0.35);
+    transform: translateY(-4px);
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.arch-stat {
+  display: block;
+  font-family: $font-mono;
+  font-size: clamp(2.2rem, 5vw, 2.75rem);
+  font-weight: 700;
+  color: $accent;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.arch-label {
+  display: block;
+  font-size: 0.84rem;
+  color: $text-dim;
+  margin-top: 0.6rem;
+  line-height: 1.45;
+}
+
 
 // =============================================================================
 // Doc layout (single-column + floating TOC)
@@ -1432,13 +1497,19 @@ img { max-width: 100%; height: auto; }
 
   .nav-toggle { display: flex; }
 
-  .hero { padding: 3rem 1rem 2rem; }
-  .hero-title { font-size: 2.75rem; }
-  .hero-tagline { font-size: 1.1rem; }
+  .hero { padding: 4rem 1.25rem 2rem; }
 
-  .features-inner { grid-template-columns: 1fr; gap: 1rem; }
-  .arch-grid { grid-template-columns: repeat(2, 1fr); }
+  // Tighter vertical rhythm on small screens (sections use 5.5rem on desktop).
+  .demos, .features, .quickstart, .comparison, .metrics, .arch-callout {
+    padding: 3.5rem 1.25rem;
+  }
+  .section-head { margin-bottom: 2rem; }
+
+  .features-grid { grid-template-columns: 1fr; gap: 1rem; }
+  .arch-grid { grid-template-columns: repeat(3, 1fr); gap: 1rem; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+
+  .terminal-wrap { margin-top: 2.5rem; padding: 0 1rem; }
 
   .doc-layout { padding: 1.5rem 1rem 3rem; }
   .doc-content {
@@ -1461,12 +1532,23 @@ img { max-width: 100%; height: auto; }
 }
 
 @media (max-width: 480px) {
-  .hero-title { font-size: 2.25rem; }
-  .hero-actions { flex-direction: column; align-items: center; }
+  .hero { padding: 3.25rem 1rem 1.5rem; }
+  .hero-kicker { font-size: 0.66rem; letter-spacing: 0.18em; }
+  .hero-actions { flex-direction: column; align-items: stretch; }
+  .hero-actions .btn { justify-content: center; }
   .arch-grid { grid-template-columns: 1fr; }
   .metrics-grid { grid-template-columns: 1fr; }
-  .arch-stat { font-size: 2rem; }
   .version-badge { font-size: 0.7rem; }
+
+  .demo-tabs { gap: 0.3rem; }
+  .demo-tab { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+
+  // Keep the reference table readable on narrow screens.
+  .comparison-table { font-size: 0.82rem; }
+  .comparison-table th, .comparison-table td { padding: 0.7rem 0.8rem; }
+  .comparison-table td:first-child { width: auto; white-space: normal; }
+
+  .code-block-wrap pre { font-size: 0.78rem; padding: 1.1rem; }
 }
 
 // Download page
