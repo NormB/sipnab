@@ -987,13 +987,13 @@ fn diagnose_no_streams_no_sdp_is_clean() {
 // ═══════════════════════════════════════════════════════════════════════
 // TEST 13: End-to-end pcap-to-streams
 //
-// Load voipshark-normal-call.pcap, parse ALL packets, feed RTP into
+// Load SIP_CALL_RTP_G711, parse ALL packets, feed RTP into
 // StreamStore. Verify streams exist with sane metrics.
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn end_to_end_pcap_to_streams_voipshark() {
-    let path = pcap_samples_dir().join("voipshark-normal-call.pcap");
+fn end_to_end_pcap_to_streams_g711() {
+    let path = pcap_samples_dir().join("SIP_CALL_RTP_G711");
     let data =
         std::fs::read(&path).unwrap_or_else(|e| panic!("Failed to read {}: {e}", path.display()));
 
@@ -1025,11 +1025,11 @@ fn end_to_end_pcap_to_streams_voipshark() {
     // Sanity checks on the pcap
     assert!(
         total_packets > 100,
-        "voipshark-normal-call.pcap should have many packets, got {total_packets}"
+        "SIP_CALL_RTP_G711 should have many packets, got {total_packets}"
     );
     assert!(
         rtp_packets > 100,
-        "CRITICAL: Only {rtp_packets} RTP packets detected in voipshark-normal-call.pcap. \
+        "CRITICAL: Only {rtp_packets} RTP packets detected in SIP_CALL_RTP_G711. \
          This is a normal VoIP call pcap with significant RTP traffic."
     );
 

@@ -15,7 +15,7 @@ Show
 Sleep 3s
 Type "O"
 Sleep 2s
-Type "tests/pcap-samples/voipshark-normal-call.pcap"
+Type "tests/pcap-samples/sip-rtp-g711.pcap"
 Sleep 2s
 Enter
 Sleep 6s
