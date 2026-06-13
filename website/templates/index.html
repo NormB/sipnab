@@ -9,7 +9,7 @@
 <section class="hero">
   <div class="hero-inner">
     <h1 class="hero-title">sipnab <span class="version-badge">v{{ config.extra.version }}</span></h1>
-    <p class="hero-tagline">The SIP &amp; RTP analysis tool for people who ship voice infrastructure.</p>
+    <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
     <p class="hero-sub">One binary. One dependency (libpcap). Interactive TUI + CLI + REST API.<br>Built in Rust for speed, safety, and correctness.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
@@ -158,32 +158,32 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
     <p class="metrics-sub">sipnab reports the metrics VoIP engineers already work in &mdash; grounded in the relevant ITU-T and IETF standards. Every figure is computed from the packets, never guessed.</p>
     <div class="metrics-grid">
       <div class="metric-card fade-in-up">
-        <span class="metric-std">ITU-T G.107</span>
+        <a class="metric-std" href="https://www.itu.int/rec/T-REC-G.107" target="_blank" rel="noopener noreferrer">ITU-T G.107</a>
         <h3 class="metric-name">MOS</h3>
         <p class="metric-desc">Estimated Mean Opinion Score (1&ndash;5). The R-factor is mapped to MOS using the G.107 Annex&nbsp;B formula.</p>
       </div>
       <div class="metric-card fade-in-up">
-        <span class="metric-std">ITU-T G.107</span>
+        <a class="metric-std" href="https://www.itu.int/rec/T-REC-G.107" target="_blank" rel="noopener noreferrer">ITU-T G.107</a>
         <h3 class="metric-name">R-factor</h3>
         <p class="metric-desc">E-model transmission rating (0&ndash;100), estimated from codec, jitter, and packet-loss impairments.</p>
       </div>
       <div class="metric-card fade-in-up">
-        <span class="metric-std">RFC 3550</span>
+        <a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RFC 3550</a>
         <h3 class="metric-name">Jitter</h3>
         <p class="metric-desc">RTP interarrival jitter, tracked per stream as defined by the RTP specification.</p>
       </div>
       <div class="metric-card fade-in-up">
-        <span class="metric-std">RFC 3550</span>
+        <a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RFC 3550</a>
         <h3 class="metric-name">Packet Loss</h3>
         <p class="metric-desc">Lost vs. expected RTP packets, derived from sequence-number gaps per stream.</p>
       </div>
       <div class="metric-card fade-in-up">
-        <span class="metric-std">RFC 3611</span>
+        <a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611" target="_blank" rel="noopener noreferrer">RFC 3611</a>
         <h3 class="metric-name">Burst / Gap Loss</h3>
         <p class="metric-desc">RFC&nbsp;3611-style burst/gap analysis separates bursty loss from tolerable random loss.</p>
       </div>
       <div class="metric-card fade-in-up">
-        <span class="metric-std">RFC 3611</span>
+        <a class="metric-std" href="https://www.rfc-editor.org/rfc/rfc3611" target="_blank" rel="noopener noreferrer">RFC 3611</a>
         <h3 class="metric-name">RTCP XR</h3>
         <p class="metric-desc">Parses RTCP Extended Reports (PT&nbsp;207), including the VoIP Metrics report block.</p>
       </div>
