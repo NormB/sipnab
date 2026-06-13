@@ -169,6 +169,22 @@ img { max-width: 100%; height: auto; }
   &:hover { color: $text; }
 }
 
+.nav-sponsor {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  border: 1px solid $accent;
+  border-radius: 6px;
+  color: $accent;
+  padding: 0.375rem 0.7rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+  .heart { color: $accent; line-height: 1; }
+  &:hover { background: $accent; color: $bg; .heart { color: $bg; } }
+}
+
 .nav-toggle {
   display: none;
   flex-direction: column;
