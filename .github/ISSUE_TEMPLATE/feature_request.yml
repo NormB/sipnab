@@ -1,0 +1,33 @@
+name: Feature request
+description: Suggest a new capability, metric, output format, or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / use case
+      description: What are you trying to do that sipnab can't (or makes hard) today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like sipnab to do? CLI flags, TUI behavior, output shape, etc.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other tools or workarounds you've used, and why they fall short.
+    validations:
+      required: false
+  - type: input
+    id: standard
+    attributes:
+      label: Relevant standard (if any)
+      description: ITU-T / RFC reference, if the request relates to a defined metric or protocol behavior.
+      placeholder: "RFC 3611 §4.7, ITU-T G.107"
+    validations:
+      required: false
