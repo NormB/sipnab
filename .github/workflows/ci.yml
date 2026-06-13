@@ -24,6 +24,7 @@ jobs:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
@@ -98,9 +99,11 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-features-${{ matrix.features }}-${{ hashFiles('**/Cargo.lock') }}
+          # Cache keys must not contain commas, and matrix.features has them
+          # (e.g. "native,tui,audio"); key on the lockfile only.
+          key: ${{ runner.os }}-features-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-features-${{ matrix.features }}-
+            ${{ runner.os }}-features-
             ${{ runner.os }}-cargo-
 
       # wasm is lib-only: its test/bin targets are meaningless on the host.

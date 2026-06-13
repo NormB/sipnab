@@ -569,7 +569,9 @@ fn main() {
     // Note: The metrics server shares the same stores that are created inside
     // run_tui_mode/run_batch_mode. We parse/validate the address here but defer
     // actual server start to those functions where the stores are available.
-    #[cfg(feature = "api")]
+    // Only consumed by run_tui_mode (TUI path); batch mode starts its metrics
+    // server separately, so gate this to the combination that actually uses it.
+    #[cfg(all(feature = "api", feature = "tui"))]
     let metrics_bind_addr: Option<std::net::SocketAddr> = cli.metrics.as_deref().map(|addr_str| {
         match sipnab::output::prometheus_server::parse_metrics_addr(addr_str) {
             Ok(a) => a,
