@@ -120,7 +120,7 @@ impl CryptoBackend for RingCryptoBackend {
     }
 
     fn aes_cbc_decrypt(&self, key: &[u8], iv: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
-        use cbc::cipher::{BlockDecryptMut, KeyIvInit};
+        use cbc::cipher::{BlockModeDecrypt, KeyIvInit};
 
         if iv.len() != 16 {
             anyhow::bail!("AES-CBC IV must be 16 bytes, got {}", iv.len());
@@ -140,7 +140,7 @@ impl CryptoBackend for RingCryptoBackend {
                 let decryptor = Aes128CbcDec::new_from_slices(key, iv)
                     .map_err(|e| anyhow::anyhow!("AES-128-CBC key/IV error: {e}"))?;
                 let plaintext = decryptor
-                    .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
+                    .decrypt_padded::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
                     .map_err(|e| anyhow::anyhow!("AES-128-CBC decrypt failed: {e}"))?;
                 Ok(plaintext.to_vec())
             }
@@ -149,7 +149,7 @@ impl CryptoBackend for RingCryptoBackend {
                 let decryptor = Aes256CbcDec::new_from_slices(key, iv)
                     .map_err(|e| anyhow::anyhow!("AES-256-CBC key/IV error: {e}"))?;
                 let plaintext = decryptor
-                    .decrypt_padded_mut::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
+                    .decrypt_padded::<cbc::cipher::block_padding::Pkcs7>(&mut buf)
                     .map_err(|e| anyhow::anyhow!("AES-256-CBC decrypt failed: {e}"))?;
                 Ok(plaintext.to_vec())
             }
@@ -395,7 +395,7 @@ mod tests {
 
         #[test]
         fn aes_128_cbc_roundtrip() {
-            use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+            use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 
             let key = [0xAAu8; 16];
             let iv = [0xBBu8; 16];
@@ -405,7 +405,7 @@ mod tests {
             type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
             let encryptor = Aes128CbcEnc::new_from_slices(&key, &iv).unwrap();
             let ciphertext =
-                encryptor.encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext);
+                encryptor.encrypt_padded_vec::<cbc::cipher::block_padding::Pkcs7>(plaintext);
 
             // Decrypt
             let backend = RingCryptoBackend;
@@ -415,7 +415,7 @@ mod tests {
 
         #[test]
         fn aes_256_cbc_roundtrip() {
-            use cbc::cipher::{BlockEncryptMut, KeyIvInit};
+            use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
 
             let key = [0xCCu8; 32];
             let iv = [0xDDu8; 16];
@@ -424,7 +424,7 @@ mod tests {
             type Aes256CbcEnc = cbc::Encryptor<aes::Aes256>;
             let encryptor = Aes256CbcEnc::new_from_slices(&key, &iv).unwrap();
             let ciphertext =
-                encryptor.encrypt_padded_vec_mut::<cbc::cipher::block_padding::Pkcs7>(plaintext);
+                encryptor.encrypt_padded_vec::<cbc::cipher::block_padding::Pkcs7>(plaintext);
 
             let backend = RingCryptoBackend;
             let decrypted = backend.aes_cbc_decrypt(&key, &iv, &ciphertext).unwrap();
