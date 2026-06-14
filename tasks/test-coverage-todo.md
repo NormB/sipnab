@@ -3,10 +3,11 @@
 Baseline (`cargo llvm-cov --all-features --workspace`, 2026-06-14):
 **82.30% lines · 83.72% regions · 88.12% functions** (27,509 lines, 4,868 missed).
 
-## Status (2026-06-14) — P0, P1, P3, P4 done; P2 outstanding
+## Status (2026-06-14) — ALL phases (P0–P4) DONE ✅
 
-After implementing P0/P1/P3/P4 (`--ignore-filename-regex 'tools_gen_fixture\.rs'`):
-**87.29% lines · 87.67% regions · 91.19% functions** (lib tests: 931 passing).
+Final: **90.22% lines · 90.71% regions · 92.90% functions** (full suite: 1756
+tests passing, 0 failing). Goal of ~90% line coverage met.
+Measured with `--ignore-filename-regex 'tools_gen_fixture\.rs'`.
 
 Per-file line coverage, before → after:
 | File | Before | After |
@@ -23,9 +24,17 @@ Per-file line coverage, before → after:
 | `output/api.rs` | 87.20% | 97.19% |
 | `rtp/playback.rs` | 0% | 53.76% (DSP only; device path intentionally uncovered) |
 | `privilege.rs` | 43.70% | 56.92% (syscall arms need root, accepted) |
+| `tui/call_flow/render.rs` | 43.29% | 85.07% |
+| `tui/call_flow/prepare.rs` | 77.15% | 91.97% |
+| `tui/render.rs` | 78.79% | 92.17% |
+| `tui/events.rs` | 79.53% | 88.36% |
+| `tui/save.rs` | 76.79% | 91.41% |
+| `tui/mod.rs` | 78.69% | 90.19% |
+| `tui/stream_detail.rs` | 75.87% | 86.13% |
 
-**Remaining: P2 — the TUI rendering cluster (~1,400 missed lines).** Not yet
-done; tackle with `ratatui` `TestBackend` snapshots as outlined below.
+Intentionally uncovered: the real terminal event loop (`run_tui`), live audio
+device path (`AudioPlayer`), root-only syscall arms in `privilege.rs`, and
+clipboard/external-process arms — all hardware/OS-bound.
 
 Goal: lift line coverage toward ~90% by attacking the largest *feasible* gaps
 first. Files are ranked below by **missed lines × feasibility**, not raw %.
