@@ -55,18 +55,20 @@ jobs:
         run: cargo llvm-cov --all-features --workspace --no-report
 
       - name: Coverage summary
+        # Exclude the dev-only tools_gen_fixture.rs [[bin]] from every report
+        # (mirrors codecov.yml `ignore:`); it is not shipped product code.
         run: |
           {
             echo '### Test coverage'
             echo '```'
-            cargo llvm-cov report --summary-only
+            cargo llvm-cov report --summary-only --ignore-filename-regex 'tools_gen_fixture\.rs'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Generate lcov + HTML report
         run: |
-          cargo llvm-cov report --lcov --output-path lcov.info
-          cargo llvm-cov report --html
+          cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex 'tools_gen_fixture\.rs'
+          cargo llvm-cov report --html --ignore-filename-regex 'tools_gen_fixture\.rs'
 
       - name: Upload HTML coverage artifact
         uses: actions/upload-artifact@v7
