@@ -696,3 +696,349 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
         Err(e) => format!("JSON serialization failed: {e}"),
     }
 }
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::parse::{ParsedPacket, TransportProto};
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn addr_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    fn addr_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+    fn base_ts() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn raw_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg
+    }
+
+    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = raw_sip(
+            &format!("INVITE sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse INVITE")
+    }
+
+    fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = raw_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: \"a\" <sip:a@example.com>;tag=t1",
+                "To: \"b\" <sip:b@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
+            .expect("parse 200")
+    }
+
+    fn app_with_dialogs() -> App {
+        let t0 = base_ts();
+        App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0),
+            make_ok("call-1@test", t0 + TimeDelta::seconds(1)),
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
+            make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
+        ])
+    }
+
+    /// Build a minimal RTP packet (12-byte header + payload) and feed it to
+    /// the app's stream store so RTP exports have something to serialize.
+    fn add_rtp_stream(app: &App) {
+        let mut data = vec![
+            0x80, 0x00, // V=2, PT=0 (PCMU)
+            0x00, 0x01, // seq
+            0x00, 0x00, 0x00, 0x00, // timestamp
+            0x12, 0x34, 0x56, 0x78, // ssrc
+        ];
+        data.extend_from_slice(&[0xAA; 160]); // payload
+        let rtp = crate::rtp::parser::parse_rtp_header(&data).expect("rtp header");
+        let parsed = ParsedPacket {
+            timestamp: base_ts(),
+            src_addr: addr_a(),
+            dst_addr: addr_b(),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: TransportProto::Udp,
+            payload: bytes::Bytes::from(data),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        };
+        app.stream_store
+            .write()
+            .process_rtp(&parsed, &rtp, base_ts());
+    }
+
+    fn tmp_path(name: &str) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // leak the dir so the path stays valid for the test duration
+        let p = dir.keep();
+        p.join(name)
+    }
+
+    // ── Happy-path: each format writes a file ────────────────────────
+
+    #[test]
+    fn pcap_saves_packets() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.pcap");
+        let msg = save_to_pcap_path(&app, p.to_str().unwrap(), false);
+        assert!(msg.contains("Saved"), "got: {msg}");
+        assert!(p.exists());
+    }
+
+    #[test]
+    fn pcapng_saves_packets() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.pcapng");
+        let msg = save_to_pcap_path(&app, p.to_str().unwrap(), true);
+        assert!(msg.contains("pcapng"), "got: {msg}");
+        assert!(p.exists());
+    }
+
+    #[test]
+    fn txt_saves_and_content_has_message_header() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.txt");
+        let msg = save_to_txt_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("# Message 1"));
+        assert!(content.contains("INVITE"));
+    }
+
+    #[test]
+    fn json_saves_and_parses_back() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.json");
+        let msg = save_to_json_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(v.is_array());
+        assert_eq!(v.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn ndjson_saves_one_object_per_line() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.ndjson");
+        let msg = save_to_ndjson_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2);
+        for line in lines {
+            let _: serde_json::Value = serde_json::from_str(line).expect("valid json line");
+        }
+    }
+
+    #[test]
+    fn csv_saves_with_header() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.csv");
+        let msg = save_to_csv_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.starts_with("call_id,method,state,"));
+        // header + 2 dialog rows
+        assert_eq!(content.lines().count(), 3);
+    }
+
+    #[test]
+    fn markdown_saves_with_summary() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.md");
+        let msg = save_to_markdown_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("# Call Summary"));
+        assert!(content.contains("## Dialog:"));
+    }
+
+    #[test]
+    fn mermaid_saves_diagram() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.html");
+        let msg = save_to_mermaid_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved Mermaid"), "got: {msg}");
+        assert!(p.exists());
+    }
+
+    #[test]
+    fn sipp_saves_scenario_xml() {
+        let app = app_with_dialogs();
+        let p = tmp_path("out.xml");
+        let msg = save_to_sipp_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved SIPp"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(content.contains("<scenario"));
+        assert!(content.contains("</scenario>"));
+    }
+
+    #[test]
+    fn rtp_json_saves_streams() {
+        let app = app_with_dialogs();
+        add_rtp_stream(&app);
+        let p = tmp_path("rtp.json");
+        let msg = save_to_rtp_json_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved 1 RTP"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 1);
+        assert_eq!(v[0]["codec"], "PCMU");
+    }
+
+    // ── Empty-store paths ────────────────────────────────────────────
+
+    #[test]
+    fn empty_store_messages() {
+        let app = App::new_test();
+        assert_eq!(save_to_pcap_path(&app, "/tmp/x.pcap", false), "No messages to save");
+        assert_eq!(save_to_txt_path(&app, "/tmp/x.txt"), "No messages to save");
+        assert_eq!(save_to_mermaid_path(&app, "/tmp/x.html"), "No messages to export");
+    }
+
+    #[test]
+    fn empty_store_dialogs() {
+        let app = App::new_test();
+        assert_eq!(save_to_json_path(&app, "/tmp/x.json"), "No dialogs to save");
+        assert_eq!(save_to_ndjson_path(&app, "/tmp/x.ndjson"), "No dialogs to save");
+        assert_eq!(save_to_csv_path(&app, "/tmp/x.csv"), "No dialogs to save");
+        assert_eq!(save_to_markdown_path(&app, "/tmp/x.md"), "No dialogs to save");
+        assert_eq!(save_to_sipp_path(&app, "/tmp/x.xml"), "No dialog to export");
+    }
+
+    #[test]
+    fn empty_store_rtp_and_wav() {
+        let app = App::new_test();
+        assert_eq!(save_to_rtp_json_path(&app, "/tmp/x.json"), "No RTP streams to save");
+        // No call flow + no selected dialog -> "No RTP streams captured"
+        let msg = save_to_wav_path(&app, "/tmp/x.wav");
+        assert!(msg.contains("No RTP streams"), "got: {msg}");
+    }
+
+    // ── Error paths: unwritable destinations ─────────────────────────
+
+    /// A path whose parent directory does not exist forces std::fs::write
+    /// (and the pcap writer) to fail.
+    const BAD_PATH: &str = "/nonexistent_dir_xyz/sub/out";
+
+    #[test]
+    fn txt_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_txt_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn json_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_json_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn ndjson_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_ndjson_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn csv_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_csv_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn markdown_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_markdown_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn mermaid_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_mermaid_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn sipp_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_sipp_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    #[test]
+    fn pcap_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        let msg = save_to_pcap_path(&app, BAD_PATH, false);
+        assert!(
+            msg.starts_with("Save failed") || msg.starts_with("Write error"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn rtp_json_write_failure_surfaces_error() {
+        let app = app_with_dialogs();
+        add_rtp_stream(&app);
+        let msg = save_to_rtp_json_path(&app, BAD_PATH);
+        assert!(msg.starts_with("Save failed"), "got: {msg}");
+    }
+
+    // ── Pure helpers ─────────────────────────────────────────────────
+
+    #[test]
+    fn csv_escape_quotes_special_chars() {
+        assert_eq!(csv_escape("plain"), "plain");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("he said \"hi\""), "\"he said \"\"hi\"\"\"");
+        assert_eq!(csv_escape("line\nbreak"), "\"line\nbreak\"");
+    }
+
+    #[test]
+    fn format_dialog_state_maps_variants() {
+        use crate::sip::dialog::DialogState;
+        assert_eq!(format_dialog_state(&DialogState::InCall), "InCall");
+        assert_eq!(format_dialog_state(&DialogState::Completed), "Completed");
+        assert_eq!(format_dialog_state(&DialogState::Failed), "Failed");
+        assert_eq!(format_dialog_state(&DialogState::Terminated), "Terminated");
+    }
+}

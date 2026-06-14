@@ -1598,3 +1598,951 @@ pub(super) fn filtered_dialog_count(app: &App) -> usize {
         store.len()
     }
 }
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::parse::TransportProto;
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use std::net::{IpAddr, Ipv4Addr};
+
+    // ── Construction helpers (mirroring tests/tui_state_test.rs) ──────
+
+    fn addr_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    fn addr_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+    fn base_ts() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn raw_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg
+    }
+
+    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = raw_sip(
+            &format!("INVITE sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse INVITE")
+    }
+
+    fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = raw_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: \"a\" <sip:a@example.com>;tag=t1",
+                "To: \"b\" <sip:b@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
+            .expect("parse 200")
+    }
+
+    fn app_with_dialogs() -> App {
+        let t0 = base_ts();
+        App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0),
+            make_ok("call-1@test", t0 + TimeDelta::seconds(1)),
+            make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
+            make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
+            make_invite("call-3@test", "1005", "1006", t0 + TimeDelta::seconds(10)),
+            make_ok("call-3@test", t0 + TimeDelta::seconds(11)),
+        ])
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn key_mod(code: KeyCode, m: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, m)
+    }
+
+    fn open_call_flow(app: &mut App) {
+        handle_call_list_key(app, key(KeyCode::Enter));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    // ── handle_key_event: dispatch & global ──────────────────────────
+
+    #[test]
+    fn key_event_ctrl_c_quits() {
+        let mut app = App::new_test();
+        handle_key_event(&mut app, key_mod(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn key_event_routes_to_popup_first() {
+        let mut app = app_with_dialogs();
+        app.active_popup = Some(Popup::SaveDialog);
+        // Esc inside save popup closes it (handled by popup handler, not view)
+        handle_key_event(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.active_popup, None);
+    }
+
+    #[test]
+    fn key_event_routes_to_search_when_active() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        handle_key_event(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.search_query, "z");
+        assert!(app.search_active);
+    }
+
+    #[test]
+    fn key_event_dispatches_by_view() {
+        let mut app = App::new_test();
+        handle_key_event(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    // ── handle_search_input ──────────────────────────────────────────
+
+    #[test]
+    fn search_input_char_and_backspace() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        handle_search_input(&mut app, key(KeyCode::Char('a')));
+        handle_search_input(&mut app, key(KeyCode::Char('b')));
+        assert_eq!(app.search_query, "ab");
+        handle_search_input(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.search_query, "a");
+    }
+
+    #[test]
+    fn search_input_esc_clears() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        app.search_query = "foo".to_string();
+        handle_search_input(&mut app, key(KeyCode::Esc));
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, "");
+    }
+
+    #[test]
+    fn search_input_enter_commits() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        app.search_query = "bar".to_string();
+        handle_search_input(&mut app, key(KeyCode::Enter));
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, "bar"); // retained
+    }
+
+    #[test]
+    fn search_input_unhandled_key_noop() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        handle_search_input(&mut app, key(KeyCode::F(4)));
+        assert_eq!(app.search_query, "");
+        assert!(app.search_active);
+    }
+
+    // ── handle_call_list_key ─────────────────────────────────────────
+
+    #[test]
+    fn call_list_down_up_navigation() {
+        let mut app = app_with_dialogs();
+        assert_eq!(app.call_list.selected(), 0);
+        handle_call_list_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.call_list.selected(), 1);
+        handle_call_list_key(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.call_list.selected(), 2);
+        handle_call_list_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.call_list.selected(), 1);
+        handle_call_list_key(&mut app, key(KeyCode::Char('k')));
+        assert_eq!(app.call_list.selected(), 0);
+    }
+
+    #[test]
+    fn call_list_home_end() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.call_list.selected(), 2);
+        handle_call_list_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.call_list.selected(), 0);
+    }
+
+    #[test]
+    fn call_list_page_down_up() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::PageDown));
+        // clamps to last (idx 2)
+        assert_eq!(app.call_list.selected(), 2);
+        handle_call_list_key(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.call_list.selected(), 0);
+    }
+
+    #[test]
+    fn call_list_enter_opens_flow() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn call_list_enter_empty_noop() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn call_list_tab_to_stream_list() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn call_list_space_toggles_selection() {
+        let mut app = app_with_dialogs();
+        assert_eq!(app.call_list.selected_rows_count(), 0);
+        handle_call_list_key(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.call_list.selected_rows_count(), 1);
+    }
+
+    #[test]
+    fn call_list_esc_quits() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::Esc));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn call_list_ctrl_l_clears() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert_eq!(app.dialog_store.read().len(), 0);
+    }
+
+    #[test]
+    fn call_list_f6_opens_raw() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::F(6)));
+        assert!(matches!(app.current_view, View::RawMessage { .. }));
+    }
+
+    #[test]
+    fn call_list_r_opens_raw() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::Char('r')));
+        assert!(matches!(app.current_view, View::RawMessage { .. }));
+    }
+
+    #[test]
+    fn call_list_t_cycles_timestamp() {
+        let mut app = App::new_test();
+        let before = app.timestamp_mode;
+        handle_call_list_key(&mut app, key(KeyCode::Char('t')));
+        assert_ne!(app.timestamp_mode, before);
+        assert!(app.status_error.is_some());
+    }
+
+    #[test]
+    fn call_list_sort_prev_next_reverse() {
+        let mut app = App::new_test();
+        let start = app.call_list.sort_column();
+        handle_call_list_key(&mut app, key(KeyCode::Char('>')));
+        assert_ne!(app.call_list.sort_column(), start);
+        handle_call_list_key(&mut app, key(KeyCode::Char('<')));
+        assert_eq!(app.call_list.sort_column(), start);
+        let asc = app.call_list.sort_ascending();
+        handle_call_list_key(&mut app, key(KeyCode::Char('Z')));
+        assert_ne!(app.call_list.sort_ascending(), asc);
+    }
+
+    #[test]
+    fn call_list_a_toggles_autoscroll() {
+        let mut app = App::new_test();
+        let before = app.call_list.autoscroll;
+        handle_call_list_key(&mut app, key(KeyCode::Char('A')));
+        assert_ne!(app.call_list.autoscroll, before);
+    }
+
+    #[test]
+    fn call_list_p_toggles_pause() {
+        let mut app = App::new_test();
+        assert!(!app.paused);
+        handle_call_list_key(&mut app, key(KeyCode::Char('p')));
+        assert!(app.paused);
+    }
+
+    #[test]
+    fn call_list_help_save_filter_settings() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::F(2)));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::F(7)));
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::F(8)));
+        assert_eq!(app.active_popup, Some(Popup::SettingsDialog));
+    }
+
+    #[test]
+    fn call_list_search_via_slash_and_f3() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Char('/')));
+        assert!(app.search_active);
+
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::F(3)));
+        assert!(app.search_active);
+    }
+
+    #[test]
+    fn call_list_f10_opens_column_selector() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::F(10)));
+        assert!(app.call_list.column_selector_open);
+    }
+
+    #[test]
+    fn call_list_f9_clears_filter() {
+        let mut app = app_with_dialogs();
+        app.active_filter_text = "x".to_string();
+        handle_call_list_key(&mut app, key(KeyCode::F(9)));
+        assert!(app.active_filter.is_none());
+        assert!(app.active_filter_text.is_empty());
+    }
+
+    #[test]
+    fn call_list_s_opens_statistics() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        assert_eq!(app.current_view, View::Statistics);
+    }
+
+    #[test]
+    fn call_list_extended_flow_key() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::F(4)));
+        assert!(app.extended_flow);
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn call_list_capital_o_opens_file_dialog() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Char('O')));
+        assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
+    }
+
+    #[test]
+    fn call_list_unhandled_key_noop() {
+        let mut app = App::new_test();
+        handle_call_list_key(&mut app, key(KeyCode::Char('Q')));
+        assert_eq!(app.current_view, View::CallList);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn call_list_routes_to_column_selector_when_open() {
+        let mut app = App::new_test();
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Esc));
+        assert!(!app.call_list.column_selector_open);
+    }
+
+    // ── handle_column_selector_key ───────────────────────────────────
+
+    #[test]
+    fn column_selector_nav_and_toggle() {
+        let mut app = App::new_test();
+        app.call_list.column_selector_open = true;
+        app.call_list.column_selector_cursor = 0;
+        handle_column_selector_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.call_list.column_selector_cursor, 1);
+        handle_column_selector_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.call_list.column_selector_cursor, 0);
+
+        let vis = app.call_list.visible_columns[0];
+        handle_column_selector_key(&mut app, key(KeyCode::Char(' ')));
+        assert_ne!(app.call_list.visible_columns[0], vis);
+    }
+
+    #[test]
+    fn column_selector_enter_and_esc_close() {
+        let mut app = App::new_test();
+        app.call_list.column_selector_open = true;
+        handle_column_selector_key(&mut app, key(KeyCode::Enter));
+        assert!(!app.call_list.column_selector_open);
+
+        app.call_list.column_selector_open = true;
+        handle_column_selector_key(&mut app, key(KeyCode::Esc));
+        assert!(!app.call_list.column_selector_open);
+    }
+
+    #[test]
+    fn column_selector_unhandled_noop() {
+        let mut app = App::new_test();
+        app.call_list.column_selector_open = true;
+        handle_column_selector_key(&mut app, key(KeyCode::Char('z')));
+        assert!(app.call_list.column_selector_open);
+    }
+
+    // ── handle_stream_list_key ───────────────────────────────────────
+
+    #[test]
+    fn stream_list_tab_back_to_call_list() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn stream_list_esc_to_call_list() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn stream_list_quit_help_search_filter_save() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::Char('/')));
+        assert!(app.search_active);
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::F(7)));
+        assert_eq!(app.active_popup, Some(Popup::FilterDialog));
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::F(2)));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+
+    #[test]
+    fn stream_list_nav_noop_when_empty() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_stream_list_key(&mut app, key(KeyCode::Down));
+        handle_stream_list_key(&mut app, key(KeyCode::Up));
+        handle_stream_list_key(&mut app, key(KeyCode::Home));
+        handle_stream_list_key(&mut app, key(KeyCode::End));
+        // Enter with no streams: stays in stream list
+        handle_stream_list_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    // ── handle_stream_detail_key ─────────────────────────────────────
+
+    fn app_in_stream_detail() -> App {
+        let mut app = App::new_test();
+        let k = crate::rtp::stream::StreamKey {
+            ssrc: 1,
+            src: std::net::SocketAddr::new(addr_a(), 20000),
+            dst: std::net::SocketAddr::new(addr_b(), 30000),
+        };
+        app.stream_detail_return_view = Some(View::StreamList);
+        app.current_view = View::StreamDetail(k);
+        app
+    }
+
+    #[test]
+    fn stream_detail_scroll() {
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.stream_detail_scroll, 1);
+        handle_stream_detail_key(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.stream_detail_scroll, 2);
+        handle_stream_detail_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.stream_detail_scroll, 1);
+        handle_stream_detail_key(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.stream_detail_scroll, 21);
+        handle_stream_detail_key(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.stream_detail_scroll, 1);
+        handle_stream_detail_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.stream_detail_scroll, 0);
+    }
+
+    #[test]
+    fn stream_detail_up_saturates() {
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.stream_detail_scroll, 0);
+    }
+
+    #[test]
+    fn stream_detail_esc_returns() {
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn stream_detail_esc_default_stream_list() {
+        let mut app = app_in_stream_detail();
+        app.stream_detail_return_view = None;
+        handle_stream_detail_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn stream_detail_quit_help_save() {
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+
+        let mut app = app_in_stream_detail();
+        handle_stream_detail_key(&mut app, key(KeyCode::F(2)));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+
+    // ── handle_call_flow_key ─────────────────────────────────────────
+
+    #[test]
+    fn call_flow_down_up() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        assert_eq!(app.selected_msg_index, 0);
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.selected_msg_index, 1);
+        handle_call_flow_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.selected_msg_index, 0);
+    }
+
+    #[test]
+    fn call_flow_home_end() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.selected_msg_index, 1); // 2 msgs
+        handle_call_flow_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.selected_msg_index, 0);
+    }
+
+    #[test]
+    fn call_flow_page_up_down() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.selected_msg_index, 1);
+        handle_call_flow_key(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.selected_msg_index, 0);
+    }
+
+    #[test]
+    fn call_flow_enter_opens_raw() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.current_view, View::RawMessage { .. }));
+    }
+
+    #[test]
+    fn call_flow_space_diff_select() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.diff_selected_msg, Some(0));
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(matches!(app.current_view, View::MessageDiff { .. }));
+    }
+
+    #[test]
+    fn call_flow_r_jumps_to_stream_list() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn call_flow_display_toggles() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        let sdp = app.sdp_display_mode;
+        handle_call_flow_key(&mut app, key(KeyCode::Char('d')));
+        assert_ne!(app.sdp_display_mode, sdp);
+
+        let cm = app.color_mode;
+        handle_call_flow_key(&mut app, key(KeyCode::Char('c')));
+        assert_ne!(app.color_mode, cm);
+
+        let rp = app.raw_preview;
+        handle_call_flow_key(&mut app, key(KeyCode::Char('R')));
+        assert_ne!(app.raw_preview, rp);
+    }
+
+    #[test]
+    fn call_flow_panel_resize() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        app.raw_preview = true;
+        let pct = app.raw_preview_pct;
+        handle_call_flow_key(&mut app, key(KeyCode::Char('+')));
+        assert_eq!(app.raw_preview_pct, pct + 5);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('-')));
+        assert_eq!(app.raw_preview_pct, pct);
+    }
+
+    #[test]
+    fn call_flow_detail_scroll_brackets() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(']')));
+        assert_eq!(app.detail_scroll, 1);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('[')));
+        assert_eq!(app.detail_scroll, 0);
+    }
+
+    #[test]
+    fn call_flow_extended_and_rtp_toggle() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('x')));
+        assert!(app.extended_flow);
+        let rtp = app.show_rtp_in_flow;
+        handle_call_flow_key(&mut app, key(KeyCode::F(6)));
+        assert_ne!(app.show_rtp_in_flow, rtp);
+    }
+
+    #[test]
+    fn call_flow_mark_set_clear() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('m')));
+        assert_eq!(app.mark_index, Some(0));
+        handle_call_flow_key(&mut app, key(KeyCode::Char('M')));
+        assert_eq!(app.mark_index, None);
+    }
+
+    #[test]
+    fn call_flow_fold_expand_toggle() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('e')));
+        assert!(app.fold_expanded.contains(&0));
+        handle_call_flow_key(&mut app, key(KeyCode::Char('e')));
+        assert!(!app.fold_expanded.contains(&0));
+    }
+
+    #[test]
+    fn call_flow_esc_clears_diff_and_returns() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        handle_call_flow_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.diff_selected_msg, None);
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn call_flow_quit_help_save() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::F(2)));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+
+    #[test]
+    fn call_flow_f5_resets_compare_and_f9_clears_filter() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.diff_selected_msg.is_some());
+        handle_call_flow_key(&mut app, key(KeyCode::F(5)));
+        assert_eq!(app.diff_selected_msg, None);
+
+        app.active_filter_text = "x".to_string();
+        handle_call_flow_key(&mut app, key(KeyCode::F(9)));
+        assert!(app.active_filter.is_none());
+    }
+
+    #[test]
+    fn call_flow_unhandled_noop() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('Q')));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    // ── handle_raw_message_key ───────────────────────────────────────
+
+    fn app_in_raw_message() -> App {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.current_view, View::RawMessage { .. }));
+        app
+    }
+
+    #[test]
+    fn raw_message_scroll() {
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.raw_msg_scroll, 1);
+        handle_raw_message_key(&mut app, key(KeyCode::Char('j')));
+        assert_eq!(app.raw_msg_scroll, 2);
+        handle_raw_message_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.raw_msg_scroll, 1);
+        handle_raw_message_key(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.raw_msg_scroll, 21);
+        handle_raw_message_key(&mut app, key(KeyCode::PageUp));
+        assert_eq!(app.raw_msg_scroll, 1);
+        handle_raw_message_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.raw_msg_scroll, 0);
+    }
+
+    #[test]
+    fn raw_message_esc_returns_to_flow() {
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn raw_message_toggles_and_search() {
+        let mut app = app_in_raw_message();
+        let sh = app.syntax_highlight;
+        handle_raw_message_key(&mut app, key(KeyCode::Char('s')));
+        assert_ne!(app.syntax_highlight, sh);
+
+        let cm = app.color_mode;
+        handle_raw_message_key(&mut app, key(KeyCode::Char('c')));
+        assert_ne!(app.color_mode, cm);
+
+        handle_raw_message_key(&mut app, key(KeyCode::Char('/')));
+        assert!(app.search_active);
+    }
+
+    #[test]
+    fn raw_message_quit_help_save() {
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::F(2)));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+
+    #[test]
+    fn raw_message_unhandled_noop() {
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::Char('Z')));
+        assert!(matches!(app.current_view, View::RawMessage { .. }));
+    }
+
+    // ── handle_message_diff_key ──────────────────────────────────────
+
+    fn app_in_message_diff() -> App {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(matches!(app.current_view, View::MessageDiff { .. }));
+        app
+    }
+
+    #[test]
+    fn message_diff_q_quits() {
+        let mut app = app_in_message_diff();
+        handle_message_diff_key(&mut app, key(KeyCode::Char('q')));
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn message_diff_esc_returns_to_flow() {
+        let mut app = app_in_message_diff();
+        handle_message_diff_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn message_diff_f1_help() {
+        let mut app = app_in_message_diff();
+        handle_message_diff_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::Help);
+    }
+
+    #[test]
+    fn message_diff_unhandled_noop() {
+        let mut app = app_in_message_diff();
+        handle_message_diff_key(&mut app, key(KeyCode::Char('z')));
+        assert!(matches!(app.current_view, View::MessageDiff { .. }));
+    }
+
+    // ── handle_help_key / handle_statistics_key ──────────────────────
+
+    #[test]
+    fn help_key_closes() {
+        let mut app = App::new_test();
+        app.current_view = View::Help;
+        handle_help_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+
+        app.current_view = View::Help;
+        handle_help_key(&mut app, key(KeyCode::F(1)));
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn help_key_unhandled_noop() {
+        let mut app = App::new_test();
+        app.current_view = View::Help;
+        handle_help_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.current_view, View::Help);
+    }
+
+    #[test]
+    fn statistics_key_closes() {
+        let mut app = App::new_test();
+        app.current_view = View::Statistics;
+        handle_statistics_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::CallList);
+
+        app.current_view = View::Statistics;
+        handle_statistics_key(&mut app, key(KeyCode::Char('s')));
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn statistics_key_unhandled_noop() {
+        let mut app = App::new_test();
+        app.current_view = View::Statistics;
+        handle_statistics_key(&mut app, key(KeyCode::Char('z')));
+        assert_eq!(app.current_view, View::Statistics);
+    }
+
+    // ── handle_settings_popup_key ────────────────────────────────────
+
+    #[test]
+    fn settings_popup_nav_and_toggle() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+        app.settings_dialog.focused_item = 0;
+        handle_settings_popup_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.settings_dialog.focused_item, 1);
+        handle_settings_popup_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.settings_dialog.focused_item, 0);
+
+        // Item 0 = color mode cycle
+        let cm = app.color_mode;
+        handle_settings_popup_key(&mut app, key(KeyCode::Enter));
+        assert_ne!(app.color_mode, cm);
+    }
+
+    #[test]
+    fn settings_popup_esc_closes() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+        handle_settings_popup_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.active_popup, None);
+    }
+
+    // ── helpers ──────────────────────────────────────────────────────
+
+    #[test]
+    fn filtered_dialog_count_no_filter() {
+        let app = app_with_dialogs();
+        assert_eq!(filtered_dialog_count(&app), 3);
+    }
+
+    #[test]
+    fn get_selected_call_id_returns_first() {
+        let app = app_with_dialogs();
+        assert!(get_selected_call_id(&app).is_some());
+    }
+
+    #[test]
+    fn is_rtcp_offline_checks() {
+        // even port -> false
+        assert!(!is_rtcp_offline(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5000));
+        // odd port, version 2, pt 200 -> true
+        assert!(is_rtcp_offline(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5001));
+        // too short -> false
+        assert!(!is_rtcp_offline(&[0x80, 200], 5001));
+        // wrong version -> false
+        assert!(!is_rtcp_offline(&[0x00, 200, 0, 0, 0, 0, 0, 0], 5001));
+        // pt out of range -> false
+        assert!(!is_rtcp_offline(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
+    }
+
+    #[test]
+    fn expand_tilde_expands_home() {
+        // SAFETY: test-only env mutation
+        unsafe {
+            std::env::set_var("HOME", "/home/testuser");
+        }
+        assert_eq!(expand_tilde("~/foo"), "/home/testuser/foo");
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+    }
+
+    #[test]
+    fn load_pcap_file_missing_returns_error() {
+        let mut app = App::new_test();
+        let msg = load_pcap_file(&mut app, "/nonexistent/path/file.pcap");
+        assert!(msg.contains("File not found"), "got: {msg}");
+    }
+}
