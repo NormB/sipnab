@@ -1106,4 +1106,393 @@ mod tests {
         // Should have header + bar + message + closing bar
         assert!(lines.len() >= 4);
     }
+
+    // ── Shared helpers for the builder/render coverage tests ───────────
+
+    use crate::sip::dialog_store::DialogStore;
+    use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, Utc};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn ip_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    fn ip_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+    fn base_ts() -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn build_raw(first_line: &str, headers: &[&str], body: &str) -> Vec<u8> {
+        let mut s = String::new();
+        s.push_str(first_line);
+        s.push_str("\r\n");
+        for h in headers {
+            s.push_str(h);
+            s.push_str("\r\n");
+        }
+        s.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        s.push_str("\r\n");
+        s.push_str(body);
+        s.into_bytes()
+    }
+
+    /// A->B request message.
+    fn req(method: &str, cseq: &str, call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_raw(
+            &format!("{method} sip:bob@10.0.0.2 SIP/2.0"),
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKreq",
+                "From: \"Alice\" <sip:alice@10.0.0.1>;tag=t1",
+                "To: \"Bob\" <sip:bob@10.0.0.2>",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq}"),
+            ],
+            "",
+        );
+        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse request")
+    }
+
+    /// B->A response message.
+    fn resp(
+        status: u16,
+        reason: &str,
+        cseq: &str,
+        call_id: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_raw(
+            &format!("SIP/2.0 {status} {reason}"),
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKreq",
+                "From: \"Alice\" <sip:alice@10.0.0.1>;tag=t1",
+                "To: \"Bob\" <sip:bob@10.0.0.2>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq}"),
+            ],
+            "",
+        );
+        parse_sip(&raw, ts, ip_b(), ip_a(), 5060, 5060, TransportProto::Udp)
+            .expect("parse response")
+    }
+
+    /// INVITE A->B carrying an SDP offer.
+    fn invite_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let sdp = "v=0\r\n\
+                   o=- 1 1 IN IP4 10.0.0.1\r\n\
+                   s=-\r\n\
+                   c=IN IP4 10.0.0.1\r\n\
+                   t=0 0\r\n\
+                   m=audio 20000 RTP/AVP 0 8\r\n\
+                   a=rtpmap:0 PCMU/8000\r\n\
+                   a=rtpmap:8 PCMA/8000\r\n";
+        let raw = build_raw(
+            "INVITE sip:bob@10.0.0.2 SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKsdp",
+                "From: \"Alice\" <sip:alice@10.0.0.1>;tag=t1",
+                "To: \"Bob\" <sip:bob@10.0.0.2>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+            ],
+            sdp,
+        );
+        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse INVITE+SDP")
+    }
+
+    fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
+        FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::None,
+            ts_mode: TimestampMode::Absolute,
+            color_mode: ColorMode::Method,
+            show_rtp: false,
+            selected_msg: None,
+            theme,
+        }
+    }
+
+    fn line_to_string(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    fn lines_to_string(lines: &[Line<'_>]) -> String {
+        lines.iter().map(line_to_string).collect::<Vec<_>>().join("\n")
+    }
+
+    /// Store with a complete INVITE/180/200/ACK/BYE/200 dialog.
+    fn store_full_dialog(call_id: &str) -> DialogStore {
+        let t = base_ts();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(req("INVITE", "1 INVITE", call_id, t));
+        store.process_message(resp(180, "Ringing", "1 INVITE", call_id, t + TimeDelta::seconds(1)));
+        store.process_message(resp(200, "OK", "1 INVITE", call_id, t + TimeDelta::seconds(2)));
+        store.process_message(req("ACK", "1 ACK", call_id, t + TimeDelta::milliseconds(2100)));
+        store.process_message(req("BYE", "2 BYE", call_id, t + TimeDelta::seconds(30)));
+        store.process_message(resp(200, "OK", "2 BYE", call_id, t + TimeDelta::seconds(30)));
+        store
+    }
+
+    fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(w, h)).unwrap()
+    }
+
+    fn buffer_text(term: &Terminal<TestBackend>) -> String {
+        let buf = term.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    // ── build_call_flow_lines / _with_width ────────────────────────────
+
+    #[test]
+    fn build_lines_full_dialog_has_methods_and_status() {
+        let theme = Theme::default();
+        let store = store_full_dialog("full@test");
+        let (count, lines) = build_call_flow_lines(&store, "full@test", &theme).expect("some");
+        let stored = store.get("full@test").unwrap().messages.len();
+        assert_eq!(count, stored);
+        // header + top bar + N messages + bottom bar
+        assert_eq!(lines.len(), stored + 3);
+        let text = lines_to_string(&lines);
+        for needle in ["10.0.0.1:5060", "INVITE", "180", "200", "ACK", "BYE"] {
+            assert!(text.contains(needle), "missing {needle} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn build_lines_missing_dialog_returns_none() {
+        let theme = Theme::default();
+        let store = DialogStore::new(100, false);
+        assert!(build_call_flow_lines(&store, "nope@test", &theme).is_none());
+    }
+
+    #[test]
+    fn build_lines_pdd_annotation_on_180() {
+        let theme = Theme::default();
+        let store = store_full_dialog("pdd@test");
+        // 120-wide default => PDD annotated against the 180 Ringing.
+        let (_c, lines) = build_call_flow_lines(&store, "pdd@test", &theme).expect("some");
+        let text = lines_to_string(&lines);
+        assert!(text.contains("PDD:"), "expected PDD annotation in:\n{text}");
+    }
+
+    #[test]
+    fn build_lines_narrow_width_clamps_arrow() {
+        let theme = Theme::default();
+        let store = store_full_dialog("narrow@test");
+        // width 20 forces saturating_sub to 0 -> MIN_ARROW_WIDTH path.
+        let narrow = build_call_flow_lines_with_width(&store, "narrow@test", 20, &theme)
+            .expect("some")
+            .1;
+        let wide = build_call_flow_lines_with_width(&store, "narrow@test", 200, &theme)
+            .expect("some")
+            .1;
+        // Same logical line count regardless of width.
+        assert_eq!(narrow.len(), wide.len());
+        // Narrow header should be shorter than the wide one (smaller arrow span).
+        let nh = line_to_string(&narrow[0]).chars().count();
+        let wh = line_to_string(&wide[0]).chars().count();
+        assert!(nh < wh, "narrow header {nh} should be < wide {wh}");
+    }
+
+    #[test]
+    fn build_lines_single_message_dialog() {
+        let theme = Theme::default();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(req("INVITE", "1 INVITE", "one@test", base_ts()));
+        let (count, lines) = build_call_flow_lines(&store, "one@test", &theme).expect("some");
+        assert_eq!(count, 1);
+        // header + bar + 1 message + bar
+        assert_eq!(lines.len(), 4);
+        assert!(lines_to_string(&lines).contains("INVITE"));
+    }
+
+    #[test]
+    fn build_lines_provisional_then_error_final() {
+        let theme = Theme::default();
+        let t = base_ts();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(req("INVITE", "1 INVITE", "err@test", t));
+        store.process_message(resp(100, "Trying", "1 INVITE", "err@test", t + TimeDelta::milliseconds(50)));
+        store.process_message(resp(480, "Temporarily Unavailable", "1 INVITE", "err@test", t + TimeDelta::seconds(1)));
+        let (count, lines) = build_call_flow_lines(&store, "err@test", &theme).expect("some");
+        assert_eq!(count, 3);
+        let text = lines_to_string(&lines);
+        assert!(text.contains("100"));
+        assert!(text.contains("480"));
+    }
+
+    // ── build_call_flow_lines_with_options ─────────────────────────────
+
+    #[test]
+    fn build_lines_with_options_selected_marker() {
+        let theme = Theme::default();
+        let store = store_full_dialog("opt@test");
+        let mut o = opts(&theme);
+        o.selected_msg = Some(2);
+        let (_c, lines) = build_call_flow_lines_with_options(&store, "opt@test", 120, &o)
+            .expect("some");
+        assert!(lines_to_string(&lines).contains("[SELECTED]"));
+    }
+
+    #[test]
+    fn build_lines_with_options_sdp_summary_and_rtp() {
+        let theme = Theme::default();
+        let t = base_ts();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(invite_with_sdp("sdp@test", t));
+        store.process_message(resp(200, "OK", "1 INVITE", "sdp@test", t + TimeDelta::seconds(1)));
+        store.process_message(req("ACK", "1 ACK", "sdp@test", t + TimeDelta::milliseconds(1100)));
+        store.process_message(req("BYE", "2 BYE", "sdp@test", t + TimeDelta::seconds(10)));
+        let mut o = opts(&theme);
+        o.sdp_mode = SdpDisplayMode::Summary;
+        o.show_rtp = true;
+        let (_c, lines) = build_call_flow_lines_with_options(&store, "sdp@test", 120, &o)
+            .expect("some");
+        let text = lines_to_string(&lines);
+        // SDP summary lists codecs; show_rtp draws an "RTP stream active" bar at BYE.
+        assert!(text.contains("Codecs:"), "expected codec summary in:\n{text}");
+        assert!(text.contains("RTP stream active"), "expected RTP bar in:\n{text}");
+    }
+
+    #[test]
+    fn build_lines_with_options_sdp_full_emits_body_lines() {
+        let theme = Theme::default();
+        let mut store = DialogStore::new(100, false);
+        store.process_message(invite_with_sdp("sdpfull@test", base_ts()));
+        let mut o = opts(&theme);
+        o.sdp_mode = SdpDisplayMode::Full;
+        let (_c, lines) = build_call_flow_lines_with_options(&store, "sdpfull@test", 120, &o)
+            .expect("some");
+        let text = lines_to_string(&lines);
+        assert!(text.contains("m=audio 20000"), "expected raw SDP body in:\n{text}");
+        assert!(text.contains("a=rtpmap:0 PCMU/8000"));
+    }
+
+    #[test]
+    fn build_lines_with_options_delta_prev_timestamps() {
+        let theme = Theme::default();
+        let store = store_full_dialog("delta@test");
+        let mut o = opts(&theme);
+        o.ts_mode = TimestampMode::DeltaPrev;
+        let (_c, lines) = build_call_flow_lines_with_options(&store, "delta@test", 120, &o)
+            .expect("some");
+        // Delta-prev renders "+<n>s" relative timestamps.
+        assert!(lines_to_string(&lines).contains("+"));
+    }
+
+    #[test]
+    fn build_lines_with_options_missing_dialog_none() {
+        let theme = Theme::default();
+        let store = DialogStore::new(100, false);
+        let o = opts(&theme);
+        assert!(build_call_flow_lines_with_options(&store, "absent@test", 120, &o).is_none());
+    }
+
+    // ── build_extended_flow_lines ──────────────────────────────────────
+
+    #[test]
+    fn extended_flow_single_leg_header() {
+        let theme = Theme::default();
+        let store = store_full_dialog("ext@test");
+        let o = opts(&theme);
+        let (count, lines) = build_extended_flow_lines(&store, "ext@test", 120, &o)
+            .expect("some");
+        assert_eq!(count, 6);
+        let text = lines_to_string(&lines);
+        assert!(text.contains("Extended Flow:"), "missing header in:\n{text}");
+        assert!(text.contains("correlated leg(s)"));
+        assert!(text.contains("INVITE"));
+    }
+
+    #[test]
+    fn extended_flow_missing_dialog_none() {
+        let theme = Theme::default();
+        let store = DialogStore::new(100, false);
+        let o = opts(&theme);
+        assert!(build_extended_flow_lines(&store, "gone@test", 120, &o).is_none());
+    }
+
+    // ── render_call_flow / render_call_flow_lines ──────────────────────
+
+    #[test]
+    fn render_call_flow_paints_buffer() {
+        let theme = Theme::default();
+        let store = store_full_dialog("render@test");
+        let mut term = terminal(100, 30);
+        let area = Rect::new(0, 0, 100, 30);
+        term.draw(|f| render_call_flow(f, area, &store, "render@test", 0, &theme))
+            .unwrap();
+        let text = buffer_text(&term);
+        assert!(text.contains("INVITE"), "buffer:\n{text}");
+        assert!(text.contains("BYE"));
+        assert!(!text.contains("Dialog not found"));
+    }
+
+    #[test]
+    fn render_call_flow_missing_shows_fallback() {
+        let theme = Theme::default();
+        let store = DialogStore::new(100, false);
+        let mut term = terminal(80, 10);
+        let area = Rect::new(0, 0, 80, 10);
+        term.draw(|f| render_call_flow(f, area, &store, "missing@test", 0, &theme))
+            .unwrap();
+        assert!(buffer_text(&term).contains("Dialog not found or empty"));
+    }
+
+    #[test]
+    fn render_call_flow_narrow_width() {
+        let theme = Theme::default();
+        let store = store_full_dialog("rnarrow@test");
+        let mut term = terminal(40, 20);
+        let area = Rect::new(0, 0, 40, 20);
+        term.draw(|f| render_call_flow(f, area, &store, "rnarrow@test", 0, &theme))
+            .unwrap();
+        // Still renders the wrapped ladder without panicking; some content present.
+        let text = buffer_text(&term);
+        assert!(text.contains("INVITE") || text.contains("10.0.0.1"), "buffer:\n{text}");
+    }
+
+    #[test]
+    fn render_call_flow_lines_scroll_offset() {
+        let theme = Theme::default();
+        let store = store_full_dialog("scroll@test");
+        let mut term = terminal(100, 6);
+        let area = Rect::new(0, 0, 100, 6);
+        // Scroll past the header rows so later messages appear at the top.
+        term.draw(|f| {
+            render_call_flow_lines(f, area, "scroll@test", 4, &theme, || {
+                build_call_flow_lines_with_width(&store, "scroll@test", 100, &theme)
+            })
+        })
+        .unwrap();
+        let text = buffer_text(&term);
+        // With offset 4 (header+bar+INVITE+180 scrolled away) the 200/ACK/BYE show.
+        assert!(text.contains("BYE") || text.contains("ACK") || text.contains("200"), "buffer:\n{text}");
+    }
+
+    #[test]
+    fn render_call_flow_lines_builder_returns_none() {
+        let theme = Theme::default();
+        let mut term = terminal(60, 8);
+        let area = Rect::new(0, 0, 60, 8);
+        term.draw(|f| {
+            render_call_flow_lines(f, area, "x@test", 0, &theme, || None)
+        })
+        .unwrap();
+        assert!(buffer_text(&term).contains("Dialog not found or empty"));
+    }
 }

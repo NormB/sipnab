@@ -731,6 +731,537 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use chrono::{DateTime, TimeDelta, Utc};
+
+    use crate::capture::parse::TransportProto;
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use crate::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+
+    use super::*;
+
+    // ── Construction helpers ─────────────────────────────────────────
+
+    fn addr_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    fn addr_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+    fn t0() -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn build_raw(first_line: &str, headers: &[&str], body: &str) -> Vec<u8> {
+        let mut m = Vec::new();
+        m.extend_from_slice(first_line.as_bytes());
+        m.extend_from_slice(b"\r\n");
+        for h in headers {
+            m.extend_from_slice(h.as_bytes());
+            m.extend_from_slice(b"\r\n");
+        }
+        m.extend_from_slice(b"\r\n");
+        m.extend_from_slice(body.as_bytes());
+        m
+    }
+
+    fn parse_req(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
+        parse_sip(raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp).expect("parse req")
+    }
+
+    fn parse_resp(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
+        parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
+            .expect("parse resp")
+    }
+
+    fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        parse_req(
+            &build_raw(
+                "INVITE sip:bob@10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} INVITE"),
+                    "Content-Length: 0",
+                ],
+                "",
+            ),
+            ts,
+        )
+    }
+
+    fn invite_with_sdp(cid: &str, cseq: u32, codecs_line: &str, rtpmaps: &[&str], ts: DateTime<Utc>) -> SipMessage {
+        let mut sdp = String::from(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 10.0.0.1\r\n\
+             s=-\r\n\
+             c=IN IP4 10.0.0.1\r\n\
+             t=0 0\r\n",
+        );
+        sdp.push_str(codecs_line);
+        sdp.push_str("\r\n");
+        for rm in rtpmaps {
+            sdp.push_str(rm);
+            sdp.push_str("\r\n");
+        }
+        parse_req(
+            &build_raw(
+                "INVITE sip:bob@10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} INVITE"),
+                    "Content-Type: application/sdp",
+                    &format!("Content-Length: {}", sdp.len()),
+                ],
+                &sdp,
+            ),
+            ts,
+        )
+    }
+
+    fn register(cid: &str, cseq: u32, auth: Option<&str>, ts: DateTime<Utc>) -> SipMessage {
+        let mut headers = vec![
+            "From: <sip:alice@10.0.0.1>;tag=t1".to_string(),
+            "To: <sip:alice@10.0.0.1>".to_string(),
+            format!("Call-ID: {cid}"),
+            format!("CSeq: {cseq} REGISTER"),
+            "Content-Length: 0".to_string(),
+        ];
+        if let Some(a) = auth {
+            headers.push(format!("Authorization: {a}"));
+        }
+        let hdr_refs: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
+        parse_req(
+            &build_raw("REGISTER sip:10.0.0.2 SIP/2.0", &hdr_refs, ""),
+            ts,
+        )
+    }
+
+    fn ack(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        parse_req(
+            &build_raw(
+                "ACK sip:bob@10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} ACK"),
+                    "Content-Length: 0",
+                ],
+                "",
+            ),
+            ts,
+        )
+    }
+
+    fn ack_register(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        parse_req(
+            &build_raw(
+                "ACK sip:10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:alice@10.0.0.1>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} ACK"),
+                    "Content-Length: 0",
+                ],
+                "",
+            ),
+            ts,
+        )
+    }
+
+    fn response(cid: &str, status: u16, reason: &str, cseq: u32, method: &str, ts: DateTime<Utc>) -> SipMessage {
+        parse_resp(
+            &build_raw(
+                &format!("SIP/2.0 {status} {reason}"),
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} {method}"),
+                    "Content-Length: 0",
+                ],
+                "",
+            ),
+            ts,
+        )
+    }
+
+    fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        parse_req(
+            &build_raw(
+                "BYE sip:bob@10.0.0.2 SIP/2.0",
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} BYE"),
+                    "Content-Length: 0",
+                ],
+                "",
+            ),
+            ts,
+        )
+    }
+
+    fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
+        FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::None,
+            ts_mode: TimestampMode::Absolute,
+            color_mode: ColorMode::Method,
+            show_rtp: false,
+            selected_msg: None,
+            theme,
+        }
+    }
+
+    // ── delta_style ──────────────────────────────────────────────────
+
+    #[test]
+    fn delta_style_buckets() {
+        let theme = Theme::default();
+        assert_eq!(delta_style(0, &theme).fg, Some(theme.good));
+        assert_eq!(delta_style(99, &theme).fg, Some(theme.good));
+        assert_eq!(delta_style(100, &theme).fg, Some(theme.warning));
+        assert_eq!(delta_style(999, &theme).fg, Some(theme.warning));
+        assert_eq!(delta_style(1000, &theme).fg, Some(theme.bad));
+        assert_eq!(delta_style(4999, &theme).fg, Some(theme.bad));
+        // > 5s → bold red
+        let slow = delta_style(5000, &theme);
+        assert_eq!(slow.fg, Some(theme.bad));
+        assert!(slow.add_modifier.contains(Modifier::BOLD));
+        // negative deltas count as fast/good
+        assert_eq!(delta_style(-10, &theme).fg, Some(theme.good));
+    }
+
+    // ── format_message_label ─────────────────────────────────────────
+
+    #[test]
+    fn label_request_and_response() {
+        assert_eq!(format_message_label(&invite("c1", 1, t0())), "INVITE");
+        let r = response("c1", 200, "OK", 1, "INVITE", t0());
+        assert_eq!(format_message_label(&r), "200 OK");
+        let r180 = response("c1", 180, "Ringing", 1, "INVITE", t0());
+        assert_eq!(format_message_label(&r180), "180 Ringing");
+    }
+
+    #[test]
+    fn label_appends_sdp_suffix() {
+        let m = invite_with_sdp(
+            "csdp",
+            1,
+            "m=audio 20000 RTP/AVP 0 8",
+            &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
+            t0(),
+        );
+        assert_eq!(format_message_label(&m), "INVITE (SDP)");
+    }
+
+    // ── prepare_messages: empty ──────────────────────────────────────
+
+    #[test]
+    fn prepare_empty_returns_empty() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let (parts, msgs) = prepare_messages(&[], t0(), None, &o, &HashSet::new());
+        assert!(parts.is_empty());
+        assert!(msgs.is_empty());
+    }
+
+    // ── prepare_messages: basic dialog + participants + PDD ───────────
+
+    #[test]
+    fn prepare_basic_dialog_with_pdd() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![
+            invite("c1", 1, t0()),
+            response("c1", 180, "Ringing", 1, "INVITE", t0() + TimeDelta::milliseconds(500)),
+            response("c1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            ack("c1", 1, t0() + TimeDelta::seconds(1)),
+            bye("c1", 2, t0() + TimeDelta::seconds(30)),
+        ];
+        let (parts, prepared) = prepare_messages(&msgs, t0(), Some(500), &o, &HashSet::new());
+        // Two endpoints discovered (A↔B).
+        assert_eq!(parts.len(), 2);
+        assert_eq!(prepared.len(), 5);
+        // PDD note attached to the 180 Ringing row.
+        let pdd_row = prepared.iter().find(|m| m.label == "180 Ringing").unwrap();
+        assert_eq!(pdd_row.pdd_note.as_deref(), Some("  PDD: 500ms"));
+        // Only one PDD note total.
+        assert_eq!(prepared.iter().filter(|m| m.pdd_note.is_some()).count(), 1);
+    }
+
+    // ── prepare_messages: SDP summary → extract_codec_list path ───────
+
+    #[test]
+    fn prepare_sdp_summary_lists_codecs() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.sdp_mode = SdpDisplayMode::Summary;
+        let msgs = vec![invite_with_sdp(
+            "csdp",
+            1,
+            "m=audio 20000 RTP/AVP 0 8",
+            &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
+            t0(),
+        )];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(prepared.len(), 1);
+        let codec_line = prepared[0]
+            .extra_lines
+            .iter()
+            .find(|(s, _)| s.contains("Codecs:"))
+            .map(|(s, _)| s.clone())
+            .expect("codec summary line");
+        assert!(codec_line.contains("PCMU"), "got: {codec_line}");
+        assert!(codec_line.contains("PCMA"), "got: {codec_line}");
+    }
+
+    #[test]
+    fn prepare_sdp_full_emits_body_lines() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.sdp_mode = SdpDisplayMode::Full;
+        let msgs = vec![invite_with_sdp(
+            "csdp",
+            1,
+            "m=audio 20000 RTP/AVP 0",
+            &["a=rtpmap:0 PCMU/8000"],
+            t0(),
+        )];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let joined: String = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("v=0"), "full SDP body missing: {joined}");
+        assert!(joined.contains("m=audio"), "media line missing: {joined}");
+    }
+
+    // ── prepare_messages: SDP delta badge (re-INVITE codec change) ────
+
+    #[test]
+    fn prepare_sdp_badge_on_codec_change() {
+        let theme = Theme::default();
+        let o = opts(&theme); // sdp_mode None is fine; badges are independent
+        let msgs = vec![
+            invite_with_sdp(
+                "cbadge",
+                1,
+                "m=audio 20000 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0(),
+            ),
+            // re-INVITE adds G722, removes PCMU.
+            invite_with_sdp(
+                "cbadge",
+                2,
+                "m=audio 20000 RTP/AVP 9",
+                &["a=rtpmap:9 G722/8000"],
+                t0() + TimeDelta::seconds(5),
+            ),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let badge = prepared[1].sdp_badge.as_deref().expect("badge on re-INVITE");
+        assert!(badge.contains("+G722"), "expected codec add: {badge}");
+        assert!(badge.contains("PCMU"), "expected codec removal: {badge}");
+    }
+
+    // ── prepare_messages: RTP bar insertion on ACK ────────────────────
+
+    #[test]
+    fn prepare_rtp_bar_inserted_after_ack() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite("crtp", 1, t0()),
+            response("crtp", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            ack("crtp", 1, t0() + TimeDelta::seconds(1)),
+            bye("crtp", 2, t0() + TimeDelta::seconds(10)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        // A deferred RTP bar row is added after the ACK → 5 rows total.
+        assert!(prepared.iter().any(|m| m.is_rtp_bar), "no RTP bar emitted");
+        assert!(
+            prepared.iter().any(|m| m.label.contains("RTP")),
+            "RTP label missing"
+        );
+    }
+
+    // ── prepare_messages: scaled spacer insertion ─────────────────────
+
+    #[test]
+    fn prepare_scaled_inserts_spacers() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.ts_mode = TimestampMode::Scaled;
+        // Large gaps between messages → spacer rows inserted.
+        let msgs = vec![
+            invite("cscale", 1, t0()),
+            response("cscale", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(5)),
+            bye("cscale", 2, t0() + TimeDelta::seconds(30)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert!(prepared.iter().any(|m| m.is_spacer), "no spacers inserted");
+        // More rows than raw messages because of spacers.
+        assert!(prepared.len() > 3, "expected spacer expansion, got {}", prepared.len());
+    }
+
+    // ── fold_messages: retransmit folding ─────────────────────────────
+
+    #[test]
+    fn prepare_folds_retransmissions() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mut retx = response("cretx", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(2));
+        retx.is_retransmission = true;
+        let msgs = vec![
+            invite("cretx", 1, t0()),
+            response("cretx", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            retx,
+        ];
+        // Not expanded → the retransmission folds into the prior 200 OK.
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 2, "retx should fold away one row");
+        let ok = folded.iter().find(|m| m.label == "200 OK").unwrap();
+        assert_eq!(ok.folded_count, 1);
+        assert!(ok.fold_label.as_deref().unwrap().contains("retx"));
+
+        // Expanded at index 2 → no folding.
+        let mut expanded = HashSet::new();
+        expanded.insert(2usize);
+        let (_p2, unfolded) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+        assert_eq!(unfolded.len(), 3, "expanded retx should remain visible");
+    }
+
+    // ── detect_auth_sequence + fold (auth collapse) ───────────────────
+
+    #[test]
+    fn detect_auth_sequence_register_flow() {
+        let cid = "cauth";
+        let msgs = vec![
+            register(cid, 1, None, t0()),
+            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
+            register(cid, 2, Some("Digest username=\"alice\""), t0() + TimeDelta::milliseconds(30)),
+        ];
+        assert_eq!(detect_auth_sequence(&msgs, 0), Some(4));
+
+        // Without the Authorization header on the retry, it is not an auth seq.
+        let no_auth = vec![
+            register(cid, 1, None, t0()),
+            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
+            register(cid, 2, None, t0() + TimeDelta::milliseconds(30)),
+        ];
+        assert_eq!(detect_auth_sequence(&no_auth, 0), None);
+
+        // Too few messages.
+        assert_eq!(detect_auth_sequence(&msgs[..3], 0), None);
+    }
+
+    #[test]
+    fn prepare_collapses_auth_sequence() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let cid = "cauth2";
+        let msgs = vec![
+            register(cid, 1, None, t0()),
+            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
+            register(cid, 2, Some("Digest username=\"alice\""), t0() + TimeDelta::milliseconds(30)),
+        ];
+        // Collapsed: the 4-message auth handshake folds into one header row.
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 1, "auth sequence should collapse to one row");
+        assert_eq!(folded[0].folded_count, 4);
+        assert!(folded[0].label.contains("(auth retry)"), "got: {}", folded[0].label);
+        assert!(
+            folded[0].fold_label.as_deref().unwrap().contains("auth retry"),
+            "missing auth fold label"
+        );
+
+        // Expanded at index 0 → all four rows shown.
+        let mut expanded = HashSet::new();
+        expanded.insert(0usize);
+        let (_p2, shown) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+        assert_eq!(shown.len(), 4, "expanded auth sequence should show all rows");
+    }
+
+    // ── extract_codec_list: rtpmap and static-PT fallback ─────────────
+
+    #[test]
+    fn extract_codec_list_uses_rtpmap_then_static_fallback() {
+        // With rtpmap entries → encoding names taken verbatim.
+        let with_map = invite_with_sdp(
+            "ccodec",
+            1,
+            "m=audio 20000 RTP/AVP 0 8",
+            &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
+            t0(),
+        );
+        let session = with_map.sdp().expect("sdp");
+        let codecs = extract_codec_list(&session);
+        assert_eq!(codecs, vec!["PCMU".to_string(), "PCMA".to_string()]);
+
+        // No rtpmap → static payload-type number mapping.
+        let no_map = invite_with_sdp("ccodec2", 1, "m=audio 20000 RTP/AVP 0 9 18 101", &[], t0());
+        let session2 = no_map.sdp().expect("sdp2");
+        let codecs2 = extract_codec_list(&session2);
+        assert_eq!(
+            codecs2,
+            vec![
+                "PCMU".to_string(),
+                "G722".to_string(),
+                "G729".to_string(),
+                "telephone-event".to_string()
+            ]
+        );
+    }
+
+    // ── color modes / selection state ─────────────────────────────────
+
+    #[test]
+    fn prepare_color_modes_and_selection() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite("csel", 1, t0()),
+            response("csel", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+        ];
+
+        // CallId color mode + a selection on row 0.
+        let mut o = opts(&theme);
+        o.color_mode = ColorMode::CallId;
+        o.selected_msg = Some(0);
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert!(prepared[0].selected);
+        assert_eq!(prepared[0].selection_state, SelectionState::Selected);
+        // Row 1 shares the same endpoint pair → Related.
+        assert_eq!(prepared[1].selection_state, SelectionState::Related);
+
+        // CSeq color mode just needs to run without panicking.
+        let mut o2 = opts(&theme);
+        o2.color_mode = ColorMode::CSeq;
+        o2.ts_mode = TimestampMode::DeltaPrev;
+        let (_p2, prepared2) = prepare_messages(&msgs, t0(), None, &o2, &HashSet::new());
+        assert_eq!(prepared2.len(), 2);
+        // DeltaPrev timestamps are right-aligned "+x.xxxs" strings.
+        assert!(prepared2[1].timestamp.contains('+'));
+    }
+}
+
 /// Format SDP codec list from an SDP session for the summary display.
 pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
     let mut codecs = Vec::new();
