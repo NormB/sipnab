@@ -2235,3 +2235,374 @@ fn start_mcp_http_server(
         });
     handle.ok()
 }
+
+// ── Unit tests for the binary's pure helpers ────────────────────────────
+//
+// These cover the stand-alone logic in `main.rs` that needs no live capture
+// device: argument parsers, filter/capture-config builders, post-capture
+// report generation, per-message output dispatch, and a synthetic drive of
+// `process_parsed_packet`. The live-capture / TUI arms stay integration-only.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// Baseline non-interactive CLI; mutate the pub fields per test.
+    fn base_cli() -> Cli {
+        let mut cli = Cli::parse_from_args(["sipnab"]);
+        cli.no_tui = true;
+        cli
+    }
+
+    /// Raw bytes of a minimal but well-formed SIP INVITE for `call_id`.
+    /// (`sipnab::test_utils` is `#[cfg(test)]`-gated in the lib and so is not
+    /// visible from the binary's own test build — inline the construction.)
+    fn invite_bytes(call_id: &str) -> Vec<u8> {
+        let headers = [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-abc".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
+            "To: Bob <sip:bob@example.com>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Max-Forwards: 70".to_string(),
+            "Contact: <sip:alice@10.0.0.1:5060>".to_string(),
+            "Content-Length: 0".to_string(),
+        ];
+        let mut msg = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
+        for h in headers {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        msg.into_bytes()
+    }
+
+    fn parsed_sip_packet(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
+        ParsedPacket {
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: bytes::Bytes::from(payload),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        }
+    }
+
+    // ── parse_portrange ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_portrange_valid_and_trimmed() {
+        assert_eq!(parse_portrange("5060-5061").unwrap(), (5060, 5061));
+        // surrounding whitespace is trimmed on each side
+        assert_eq!(parse_portrange(" 100 - 200 ").unwrap(), (100, 200));
+        // single-port range (start == end) is allowed
+        assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
+    }
+
+    #[test]
+    fn parse_portrange_errors() {
+        // wrong number of '-' separated parts
+        assert!(parse_portrange("5060").is_err());
+        assert!(parse_portrange("5060-5061-5062").is_err());
+        // non-numeric start / end
+        assert!(parse_portrange("abc-5061").is_err());
+        assert!(parse_portrange("5060-xyz").is_err());
+        // out of u16 range
+        assert!(parse_portrange("0-70000").is_err());
+        // start > end
+        let err = parse_portrange("6000-5000").unwrap_err();
+        assert!(err.contains("start"), "got: {err}");
+    }
+
+    // ── parse_autostop ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_autostop_duration_and_filesize() {
+        let (dur, size) = parse_autostop("duration:30").unwrap();
+        assert_eq!(dur, Some(std::time::Duration::from_secs(30)));
+        assert_eq!(size, None);
+
+        let (dur, size) = parse_autostop("filesize:100").unwrap();
+        assert_eq!(dur, None);
+        assert_eq!(size, Some(100));
+    }
+
+    #[test]
+    fn parse_autostop_errors() {
+        assert!(parse_autostop("duration").is_err()); // missing ':'
+        assert!(parse_autostop("duration:notanumber").is_err());
+        assert!(parse_autostop("unknown:10").is_err()); // unknown key
+    }
+
+    // ── build_filter_expr ──────────────────────────────────────────────
+
+    #[test]
+    fn build_filter_expr_explicit_flag_wins() {
+        let mut cli = base_cli();
+        cli.filter = Some("retransmits > 0".to_string());
+        let config = Config::default();
+        assert!(build_filter_expr(&cli, &config).is_some());
+    }
+
+    #[test]
+    fn build_filter_expr_diagnostic_aliases() {
+        let config = Config::default();
+        // Each diagnostic flag on its own produces a filter.
+        let flags: [fn(&mut Cli); 5] = [
+            |c| c.problems = true,
+            |c| c.slow_setup = true,
+            |c| c.short_calls = true,
+            |c| c.one_way = true,
+            |c| c.nat_issues = true,
+        ];
+        for set in flags {
+            let mut cli = base_cli();
+            set(&mut cli);
+            assert!(build_filter_expr(&cli, &config).is_some());
+        }
+        // Multiple flags combine with OR.
+        let mut cli = base_cli();
+        cli.problems = true;
+        cli.one_way = true;
+        assert!(build_filter_expr(&cli, &config).is_some());
+    }
+
+    #[test]
+    fn build_filter_expr_config_fallback_and_none() {
+        // No flags, no config -> None.
+        assert!(build_filter_expr(&base_cli(), &Config::default()).is_none());
+
+        // Config fallback expression is used when no CLI flag is set.
+        let mut config = Config::default();
+        config.filter.expression = Some("retransmits > 0".to_string());
+        assert!(build_filter_expr(&base_cli(), &config).is_some());
+    }
+
+    // ── build_capture_config ───────────────────────────────────────────
+
+    #[test]
+    fn build_capture_config_defaults() {
+        let cc = build_capture_config(&base_cli(), &Config::default());
+        assert_eq!(cc.snaplen, 65535);
+        assert_eq!(cc.buffer_mb, 2);
+        assert_eq!(cc.bpf_filter, None);
+        assert_eq!(cc.count, None);
+        assert_eq!(cc.duration, None);
+        assert!(!cc.replay);
+    }
+
+    #[test]
+    fn build_capture_config_cli_overrides() {
+        let mut cli = base_cli();
+        cli.snaplen = Some(1500);
+        cli.buffer = Some(8);
+        cli.count = Some(42);
+        cli.replay = true;
+        cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
+        let cc = build_capture_config(&cli, &Config::default());
+        assert_eq!(cc.snaplen, 1500);
+        assert_eq!(cc.buffer_mb, 8);
+        assert_eq!(cc.count, Some(42));
+        assert!(cc.replay);
+        assert_eq!(cc.bpf_filter.as_deref(), Some("udp port 5060"));
+    }
+
+    #[test]
+    fn build_capture_config_bpf_file_takes_precedence() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("sipnab_test_bpf_filter.txt");
+        std::fs::write(&path, "  udp and port 5060\n").unwrap();
+        let mut cli = base_cli();
+        cli.bpf_file = Some(path.to_string_lossy().into_owned());
+        // positional filter present but --bpf-file wins
+        cli.bpf_filter = vec!["tcp".to_string()];
+        let cc = build_capture_config(&cli, &Config::default());
+        assert_eq!(cc.bpf_filter.as_deref(), Some("udp and port 5060"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn build_capture_config_config_fallback() {
+        let mut config = Config::default();
+        config.capture.snaplen = Some(256);
+        config.capture.buffer = Some(16);
+        // CLI leaves snaplen/buffer unset -> config values used.
+        let cc = build_capture_config(&base_cli(), &config);
+        assert_eq!(cc.snaplen, 256);
+        assert_eq!(cc.buffer_mb, 16);
+    }
+
+    // ── dispatch_sip_output ────────────────────────────────────────────
+
+    #[test]
+    fn dispatch_sip_output_all_modes() {
+        let data = bytes::Bytes::from(invite_bytes("disp-1@example.com"));
+        let msg = sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("invite should parse");
+        let opts = OutputOptions::default();
+
+        // Default pretty print.
+        dispatch_sip_output(&msg, &opts, &base_cli(), None);
+
+        // JSON.
+        let mut cli = base_cli();
+        cli.json = true;
+        dispatch_sip_output(&msg, &opts, &cli, None);
+
+        // fail2ban (request path).
+        let mut cli = base_cli();
+        cli.fail2ban = true;
+        dispatch_sip_output(&msg, &opts, &cli, None);
+
+        // raw text dump.
+        let mut cli = base_cli();
+        cli.text_dump = true;
+        dispatch_sip_output(&msg, &opts, &cli, None);
+
+        // suppressed entirely.
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+        dispatch_sip_output(&msg, &opts, &cli, None);
+
+        // line-buffer flush branch.
+        let mut cli = base_cli();
+        cli.line_buffer = true;
+        dispatch_sip_output(&msg, &opts, &cli, Some(chrono::Utc::now()));
+    }
+
+    // ── generate_reports ───────────────────────────────────────────────
+
+    #[test]
+    fn generate_reports_summary_and_call_report() {
+        let mut dialog_store = DialogStore::new(100, false);
+        let stream_store = StreamStore::new(100);
+
+        // Empty --report summary path.
+        let mut cli = base_cli();
+        cli.report = true;
+        generate_reports(&cli, &dialog_store, &stream_store);
+
+        // --call-report for an unknown Call-ID hits the "not found" warn arm.
+        let mut cli = base_cli();
+        cli.call_report = Some("does-not-exist".to_string());
+        generate_reports(&cli, &dialog_store, &stream_store);
+
+        // Insert a dialog, then --call-report finds it across all formats.
+        let call_id = "report-1@example.com";
+        let data = bytes::Bytes::from(invite_bytes(call_id));
+        let msg = sip::parser::parse_sip_bytes(
+            &data,
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .unwrap();
+        dialog_store.process_message(msg);
+        assert!(dialog_store.get(call_id).is_some());
+
+        let formats: [fn(&mut Cli); 3] = [
+            |_c| {},
+            |c| c.json = true,
+            |c| c.markdown = true,
+        ];
+        for setup in formats {
+            let mut cli = base_cli();
+            cli.call_report = Some(call_id.to_string());
+            setup(&mut cli);
+            generate_reports(&cli, &dialog_store, &stream_store);
+        }
+    }
+
+    // ── process_parsed_packet ──────────────────────────────────────────
+
+    /// Build the engine/state/context scaffolding and drive a single packet,
+    /// returning the resulting (sip_count, rtp_count).
+    fn drive_packet(cli: &Cli, pp: &ParsedPacket, portrange: (u16, u16)) -> (u64, u64) {
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+        };
+
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange,
+        };
+        let mut state = ProcessingState {
+            dialog_store: &mut dialog_store,
+            stream_store: &mut stream_store,
+            rtp_heuristic: &mut rtp_heuristic,
+            event_exec: &mut event_exec,
+        };
+
+        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, false);
+        (counters.sip_count, counters.rtp_count)
+    }
+
+    #[test]
+    fn process_parsed_packet_counts_sip() {
+        let mut cli = base_cli();
+        cli.no_cli_print = true; // keep test output quiet
+        let pp = parsed_sip_packet(invite_bytes("ppp-1@example.com"), 5060, 5060);
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        assert_eq!(sip, 1, "one SIP message should be counted");
+    }
+
+    #[test]
+    fn process_parsed_packet_ignores_non_sip_and_out_of_range() {
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+
+        // Garbage payload on the SIP port: not a SIP message -> no count.
+        let pp = parsed_sip_packet(b"\x00\x01\x02not-sip-at-all".to_vec(), 5060, 5060);
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        assert_eq!(sip, 0);
+
+        // A valid SIP message but on a port outside the SIP range -> skipped.
+        let pp = parsed_sip_packet(invite_bytes("oor-1@example.com"), 40000, 40001);
+        let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
+        assert_eq!(sip, 0);
+    }
+}

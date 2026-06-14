@@ -1173,4 +1173,448 @@ mod tests {
             "Two empty slices should return true"
         );
     }
+
+    // ── Stream-store helpers ──────────────────────────────────────────
+
+    /// Insert one RTP stream into the store via `process_rtp`.
+    ///
+    /// Returns after a single packet so the stream exists with `packet_count`
+    /// of at least 1 and no loss/jitter (MOS near the codec ceiling).
+    fn add_stream(state: &ApiState, ssrc: u32, src_port: u16, dst_port: u16) {
+        use crate::capture::parse::TransportProto;
+        use crate::rtp::parser::RtpHeader;
+
+        let parsed = crate::capture::ParsedPacket {
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).expect("ts"),
+            src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            src_port,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 12 + 160].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0, // PCMU
+            sequence: 1,
+            timestamp: 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let mut ss = state.stream_store.write();
+        ss.process_rtp(&parsed, &rtp, parsed.timestamp);
+    }
+
+    // ── list_streams branches ─────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_streams_returns_populated() {
+        let state = make_state();
+        add_stream(&state, 0x1111_1111, 20000, 30000);
+        add_stream(&state, 0x2222_2222, 20002, 30002);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/streams"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["total"], 2);
+        assert_eq!(parsed["streams"].as_array().expect("array").len(), 2);
+        // stream_summary fields
+        let first = &parsed["streams"][0];
+        assert!(first["ssrc"].as_str().expect("ssrc").starts_with("0x"));
+        assert!(first["mos"].is_number());
+        assert!(first["loss_pct"].is_number());
+    }
+
+    #[tokio::test]
+    async fn list_streams_orphaned_filter_excludes_active() {
+        let state = make_state();
+        add_stream(&state, 0x3333_3333, 21000, 31000);
+        let app = build_router(state);
+
+        // Streams created here are not orphaned; filtering orphaned=true yields none.
+        let resp = app
+            .oneshot(test_request("/v1/streams?orphaned=true"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+        // total still counts all streams in the store
+        assert_eq!(parsed["total"], 1);
+    }
+
+    #[tokio::test]
+    async fn list_streams_mos_below_filter() {
+        let state = make_state();
+        add_stream(&state, 0x4444_4444, 22000, 32000);
+        let app = build_router(state);
+
+        // A clean stream has high MOS; mos_below=1.0 should exclude it.
+        let resp = app
+            .oneshot(test_request("/v1/streams?mos_below=1.0"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+
+        // A generous threshold should include it.
+        let state2 = make_state();
+        add_stream(&state2, 0x4444_4444, 22000, 32000);
+        let app2 = build_router(state2);
+        let resp2 = app2
+            .oneshot(test_request("/v1/streams?mos_below=5.0"))
+            .await
+            .expect("oneshot");
+        let body2 = body_to_string(resp2.into_body()).await;
+        let parsed2: Value = serde_json::from_str(&body2).expect("valid JSON");
+        assert_eq!(parsed2["streams"].as_array().expect("array").len(), 1);
+    }
+
+    // ── get_stream branches ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_stream_found_by_hex() {
+        let state = make_state();
+        add_stream(&state, 0x1234_5678, 23000, 33000);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/streams/0x12345678"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert!(parsed.is_object());
+    }
+
+    #[tokio::test]
+    async fn get_stream_found_without_0x_prefix() {
+        let state = make_state();
+        add_stream(&state, 0x0000_ABCD, 24000, 34000);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/streams/0000abcd"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn get_stream_invalid_hex_returns_400() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/streams/not-hex-zz"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // ── get_dialog with associated streams (full detail path) ─────────
+
+    #[tokio::test]
+    async fn get_dialog_includes_associated_streams() {
+        let state = make_state();
+        populate_dialogs(&state);
+        // Associate a stream with call-1@test by linking on its media address.
+        add_stream(&state, 0x5555_5555, 25000, 35000);
+        {
+            let mut ss = state.stream_store.write();
+            ss.link_to_dialog(
+                IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                25000,
+                "call-1@test",
+            );
+        }
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs/call-1@test"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["call_id"], "call-1@test");
+    }
+
+    // ── list_dialogs filters ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn list_dialogs_state_filter_matches() {
+        let state = make_state();
+        populate_dialogs(&state); // all INVITE dialogs are in "Trying" state
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?state=trying"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn list_dialogs_state_filter_excludes() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?state=Completed"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
+        // total is unfiltered
+        assert_eq!(parsed["total"], 3);
+    }
+
+    #[tokio::test]
+    async fn list_dialogs_from_regex_filter() {
+        let state = make_state();
+        populate_dialogs(&state); // from users: user0, user1, user2
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?from=user1"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        assert_eq!(parsed["dialogs"][0]["from"], "user1");
+    }
+
+    #[tokio::test]
+    async fn list_dialogs_invalid_from_regex_is_ignored() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        // An invalid regex fails to compile -> from_regex is None -> no filtering.
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?from=%5B"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+    }
+
+    // ── metrics with stream data ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_metrics_with_streams_populates_rtp() {
+        let state = make_state();
+        populate_dialogs(&state);
+        add_stream(&state, 0x6666_6666, 26000, 36000);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/metrics"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        // content-type header set by the handler
+        let ct = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(ct.contains("text/plain"), "got content-type: {ct}");
+
+        let body = body_to_string(resp.into_body()).await;
+        assert!(body.contains("sipnab_"));
+    }
+
+    // ── stats with empty stores ───────────────────────────────────────
+
+    #[tokio::test]
+    async fn stats_empty_store_has_null_percentiles() {
+        let state = make_state();
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/stats"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"]["total"], 0);
+        // percentile(&[], _) is None -> serialized as null
+        assert!(parsed["timing"]["pdd_p50_ms"].is_null());
+    }
+
+    // ── auth guard arms ───────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn auth_no_key_configured_allows_request() {
+        // make_state has api_key = None -> check_auth short-circuits to Ok.
+        let state = make_state();
+        populate_dialogs(&state);
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/dialogs"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_non_bearer_scheme_returns_401() {
+        let state = make_state_with_key("secret-key");
+        let app = build_router(state);
+
+        // "Basic ..." does not start with "Bearer " -> 401.
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Basic secret-key");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_non_ascii_header_returns_401() {
+        let state = make_state_with_key("secret-key");
+        let app = build_router(state);
+
+        // A non-visible-ASCII header value makes to_str() fail -> 401.
+        let req = test_request_with_header("/v1/dialogs", "Authorization", "Bearer \u{00ff}key");
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn health_check_ignores_rate_limit_and_auth() {
+        // /health is not guarded; works even with a key configured.
+        let state = make_state_with_key("secret-key");
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/health"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_to_string(resp.into_body()).await, "ok");
+    }
+
+    // ── helper unit tests ─────────────────────────────────────────────
+
+    #[test]
+    fn percentile_single_element() {
+        let one = vec![42];
+        assert_eq!(percentile(&one, 0), Some(42));
+        assert_eq!(percentile(&one, 50), Some(42));
+        assert_eq!(percentile(&one, 100), Some(42));
+    }
+
+    #[test]
+    fn percentile_empty_is_none() {
+        assert_eq!(percentile(&[], 50), None);
+        assert_eq!(percentile(&[], 99), None);
+    }
+
+    #[test]
+    fn approximate_mos_clean_stream_is_high() {
+        let state = make_state();
+        add_stream(&state, 0x7777_7777, 27000, 37000);
+        let ss = state.stream_store.read();
+        let s = ss.iter().next().expect("one stream");
+        let mos = approximate_mos(s);
+        // A loss-free, jitter-free PCMU stream should score well above 3.0.
+        assert!(mos > 3.0, "expected good MOS, got {mos}");
+        assert!(mos <= 5.0, "MOS should not exceed ceiling, got {mos}");
+    }
+
+    #[test]
+    fn dialog_summary_shape() {
+        let state = make_state();
+        populate_dialogs(&state);
+        let ds = state.dialog_store.read();
+        let d = ds.iter().next().expect("one dialog");
+        let summary = dialog_summary(d);
+        assert!(summary["call_id"].is_string());
+        assert_eq!(summary["method"], "INVITE");
+        assert!(summary["timing"].is_object());
+        assert!(summary["created_at"].is_string());
+    }
+
+    #[test]
+    fn stream_summary_shape() {
+        let state = make_state();
+        add_stream(&state, 0x8888_8888, 28000, 38000);
+        let ss = state.stream_store.read();
+        let s = ss.iter().next().expect("one stream");
+        let summary = stream_summary(s);
+        assert_eq!(summary["ssrc"], "0x88888888");
+        assert!(summary["mos"].is_number());
+        assert_eq!(summary["orphaned"], false);
+    }
+
+    #[test]
+    fn parse_bind_addr_port_zero() {
+        let addr = parse_bind_addr("0").expect("parse");
+        assert_eq!(addr.port(), 0);
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn parse_bind_addr_colon_only_is_invalid() {
+        // ":" strips to empty, which is not a valid u16 and not a SocketAddr.
+        assert!(parse_bind_addr(":").is_err());
+    }
+
+    #[test]
+    fn parse_bind_addr_out_of_range_port_is_invalid() {
+        // 70000 > u16::MAX so the bare-port branch fails, then SocketAddr parse fails.
+        assert!(parse_bind_addr("70000").is_err());
+    }
+
+    #[test]
+    fn parse_bind_addr_ipv6_full() {
+        let addr = parse_bind_addr("[::1]:8080").expect("parse");
+        assert_eq!(addr.port(), 8080);
+        assert!(addr.ip().is_loopback());
+    }
+
+    #[test]
+    fn rate_limiter_separate_ips_independent() {
+        let mut limiter = RateLimiter::new(1);
+        let ip_a = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let ip_b = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
+        assert!(limiter.check(ip_a));
+        // Different IP has its own bucket.
+        assert!(limiter.check(ip_b));
+        // ip_a is now over its limit.
+        assert!(!limiter.check(ip_a));
+    }
 }

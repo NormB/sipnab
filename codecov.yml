@@ -25,3 +25,5 @@ ignore:
   - "examples"
   - "website"
   - "**/build.rs"
+  # Dev-only [[bin]] fixture generator, not shipped product code.
+  - "tools_gen_fixture.rs"

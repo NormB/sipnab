@@ -298,4 +298,174 @@ mod tests {
     fn basic_auth_missing_prefix() {
         assert!(!check_basic_auth("Bearer token", "user:pass"));
     }
+
+    // ── End-to-end server tests ────────────────────────────────────────
+    //
+    // These exercise the spawned accept loop in `start_metrics_server` by
+    // binding it to an ephemeral port and issuing raw HTTP/1.1 requests.
+
+    use crate::capture::parse::ParsedPacket;
+    use chrono::Utc;
+    use std::io::Read;
+    use std::net::TcpStream;
+
+    /// Reserve a free localhost port by binding to :0, then release it so the
+    /// metrics server can claim it. (Standard small-race test pattern.)
+    fn free_addr() -> SocketAddr {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        l.local_addr().unwrap()
+    }
+
+    /// Send a raw HTTP request and return the full response as a string.
+    fn http_request(addr: SocketAddr, raw: &str) -> String {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all(raw.as_bytes()).unwrap();
+        let mut resp = String::new();
+        // Server sets Connection: close, so read to EOF.
+        stream.read_to_string(&mut resp).unwrap();
+        resp
+    }
+
+    /// A dialog store containing one tracked INVITE dialog.
+    fn populated_dialog_store() -> Arc<RwLock<DialogStore>> {
+        let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+                    Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-x\r\n\
+                    From: Alice <sip:alice@example.com>;tag=a1\r\n\
+                    To: Bob <sip:bob@example.com>\r\n\
+                    Call-ID: metrics-1@example.com\r\n\
+                    CSeq: 1 INVITE\r\n\
+                    Max-Forwards: 70\r\n\
+                    Contact: <sip:alice@10.0.0.1:5060>\r\n\
+                    Content-Length: 0\r\n\r\n";
+        let data = bytes::Bytes::from_static(raw);
+        let msg = crate::sip::parser::parse_sip_bytes(
+            &data,
+            Utc::now(),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            5060,
+            5060,
+            crate::capture::parse::TransportProto::Udp,
+        )
+        .unwrap();
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(msg);
+        Arc::new(RwLock::new(ds))
+    }
+
+    /// A stream store containing one active RTP stream (last_seen ~= now).
+    fn populated_stream_store() -> Arc<RwLock<StreamStore>> {
+        use crate::capture::parse::TransportProto;
+        use crate::rtp::parser::RtpHeader;
+        let parsed = ParsedPacket {
+            timestamp: Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: TransportProto::Udp,
+            payload: bytes::Bytes::from_static(&[0u8; 172]),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0, // PCMU
+            sequence: 1,
+            timestamp: 160,
+            ssrc: 0x1234_5678,
+            payload_offset: 12,
+        };
+        let mut ss = StreamStore::new(100);
+        ss.process_rtp(&parsed, &rtp, Utc::now());
+        Arc::new(RwLock::new(ss))
+    }
+
+    #[test]
+    fn metrics_endpoint_returns_200_with_body() {
+        let addr = free_addr();
+        let _handle = start_metrics_server(
+            addr,
+            populated_dialog_store(),
+            populated_stream_store(),
+            None,
+        )
+        .expect("server should bind");
+
+        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
+        assert!(
+            resp.contains("version=0.0.4"),
+            "should advertise Prometheus content type"
+        );
+        // Body should carry the exposition text produced by format_metrics.
+        assert!(resp.contains("sipnab_"), "metrics body missing: {resp:?}");
+    }
+
+    #[test]
+    fn unknown_path_returns_404() {
+        let addr = free_addr();
+        let _handle = start_metrics_server(
+            addr,
+            Arc::new(RwLock::new(DialogStore::new(10, false))),
+            Arc::new(RwLock::new(StreamStore::new(10))),
+            None,
+        )
+        .expect("server should bind");
+
+        let resp = http_request(addr, "GET /nope HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 404 Not Found"), "got: {resp:?}");
+    }
+
+    #[test]
+    fn basic_auth_enforced() {
+        let addr = free_addr();
+        let _handle = start_metrics_server(
+            addr,
+            Arc::new(RwLock::new(DialogStore::new(10, false))),
+            Arc::new(RwLock::new(StreamStore::new(10))),
+            Some("user:pass".to_string()),
+        )
+        .expect("server should bind");
+
+        // No credentials -> 401 with a challenge.
+        let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
+        assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "got: {resp:?}");
+        assert!(resp.contains("WWW-Authenticate: Basic"), "got: {resp:?}");
+
+        // Wrong credentials -> still 401.
+        let resp = http_request(
+            addr,
+            "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjp3cm9uZw==\r\n\r\n",
+        );
+        assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "got: {resp:?}");
+
+        // Correct credentials (base64 "user:pass") -> 200.
+        let resp = http_request(
+            addr,
+            "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n",
+        );
+        assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
+    }
+
+    #[test]
+    fn collect_metrics_counts_dialogs_and_active_streams() {
+        let metrics = collect_metrics(&populated_dialog_store(), &populated_stream_store());
+        // One INVITE dialog was inserted.
+        assert!(metrics.messages_total.values().sum::<u64>() >= 1);
+        assert!(!metrics.dialogs_total.is_empty());
+        // The stream was created with a near-now timestamp, so it counts active.
+        assert_eq!(metrics.rtp_streams_active, 1);
+    }
 }
