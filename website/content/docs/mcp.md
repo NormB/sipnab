@@ -1,6 +1,6 @@
 +++
 title = "MCP Server"
-weight = 8
+weight = 9
 +++
 
 sipnab can run as a **Model Context Protocol** server, exposing its
