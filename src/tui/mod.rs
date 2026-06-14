@@ -1278,4 +1278,266 @@ mod tests {
             View::CallFlow("def".to_string())
         );
     }
+
+    // ── SaveFormat round-trips ──────────────────────────────────────
+
+    #[test]
+    fn save_format_next_full_cycle() {
+        // 11 formats — next() applied 11 times returns to start.
+        let mut f = SaveFormat::Pcap;
+        for _ in 0..11 {
+            f = f.next();
+        }
+        assert_eq!(f, SaveFormat::Pcap);
+    }
+
+    #[test]
+    fn save_format_prev_is_inverse_of_next() {
+        let formats = [
+            SaveFormat::Pcap,
+            SaveFormat::PcapNg,
+            SaveFormat::Txt,
+            SaveFormat::Json,
+            SaveFormat::Ndjson,
+            SaveFormat::Csv,
+            SaveFormat::Html,
+            SaveFormat::Markdown,
+            SaveFormat::Wav,
+            SaveFormat::SippXml,
+            SaveFormat::RtpJson,
+        ];
+        for &f in &formats {
+            assert_eq!(f.next().prev(), f, "prev∘next != id for {f:?}");
+            assert_eq!(f.prev().next(), f, "next∘prev != id for {f:?}");
+        }
+    }
+
+    #[test]
+    fn save_format_extension_label_category_description_nonempty() {
+        let formats = [
+            SaveFormat::Pcap,
+            SaveFormat::PcapNg,
+            SaveFormat::Txt,
+            SaveFormat::Json,
+            SaveFormat::Ndjson,
+            SaveFormat::Csv,
+            SaveFormat::Html,
+            SaveFormat::Markdown,
+            SaveFormat::Wav,
+            SaveFormat::SippXml,
+            SaveFormat::RtpJson,
+        ];
+        for &f in &formats {
+            assert!(!f.extension().is_empty());
+            assert!(!f.label().is_empty());
+            assert!(!f.category().is_empty());
+            assert!(!f.description().is_empty());
+        }
+        assert_eq!(SaveFormat::Pcap.extension(), "pcap");
+        assert_eq!(SaveFormat::RtpJson.extension(), "rtp.json");
+        assert_eq!(SaveFormat::Pcap.category(), "Packet Capture");
+        assert_eq!(SaveFormat::Json.category(), "Structured/Analytics");
+    }
+
+    // ── Display-mode enum cycles ────────────────────────────────────
+
+    #[test]
+    fn sdp_display_mode_cycle_and_labels() {
+        assert_eq!(SdpDisplayMode::None.next(), SdpDisplayMode::Summary);
+        assert_eq!(SdpDisplayMode::Summary.next(), SdpDisplayMode::Full);
+        assert_eq!(SdpDisplayMode::Full.next(), SdpDisplayMode::None);
+        assert!(SdpDisplayMode::None.label().contains("SDP"));
+        assert!(SdpDisplayMode::Summary.label().contains("Summary"));
+        assert!(SdpDisplayMode::Full.label().contains("Full"));
+    }
+
+    #[test]
+    fn timestamp_mode_cycle_and_labels() {
+        assert_eq!(TimestampMode::Absolute.next(), TimestampMode::DeltaPrev);
+        assert_eq!(TimestampMode::DeltaPrev.next(), TimestampMode::DeltaFirst);
+        assert_eq!(TimestampMode::DeltaFirst.next(), TimestampMode::Scaled);
+        assert_eq!(TimestampMode::Scaled.next(), TimestampMode::Absolute);
+        for m in [
+            TimestampMode::Absolute,
+            TimestampMode::DeltaPrev,
+            TimestampMode::DeltaFirst,
+            TimestampMode::Scaled,
+        ] {
+            assert!(m.label().contains("Time"));
+        }
+    }
+
+    #[test]
+    fn color_mode_cycle_and_labels() {
+        assert_eq!(ColorMode::Method.next(), ColorMode::CallId);
+        assert_eq!(ColorMode::CallId.next(), ColorMode::CSeq);
+        assert_eq!(ColorMode::CSeq.next(), ColorMode::Method);
+        for m in [ColorMode::Method, ColorMode::CallId, ColorMode::CSeq] {
+            assert!(m.label().contains("Color"));
+        }
+    }
+
+    // ── FilterDialogState navigation & build ────────────────────────
+
+    #[test]
+    fn filter_dialog_text_field_accessors() {
+        let mut st = FilterDialogState::default();
+        st.sip_from = "a".to_string();
+        st.sip_to = "b".to_string();
+        st.source = "c".to_string();
+        st.destination = "d".to_string();
+        st.payload = "e".to_string();
+        assert_eq!(st.text_field(0), "a");
+        assert_eq!(st.text_field(1), "b");
+        assert_eq!(st.text_field(2), "c");
+        assert_eq!(st.text_field(3), "d");
+        assert_eq!(st.text_field(4), "e");
+        assert_eq!(st.text_field(99), "");
+        // mutable accessor
+        if let Some(s) = st.text_field_mut(0) {
+            s.push('z');
+        }
+        assert_eq!(st.text_field(0), "az");
+        assert!(st.text_field_mut(99).is_none());
+    }
+
+    #[test]
+    fn filter_dialog_focus_wraps_both_directions() {
+        let mut st = FilterDialogState::default();
+        assert_eq!(st.focused_field(), 0);
+        st.focus_prev(); // wrap to last
+        assert_eq!(st.focused_field(), FILTER_ITEM_COUNT - 1);
+        st.focus_next(); // wrap back to 0
+        assert_eq!(st.focused_field(), 0);
+    }
+
+    #[test]
+    fn filter_dialog_focus_classification() {
+        let mut st = FilterDialogState::default();
+        // text fields 0..5
+        st.focused_field = 0;
+        assert!(st.is_text_field_focused());
+        assert!(!st.is_checkbox_focused());
+        assert!(st.checkbox_index().is_none());
+        // checkbox region
+        st.focused_field = FILTER_TEXT_FIELD_COUNT; // first checkbox
+        assert!(st.is_checkbox_focused());
+        assert_eq!(st.checkbox_index(), Some(0));
+        // button region
+        st.focused_field = FILTER_BUTTON_IDX;
+        assert!(!st.is_text_field_focused());
+        assert!(!st.is_checkbox_focused());
+    }
+
+    #[test]
+    fn filter_dialog_checkbox_grid_navigation() {
+        let mut st = FilterDialogState::default();
+        // Focus first checkbox (index 0).
+        st.focused_field = FILTER_TEXT_FIELD_COUNT;
+        st.checkbox_right(); // 0 -> 1
+        assert_eq!(st.checkbox_index(), Some(1));
+        st.checkbox_left(); // 1 -> 0
+        assert_eq!(st.checkbox_index(), Some(0));
+        st.checkbox_down(); // 0 -> 2
+        assert_eq!(st.checkbox_index(), Some(2));
+        st.checkbox_up(); // 2 -> 0
+        assert_eq!(st.checkbox_index(), Some(0));
+        // Up from top row → moves to last text field.
+        st.checkbox_up();
+        assert!(st.is_text_field_focused());
+        assert_eq!(st.focused_field(), FILTER_TEXT_FIELD_COUNT - 1);
+    }
+
+    #[test]
+    fn filter_dialog_checkbox_down_to_buttons() {
+        let mut st = FilterDialogState::default();
+        // Last reachable checkbox in a column → down goes to buttons.
+        // index 8 (INFO) -> +2 = 10 (out of range) -> Filter button.
+        st.focused_field = FILTER_TEXT_FIELD_COUNT + 8;
+        st.checkbox_down();
+        assert_eq!(st.focused_field(), FILTER_BUTTON_IDX);
+    }
+
+    #[test]
+    fn filter_dialog_toggle_and_build_expression() {
+        let mut st = FilterDialogState::default();
+        // Empty → no expression.
+        assert!(st.build_filter_expression().is_none());
+        assert!(st.is_empty());
+
+        // Toggle INVITE checkbox (index 2).
+        st.focused_field = FILTER_TEXT_FIELD_COUNT + 2;
+        st.toggle_checkbox();
+        assert!(st.methods[2]);
+        let expr = st.build_filter_expression().expect("some methods checked");
+        assert!(expr.contains("method == 'INVITE'"));
+
+        // Add text fields → AND-joined.
+        st.sip_from = "1001".to_string();
+        st.source = "10.0.0.1".to_string();
+        let expr = st.build_filter_expression().unwrap();
+        assert!(expr.contains("from.user"));
+        assert!(expr.contains("src.ip"));
+        assert!(expr.contains(" AND "));
+    }
+
+    #[test]
+    fn filter_dialog_all_methods_checked_yields_no_method_filter() {
+        let mut st = FilterDialogState::default();
+        st.methods = [true; 10];
+        // All checked → method filter omitted; with no text fields → None.
+        assert!(st.build_filter_expression().is_none());
+    }
+
+    #[test]
+    fn filter_dialog_clear_resets_everything() {
+        let mut st = FilterDialogState::default();
+        st.sip_from = "x".to_string();
+        st.sip_to = "y".to_string();
+        st.methods[0] = true;
+        st.focused_field = 7;
+        st.cursor_pos = 3;
+        st.clear();
+        assert!(st.is_empty());
+        assert_eq!(st.focused_field(), 0);
+        assert_eq!(st.cursor_pos, 0);
+    }
+
+    #[test]
+    fn filter_dialog_sync_cursor_to_field_end() {
+        let mut st = FilterDialogState::default();
+        st.sip_to = "hello".to_string();
+        st.focused_field = 1; // SIP To
+        st.cursor_pos = 0;
+        st.sync_cursor();
+        assert_eq!(st.cursor_pos, 5);
+    }
+
+    // ── App state setters ───────────────────────────────────────────
+
+    #[test]
+    fn app_set_capture_mode_and_bpf_filter() {
+        let mut app = App::new_test();
+        app.set_capture_mode("Offline (cap.pcap)".to_string());
+        assert_eq!(app.capture_mode, "Offline (cap.pcap)");
+        app.set_bpf_filter("udp port 5060".to_string());
+        assert_eq!(app.bpf_filter, "udp port 5060");
+    }
+
+    #[test]
+    fn app_mark_data_updated_resets_to_active() {
+        let mut app = App::new_test();
+        app.last_data_update = Instant::now() - Duration::from_secs(10);
+        assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
+        app.mark_data_updated();
+        assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));
+    }
+
+    #[test]
+    fn app_is_paused_reflects_flag() {
+        let mut app = App::new_test();
+        assert!(!app.is_paused());
+        app.paused = true;
+        assert!(app.is_paused());
+    }
 }
