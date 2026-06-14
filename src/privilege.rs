@@ -329,4 +329,25 @@ mod tests {
         // May or may not succeed depending on permissions, but must not panic
         let _ = disable_core_dumps();
     }
+
+    #[test]
+    fn resolve_user_root_is_uid_zero() {
+        let (uid, _gid) = resolve_user("root").expect("root should exist");
+        assert_eq!(uid, 0, "root must resolve to uid 0");
+    }
+
+    #[test]
+    fn drop_privileges_with_target_user_non_root_is_noop() {
+        // As a non-root process, requesting a target user is still a no-op Ok
+        // (the actual setuid path requires root and is exercised separately).
+        assert!(drop_privileges(Some("nobody"), false).is_ok());
+    }
+
+    #[test]
+    fn do_chroot_without_root_fails() {
+        // chroot(2) requires CAP_SYS_CHROOT; as a normal user this must error
+        // rather than silently succeed (covers the error path of do_chroot).
+        let result = do_chroot(std::path::Path::new("/tmp"));
+        assert!(result.is_err(), "non-root chroot should fail");
+    }
 }

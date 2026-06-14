@@ -1206,4 +1206,394 @@ mod tests {
             "processed count should reflect all entries"
         );
     }
+
+    // ── helpers for the added tests ────────────────────────────────────
+
+    /// A decryptor wrapping `crypto` with no keylog file and empty state.
+    fn decryptor_with(crypto: Box<dyn CryptoBackend>) -> TlsDecryptor {
+        TlsDecryptor {
+            keylog_entries: Vec::new(),
+            sessions: HashMap::new(),
+            crypto,
+            decrypted_count: 0,
+            keylog_path: None,
+            last_keylog_size: 0,
+            observed_handshakes: Vec::new(),
+            keylog_processed_count: 0,
+        }
+    }
+
+    /// A minimal but well-formed ServerHello handshake payload advertising
+    /// `cipher_code`, with a `session_id_len`-byte session id.
+    fn server_hello(cipher_code: u16, session_id_len: u8) -> Vec<u8> {
+        let mut hs = vec![2u8, 0, 0, 0]; // msg_type=ServerHello + 3-byte length
+        hs.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
+        hs.extend_from_slice(&[0x5Au8; 32]); // server_random
+        hs.push(session_id_len);
+        hs.extend(std::iter::repeat_n(0xCDu8, session_id_len as usize));
+        hs.extend_from_slice(&cipher_code.to_be_bytes());
+        hs.push(0); // compression method
+        hs
+    }
+
+    // ── CipherSuite table ──────────────────────────────────────────────
+
+    #[test]
+    fn cipher_suite_properties() {
+        use CipherSuite::*;
+        // (suite, key_len, iv_len, mac_key_len, is_cbc, display)
+        let table = [
+            (Aes128Gcm, 16, 12, 0, false, "TLS_AES_128_GCM_SHA256"),
+            (Aes256Gcm, 32, 12, 0, false, "TLS_AES_256_GCM_SHA384"),
+            (Aes128CbcSha, 16, 16, 20, true, "TLS_RSA_WITH_AES_128_CBC_SHA"),
+            (
+                Aes256CbcSha256,
+                32,
+                16,
+                32,
+                true,
+                "TLS_RSA_WITH_AES_256_CBC_SHA256",
+            ),
+        ];
+        for (suite, kl, il, ml, cbc, disp) in table {
+            assert_eq!(suite.key_len(), kl, "{disp} key_len");
+            assert_eq!(suite.iv_len(), il, "{disp} iv_len");
+            assert_eq!(suite.mac_key_len(), ml, "{disp} mac_key_len");
+            assert_eq!(suite.is_cbc(), cbc, "{disp} is_cbc");
+            assert_eq!(format!("{suite}"), disp);
+        }
+    }
+
+    #[test]
+    fn cipher_suite_from_code_point_all_known_and_unknown() {
+        use CipherSuite::*;
+        let known = [
+            (0x009Cu16, Aes128Gcm),
+            (0x009D, Aes256Gcm),
+            (0x1301, Aes128Gcm),
+            (0x1302, Aes256Gcm),
+            (0x002F, Aes128CbcSha),
+            (0x003C, Aes128CbcSha),
+            (0x003D, Aes256CbcSha256),
+            (0x0035, Aes256CbcSha256),
+        ];
+        for (code, expected) in known {
+            assert_eq!(CipherSuite::from_code_point(code), Some(expected));
+        }
+        for code in [0x0000u16, 0x1303, 0xFFFF, 0x00FF] {
+            assert!(CipherSuite::from_code_point(code).is_none());
+        }
+    }
+
+    // ── parse_server_hello ─────────────────────────────────────────────
+
+    #[test]
+    fn parse_server_hello_valid() {
+        let info = parse_server_hello(&server_hello(0x009C, 0)).unwrap();
+        assert_eq!(info.server_random, Some([0x5Au8; 32]));
+        assert_eq!(info.cipher_suite_code, Some(0x009C));
+
+        // With a non-empty session id, the cipher offset shifts accordingly.
+        let info = parse_server_hello(&server_hello(0x1302, 32)).unwrap();
+        assert_eq!(info.cipher_suite_code, Some(0x1302));
+    }
+
+    #[test]
+    fn parse_server_hello_rejects_malformed() {
+        assert!(parse_server_hello(&[]).is_none()); // < 4 bytes
+        assert!(parse_server_hello(&[1, 0, 0, 0]).is_none()); // msg_type != 2 (ClientHello)
+        // ServerHello type but truncated before the 32-byte random.
+        assert!(parse_server_hello(&[2, 0, 0, 0, 0x03, 0x03, 0, 0]).is_none());
+        // Long enough for the random, but session_id_len pushes cipher past the end.
+        let mut hs = server_hello(0x009C, 0);
+        hs[38] = 200; // session_id_len far beyond the buffer
+        assert!(parse_server_hello(&hs).is_none());
+    }
+
+    // ── process_record ─────────────────────────────────────────────────
+
+    #[test]
+    fn process_record_observes_serverhello_and_ignores_others() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+
+        // A Handshake record carrying a ServerHello is observed.
+        let rec = TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: server_hello(0x009C, 0),
+        };
+        d.process_record(&rec);
+        assert_eq!(d.observed_handshakes.len(), 1);
+
+        // A non-Handshake record is ignored.
+        let rec = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: vec![0u8; 8],
+        };
+        d.process_record(&rec);
+        assert_eq!(d.observed_handshakes.len(), 1);
+    }
+
+    // ── TLS 1.2 CLIENT_RANDOM key derivation ───────────────────────────
+
+    #[test]
+    fn tls12_client_random_derives_session() {
+        let cr = [0x77u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr.to_vec(),
+            secret: vec![0x01u8; 48], // 48-byte master secret
+        });
+
+        // Observe a ServerHello negotiating an AES-128-GCM TLS 1.2 suite.
+        d.process_record(&TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: server_hello(0x009C, 0),
+        });
+
+        d.ensure_sessions_populated();
+        let key = TlsSessionKey { client_random: cr };
+        let session = d.sessions.get(&key).expect("TLS 1.2 session derived");
+        assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
+        // GCM key/iv lengths for AES-128.
+        assert_eq!(session.client_write_key.len(), 16);
+        assert_eq!(session.client_write_iv.len(), 12);
+    }
+
+    #[test]
+    fn tls12_client_random_derives_cbc_session() {
+        let cr = [0x88u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr.to_vec(),
+            secret: vec![0x02u8; 48],
+        });
+        // CBC suite: TLS_RSA_WITH_AES_128_CBC_SHA (0x002F).
+        d.process_record(&TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: server_hello(0x002F, 0),
+        });
+        d.ensure_sessions_populated();
+        let session = d
+            .sessions
+            .get(&TlsSessionKey { client_random: cr })
+            .expect("CBC session derived");
+        assert_eq!(session.cipher_suite, CipherSuite::Aes128CbcSha);
+        assert_eq!(session.client_write_iv.len(), 16);
+    }
+
+    #[test]
+    fn tls12_unsupported_cipher_yields_no_session() {
+        let cr = [0x99u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr.to_vec(),
+            secret: vec![0x03u8; 48],
+        });
+        // 0x0000 is not a supported suite -> from_code_point returns None.
+        d.process_record(&TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: server_hello(0x0000, 0),
+        });
+        d.ensure_sessions_populated();
+        assert!(d.sessions.is_empty());
+    }
+
+    // ── CBC decryption path ────────────────────────────────────────────
+
+    /// Crypto backend that succeeds for CBC and fails for GCM.
+    struct CbcMock;
+    impl CryptoBackend for CbcMock {
+        fn aes_gcm_decrypt(&self, _: &[u8], _: &[u8], _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
+            anyhow::bail!("no gcm")
+        }
+        fn aes_cbc_decrypt(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
+            Ok(b"MESSAGE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec())
+        }
+        fn hmac_sha1(&self, _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
+            anyhow::bail!("n/a")
+        }
+        fn hkdf_expand(&self, _: &[u8], _: &[u8], len: usize) -> Result<Vec<u8>> {
+            Ok(vec![0u8; len])
+        }
+    }
+
+    fn insert_cbc_session(d: &mut TlsDecryptor, key: &TlsSessionKey) {
+        d.sessions.insert(
+            key.clone(),
+            TlsSession {
+                client_write_key: vec![0u8; 16],
+                server_write_key: vec![0u8; 16],
+                client_write_iv: vec![0u8; 16],
+                server_write_iv: vec![0u8; 16],
+                cipher_suite: CipherSuite::Aes128CbcSha,
+                sequence_client: 0,
+                sequence_server: 0,
+                client_addr: None,
+            },
+        );
+    }
+
+    #[test]
+    fn cbc_record_decrypts() {
+        let key = TlsSessionKey {
+            client_random: [0x10u8; 32],
+        };
+        let mut d = decryptor_with(Box::new(CbcMock));
+        insert_cbc_session(&mut d, &key);
+
+        // Payload longer than the 16-byte explicit IV.
+        let record = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 48,
+            payload: vec![0xABu8; 48],
+        };
+        let out = d
+            .try_decrypt(
+                &record,
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+            )
+            .expect("cbc record should decrypt");
+        assert!(out.starts_with(b"MESSAGE sip:"));
+        assert_eq!(d.decrypted_count, 1);
+    }
+
+    #[test]
+    fn cbc_record_too_short_for_iv_returns_none() {
+        let key = TlsSessionKey {
+            client_random: [0x20u8; 32],
+        };
+        let mut d = decryptor_with(Box::new(CbcMock));
+        insert_cbc_session(&mut d, &key);
+
+        // Payload <= 16-byte IV: both direction attempts hit `continue`.
+        let record = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 8,
+            payload: vec![0u8; 8],
+        };
+        assert!(
+            d.try_decrypt(
+                &record,
+                "10.0.0.1".parse().unwrap(),
+                "10.0.0.2".parse().unwrap(),
+            )
+            .is_none()
+        );
+    }
+
+    // ── poll_keylog_file ───────────────────────────────────────────────
+
+    #[test]
+    fn poll_keylog_without_path_is_noop() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        assert_eq!(d.poll_keylog_file().unwrap(), 0);
+    }
+
+    #[test]
+    fn poll_keylog_loads_appended_entries() {
+        use std::io::Write;
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "CLIENT_TRAFFIC_SECRET_0 {} {}", "aa".repeat(32), "bb".repeat(32)).unwrap();
+        tmp.flush().unwrap();
+
+        let mut d = TlsDecryptor::new(
+            Some(tmp.path()),
+            Box::new(MockCrypto {
+                decrypt_result: None,
+            }),
+        )
+        .unwrap();
+        assert_eq!(d.keylog_entry_count(), 1);
+
+        // No growth yet -> nothing new.
+        assert_eq!(d.poll_keylog_file().unwrap(), 0);
+
+        // Append a valid line and a junk line (the junk is skipped).
+        writeln!(tmp, "SERVER_TRAFFIC_SECRET_0 {} {}", "aa".repeat(32), "cc".repeat(32)).unwrap();
+        writeln!(tmp, "this is not a valid keylog line").unwrap();
+        tmp.flush().unwrap();
+
+        assert_eq!(d.poll_keylog_file().unwrap(), 1, "one new valid key");
+        assert_eq!(d.keylog_entry_count(), 2);
+    }
+
+    // ── load_dtls_keylog ───────────────────────────────────────────────
+
+    #[test]
+    fn load_dtls_keylog_empty_and_populated() {
+        use std::io::Write;
+        // Empty file -> 0 entries.
+        let empty = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(TlsDecryptor::load_dtls_keylog(empty.path()).unwrap(), 0);
+
+        // One entry.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "CLIENT_RANDOM {} {}", "aa".repeat(32), "dd".repeat(48)).unwrap();
+        tmp.flush().unwrap();
+        assert_eq!(TlsDecryptor::load_dtls_keylog(tmp.path()).unwrap(), 1);
+    }
+
+    // ── strip_tls13_padding edge ───────────────────────────────────────
+
+    #[test]
+    fn strip_padding_all_zeros_and_empty() {
+        // All-zero record collapses to empty (content type popped, rest stripped).
+        let mut data = vec![0u8; 6];
+        strip_tls13_padding(&mut data);
+        assert!(data.is_empty());
+
+        // Empty input is a no-op.
+        let mut empty: Vec<u8> = Vec::new();
+        strip_tls13_padding(&mut empty);
+        assert!(empty.is_empty());
+    }
+
+    // ── build_record_aad for other content types/versions ──────────────
+
+    #[test]
+    fn build_aad_covers_content_types_and_versions() {
+        let cases = [
+            (TlsContentType::ChangeCipherSpec, TlsVersion::Tls10, 20u8, 0x0301u16),
+            (TlsContentType::Alert, TlsVersion::Tls11, 21, 0x0302),
+            (TlsContentType::Handshake, TlsVersion::Tls13, 22, 0x0303),
+            (TlsContentType::Unknown(99), TlsVersion::Unknown(0x7F7F), 99, 0x7F7F),
+        ];
+        for (ct, ver, want_ct, want_ver) in cases {
+            let aad = build_record_aad(&TlsRecord {
+                content_type: ct,
+                version: ver,
+                length: 5,
+                payload: vec![],
+            });
+            assert_eq!(aad[0], want_ct);
+            assert_eq!(u16::from_be_bytes([aad[1], aad[2]]), want_ver);
+            assert_eq!(u16::from_be_bytes([aad[3], aad[4]]), 5);
+        }
+    }
 }

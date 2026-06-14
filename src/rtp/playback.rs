@@ -215,3 +215,106 @@ fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     out
 }
+
+// Tests cover the device-free DSP helpers (decode + resample). The rodio
+// `AudioPlayer` / `MixerDeviceSink` device path is hardware-bound and stays
+// uncovered by design.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::stream::{RtpStream, StreamKey};
+    use chrono::Utc;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    /// An RtpStream with the given payload type and no captured frames yet.
+    fn stream(payload_type: u8) -> RtpStream {
+        let key = StreamKey {
+            ssrc: 0x1111_2222,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4000),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4002),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type,
+            sequence: 0,
+            timestamp: 0,
+            ssrc: 0x1111_2222,
+            payload_offset: 12,
+        };
+        RtpStream::new(key, &hdr, Utc::now())
+    }
+
+    #[test]
+    fn resample_same_rate_and_empty_are_identity() {
+        let s = vec![0.1, -0.2, 0.3];
+        assert_eq!(resample_f32(&s, 8000, 8000), s);
+        assert_eq!(resample_f32(&[], 8000, 16000), Vec::<f32>::new());
+    }
+
+    #[test]
+    fn resample_upsample_and_downsample_lengths() {
+        let s = vec![0.0f32; 100];
+        // 8k -> 16k roughly doubles the sample count.
+        assert_eq!(resample_f32(&s, 8000, 16000).len(), 200);
+        // 48k -> 8k roughly divides by six.
+        let s = vec![0.0f32; 60];
+        assert_eq!(resample_f32(&s, 48000, 8000).len(), 10);
+    }
+
+    #[test]
+    fn resample_linear_interpolation_values() {
+        // Upsampling [0.0, 1.0] by 2x interpolates a midpoint near 0.5.
+        let out = resample_f32(&[0.0, 1.0], 8000, 16000);
+        assert_eq!(out.len(), 4);
+        assert!((out[0] - 0.0).abs() < 1e-6);
+        assert!((out[1] - 0.5).abs() < 1e-6, "midpoint should interpolate");
+    }
+
+    #[test]
+    fn decode_g711_normalizes_to_unit_range() {
+        let mut s = stream(0); // PCMU
+        s.payload_buffer.push_back((0, vec![0xFFu8; 160]));
+        s.payload_buffer.push_back((160, vec![0x00u8; 160]));
+
+        let ulaw = decode_g711_to_f32(G711Codec::Ulaw, &s);
+        // One f32 sample per input byte across both frames.
+        assert_eq!(ulaw.len(), 320);
+        assert!(ulaw.iter().all(|&v| (-1.0..=1.0).contains(&v)));
+
+        // A-law decodes the same byte counts (values differ).
+        let alaw = decode_g711_to_f32(G711Codec::Alaw, &stream_with_frame());
+        assert_eq!(alaw.len(), 160);
+    }
+
+    fn stream_with_frame() -> RtpStream {
+        let mut s = stream(8); // PCMA
+        s.payload_buffer.push_back((0, vec![0x55u8; 160]));
+        s
+    }
+
+    #[test]
+    fn decode_g711_empty_stream_is_empty() {
+        assert!(decode_g711_to_f32(G711Codec::Ulaw, &stream(0)).is_empty());
+    }
+
+    #[test]
+    fn decode_opus_skips_undecodable_frames() {
+        // Empty stream -> Ok(empty).
+        let empty = decode_opus_to_f32(&stream(111)).expect("opus decode ok");
+        assert!(empty.is_empty());
+
+        // Garbage payloads: each frame fails to decode and is skipped, but the
+        // function still returns Ok (the error-skip branch).
+        let mut s = stream(111);
+        s.payload_buffer.push_back((0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        s.payload_buffer.push_back((20, vec![0xFF; 8]));
+        let pcm = decode_opus_to_f32(&s).expect("opus decode ok despite bad frames");
+        // Undecodable frames produce no samples.
+        assert!(pcm.is_empty());
+    }
+}

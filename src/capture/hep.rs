@@ -1346,4 +1346,362 @@ mod tests {
         assert_eq!(w.check(start + Duration::from_secs(3600)), None);
         assert_eq!(w.on_packet(start + Duration::from_secs(7200)), None);
     }
+
+    // ── Malformed / edge HEP v3 parsing ──────────────────────────────
+
+    /// Helper: assemble a HEP v3 packet from a pre-built chunk buffer,
+    /// computing the magic + total_length header. Lets a test craft
+    /// individual (possibly malformed) chunks precisely.
+    fn assemble_v3(chunks: &[u8]) -> Vec<u8> {
+        let total_len = (HEP3_HEADER_LEN + chunks.len()) as u16;
+        let mut pkt = Vec::new();
+        pkt.extend_from_slice(HEP3_MAGIC);
+        pkt.extend_from_slice(&total_len.to_be_bytes());
+        pkt.extend_from_slice(chunks);
+        pkt
+    }
+
+    /// A chunk whose declared length is below the 6-byte header minimum
+    /// must be rejected (guards against an offset that never advances).
+    #[test]
+    fn parse_hep_v3_chunk_len_below_header_rejected() {
+        let mut chunks = Vec::new();
+        // vendor=0, type=SRC_IPV4, length=3 (illegal: < CHUNK_HEADER_LEN)
+        chunks.extend_from_slice(&0u16.to_be_bytes());
+        chunks.extend_from_slice(&CHUNK_SRC_IPV4.to_be_bytes());
+        chunks.extend_from_slice(&3u16.to_be_bytes());
+        let data = assemble_v3(&chunks);
+        let err = parse_hep(&data).unwrap_err();
+        assert!(
+            format!("{err}").contains("smaller than header"),
+            "expected header-min error, got: {err}"
+        );
+    }
+
+    /// A zero-length declared chunk is the degenerate case of the
+    /// below-header check and must also be rejected (it would otherwise
+    /// loop forever without advancing `offset`).
+    #[test]
+    fn parse_hep_v3_zero_length_chunk_rejected() {
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(&0u16.to_be_bytes());
+        chunks.extend_from_slice(&CHUNK_IP_FAMILY.to_be_bytes());
+        chunks.extend_from_slice(&0u16.to_be_bytes()); // length = 0
+        let data = assemble_v3(&chunks);
+        assert!(parse_hep(&data).is_err());
+    }
+
+    /// `total_length` smaller than the 6-byte header leaves the chunk
+    /// loop with nothing to walk; the packet then lacks required address
+    /// chunks and must error on the missing source address.
+    #[test]
+    fn parse_hep_v3_total_len_below_header() {
+        let mut data = Vec::new();
+        data.extend_from_slice(HEP3_MAGIC);
+        data.extend_from_slice(&3u16.to_be_bytes()); // total_len = 3 < header
+        // pad so the slice itself is long enough to read the header
+        data.extend_from_slice(&[0u8, 0u8]);
+        let err = parse_hep(&data).unwrap_err();
+        assert!(
+            format!("{err}").contains("source address"),
+            "expected missing-source error, got: {err}"
+        );
+    }
+
+    /// A v3 packet carrying source but no destination address chunk must
+    /// fail with a destination-address error (mirrors the src-addr test).
+    #[test]
+    fn parse_hep_v3_missing_dst_addr() {
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"test");
+        let data = assemble_v3(&chunks);
+        let err = parse_hep(&data).unwrap_err();
+        assert!(
+            format!("{err}").contains("destination address"),
+            "expected missing-destination error, got: {err}"
+        );
+    }
+
+    /// Each fixed-width chunk has a minimum-length guard. A truncated
+    /// chunk body (e.g. a 3-byte SRC_IPV4) must be rejected rather than
+    /// reading past the declared data.
+    #[test]
+    fn parse_hep_v3_short_fixed_chunks_rejected() {
+        // (chunk_type, too-short data, expected error fragment)
+        let cases: &[(u16, &[u8], &str)] = &[
+            (CHUNK_IP_PROTO, &[], "IP_PROTO chunk too short"),
+            (CHUNK_SRC_IPV4, &[1, 2, 3], "SRC_IPV4 chunk too short"),
+            (CHUNK_DST_IPV4, &[1, 2, 3], "DST_IPV4 chunk too short"),
+            (CHUNK_SRC_IPV6, &[0; 8], "SRC_IPV6 chunk too short"),
+            (CHUNK_DST_IPV6, &[0; 8], "DST_IPV6 chunk too short"),
+            (CHUNK_SRC_PORT, &[1], "SRC_PORT chunk too short"),
+            (CHUNK_DST_PORT, &[1], "DST_PORT chunk too short"),
+            (CHUNK_TS_SEC, &[1, 2], "TS_SEC chunk too short"),
+            (CHUNK_TS_USEC, &[1, 2], "TS_USEC chunk too short"),
+            (CHUNK_PROTO_TYPE, &[], "PROTO_TYPE chunk too short"),
+            (CHUNK_CAPTURE_ID, &[1, 2], "CAPTURE_ID chunk too short"),
+        ];
+        for (ty, body, frag) in cases {
+            let mut chunks = Vec::new();
+            append_chunk(&mut chunks, 0, *ty, body);
+            let data = assemble_v3(&chunks);
+            let err = parse_hep(&data).unwrap_err();
+            assert!(
+                format!("{err}").contains(frag),
+                "chunk type {ty:#06x}: expected `{frag}`, got: {err}"
+            );
+        }
+    }
+
+    /// Unknown vendor chunks and the informational IP_FAMILY chunk are
+    /// skipped without aborting the parse: a packet that mixes them with
+    /// the required chunks still parses cleanly.
+    #[test]
+    fn parse_hep_v3_skips_unknown_and_family_chunks() {
+        let mut chunks = Vec::new();
+        // Informational family chunk (a no-op branch in the parser).
+        append_chunk(&mut chunks, 0, CHUNK_IP_FAMILY, &[2]);
+        // Unknown chunk type with a non-zero vendor — must be skipped.
+        append_chunk(&mut chunks, 0x1234, 0x7fff, b"ignored-vendor-data");
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(&mut chunks, 0, CHUNK_SRC_PORT, &5060u16.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_DST_PORT, &5061u16.to_be_bytes());
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"PING");
+        let data = assemble_v3(&chunks);
+
+        let hep = parse_hep(&data).expect("unknown chunks should be skipped");
+        assert_eq!(hep.src_addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
+        assert_eq!(hep.dst_addr, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+        assert_eq!(hep.src_port, 5060);
+        assert_eq!(hep.dst_port, 5061);
+        assert_eq!(&hep.payload[..], b"PING");
+        // No capture-id chunk present.
+        assert_eq!(hep.capture_id, None);
+    }
+
+    /// The correlation-id chunk decodes as UTF-8 with trailing NULs
+    /// trimmed (senders often NUL-pad the Call-ID).
+    #[test]
+    fn parse_hep_v3_correlation_id_trims_trailing_nuls() {
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(
+            &mut chunks,
+            0,
+            CHUNK_CORRELATION_ID,
+            b"call-abc-123\0\0\0",
+        );
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"X");
+        let data = assemble_v3(&chunks);
+
+        let hep = parse_hep(&data).expect("parse should succeed");
+        assert_eq!(hep.correlation_id.as_deref(), Some("call-abc-123"));
+    }
+
+    /// Invalid UTF-8 in the correlation-id is lossily decoded (never an
+    /// error) so a single bad byte can't drop an otherwise-valid packet.
+    #[test]
+    fn parse_hep_v3_correlation_id_invalid_utf8_is_lossy() {
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(&mut chunks, 0, CHUNK_CORRELATION_ID, &[0xff, 0xfe, b'!']);
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"X");
+        let data = assemble_v3(&chunks);
+
+        let hep = parse_hep(&data).expect("lossy decode, not an error");
+        let cid = hep.correlation_id.expect("correlation id present");
+        // U+FFFD replacement char for each invalid byte, then the '!'.
+        assert!(cid.ends_with('!'), "got: {cid:?}");
+        assert!(cid.contains('\u{fffd}'), "got: {cid:?}");
+    }
+
+    /// IPv6 source/destination chunks decode to the right addresses,
+    /// exercising the 16-byte address branches directly (not via builder).
+    #[test]
+    fn parse_hep_v3_ipv6_chunks_decode() {
+        let src = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xaa);
+        let dst = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 0xbb);
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV6, &src.octets());
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV6, &dst.octets());
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"Y");
+        let data = assemble_v3(&chunks);
+
+        let hep = parse_hep(&data).expect("parse should succeed");
+        assert_eq!(hep.src_addr, IpAddr::V6(src));
+        assert_eq!(hep.dst_addr, IpAddr::V6(dst));
+    }
+
+    /// An empty payload chunk yields an empty payload Vec (not an error),
+    /// and an absent payload chunk leaves the payload empty by default.
+    #[test]
+    fn parse_hep_v3_empty_and_absent_payload() {
+        // Empty payload chunk.
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"");
+        let data = assemble_v3(&chunks);
+        let hep = parse_hep(&data).expect("empty payload is valid");
+        assert!(hep.payload.is_empty());
+
+        // No payload chunk at all.
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        let data = assemble_v3(&chunks);
+        let hep = parse_hep(&data).expect("absent payload is valid");
+        assert!(hep.payload.is_empty());
+    }
+
+    /// RTCP and Unknown protocol-type bytes decode correctly through the
+    /// parser (covers the non-SIP arms of HepProtocol::from_byte in situ).
+    #[test]
+    fn parse_hep_v3_rtcp_and_unknown_proto_types() {
+        let make = |proto: u8| {
+            let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+            let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+            make_hep_v3(src, dst, 1, 2, 0, 0, proto, b"Z")
+        };
+        assert_eq!(parse_hep(&make(5)).unwrap().protocol, HepProtocol::Rtcp);
+        assert_eq!(parse_hep(&make(32)).unwrap().protocol, HepProtocol::Rtp);
+        assert_eq!(
+            parse_hep(&make(200)).unwrap().protocol,
+            HepProtocol::Unknown(200)
+        );
+    }
+
+    /// A chunk header that begins inside `total_length` but whose 6-byte
+    /// header does not fully fit before `total_length` ends is silently
+    /// left unwalked (loop guard `offset + CHUNK_HEADER_LEN <= total_len`).
+    /// The required chunks before it still parse.
+    #[test]
+    fn parse_hep_v3_trailing_partial_chunk_header_ignored() {
+        let mut chunks = Vec::new();
+        append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
+        append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
+        append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"OK");
+        // Append 3 trailing bytes — not enough for a full chunk header.
+        chunks.extend_from_slice(&[0xde, 0xad, 0xbe]);
+        let data = assemble_v3(&chunks);
+
+        let hep = parse_hep(&data).expect("partial trailing header is ignored");
+        assert_eq!(&hep.payload[..], b"OK");
+    }
+
+    // ── Malformed / edge HEP v2 parsing ──────────────────────────────
+
+    /// A HEP v2 header length below the 16-byte IPv4 minimum is rejected
+    /// even when enough bytes are present.
+    #[test]
+    fn parse_hep_v2_header_len_below_minimum() {
+        // version=2, header_len=10 (< HEP2_MIN_HEADER), followed by padding.
+        let data = [0x02u8, 10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let err = parse_hep(&data).unwrap_err();
+        assert!(
+            format!("{err}").contains("below minimum"),
+            "expected below-minimum error, got: {err}"
+        );
+    }
+
+    /// A HEP v2 packet whose header consumes the whole buffer yields an
+    /// empty payload (boundary case: `data[header_len..]` is empty).
+    #[test]
+    fn parse_hep_v2_empty_payload() {
+        let data = make_hep_v2(
+            Ipv4Addr::new(1, 2, 3, 4),
+            Ipv4Addr::new(5, 6, 7, 8),
+            100,
+            200,
+            b"",
+        );
+        let hep = parse_hep(&data).expect("parse should succeed");
+        assert_eq!(hep.version, 2);
+        assert!(hep.payload.is_empty());
+        assert_eq!(hep.ip_protocol, 17);
+        assert_eq!(hep.protocol, HepProtocol::Sip);
+        assert_eq!(hep.correlation_id, None);
+        assert_eq!(hep.capture_id, None);
+    }
+
+    // ── Builder structure & round-trips ──────────────────────────────
+
+    /// `build_hep_v3` must emit the magic, a `total_length` equal to the
+    /// real byte count, and (for IPv4) the IPv4 family/address chunk types
+    /// rather than the IPv6 variants.
+    #[test]
+    fn build_hep_v3_header_and_length_consistent() {
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 5060,
+            dst_port: 5061,
+        };
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 7, b"hello");
+
+        assert_eq!(&built[..4], HEP3_MAGIC);
+        let declared = u16::from_be_bytes([built[4], built[5]]) as usize;
+        assert_eq!(
+            declared,
+            built.len(),
+            "declared total_length must equal real byte count"
+        );
+
+        // IPv4 build path must not emit IPv6 address chunk types.
+        let v4_src = CHUNK_SRC_IPV4.to_be_bytes();
+        assert!(
+            built.windows(2).any(|w| w == v4_src),
+            "IPv4 src chunk type should be present"
+        );
+        let v6_src = CHUNK_SRC_IPV6.to_be_bytes();
+        // Search only the chunk region (after the 6-byte header) for the
+        // IPv6 type marker; it must be absent for an IPv4 endpoint.
+        assert!(
+            !built[HEP3_HEADER_LEN..]
+                .chunks(2)
+                .any(|w| w == v6_src),
+            "IPv6 src chunk type must be absent for IPv4 endpoint"
+        );
+    }
+
+    /// `append_chunk` writes a 6-byte header (vendor, type, length) where
+    /// length counts the header plus the data, followed by the data verbatim.
+    #[test]
+    fn append_chunk_layout() {
+        let mut buf = Vec::new();
+        append_chunk(&mut buf, 0xabcd, 0x0011, &[0xde, 0xad]);
+        assert_eq!(buf.len(), CHUNK_HEADER_LEN + 2);
+        assert_eq!(u16::from_be_bytes([buf[0], buf[1]]), 0xabcd); // vendor
+        assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0011); // type
+        assert_eq!(u16::from_be_bytes([buf[4], buf[5]]) as usize, CHUNK_HEADER_LEN + 2);
+        assert_eq!(&buf[6..], &[0xde, 0xad]);
+    }
+
+    /// Round-trip an RTCP packet with sub-second timestamp precision and
+    /// verify the correlation/capture metadata survives when present.
+    #[test]
+    fn build_and_parse_round_trip_rtcp_with_usec() {
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 6)),
+            src_port: 40000,
+            dst_port: 40001,
+        };
+        let ts = Utc.timestamp_opt(1234567890, 250_000_000).single().unwrap();
+        let payload = &[0x80, 0xc8, 0x00, 0x06]; // RTCP SR header start
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtcp, 1000, payload);
+        let parsed = parse_hep(&built).expect("round-trip");
+
+        assert_eq!(parsed.protocol, HepProtocol::Rtcp);
+        assert_eq!(parsed.ip_protocol, 17);
+        assert_eq!(parsed.capture_id, Some(1000));
+        assert_eq!(&parsed.payload[..], payload);
+        assert_eq!(parsed.timestamp.timestamp(), 1234567890);
+        assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 250_000);
+    }
 }
