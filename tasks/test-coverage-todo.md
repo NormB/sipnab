@@ -3,6 +3,30 @@
 Baseline (`cargo llvm-cov --all-features --workspace`, 2026-06-14):
 **82.30% lines · 83.72% regions · 88.12% functions** (27,509 lines, 4,868 missed).
 
+## Status (2026-06-14) — P0, P1, P3, P4 done; P2 outstanding
+
+After implementing P0/P1/P3/P4 (`--ignore-filename-regex 'tools_gen_fixture\.rs'`):
+**87.29% lines · 87.67% regions · 91.19% functions** (lib tests: 931 passing).
+
+Per-file line coverage, before → after:
+| File | Before | After |
+|---|---|---|
+| `sip/response_codes.rs` | 36.86% | 99.47% |
+| `output/prometheus_server.rs` | 34.08% | 96.31% |
+| `capture/decrypt.rs` | 64.75% | 94.70% |
+| `capture/writer.rs` | 71.08% | 93.98% |
+| `capture/mod.rs` | 52.38% | 63.08% |
+| `main.rs` (helpers) | 56.28% | 64.55% |
+| `capture/hep.rs` | 73.91% | 80.73% |
+| `sip/dsl.rs` | 85.51% | 95.24% |
+| `mcp/server.rs` | 76.28% | 95.86% |
+| `output/api.rs` | 87.20% | 97.19% |
+| `rtp/playback.rs` | 0% | 53.76% (DSP only; device path intentionally uncovered) |
+| `privilege.rs` | 43.70% | 56.92% (syscall arms need root, accepted) |
+
+**Remaining: P2 — the TUI rendering cluster (~1,400 missed lines).** Not yet
+done; tackle with `ratatui` `TestBackend` snapshots as outlined below.
+
 Goal: lift line coverage toward ~90% by attacking the largest *feasible* gaps
 first. Files are ranked below by **missed lines × feasibility**, not raw %.
 

@@ -1287,4 +1287,317 @@ mod tests {
         let filter = FilterExpr::parse("msg_count == 1").expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[]));
     }
+
+    // ── expand_alias: every alias maps to its documented expression ─────
+
+    #[test]
+    fn expand_alias_returns_exact_expansions() {
+        assert!(expand_alias("problems").unwrap().contains("state == 'Failed'"));
+        assert_eq!(expand_alias("slow-setup"), Some("pdd > 3.0"));
+        assert_eq!(
+            expand_alias("short-calls"),
+            Some("duration < 5.0 AND state == 'Completed'")
+        );
+        assert_eq!(expand_alias("one-way"), Some("one_way == true"));
+        assert_eq!(expand_alias("nat-issues"), Some("nat_mismatch == true"));
+        assert_eq!(expand_alias("codec-asym"), Some("codec_asymmetry == true"));
+        assert_eq!(expand_alias("ptime-asym"), Some("ptime_asymmetry == true"));
+        assert_eq!(
+            expand_alias("payload-asym"),
+            Some("payload_asymmetry == true")
+        );
+        assert_eq!(
+            expand_alias("duration-asym"),
+            Some("duration_asymmetry == true")
+        );
+        assert_eq!(expand_alias("late-media"), Some("late_media == true"));
+    }
+
+    #[test]
+    fn expand_alias_empty_and_case_sensitive_are_none() {
+        // Alias matching is exact and case-sensitive.
+        assert!(expand_alias("").is_none());
+        assert!(expand_alias("Problems").is_none());
+        assert!(expand_alias("PROBLEMS").is_none());
+        assert!(expand_alias("slow_setup").is_none());
+    }
+
+    // ── check_nesting_depth: boundary behaviour ─────────────────────────
+
+    #[test]
+    fn nesting_depth_exactly_at_limit_ok() {
+        // Exactly MAX_NESTING_DEPTH (50) open parens is allowed; 51 is not.
+        let expr = format!(
+            "{}from.user == '1001'{}",
+            "(".repeat(50),
+            ")".repeat(50)
+        );
+        // Nesting-depth check itself passes (no "nesting depth" error).
+        assert!(check_nesting_depth(&expr).is_ok());
+
+        let too_deep = format!(
+            "{}from.user == '1001'{}",
+            "(".repeat(51),
+            ")".repeat(51)
+        );
+        let err = check_nesting_depth(&too_deep).unwrap_err().to_string();
+        assert!(err.contains("nesting depth"), "got: {err}");
+    }
+
+    #[test]
+    fn nesting_depth_unbalanced_close_parens_saturates() {
+        // Leading ')' must not underflow; depth saturates at 0.
+        assert!(check_nesting_depth(")))(((").is_ok());
+    }
+
+    // ── render_parse_error: direct unit coverage ────────────────────────
+
+    #[test]
+    fn render_parse_error_basic_caret_and_footer() {
+        let expr = "from.user == 'x'";
+        let out = render_parse_error(expr, 0, "unexpected input");
+        assert!(out.starts_with("unexpected input at position 0"));
+        assert!(out.contains(expr));
+        assert!(out.contains('^'));
+        assert!(out.contains("valid operators:"));
+        assert!(out.contains("docs/filter-dsl.md"));
+    }
+
+    #[test]
+    fn render_parse_error_empty_offending_omits_token() {
+        // pos at end-of-string => no offending token => no ": '...'" suffix.
+        let expr = "from.user == 'x'";
+        let out = render_parse_error(expr, expr.len(), "unexpected trailing input");
+        let header = out.lines().next().unwrap();
+        assert!(header.ends_with("position 16"), "got: {header}");
+        assert!(!header.contains(": '"), "got: {header}");
+    }
+
+    #[test]
+    fn render_parse_error_no_quote_hint_for_keyword_value() {
+        // "true" after an operator is a valid boolean, so no quoting hint.
+        let out = render_parse_error("one_way == true", 11, "x");
+        assert!(!out.contains("must be quoted"), "got: {out}");
+    }
+
+    #[test]
+    fn render_parse_error_pos_past_end_is_clamped() {
+        // An out-of-range position must not panic; it is clamped to len.
+        let expr = "method == 'X'";
+        let out = render_parse_error(expr, 9999, "boom");
+        assert!(out.contains("boom at position"));
+    }
+
+    // ── parse_value / parse_operator error arms via FilterExpr::parse ───
+
+    #[test]
+    fn parse_unterminated_string_errors() {
+        // Missing closing quote hits the ErrorKind::Char failure arm.
+        let result = FilterExpr::parse("from.user == 'unterminated");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_invalid_regex_errors() {
+        // An unbalanced group fails RegexBuilder::build -> Verify failure arm.
+        let result = FilterExpr::parse("from.user =~ '(unclosed'");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_non_numeric_value_for_number_errors() {
+        // A bare unquoted word where a number/string is expected.
+        let result = FilterExpr::parse("msg_count == abc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_unknown_operator_errors() {
+        let result = FilterExpr::parse("from.user ?? '1001'");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_trailing_input_errors() {
+        let result = FilterExpr::parse("from.user == '1001' garbage");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("trailing"), "got: {err}");
+    }
+
+    #[test]
+    fn parse_false_boolean_literal() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        // one_way is false with no streams, so == false matches.
+        let filter = FilterExpr::parse("one_way == false").expect("should parse");
+        assert!(filter.matches_dialog(&dialog, &[]));
+    }
+
+    // ── compare_str: every operator + type mismatch ─────────────────────
+
+    #[test]
+    fn compare_str_all_operators() {
+        assert!(compare_str("b", &Operator::Eq, &Value::Str("b".into())));
+        assert!(!compare_str("b", &Operator::Eq, &Value::Str("a".into())));
+        assert!(compare_str("b", &Operator::Ne, &Value::Str("a".into())));
+        assert!(compare_str("a", &Operator::Lt, &Value::Str("b".into())));
+        assert!(compare_str("b", &Operator::Gt, &Value::Str("a".into())));
+        assert!(compare_str("a", &Operator::Le, &Value::Str("a".into())));
+        assert!(compare_str("b", &Operator::Ge, &Value::Str("b".into())));
+        let re = regex::Regex::new("^b").unwrap();
+        assert!(compare_str("bee", &Operator::Regex, &Value::Re(re)));
+    }
+
+    #[test]
+    fn compare_str_type_mismatch_is_false() {
+        // String field compared against a numeric/bool literal => false.
+        assert!(!compare_str("b", &Operator::Eq, &Value::Num(1.0)));
+        assert!(!compare_str("b", &Operator::Eq, &Value::Bool(true)));
+        // Regex operator without a compiled regex value => false.
+        assert!(!compare_str("b", &Operator::Regex, &Value::Str("b".into())));
+    }
+
+    // ── compare_num: every operator + type mismatch ─────────────────────
+
+    #[test]
+    fn compare_num_all_operators() {
+        assert!(compare_num(3.0, &Operator::Eq, &Value::Num(3.0)));
+        assert!(!compare_num(3.0, &Operator::Eq, &Value::Num(4.0)));
+        assert!(compare_num(3.0, &Operator::Ne, &Value::Num(4.0)));
+        assert!(compare_num(2.0, &Operator::Lt, &Value::Num(3.0)));
+        assert!(compare_num(4.0, &Operator::Gt, &Value::Num(3.0)));
+        assert!(compare_num(3.0, &Operator::Le, &Value::Num(3.0)));
+        assert!(compare_num(3.0, &Operator::Ge, &Value::Num(3.0)));
+        // Regex is never applicable to numbers.
+        assert!(!compare_num(3.0, &Operator::Regex, &Value::Num(3.0)));
+    }
+
+    #[test]
+    fn compare_num_type_mismatch_is_false() {
+        assert!(!compare_num(3.0, &Operator::Eq, &Value::Str("3".into())));
+        assert!(!compare_num(3.0, &Operator::Lt, &Value::Bool(false)));
+    }
+
+    // ── compare_bool: operators + type mismatch ─────────────────────────
+
+    #[test]
+    fn compare_bool_eq_ne_and_unsupported_operators() {
+        assert!(compare_bool(true, &Operator::Eq, &Value::Bool(true)));
+        assert!(!compare_bool(true, &Operator::Eq, &Value::Bool(false)));
+        assert!(compare_bool(true, &Operator::Ne, &Value::Bool(false)));
+        // Ordering operators are not meaningful for booleans => false.
+        assert!(!compare_bool(true, &Operator::Lt, &Value::Bool(false)));
+        assert!(!compare_bool(true, &Operator::Gt, &Value::Bool(false)));
+        assert!(!compare_bool(true, &Operator::Le, &Value::Bool(false)));
+        assert!(!compare_bool(true, &Operator::Ge, &Value::Bool(false)));
+        assert!(!compare_bool(true, &Operator::Regex, &Value::Bool(true)));
+    }
+
+    #[test]
+    fn compare_bool_type_mismatch_is_false() {
+        assert!(!compare_bool(true, &Operator::Eq, &Value::Num(1.0)));
+        assert!(!compare_bool(true, &Operator::Eq, &Value::Str("true".into())));
+    }
+
+    // ── state_to_str: all DialogState variants ──────────────────────────
+
+    #[test]
+    fn state_to_str_covers_all_variants() {
+        let cases = [
+            (DialogState::Trying, "Trying"),
+            (DialogState::Ringing, "Ringing"),
+            (DialogState::InCall, "InCall"),
+            (DialogState::Completed, "Completed"),
+            (DialogState::Cancelled, "Cancelled"),
+            (DialogState::Failed, "Failed"),
+            (DialogState::Registered, "Registered"),
+            (DialogState::Expired, "Expired"),
+            (DialogState::Pending, "Pending"),
+            (DialogState::Active, "Active"),
+            (DialogState::Terminated, "Terminated"),
+            (DialogState::Transferring, "Transferring"),
+        ];
+        for (state, expected) in cases {
+            assert_eq!(state_to_str(&state), expected);
+        }
+    }
+
+    // ── approximate_mos ─────────────────────────────────────────────────
+
+    #[test]
+    fn approximate_mos_clean_stream_is_high() {
+        // No loss, no jitter => R near 93 => MOS in the ~4.4 range.
+        let stream = make_rtp_stream(false);
+        let mos = approximate_mos(&stream);
+        assert!(mos > 4.0 && mos <= 4.5, "got {mos}");
+    }
+
+    #[test]
+    fn approximate_mos_degrades_with_jitter_and_loss() {
+        let mut stream = make_rtp_stream(false);
+        stream.jitter = 80.0;
+        stream.lost_packets = 50;
+        // packet_count is 1 from construction; make loss heavy.
+        let degraded = approximate_mos(&stream);
+        let clean = approximate_mos(&make_rtp_stream(false));
+        assert!(degraded < clean, "degraded {degraded} < clean {clean}");
+        assert!(degraded >= 1.0, "MOS floor is 1.0, got {degraded}");
+    }
+
+    #[test]
+    fn approximate_mos_worst_case_floored_at_one() {
+        let mut stream = make_rtp_stream(false);
+        stream.jitter = 100.0;
+        stream.lost_packets = 1_000_000;
+        let mos = approximate_mos(&stream);
+        assert!((mos - 1.0).abs() < 1e-9, "expected floor 1.0, got {mos}");
+    }
+
+    #[test]
+    fn approximate_mos_no_packets_no_loss() {
+        // total == 0 path: loss_pct stays 0.0, no division by zero.
+        let mut stream = make_rtp_stream(false);
+        stream.packet_count = 0;
+        stream.lost_packets = 0;
+        let mos = approximate_mos(&stream);
+        assert!(mos > 4.0, "got {mos}");
+    }
+
+    // ── eval_compare numeric field paths via matches_dialog ─────────────
+
+    #[test]
+    fn rtp_mos_loss_jitter_fields_evaluate() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        let mut stream = make_rtp_stream(false);
+        stream.jitter = 60.0;
+        stream.lost_packets = 4; // with packet_count 1 => high loss%
+        let streams: Vec<&RtpStream> = vec![&stream];
+
+        // MOS should be degraded below 4.0.
+        let mos_filter = FilterExpr::parse("rtp.mos < 4.0").expect("parse");
+        assert!(mos_filter.matches_dialog(&dialog, &streams));
+
+        // Jitter worst-case across streams is 60.0.
+        let jitter_filter = FilterExpr::parse("rtp.jitter > 50.0").expect("parse");
+        assert!(jitter_filter.matches_dialog(&dialog, &streams));
+
+        // Loss percentage is high.
+        let loss_filter = FilterExpr::parse("rtp.loss > 50.0").expect("parse");
+        assert!(loss_filter.matches_dialog(&dialog, &streams));
+    }
+
+    #[test]
+    fn rtp_codec_and_ssrc_string_fields() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        let mut stream = make_rtp_stream(false);
+        stream.codec = Some("PCMU".to_string());
+        let streams: Vec<&RtpStream> = vec![&stream];
+
+        let codec_filter = FilterExpr::parse("rtp.codec == 'PCMU'").expect("parse");
+        assert!(codec_filter.matches_dialog(&dialog, &streams));
+
+        // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
+        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
+        assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+    }
 }

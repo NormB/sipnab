@@ -541,4 +541,77 @@ mod tests {
         let packets: Vec<_> = pkt_rx.try_iter().collect();
         assert!(!packets.is_empty(), "Expected packets from fixture file");
     }
+
+    // ── PacketProcessor::process dispatch (device-free) ─────────────────
+    #[cfg(feature = "native")]
+    mod processor {
+        use super::*;
+        use crate::capture::packet::Packet;
+        use chrono::Utc;
+
+        /// Minimal Ethernet + IPv4 + UDP frame carrying `payload`.
+        fn eth_ipv4_udp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+            let udp_len = 8 + payload.len() as u16;
+            let ip_total = 20 + udp_len;
+            let mut p = Vec::new();
+            p.extend_from_slice(&[0xAA; 6]); // dst MAC
+            p.extend_from_slice(&[0xBB; 6]); // src MAC
+            p.extend_from_slice(&[0x08, 0x00]); // IPv4
+            p.push(0x45); // ver/ihl
+            p.push(0x00);
+            p.extend_from_slice(&ip_total.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x01]); // id
+            p.extend_from_slice(&[0x40, 0x00]); // DF, offset 0
+            p.push(64); // ttl
+            p.push(17); // UDP
+            p.extend_from_slice(&[0x00, 0x00]); // checksum
+            p.extend_from_slice(&[10, 0, 0, 1]); // src ip
+            p.extend_from_slice(&[10, 0, 0, 2]); // dst ip
+            p.extend_from_slice(&src_port.to_be_bytes());
+            p.extend_from_slice(&dst_port.to_be_bytes());
+            p.extend_from_slice(&udp_len.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x00]); // checksum
+            p.extend_from_slice(payload);
+            p
+        }
+
+        fn packet(data: Vec<u8>) -> Packet {
+            let n = data.len();
+            Packet::new(Utc::now(), data, n, n, None, 1) // linktype 1 = Ethernet
+        }
+
+        #[test]
+        fn udp_packet_yields_one_parsed() {
+            let mut proc = PacketProcessor::new();
+            let frame = eth_ipv4_udp(5060, 5060, b"REGISTER sip:x SIP/2.0\r\n\r\n");
+            let out = proc.process(&packet(frame));
+            assert_eq!(out.len(), 1);
+            assert_eq!(out[0].transport, parse::TransportProto::Udp);
+            assert_eq!(out[0].dst_port, 5060);
+        }
+
+        #[test]
+        fn non_ip_frame_yields_nothing() {
+            let mut proc = PacketProcessor::with_max_sessions(16);
+            // EtherType 0x0806 (ARP) — not IP, so parse yields no ParsedPacket.
+            let mut frame = vec![0xAAu8; 6];
+            frame.extend_from_slice(&[0xBB; 6]);
+            frame.extend_from_slice(&[0x08, 0x06]); // ARP
+            frame.extend_from_slice(&[0u8; 28]);
+            assert!(proc.process(&packet(frame)).is_empty());
+        }
+
+        #[test]
+        fn truncated_garbage_yields_nothing() {
+            let mut proc = PacketProcessor::new();
+            // Too short to be a valid Ethernet/IP frame -> parse error path.
+            assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
+        }
+
+        #[test]
+        fn sweep_is_safe_on_empty_state() {
+            let mut proc = PacketProcessor::default();
+            proc.sweep(); // exercises both reassembler sweeps with no entries
+        }
+    }
 }

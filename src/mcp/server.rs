@@ -878,11 +878,81 @@ impl ServerHandler for SipnabMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::parse::TransportProto;
+    use crate::sip::parser::parse_sip;
+    use crate::test_utils::build_sip_message as build_sip;
+    use std::net::{IpAddr, Ipv4Addr};
 
     fn empty_server() -> SipnabMcp {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         SipnabMcp::new(ds, ss)
+    }
+
+    fn localhost() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
+    }
+
+    fn base_ts() -> chrono::DateTime<chrono::Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn parse_at(raw: &[u8], ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
+        parse_sip(raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
+            .expect("should parse SIP")
+    }
+
+    fn invite(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKabc",
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "User-Agent: TestUA/1.0",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_at(&raw, ts)
+    }
+
+    fn ok200(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKabc",
+                "From: Alice <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_at(&raw, ts)
+    }
+
+    /// A server whose dialog store holds one dialog (`call_id`) with an
+    /// INVITE followed by a 200 OK (two messages).
+    fn server_with_dialog(call_id: &str) -> SipnabMcp {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite(call_id, base_ts()));
+        ds.process_message(ok200(call_id, base_ts()));
+        let ds = Arc::new(RwLock::new(ds));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        SipnabMcp::new(ds, ss)
+    }
+
+    /// Extract the text body of the first content item.
+    fn text_of(result: &CallToolResult) -> String {
+        result.content[0]
+            .as_text()
+            .expect("content should be text-able")
+            .text
+            .clone()
     }
 
     #[tokio::test]
@@ -969,5 +1039,430 @@ mod tests {
         let content = &result.content[0];
         let raw = content.as_text().expect("should be text-able").text.clone();
         assert!(raw.contains("[]"), "empty store → empty list, got: {raw}");
+    }
+
+    // ── list_dialogs success path with populated store ───────────────
+
+    #[tokio::test]
+    async fn list_dialogs_returns_summary_for_populated_store() {
+        let server = server_with_dialog("call-list@x");
+        let result = server
+            .list_dialogs(Parameters(ListDialogsParams::default()))
+            .await
+            .expect("list_dialogs should succeed");
+        let raw = text_of(&result);
+        assert!(raw.contains("call-list@x"), "summary must name the dialog: {raw}");
+        assert!(raw.contains("alice"), "from_user should appear: {raw}");
+    }
+
+    // ── get_dialog_report success paths ──────────────────────────────
+
+    #[tokio::test]
+    async fn get_dialog_report_json_returns_structured_object() {
+        let server = server_with_dialog("rep@x");
+        let result = server
+            .get_dialog_report(Parameters(GetDialogReportParams {
+                call_id: "rep@x".to_string(),
+                format: None,
+            }))
+            .await
+            .expect("report should succeed");
+        let raw = text_of(&result);
+        // JSON path re-parses to structured JSON; it must be a JSON object.
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("report is JSON");
+        assert!(v.is_object(), "json report should be an object, got: {raw}");
+    }
+
+    #[tokio::test]
+    async fn get_dialog_report_markdown_returns_text() {
+        let server = server_with_dialog("repmd@x");
+        let result = server
+            .get_dialog_report(Parameters(GetDialogReportParams {
+                call_id: "repmd@x".to_string(),
+                format: Some("markdown".to_string()),
+            }))
+            .await
+            .expect("markdown report should succeed");
+        let raw = text_of(&result);
+        assert!(!raw.is_empty(), "markdown report must be non-empty");
+        // markdown report is not valid standalone JSON
+        assert!(serde_json::from_str::<serde_json::Value>(&raw).is_err());
+    }
+
+    // ── get_dialog ───────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_dialog_unknown_call_id_errors() {
+        let server = empty_server();
+        let err = server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: "missing@x".to_string(),
+                max_messages: None,
+                cursor: None,
+            }))
+            .await
+            .expect_err("unknown call_id must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn get_dialog_returns_messages_and_completion() {
+        let server = server_with_dialog("dlg@x");
+        let result = server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: "dlg@x".to_string(),
+                max_messages: None,
+                cursor: None,
+            }))
+            .await
+            .expect("get_dialog should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["total_messages"], 2);
+        assert_eq!(v["complete"], true);
+        assert!(v["next_cursor"].is_null());
+        assert_eq!(v["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_dialog_pagination_yields_next_cursor() {
+        let server = server_with_dialog("page@x");
+        let result = server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: "page@x".to_string(),
+                max_messages: Some(1),
+                cursor: Some(0),
+            }))
+            .await
+            .expect("get_dialog should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["total_messages"], 2);
+        assert_eq!(v["complete"], false);
+        assert_eq!(v["next_cursor"], 1);
+        assert_eq!(v["messages"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_dialog_cursor_past_end_returns_empty_slice() {
+        let server = server_with_dialog("end@x");
+        let result = server
+            .get_dialog(Parameters(GetDialogParams {
+                call_id: "end@x".to_string(),
+                max_messages: Some(100),
+                cursor: Some(99),
+            }))
+            .await
+            .expect("get_dialog should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(v["messages"].as_array().unwrap().is_empty());
+        assert_eq!(v["complete"], true);
+        assert!(v["next_cursor"].is_null());
+    }
+
+    // ── get_message ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn get_message_unknown_call_id_errors() {
+        let server = empty_server();
+        let err = server
+            .get_message(Parameters(GetMessageParams {
+                call_id: "missing@x".to_string(),
+                index: 0,
+            }))
+            .await
+            .expect_err("unknown call_id must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn get_message_index_out_of_range_errors() {
+        let server = server_with_dialog("msgoob@x");
+        let err = server
+            .get_message(Parameters(GetMessageParams {
+                call_id: "msgoob@x".to_string(),
+                index: 99,
+            }))
+            .await
+            .expect_err("out-of-range index must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+        assert!(
+            json["message"].as_str().unwrap().contains("out of range"),
+            "message should mention range: {json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_message_returns_structured_message() {
+        let server = server_with_dialog("msg@x");
+        let result = server
+            .get_message(Parameters(GetMessageParams {
+                call_id: "msg@x".to_string(),
+                index: 0,
+            }))
+            .await
+            .expect("get_message should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(v.is_object(), "message should serialize to a JSON object");
+    }
+
+    // ── render_ladder ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn render_ladder_unknown_format_errors() {
+        let server = server_with_dialog("ladfmt@x");
+        let err = server
+            .render_ladder(Parameters(RenderLadderParams {
+                call_id: "ladfmt@x".to_string(),
+                format: Some("html".to_string()),
+            }))
+            .await
+            .expect_err("unknown format must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn render_ladder_unknown_call_id_errors() {
+        let server = empty_server();
+        let err = server
+            .render_ladder(Parameters(RenderLadderParams {
+                call_id: "missing@x".to_string(),
+                format: None,
+            }))
+            .await
+            .expect_err("unknown call_id must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn render_ladder_text_format_returns_non_empty() {
+        let server = server_with_dialog("lad@x");
+        let result = server
+            .render_ladder(Parameters(RenderLadderParams {
+                call_id: "lad@x".to_string(),
+                format: Some("text".to_string()),
+            }))
+            .await
+            .expect("render_ladder should succeed");
+        assert!(!text_of(&result).is_empty(), "ladder text must be non-empty");
+    }
+
+    // ── rtp_stats ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rtp_stats_unknown_call_id_errors() {
+        let server = empty_server();
+        let err = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                call_id: "missing@x".to_string(),
+            }))
+            .await
+            .expect_err("unknown call_id must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn rtp_stats_no_streams_returns_empty_streams_array() {
+        let server = server_with_dialog("rtp@x");
+        let result = server
+            .rtp_stats(Parameters(RtpStatsParams {
+                call_id: "rtp@x".to_string(),
+            }))
+            .await
+            .expect("rtp_stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["call_id"], "rtp@x");
+        assert!(v["streams"].as_array().unwrap().is_empty());
+        assert!(v.get("diagnosis").is_some());
+    }
+
+    // ── search_messages ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn search_messages_empty_query_errors() {
+        let server = empty_server();
+        let err = server
+            .search_messages(Parameters(SearchMessagesParams {
+                query: String::new(),
+                limit: None,
+            }))
+            .await
+            .expect_err("empty query must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn search_messages_no_match_returns_empty() {
+        let server = server_with_dialog("srch@x");
+        let result = server
+            .search_messages(Parameters(SearchMessagesParams {
+                query: "zzz-no-such-token".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("search should succeed");
+        assert!(text_of(&result).contains("[]"));
+    }
+
+    #[tokio::test]
+    async fn search_messages_case_insensitive_hit() {
+        let server = server_with_dialog("srch2@x");
+        let result = server
+            .search_messages(Parameters(SearchMessagesParams {
+                // Upper-cased query against lower-cased "alice".
+                query: "ALICE".to_string(),
+                limit: Some(10),
+            }))
+            .await
+            .expect("search should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let hits = v.as_array().expect("hits array");
+        assert!(!hits.is_empty(), "should match the From header");
+        assert_eq!(hits[0]["call_id"], "srch2@x");
+        assert!(hits[0]["snippet"].as_str().unwrap().to_lowercase().contains("alice"));
+    }
+
+    // ── tail_dialogs ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn tail_dialogs_invalid_cursor_errors() {
+        let server = empty_server();
+        let err = server
+            .tail_dialogs(Parameters(TailDialogsParams {
+                cursor: Some("not-a-timestamp".to_string()),
+                limit: None,
+            }))
+            .await
+            .expect_err("bad cursor must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn tail_dialogs_no_cursor_returns_all_with_next_cursor() {
+        let server = server_with_dialog("tail@x");
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams::default()))
+            .await
+            .expect("tail should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["dialogs"].as_array().unwrap().len(), 1);
+        assert!(v["next_cursor"].is_string(), "next_cursor set when dialogs returned");
+        assert_eq!(v["source_exhausted"], false);
+    }
+
+    #[tokio::test]
+    async fn tail_dialogs_future_cursor_filters_everything() {
+        let server = server_with_dialog("tailf@x");
+        // A cursor strictly after the dialog's updated_at filters it out.
+        let future = "2099-01-01T00:00:00Z".to_string();
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams {
+                cursor: Some(future),
+                limit: None,
+            }))
+            .await
+            .expect("tail should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(v["dialogs"].as_array().unwrap().is_empty());
+        assert!(v["next_cursor"].is_null(), "no dialogs → null cursor");
+    }
+
+    // ── security_findings ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn security_findings_no_engine_returns_empty() {
+        let server = empty_server();
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .expect("no engine → empty list");
+        assert!(text_of(&result).contains("[]"));
+    }
+
+    #[tokio::test]
+    async fn security_findings_invalid_since_errors() {
+        let server = empty_server();
+        let err = server
+            .security_findings(Parameters(SecurityFindingsParams {
+                kinds: None,
+                since: Some("garbage".to_string()),
+                limit: None,
+            }))
+            .await
+            .expect_err("bad since must error");
+        let json = serde_json::to_value(err).unwrap();
+        assert_eq!(json["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn security_findings_with_engine_returns_recorded_finding() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.fire("scanner", localhost(), "probe from scanner");
+        let engine = Arc::new(RwLock::new(engine));
+
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let server = SipnabMcp::new(ds, ss).with_alert_engine(engine);
+
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams::default()))
+            .await
+            .expect("security_findings should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        let arr = v.as_array().expect("findings array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["rule_name"], "scanner");
+        assert_eq!(arr[0]["src_ip"], "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn security_findings_kinds_filter_excludes_other_rules() {
+        let mut engine = AlertEngine::new(vec![], None);
+        engine.fire("scanner", localhost(), "scan");
+        let engine = Arc::new(RwLock::new(engine));
+
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let server = SipnabMcp::new(ds, ss).with_alert_engine(engine);
+
+        let result = server
+            .security_findings(Parameters(SecurityFindingsParams {
+                kinds: Some(vec!["fraud".to_string()]),
+                since: None,
+                limit: None,
+            }))
+            .await
+            .expect("security_findings should succeed");
+        // Only "scanner" recorded; filtering on "fraud" yields none.
+        assert!(text_of(&result).contains("[]"));
+    }
+
+    // ── stats ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn stats_empty_store_all_zero() {
+        let server = empty_server();
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["schema_version"], 1);
+        assert_eq!(v["dialog_count"], 0);
+        assert_eq!(v["stream_count"], 0);
+        assert_eq!(v["orphaned_stream_count"], 0);
+        assert_eq!(v["active_call_count"], 0);
+    }
+
+    #[tokio::test]
+    async fn stats_counts_dialogs() {
+        let server = server_with_dialog("stat@x");
+        let result = server.stats().await.expect("stats should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert_eq!(v["dialog_count"], 1);
+        assert_eq!(v["stream_count"], 0);
     }
 }

@@ -697,4 +697,149 @@ mod tests {
             "Raw mode should NOT include DSB"
         );
     }
+
+    // ── End-to-end write / read-back / rotate / DSB ─────────────────────
+    mod roundtrip {
+        use super::*;
+        use crate::capture::packet::Packet;
+
+        fn pkt(byte: u8, len: usize) -> Packet {
+            Packet::new(chrono::Utc::now(), vec![byte; len], len, len, None, 1)
+        }
+
+        #[test]
+        fn pcap_write_and_read_back() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.pcap");
+
+            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            assert_eq!(w.export_mode(), PcapExportMode::Decrypted);
+            for i in 0..3u8 {
+                w.write(&pkt(i, 50)).unwrap();
+            }
+            assert_eq!(w.bytes_written(), 150);
+            w.finish().unwrap();
+
+            // Re-open with libpcap and count the packets back.
+            let mut cap = pcap::Capture::from_file(&path).expect("reopen pcap");
+            let mut count = 0;
+            while cap.next_packet().is_ok() {
+                count += 1;
+                if count > 10 {
+                    break;
+                }
+            }
+            assert_eq!(count, 3, "all three packets should round-trip");
+        }
+
+        #[test]
+        fn pcapng_write_with_dsb_produces_valid_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("out.pcapng");
+            let keylog = dir.path().join("keys.txt");
+            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+
+            let mut w = PcapWriter::with_format(
+                &path,
+                1,
+                None,
+                None,
+                true, // pcapng
+                PcapExportMode::EncryptedWithDsb,
+            )
+            .unwrap();
+
+            // First call writes the DSB; the second is a no-op (already written).
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+
+            for i in 0..2u8 {
+                w.write(&pkt(i, 40)).unwrap();
+            }
+            w.finish().unwrap();
+
+            // The PCAP-NG Section Header Block opens with block type 0x0A0D0D0A.
+            let bytes = std::fs::read(&path).unwrap();
+            assert!(bytes.len() > 28, "file should have content");
+            assert_eq!(&bytes[0..4], &0x0A0D0D0Au32.to_le_bytes());
+        }
+
+        #[test]
+        fn size_based_rotation_creates_sequenced_file() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rot.pcap");
+
+            // Tiny size cap so the third write triggers rotation.
+            let mut w = PcapWriter::new(&path, 1, Some(80), None).unwrap();
+            for i in 0..5u8 {
+                w.write(&pkt(i, 50)).unwrap();
+            }
+            w.finish().unwrap();
+
+            assert!(
+                dir.path().join("rot_00001.pcap").exists(),
+                "rotation should create a sequenced file"
+            );
+        }
+
+        #[test]
+        fn explicit_rotate_resets_counters() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("man.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            w.write(&pkt(0, 50)).unwrap();
+            assert_eq!(w.bytes_written(), 50);
+            w.rotate().unwrap();
+            assert_eq!(w.bytes_written(), 0, "rotate resets the byte counter");
+            assert!(dir.path().join("man_00001.pcap").exists());
+        }
+
+        #[test]
+        fn write_dsb_on_plain_pcap_is_skipped() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("plain.pcap");
+            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            // Plain pcap backend can't hold a DSB — must be a benign no-op.
+            assert!(w.write_dsb(b"CLIENT_RANDOM a b\n").is_ok());
+        }
+
+        #[test]
+        fn maybe_write_dsb_handles_raw_empty_and_missing() {
+            let dir = tempfile::tempdir().unwrap();
+
+            // Raw mode never embeds key material -> early return.
+            let raw_path = dir.path().join("raw.pcapng");
+            let mut w = PcapWriter::with_format(
+                &raw_path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+            )
+            .unwrap();
+            let keylog = dir.path().join("k.txt");
+            std::fs::write(&keylog, b"CLIENT_RANDOM a b\n").unwrap();
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+
+            // EncryptedWithDsb but an empty keylog -> the "Ok(empty)" arm.
+            let p2 = dir.path().join("e.pcapng");
+            let mut w2 = PcapWriter::with_format(
+                &p2,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::EncryptedWithDsb,
+            )
+            .unwrap();
+            let empty = dir.path().join("empty.txt");
+            std::fs::write(&empty, b"").unwrap();
+            w2.maybe_write_keylog_dsb(&empty).unwrap();
+
+            // ...and a missing keylog path -> the Err arm (logged, still Ok).
+            w2.maybe_write_keylog_dsb(dir.path().join("nope.txt").as_path())
+                .unwrap();
+        }
+    }
 }

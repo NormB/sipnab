@@ -400,4 +400,72 @@ mod tests {
         assert!(explain_response_code(999).is_none());
         assert!(explain_response_code(0).is_none());
     }
+
+    /// Every response code with an implemented explanation. Keep in sync with
+    /// the `match` arms above — the table-driven tests below assert this list
+    /// is exactly the set of codes that return `Some`.
+    const IMPLEMENTED_CODES: &[u16] = &[
+        // 1xx
+        100, 180, 181, 182, 183, 199, //
+        // 2xx
+        200, 202, 204, //
+        // 3xx
+        300, 301, 302, 305, 380, //
+        // 4xx
+        400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 412, 413, 414, 415, 416, 417, 420,
+        421, 422, 423, 428, 429, 433, 436, 437, 438, 439, 440, 469, 470, 480, 481, 482, 483, 484,
+        485, 486, 487, 488, 489, 491, 493, 494, //
+        // 5xx
+        500, 501, 502, 503, 504, 505, 513, 555, 580, //
+        // 6xx
+        600, 603, 604, 606, 607, 608,
+    ];
+
+    #[test]
+    fn every_implemented_code_starts_with_its_number_and_is_nonempty() {
+        for &code in IMPLEMENTED_CODES {
+            let text = explain_response_code(code)
+                .unwrap_or_else(|| panic!("code {code} should have an explanation"));
+            // Each explanation opens with the numeric code, e.g. "404 Not Found …".
+            assert!(
+                text.starts_with(&code.to_string()),
+                "explanation for {code} should start with the code, got: {text:?}"
+            );
+            // No stray empty/whitespace-only entries, and an em-dash separator.
+            assert!(text.trim().len() > 5, "explanation for {code} too short");
+            assert!(
+                text.contains('—'),
+                "explanation for {code} missing em-dash separator: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn implemented_set_is_exactly_the_codes_returning_some() {
+        // Sweep the entire u16 response-code space: a code returns Some iff it
+        // is in IMPLEMENTED_CODES. Guards against a typo'd or duplicated arm.
+        for code in 0u16..=1000 {
+            let is_listed = IMPLEMENTED_CODES.contains(&code);
+            assert_eq!(
+                explain_response_code(code).is_some(),
+                is_listed,
+                "code {code}: listed={is_listed} but Some={}",
+                explain_response_code(code).is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn unimplemented_and_boundary_codes_return_none() {
+        // Boundaries just outside real classes, plus reserved/unused codes.
+        for &code in &[
+            0u16, 1, 99, 101, 150, 184, 198, 201, 203, 205, 299, 303, 399, 411, 418, 430, 490, 499,
+            511, 599, 601, 605, 699, 700, 999, 1000,
+        ] {
+            assert!(
+                explain_response_code(code).is_none(),
+                "code {code} should be unimplemented (None)"
+            );
+        }
+    }
 }
