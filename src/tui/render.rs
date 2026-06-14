@@ -1586,3 +1586,666 @@ pub(super) fn render_message_diff(
     frame.render_widget(left_para, left_area);
     frame.render_widget(right_para, right_area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    use crate::capture::parse::TransportProto;
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    // ── Helpers ────────────────────────────────────────────────────
+
+    fn addr_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+    fn addr_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+    fn base_ts() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg
+    }
+
+    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            &format!("INVITE sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse INVITE")
+    }
+
+    fn make_response(
+        call_id: &str,
+        status: u16,
+        reason: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} {reason}"),
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
+            .expect("parse response")
+    }
+
+    fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "BYE sip:1002@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 2 BYE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
+            .expect("parse BYE")
+    }
+
+    /// App with one populated, completed dialog (INVITE/180/200/BYE).
+    fn app_with_dialog() -> App {
+        let t0 = base_ts();
+        App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0),
+            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1)),
+            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2)),
+            make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
+        ])
+    }
+
+    /// Render `app` at the given size and return the buffer as a string.
+    fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal
+            .draw(|frame| render_app(frame, app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    // ── render_app dispatch across views & widths ──────────────────
+
+    #[test]
+    fn render_app_call_list_empty_and_populated() {
+        let mut empty = App::new_test();
+        let out = render_to_string(&mut empty, 80, 24);
+        assert!(out.contains("Current Mode"));
+        assert!(out.contains("Dialogs:"));
+
+        let mut app = app_with_dialog();
+        let out = render_to_string(&mut app, 80, 24);
+        // The dialog count should reflect one dialog.
+        assert!(out.contains("Dialogs: 1"));
+    }
+
+    #[test]
+    fn render_app_call_list_narrow_and_wide() {
+        let mut app = app_with_dialog();
+        let narrow = render_to_string(&mut app, 60, 12);
+        assert!(narrow.contains("Esc"));
+        let wide = render_to_string(&mut app, 130, 40);
+        // Wide call list f-key bar advertises the Open hotkey.
+        assert!(wide.contains("Open"));
+    }
+
+    #[test]
+    fn render_app_stream_list_view() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        let out = render_to_string(&mut app, 100, 24);
+        // Stream-list f-key bar advertises Calls (Tab to switch back).
+        assert!(out.contains("Calls"));
+    }
+
+    #[test]
+    fn render_app_call_flow_view_split_and_nosplit() {
+        let mut app = app_with_dialog();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        // Default raw_preview = true → split layout; renders detail panel.
+        let split = render_to_string(&mut app, 120, 30);
+        assert!(split.contains("Back"));
+        // status line 3 shows the call-flow mode hints
+        assert!(split.contains("Time:") || split.contains("SDP:"));
+
+        // No split.
+        app.raw_preview = false;
+        let nosplit = render_to_string(&mut app, 120, 30);
+        assert!(nosplit.contains("Back"));
+    }
+
+    #[test]
+    fn render_app_call_flow_extended_flow() {
+        let mut app = app_with_dialog();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        app.extended_flow = true;
+        let out = render_to_string(&mut app, 120, 30);
+        assert!(out.contains("Back"));
+    }
+
+    #[test]
+    fn render_app_raw_message_view() {
+        let mut app = app_with_dialog();
+        app.current_view = View::RawMessage {
+            call_id: "call-1@test".to_string(),
+            message_index: 0,
+        };
+        let out = render_to_string(&mut app, 90, 30);
+        // Raw message f-key bar advertises Highlight.
+        assert!(out.contains("Highlight"));
+    }
+
+    #[test]
+    fn render_app_message_diff_view() {
+        let mut app = app_with_dialog();
+        app.current_view = View::MessageDiff {
+            call_id: "call-1@test".to_string(),
+            msg1_idx: 0,
+            msg2_idx: 1,
+        };
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Message 1"));
+        assert!(out.contains("Message 2"));
+    }
+
+    #[test]
+    fn render_app_help_and_statistics_views() {
+        let mut app = app_with_dialog();
+        app.current_view = View::Help;
+        let help = render_to_string(&mut app, 80, 30);
+        assert!(!help.is_empty());
+
+        app.current_view = View::Statistics;
+        let stats = render_to_string(&mut app, 80, 30);
+        assert!(stats.contains("Statistics"));
+        assert!(stats.contains("Dialogs:"));
+    }
+
+    // ── Status line variants ───────────────────────────────────────
+
+    #[test]
+    fn render_app_status_line1_paused_and_autoscroll() {
+        let mut app = app_with_dialog();
+        app.paused = true;
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("PAUSED"));
+        // autoscroll indicator [A] (default autoscroll on for call list)
+        assert!(out.contains("[A]"));
+    }
+
+    #[test]
+    fn render_app_status_line1_offline_mode() {
+        let mut app = app_with_dialog();
+        app.capture_mode = "Offline (capture.pcap)".to_string();
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("Offline"));
+    }
+
+    #[test]
+    fn render_app_status_line3_search_active() {
+        let mut app = app_with_dialog();
+        app.search_active = true;
+        app.search_query = "invite".to_string();
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("/invite"));
+    }
+
+    #[test]
+    fn render_app_status_line3_error_message() {
+        let mut app = app_with_dialog();
+        app.status_error = Some("save failed: disk full".to_string());
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("save failed"));
+    }
+
+    #[test]
+    fn render_app_status_line3_info_message() {
+        let mut app = app_with_dialog();
+        // No "error"/"fail" → uses foreground color path.
+        app.status_error = Some("saved 3 dialogs".to_string());
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("saved 3 dialogs"));
+    }
+
+    #[test]
+    fn render_app_status_line2_filter_and_bpf() {
+        let mut app = app_with_dialog();
+        app.active_filter_text = "method == 'INVITE'".to_string();
+        app.bpf_filter = "udp port 5060".to_string();
+        let out = render_to_string(&mut app, 120, 24);
+        assert!(out.contains("Match Expression"));
+        assert!(out.contains("udp port 5060"));
+    }
+
+    // ── Popups via render_app overlay ──────────────────────────────
+
+    #[test]
+    fn render_app_save_popup_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.set_save_path("/tmp/out.pcap");
+        let out = render_to_string(&mut app, 90, 30);
+        assert!(out.contains("Save Capture"));
+        assert!(out.contains("/tmp/out.pcap"));
+    }
+
+    #[test]
+    fn render_app_file_open_browser_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        app.open_manual_mode = false;
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Dir:"));
+    }
+
+    #[test]
+    fn render_app_file_open_manual_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        app.open_manual_mode = true;
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Path:"));
+    }
+
+    #[test]
+    fn render_app_settings_popup_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SettingsDialog);
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Settings"));
+        assert!(out.contains("Color Mode"));
+    }
+
+    #[test]
+    fn render_app_filter_popup_overlay() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::FilterDialog);
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Filter"));
+        assert!(out.contains("SIP From"));
+    }
+
+    // ── Direct popup function tests ────────────────────────────────
+
+    #[test]
+    fn render_save_popup_empty_path_shows_cursor() {
+        let mut app = App::new_test();
+        app.save_path.clear();
+        app.save_cursor = 0;
+        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_save_popup(frame, area, &app);
+            })
+            .unwrap();
+        // Should not panic with empty path; popup title present.
+        let buf = terminal.backend().buffer();
+        let mut found = false;
+        for y in 0..buf.area.height {
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            if row.contains("Save Capture") {
+                found = true;
+            }
+        }
+        assert!(found);
+    }
+
+    #[test]
+    fn render_save_popup_cursor_mid_string() {
+        let mut app = App::new_test();
+        app.save_path = "abcdef".to_string();
+        app.save_cursor = 3; // cursor in the middle
+        let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_save_popup(frame, area, &app);
+            })
+            .unwrap();
+        // Renders without panic; reaches the mid-string cursor branch.
+    }
+
+    #[test]
+    fn render_file_open_browser_empty_and_populated() {
+        // Empty entries → "(no matching pcap files)" path.
+        let mut app = App::new_test();
+        app.open_entries.clear();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = centered_popup(area, 80, 22);
+                render_file_open_browser(frame, inner, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("no matching pcap files"));
+    }
+
+    #[test]
+    fn render_file_open_browser_with_filter() {
+        let mut app = App::new_test();
+        app.open_filter = "abc".to_string();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = centered_popup(area, 80, 22);
+                render_file_open_browser(frame, inner, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("Filter: abc"));
+    }
+
+    #[test]
+    fn render_file_open_manual_empty_and_with_path() {
+        // Empty path branch.
+        let mut app = App::new_test();
+        app.open_path.clear();
+        app.open_cursor = 0;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = centered_popup(area, 80, 22);
+                render_file_open_manual(frame, inner, &app);
+            })
+            .unwrap();
+
+        // Cursor mid-path branch.
+        app.open_path = "/tmp/a.pcap".to_string();
+        app.open_cursor = 4;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = centered_popup(area, 80, 22);
+                render_file_open_manual(frame, inner, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            text.push('\n');
+        }
+        assert!(text.contains("Path:"));
+    }
+
+    // ── render_status_line2/3 direct (non-call-flow branch) ────────
+
+    #[test]
+    fn render_status_line3_display_filter_default() {
+        let mut app = App::new_test();
+        app.active_filter_text = "from.user =~ '1001'".to_string();
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 80, 1);
+                render_status_line3(frame, area, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row.contains("Display Filter"));
+    }
+
+    #[test]
+    fn render_status_line3_call_flow_branch() {
+        let mut app = app_with_dialog();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        app.raw_preview = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 100, 1);
+                render_status_line3(frame, area, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row.contains("Split:"));
+    }
+
+    // ── render_fkey_bar across views ───────────────────────────────
+
+    #[test]
+    fn render_fkey_bar_views() {
+        let theme = Theme::default();
+        for view in [
+            View::CallList,
+            View::StreamList,
+            View::CallFlow("x".to_string()),
+            View::RawMessage {
+                call_id: "x".to_string(),
+                message_index: 0,
+            },
+            View::MessageDiff {
+                call_id: "x".to_string(),
+                msg1_idx: 0,
+                msg2_idx: 1,
+            },
+            View::Help,
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+            terminal
+                .draw(|frame| {
+                    let area = Rect::new(0, 0, 120, 1);
+                    render_fkey_bar(frame, area, &view, &None, &theme);
+                })
+                .unwrap();
+            let buf = terminal.backend().buffer();
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, 0)).unwrap().symbol());
+            }
+            assert!(row.contains("Esc"), "view {view:?} bar missing Esc: {row:?}");
+        }
+    }
+
+    #[test]
+    fn render_fkey_bar_popup_overrides_view() {
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 120, 1);
+                render_fkey_bar(
+                    frame,
+                    area,
+                    &View::CallList,
+                    &Some(Popup::SaveDialog),
+                    &theme,
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row.contains("Format"));
+    }
+
+    // ── render_filter_text_field direct ────────────────────────────
+
+    #[test]
+    fn render_filter_text_field_focused_and_unfocused() {
+        let theme = Theme::default();
+
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field = FilterTextField {
+            label: "From: ",
+            value: "alice",
+            field_width: 20,
+            focused: true,
+            cursor_pos: 2,
+        };
+        render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row.contains("From:"));
+        assert!(row.contains("alice"));
+
+        // Unfocused branch with value longer than the field (truncation).
+        let mut buf2 = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field2 = FilterTextField {
+            label: "To: ",
+            value: "averylongvaluethatexceedsthefieldwidth",
+            field_width: 12,
+            focused: false,
+            cursor_pos: 0,
+        };
+        render_filter_text_field(&mut buf2, 0, 0, &field2, &theme);
+        let mut row2 = String::new();
+        for x in 0..buf2.area.width {
+            row2.push_str(buf2.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row2.contains("To:"));
+    }
+
+    #[test]
+    fn render_filter_text_field_cursor_at_end() {
+        let theme = Theme::default();
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field = FilterTextField {
+            label: "F: ",
+            value: "ab",
+            field_width: 20,
+            focused: true,
+            cursor_pos: 2, // at end == value.len()
+        };
+        render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+        // Renders block cursor at end without panic.
+    }
+
+    // ── centered_popup geometry ────────────────────────────────────
+
+    #[test]
+    fn centered_popup_clamps_to_area() {
+        let area = Rect::new(0, 0, 40, 20);
+        let r = centered_popup(area, 100, 100);
+        assert_eq!(r.width, 40);
+        assert_eq!(r.height, 20);
+        let r2 = centered_popup(area, 20, 10);
+        assert_eq!(r2.width, 20);
+        assert_eq!(r2.height, 10);
+        assert_eq!(r2.x, 10);
+        assert_eq!(r2.y, 5);
+    }
+
+    // ── message diff edge cases ────────────────────────────────────
+
+    #[test]
+    fn render_message_diff_dialog_not_found() {
+        let app = App::new_test();
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_message_diff(frame, area, &store, "missing", 0, 1, &theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(text.contains("Dialog not found"));
+    }
+
+    #[test]
+    fn render_message_diff_message_index_out_of_range() {
+        let app = app_with_dialog();
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                // msg index way past the end.
+                render_message_diff(frame, area, &store, "call-1@test", 0, 999, &theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(text.contains("Message not found"));
+    }
+}

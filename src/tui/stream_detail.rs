@@ -458,4 +458,264 @@ mod tests {
         assert_eq!(jitter_to_block(35.0), '\u{2588}'); // █ (boundary)
         assert_eq!(jitter_to_block(100.0), '\u{2588}'); // █ (well above max)
     }
+
+    // ── Style helper threshold tests ─────────────────────────────────
+
+    use ratatui::style::Color;
+
+    #[test]
+    fn jitter_style_thresholds() {
+        let theme = Theme::default();
+        // < 20ms → good
+        assert_eq!(jitter_style(0.0, &theme).fg, Some(theme.good));
+        assert_eq!(jitter_style(19.9, &theme).fg, Some(theme.good));
+        // 20..50ms → warning
+        assert_eq!(jitter_style(20.0, &theme).fg, Some(theme.warning));
+        assert_eq!(jitter_style(49.9, &theme).fg, Some(theme.warning));
+        // >= 50ms → bad
+        assert_eq!(jitter_style(50.0, &theme).fg, Some(theme.bad));
+        assert_eq!(jitter_style(120.0, &theme).fg, Some(theme.bad));
+    }
+
+    #[test]
+    fn loss_style_thresholds() {
+        let theme = Theme::default();
+        // < 0.5% → good
+        assert_eq!(loss_style(0.0, &theme).fg, Some(theme.good));
+        assert_eq!(loss_style(0.49, &theme).fg, Some(theme.good));
+        // 0.5..2.0% → warning
+        assert_eq!(loss_style(0.5, &theme).fg, Some(theme.warning));
+        assert_eq!(loss_style(1.99, &theme).fg, Some(theme.warning));
+        // >= 2.0% → bad
+        assert_eq!(loss_style(2.0, &theme).fg, Some(theme.bad));
+        assert_eq!(loss_style(75.0, &theme).fg, Some(theme.bad));
+    }
+
+    #[test]
+    fn section_header_has_title_and_accent() {
+        let theme = Theme::default();
+        let line = section_header("Quality", &theme);
+        // First span carries the bolded, accented title text.
+        let first = &line.spans[0];
+        assert!(first.content.contains("Quality"));
+        assert!(first.content.starts_with("\u{2500}\u{2500} ")); // "── "
+        assert_eq!(first.style.fg, Some(theme.accent));
+        assert!(
+            first
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        // Trailing rule uses the border color.
+        let rule = &line.spans[1];
+        assert_eq!(rule.style.fg, Some(theme.border));
+    }
+
+    // ── render_stream_detail integration tests ───────────────────────
+
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use chrono::{DateTime, TimeDelta, Utc};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    use crate::capture::ParsedPacket;
+    use crate::capture::parse::TransportProto;
+    use crate::rtp::parser::RtpHeader;
+    use crate::rtp::rtcp::{ReceiverReport, ReceptionReport, RtcpPacket};
+
+    fn rtp_header(ssrc: u32, seq: u16, pt: u8) -> RtpHeader {
+        RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: pt,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc,
+            payload_offset: 12,
+        }
+    }
+
+    fn parsed(src_port: u16, dst_port: u16, ts: DateTime<Utc>) -> ParsedPacket {
+        ParsedPacket {
+            timestamp: ts,
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 172].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        }
+    }
+
+    /// Build a store holding one PCMU stream, then inject RTCP-reported
+    /// jitter/loss so the render path exercises the chosen style branch.
+    /// Returns the store and the key of the inserted stream.
+    fn store_with_stream(ssrc: u32, jitter: u32, lost: u32) -> (StreamStore, StreamKey) {
+        let mut store = StreamStore::new(16);
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        // A few packets so packet_count > 0 and a duration exists.
+        store.process_rtp(&parsed(20000, 30000, t0), &rtp_header(ssrc, 1, 0), t0);
+        store.process_rtp(
+            &parsed(20000, 30000, t0 + TimeDelta::milliseconds(20)),
+            &rtp_header(ssrc, 2, 0),
+            t0 + TimeDelta::milliseconds(20),
+        );
+        store.process_rtp(
+            &parsed(20000, 30000, t0 + TimeDelta::milliseconds(40)),
+            &rtp_header(ssrc, 3, 0),
+            t0 + TimeDelta::milliseconds(40),
+        );
+        // Inject authoritative jitter + cumulative loss via an RTCP RR.
+        let rr = RtcpPacket::ReceiverReport(ReceiverReport {
+            ssrc: 0x9999_9999,
+            reports: vec![ReceptionReport {
+                ssrc,
+                fraction_lost: 0,
+                cumulative_lost: lost,
+                highest_seq: 3,
+                jitter,
+                last_sr: 0,
+                delay_since_sr: 0,
+            }],
+        });
+        store.process_rtcp(&[rr]);
+
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        (store, key)
+    }
+
+    fn render_to_string(store: &StreamStore, key: &StreamKey) -> String {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_stream_detail(frame, area, key, store, 0, &theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn render_stream_detail_missing_key_shows_placeholder() {
+        let theme = Theme::default();
+        let store = StreamStore::new(4);
+        // Key that was never inserted.
+        let key = StreamKey {
+            ssrc: 0xDEAD_BEEF,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 1000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 2000),
+        };
+        let backend = TestBackend::new(60, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_stream_detail(frame, area, &key, &store, 0, &theme);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(out.contains("Stream no longer available."), "got: {out}");
+    }
+
+    #[test]
+    fn render_stream_detail_good_quality() {
+        // Low jitter, no loss → "Good" MOS path, good-colored styles.
+        let (store, key) = store_with_stream(0x1111_1111, /*jitter*/ 0, /*lost*/ 0);
+        let out = render_to_string(&store, &key);
+        assert!(out.contains("RTP Stream Detail"), "header missing: {out}");
+        assert!(out.contains("SSRC: 0x11111111"), "ssrc missing: {out}");
+        assert!(out.contains("PCMU"), "codec missing: {out}");
+        assert!(out.contains("Quality"), "quality section missing: {out}");
+        assert!(out.contains("MOS:"), "MOS line missing: {out}");
+        assert!(out.contains("Jitter:"), "jitter line missing: {out}");
+        assert!(out.contains("Loss:"), "loss line missing: {out}");
+        assert!(out.contains("(Good)"), "expected Good MOS label: {out}");
+        // No loss → "Orphaned" flag line present, lost pkts 0.
+        assert!(out.contains("Orphaned:"), "flags line missing: {out}");
+    }
+
+    #[test]
+    fn render_stream_detail_warn_quality() {
+        // Moderate jitter (30ms) and some loss → warning-band styles.
+        let (store, key) = store_with_stream(0x2222_2222, /*jitter*/ 30, /*lost*/ 1);
+        let out = render_to_string(&store, &key);
+        assert!(out.contains("RTP Stream Detail"));
+        assert!(out.contains("MOS:"));
+        // Lost packets > 0 surfaces the burst/gap analysis section.
+        assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
+    }
+
+    #[test]
+    fn render_stream_detail_bad_quality() {
+        // High jitter (80ms) and heavy loss → bad-band styles and low MOS.
+        // Loss is produced via a real RTP sequence gap so lost_packets > 0
+        // (and the burst/gap section becomes reachable), then jitter is
+        // overridden authoritatively via RTCP.
+        let mut store = StreamStore::new(16);
+        let ssrc = 0x3333_3333u32;
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        store.process_rtp(&parsed(20000, 30000, t0), &rtp_header(ssrc, 1, 0), t0);
+        // Jump the sequence number forward to manufacture a loss gap.
+        store.process_rtp(
+            &parsed(20000, 30000, t0 + TimeDelta::milliseconds(60)),
+            &rtp_header(ssrc, 60, 0),
+            t0 + TimeDelta::milliseconds(60),
+        );
+        let rr = RtcpPacket::ReceiverReport(ReceiverReport {
+            ssrc: 0x9999_9999,
+            reports: vec![ReceptionReport {
+                ssrc,
+                fraction_lost: 200,
+                cumulative_lost: 50,
+                highest_seq: 60,
+                jitter: 80,
+                last_sr: 0,
+                delay_since_sr: 0,
+            }],
+        });
+        store.process_rtcp(&[rr]);
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let out = render_to_string(&store, &key);
+        assert!(out.contains("RTP Stream Detail"));
+        assert!(out.contains("MOS:"));
+        assert!(out.contains("Loss:"));
+        assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
+        let _ = Color::Reset; // keep Color import used regardless of assertions
+    }
 }
