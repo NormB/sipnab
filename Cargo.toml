@@ -83,6 +83,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 bytes = "1"
 parking_lot = "0.12"
 regex = "1"
+trycmd = "1"
+jsonschema = "0.46"
 clap = { version = "4", features = ["derive", "env", "string"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
