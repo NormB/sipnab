@@ -741,8 +741,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
     }
 
     fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -756,8 +764,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse 200")
+        parse_sip(
+            &raw,
+            ts,
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 200")
     }
 
     fn app_with_dialogs() -> App {
@@ -926,25 +942,40 @@ mod tests {
     #[test]
     fn empty_store_messages() {
         let app = App::new_test();
-        assert_eq!(save_to_pcap_path(&app, "/tmp/x.pcap", false), "No messages to save");
+        assert_eq!(
+            save_to_pcap_path(&app, "/tmp/x.pcap", false),
+            "No messages to save"
+        );
         assert_eq!(save_to_txt_path(&app, "/tmp/x.txt"), "No messages to save");
-        assert_eq!(save_to_mermaid_path(&app, "/tmp/x.html"), "No messages to export");
+        assert_eq!(
+            save_to_mermaid_path(&app, "/tmp/x.html"),
+            "No messages to export"
+        );
     }
 
     #[test]
     fn empty_store_dialogs() {
         let app = App::new_test();
         assert_eq!(save_to_json_path(&app, "/tmp/x.json"), "No dialogs to save");
-        assert_eq!(save_to_ndjson_path(&app, "/tmp/x.ndjson"), "No dialogs to save");
+        assert_eq!(
+            save_to_ndjson_path(&app, "/tmp/x.ndjson"),
+            "No dialogs to save"
+        );
         assert_eq!(save_to_csv_path(&app, "/tmp/x.csv"), "No dialogs to save");
-        assert_eq!(save_to_markdown_path(&app, "/tmp/x.md"), "No dialogs to save");
+        assert_eq!(
+            save_to_markdown_path(&app, "/tmp/x.md"),
+            "No dialogs to save"
+        );
         assert_eq!(save_to_sipp_path(&app, "/tmp/x.xml"), "No dialog to export");
     }
 
     #[test]
     fn empty_store_rtp_and_wav() {
         let app = App::new_test();
-        assert_eq!(save_to_rtp_json_path(&app, "/tmp/x.json"), "No RTP streams to save");
+        assert_eq!(
+            save_to_rtp_json_path(&app, "/tmp/x.json"),
+            "No RTP streams to save"
+        );
         // No call flow + no selected dialog -> "No RTP streams captured"
         let msg = save_to_wav_path(&app, "/tmp/x.wav");
         assert!(msg.contains("No RTP streams"), "got: {msg}");

@@ -898,8 +898,16 @@ mod tests {
     }
 
     fn parse_at(raw: &[u8], ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
-        parse_sip(raw, ts, localhost(), localhost(), 5060, 5060, TransportProto::Udp)
-            .expect("should parse SIP")
+        parse_sip(
+            raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse SIP")
     }
 
     fn invite(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
@@ -1051,7 +1059,10 @@ mod tests {
             .await
             .expect("list_dialogs should succeed");
         let raw = text_of(&result);
-        assert!(raw.contains("call-list@x"), "summary must name the dialog: {raw}");
+        assert!(
+            raw.contains("call-list@x"),
+            "summary must name the dialog: {raw}"
+        );
         assert!(raw.contains("alice"), "from_user should appear: {raw}");
     }
 
@@ -1247,7 +1258,10 @@ mod tests {
             }))
             .await
             .expect("render_ladder should succeed");
-        assert!(!text_of(&result).is_empty(), "ladder text must be non-empty");
+        assert!(
+            !text_of(&result).is_empty(),
+            "ladder text must be non-empty"
+        );
     }
 
     // ── rtp_stats ────────────────────────────────────────────────────
@@ -1324,7 +1338,13 @@ mod tests {
         let hits = v.as_array().expect("hits array");
         assert!(!hits.is_empty(), "should match the From header");
         assert_eq!(hits[0]["call_id"], "srch2@x");
-        assert!(hits[0]["snippet"].as_str().unwrap().to_lowercase().contains("alice"));
+        assert!(
+            hits[0]["snippet"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("alice")
+        );
     }
 
     // ── tail_dialogs ─────────────────────────────────────────────────
@@ -1352,7 +1372,10 @@ mod tests {
             .expect("tail should succeed");
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert_eq!(v["dialogs"].as_array().unwrap().len(), 1);
-        assert!(v["next_cursor"].is_string(), "next_cursor set when dialogs returned");
+        assert!(
+            v["next_cursor"].is_string(),
+            "next_cursor set when dialogs returned"
+        );
         assert_eq!(v["source_exhausted"], false);
     }
 
