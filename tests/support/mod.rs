@@ -15,6 +15,9 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+/// JSON-Schema validation helpers (T1.3).
+pub mod schema;
+
 /// Determinism contract (spec §4d): fixed virtual-terminal dimensions.
 pub const FIXED_COLS: u16 = 120;
 pub const FIXED_ROWS: u16 = 40;
