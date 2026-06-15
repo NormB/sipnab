@@ -275,3 +275,94 @@ fn mint_token_cli_mode_produces_verifiable_token() {
         "CLI-minted token should verify under same key"
     );
 }
+
+// M6 burn-down: --mcp-token-file (static token loaded from a file).
+#[test]
+fn static_mcp_token_file_backward_compat() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("mcp.token");
+    std::fs::write(&path, "file-static-mcp-secret\n").expect("write token file");
+
+    let (child, addr) =
+        spawn_http(&["--mcp-token-file", path.to_str().unwrap()]).expect("server should start");
+    // The file's token (trimmed) authenticates; wrong/missing → 401.
+    assert_eq!(
+        initialize_status(&addr, Some("file-static-mcp-secret")),
+        200,
+        "token from --mcp-token-file → 200"
+    );
+    assert_eq!(
+        initialize_status(&addr, Some("wrong")),
+        401,
+        "wrong token → 401"
+    );
+    assert_eq!(initialize_status(&addr, None), 401, "missing token → 401");
+    shutdown(child);
+}
+
+/// POST `initialize` with an explicit `Host` header (to exercise the DNS-rebind
+/// allowlist), connecting to `addr` regardless of the header value.
+fn initialize_status_with_host(addr: &str, host_header: &str, bearer: Option<&str>) -> u16 {
+    let (host, port_str) = addr.rsplit_once(':').expect("host:port");
+    let port: u16 = port_str.parse().expect("port");
+    let body = serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                   "clientInfo": {"name": "test", "version": "0"}}
+    });
+    let body_str = serde_json::to_string(&body).unwrap();
+    let mut stream = TcpStream::connect((host, port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("read timeout");
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\n\
+         Host: {host_header}\r\n\
+         Content-Type: application/json\r\n\
+         Accept: application/json, text/event-stream\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n",
+        body_str.len(),
+    );
+    if let Some(b) = bearer {
+        req.push_str(&format!("Authorization: Bearer {b}\r\n"));
+    }
+    req.push_str("\r\n");
+    req.push_str(&body_str);
+    stream.write_all(req.as_bytes()).expect("write");
+    let mut resp = Vec::new();
+    stream.read_to_end(&mut resp).expect("read");
+    String::from_utf8_lossy(&resp)
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or(0)
+}
+
+// M6 burn-down: --mcp-allowed-host extends rmcp's Host-header allowlist.
+#[test]
+fn mcp_allowed_host_controls_host_header() {
+    let (child, addr) = spawn_http(&[
+        "--mcp-signing-key",
+        SIGNING_KEY,
+        "--mcp-allowed-host",
+        "custom.example",
+    ])
+    .expect("server should start");
+    let token = sipnab::auth::mint(SIGNING_KEY.as_bytes(), "host-test", now() + 3600);
+
+    // The configured Host is accepted (and auth passes) → 200.
+    assert_eq!(
+        initialize_status_with_host(&addr, "custom.example", Some(&token)),
+        200,
+        "Host added via --mcp-allowed-host must be accepted"
+    );
+    // A Host that is neither loopback nor allow-listed is rejected (not 200).
+    assert_ne!(
+        initialize_status_with_host(&addr, "blocked.invalid", Some(&token)),
+        200,
+        "a non-allowlisted Host must be rejected by DNS-rebind protection"
+    );
+    shutdown(child);
+}
