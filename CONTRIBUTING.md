@@ -23,6 +23,20 @@ cargo test
 cargo test --all-features
 ```
 
+## Git Hooks
+
+This repo ships hooks in `.githooks/`. Enable them once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- **`pre-push`** runs `cargo fmt --all -- --check` as a hard gate and blocks the
+  push if any file is unformatted (this is the exact gap that has broken CI).
+  It also runs `cargo clippy --all-targets -- -D warnings` as a soft warning.
+  For genuine emergencies you can bypass it: `SKIP_FMT_HOOK=1 git push`.
+- Verify the hook itself with `scripts/test-pre-push.sh`.
+
 ## Code Style
 
 This project enforces consistent style through tooling and convention:
