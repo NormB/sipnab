@@ -606,6 +606,27 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    // sngrep parity: every call-list row shows a [ ]/[*] selection checkbox
+    // so users can see and pick which dialogs to act on (e.g. save).
+    #[test]
+    fn call_list_selection_checkbox_visible() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(KeyCode::Char(' ')); // check row 0
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+        // The checked row shows [*]; unchecked rows show [ ].
+        assert!(
+            output.contains("[*]"),
+            "expected a checked [*] row:\n{output}"
+        );
+        assert!(
+            output.contains("[ ]"),
+            "expected unchecked [ ] rows:\n{output}"
+        );
+    }
+
     #[test]
     fn call_list_autoscroll_off() {
         let backend = TestBackend::new(80, 24);

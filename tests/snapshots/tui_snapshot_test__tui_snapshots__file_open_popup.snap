@@ -5,10 +5,10 @@ expression: output
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-  # ▲   Method     From            To               Source          Destination     State        Msgs  Date     PDD
->  1    INVITE     1001            1002             10.0.0.1        10.0.0.2        Completed    4     +0.000s  1000ms
-   2    INVITE     1003            1004             10.0.0.1        10.0.0.2        FAILED       2     +5.000s
-   3    INVITE     1005            1006             10.0.0.1        10.0.0.2        InCall       2     +5.000s
+  # ▲    Method     From            To              Source          Destination     State        Msgs  Date     PDD
+> [ ]1   INVITE     1001            1002            10.0.0.1        10.0.0.2        Completed    4     +0.000s  1000ms
+  [ ]2   INVITE     1003            1004            10.0.0.1        10.0.0.2        FAILED       2     +5.000s
+  [ ]3   INVITE     1005            1006            10.0.0.1        10.0.0.2        InCall       2     +5.000s
 
 
                     ┌ Open PCAP File ──────────────────────────────────────────────────────────────┐

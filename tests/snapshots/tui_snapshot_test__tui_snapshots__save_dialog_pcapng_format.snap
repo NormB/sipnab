@@ -6,9 +6,9 @@ expression: output
  Match Expression:     BPF Filter:
  Dis┌ Save Capture ────────────────────────────────────────────────────────┐
   # │                                                                      │D
->  1│  Save to: /tmp/sipnab_20240615_120000.pcapng                         │00ms
-   2│                                                                      │
-   3│  Packet Capture                                                      │
+> [ │  Save to: /tmp/sipnab_20240615_120000.pcapng                         │00ms
+  [ │                                                                      │
+  [ │  Packet Capture                                                      │
     │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │
     │    ▸ PCAP-NG Modern format with metadata and annotations             │
     │                                                                      │
