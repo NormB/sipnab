@@ -1092,6 +1092,37 @@ impl App {
         &self.search_query
     }
 
+    /// Dialogs that a call-list action (save, clear) applies to, in the
+    /// order shown on screen: the checkbox-selected rows if any are checked,
+    /// otherwise every displayed (filtered + searched) dialog.
+    ///
+    /// Borrows from the provided store guard. This mirrors what the user sees
+    /// — selection indices are positions in the rendered, sorted list — so
+    /// the same helper backs both rendering and these actions.
+    pub(super) fn dialogs_to_export<'a>(
+        &self,
+        store: &'a DialogStore,
+    ) -> Vec<&'a crate::sip::dialog::SipDialog> {
+        let displayed = call_list::displayed_dialogs(
+            store,
+            self.active_filter.as_ref(),
+            &self.search_query,
+            self.call_list.sort_column(),
+            self.call_list.sort_ascending(),
+        );
+        let selected = self.call_list.selected_rows();
+        if selected.is_empty() {
+            displayed
+        } else {
+            displayed
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| selected.contains(i))
+                .map(|(_, d)| d)
+                .collect()
+        }
+    }
+
     /// Return whether syntax highlighting is enabled.
     pub fn syntax_highlight(&self) -> bool {
         self.syntax_highlight

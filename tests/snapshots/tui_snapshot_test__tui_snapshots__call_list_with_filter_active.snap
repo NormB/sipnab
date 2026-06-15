@@ -1,13 +1,12 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 396
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (1 displayed)  [A]
  Match Expression: from.user =~ '1003'    BPF Filter:
  Display Filter: from.user =~ '1003'
-  # ▲  Method   From  To     Source              Destination         State      Msgs Date     PDD
->  1   INVITE   1003  1004   10.0.0.1            10.0.0.2            FAILED     2    +0.000s
+  # ▲   Method   From  To    Source              Destination         State      Msgs Date     PDD
+> [ ]1  INVITE   1003  1004  10.0.0.1            10.0.0.2            FAILED     2    +0.000s
 
 
 

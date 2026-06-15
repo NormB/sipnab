@@ -308,6 +308,67 @@ pub struct CallListDisplay<'a> {
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
 /// selected row, full-width layout. No title line -- status is rendered
 /// separately at the top of the screen.
+/// Returns true if `dialog` matches the case-insensitive search query,
+/// scanning the same fields the call list displays plus raw message bodies
+/// (the sngrep/Wireshark-style full-text fallback). `query_lower` must
+/// already be lowercased by the caller.
+pub fn dialog_matches_search(dialog: &crate::sip::dialog::SipDialog, query_lower: &str) -> bool {
+    dialog.call_id.to_ascii_lowercase().contains(query_lower)
+        || dialog
+            .method
+            .as_str()
+            .to_ascii_lowercase()
+            .contains(query_lower)
+        || dialog
+            .from_user
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains(query_lower)
+        || dialog
+            .to_user
+            .as_deref()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains(query_lower)
+        || dialog.src_addr.to_string().contains(query_lower)
+        || dialog.dst_addr.to_string().contains(query_lower)
+        || state_display_str(dialog.state())
+            .to_ascii_lowercase()
+            .contains(query_lower)
+        || dialog.messages.iter().any(|msg| {
+            String::from_utf8_lossy(&msg.raw)
+                .to_ascii_lowercase()
+                .contains(query_lower)
+        })
+}
+
+/// Build the dialog list in the exact order the call list displays it:
+/// filtered by `filter`, then by `search_query`, then sorted by the active
+/// column/direction.
+///
+/// This is the single source of truth shared by the renderer and by the
+/// save/clear actions, so that multi-select row indices always map to the
+/// same dialogs the user sees on screen.
+pub fn displayed_dialogs<'a>(
+    store: &'a DialogStore,
+    filter: Option<&FilterExpr>,
+    search_query: &str,
+    sort_column: SortColumn,
+    sort_ascending: bool,
+) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    let mut dialogs: Vec<_> = match filter {
+        Some(f) => store.iter().filter(|d| f.matches_dialog(d, &[])).collect(),
+        None => store.iter().collect(),
+    };
+    if !search_query.is_empty() {
+        let q = search_query.to_ascii_lowercase();
+        dialogs.retain(|d| dialog_matches_search(d, &q));
+    }
+    sort_dialogs(&mut dialogs, sort_column, sort_ascending);
+    dialogs
+}
+
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
@@ -367,47 +428,15 @@ pub fn render_call_list(
     let all_widths = compute_column_widths(table_area.width);
     let widths: Vec<Constraint> = vis_indices.iter().map(|&i| all_widths[i]).collect();
 
-    let mut dialogs: Vec<_> = if let Some(filter) = filter {
-        store
-            .iter()
-            .filter(|d| filter.matches_dialog(d, &[]))
-            .collect()
-    } else {
-        store.iter().collect()
-    };
-
-    // Text search: filter across all visible fields (case-insensitive),
-    // falling back to raw message body search (like sngrep/Wireshark).
-    if !search_query.is_empty() {
-        let q = search_query.to_ascii_lowercase();
-        dialogs.retain(|d| {
-            d.call_id.to_ascii_lowercase().contains(&q)
-                || d.method.as_str().to_ascii_lowercase().contains(&q)
-                || d.from_user
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&q)
-                || d.to_user
-                    .as_deref()
-                    .unwrap_or("")
-                    .to_ascii_lowercase()
-                    .contains(&q)
-                || d.src_addr.to_string().contains(&q)
-                || d.dst_addr.to_string().contains(&q)
-                || state_display_str(d.state())
-                    .to_ascii_lowercase()
-                    .contains(&q)
-                || d.messages.iter().any(|msg| {
-                    String::from_utf8_lossy(&msg.raw)
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                })
-        });
-    }
-
-    // Sort dialogs by the selected column
-    sort_dialogs(&mut dialogs, state.sort_column(), state.sort_ascending());
+    // Build the displayed list (filter + search + sort) via the shared
+    // helper so multi-select indices map to exactly these rows.
+    let dialogs = displayed_dialogs(
+        store,
+        filter,
+        search_query,
+        state.sort_column(),
+        state.sort_ascending(),
+    );
 
     // Always render the header, even when empty (sngrep style).
     // Show a help message below the header if there are no dialogs.
@@ -465,11 +494,12 @@ pub fn render_call_list(
         .map(|(vis_idx, dialog)| {
             let idx = scroll_offset + vis_idx; // original index in full list
 
-            // Show selection marker for multi-selected rows
-            let diag_icon = if state.selected_rows.contains(&idx) {
-                "\u{25B8}" // ▸
+            // sngrep-style selection checkbox: [*] when checked, [ ] otherwise.
+            // The checkbox marks which dialogs an action (e.g. save) applies to.
+            let checkbox = if state.selected_rows.contains(&idx) {
+                "[*]"
             } else {
-                " "
+                "[ ]"
             };
 
             // Date column formatting based on timestamp mode
@@ -523,7 +553,7 @@ pub fn render_call_list(
             };
 
             let all_cells = [
-                Cell::from(Span::raw(format!("{}{}", diag_icon, idx + 1))),
+                Cell::from(Span::raw(format!("{}{}", checkbox, idx + 1))),
                 Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                 Cell::from(Span::raw(dialog.from_user.as_deref().unwrap_or("-"))),
                 Cell::from(Span::raw(dialog.to_user.as_deref().unwrap_or("-"))),
@@ -601,8 +631,9 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
     let overhead: u16 = 11;
 
     if total_width >= 120 {
-        // Fixed: #(5) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8) = 48
-        let fixed: u16 = 48 + overhead;
+        // Fixed: #(6) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8) = 49
+        // #(6) holds the "[ ]" checkbox plus up to a 3-digit index.
+        let fixed: u16 = 49 + overhead;
         let flex = total_width.saturating_sub(fixed);
         // Src/Dst each get 21+, From/To split remainder
         let addr_each = 21.min(flex / 4);
@@ -610,7 +641,7 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
         let from_w = from_to_pool / 2;
         let to_w = from_to_pool - from_w;
         vec![
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Length(10),
             Constraint::Length(from_w),
             Constraint::Length(to_w),
@@ -622,15 +653,16 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
             Constraint::Length(8),
         ]
     } else {
-        // Tighter layout: #(4) + Method(8) + State(10) + Msgs(4) + Date(8) + PDD(6) = 40
-        let fixed: u16 = 40 + overhead;
+        // Tighter layout: #(5) + Method(8) + State(10) + Msgs(4) + Date(8) + PDD(6) = 41
+        // #(5) holds the "[ ]" checkbox plus up to a 2-digit index.
+        let fixed: u16 = 41 + overhead;
         let flex = total_width.saturating_sub(fixed);
         let addr_each = (flex * 2 / 5).max(11);
         let from_to_pool = flex.saturating_sub(addr_each * 2);
         let from_w = (from_to_pool / 2).max(4);
         let to_w = from_to_pool.saturating_sub(from_w).max(4);
         vec![
-            Constraint::Length(4),
+            Constraint::Length(5),
             Constraint::Length(8),
             Constraint::Length(from_w),
             Constraint::Length(to_w),
