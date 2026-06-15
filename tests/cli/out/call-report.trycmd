@@ -1,0 +1,27 @@
+```
+$ sipnab -N -I tests/fixtures/sip_call.pcap --call-report test-call-1@10.0.0.1 --no-cli-print
+Call Report: test-call-1@10.0.0.1
+════════════════════════════════════════
+Time:       2023-11-14 22:13:20 -> 22:14:20 (60s)
+From:       <sip:1001@...>
+To:         <sip:1002@...>
+Result:     Completed (BYE)
+
+Timing:
+  PDD:        0.50s
+  Setup:      2.00s
+  Ring:       1.50s
+  Teardown:   0.10s
+  Retransmits: 0
+
+SIP Transactions:
+  INVITE -> 100 (100ms) -> 180 (500ms) -> 200 (2000ms)
+  ACK
+  BYE -> 200 (60100ms)
+
+Media Streams:
+  None
+
+Issues Detected: None
+
+```

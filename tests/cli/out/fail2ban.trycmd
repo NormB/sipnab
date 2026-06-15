@@ -1,0 +1,7 @@
+```
+$ sipnab -N -I tests/fixtures/sip_call.pcap --fail2ban
+[..]: scanner_detected src=10.0.0.1 ua=sipnab-test/1.0 method=INVITE
+[..]: scanner_detected src=10.0.0.1 ua=unknown method=ACK
+[..]: scanner_detected src=10.0.0.1 ua=unknown method=BYE
+
+```

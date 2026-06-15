@@ -12,7 +12,7 @@ use sipnab::capture::file::capture_file;
 use sipnab::capture::packet::Packet;
 use sipnab::capture::parse::{TransportProto, parse_packet};
 use sipnab::capture::writer::PcapWriter;
-use sipnab::capture::{CaptureConfig, PacketProcessor};
+use sipnab::capture::{CaptureConfig, PacketProcessor, PcapExportMode};
 
 /// Path to the test fixture pcap.
 fn fixture_path() -> PathBuf {
@@ -188,6 +188,94 @@ fn writer_with_count_limit() {
         reread.len(),
         5,
         "Written file should have exactly 5 packets"
+    );
+}
+
+// ── format roundtrip (M2 — T2.6) ─────────────────────────────────────────
+
+/// Read the first `n` bytes of a file (for magic-number assertions).
+fn read_magic(path: &std::path::Path, n: usize) -> Vec<u8> {
+    let bytes = std::fs::read(path).expect("read output file");
+    assert!(bytes.len() >= n, "file too short for magic check");
+    bytes[..n].to_vec()
+}
+
+/// Classic pcap roundtrip must preserve the **link type** (not just the count):
+/// a wrong linktype silently corrupts every reread packet's framing.
+#[test]
+fn pcap_roundtrip_preserves_linktype_and_magic() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let output_path = dir.path().join("rt.pcap");
+    let packets = collect_packets(CaptureConfig::default());
+    let src_link = packets[0].link_type;
+
+    {
+        let mut writer =
+            PcapWriter::new(&output_path, src_link, None, None).expect("create writer");
+        for pkt in &packets {
+            writer.write(pkt).expect("write packet");
+        }
+    }
+
+    // Classic pcap magic: micro/nano-second, little/big-endian variants.
+    let magic = read_magic(&output_path, 4);
+    let known = [
+        [0xd4, 0xc3, 0xb2, 0xa1], // microsec LE
+        [0xa1, 0xb2, 0xc3, 0xd4], // microsec BE
+        [0x4d, 0x3c, 0xb2, 0xa1], // nanosec LE
+        [0xa1, 0xb2, 0x3c, 0x4d], // nanosec BE
+    ];
+    assert!(
+        known.iter().any(|m| m == magic.as_slice()),
+        "unexpected pcap magic: {magic:02x?}"
+    );
+
+    let (tx, rx) = unbounded();
+    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
+    let reread: Vec<Packet> = rx.try_iter().collect();
+    assert_eq!(reread.len(), packets.len(), "count must survive roundtrip");
+    for pkt in &reread {
+        assert_eq!(pkt.link_type, src_link, "link type must survive roundtrip");
+    }
+}
+
+/// PCAP-NG output must carry the Section Header Block magic and roundtrip.
+#[test]
+fn pcapng_roundtrip_and_magic() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let output_path = dir.path().join("rt.pcapng");
+    let packets = collect_packets(CaptureConfig::default());
+    let src_link = packets[0].link_type;
+
+    {
+        let mut writer = PcapWriter::with_format(
+            &output_path,
+            src_link,
+            None,
+            None,
+            true, // pcapng
+            PcapExportMode::Decrypted,
+        )
+        .expect("create pcapng writer");
+        for pkt in &packets {
+            writer.write(pkt).expect("write packet");
+        }
+    }
+
+    // pcapng begins with a Section Header Block: type 0x0A0D0D0A.
+    assert_eq!(
+        read_magic(&output_path, 4),
+        vec![0x0a, 0x0d, 0x0d, 0x0a],
+        "pcapng Section Header Block magic missing"
+    );
+
+    let (tx, rx) = unbounded();
+    capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read pcapng");
+    let reread: Vec<Packet> = rx.try_iter().collect();
+    assert_eq!(
+        reread.len(),
+        packets.len(),
+        "pcapng roundtrip must preserve packet count"
     );
 }
 
