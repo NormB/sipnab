@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/sipnab-audio"]
+resolver = "2"
+
 [package]
 name = "sipnab"
 version = "0.4.2"
@@ -59,8 +63,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "logg
 aes = { version = "0.9", optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
 
-# Audio playback (feature-gated)
-rodio = { version = "0.22", default-features = false, features = ["playback"], optional = true }
+# Audio playback (feature-gated). The rodio/ALSA dependency lives in the
+# `sipnab-audio` cdylib plugin (crates/sipnab-audio); the main binary only
+# dlopen's it lazily via libloading so there is no load-time libasound NEEDED.
+libloading = { version = "0.8", optional = true }
 
 # Opus codec (pure Rust, no FFI — always available for WAV export)
 opus-decoder = "0.1"
@@ -110,7 +116,7 @@ native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "de
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = ["native"]
-audio = ["dep:rodio", "dep:libc"]
+audio = ["dep:libloading", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64"]
 mcp = ["native", "dep:tokio", "dep:rmcp"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]

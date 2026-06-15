@@ -3585,6 +3585,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "libc",
+ "libloading",
  "log",
  "nom 8.0.0",
  "opus-decoder",
@@ -3595,7 +3596,6 @@ dependencies = [
  "regex",
  "ring",
  "rmcp",
- "rodio",
  "rustls",
  "serde",
  "serde_json",
@@ -3612,6 +3612,14 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "zeroize",
+]
+
+[[package]]
+name = "sipnab-audio"
+version = "0.4.2"
+dependencies = [
+ "libc",
+ "rodio",
 ]
 
 [[package]]
