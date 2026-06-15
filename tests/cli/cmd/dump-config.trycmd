@@ -1,0 +1,23 @@
+```
+$ sipnab --dump-config
+sipnab v[..]
+
+# No config file loaded (defaults only)
+[capture]
+
+[display]
+
+[filter]
+
+[security]
+
+[limits]
+
+[privilege]
+
+[theme]
+
+[keybindings]
+
+
+```

@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/dialog.schema.json",
+  "title": "sipnab dialog summary (GET /v1/dialogs list item)",
+  "description": "Serialized form of dialog_summary() (src/output/api.rs): one element of the `dialogs` array. The list wrapper carries schema_version/total/offset/limit. Live-output validation lands in M3 (T3.2) when the REST API test harness exists; for now this schema is authored and proven well-formed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "call_id",
+    "state",
+    "method",
+    "duration_sec",
+    "msg_count",
+    "timing",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "call_id": { "type": "string" },
+    "from": { "type": ["string", "null"] },
+    "to": { "type": ["string", "null"] },
+    "state": { "type": "string" },
+    "method": { "type": "string" },
+    "duration_sec": { "type": "number" },
+    "msg_count": { "type": "integer", "minimum": 0 },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retransmits"],
+      "properties": {
+        "pdd_ms": { "type": ["integer", "null"] },
+        "setup_ms": { "type": ["integer", "null"] },
+        "retransmits": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}
