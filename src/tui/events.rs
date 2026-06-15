@@ -1645,8 +1645,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
     }
 
     fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -1660,8 +1668,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse 200")
+        parse_sip(
+            &raw,
+            ts,
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 200")
     }
 
     fn app_with_dialogs() -> App {

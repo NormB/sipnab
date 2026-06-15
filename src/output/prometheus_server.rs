@@ -441,7 +441,10 @@ mod tests {
 
         // No credentials -> 401 with a challenge.
         let resp = http_request(addr, "GET /metrics HTTP/1.1\r\nHost: x\r\n\r\n");
-        assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "got: {resp:?}");
+        assert!(
+            resp.starts_with("HTTP/1.1 401 Unauthorized"),
+            "got: {resp:?}"
+        );
         assert!(resp.contains("WWW-Authenticate: Basic"), "got: {resp:?}");
 
         // Wrong credentials -> still 401.
@@ -449,7 +452,10 @@ mod tests {
             addr,
             "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjp3cm9uZw==\r\n\r\n",
         );
-        assert!(resp.starts_with("HTTP/1.1 401 Unauthorized"), "got: {resp:?}");
+        assert!(
+            resp.starts_with("HTTP/1.1 401 Unauthorized"),
+            "got: {resp:?}"
+        );
 
         // Correct credentials (base64 "user:pass") -> 200.
         let resp = http_request(

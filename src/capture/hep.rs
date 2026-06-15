@@ -1488,12 +1488,7 @@ mod tests {
         let mut chunks = Vec::new();
         append_chunk(&mut chunks, 0, CHUNK_SRC_IPV4, &[10, 0, 0, 1]);
         append_chunk(&mut chunks, 0, CHUNK_DST_IPV4, &[10, 0, 0, 2]);
-        append_chunk(
-            &mut chunks,
-            0,
-            CHUNK_CORRELATION_ID,
-            b"call-abc-123\0\0\0",
-        );
+        append_chunk(&mut chunks, 0, CHUNK_CORRELATION_ID, b"call-abc-123\0\0\0");
         append_chunk(&mut chunks, 0, CHUNK_PAYLOAD, b"X");
         let data = assemble_v3(&chunks);
 
@@ -1662,9 +1657,7 @@ mod tests {
         // Search only the chunk region (after the 6-byte header) for the
         // IPv6 type marker; it must be absent for an IPv4 endpoint.
         assert!(
-            !built[HEP3_HEADER_LEN..]
-                .chunks(2)
-                .any(|w| w == v6_src),
+            !built[HEP3_HEADER_LEN..].chunks(2).any(|w| w == v6_src),
             "IPv6 src chunk type must be absent for IPv4 endpoint"
         );
     }
@@ -1678,7 +1671,10 @@ mod tests {
         assert_eq!(buf.len(), CHUNK_HEADER_LEN + 2);
         assert_eq!(u16::from_be_bytes([buf[0], buf[1]]), 0xabcd); // vendor
         assert_eq!(u16::from_be_bytes([buf[2], buf[3]]), 0x0011); // type
-        assert_eq!(u16::from_be_bytes([buf[4], buf[5]]) as usize, CHUNK_HEADER_LEN + 2);
+        assert_eq!(
+            u16::from_be_bytes([buf[4], buf[5]]) as usize,
+            CHUNK_HEADER_LEN + 2
+        );
         assert_eq!(&buf[6..], &[0xde, 0xad]);
     }
 

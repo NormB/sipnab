@@ -1590,10 +1590,10 @@ pub(super) fn render_message_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use crate::capture::parse::TransportProto;
     use crate::sip::SipMessage;
     use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
@@ -1633,16 +1633,19 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse INVITE")
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
     }
 
-    fn make_response(
-        call_id: &str,
-        status: u16,
-        reason: &str,
-        ts: DateTime<Utc>,
-    ) -> SipMessage {
+    fn make_response(call_id: &str, status: u16, reason: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -1653,8 +1656,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse response")
+        parse_sip(
+            &raw,
+            ts,
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse response")
     }
 
     fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
@@ -1668,8 +1679,16 @@ mod tests {
                 "Content-Length: 0",
             ],
         );
-        parse_sip(&raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse BYE")
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse BYE")
     }
 
     /// App with one populated, completed dialog (INVITE/180/200/BYE).
@@ -1686,9 +1705,7 @@ mod tests {
     /// Render `app` at the given size and return the buffer as a string.
     fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|frame| render_app(frame, app))
-            .unwrap();
+        terminal.draw(|frame| render_app(frame, app)).unwrap();
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
@@ -2105,7 +2122,10 @@ mod tests {
             for x in 0..buf.area.width {
                 row.push_str(buf.cell((x, 0)).unwrap().symbol());
             }
-            assert!(row.contains("Esc"), "view {view:?} bar missing Esc: {row:?}");
+            assert!(
+                row.contains("Esc"),
+                "view {view:?} bar missing Esc: {row:?}"
+            );
         }
     }
 
