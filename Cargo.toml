@@ -1,5 +1,8 @@
 [workspace]
 members = [".", "crates/sipnab-audio"]
+# `fuzz/` is a standalone cargo-fuzz package (its own build via `cargo fuzz`);
+# it depends on this crate by path and must NOT be pulled into the workspace.
+exclude = ["fuzz"]
 resolver = "2"
 
 [package]
