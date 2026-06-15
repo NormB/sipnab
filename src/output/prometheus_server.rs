@@ -34,7 +34,10 @@ pub fn start_metrics_server(
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| anyhow::anyhow!("Failed to bind metrics server on {bind_addr}: {e}"))?;
 
-    tracing::info!("Prometheus metrics server listening on {bind_addr}");
+    // Log the actual bound address: with port 0 the OS assigns an ephemeral
+    // port, so logging `bind_addr` would print ":0" (mirrors the REST API/HEP).
+    let actual_addr = listener.local_addr().unwrap_or(bind_addr);
+    tracing::info!("Prometheus metrics server listening on {actual_addr}");
 
     let handle = std::thread::Builder::new()
         .name("metrics-server".to_string())
