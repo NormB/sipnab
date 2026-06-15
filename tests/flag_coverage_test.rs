@@ -32,8 +32,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     "chroot",
     "dtls-keylog",
     "hep-parse",
-    "ignore-case",
-    "invert",
     "keylog",
     "keylog-watch",
     "metrics",
@@ -48,7 +46,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     "tag",
     "telephone-event",
     "tls-key",
-    "word",
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.
