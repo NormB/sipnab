@@ -1381,12 +1381,14 @@ mod tests {
 
     #[test]
     fn filter_dialog_text_field_accessors() {
-        let mut st = FilterDialogState::default();
-        st.sip_from = "a".to_string();
-        st.sip_to = "b".to_string();
-        st.source = "c".to_string();
-        st.destination = "d".to_string();
-        st.payload = "e".to_string();
+        let mut st = FilterDialogState {
+            sip_from: "a".to_string(),
+            sip_to: "b".to_string(),
+            source: "c".to_string(),
+            destination: "d".to_string(),
+            payload: "e".to_string(),
+            ..Default::default()
+        };
         assert_eq!(st.text_field(0), "a");
         assert_eq!(st.text_field(1), "b");
         assert_eq!(st.text_field(2), "c");
@@ -1413,9 +1415,11 @@ mod tests {
 
     #[test]
     fn filter_dialog_focus_classification() {
-        let mut st = FilterDialogState::default();
+        let mut st = FilterDialogState {
+            focused_field: 0,
+            ..Default::default()
+        };
         // text fields 0..5
-        st.focused_field = 0;
         assert!(st.is_text_field_focused());
         assert!(!st.is_checkbox_focused());
         assert!(st.checkbox_index().is_none());
@@ -1431,9 +1435,11 @@ mod tests {
 
     #[test]
     fn filter_dialog_checkbox_grid_navigation() {
-        let mut st = FilterDialogState::default();
+        let mut st = FilterDialogState {
+            focused_field: FILTER_TEXT_FIELD_COUNT,
+            ..Default::default()
+        };
         // Focus first checkbox (index 0).
-        st.focused_field = FILTER_TEXT_FIELD_COUNT;
         st.checkbox_right(); // 0 -> 1
         assert_eq!(st.checkbox_index(), Some(1));
         st.checkbox_left(); // 1 -> 0
@@ -1450,10 +1456,12 @@ mod tests {
 
     #[test]
     fn filter_dialog_checkbox_down_to_buttons() {
-        let mut st = FilterDialogState::default();
+        let mut st = FilterDialogState {
+            focused_field: FILTER_TEXT_FIELD_COUNT + 8,
+            ..Default::default()
+        };
         // Last reachable checkbox in a column → down goes to buttons.
         // index 8 (INFO) -> +2 = 10 (out of range) -> Filter button.
-        st.focused_field = FILTER_TEXT_FIELD_COUNT + 8;
         st.checkbox_down();
         assert_eq!(st.focused_field(), FILTER_BUTTON_IDX);
     }
@@ -1483,17 +1491,21 @@ mod tests {
 
     #[test]
     fn filter_dialog_all_methods_checked_yields_no_method_filter() {
-        let mut st = FilterDialogState::default();
-        st.methods = [true; 10];
+        let st = FilterDialogState {
+            methods: [true; 10],
+            ..Default::default()
+        };
         // All checked → method filter omitted; with no text fields → None.
         assert!(st.build_filter_expression().is_none());
     }
 
     #[test]
     fn filter_dialog_clear_resets_everything() {
-        let mut st = FilterDialogState::default();
-        st.sip_from = "x".to_string();
-        st.sip_to = "y".to_string();
+        let mut st = FilterDialogState {
+            sip_from: "x".to_string(),
+            sip_to: "y".to_string(),
+            ..Default::default()
+        };
         st.methods[0] = true;
         st.focused_field = 7;
         st.cursor_pos = 3;
@@ -1505,10 +1517,12 @@ mod tests {
 
     #[test]
     fn filter_dialog_sync_cursor_to_field_end() {
-        let mut st = FilterDialogState::default();
-        st.sip_to = "hello".to_string();
-        st.focused_field = 1; // SIP To
-        st.cursor_pos = 0;
+        let mut st = FilterDialogState {
+            sip_to: "hello".to_string(),
+            focused_field: 1, // SIP To
+            cursor_pos: 0,
+            ..Default::default()
+        };
         st.sync_cursor();
         assert_eq!(st.cursor_pos, 5);
     }
