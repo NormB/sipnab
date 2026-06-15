@@ -233,7 +233,7 @@ full matrix is maintained here and checked in CI):
 | TUI 4 dialogs + display-mode cycles | L3a | **add snapshots** | ◐ GAP |
 | TUI launch/quit/resize | L3b | `tui_e2e_test` (nextest+retry) | ✅ / stabilize |
 | REST API endpoints + auth + TLS | L4 | **add** | ❌ GAP |
-| Bearer-token lifecycle: use + **expiry** + rotation + revocation (API + MCP) | feat + L4 | **implement + document + test + validate** (M3b) | ❌ CRITICAL GAP — not implemented |
+| Bearer-token lifecycle: use + **expiry** + rotation + revocation (API + MCP) | feat + L4 | HMAC signed tokens (`src/auth`) + `api_token_test`/`mcp_token_test` + unit negatives | ✅ implemented + documented ([`auth.md`](../docs/auth.md)) + tested + validated (M3b) |
 | Prometheus `/metrics` scrape | L4 | **add** | ❌ GAP |
 | MCP 12 tools round-trip | L4 | extend `mcp_*` | ◐ partial |
 | HEP ingest/forward/limit | L4 | **add** | ❌ GAP |
