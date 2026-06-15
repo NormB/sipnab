@@ -346,7 +346,13 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
 
         let output = buffer_to_string(&terminal);
-        insta::assert_snapshot!(output);
+        // The F-key footer hint differs by feature: the `audio` build adds a
+        // "P Play" entry. Snapshot under a feature-specific name so both the
+        // headless (no-audio) build and the full (audio) build stay green.
+        #[cfg(feature = "audio")]
+        insta::assert_snapshot!("stream_detail_view_audio", output);
+        #[cfg(not(feature = "audio"))]
+        insta::assert_snapshot!("stream_detail_view_noaudio", output);
     }
 
     #[test]
