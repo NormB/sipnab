@@ -236,14 +236,15 @@ pub(super) fn clear_calls(app: &mut App) {
         // Clear only selected rows: collect the Call-IDs to remove
         let call_ids_to_remove: Vec<String> = {
             let store = app.dialog_store.read();
-            let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
-                store
-                    .iter()
-                    .filter(|d| filter.matches_dialog(d, &[]))
-                    .collect()
-            } else {
-                store.iter().collect()
-            };
+            // Map selected row indices to dialogs through the same displayed
+            // (filter + search + sort) ordering the user sees on screen.
+            let dialogs = call_list::displayed_dialogs(
+                &store,
+                app.active_filter.as_ref(),
+                &app.search_query,
+                app.call_list.sort_column(),
+                app.call_list.sort_ascending(),
+            );
             selected_rows
                 .iter()
                 .filter_map(|&idx| dialogs.get(idx).map(|d| d.call_id.clone()))
