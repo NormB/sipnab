@@ -96,9 +96,19 @@ jobs:
               ;;
           esac
 
+          # The audio plugin (libsipnab_audio cdylib) ships only on dynamic
+          # builds that include audio: gnu + macOS with audio == "full".
+          # musl (static, no-audio) and -noaudio builds skip the plugin.
+          audio_plugin="no"
+          case "${{ matrix.target }}" in
+            *-linux-musl) audio_plugin="no" ;;
+            *) [ "$features" = "full" ] && audio_plugin="yes" ;;
+          esac
+
           echo "features=$features" >> "$GITHUB_OUTPUT"
           echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
-          echo "Target ${{ matrix.target }} -> features=$features suffix='$suffix'"
+          echo "audio_plugin=$audio_plugin" >> "$GITHUB_OUTPUT"
+          echo "Target ${{ matrix.target }} -> features=$features suffix='$suffix' audio_plugin=$audio_plugin"
 
       - name: Build (cross)
         if: matrix.cross
@@ -107,6 +117,14 @@ jobs:
       - name: Build (native)
         if: '!matrix.cross'
         run: cargo build --release --target ${{ matrix.target }} --no-default-features --features ${{ steps.features.outputs.features }} --bin sipnab
+
+      - name: Build audio plugin (cross)
+        if: matrix.cross && steps.features.outputs.audio_plugin == 'yes'
+        run: cross build --release --target ${{ matrix.target }} -p sipnab-audio
+
+      - name: Build audio plugin (native)
+        if: '!matrix.cross && steps.features.outputs.audio_plugin == ''yes'''
+        run: cargo build --release --target ${{ matrix.target }} -p sipnab-audio
 
       - name: Strip binary
         run: strip "target/${{ matrix.target }}/release/sipnab" || true
@@ -121,6 +139,18 @@ jobs:
           cp "target/${{ matrix.target }}/release/sipnab" "dist/${stage}/"
           cp README.md LICENSE-MIT LICENSE-APACHE "dist/${stage}/"
           [ -f man/sipnab.1 ] && cp man/sipnab.1 "dist/${stage}/"
+          # Stage the audio plugin alongside the binary when it was built.
+          if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ]; then
+            case "${{ matrix.target }}" in
+              *-apple-darwin) plugin="target/${{ matrix.target }}/release/libsipnab_audio.dylib" ;;
+              *)              plugin="target/${{ matrix.target }}/release/libsipnab_audio.so" ;;
+            esac
+            if [ -f "$plugin" ]; then
+              cp "$plugin" "dist/${stage}/"
+            else
+              echo "WARNING: audio plugin expected but not found at $plugin" >&2
+            fi
+          fi
           ( cd dist && tar -czf "${stage}.tar.gz" "${stage}" && rm -rf "${stage}" )
           if command -v sha256sum >/dev/null; then
             ( cd dist && sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256" )
@@ -145,7 +175,15 @@ jobs:
             aarch64-unknown-linux-gnu) deb_arch=arm64 ;;
             *) echo "unexpected target ${{ matrix.target }}" >&2; exit 1 ;;
           esac
+          # Pass the prebuilt audio plugin to the deb builder when present so it
+          # ships at /usr/lib/sipnab/ and adds the libasound Recommends.
+          plugin_arg=""
+          if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ] \
+             && [ -f "target/${{ matrix.target }}/release/libsipnab_audio.so" ]; then
+            plugin_arg="target/${{ matrix.target }}/release/libsipnab_audio.so"
+          fi
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
+          SIPNAB_AUDIO_PLUGIN="$plugin_arg" \
             bash contrib/deb/build-deb.sh "$deb_version" "$deb_arch"
           mkdir -p dist
           suffix="${{ steps.features.outputs.suffix }}"
