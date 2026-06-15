@@ -46,14 +46,20 @@ target system:
 
 | Library            | Package (Debian/Ubuntu) | Package (Fedora/RHEL)   | When required                                  |
 |--------------------|-------------------------|-------------------------|------------------------------------------------|
-| `libpcap.so.1`     | `libpcap0.8`            | `libpcap`               | Any build that includes the `native` feature   |
-| `libasound.so.2`   | `libasound2`            | `alsa-lib`              | Any build that includes the `audio` feature (in default) |
+| `libpcap.so.1`     | `libpcap0.8`            | `libpcap`               | Mandatory — any build that includes the `native` feature (the binary always links it) |
+| `libasound.so.2`   | `libasound2`            | `alsa-lib`              | **Optional** — only for live audio playback in the TUI (loaded lazily via the audio plugin) |
 
 `tls`, `hep`, `api`, `mcp`, `mcp-http`, and `wasm` are pure-Rust and need no
-additional system libraries. To drop the libasound runtime dependency on a
-headless capture/MCP host, build without the `audio` feature — see the
-`--no-default-features --features native,hep,api,mcp,mcp-http` recipe in the
-Feature Flags section below.
+additional system libraries.
+
+The `audio` feature **no longer links libasound into the `sipnab` binary**.
+Device output lives in a separate plugin, `libsipnab_audio.so`
+(`/usr/lib/sipnab/` from the `.deb`, or next to the binary in dev builds),
+which sipnab `dlopen`s only the moment you press play. So an audio-enabled
+binary starts fine on a host without libasound; if libasound (or the plugin)
+is missing, playback returns a clear error and WAV export (F2) still works.
+Install `libasound2` for live playback — it is a Debian `Recommends`, not a
+hard dependency.
 
 ## Build
 
@@ -125,7 +131,7 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 |------------|----------------------------------------------------------------------|---------|
 | `native`   | Live capture, file capture, output writers, signal handling, CLI     | yes     |
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
-| `audio`    | RTP audio playback in TUI + WAV export (rodio)                       | yes     |
+| `audio`    | RTP audio playback in TUI via the lazily-loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
 | `hep`      | HEP v2/v3 send + receive (Homer Encapsulation Protocol)              | no      |
 | `api`      | REST API + Prometheus metrics endpoint (axum, tokio)                 | no      |
@@ -144,7 +150,7 @@ cargo build --release --features full
 cargo build --release --no-default-features --features native,hep,api,mcp,mcp-http
 ```
 
-Note: `audio` is in the default feature set, so the `libasound2` runtime dependency applies to plain `cargo build --release` too — not just `--features full`. Drop `audio` (e.g. `--no-default-features --features native,tui` or the headless recipe above) if your deploy host won't have libasound.
+Note: `audio` is in the default feature set, but it does **not** add a load-time `libasound2` dependency to the `sipnab` binary. The rodio/ALSA code lives in the separate `sipnab-audio` cdylib plugin (`libsipnab_audio.so`), which the binary `dlopen`s lazily only when you actually play a stream. So the binary starts fine without libasound; install `libasound2` only if you want live playback (otherwise WAV export still works). For a fully audio-free build, drop `audio` (e.g. `--no-default-features --features native,tui` or the headless recipe above) and the plugin is simply not built.
 
 ## Documentation
 

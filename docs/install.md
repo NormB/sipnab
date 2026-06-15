@@ -89,7 +89,7 @@ sipnab uses Cargo feature flags to control optional functionality. The default b
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required by every other feature except `wasm`.** Included by default. | `pcap`, `clap`, `crossbeam-channel`, `libc`, `pcap-file`, `tracing-subscriber`, `tracing-log` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width` |
-| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Adds a runtime dependency on `libasound.so.2`. | `rodio`, `libc` |
+| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `aes`, `cbc`, `zeroize` |
 | `hep` | HEP v2/v3 send + receive (Homer Encapsulation Protocol) | `native` |
 | `api` | REST API + Prometheus metrics endpoint | `native`, `axum`, `tokio` |
@@ -111,7 +111,16 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 cargo build --release --features full
 ```
 
-A `--features full` (or any build with `audio`) dynamically links `libasound.so.2` and refuses to start without it — install `libasound2` alongside `libpcap0.8` on Debian/Ubuntu, or drop the `audio` feature for headless servers.
+`libasound.so.2` is now an **optional** runtime dependency. The `audio` feature
+builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/`
+by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary
+`dlopen`s this plugin only when you actually play a stream, so an audio-enabled
+binary starts fine on a host without libasound. If libasound (or the plugin) is
+missing, playback returns a clear error and you can still export the stream to a
+WAV file (F2). On Debian/Ubuntu `libasound2` is shipped as a `Recommends` of the
+package; install it for live playback. Only `libpcap0.8` is a hard dependency.
+For a fully audio-free build, drop the `audio` feature and the plugin is not
+built.
 
 See the website install guide ([www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
 
