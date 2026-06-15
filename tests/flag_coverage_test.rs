@@ -23,26 +23,35 @@ use clap::CommandFactory;
 /// adding a test for a listed flag also fails the gate until you remove it
 /// from this list. Burn this down toward zero (spec §15 = 100%).
 const KNOWN_UNTESTED: &[&str] = &[
-    // Burned down in M6 (see tests/cli_flag_behavior_test.rs): count,
-    // calls-only, text-dump, pcapng, api-signing-key-file, api-token-ttl,
-    // mcp-signing-key-file — removed from this baseline as the ratchet requires.
-    "alert-exec",
-    "buffer",
-    "chroot",
-    "dtls-keylog",
-    "hep-parse",
-    "keylog",
-    "keylog-watch",
-    "metrics",
-    "metrics-auth",
-    "on-quality-exec",
-    "pcap-export-mode",
-    "replay",
-    "split",
-    "srtp-keys",
-    "syslog",
-    "telephone-event",
-    "tls-key",
+    // M6 burned 19 flags down to this floor (see tests/cli_flag_behavior_test.rs:
+    // count, calls-only, text-dump, pcapng, api-signing-key-file, api-token-ttl,
+    // mcp-signing-key-file, config, bpf-file, on-dialog-exec, limit,
+    // mcp-token-file, mcp-allowed-host, ignore-case, invert, word, after,
+    // rotate, tag). The remainder are NOT quick behavior tests — each is
+    // categorized below by what it needs. Closing them is M5/T5.1 fixture work
+    // or your environment (root / syslogd / live NIC), not a sandbox test.
+
+    // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
+    "keylog",           // TLS SSLKEYLOGFILE decrypt — needs TLS-SIP pcap + keylog
+    "keylog-watch",     // live keylog tailing — needs the same + a running source
+    "dtls-keylog",      // DTLS-SRTP key extraction — needs a DTLS pcap
+    "tls-key",          // TLS private-key decrypt — needs TLS-SIP pcap + the key
+    "srtp-keys",        // SRTP decrypt — needs an SRTP pcap + key material
+    "pcap-export-mode", // encrypted-traffic export mode — pairs with the above
+    // ── Root / system services (cannot run in the sandbox) ──────────────────
+    "chroot", // requires root to chroot()
+    "syslog", // requires a syslog daemon to observe alerts
+    "buffer", // kernel capture-buffer sizing — live capture only
+    // ── Standalone servers that need a live source to stay alive ────────────
+    "metrics",      // metrics-only process exits after an offline pcap read
+    "metrics-auth", // (auth logic is unit-tested in prometheus_server.rs)
+    // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
+    "hep-parse",       // needs a HEP-encapsulated pcap to unwrap
+    "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
+    "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture
+    "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger
+    "replay",          // replays at original timing — no offline output to assert
+    "split",           // splits output by size — needs a large enough capture
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.
