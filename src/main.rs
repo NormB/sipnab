@@ -2518,11 +2518,7 @@ mod tests {
         dialog_store.process_message(msg);
         assert!(dialog_store.get(call_id).is_some());
 
-        let formats: [fn(&mut Cli); 3] = [
-            |_c| {},
-            |c| c.json = true,
-            |c| c.markdown = true,
-        ];
+        let formats: [fn(&mut Cli); 3] = [|_c| {}, |c| c.json = true, |c| c.markdown = true];
         for setup in formats {
             let mut cli = base_cli();
             cli.call_report = Some(call_id.to_string());

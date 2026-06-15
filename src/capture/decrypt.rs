@@ -1245,7 +1245,14 @@ mod tests {
         let table = [
             (Aes128Gcm, 16, 12, 0, false, "TLS_AES_128_GCM_SHA256"),
             (Aes256Gcm, 32, 12, 0, false, "TLS_AES_256_GCM_SHA384"),
-            (Aes128CbcSha, 16, 16, 20, true, "TLS_RSA_WITH_AES_128_CBC_SHA"),
+            (
+                Aes128CbcSha,
+                16,
+                16,
+                20,
+                true,
+                "TLS_RSA_WITH_AES_128_CBC_SHA",
+            ),
             (
                 Aes256CbcSha256,
                 32,
@@ -1519,7 +1526,13 @@ mod tests {
     fn poll_keylog_loads_appended_entries() {
         use std::io::Write;
         let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        writeln!(tmp, "CLIENT_TRAFFIC_SECRET_0 {} {}", "aa".repeat(32), "bb".repeat(32)).unwrap();
+        writeln!(
+            tmp,
+            "CLIENT_TRAFFIC_SECRET_0 {} {}",
+            "aa".repeat(32),
+            "bb".repeat(32)
+        )
+        .unwrap();
         tmp.flush().unwrap();
 
         let mut d = TlsDecryptor::new(
@@ -1535,7 +1548,13 @@ mod tests {
         assert_eq!(d.poll_keylog_file().unwrap(), 0);
 
         // Append a valid line and a junk line (the junk is skipped).
-        writeln!(tmp, "SERVER_TRAFFIC_SECRET_0 {} {}", "aa".repeat(32), "cc".repeat(32)).unwrap();
+        writeln!(
+            tmp,
+            "SERVER_TRAFFIC_SECRET_0 {} {}",
+            "aa".repeat(32),
+            "cc".repeat(32)
+        )
+        .unwrap();
         writeln!(tmp, "this is not a valid keylog line").unwrap();
         tmp.flush().unwrap();
 
@@ -1579,10 +1598,20 @@ mod tests {
     #[test]
     fn build_aad_covers_content_types_and_versions() {
         let cases = [
-            (TlsContentType::ChangeCipherSpec, TlsVersion::Tls10, 20u8, 0x0301u16),
+            (
+                TlsContentType::ChangeCipherSpec,
+                TlsVersion::Tls10,
+                20u8,
+                0x0301u16,
+            ),
             (TlsContentType::Alert, TlsVersion::Tls11, 21, 0x0302),
             (TlsContentType::Handshake, TlsVersion::Tls13, 22, 0x0303),
-            (TlsContentType::Unknown(99), TlsVersion::Unknown(0x7F7F), 99, 0x7F7F),
+            (
+                TlsContentType::Unknown(99),
+                TlsVersion::Unknown(0x7F7F),
+                99,
+                0x7F7F,
+            ),
         ];
         for (ct, ver, want_ct, want_ver) in cases {
             let aad = build_record_aad(&TlsRecord {

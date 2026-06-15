@@ -1153,18 +1153,11 @@ mod tests {
             ],
             "",
         );
-        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp)
-            .expect("parse request")
+        parse_sip(&raw, ts, ip_a(), ip_b(), 5060, 5060, TransportProto::Udp).expect("parse request")
     }
 
     /// B->A response message.
-    fn resp(
-        status: u16,
-        reason: &str,
-        cseq: &str,
-        call_id: &str,
-        ts: DateTime<Utc>,
-    ) -> SipMessage {
+    fn resp(status: u16, reason: &str, cseq: &str, call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_raw(
             &format!("SIP/2.0 {status} {reason}"),
             &[
@@ -1222,7 +1215,11 @@ mod tests {
     }
 
     fn lines_to_string(lines: &[Line<'_>]) -> String {
-        lines.iter().map(line_to_string).collect::<Vec<_>>().join("\n")
+        lines
+            .iter()
+            .map(line_to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Store with a complete INVITE/180/200/ACK/BYE/200 dialog.
@@ -1230,11 +1227,34 @@ mod tests {
         let t = base_ts();
         let mut store = DialogStore::new(100, false);
         store.process_message(req("INVITE", "1 INVITE", call_id, t));
-        store.process_message(resp(180, "Ringing", "1 INVITE", call_id, t + TimeDelta::seconds(1)));
-        store.process_message(resp(200, "OK", "1 INVITE", call_id, t + TimeDelta::seconds(2)));
-        store.process_message(req("ACK", "1 ACK", call_id, t + TimeDelta::milliseconds(2100)));
+        store.process_message(resp(
+            180,
+            "Ringing",
+            "1 INVITE",
+            call_id,
+            t + TimeDelta::seconds(1),
+        ));
+        store.process_message(resp(
+            200,
+            "OK",
+            "1 INVITE",
+            call_id,
+            t + TimeDelta::seconds(2),
+        ));
+        store.process_message(req(
+            "ACK",
+            "1 ACK",
+            call_id,
+            t + TimeDelta::milliseconds(2100),
+        ));
         store.process_message(req("BYE", "2 BYE", call_id, t + TimeDelta::seconds(30)));
-        store.process_message(resp(200, "OK", "2 BYE", call_id, t + TimeDelta::seconds(30)));
+        store.process_message(resp(
+            200,
+            "OK",
+            "2 BYE",
+            call_id,
+            t + TimeDelta::seconds(30),
+        ));
         store
     }
 
@@ -1326,8 +1346,20 @@ mod tests {
         let t = base_ts();
         let mut store = DialogStore::new(100, false);
         store.process_message(req("INVITE", "1 INVITE", "err@test", t));
-        store.process_message(resp(100, "Trying", "1 INVITE", "err@test", t + TimeDelta::milliseconds(50)));
-        store.process_message(resp(480, "Temporarily Unavailable", "1 INVITE", "err@test", t + TimeDelta::seconds(1)));
+        store.process_message(resp(
+            100,
+            "Trying",
+            "1 INVITE",
+            "err@test",
+            t + TimeDelta::milliseconds(50),
+        ));
+        store.process_message(resp(
+            480,
+            "Temporarily Unavailable",
+            "1 INVITE",
+            "err@test",
+            t + TimeDelta::seconds(1),
+        ));
         let (count, lines) = build_call_flow_lines(&store, "err@test", &theme).expect("some");
         assert_eq!(count, 3);
         let text = lines_to_string(&lines);
@@ -1343,8 +1375,8 @@ mod tests {
         let store = store_full_dialog("opt@test");
         let mut o = opts(&theme);
         o.selected_msg = Some(2);
-        let (_c, lines) = build_call_flow_lines_with_options(&store, "opt@test", 120, &o)
-            .expect("some");
+        let (_c, lines) =
+            build_call_flow_lines_with_options(&store, "opt@test", 120, &o).expect("some");
         assert!(lines_to_string(&lines).contains("[SELECTED]"));
     }
 
@@ -1354,18 +1386,35 @@ mod tests {
         let t = base_ts();
         let mut store = DialogStore::new(100, false);
         store.process_message(invite_with_sdp("sdp@test", t));
-        store.process_message(resp(200, "OK", "1 INVITE", "sdp@test", t + TimeDelta::seconds(1)));
-        store.process_message(req("ACK", "1 ACK", "sdp@test", t + TimeDelta::milliseconds(1100)));
+        store.process_message(resp(
+            200,
+            "OK",
+            "1 INVITE",
+            "sdp@test",
+            t + TimeDelta::seconds(1),
+        ));
+        store.process_message(req(
+            "ACK",
+            "1 ACK",
+            "sdp@test",
+            t + TimeDelta::milliseconds(1100),
+        ));
         store.process_message(req("BYE", "2 BYE", "sdp@test", t + TimeDelta::seconds(10)));
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Summary;
         o.show_rtp = true;
-        let (_c, lines) = build_call_flow_lines_with_options(&store, "sdp@test", 120, &o)
-            .expect("some");
+        let (_c, lines) =
+            build_call_flow_lines_with_options(&store, "sdp@test", 120, &o).expect("some");
         let text = lines_to_string(&lines);
         // SDP summary lists codecs; show_rtp draws an "RTP stream active" bar at BYE.
-        assert!(text.contains("Codecs:"), "expected codec summary in:\n{text}");
-        assert!(text.contains("RTP stream active"), "expected RTP bar in:\n{text}");
+        assert!(
+            text.contains("Codecs:"),
+            "expected codec summary in:\n{text}"
+        );
+        assert!(
+            text.contains("RTP stream active"),
+            "expected RTP bar in:\n{text}"
+        );
     }
 
     #[test]
@@ -1375,10 +1424,13 @@ mod tests {
         store.process_message(invite_with_sdp("sdpfull@test", base_ts()));
         let mut o = opts(&theme);
         o.sdp_mode = SdpDisplayMode::Full;
-        let (_c, lines) = build_call_flow_lines_with_options(&store, "sdpfull@test", 120, &o)
-            .expect("some");
+        let (_c, lines) =
+            build_call_flow_lines_with_options(&store, "sdpfull@test", 120, &o).expect("some");
         let text = lines_to_string(&lines);
-        assert!(text.contains("m=audio 20000"), "expected raw SDP body in:\n{text}");
+        assert!(
+            text.contains("m=audio 20000"),
+            "expected raw SDP body in:\n{text}"
+        );
         assert!(text.contains("a=rtpmap:0 PCMU/8000"));
     }
 
@@ -1388,8 +1440,8 @@ mod tests {
         let store = store_full_dialog("delta@test");
         let mut o = opts(&theme);
         o.ts_mode = TimestampMode::DeltaPrev;
-        let (_c, lines) = build_call_flow_lines_with_options(&store, "delta@test", 120, &o)
-            .expect("some");
+        let (_c, lines) =
+            build_call_flow_lines_with_options(&store, "delta@test", 120, &o).expect("some");
         // Delta-prev renders "+<n>s" relative timestamps.
         assert!(lines_to_string(&lines).contains("+"));
     }
@@ -1409,11 +1461,13 @@ mod tests {
         let theme = Theme::default();
         let store = store_full_dialog("ext@test");
         let o = opts(&theme);
-        let (count, lines) = build_extended_flow_lines(&store, "ext@test", 120, &o)
-            .expect("some");
+        let (count, lines) = build_extended_flow_lines(&store, "ext@test", 120, &o).expect("some");
         assert_eq!(count, 6);
         let text = lines_to_string(&lines);
-        assert!(text.contains("Extended Flow:"), "missing header in:\n{text}");
+        assert!(
+            text.contains("Extended Flow:"),
+            "missing header in:\n{text}"
+        );
         assert!(text.contains("correlated leg(s)"));
         assert!(text.contains("INVITE"));
     }
@@ -1463,7 +1517,10 @@ mod tests {
             .unwrap();
         // Still renders the wrapped ladder without panicking; some content present.
         let text = buffer_text(&term);
-        assert!(text.contains("INVITE") || text.contains("10.0.0.1"), "buffer:\n{text}");
+        assert!(
+            text.contains("INVITE") || text.contains("10.0.0.1"),
+            "buffer:\n{text}"
+        );
     }
 
     #[test]
@@ -1481,7 +1538,10 @@ mod tests {
         .unwrap();
         let text = buffer_text(&term);
         // With offset 4 (header+bar+INVITE+180 scrolled away) the 200/ACK/BYE show.
-        assert!(text.contains("BYE") || text.contains("ACK") || text.contains("200"), "buffer:\n{text}");
+        assert!(
+            text.contains("BYE") || text.contains("ACK") || text.contains("200"),
+            "buffer:\n{text}"
+        );
     }
 
     #[test]
@@ -1489,10 +1549,8 @@ mod tests {
         let theme = Theme::default();
         let mut term = terminal(60, 8);
         let area = Rect::new(0, 0, 60, 8);
-        term.draw(|f| {
-            render_call_flow_lines(f, area, "x@test", 0, &theme, || None)
-        })
-        .unwrap();
+        term.draw(|f| render_call_flow_lines(f, area, "x@test", 0, &theme, || None))
+            .unwrap();
         assert!(buffer_text(&term).contains("Dialog not found or empty"));
     }
 }
