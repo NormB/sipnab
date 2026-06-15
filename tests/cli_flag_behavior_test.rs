@@ -122,6 +122,9 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
     );
 }
 
+// Minting from an MCP signing key needs the `mcp` feature (the MCP verifier
+// config is mcp-gated); only run this where mcp is compiled in.
+#[cfg(feature = "mcp")]
 #[test]
 fn mint_with_mcp_signing_key_file_produces_token() {
     // --mcp-signing-key-file: mint using an MCP signing key loaded from a file.
