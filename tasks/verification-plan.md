@@ -194,7 +194,7 @@ JSON-bearing formats also pass schema validation.
 
 | ID | Task | Deliverable files | Deps | Size | Success (pass) criteria |
 |---|---|---|---|---|---|
-| [ ] **T3b.1** | Design the token lifecycle model (decision) | design note appended here | — | S | settles: TTL source (`--api-token-ttl`/`--mcp-token-ttl` + per-token `expires_at` in token file), rotation (N overlapping-valid tokens), revocation (revocation list / removal), and self-describing (signed) vs server-tracked tokens; constant-time compare preserved |
+| [x] **T3b.1** | Design the token lifecycle model (decision) | design note below | — | S | ✅ **RESOLVED: HMAC self-describing tokens** (maintainer choice). Format, signing-key rotation, mint subcommand, denylist revocation, static-key backward-compat, clock seam — see "T3b.1 Design decision" below |
 | [ ] **T3b.2** | Implement expiry+rotation+revocation — **REST API** | `src/output/api.rs`, `src/cli.rs` (new flags), token store module | T3b.1 | L | TDD red→green; expired token → 401; rotation window accepts both; revoked → 401; non-loopback still requires a *valid* token; constant-time retained |
 | [ ] **T3b.3** | Implement expiry+rotation+revocation — **MCP** | `src/mcp/transport.rs`, `src/cli.rs` | T3b.1 | L | same lifecycle semantics as API; http + stdio paths covered |
 | [ ] **T3b.4** | Document the feature | `--help` text, `docs/` (security/auth page → wiki), `CONTRIBUTING.md` | T3b.2, T3b.3 | S | every new flag documented; token lifecycle (issue/use/expire/rotate/revoke) described; `docs_drift_test` green |
@@ -208,6 +208,31 @@ validated** for both API and MCP; the spec §15 token-lifecycle row flips from �
 - **Fails if:** an expired or revoked token is **accepted** (must fail-closed) · rotation drops a
   still-valid token · TTL/clock handling is nondeterministic or flaky · constant-time comparison is
   lost · any token state lacks a registry entry · the feature ships undocumented.
+
+### T3b.1 — Design decision (RESOLVED): HMAC self-describing tokens
+
+Maintainer chose **signed self-describing (HMAC)** over a server-tracked token file.
+
+- **Token format:** `s1.<b64url(payload)>.<b64url(sig)>` where `payload` is compact JSON
+  `{"id":"<jti>","exp":<unix_seconds>}` and `sig = HMAC-SHA256(signing_key, "s1.<b64url(payload)>")`.
+  Stateless verification: recompute the HMAC, **constant-time** compare, check `exp > now`, check `id`
+  not revoked.
+- **Signing key(s):** `--api-signing-key` (repeatable; also `--api-signing-key-file` / env
+  `SIPNAB_API_SIGNING_KEY`) and the MCP equivalents. The **first** key mints; **all** are accepted on
+  verify → signing-key **rotation** with overlap.
+- **Issuance:** a `mint-token` subcommand (`sipnab mint-token --signing-key K [--ttl SECS] [--id ID]`)
+  prints a signed token. `--api-token-ttl`/`--mcp-token-ttl` set the default mint TTL.
+- **Rotation (tokens):** multiple minted tokens coexist, each valid until its own `exp` — mint new,
+  distribute, let old expire.
+- **Revocation:** a denylist of token `id`s (`--api-revoked-file` / `--mcp-revoked-file`), reloaded on
+  mtime change so removal takes effect without restart. (Signed tokens are otherwise valid until `exp`,
+  so a denylist is required for revocation — accepted cost of the stateless model.)
+- **Backward compat:** `--api-key` / `--mcp-token` / `--mcp-token-file` keep working — a presented
+  value that isn't a parseable signed token falls back to a constant-time match against the static
+  secret (no expiry). Non-loopback-requires-a-token rule preserved.
+- **Clock seam:** `verify(token, now_unix)` takes `now` as a parameter → expiry is unit-tested
+  deterministically; an e2e test additionally mints a ~1 s-TTL token and asserts 200 → 401 across real
+  time. Crypto via RustCrypto `hmac` + `sha2` (pure Rust; decoupled from the `tls` feature).
 
 ---
 
