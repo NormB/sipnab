@@ -148,6 +148,31 @@ fn mint_with_mcp_signing_key_file_produces_token() {
 }
 
 #[test]
+fn limit_caps_tracked_dialogs() {
+    // --limit N caps the number of dialogs tracked. The RTP fixture has 2
+    // dialogs; --limit 1 must keep only 1 in the report.
+    let rtp = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let full = run(&["-N", "-I", rtp, "--report", "--no-cli-print"]);
+    let full_rows = full.lines().filter(|l| l.contains('@')).count();
+    assert!(
+        full_rows >= 2,
+        "RTP fixture should have ≥2 dialogs, got {full_rows}"
+    );
+
+    let capped = run(&[
+        "-N",
+        "-I",
+        rtp,
+        "--limit",
+        "1",
+        "--report",
+        "--no-cli-print",
+    ]);
+    let capped_rows = capped.lines().filter(|l| l.contains('@')).count();
+    assert_eq!(capped_rows, 1, "--limit 1 must keep exactly one dialog");
+}
+
+#[test]
 fn config_file_is_loaded() {
     // --config: the loader reads the file and --dump-config reflects it.
     let dir = tempfile::tempdir().expect("tempdir");
