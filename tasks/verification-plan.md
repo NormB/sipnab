@@ -130,19 +130,26 @@ tests green in CI.
 > One golden (and schema, where JSON) per output format. All run the binary against
 > `tests/fixtures/sip_call.pcap`, pipe through `normalize()`, and snapshot. Each is **S** unless noted.
 
+> **Reality reconciliation (M2):** CSV (T2.5) and mermaid/ladder (T2.10) are **not** CLI
+> flags — they are **WASM** (`src/wasm.rs`, `target_arch=wasm32`-only) and **TUI export**
+> (`src/tui/save.rs`) formats. They are therefore covered by in-crate content tests, not CLI
+> goldens. `--payload-limit` (T2.1) has no effect on default text (one-liners) and is covered by
+> the existing `cli_print::payload_limit_truncates` unit test. The 9 genuinely CLI-reachable
+> formats are pinned by trycmd goldens in `tests/cli/out/`.
+
 | ID | Format / flag | Deliverable | Deps | Success (pass) criteria |
 |---|---|---|---|---|
-| [ ] **T2.1** | text (default), `--delta-time`, `--payload-limit` | `tests/cli/out/text_*.trycmd` | T1.4 | golden stable; color stripped |
-| [ ] **T2.2** | `--json`, `--json-pretty`, NDJSON | goldens + reuse T1.3 schema | T1.3 | every line validates against `message.schema.json` |
-| [ ] **T2.3** | `--report` | golden | T1.4 | dialog table columns present & ordered |
-| [ ] **T2.4** | `--call-report` (+`--markdown`, json) | goldens + `call_report.schema.json` check | T1.3 | all three formats; media-diagnosis section present |
-| [ ] **T2.5** | CSV export | golden + header-row assert | T1.4 | **GAP closed**; column set pinned |
-| [ ] **T2.6** | pcap / pcapng (`-O`, `--pcapng`) roundtrip (M) | extend `tests/capture_test.rs` | T1.1 | write→reread via `pcap`; packet count + linktype match; pcapng magic asserted |
-| [ ] **T2.7** | `--hexdump` | golden | T1.4 | **GAP closed** |
-| [ ] **T2.8** | `--fail2ban` | golden + shape assert | T1.4 | **GAP closed**; parses as fail2ban json lines |
-| [ ] **T2.9** | `--wireshark`, `--tshark-filter` | golden | T1.4 | **GAP closed**; filter syntax for known Call-IDs |
-| [ ] **T2.10** | mermaid/ladder export | golden | T1.4 | **GAP closed**; valid mermaid `sequenceDiagram` |
-| [ ] **T2.11** | `--group-by` | golden | T1.4 | grouping by call-id/from |
+| [x] **T2.1** | text (default), `--delta-time` (+`--payload-limit` via unit test) | `tests/cli/out/text.trycmd`, `text-delta.trycmd` | T1.4 | ✅ goldens stable (pcap-timestamp deterministic); color stripped via `NO_COLOR`; payload-limit covered by `cli_print` unit test |
+| [x] **T2.2** | `--json`, `--json-pretty`, NDJSON | `tests/json_schema_test.rs` (`json_and_json_pretty_streams_validate`) | T1.3 | ✅ all 7 lines of **both** flags validate against `message.schema.json`; count pinned |
+| [x] **T2.3** | `--report` | `tests/cli/out/report.trycmd` | T1.4 | ✅ dialog table header + row pinned (exact columns + trailing layout) |
+| [x] **T2.4** | `--call-report` (text + `--markdown` + json) | `tests/cli/out/call-report.trycmd`, `call-report-markdown.trycmd`; json via `call_report.schema.json` (T1.3) | T1.3 | ✅ text + markdown goldens (Summary/Timing/Media/Issues sections); json schema-validated on no-RTP + RTP fixtures |
+| [x] **T2.5** | CSV export (**WASM/TUI**, not CLI) | strengthened `src/tui/save.rs::csv_saves_with_header` | T1.4 | ✅ **column set pinned** (exact 11-col header) + row count; (WASM `export_csv` differs at 10 cols — noted) |
+| [x] **T2.6** | pcap / pcapng (`-O`, `--pcapng`) roundtrip | `tests/capture_test.rs` (`pcap_roundtrip_preserves_linktype_and_magic`, `pcapng_roundtrip_and_magic`) | T1.1 | ✅ write→reread count + **linktype match**; classic-pcap magic (4 variants) + **pcapng SHB magic** `0a0d0d0a` asserted |
+| [x] **T2.7** | `--hexdump` | `tests/cli/out/hexdump.trycmd` | T1.4 | ✅ full deterministic hexdump pinned (offset/hex/ASCII for all 7 msgs) |
+| [x] **T2.8** | `--fail2ban` | `tests/cli/out/fail2ban.trycmd` | T1.4 | ✅ stable `scanner_detected src=… ua=… method=…` lines pinned; volatile syslog date+PID redacted with `[..]` (verified across 2 wall-clock runs) |
+| [x] **T2.9** | `--wireshark`, `--tshark-filter` | `tests/cli/out/wireshark.trycmd`, `tshark-filter.trycmd` | T1.4 | ✅ message lines + emitted `tshark -r … -Y '…' -V` command + Call-ID filter pinned |
+| [x] **T2.10** | mermaid/ladder export (**WASM/TUI**, not CLI) | strengthened `src/tui/save.rs::mermaid_saves_diagram` | T1.4 | ✅ **content** validated: `sequenceDiagram` + `participant` + `class="mermaid"` + renderer script (was existence-only) |
+| [x] **T2.11** | `--group-by` | `tests/cli/out/group-by.trycmd` | T1.4 | ✅ group-by call-id output pinned |
 
 **M2 exit gate:** every row in the spec's "Output formats" inventory has ≥1 green golden;
 JSON-bearing formats also pass schema validation.

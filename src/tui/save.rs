@@ -888,7 +888,12 @@ mod tests {
         let msg = save_to_csv_path(&app, p.to_str().unwrap());
         assert!(msg.contains("Saved"), "got: {msg}");
         let content = std::fs::read_to_string(&p).unwrap();
-        assert!(content.starts_with("call_id,method,state,"));
+        // M2/T2.5: pin the exact column set, not just a prefix.
+        let header = content.lines().next().unwrap();
+        assert_eq!(
+            header,
+            "call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,setup_ms,created_at"
+        );
         // header + 2 dialog rows
         assert_eq!(content.lines().count(), 3);
     }
@@ -911,6 +916,22 @@ mod tests {
         let msg = save_to_mermaid_path(&app, p.to_str().unwrap());
         assert!(msg.contains("Saved Mermaid"), "got: {msg}");
         assert!(p.exists());
+        // M2/T2.10: validate the CONTENT, not just that a file was written —
+        // a valid Mermaid `sequenceDiagram` with participants and the renderer.
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            content.contains("sequenceDiagram"),
+            "missing mermaid sequenceDiagram keyword"
+        );
+        assert!(content.contains("participant "), "missing participants");
+        assert!(
+            content.contains("class=\"mermaid\""),
+            "missing mermaid render container"
+        );
+        assert!(
+            content.contains("mermaid.min.js"),
+            "missing mermaid renderer script"
+        );
     }
 
     #[test]
