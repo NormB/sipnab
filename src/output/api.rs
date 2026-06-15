@@ -266,11 +266,14 @@ pub async fn run_server(
         router
     };
 
-    tracing::info!("REST API listening on {}", bind_addr);
-
     let listener = tokio::net::TcpListener::bind(bind_addr)
         .await
         .map_err(|e| crate::Error::Server(format!("failed to bind API to {bind_addr}: {e}")))?;
+
+    // Log the *actual* bound address: with port 0 the OS assigns an ephemeral
+    // port, so logging `bind_addr` would print ":0". Matches the MCP HTTP server.
+    let actual_addr = listener.local_addr().unwrap_or(bind_addr);
+    tracing::info!("REST API listening on {}", actual_addr);
 
     axum::serve(
         listener,
