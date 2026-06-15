@@ -18,8 +18,13 @@
 //!
 //! # Authentication
 //!
-//! If `--api-key` is provided, all endpoints (except `/health`) require
-//! `Authorization: Bearer <key>`. Missing or invalid keys return 401.
+//! If a static `--api-key` and/or one or more HMAC signing keys
+//! (`--api-signing-key`/`--api-signing-key-file`) are configured, all
+//! endpoints (except `/health`) require `Authorization: Bearer <token>`.
+//! Bearer values may be self-describing signed `s1.` tokens (with expiry,
+//! signing-key rotation, and revocation via `--api-revoked-file`) or the
+//! static API key. Missing or invalid credentials return 401. See
+//! [`crate::auth`].
 //!
 //! # Rate Limiting
 //!
@@ -57,8 +62,8 @@ pub struct ApiState {
     pub dialog_store: Arc<RwLock<DialogStore>>,
     /// Shared RTP stream store (same instance used by capture threads).
     pub stream_store: Arc<RwLock<StreamStore>>,
-    /// Optional bearer token for API authentication.
-    pub api_key: Option<String>,
+    /// Bearer-token verifier (signed tokens + static secrets + revocation).
+    pub verifier: Arc<crate::auth::TokenVerifier>,
     /// Per-IP rate limiter.
     pub rate_limiter: Arc<Mutex<RateLimiter>>,
 }
@@ -287,9 +292,11 @@ pub async fn run_server(
 
 /// Check authentication. Returns `Err(StatusCode)` if auth fails.
 fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
-    let Some(ref expected_key) = state.api_key else {
+    // No signing keys and no static secret configured ⇒ auth disabled
+    // (loopback-allowed behavior unchanged from before this feature).
+    if state.verifier.is_unconfigured() {
         return Ok(());
-    };
+    }
 
     let Some(auth_header) = headers.get("authorization") else {
         return Err(StatusCode::UNAUTHORIZED);
@@ -298,34 +305,12 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
     let auth_str = auth_header.to_str().map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     if let Some(token) = auth_str.strip_prefix("Bearer ")
-        && constant_time_eq(token.as_bytes(), expected_key.as_bytes())
+        && state.verifier.verify(token, chrono::Utc::now().timestamp())
     {
         return Ok(());
     }
 
     Err(StatusCode::UNAUTHORIZED)
-}
-
-/// Constant-time byte comparison to prevent timing side-channel attacks on API keys.
-///
-/// Does not leak the length of either input: both are compared up to
-/// the length of the longer input, and the length check is folded into
-/// the final result without early return.
-///
-/// `#[inline(never)]` prevents the optimizer from rewriting the loop into
-/// a short-circuiting form. `black_box` on the accumulator forces the
-/// compiler to materialize it, blocking dead-store elimination.
-#[inline(never)]
-pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let len_match = a.len() == b.len();
-    let max_len = a.len().max(b.len());
-    let mut byte_diff = 0u8;
-    for i in 0..max_len {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        byte_diff |= x ^ y;
-    }
-    len_match && std::hint::black_box(byte_diff) == 0
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
@@ -776,7 +761,9 @@ mod tests {
         ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-            api_key: None,
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig::default(),
+            )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
         }
     }
@@ -785,7 +772,12 @@ mod tests {
         ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-            api_key: Some(key.to_string()),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig {
+                    static_keys: vec![key.to_string()],
+                    ..Default::default()
+                },
+            )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
         }
     }
@@ -961,6 +953,60 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    fn make_state_with_signing_key(key: &[u8]) -> ApiState {
+        ApiState {
+            dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
+            stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig {
+                    signing_keys: vec![key.to_vec()],
+                    ..Default::default()
+                },
+            )),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_valid_signed_token_returns_200() {
+        let key = b"router-signing-key";
+        let state = make_state_with_signing_key(key);
+        populate_dialogs(&state);
+        let app = build_router(state);
+        // exp far in the future.
+        let token = crate::auth::mint(key, "id1", chrono::Utc::now().timestamp() + 3600);
+        let req =
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn auth_expired_signed_token_returns_401() {
+        let key = b"router-signing-key";
+        let state = make_state_with_signing_key(key);
+        let app = build_router(state);
+        // exp already in the past — deterministic, no sleeping.
+        let token = crate::auth::mint(key, "id1", chrono::Utc::now().timestamp() - 1);
+        let req =
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn auth_forged_signed_token_returns_401() {
+        let key = b"router-signing-key";
+        let state = make_state_with_signing_key(key);
+        let app = build_router(state);
+        // Signed by a different key.
+        let token = crate::auth::mint(b"other-key", "id1", chrono::Utc::now().timestamp() + 3600);
+        let req =
+            test_request_with_header("/v1/dialogs", "Authorization", &format!("Bearer {token}"));
+        let resp = app.oneshot(req).await.expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn pagination_offset_and_limit() {
         let state = make_state();
@@ -1106,7 +1152,9 @@ mod tests {
         let state = ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
             stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-            api_key: None,
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig::default(),
+            )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1))),
         };
         populate_dialogs(&state);
@@ -1137,44 +1185,6 @@ mod tests {
         assert_eq!(percentile(&odd, 50), Some(30));
         assert_eq!(percentile(&odd, 0), Some(10));
         assert_eq!(percentile(&odd, 100), Some(50));
-    }
-
-    // ── constant_time_eq hardening tests ──────────────────────────────
-
-    #[test]
-    fn constant_time_eq_equal_slices() {
-        assert!(
-            constant_time_eq(b"secret-key-12345", b"secret-key-12345"),
-            "Identical slices should return true"
-        );
-    }
-
-    #[test]
-    fn constant_time_eq_different_slices() {
-        assert!(
-            !constant_time_eq(b"secret-key-12345", b"secret-key-XXXXX"),
-            "Different slices of same length should return false"
-        );
-    }
-
-    #[test]
-    fn constant_time_eq_different_lengths() {
-        assert!(
-            !constant_time_eq(b"short", b"much-longer-string"),
-            "Different length slices should return false"
-        );
-        assert!(
-            !constant_time_eq(b"much-longer-string", b"short"),
-            "Different length slices (reversed) should return false"
-        );
-    }
-
-    #[test]
-    fn constant_time_eq_empty() {
-        assert!(
-            constant_time_eq(b"", b""),
-            "Two empty slices should return true"
-        );
     }
 
     // ── Stream-store helpers ──────────────────────────────────────────

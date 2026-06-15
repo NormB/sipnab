@@ -418,9 +418,34 @@ pub struct Cli {
     #[arg(long, value_name = "ADDR")]
     pub api: Option<String>,
 
-    /// API key for REST API authentication.
+    /// API key for REST API authentication (static shared secret, no expiry).
     #[arg(long, value_name = "KEY", env = "SIPNAB_API_KEY")]
     pub api_key: Option<String>,
+
+    /// HMAC signing key for REST API self-describing bearer tokens
+    /// (repeatable). The FIRST key mints; ALL keys are accepted on verify,
+    /// enabling signing-key rotation with overlap. Also read from
+    /// SIPNAB_API_SIGNING_KEY.
+    #[arg(
+        long = "api-signing-key",
+        value_name = "KEY",
+        env = "SIPNAB_API_SIGNING_KEY"
+    )]
+    pub api_signing_key: Vec<String>,
+
+    /// Read one REST API HMAC signing key from a file (contents trimmed).
+    /// Prepended to any --api-signing-key values so it is the minting key.
+    #[arg(long = "api-signing-key-file", value_name = "FILE")]
+    pub api_signing_key_file: Option<String>,
+
+    /// Revocation denylist file for REST API tokens: one revoked token id per
+    /// line (blanks and `#` comments ignored). Reloaded when the file changes.
+    #[arg(long = "api-revoked-file", value_name = "FILE")]
+    pub api_revoked_file: Option<String>,
+
+    /// TTL in seconds for a minted REST API token (used with --mint-token).
+    #[arg(long = "api-token-ttl", value_name = "SECS", default_value = "3600")]
+    pub api_token_ttl: i64,
 
     /// TLS certificate for API endpoint.
     #[arg(long, value_name = "FILE")]
@@ -462,6 +487,31 @@ pub struct Cli {
     /// systemd units).
     #[arg(long = "mcp-token-file", value_name = "FILE")]
     pub mcp_token_file: Option<String>,
+
+    /// HMAC signing key for HTTP MCP self-describing bearer tokens
+    /// (repeatable). The FIRST key mints; ALL keys are accepted on verify,
+    /// enabling signing-key rotation with overlap. Also read from
+    /// SIPNAB_MCP_SIGNING_KEY.
+    #[arg(
+        long = "mcp-signing-key",
+        value_name = "KEY",
+        env = "SIPNAB_MCP_SIGNING_KEY"
+    )]
+    pub mcp_signing_key: Vec<String>,
+
+    /// Read one HTTP MCP HMAC signing key from a file (contents trimmed).
+    /// Prepended to any --mcp-signing-key values so it is the minting key.
+    #[arg(long = "mcp-signing-key-file", value_name = "FILE")]
+    pub mcp_signing_key_file: Option<String>,
+
+    /// Revocation denylist file for HTTP MCP tokens: one revoked token id per
+    /// line (blanks and `#` comments ignored). Reloaded when the file changes.
+    #[arg(long = "mcp-revoked-file", value_name = "FILE")]
+    pub mcp_revoked_file: Option<String>,
+
+    /// TTL in seconds for a minted HTTP MCP token (used with --mint-token).
+    #[arg(long = "mcp-token-ttl", value_name = "SECS", default_value = "3600")]
+    pub mcp_token_ttl: i64,
 
     /// Additional `Host` header values the HTTP MCP server will accept
     /// (repeatable). rmcp's DNS-rebind protection defaults to allowing
@@ -542,6 +592,18 @@ pub struct Cli {
     /// Maximum concurrent TCP/TLS reassembly sessions.
     #[arg(long, value_name = "N", default_value = "10000")]
     pub max_reassembly: u64,
+
+    // ── Token minting ────────────────────────────────────────────────
+    /// Mint a signed bearer token from the first configured signing key,
+    /// print it to stdout, and exit. TTL comes from --api-token-ttl (or
+    /// --mcp-token-ttl); id from --token-id (or auto-derived). Does NOT start
+    /// capture or any server.
+    #[arg(long = "mint-token")]
+    pub mint_token: bool,
+
+    /// Token id (jti) for --mint-token. Defaults to a derived unique id.
+    #[arg(long = "token-id", value_name = "ID")]
+    pub token_id: Option<String>,
 
     // ── Config ───────────────────────────────────────────────────────
     /// Path to configuration file.

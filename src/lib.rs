@@ -21,6 +21,8 @@
 
 // Every public item must be documented; keeps the library surface usable.
 #![warn(missing_docs)]
+#[cfg(any(feature = "api", feature = "mcp"))]
+pub mod auth;
 pub mod capture;
 #[doc(hidden)]
 #[cfg(feature = "native")]

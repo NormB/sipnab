@@ -16,8 +16,9 @@
 //!
 //! - Default bind is `127.0.0.1:8731` (D18 localhost-default).
 //! - Non-loopback bind without bearer token is refused.
-//! - Bearer tokens compared via constant-time comparison reusing
-//!   `output::api::constant_time_eq`.
+//! - Bearer tokens verified via `auth::TokenVerifier` (signed `s1.` tokens
+//!   with expiry/rotation/revocation, plus constant-time static-secret
+//!   fallback).
 
 use super::server::SipnabMcp;
 use rmcp::ServiceExt;
@@ -46,19 +47,20 @@ mod http {
     };
 
     use super::SipnabMcp;
-    use crate::output::api::constant_time_eq;
+    use crate::auth::{TokenVerifier, VerifierConfig};
 
     /// HTTP-server context passed through axum middleware.
     #[derive(Clone)]
     struct McpHttpState {
-        /// Resolved bearer token. None means "no auth required" — only
-        /// allowed when bind is loopback.
-        token: Option<Arc<String>>,
+        /// Bearer-token verifier (signed tokens + static secrets + revocation).
+        /// When unconfigured (no signing keys, no static secret) auth is
+        /// disabled — only allowed when bind is loopback.
+        verifier: Arc<TokenVerifier>,
     }
 
-    /// Bearer-token guard. On loopback with no token configured the request
+    /// Bearer-token guard. On loopback with no auth configured the request
     /// passes; otherwise the `Authorization: Bearer` header is required and
-    /// compared in constant time.
+    /// verified (signed token or static secret, constant-time).
     async fn auth_layer(
         axum::extract::State(state): axum::extract::State<McpHttpState>,
         ConnectInfo(_addr): ConnectInfo<SocketAddr>,
@@ -66,13 +68,16 @@ mod http {
         request: axum::extract::Request,
         next: Next,
     ) -> Result<Response, StatusCode> {
-        if let Some(token) = state.token.as_deref() {
+        if !state.verifier.is_unconfigured() {
             let provided = headers
                 .get(axum::http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .ok_or(StatusCode::UNAUTHORIZED)?;
-            if !constant_time_eq(provided.as_bytes(), token.as_bytes()) {
+            if !state
+                .verifier
+                .verify(provided, chrono::Utc::now().timestamp())
+            {
                 return Err(StatusCode::UNAUTHORIZED);
             }
         }
@@ -86,15 +91,16 @@ mod http {
     pub async fn serve_http(
         server: SipnabMcp,
         bind: SocketAddr,
-        token: Option<String>,
+        auth_config: VerifierConfig,
         extra_allowed_hosts: Vec<String>,
     ) -> anyhow::Result<()> {
         // Refuse non-loopback bind without auth (D18 + 8.2 rule).
-        if !bind.ip().is_loopback() && token.is_none() {
+        if !bind.ip().is_loopback() && auth_config.is_unconfigured() {
             anyhow::bail!(
                 "MCP HTTP refuses to start: --mcp-bind {bind} is non-loopback \
-                 but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN was \
-                 supplied. See D18 in the v6 plan."
+                 but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / \
+                 --mcp-signing-key / --mcp-signing-key-file / \
+                 SIPNAB_MCP_SIGNING_KEY was supplied. See D18 in the v6 plan."
             );
         }
         if !bind.ip().is_loopback() {
@@ -106,7 +112,7 @@ mod http {
 
         let session_mgr = Arc::new(LocalSessionManager::default());
         let state = McpHttpState {
-            token: token.map(Arc::new),
+            verifier: Arc::new(TokenVerifier::new(auth_config)),
         };
 
         // Apply --mcp-allowed-host overrides on top of rmcp's defaults
