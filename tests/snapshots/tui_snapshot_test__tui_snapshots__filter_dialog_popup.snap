@@ -5,7 +5,7 @@ expression: output
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Fil┌ Filter ──────────────────────────────────────────────┐
-# ▲  Method │                                                      │     PDD
+# ▲   Method│                                                      │e     PDD
             │  SIP From:    [                                   ]  │
   No SIP dia│  SIP To:      [                                   ]  │
             │  Source:      [                                   ]  │

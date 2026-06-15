@@ -11,8 +11,11 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
     let store = app.dialog_store.read();
 
     // Collect all messages across all dialogs
-    let messages: Vec<&crate::sip::SipMessage> =
-        store.iter().flat_map(|d| d.messages.iter()).collect();
+    let messages: Vec<&crate::sip::SipMessage> = app
+        .dialogs_to_export(&store)
+        .into_iter()
+        .flat_map(|d| d.messages.iter())
+        .collect();
 
     if messages.is_empty() {
         return "No messages to save".to_string();
@@ -49,8 +52,11 @@ pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
 
-    let messages: Vec<&crate::sip::SipMessage> =
-        store.iter().flat_map(|d| d.messages.iter()).collect();
+    let messages: Vec<&crate::sip::SipMessage> = app
+        .dialogs_to_export(&store)
+        .into_iter()
+        .flat_map(|d| d.messages.iter())
+        .collect();
 
     if messages.is_empty() {
         return "No messages to save".to_string();
@@ -119,8 +125,11 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
                 Vec::new()
             }
         } else {
-            // In call list: export all dialogs
-            store.iter().flat_map(|d| d.messages.clone()).collect()
+            // In call list: export the selected dialogs (or all if none checked)
+            app.dialogs_to_export(&store)
+                .into_iter()
+                .flat_map(|d| d.messages.clone())
+                .collect()
         };
 
     if messages.is_empty() {
@@ -189,7 +198,7 @@ pub(super) fn csv_escape(field: &str) -> String {
 pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
-    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = app.dialogs_to_export(&store);
 
     if dialogs.is_empty() {
         return "No dialogs to save".to_string();
@@ -256,7 +265,7 @@ pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
 pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
-    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = app.dialogs_to_export(&store);
 
     if dialogs.is_empty() {
         return "No dialogs to save".to_string();
@@ -327,7 +336,7 @@ pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
 pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
-    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = app.dialogs_to_export(&store);
 
     if dialogs.is_empty() {
         return "No dialogs to save".to_string();
@@ -370,7 +379,7 @@ pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
 pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
-    let dialogs: Vec<&crate::sip::dialog::SipDialog> = store.iter().collect();
+    let dialogs: Vec<&crate::sip::dialog::SipDialog> = app.dialogs_to_export(&store);
 
     if dialogs.is_empty() {
         return "No dialogs to save".to_string();
@@ -519,11 +528,12 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
 
-    // Pick dialog: current call flow view or first dialog
+    // Pick dialog: current call flow view, else the first selected dialog
+    // (or the first overall when nothing is checked).
     let dialog = if let View::CallFlow(ref call_id) = app.current_view {
         store.get(call_id)
     } else {
-        store.iter().next()
+        app.dialogs_to_export(&store).into_iter().next()
     };
 
     let dialog = match dialog {
@@ -865,6 +875,41 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(v.is_array());
         assert_eq!(v.as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn json_save_honors_selection() {
+        // sngrep parity: checking rows limits the export to the selected
+        // dialogs (the [*] checkbox group). Here only call-1 is checked.
+        let mut app = app_with_dialogs();
+        app.call_list.move_to_top(); // cursor on row 0 (call-1)
+        app.call_list.toggle_selection(); // check it
+        let p = tmp_path("sel.json");
+        let msg = save_to_json_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            v.as_array().unwrap().len(),
+            1,
+            "only the selected dialog should be exported"
+        );
+        assert!(content.contains("call-1@test"), "selected dialog present");
+        assert!(
+            !content.contains("call-2@test"),
+            "unselected dialog must be excluded"
+        );
+    }
+
+    #[test]
+    fn save_with_no_selection_exports_all() {
+        // No checkboxes set -> export everything (current default behavior).
+        let app = app_with_dialogs();
+        let p = tmp_path("all.json");
+        save_to_json_path(&app, p.to_str().unwrap());
+        let content = std::fs::read_to_string(&p).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(v.as_array().unwrap().len(), 2, "all dialogs exported");
     }
 
     #[test]

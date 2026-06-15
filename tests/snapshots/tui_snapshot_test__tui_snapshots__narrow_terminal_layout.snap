@@ -1,15 +1,14 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 755
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-  # ▲  Meth From To   Source Desti State  Msgs Date   PDD
->  1   INVI 1001 1002 10.0.0 10.0. Comple 4    +0.000 1000ms
-   2   INVI 1003 1004 10.0.0 10.0. FAILED 2    +5.000
-   3   INVI 1005 1006 10.0.0 10.0. InCall 2    +5.000
+  # ▲   Metho From To   Sourc Desti State Msgs Date   PDD
+> [ ]1  INVIT 1001 1002 10.0. 10.0. Compl 4    +0.000 1000ms
+  [ ]2  INVIT 1003 1004 10.0. 10.0. FAILE 2    +5.000
+  [ ]3  INVIT 1005 1006 10.0. 10.0. InCal 2    +5.000
 
 
 
