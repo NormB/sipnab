@@ -103,13 +103,22 @@ impl ApiServer {
         // identical consecutive reads — which generically means processing has
         // settled, without assuming any per-fixture counts.
         // Authenticate the readiness poll if the server was started with a key
-        // (otherwise /v1/stats would 401 and never look "stable").
-        let key = extra_args
+        // (otherwise /v1/stats would 401 and never look "stable"). Supports
+        // both the static `--api-key` and an HMAC `--api-signing-key` (in which
+        // case we mint a short-lived token with the same key for the poll).
+        let mut bearer = extra_args
             .windows(2)
             .find(|w| w[0] == "--api-key")
             .map(|w| w[1].to_string());
+        #[cfg(feature = "api")]
+        if bearer.is_none()
+            && let Some(w) = extra_args.windows(2).find(|w| w[0] == "--api-signing-key")
+        {
+            let exp = chrono::Utc::now().timestamp() + 3600;
+            bearer = Some(sipnab::auth::mint(w[1].as_bytes(), "readiness-poll", exp));
+        }
         let srv = ApiServer { child, addr };
-        srv.await_stable(key.as_deref());
+        srv.await_stable(bearer.as_deref());
         srv
     }
 

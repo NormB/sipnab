@@ -133,6 +133,27 @@ fn main() {
     // 4a. Warn about unimplemented flags that were set
     cli.warn_unimplemented_flags();
 
+    // 4b. --mint-token: mint a signed bearer token and exit. Does NOT start
+    // capture or any server. Gated to builds with auth (api or mcp).
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    if cli.mint_token {
+        match mint_token_and_exit(&cli) {
+            Ok(token) => {
+                println!("{token}");
+                std::process::exit(0);
+            }
+            Err(msg) => {
+                tracing::error!("{msg}");
+                std::process::exit(2);
+            }
+        }
+    }
+    #[cfg(not(any(feature = "api", feature = "mcp")))]
+    if cli.mint_token {
+        tracing::error!("--mint-token requires the 'api' or 'mcp' feature (not compiled in)");
+        std::process::exit(2);
+    }
+
     // 5. Load configuration
     let loaded = match Config::load(cli.config.as_deref(), cli.no_config) {
         Ok(loaded) => {
@@ -2053,6 +2074,141 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
     }
 }
 
+// ── Auth / token helpers ───────────────────────────────────────────
+
+/// Read one signing key from a file (contents trimmed). Logs and exits on
+/// failure (a misconfigured key file is fatal).
+#[cfg(any(feature = "api", feature = "mcp"))]
+fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
+    match std::fs::read_to_string(path) {
+        Ok(s) => s.trim().as_bytes().to_vec(),
+        Err(e) => {
+            tracing::error!("{flag} '{path}': {e}");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Resolve the REST API auth config (signing keys + static secret + revocation
+/// file) from the CLI into an `auth::VerifierConfig`.
+#[cfg(feature = "api")]
+fn resolve_api_verifier_config(cli: &Cli) -> sipnab::auth::VerifierConfig {
+    let mut signing_keys: Vec<Vec<u8>> = Vec::new();
+    // File key first so it is the minting key.
+    if let Some(ref path) = cli.api_signing_key_file {
+        signing_keys.push(read_signing_key_file(path, "--api-signing-key-file"));
+    }
+    for k in &cli.api_signing_key {
+        if !k.is_empty() {
+            signing_keys.push(k.as_bytes().to_vec());
+        }
+    }
+    let static_keys: Vec<String> = cli
+        .api_key
+        .iter()
+        .filter(|k| !k.is_empty())
+        .cloned()
+        .collect();
+    sipnab::auth::VerifierConfig {
+        signing_keys,
+        static_keys,
+        revoked_file: cli.api_revoked_file.as_ref().map(std::path::PathBuf::from),
+    }
+}
+
+/// Resolve the HTTP MCP auth config from the CLI. The MCP token resolution
+/// order (`--mcp-token` > `--mcp-token-file` > env) is preserved for the
+/// static-secret fallback.
+#[cfg(feature = "mcp")]
+fn resolve_mcp_verifier_config(cli: &Cli) -> sipnab::auth::VerifierConfig {
+    let mut signing_keys: Vec<Vec<u8>> = Vec::new();
+    if let Some(ref path) = cli.mcp_signing_key_file {
+        signing_keys.push(read_signing_key_file(path, "--mcp-signing-key-file"));
+    }
+    for k in &cli.mcp_signing_key {
+        if !k.is_empty() {
+            signing_keys.push(k.as_bytes().to_vec());
+        }
+    }
+
+    // Static secret: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN (env is
+    // folded into --mcp-token by clap). Trim file contents.
+    let mut static_keys: Vec<String> = Vec::new();
+    if let Some(t) = cli.mcp_token.as_ref() {
+        let t = t.trim();
+        if !t.is_empty() {
+            static_keys.push(t.to_string());
+        }
+    } else if let Some(path) = cli.mcp_token_file.as_ref() {
+        match std::fs::read_to_string(path) {
+            Ok(s) => {
+                let s = s.trim();
+                if !s.is_empty() {
+                    static_keys.push(s.to_string());
+                }
+            }
+            Err(e) => {
+                tracing::error!("--mcp-token-file '{path}': {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+
+    sipnab::auth::VerifierConfig {
+        signing_keys,
+        static_keys,
+        revoked_file: cli.mcp_revoked_file.as_ref().map(std::path::PathBuf::from),
+    }
+}
+
+/// Mint a signed token from the CLI configuration and return it. Picks the
+/// surface (API vs MCP) based on which signing keys are configured. Returns an
+/// error message string on misconfiguration.
+#[cfg(any(feature = "api", feature = "mcp"))]
+fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
+    // Gather the first signing key + TTL, preferring API config, then MCP.
+    #[allow(unused_mut)]
+    let mut first_key: Option<Vec<u8>> = None;
+    #[allow(unused_mut)]
+    let mut ttl: i64 = 3600;
+
+    #[cfg(feature = "api")]
+    {
+        if cli.api_signing_key_file.is_some() || !cli.api_signing_key.is_empty() {
+            let cfg = resolve_api_verifier_config(cli);
+            first_key = cfg.signing_keys.into_iter().next();
+            ttl = cli.api_token_ttl;
+        }
+    }
+    #[cfg(feature = "mcp")]
+    if first_key.is_none()
+        && (cli.mcp_signing_key_file.is_some() || !cli.mcp_signing_key.is_empty())
+    {
+        let cfg = resolve_mcp_verifier_config(cli);
+        first_key = cfg.signing_keys.into_iter().next();
+        ttl = cli.mcp_token_ttl;
+    }
+
+    let key = first_key.ok_or_else(|| {
+        "--mint-token requires at least one --api-signing-key/--api-signing-key-file \
+         or --mcp-signing-key/--mcp-signing-key-file"
+            .to_string()
+    })?;
+
+    if ttl <= 0 {
+        return Err(format!("token TTL must be positive, got {ttl}"));
+    }
+
+    let now = chrono::Utc::now().timestamp();
+    let exp = now.saturating_add(ttl);
+    let id = cli
+        .token_id
+        .clone()
+        .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
+
+    Ok(sipnab::auth::mint(&key, &id, exp))
+}
+
 // ── API server ─────────────────────────────────────────────────────
 
 /// Start the REST API server in a background thread with its own tokio runtime.
@@ -2075,10 +2231,13 @@ fn start_api_server(
         }
     };
 
+    let verifier = Arc::new(sipnab::auth::TokenVerifier::new(
+        resolve_api_verifier_config(cli),
+    ));
     let state = ApiState {
         dialog_store,
         stream_store,
-        api_key: cli.api_key.clone(),
+        verifier,
         rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100))),
     };
 
@@ -2192,21 +2351,9 @@ fn start_mcp_http_server(
         }
     };
 
-    // Resolve token: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN.
-    let token: Option<String> = if let Some(t) = cli.mcp_token.as_ref() {
-        Some(t.trim().to_string())
-    } else if let Some(path) = cli.mcp_token_file.as_ref() {
-        match std::fs::read_to_string(path) {
-            Ok(s) => Some(s.trim().to_string()),
-            Err(e) => {
-                tracing::error!("--mcp-token-file '{path}': {e}");
-                return None;
-            }
-        }
-    } else {
-        None
-    }
-    .filter(|s| !s.is_empty());
+    // Resolve auth: HMAC signing keys + static secret (--mcp-token >
+    // --mcp-token-file > SIPNAB_MCP_TOKEN) + revocation file.
+    let auth_config = resolve_mcp_verifier_config(cli);
 
     let extra_allowed_hosts = cli.mcp_allowed_host.clone();
 
@@ -2225,9 +2372,13 @@ fn start_mcp_http_server(
                 }
             };
             runtime.block_on(async move {
-                if let Err(e) =
-                    sipnab::mcp::transport::serve_http(server, bind, token, extra_allowed_hosts)
-                        .await
+                if let Err(e) = sipnab::mcp::transport::serve_http(
+                    server,
+                    bind,
+                    auth_config,
+                    extra_allowed_hosts,
+                )
+                .await
                 {
                     tracing::error!("MCP HTTP server error: {e}");
                 }

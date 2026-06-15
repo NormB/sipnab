@@ -134,11 +134,19 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint |
 | `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections |
+| `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens (repeatable; the first mints, all are accepted on verify → key rotation). Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `api` |
+| `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed). Feature: `api` |
+| `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
+| `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `--mcp` | -- | off | Run sipnab as an MCP server. Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. |
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. |
 | `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). |
+| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens (repeatable; first mints, all verify). Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](./auth.md). |
+| `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed). |
+| `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). |
+| `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (pair with a network-level source-IP allowlist). |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
@@ -146,6 +154,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second |
 | `--syslog` | -- | off | Send alerts to syslog |
+| `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key, print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
+| `--token-id` | `<ID>` | -- | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
 
 ## TLS / Decryption
 

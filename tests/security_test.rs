@@ -958,7 +958,12 @@ fn constant_time_eq_different_lengths_still_compares() {
     let state = ApiState {
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-        api_key: Some("secret_key_123".to_string()),
+        verifier: Arc::new(sipnab::auth::TokenVerifier::new(
+            sipnab::auth::VerifierConfig {
+                static_keys: vec!["secret_key_123".to_string()],
+                ..Default::default()
+            },
+        )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
     };
 
@@ -970,7 +975,8 @@ fn constant_time_eq_different_lengths_still_compares() {
     // For unit testing, verify the constant-time comparison logic:
     // both "short" vs "secret_key_123" and "secret_key_123" vs
     // "secret_key_123" should be handled without panic.
-    assert!(state.api_key.is_some());
+    assert!(!state.verifier.is_unconfigured());
+    let _ = headers;
 }
 
 /// M4: Constant-time comparison returns true for matching strings.
@@ -991,7 +997,12 @@ fn constant_time_eq_matching_strings() {
     let state = ApiState {
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-        api_key: Some("secret_key_123".to_string()),
+        verifier: Arc::new(sipnab::auth::TokenVerifier::new(
+            sipnab::auth::VerifierConfig {
+                static_keys: vec!["secret_key_123".to_string()],
+                ..Default::default()
+            },
+        )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
     };
 
@@ -1035,7 +1046,12 @@ fn constant_time_eq_different_strings_same_length() {
     let state = ApiState {
         dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
         stream_store: Arc::new(RwLock::new(StreamStore::new(1000))),
-        api_key: Some("secret_key_123".to_string()),
+        verifier: Arc::new(sipnab::auth::TokenVerifier::new(
+            sipnab::auth::VerifierConfig {
+                static_keys: vec!["secret_key_123".to_string()],
+                ..Default::default()
+            },
+        )),
         rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
     };
 
