@@ -146,3 +146,84 @@ fn mint_with_mcp_signing_key_file_produces_token() {
         "minted MCP token shape: {token}"
     );
 }
+
+#[test]
+fn config_file_is_loaded() {
+    // --config: the loader reads the file and --dump-config reflects it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cfg = dir.path().join("c.toml");
+    std::fs::File::create(&cfg)
+        .unwrap()
+        .write_all(b"[display]\npayload_limit = 99\n")
+        .unwrap();
+
+    let out = run(&["-D", "--config", cfg.to_str().unwrap()]);
+    assert!(
+        out.contains("Loaded from:"),
+        "must report the loaded source"
+    );
+    assert!(
+        out.contains("payload_limit = 99"),
+        "--config values must appear in the dumped config:\n{out}"
+    );
+}
+
+#[test]
+fn bpf_file_filters_from_a_file() {
+    // --bpf-file: a matching filter passes all packets; a non-matching one
+    // passes none — proving the BPF is read from the file and applied.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let matching = dir.path().join("match.bpf");
+    std::fs::File::create(&matching)
+        .unwrap()
+        .write_all(b"udp port 5060\n")
+        .unwrap();
+    let none = dir.path().join("none.bpf");
+    std::fs::File::create(&none)
+        .unwrap()
+        .write_all(b"tcp port 80\n")
+        .unwrap();
+
+    let pass = ndjson_lines(&run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--bpf-file",
+        matching.to_str().unwrap(),
+        "--json",
+    ]));
+    assert_eq!(
+        pass.len(),
+        7,
+        "matching --bpf-file must pass all 7 messages"
+    );
+
+    let drop = ndjson_lines(&run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--bpf-file",
+        none.to_str().unwrap(),
+        "--json",
+    ]));
+    assert!(drop.is_empty(), "non-matching --bpf-file must pass none");
+}
+
+#[test]
+fn on_dialog_exec_runs_per_dialog() {
+    // --on-dialog-exec: the command runs as dialogs complete. Use a command
+    // that creates a marker file and assert it exists afterward.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let marker = dir.path().join("fired");
+    run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--on-dialog-exec",
+        &format!("touch {}", marker.to_str().unwrap()),
+    ]);
+    assert!(
+        marker.exists(),
+        "--on-dialog-exec command must run for the fixture's dialog"
+    );
+}
