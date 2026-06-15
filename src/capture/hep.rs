@@ -765,7 +765,13 @@ pub fn capture_hep(
         tracing::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
     }
 
-    tracing::info!("HEP listener started on {bind_addr}");
+    // Log the actual bound address: with port 0 the OS assigns an ephemeral
+    // port, so logging `bind_addr` would print ":0" (mirrors the REST API).
+    let actual_addr = socket
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| bind_addr.to_string());
+    tracing::info!("HEP listener started on {actual_addr}");
 
     let mut idle_watch = IdleWatch::new(HEP_IDLE_WARN_AFTER, std::time::Instant::now());
 
