@@ -90,14 +90,16 @@ M1–M5, M3b, and M-Docs being substantially done.
 
 ## M0 — Prerequisites & decisions (do first, ~½ day)
 
-- [ ] **D0.1** Confirm tooling choices (defaults from spec; change here if desired):
-  CLI goldens = **`trycmd`/`snapbox`**; API client = **`reqwest`** (blocking, `rustls-tls`);
-  schema = **`jsonschema`**; runner = **`cargo-nextest`**. *(Decision owner: maintainer.)*
-- [ ] **D0.2** Pick PR granularity: **one PR per task** (recommended) vs one per milestone.
-- [ ] **D0.3** Clock-seam discovery (S): grep the TUI/report render paths for `Utc::now()` /
-  `Instant::now()` called *inside* rendering. If any view computes "now" internally (not via
-  injected timestamps), file a small task to add a `Clock` seam. Output: yes/no + list.
-  - Deliverable: note appended to this file under M1.
+- [x] **D0.1** Tooling choices confirmed: CLI goldens = **`trycmd`/`snapbox`**; API client =
+  **`reqwest`** (blocking, `rustls-tls`); schema = **`jsonschema`**; runner = **`cargo-nextest`**.
+- [x] **D0.2** PR granularity: **one PR per coherent slice** (M0+T1.1/T1.2/T1.5 landed together as the
+  test-support foundation).
+- [x] **D0.3** Clock-seam discovery — **DONE. Finding: no Clock seam needed.** TUI/report render paths
+  take *injected* timestamps; the only internal `now()` in production are (a) `Instant::now()`
+  rate-limit windows (`output/event_exec.rs`, `output/api.rs` — not rendered) and (b) a few output
+  timestamps in `output/fail2ban.rs`, `output/synthetic.rs`, `tui/call_flow/export.rs`, which the
+  `normalize()` scrubber (T1.1) handles. The rest of the `now()` hits are in `#[cfg(test)]` code. So
+  determinism is achieved via injected time + normalization, not a code seam.
 
 ---
 
@@ -107,11 +109,11 @@ M1–M5, M3b, and M-Docs being substantially done.
 
 | ID | Task | Deliverable files | Deps | Size | Success (pass) criteria |
 |---|---|---|---|---|---|
-| [ ] **T1.1** | Shared test-support module | `tests/support/mod.rs` (+ `tests/support/normalize.rs`) | — | M | `normalize()` scrubs timestamps, durations, RFC3339, temp paths, PIDs, ports; unit-tested; reused by ≥2 existing tests (start with `parse_path_test.rs`) |
-| [ ] **T1.2** | Adopt `cargo-nextest` | `.config/nextest.toml`; CI step in `ci.yml` | — | S | `cargo nextest run --all-features` green; an `e2e` profile with `retries = 2` for PTY tests |
+| [x] **T1.1** | Shared test-support module | `tests/support/mod.rs`, `tests/support_selftest.rs` | — | M | ✅ `normalize()` scrubs timestamps/durations/temp-paths/PIDs/loopback-ports; 13 self-tests (incl. empty/backslash/NUL edge cases) red→green, 3× stable |
+| [x] **T1.2** | Adopt `cargo-nextest` | `.config/nextest.toml` (CI step pending T6.3) | — | S | ✅ `cargo nextest run` green; `default`/`ci`/`e2e` profiles; `e2e` has `retries = 2` |
 | [ ] **T1.3** | JSON Schemas + validator | `tests/schemas/{message,dialog,stream,call_report}.schema.json`; `tests/support/schema.rs`; `jsonschema` dev-dep | T1.1 | M | Each schema (versioned, `schema_version:1`) validates current `--json`/report output on `sip_call.pcap`; an intentionally-broken field fails the test |
 | [ ] **T1.4** | CLI golden harness + first cases | `Cargo.toml` (`trycmd` dev-dep); `tests/cli_goldens.rs`; `tests/cli/cmd/{help,version,dump-config}.trycmd` | T1.1 | M | `--help`/`--version`/`--dump-config` goldens pass under `TZ=UTC NO_COLOR=1`; doc-drift still green |
-| [ ] **T1.5** | Determinism env contract | `tests/support/env.rs` (fixed `COLUMNS/LINES`, `TZ`, `NO_COLOR`); CONTRIBUTING note | — | S | Helper used by golden + TUI harnesses; documented |
+| [x] **T1.5** | Determinism env contract | `tests/support/mod.rs` (`deterministic_env`, `FIXED_COLS/ROWS`) | — | S | ✅ `deterministic_env()` sets `TZ=UTC`/`NO_COLOR`/fixed `COLUMNS=120`/`LINES=40`; test-covered (consolidated into the support module rather than a separate `env.rs`) |
 
 **M1 exit gate:** T1.1–T1.5 merged; `cargo nextest run --all-features` and the new golden/schema
 tests green in CI.
