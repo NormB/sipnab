@@ -306,3 +306,67 @@ fn word_matches_whole_words_only() {
     ]));
     assert!(whole.is_empty(), "--word must require a whole-word match");
 }
+
+#[test]
+fn after_shows_trailing_context() {
+    // --after N is grep -A: N messages after each match. The UA appears on one
+    // request; --after 2 adds the two following messages.
+    let match_only = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "sipnab", "--json"]));
+    assert_eq!(match_only.len(), 1, "exactly one message carries the UA");
+    let with_after = ndjson_lines(&run(&[
+        "-N", "-I", FIXTURE, "--ua", "sipnab", "--after", "2", "--json",
+    ]));
+    assert_eq!(with_after.len(), 3, "--after 2 adds two trailing messages");
+}
+
+#[test]
+fn rotate_discards_oldest_dialog() {
+    // The RTP fixture has two dialogs (1-1966 then 1-1968). --limit 1 keeps the
+    // FIRST; --limit 1 --rotate discards the oldest and keeps the NEWEST.
+    let rtp = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let no_rotate = run(&[
+        "-N",
+        "-I",
+        rtp,
+        "--limit",
+        "1",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        no_rotate.contains("1-1966@") && !no_rotate.contains("1-1968@"),
+        "--limit 1 (no rotate) keeps the first dialog"
+    );
+    let rotated = run(&[
+        "-N",
+        "-I",
+        rtp,
+        "--limit",
+        "1",
+        "--rotate",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        rotated.contains("1-1968@") && !rotated.contains("1-1966@"),
+        "--rotate keeps the newest dialog and discards the oldest"
+    );
+}
+
+#[test]
+fn tag_labels_dialogs() {
+    // --tag applies the given tag to dialogs; it shows in the report Tags column.
+    let out = run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--tag",
+        "burndown-tag",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        out.contains("burndown-tag"),
+        "--tag value must appear in the report:\n{out}"
+    );
+}
