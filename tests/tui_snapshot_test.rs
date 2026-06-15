@@ -334,6 +334,21 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    // M4/T4.2: the StreamDetail view was the one view with no snapshot.
+    #[test]
+    fn stream_detail_view() {
+        let backend = TestBackend::new(130, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_streams();
+        app.handle_key(crossterm::event::KeyCode::Tab); // CallList -> StreamList
+        app.handle_key(crossterm::event::KeyCode::Enter); // open StreamDetail of selected stream
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
     #[test]
     fn call_flow_basic() {
         let backend = TestBackend::new(100, 30);
