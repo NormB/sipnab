@@ -731,6 +731,34 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
     }
 }
 
+/// Format SDP codec list from an SDP session for the summary display.
+pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
+    let mut codecs = Vec::new();
+    for media in &session.media {
+        for rm in &media.rtpmap {
+            codecs.push(rm.encoding.clone());
+        }
+        if media.rtpmap.is_empty() {
+            for f in &media.formats {
+                codecs.push(
+                    match f.as_str() {
+                        "0" => "PCMU",
+                        "8" => "PCMA",
+                        "9" => "G722",
+                        "18" => "G729",
+                        "4" => "G723",
+                        "3" => "GSM",
+                        "101" => "telephone-event",
+                        o => o,
+                    }
+                    .to_string(),
+                );
+            }
+        }
+    }
+    codecs.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -1350,32 +1378,32 @@ mod tests {
         // DeltaPrev timestamps are right-aligned "+x.xxxs" strings.
         assert!(prepared2[1].timestamp.contains('+'));
     }
-}
 
-/// Format SDP codec list from an SDP session for the summary display.
-pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
-    let mut codecs = Vec::new();
-    for media in &session.media {
-        for rm in &media.rtpmap {
-            codecs.push(rm.encoding.clone());
-        }
-        if media.rtpmap.is_empty() {
-            for f in &media.formats {
-                codecs.push(
-                    match f.as_str() {
-                        "0" => "PCMU",
-                        "8" => "PCMA",
-                        "9" => "G722",
-                        "18" => "G729",
-                        "4" => "G723",
-                        "3" => "GSM",
-                        "101" => "telephone-event",
-                        o => o,
-                    }
-                    .to_string(),
-                );
-            }
-        }
+    // ── format_sdp_codecs ────────────────────────────────────────────
+
+    #[test]
+    fn format_sdp_codecs_prefers_rtpmap_encodings() {
+        // When a=rtpmap is present, the encoding names are used verbatim.
+        let body = b"v=0\r\n\
+            m=audio 5004 RTP/AVP 0 8 96\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:8 PCMA/8000\r\n\
+            a=rtpmap:96 opus/48000/2\r\n";
+        let session = sdp::parse_sdp(body).expect("valid sdp");
+        assert_eq!(format_sdp_codecs(&session), "PCMU, PCMA, opus");
     }
-    codecs.join(", ")
+
+    #[test]
+    fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown() {
+        // No a=rtpmap → fall back to static payload-type numbers. This is the
+        // branch covering the numeric→name table and the `o => o` pass-through
+        // for an unrecognised dynamic type (99).
+        let body = b"v=0\r\n\
+            m=audio 5004 RTP/AVP 0 8 9 18 4 3 101 99\r\n";
+        let session = sdp::parse_sdp(body).expect("valid sdp");
+        assert_eq!(
+            format_sdp_codecs(&session),
+            "PCMU, PCMA, G722, G729, G723, GSM, telephone-event, 99"
+        );
+    }
 }
