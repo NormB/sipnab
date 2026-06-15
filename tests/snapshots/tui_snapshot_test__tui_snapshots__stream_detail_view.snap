@@ -1,0 +1,44 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+RTP Stream Detail  SSRC: 0xAAAABBBB  Codec: PCMU/8000  PT: 0
+10.0.0.1:20000 → 10.0.0.2:30000  Dialog: call-1@test
+
+── Quality ──────────────────────────────────────────────────
+  MOS: 4.4 (Good)    Jitter: 0.0ms    Loss: 0.00%
+  Packets: 1    Octets: 160    Duration: 0.0s
+  Bitrate: 0.0 kbps    Clock: 8000 Hz    CN Frames: 0
+  First: 22:13:20.000    Last: 22:13:20.000    Lost pkts: 0
+  Orphaned: No    Heuristic: No
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Esc Back  j/k Scroll  PgUp/Dn Page  P Play  F2 Save WAV
