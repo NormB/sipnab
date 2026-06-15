@@ -255,3 +255,54 @@ fn on_dialog_exec_runs_per_dialog() {
         "--on-dialog-exec command must run for the fixture's dialog"
     );
 }
+
+#[test]
+fn ignore_case_matches_case_insensitively() {
+    // The fixture's User-Agent is "sipnab-test/1.0". A wrong-case --ua pattern
+    // matches nothing by default but matches with --ignore-case.
+    let sensitive = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "SIPNAB", "--json"]));
+    assert!(
+        sensitive.is_empty(),
+        "case-sensitive --ua SIPNAB must not match"
+    );
+    let insensitive = ndjson_lines(&run(&[
+        "-N",
+        "-I",
+        FIXTURE,
+        "--ua",
+        "SIPNAB",
+        "--ignore-case",
+        "--json",
+    ]));
+    assert!(
+        !insensitive.is_empty(),
+        "--ignore-case must match the differently-cased User-Agent"
+    );
+}
+
+#[test]
+fn invert_shows_non_matching() {
+    // Every message's From is 1001, so --from 1001 matches all; --invert flips
+    // it to none.
+    let matched = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--from", "1001", "--json"]));
+    assert_eq!(matched.len(), 7, "--from 1001 should match all 7 messages");
+    let inverted = ndjson_lines(&run(&[
+        "-N", "-I", FIXTURE, "--from", "1001", "--invert", "--json",
+    ]));
+    assert!(
+        inverted.is_empty(),
+        "--invert must drop the matching messages"
+    );
+}
+
+#[test]
+fn word_matches_whole_words_only() {
+    // "nab" is a substring of the UA "sipnab-test" but not a whole word, so
+    // --word excludes it while a plain substring match includes it.
+    let substring = ndjson_lines(&run(&["-N", "-I", FIXTURE, "--ua", "nab", "--json"]));
+    assert!(!substring.is_empty(), "substring --ua nab should match");
+    let whole = ndjson_lines(&run(&[
+        "-N", "-I", FIXTURE, "--ua", "nab", "--word", "--json",
+    ]));
+    assert!(whole.is_empty(), "--word must require a whole-word match");
+}
