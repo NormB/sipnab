@@ -1,49 +1,96 @@
 //! Real-time audio playback from RTP stream payload buffers.
 //!
-//! Decodes G.711 and Opus audio, resamples to the system output rate, and
-//! plays through the default audio device via rodio. G.711 is resampled
-//! from 8 kHz; Opus decodes natively at 48 kHz (no resampling needed).
+//! Decodes G.711 and Opus audio (pure Rust, no ALSA dependency) and resamples
+//! to 48 kHz mono. The actual device output is delegated to the
+//! `sipnab-audio` plugin (`libsipnab_audio.so` / `.dylib`), which is the only
+//! component linking rodio/ALSA. The plugin is `dlopen`'d lazily on first
+//! [`AudioPlayer::new`], so the main binary carries no load-time
+//! `NEEDED libasound.so.2` ELF entry and starts fine without libasound.
 
-use std::io::Write;
-use std::num::NonZero;
+use std::ffi::OsString;
+use std::os::raw::c_void;
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
-use rodio::DeviceSinkBuilder;
-use rodio::Player;
-use rodio::buffer::SamplesBuffer;
-use rodio::stream::MixerDeviceSink;
+use libloading::{Library, Symbol};
 
 use super::g711::{G711Codec, decode_frame};
 use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
 
-/// Audio player wrapping a rodio output device and player.
+// C ABI of the sipnab-audio plugin (see crates/sipnab-audio/src/lib.rs).
+type OpenFn = unsafe extern "C" fn() -> *mut c_void;
+type PlayFn = unsafe extern "C" fn(*mut c_void, *const f32, usize, u32, u16) -> i32;
+type StopFn = unsafe extern "C" fn(*mut c_void);
+type IsPlayingFn = unsafe extern "C" fn(*mut c_void) -> i32;
+type CloseFn = unsafe extern "C" fn(*mut c_void);
+
+/// Audio player backed by the lazily-loaded `sipnab-audio` plugin.
+///
+/// The public API is unchanged from the previous rodio-linked implementation
+/// so TUI callers need no modification.
 pub struct AudioPlayer {
-    player: Player,
-    _device_sink: MixerDeviceSink,
+    // Raw function pointers resolved from `_lib`. They are only valid while
+    // `_lib` is alive, so `_lib` is kept (and dropped last via field order).
+    play: PlayFn,
+    stop: StopFn,
+    is_playing: IsPlayingFn,
+    close: CloseFn,
+    handle: *mut c_void,
+    // The loaded plugin library. MUST outlive the function pointers above and
+    // the handle; it is dropped last (struct fields drop in declaration order,
+    // so `_lib` is listed last here).
+    _lib: Library,
 }
 
 impl AudioPlayer {
-    /// Create a new audio player using the default output device.
+    /// Create a new audio player by `dlopen`-ing the `sipnab-audio` plugin and
+    /// opening the default output device through it.
+    ///
+    /// Returns a clear `Err` (never panics) when the plugin or its libasound
+    /// dependency is unavailable, so callers can fall back to WAV export.
     pub fn new() -> Result<Self> {
-        let mut device_sink = {
-            // libasound writes config/device errors straight to stderr,
-            // which corrupts the alternate-screen TUI. Redirect stderr
-            // to /dev/null for the duration of the device open.
-            let _silencer = StderrSilencer::new();
-            DeviceSinkBuilder::open_default_sink()
-        }
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "No audio output device available ({e}). \
+        let lib = load_plugin()?;
+
+        // SAFETY: the plugin exports exactly these C-ABI symbols. We resolve
+        // them up front and copy the raw fn pointers out so we don't hold
+        // borrows of `lib`.
+        let (open, play, stop, is_playing, close) = unsafe {
+            let open: Symbol<OpenFn> = lib
+                .get(b"sipnab_audio_open\0")
+                .map_err(|e| anyhow::anyhow!("audio plugin missing sipnab_audio_open: {e}"))?;
+            let play: Symbol<PlayFn> = lib
+                .get(b"sipnab_audio_play\0")
+                .map_err(|e| anyhow::anyhow!("audio plugin missing sipnab_audio_play: {e}"))?;
+            let stop: Symbol<StopFn> = lib
+                .get(b"sipnab_audio_stop\0")
+                .map_err(|e| anyhow::anyhow!("audio plugin missing sipnab_audio_stop: {e}"))?;
+            let is_playing: Symbol<IsPlayingFn> =
+                lib.get(b"sipnab_audio_is_playing\0").map_err(|e| {
+                    anyhow::anyhow!("audio plugin missing sipnab_audio_is_playing: {e}")
+                })?;
+            let close: Symbol<CloseFn> = lib
+                .get(b"sipnab_audio_close\0")
+                .map_err(|e| anyhow::anyhow!("audio plugin missing sipnab_audio_close: {e}"))?;
+            (*open, *play, *stop, *is_playing, *close)
+        };
+
+        // SAFETY: `open` is a valid plugin symbol; it returns null on failure.
+        let handle = unsafe { open() };
+        if handle.is_null() {
+            bail!(
+                "No audio output device available. \
                  Use F2 to save the stream as a WAV file instead."
-            )
-        })?;
-        device_sink.log_on_drop(false);
-        let player = Player::connect_new(device_sink.mixer());
+            );
+        }
+
         Ok(Self {
-            player,
-            _device_sink: device_sink,
+            play,
+            stop,
+            is_playing,
+            close,
+            handle,
+            _lib: lib,
         })
     }
 
@@ -78,16 +125,14 @@ impl AudioPlayer {
         };
 
         let duration_secs = pcm_48k.len() as f64 / output_rate as f64;
-        let channels = match NonZero::new(1u16) {
-            Some(c) => c,
-            None => bail!("invalid channel count"),
-        };
-        let sample_rate = match NonZero::new(output_rate) {
-            Some(r) => r,
-            None => bail!("invalid sample rate"),
-        };
-        let source = SamplesBuffer::new(channels, sample_rate, pcm_48k);
-        self.player.append(source);
+
+        // SAFETY: `self.play` is a valid plugin symbol resolved in `new`;
+        // `self.handle` is a live handle; the slice is valid for its length.
+        let rc =
+            unsafe { (self.play)(self.handle, pcm_48k.as_ptr(), pcm_48k.len(), output_rate, 1) };
+        if rc != 0 {
+            bail!("audio plugin playback failed (code {rc})");
+        }
 
         Ok(format!(
             "Playing {:.1}s of {} audio ({} frames)",
@@ -99,13 +144,86 @@ impl AudioPlayer {
 
     /// Stop playback immediately.
     pub fn stop(&self) {
-        self.player.stop();
+        // SAFETY: valid plugin symbol + live handle.
+        unsafe { (self.stop)(self.handle) };
     }
 
     /// Check if audio is currently playing.
     pub fn is_playing(&self) -> bool {
-        !self.player.empty()
+        // SAFETY: valid plugin symbol + live handle.
+        unsafe { (self.is_playing)(self.handle) != 0 }
     }
+}
+
+impl Drop for AudioPlayer {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            // SAFETY: valid plugin symbol; `handle` was opened in `new` and is
+            // closed exactly once here before `_lib` is dropped.
+            unsafe { (self.close)(self.handle) };
+            self.handle = std::ptr::null_mut();
+        }
+        // `_lib` drops after this (last field), unloading the plugin.
+    }
+}
+
+/// Candidate filename for the plugin on this platform
+/// (`libsipnab_audio.so` / `libsipnab_audio.dylib`).
+fn plugin_filename() -> String {
+    format!(
+        "{}sipnab_audio{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    )
+}
+
+/// Build the ordered list of candidate plugin paths to try:
+/// 1. `$SIPNAB_AUDIO_PLUGIN` (explicit path),
+/// 2. next to the current executable (dev builds),
+/// 3. `/usr/lib/sipnab/<soname>` (Debian install),
+/// 4. the bare soname via the loader search path.
+fn plugin_candidates() -> Vec<OsString> {
+    let filename = plugin_filename();
+    let mut candidates: Vec<OsString> = Vec::new();
+
+    if let Some(explicit) = std::env::var_os("SIPNAB_AUDIO_PLUGIN") {
+        candidates.push(explicit);
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        candidates.push(dir.join(&filename).into_os_string());
+    }
+    candidates.push(
+        PathBuf::from("/usr/lib/sipnab")
+            .join(&filename)
+            .into_os_string(),
+    );
+    candidates.push(OsString::from(&filename));
+    candidates
+}
+
+/// Resolve and `dlopen` the audio plugin, trying [`plugin_candidates`] in
+/// order and returning the first that loads.
+fn load_plugin() -> Result<Library> {
+    let candidates = plugin_candidates();
+
+    let mut last_err = String::from("no candidate paths");
+    for cand in &candidates {
+        // SAFETY: loading a trusted plugin library; any initializers it runs
+        // are our own code. Errors are non-fatal (we try the next candidate).
+        match unsafe { Library::new(cand) } {
+            Ok(lib) => return Ok(lib),
+            Err(e) => last_err = format!("{}: {e}", cand.to_string_lossy()),
+        }
+    }
+
+    bail!(
+        "Audio playback unavailable — the sipnab audio plugin or libasound2 is \
+         not installed (last error: {last_err}). Install libasound2 (Debian: \
+         `apt install libasound2t64`) or use F2 to save the stream as a WAV \
+         file instead."
+    )
 }
 
 /// Decode G.711 frames to f32 PCM in [-1.0, 1.0] range.
@@ -139,64 +257,6 @@ fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
     Ok(pcm)
 }
 
-/// RAII guard that redirects stderr to /dev/null while alive.
-///
-/// Used during audio device initialization so that libasound's C-level
-/// error output (e.g. ALSA config evaluation failures on Tegra/Jetson)
-/// does not bleed through and corrupt the TUI's alternate screen.
-#[cfg(unix)]
-struct StderrSilencer {
-    saved_fd: libc::c_int,
-}
-
-#[cfg(unix)]
-impl StderrSilencer {
-    fn new() -> Option<Self> {
-        let _ = std::io::stderr().flush();
-        // SAFETY: all file descriptors are owned locally and only closed
-        // on the exact paths that produced them.
-        unsafe {
-            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_WRONLY);
-            if devnull < 0 {
-                return None;
-            }
-            let saved_fd = libc::dup(libc::STDERR_FILENO);
-            if saved_fd < 0 {
-                libc::close(devnull);
-                return None;
-            }
-            if libc::dup2(devnull, libc::STDERR_FILENO) < 0 {
-                libc::close(saved_fd);
-                libc::close(devnull);
-                return None;
-            }
-            libc::close(devnull);
-            Some(Self { saved_fd })
-        }
-    }
-}
-
-#[cfg(unix)]
-impl Drop for StderrSilencer {
-    fn drop(&mut self) {
-        // SAFETY: saved_fd came from a successful dup() in new().
-        unsafe {
-            libc::dup2(self.saved_fd, libc::STDERR_FILENO);
-            libc::close(self.saved_fd);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-struct StderrSilencer;
-
-#[cfg(not(unix))]
-impl StderrSilencer {
-    fn new() -> Option<Self> {
-        None
-    }
-}
-
 /// Resample f32 PCM using linear interpolation.
 fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     if from_rate == to_rate || samples.is_empty() {
@@ -216,9 +276,9 @@ fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     out
 }
 
-// Tests cover the device-free DSP helpers (decode + resample). The rodio
-// `AudioPlayer` / `MixerDeviceSink` device path is hardware-bound and stays
-// uncovered by design.
+// Tests cover the device-free DSP helpers (decode + resample) and the plugin
+// load/error paths. The rodio device path lives in the `sipnab-audio` plugin
+// and is hardware-bound, so it stays uncovered by design.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,5 +377,63 @@ mod tests {
         let pcm = decode_opus_to_f32(&s).expect("opus decode ok despite bad frames");
         // Undecodable frames produce no samples.
         assert!(pcm.is_empty());
+    }
+
+    #[test]
+    fn plugin_filename_is_platform_appropriate() {
+        let name = plugin_filename();
+        assert!(name.contains("sipnab_audio"));
+        // On Linux this is `libsipnab_audio.so`; on macOS `.dylib`.
+        assert!(name.ends_with(std::env::consts::DLL_SUFFIX));
+    }
+
+    #[test]
+    fn explicit_nonexistent_plugin_path_does_not_load() {
+        // A non-existent explicit path must not dlopen successfully. We test
+        // the candidate directly to stay independent of fallback paths.
+        let bad = OsString::from("/nonexistent/path/to/libsipnab_audio.so");
+        // SAFETY: loading a (missing) library; the call simply fails.
+        let loaded = unsafe { Library::new(&bad) }.is_ok();
+        assert!(!loaded, "a non-existent plugin path must not load");
+    }
+
+    #[test]
+    fn new_with_missing_plugin_returns_err_not_panic() {
+        // Pointing SIPNAB_AUDIO_PLUGIN at a non-existent path forces the
+        // explicit-path candidate to fail. The remaining fallbacks are highly
+        // unlikely to find a real plugin in the test environment, so this
+        // exercises the graceful-fallback error path (no panic/abort).
+        //
+        // SAFETY: set_var/remove_var are unsafe in edition 2024; tests are
+        // single-threaded here and we restore the previous value.
+        let prev = std::env::var_os("SIPNAB_AUDIO_PLUGIN");
+        unsafe {
+            std::env::set_var(
+                "SIPNAB_AUDIO_PLUGIN",
+                "/nonexistent/path/to/libsipnab_audio.so",
+            );
+        }
+
+        let result = AudioPlayer::new();
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("SIPNAB_AUDIO_PLUGIN", v),
+                None => std::env::remove_var("SIPNAB_AUDIO_PLUGIN"),
+            }
+        }
+
+        // The contract is: never panic/abort. The explicit bad path must fail
+        // to load; if no other candidate finds a real plugin (the common test
+        // case) we get the "Audio playback unavailable" load error. If a real
+        // plugin *does* load via a fallback path but no audio device exists
+        // (CI), `open()` returns null and we get "No audio output device
+        // available". Both are clean `Err`s — what matters is that we did not
+        // unwind. Any `Ok` would mean a real device opened, which is also a
+        // non-panicking outcome.
+        if let Err(e) = &result {
+            let msg = e.to_string();
+            assert!(!msg.is_empty(), "error message should be non-empty");
+        }
     }
 }

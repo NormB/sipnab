@@ -1,0 +1,18 @@
+[package]
+name = "sipnab-audio"
+version = "0.4.2"
+edition = "2024"
+rust-version = "1.92"
+authors = ["Norm Brandinger"]
+description = "sipnab audio playback plugin (rodio/ALSA) — dlopen'd by the sipnab binary"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/NormB/sipnab"
+publish = false
+
+[lib]
+name = "sipnab_audio"
+crate-type = ["cdylib"]
+
+[dependencies]
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
+libc = "0.2"
