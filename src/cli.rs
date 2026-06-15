@@ -410,8 +410,9 @@ pub struct Cli {
     #[arg(long, value_name = "ADDR")]
     pub metrics: Option<String>,
 
-    /// Bearer token for metrics endpoint authentication.
-    #[arg(long, value_name = "TOKEN")]
+    /// HTTP Basic auth credentials (`user:pass`) required by the metrics
+    /// endpoint. When set, requests must send `Authorization: Basic <base64>`.
+    #[arg(long, value_name = "USER:PASS")]
     pub metrics_auth: Option<String>,
 
     /// Enable REST API endpoint (e.g., "0.0.0.0:8080").
