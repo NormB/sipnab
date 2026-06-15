@@ -36,8 +36,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     "invert",
     "keylog",
     "keylog-watch",
-    "mcp-allowed-host",
-    "mcp-token-file",
     "metrics",
     "metrics-auth",
     "on-quality-exec",

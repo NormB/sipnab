@@ -341,14 +341,14 @@ the decryption CLI flags are tracked as debt by the T6.2 gate until real fixture
 | ID | Task | Deliverable files | Deps | Size | Success (pass) criteria |
 |---|---|---|---|---|---|
 | [ ] **T6.1** | Living traceability matrix | `tasks/verification-matrix.md` | M2–M4 | M | deferred — large enumeration; the per-class gates (T6.2) provide the enforced subset. The `[x]`/`◐`/`⚠` annotations across M1–M5 in THIS plan are the de-facto matrix |
-| [x] **T6.2** | "No untested flag" CI gate | `tests/flag_coverage_test.rs` | T1.4 | M | ✅ clap-enumerated flags must each be referenced in the test corpus (tests/ + cli.rs `#[cfg(test)]`, definitions excluded). **Ratchet**: fails on a new untested flag, on a waived flag that became tested (list may only shrink), and on a stale waiver. Baseline of **25** currently-untested flags (was 36; 11 burned down in M6 — see `cli_flag_behavior_test.rs`) captured as `KNOWN_UNTESTED` debt. **Negative meta-test** proves it guards. Runs in CI via `cargo test --features full` |
+| [x] **T6.2** | "No untested flag" CI gate | `tests/flag_coverage_test.rs` | T1.4 | M | ✅ clap-enumerated flags must each be referenced in the test corpus (tests/ + cli.rs `#[cfg(test)]`, definitions excluded). **Ratchet**: fails on a new untested flag, on a waived flag that became tested (list may only shrink), and on a stale waiver. Baseline of **23** currently-untested flags (was 36; 13 burned down in M6 — see `cli_flag_behavior_test.rs`) captured as `KNOWN_UNTESTED` debt. **Negative meta-test** proves it guards. Runs in CI via `cargo test --features full` |
 | [◐] **T6.3** | CI job wiring | `.github/workflows/ci.yml` | M1–M5 | M | the gates + golden/schema/service/token/HEP suites already run via `cargo test --all-features` / `--features full` in CI + hooks. Dedicated `e2e-docker`/`perf` jobs deferred (env-bound: no docker/NICs — see T4.7/M5) |
 | [ ] **T6.4** | Docs: test architecture | `CONTRIBUTING.md` / `docs/` | M1–M4 | S | deferred (S) — the determinism contract + layer model are documented inline in each test module's header |
 | [◐] **T6.5** | Surface registry (all 4 classes) | `tests/registry/surface.toml` | M2–M4, M3b | L | the **CLI-flag class** is enforced now (T6.2). The full multi-class TOML registry (UI controls, API fields, token states, doc examples) is the remaining large enumeration — deferred |
 | [◐] **T6.6** | 100% completeness CI gate | `tests/flag_coverage_test.rs` (+ future registry) | T6.5 | M | enforced for the **CLI-flag class** now (fails red on a new untested flag; negative meta-test proves it). Extends to the other classes when T6.5's registry lands |
 
 **M6 exit gate:** a new CLI flag cannot merge untested — **enforced now** (T6.2 ratchet, green with a
-25-flag debt baseline (down from 36)). The full 4-class surface registry (T6.5) + matrix (T6.1) remain as large
+23-flag debt baseline (down from 36)). The full 4-class surface registry (T6.5) + matrix (T6.1) remain as large
 enumeration follow-ups; the other classes (API/MCP/HEP/views) are already test-covered by M3/M3b/M4.
 - **Validate with:** run the extended `docs_drift_test`; as a **negative/meta-test**, add a throwaway
   flag with no referencing test and confirm the gate goes **red** (proving it actually guards), then
