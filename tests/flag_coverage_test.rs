@@ -23,16 +23,15 @@ use clap::CommandFactory;
 /// adding a test for a listed flag also fails the gate until you remove it
 /// from this list. Burn this down toward zero (spec §15 = 100%).
 const KNOWN_UNTESTED: &[&str] = &[
+    // Burned down in M6 (see tests/cli_flag_behavior_test.rs): count,
+    // calls-only, text-dump, pcapng, api-signing-key-file, api-token-ttl,
+    // mcp-signing-key-file — removed from this baseline as the ratchet requires.
     "after",
     "alert-exec",
-    "api-signing-key-file",
-    "api-token-ttl",
     "bpf-file",
     "buffer",
-    "calls-only",
     "chroot",
     "config",
-    "count",
     "dtls-keylog",
     "hep-parse",
     "ignore-case",
@@ -41,14 +40,12 @@ const KNOWN_UNTESTED: &[&str] = &[
     "keylog-watch",
     "limit",
     "mcp-allowed-host",
-    "mcp-signing-key-file",
     "mcp-token-file",
     "metrics",
     "metrics-auth",
     "on-dialog-exec",
     "on-quality-exec",
     "pcap-export-mode",
-    "pcapng",
     "replay",
     "rotate",
     "split",
@@ -56,7 +53,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     "syslog",
     "tag",
     "telephone-event",
-    "text-dump",
     "tls-key",
     "word",
 ];
@@ -105,11 +101,10 @@ fn read_tree(dir: &Path, exts: &[&str], out: &mut String) {
             .and_then(|e| e.to_str())
             .map(|e| exts.contains(&e))
             .unwrap_or(false)
+            && let Ok(s) = std::fs::read_to_string(&path)
         {
-            if let Ok(s) = std::fs::read_to_string(&path) {
-                out.push_str(&s);
-                out.push('\n');
-            }
+            out.push_str(&s);
+            out.push('\n');
         }
     }
 }
@@ -123,10 +118,10 @@ fn test_corpus(manifest: &Path) -> String {
 
     // Append only the test module of cli.rs (after the first `#[cfg(test)]`),
     // so flag *definitions* (`long = "..."`) don't trivially satisfy the gate.
-    if let Ok(cli) = std::fs::read_to_string(manifest.join("src/cli.rs")) {
-        if let Some(idx) = cli.find("#[cfg(test)]") {
-            corpus.push_str(&cli[idx..]);
-        }
+    if let Ok(cli) = std::fs::read_to_string(manifest.join("src/cli.rs"))
+        && let Some(idx) = cli.find("#[cfg(test)]")
+    {
+        corpus.push_str(&cli[idx..]);
     }
     corpus
 }
