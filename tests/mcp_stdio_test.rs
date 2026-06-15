@@ -474,3 +474,135 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     }
     let _ = child.wait();
 }
+
+/// M3 — T3.5: assert the COMPLETE MCP tool set (count + exact names) and
+/// exercise the two tools the other tests don't call (`find_problems`,
+/// `security_findings`). The plan referred to "12 tools"; the server actually
+/// exposes 11 — this test pins that exact set so adding/removing a tool (drift)
+/// fails loudly and the plan stays honest.
+#[test]
+fn stdio_mcp_full_tool_set_and_remaining_tools() {
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let pcap = fixture("sip_call.pcap");
+    let pcap_str = pcap.to_string_lossy().to_string();
+
+    let mut child = Command::new(binary)
+        .args([
+            "-N",
+            "-I",
+            &pcap_str,
+            "--mcp",
+            "--mcp-transport",
+            "stdio",
+            "--quiet",
+        ])
+        .env("SIPNAB_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab --mcp");
+
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(&mut stdout);
+
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "sipnab-test", "version": "0"}}
+        }),
+    );
+    read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize");
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+
+    // tools/list — assert the EXACT advertised set (catches missing AND extra).
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+    );
+    let list_resp =
+        read_response_with_id(&mut reader, 2, Duration::from_secs(5)).expect("tools/list");
+    let mut names: Vec<String> = list_resp["result"]["tools"]
+        .as_array()
+        .expect("tools array")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    let mut expected = vec![
+        "find_problems",
+        "get_dialog",
+        "get_dialog_report",
+        "get_message",
+        "list_dialogs",
+        "render_ladder",
+        "rtp_stats",
+        "search_messages",
+        "security_findings",
+        "stats",
+        "tail_dialogs",
+    ];
+    expected.sort();
+    assert_eq!(names, expected, "MCP tool set drifted");
+    assert_eq!(names.len(), 11, "expected exactly 11 MCP tools");
+
+    // find_problems with default kinds (['problems']) → JSON array, no error.
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": {"name": "find_problems", "arguments": {}}
+        }),
+    );
+    let resp =
+        read_response_with_id(&mut reader, 3, Duration::from_secs(5)).expect("find_problems");
+    assert!(resp.get("error").is_none(), "find_problems errored: {resp}");
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("find_problems text");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(text)
+            .expect("find_problems JSON")
+            .is_array(),
+        "find_problems must return a JSON array"
+    );
+
+    // security_findings with no AlertEngine attached → empty JSON array, no error.
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "security_findings", "arguments": {}}
+        }),
+    );
+    let resp =
+        read_response_with_id(&mut reader, 4, Duration::from_secs(5)).expect("security_findings");
+    assert!(
+        resp.get("error").is_none(),
+        "security_findings errored: {resp}"
+    );
+    let text = resp["result"]["content"][0]["text"]
+        .as_str()
+        .expect("security_findings text");
+    let arr = serde_json::from_str::<serde_json::Value>(text).expect("security_findings JSON");
+    assert_eq!(
+        arr.as_array().map(Vec::len),
+        Some(0),
+        "security_findings must be an empty array without an AlertEngine"
+    );
+
+    drop(reader);
+    drop(stdout);
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let _ = child.wait();
+}
