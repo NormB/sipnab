@@ -1,0 +1,7 @@
+```
+$ sipnab -N -I tests/fixtures/sip_call.pcap --report --no-cli-print
+Call-ID                          From           To             State        Duration   Msgs   PDD      Tags            
+------------------------------------------------------------------------------------------------------------------
+test-call-1@10.0.0.1             1001           1002           Completed    1m 0s      7      0.5s     -               
+
+```
