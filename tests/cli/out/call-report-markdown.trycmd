@@ -1,0 +1,32 @@
+```
+$ sipnab -N -I tests/fixtures/sip_call.pcap --call-report test-call-1@10.0.0.1 --markdown --no-cli-print
+# Call Report: test-call-1@10.0.0.1
+
+## Summary
+
+| Field | Value |
+|-------|-------|
+| Time | 2023-11-14 22:13:20 -> 22:14:20 (60s) |
+| From | 1001 |
+| To | 1002 |
+| State | Completed |
+
+## Timing
+
+| Metric | Value |
+|--------|-------|
+| PDD | 0.50s |
+| Setup | 2.00s |
+| Ring | 1.50s |
+| Teardown | 0.10s |
+| Retransmits | 0 |
+
+## Media Streams
+
+No media streams detected.
+
+## Issues
+
+No issues detected.
+
+```
