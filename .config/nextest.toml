@@ -1,0 +1,22 @@
+# cargo-nextest configuration (verification plan M1/T1.2).
+# Install: `curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin`
+# or `cargo install cargo-nextest --locked`. CI uses taiki-e/install-action.
+
+[profile.default]
+# Deterministic by default: no retries, so flaky tests surface immediately.
+retries = 0
+# Surface slow tests rather than hanging CI.
+slow-timeout = { period = "30s", terminate-after = 3 }
+
+[profile.ci]
+# CI runs every test even after a failure, for a complete report.
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+
+# PTY / terminal E2E tests (tests/tui_e2e_test.rs) can be timing-flaky; allow a
+# couple of retries here ONLY. Per spec §13.4 they must also pass a no-retry
+# stability check before the `continue-on-error` CI shim is removed.
+[profile.e2e]
+retries = 2
+slow-timeout = { period = "60s", terminate-after = 2 }
