@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/stream.schema.json",
+  "title": "sipnab RTP stream (StreamJson)",
+  "description": "Serialized form of StreamJson (src/output/json.rs); also embedded in a dialog/call-report `streams` array and returned by GET /v1/streams/{id}.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ssrc",
+    "payload_type",
+    "src",
+    "dst",
+    "packets",
+    "octets",
+    "jitter_ms",
+    "loss_pct",
+    "orphaned",
+    "first_seen",
+    "last_seen",
+    "quality_intervals"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ssrc": { "type": "string" },
+    "codec": { "type": "string" },
+    "payload_type": { "type": "integer", "minimum": 0, "maximum": 255 },
+    "src": { "type": "string" },
+    "dst": { "type": "string" },
+    "packets": { "type": "integer", "minimum": 0 },
+    "octets": { "type": "integer", "minimum": 0 },
+    "jitter_ms": { "type": "number" },
+    "loss_pct": { "type": "number" },
+    "orphaned": { "type": "boolean" },
+    "associated_dialog": { "type": "string" },
+    "first_seen": { "type": "string", "format": "date-time" },
+    "last_seen": { "type": "string", "format": "date-time" },
+    "quality_intervals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/quality_interval" }
+    },
+    "burst_gap": { "$ref": "#/$defs/burst_gap" }
+  },
+  "$defs": {
+    "quality_interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp", "jitter_ms", "loss_pct", "packets"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "jitter_ms": { "type": "number" },
+        "loss_pct": { "type": "number" },
+        "packets": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "burst_gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "burst_count",
+        "burst_duration_ms",
+        "gap_duration_ms",
+        "burst_loss_rate",
+        "gap_loss_rate",
+        "is_bursty"
+      ],
+      "properties": {
+        "burst_count": { "type": "integer", "minimum": 0 },
+        "burst_duration_ms": { "type": "number" },
+        "gap_duration_ms": { "type": "number" },
+        "burst_loss_rate": { "type": "number" },
+        "gap_loss_rate": { "type": "number" },
+        "is_bursty": { "type": "boolean" }
+      }
+    }
+  }
+}

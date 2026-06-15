@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/call_report.schema.json",
+  "title": "sipnab call report / full dialog (DialogJson)",
+  "description": "Serialized form of DialogJson (src/output/json.rs): the `--call-report --json` output and GET /v1/dialogs/{id}. The embedded `streams` items mirror stream.schema.json (kept self-contained, no cross-file $ref).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "call_id",
+    "state",
+    "method",
+    "msg_count",
+    "duration_sec",
+    "timing",
+    "sdp_timeline",
+    "diagnosis",
+    "streams"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "call_id": { "type": "string" },
+    "from": { "type": "string" },
+    "to": { "type": "string" },
+    "from_display": { "type": "string" },
+    "to_display": { "type": "string" },
+    "state": { "type": "string" },
+    "method": { "type": "string" },
+    "msg_count": { "type": "integer", "minimum": 0 },
+    "duration_sec": { "type": "number" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "timing": { "$ref": "#/$defs/timing" },
+    "sdp_timeline": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/sdp_exchange" }
+    },
+    "diagnosis": { "$ref": "#/$defs/diagnosis" },
+    "streams": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/stream" }
+    }
+  },
+  "$defs": {
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["retransmits"],
+      "properties": {
+        "pdd_ms": { "type": "integer" },
+        "setup_ms": { "type": "integer" },
+        "ring_ms": { "type": "integer" },
+        "trying_delay_ms": { "type": "integer" },
+        "teardown_ms": { "type": "integer" },
+        "retransmits": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "sdp_exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp", "direction", "codecs", "mode"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "direction": { "type": "string" },
+        "codecs": { "type": "array", "items": { "type": "string" } },
+        "media_addr": { "type": "string" },
+        "media_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "mode": { "type": "string" },
+        "event": { "type": "string" }
+      }
+    },
+    "diagnosis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["one_way_audio", "nat_mismatch", "no_media", "hints"],
+      "properties": {
+        "one_way_audio": { "type": "boolean" },
+        "nat_mismatch": { "type": "boolean" },
+        "no_media": { "type": "boolean" },
+        "hints": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ssrc",
+        "payload_type",
+        "src",
+        "dst",
+        "packets",
+        "octets",
+        "jitter_ms",
+        "loss_pct",
+        "orphaned",
+        "first_seen",
+        "last_seen",
+        "quality_intervals"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "ssrc": { "type": "string" },
+        "codec": { "type": "string" },
+        "payload_type": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "src": { "type": "string" },
+        "dst": { "type": "string" },
+        "packets": { "type": "integer", "minimum": 0 },
+        "octets": { "type": "integer", "minimum": 0 },
+        "jitter_ms": { "type": "number" },
+        "loss_pct": { "type": "number" },
+        "orphaned": { "type": "boolean" },
+        "associated_dialog": { "type": "string" },
+        "first_seen": { "type": "string", "format": "date-time" },
+        "last_seen": { "type": "string", "format": "date-time" },
+        "quality_intervals": { "type": "array" },
+        "burst_gap": { "type": "object" }
+      }
+    }
+  }
+}

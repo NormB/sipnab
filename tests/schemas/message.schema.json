@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sipnab.com/schemas/message.schema.json",
+  "title": "sipnab SIP message (one --json / NDJSON line)",
+  "description": "Serialized form of MessageJson (src/output/json.rs). Request lines carry `method`; response lines carry `status_code`/`reason`.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "timestamp",
+    "src",
+    "src_port",
+    "dst",
+    "dst_port",
+    "transport",
+    "is_request"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "src": { "type": "string" },
+    "src_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "dst": { "type": "string" },
+    "dst_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "transport": { "type": "string" },
+    "is_request": { "type": "boolean" },
+    "method": { "type": "string" },
+    "status_code": { "type": "integer", "minimum": 100, "maximum": 699 },
+    "reason": { "type": "string" },
+    "call_id": { "type": "string" },
+    "from": { "type": "string" },
+    "to": { "type": "string" },
+    "ua": { "type": "string" },
+    "response_context": { "type": "string" }
+  }
+}

@@ -1,0 +1,12 @@
+```
+$ sipnab --help
+sipnab — SIP & RTP capture, analysis, and security tool.
+
+Unifies sngrep + sipgrep with added security analysis, RTP quality monitoring, and machine-readable output.
+
+Usage: sipnab [OPTIONS] [BPF_FILTER]...
+
+Arguments:
+  [BPF_FILTER]...
+...
+```
