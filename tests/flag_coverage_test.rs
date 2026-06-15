@@ -28,10 +28,8 @@ const KNOWN_UNTESTED: &[&str] = &[
     // mcp-signing-key-file — removed from this baseline as the ratchet requires.
     "after",
     "alert-exec",
-    "bpf-file",
     "buffer",
     "chroot",
-    "config",
     "dtls-keylog",
     "hep-parse",
     "ignore-case",
@@ -43,7 +41,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     "mcp-token-file",
     "metrics",
     "metrics-auth",
-    "on-dialog-exec",
     "on-quality-exec",
     "pcap-export-mode",
     "replay",
