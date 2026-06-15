@@ -809,30 +809,18 @@ mod tests {
 
             // Raw mode never embeds key material -> early return.
             let raw_path = dir.path().join("raw.pcapng");
-            let mut w = PcapWriter::with_format(
-                &raw_path,
-                1,
-                None,
-                None,
-                true,
-                PcapExportMode::Raw,
-            )
-            .unwrap();
+            let mut w =
+                PcapWriter::with_format(&raw_path, 1, None, None, true, PcapExportMode::Raw)
+                    .unwrap();
             let keylog = dir.path().join("k.txt");
             std::fs::write(&keylog, b"CLIENT_RANDOM a b\n").unwrap();
             w.maybe_write_keylog_dsb(&keylog).unwrap();
 
             // EncryptedWithDsb but an empty keylog -> the "Ok(empty)" arm.
             let p2 = dir.path().join("e.pcapng");
-            let mut w2 = PcapWriter::with_format(
-                &p2,
-                1,
-                None,
-                None,
-                true,
-                PcapExportMode::EncryptedWithDsb,
-            )
-            .unwrap();
+            let mut w2 =
+                PcapWriter::with_format(&p2, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
+                    .unwrap();
             let empty = dir.path().join("empty.txt");
             std::fs::write(&empty, b"").unwrap();
             w2.maybe_write_keylog_dsb(&empty).unwrap();

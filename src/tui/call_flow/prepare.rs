@@ -731,6 +731,34 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
     }
 }
 
+/// Format SDP codec list from an SDP session for the summary display.
+pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
+    let mut codecs = Vec::new();
+    for media in &session.media {
+        for rm in &media.rtpmap {
+            codecs.push(rm.encoding.clone());
+        }
+        if media.rtpmap.is_empty() {
+            for f in &media.formats {
+                codecs.push(
+                    match f.as_str() {
+                        "0" => "PCMU",
+                        "8" => "PCMA",
+                        "9" => "G722",
+                        "18" => "G729",
+                        "4" => "G723",
+                        "3" => "GSM",
+                        "101" => "telephone-event",
+                        o => o,
+                    }
+                    .to_string(),
+                );
+            }
+        }
+    }
+    codecs.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -774,8 +802,7 @@ mod tests {
     }
 
     fn parse_resp(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
-        parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp)
-            .expect("parse resp")
+        parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp).expect("parse resp")
     }
 
     fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
@@ -795,7 +822,13 @@ mod tests {
         )
     }
 
-    fn invite_with_sdp(cid: &str, cseq: u32, codecs_line: &str, rtpmaps: &[&str], ts: DateTime<Utc>) -> SipMessage {
+    fn invite_with_sdp(
+        cid: &str,
+        cseq: u32,
+        codecs_line: &str,
+        rtpmaps: &[&str],
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
         let mut sdp = String::from(
             "v=0\r\n\
              o=- 1 1 IN IP4 10.0.0.1\r\n\
@@ -878,7 +911,14 @@ mod tests {
         )
     }
 
-    fn response(cid: &str, status: u16, reason: &str, cseq: u32, method: &str, ts: DateTime<Utc>) -> SipMessage {
+    fn response(
+        cid: &str,
+        status: u16,
+        reason: &str,
+        cseq: u32,
+        method: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
         parse_resp(
             &build_raw(
                 &format!("SIP/2.0 {status} {reason}"),
@@ -984,7 +1024,14 @@ mod tests {
         let o = opts(&theme);
         let msgs = vec![
             invite("c1", 1, t0()),
-            response("c1", 180, "Ringing", 1, "INVITE", t0() + TimeDelta::milliseconds(500)),
+            response(
+                "c1",
+                180,
+                "Ringing",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(500),
+            ),
             response("c1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
             ack("c1", 1, t0() + TimeDelta::seconds(1)),
             bye("c1", 2, t0() + TimeDelta::seconds(30)),
@@ -1073,7 +1120,10 @@ mod tests {
             ),
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
-        let badge = prepared[1].sdp_badge.as_deref().expect("badge on re-INVITE");
+        let badge = prepared[1]
+            .sdp_badge
+            .as_deref()
+            .expect("badge on re-INVITE");
         assert!(badge.contains("+G722"), "expected codec add: {badge}");
         assert!(badge.contains("PCMU"), "expected codec removal: {badge}");
     }
@@ -1110,13 +1160,24 @@ mod tests {
         // Large gaps between messages → spacer rows inserted.
         let msgs = vec![
             invite("cscale", 1, t0()),
-            response("cscale", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(5)),
+            response(
+                "cscale",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::seconds(5),
+            ),
             bye("cscale", 2, t0() + TimeDelta::seconds(30)),
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert!(prepared.iter().any(|m| m.is_spacer), "no spacers inserted");
         // More rows than raw messages because of spacers.
-        assert!(prepared.len() > 3, "expected spacer expansion, got {}", prepared.len());
+        assert!(
+            prepared.len() > 3,
+            "expected spacer expansion, got {}",
+            prepared.len()
+        );
     }
 
     // ── fold_messages: retransmit folding ─────────────────────────────
@@ -1125,11 +1186,25 @@ mod tests {
     fn prepare_folds_retransmissions() {
         let theme = Theme::default();
         let o = opts(&theme);
-        let mut retx = response("cretx", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(2));
+        let mut retx = response(
+            "cretx",
+            200,
+            "OK",
+            1,
+            "INVITE",
+            t0() + TimeDelta::seconds(2),
+        );
         retx.is_retransmission = true;
         let msgs = vec![
             invite("cretx", 1, t0()),
-            response("cretx", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            response(
+                "cretx",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::seconds(1),
+            ),
             retx,
         ];
         // Not expanded → the retransmission folds into the prior 200 OK.
@@ -1153,16 +1228,35 @@ mod tests {
         let cid = "cauth";
         let msgs = vec![
             register(cid, 1, None, t0()),
-            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            ),
             ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
-            register(cid, 2, Some("Digest username=\"alice\""), t0() + TimeDelta::milliseconds(30)),
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            ),
         ];
         assert_eq!(detect_auth_sequence(&msgs, 0), Some(4));
 
         // Without the Authorization header on the retry, it is not an auth seq.
         let no_auth = vec![
             register(cid, 1, None, t0()),
-            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            ),
             ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
             register(cid, 2, None, t0() + TimeDelta::milliseconds(30)),
         ];
@@ -1179,17 +1273,37 @@ mod tests {
         let cid = "cauth2";
         let msgs = vec![
             register(cid, 1, None, t0()),
-            response(cid, 401, "Unauthorized", 1, "REGISTER", t0() + TimeDelta::milliseconds(10)),
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::milliseconds(10),
+            ),
             ack_register(cid, 1, t0() + TimeDelta::milliseconds(20)),
-            register(cid, 2, Some("Digest username=\"alice\""), t0() + TimeDelta::milliseconds(30)),
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::milliseconds(30),
+            ),
         ];
         // Collapsed: the 4-message auth handshake folds into one header row.
         let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
         assert_eq!(folded.len(), 1, "auth sequence should collapse to one row");
         assert_eq!(folded[0].folded_count, 4);
-        assert!(folded[0].label.contains("(auth retry)"), "got: {}", folded[0].label);
         assert!(
-            folded[0].fold_label.as_deref().unwrap().contains("auth retry"),
+            folded[0].label.contains("(auth retry)"),
+            "got: {}",
+            folded[0].label
+        );
+        assert!(
+            folded[0]
+                .fold_label
+                .as_deref()
+                .unwrap()
+                .contains("auth retry"),
             "missing auth fold label"
         );
 
@@ -1197,7 +1311,11 @@ mod tests {
         let mut expanded = HashSet::new();
         expanded.insert(0usize);
         let (_p2, shown) = prepare_messages(&msgs, t0(), None, &o, &expanded);
-        assert_eq!(shown.len(), 4, "expanded auth sequence should show all rows");
+        assert_eq!(
+            shown.len(),
+            4,
+            "expanded auth sequence should show all rows"
+        );
     }
 
     // ── extract_codec_list: rtpmap and static-PT fallback ─────────────
@@ -1260,32 +1378,32 @@ mod tests {
         // DeltaPrev timestamps are right-aligned "+x.xxxs" strings.
         assert!(prepared2[1].timestamp.contains('+'));
     }
-}
 
-/// Format SDP codec list from an SDP session for the summary display.
-pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
-    let mut codecs = Vec::new();
-    for media in &session.media {
-        for rm in &media.rtpmap {
-            codecs.push(rm.encoding.clone());
-        }
-        if media.rtpmap.is_empty() {
-            for f in &media.formats {
-                codecs.push(
-                    match f.as_str() {
-                        "0" => "PCMU",
-                        "8" => "PCMA",
-                        "9" => "G722",
-                        "18" => "G729",
-                        "4" => "G723",
-                        "3" => "GSM",
-                        "101" => "telephone-event",
-                        o => o,
-                    }
-                    .to_string(),
-                );
-            }
-        }
+    // ── format_sdp_codecs ────────────────────────────────────────────
+
+    #[test]
+    fn format_sdp_codecs_prefers_rtpmap_encodings() {
+        // When a=rtpmap is present, the encoding names are used verbatim.
+        let body = b"v=0\r\n\
+            m=audio 5004 RTP/AVP 0 8 96\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:8 PCMA/8000\r\n\
+            a=rtpmap:96 opus/48000/2\r\n";
+        let session = sdp::parse_sdp(body).expect("valid sdp");
+        assert_eq!(format_sdp_codecs(&session), "PCMU, PCMA, opus");
     }
-    codecs.join(", ")
+
+    #[test]
+    fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown() {
+        // No a=rtpmap → fall back to static payload-type numbers. This is the
+        // branch covering the numeric→name table and the `o => o` pass-through
+        // for an unrecognised dynamic type (99).
+        let body = b"v=0\r\n\
+            m=audio 5004 RTP/AVP 0 8 9 18 4 3 101 99\r\n";
+        let session = sdp::parse_sdp(body).expect("valid sdp");
+        assert_eq!(
+            format_sdp_codecs(&session),
+            "PCMU, PCMA, G722, G729, G723, GSM, telephone-event, 99"
+        );
+    }
 }

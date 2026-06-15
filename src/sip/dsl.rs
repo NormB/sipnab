@@ -1292,7 +1292,11 @@ mod tests {
 
     #[test]
     fn expand_alias_returns_exact_expansions() {
-        assert!(expand_alias("problems").unwrap().contains("state == 'Failed'"));
+        assert!(
+            expand_alias("problems")
+                .unwrap()
+                .contains("state == 'Failed'")
+        );
         assert_eq!(expand_alias("slow-setup"), Some("pdd > 3.0"));
         assert_eq!(
             expand_alias("short-calls"),
@@ -1327,19 +1331,11 @@ mod tests {
     #[test]
     fn nesting_depth_exactly_at_limit_ok() {
         // Exactly MAX_NESTING_DEPTH (50) open parens is allowed; 51 is not.
-        let expr = format!(
-            "{}from.user == '1001'{}",
-            "(".repeat(50),
-            ")".repeat(50)
-        );
+        let expr = format!("{}from.user == '1001'{}", "(".repeat(50), ")".repeat(50));
         // Nesting-depth check itself passes (no "nesting depth" error).
         assert!(check_nesting_depth(&expr).is_ok());
 
-        let too_deep = format!(
-            "{}from.user == '1001'{}",
-            "(".repeat(51),
-            ")".repeat(51)
-        );
+        let too_deep = format!("{}from.user == '1001'{}", "(".repeat(51), ")".repeat(51));
         let err = check_nesting_depth(&too_deep).unwrap_err().to_string();
         assert!(err.contains("nesting depth"), "got: {err}");
     }
@@ -1496,7 +1492,11 @@ mod tests {
     #[test]
     fn compare_bool_type_mismatch_is_false() {
         assert!(!compare_bool(true, &Operator::Eq, &Value::Num(1.0)));
-        assert!(!compare_bool(true, &Operator::Eq, &Value::Str("true".into())));
+        assert!(!compare_bool(
+            true,
+            &Operator::Eq,
+            &Value::Str("true".into())
+        ));
     }
 
     // ── state_to_str: all DialogState variants ──────────────────────────

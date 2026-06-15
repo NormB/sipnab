@@ -311,7 +311,8 @@ mod tests {
         // Garbage payloads: each frame fails to decode and is skipped, but the
         // function still returns Ok (the error-skip branch).
         let mut s = stream(111);
-        s.payload_buffer.push_back((0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        s.payload_buffer
+            .push_back((0, vec![0xDE, 0xAD, 0xBE, 0xEF]));
         s.payload_buffer.push_back((20, vec![0xFF; 8]));
         let pcm = decode_opus_to_f32(&s).expect("opus decode ok despite bad frames");
         // Undecodable frames produce no samples.

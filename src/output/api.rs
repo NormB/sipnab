@@ -1519,10 +1519,7 @@ mod tests {
         let state = make_state_with_key("secret-key");
         let app = build_router(state);
 
-        let resp = app
-            .oneshot(test_request("/health"))
-            .await
-            .expect("oneshot");
+        let resp = app.oneshot(test_request("/health")).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_to_string(resp.into_body()).await, "ok");
     }
