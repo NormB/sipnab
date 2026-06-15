@@ -26,7 +26,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     // Burned down in M6 (see tests/cli_flag_behavior_test.rs): count,
     // calls-only, text-dump, pcapng, api-signing-key-file, api-token-ttl,
     // mcp-signing-key-file — removed from this baseline as the ratchet requires.
-    "after",
     "alert-exec",
     "buffer",
     "chroot",
@@ -39,11 +38,9 @@ const KNOWN_UNTESTED: &[&str] = &[
     "on-quality-exec",
     "pcap-export-mode",
     "replay",
-    "rotate",
     "split",
     "srtp-keys",
     "syslog",
-    "tag",
     "telephone-event",
     "tls-key",
 ];
