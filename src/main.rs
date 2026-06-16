@@ -806,6 +806,7 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
 
 /// Default file where in-TUI manual name mappings persist:
 /// `$XDG_CONFIG_HOME/sipnab/hosts`, falling back to `~/.config/sipnab/hosts`.
+#[cfg(feature = "tui")]
 fn default_names_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
