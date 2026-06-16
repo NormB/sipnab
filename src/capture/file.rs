@@ -14,10 +14,67 @@ use super::CaptureConfig;
 use super::packet::Packet;
 use crate::signals;
 
+/// Open an offline capture, transparently decompressing gzip-compressed files.
+///
+/// libpcap's `pcap_open_offline` cannot read gzip-compressed captures (it
+/// reports "unknown file format"), but Wireshark decompresses them on the fly —
+/// and tools routinely hand out `.pcap` files that are actually gzip. We match
+/// Wireshark: if the file starts with the gzip magic (`1f 8b`), decompress it
+/// to a temporary file and open that instead.
+///
+/// Returns the open capture together with an optional temp-file guard. The
+/// guard owns the decompressed file and deletes it on drop, so the caller MUST
+/// keep it alive for as long as it reads from the capture.
+pub fn open_offline(
+    path: &Path,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<tempfile::TempPath>)> {
+    use std::io::Read;
+
+    // Peek the first two bytes for the gzip magic. A file too short to hold a
+    // magic number isn't gzip; let libpcap report on it as before.
+    let is_gzip = {
+        let mut magic = [0u8; 2];
+        let read_two = std::fs::File::open(path)
+            .and_then(|mut f| f.read(&mut magic))
+            .map(|n| n == 2)
+            .unwrap_or(false);
+        read_two && magic == [0x1f, 0x8b]
+    };
+
+    if !is_gzip {
+        let cap = pcap::Capture::from_file(path)
+            .with_context(|| format!("Failed to open pcap file '{}'", path.display()))?;
+        return Ok((cap, None));
+    }
+
+    // Decompress to a temp file libpcap can open. MultiGzDecoder handles
+    // concatenated gzip members, which some capture tools emit.
+    let input = std::fs::File::open(path)
+        .with_context(|| format!("Failed to open '{}'", path.display()))?;
+    let mut decoder = flate2::read::MultiGzDecoder::new(std::io::BufReader::new(input));
+    let mut temp = tempfile::Builder::new()
+        .prefix("sipnab-gz-")
+        .suffix(".pcap")
+        .tempfile()
+        .context("Failed to create temp file for gzip decompression")?;
+    std::io::copy(&mut decoder, temp.as_file_mut())
+        .with_context(|| format!("Failed to decompress gzip capture '{}'", path.display()))?;
+    let temp_path = temp.into_temp_path();
+
+    let cap = pcap::Capture::from_file(&temp_path).with_context(|| {
+        format!(
+            "Failed to open decompressed capture from '{}'",
+            path.display()
+        )
+    })?;
+    Ok((cap, Some(temp_path)))
+}
+
 /// Read packets from a pcap file and send them through the channel.
 ///
-/// Opens the file with `pcap::Capture::from_file`, applies any BPF filter,
-/// and reads packets until EOF, shutdown, count limit, or duration limit.
+/// Opens the file with [`open_offline`] (transparently handling gzip), applies
+/// any BPF filter, and reads packets until EOF, shutdown, count limit, or
+/// duration limit.
 ///
 /// This function blocks and is intended to be called from a dedicated thread.
 pub fn capture_file(
@@ -26,10 +83,10 @@ pub fn capture_file(
     tx: Sender<Packet>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    let mut cap = match pcap::Capture::from_file(path)
-        .with_context(|| format!("Failed to open pcap file '{}'", path.display()))
-    {
-        Ok(cap) => cap,
+    // `_gz_guard` owns any decompressed temp file; it must outlive all reads
+    // below, so keep it bound for the whole function.
+    let (mut cap, _gz_guard) = match open_offline(path) {
+        Ok(opened) => opened,
         Err(e) => {
             if let Some(ready) = ready_tx {
                 let _ = ready.send(Err(format!("{e:#}")));
@@ -155,6 +212,56 @@ mod tests {
             .join("tests")
             .join("fixtures")
             .join("udp_5060.pcap")
+    }
+
+    /// Helper: a real multi-packet SIP/RTP sample (classic pcap).
+    fn sample_pcap() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("pcap-samples")
+            .join("sip-rtp-g711.pcap")
+    }
+
+    /// Read a capture file via `capture_file` and return the packet count.
+    fn count_packets(path: &Path) -> usize {
+        let (tx, rx) = unbounded();
+        capture_file(path, &CaptureConfig::default(), tx, None).unwrap();
+        rx.try_iter().count()
+    }
+
+    /// gzip-compressed captures must read transparently: libpcap cannot open
+    /// them (it reports "unknown file format"), but Wireshark decompresses on
+    /// the fly, so sipnab matches that behavior. Regression for the
+    /// `.pcap.gz`-mislabeled-as-`.pcap` case.
+    #[test]
+    fn reads_gzip_compressed_pcap() {
+        use std::io::Write;
+
+        let sample = sample_pcap();
+        if !sample.exists() {
+            eprintln!("Skipping: sample not found at {}", sample.display());
+            return;
+        }
+        let baseline = count_packets(&sample);
+        assert!(baseline > 0, "sample should contain packets");
+
+        // Produce a gzip-compressed copy with a deliberately plain `.pcap` name.
+        let raw = std::fs::read(&sample).unwrap();
+        let gz_file = tempfile::Builder::new()
+            .prefix("sipnab-test-")
+            .suffix(".pcap")
+            .tempfile()
+            .unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let compressed = encoder.finish().unwrap();
+        std::fs::write(gz_file.path(), &compressed).unwrap();
+
+        let via_gz = count_packets(gz_file.path());
+        assert_eq!(
+            via_gz, baseline,
+            "gzip-compressed capture should yield the same packets as the original"
+        );
     }
 
     #[test]

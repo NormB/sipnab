@@ -1213,9 +1213,12 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
         return format!("File not found: {path_str}");
     }
 
-    let mut cap = match pcap::Capture::from_file(path) {
-        Ok(c) => c,
-        Err(e) => return format!("Failed to open: {e}"),
+    // Transparently handles gzip-compressed captures (libpcap cannot). The
+    // guard owns any decompressed temp file and must outlive the read loop
+    // below, so keep it bound for the rest of the function.
+    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
+        Ok(opened) => opened,
+        Err(e) => return format!("Failed to open: {e:#}"),
     };
 
     // Clear existing data
