@@ -176,6 +176,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices |
 | `--no-priv-drop` | -- | off | Do not drop privileges after opening capture devices |
 | `--chroot` | `<DIR>` | -- | Chroot to this directory after initialization |
+| `--setup-caps` | -- | off | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
 
 ## Resource Limits
 

@@ -4,6 +4,30 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `--version` / `-V` now embeds the git commit (and a `-dirty` marker) alongside
+  the version and feature list. In the TUI, press `v` to show it in the status
+  line; it also appears on the help screen.
+- `--setup-caps`: grants the binary the Linux capabilities needed for live
+  capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without
+  `sudo`, then exits. Re-invokes through `sudo` when not already root. An
+  `install.sh` wrapper runs `cargo install` followed by this step.
+- Call flow split view: `Tab` switches keyboard focus between the ladder and
+  detail panes (focused pane is highlighted and shown in the status line), and
+  vertical scrollbars appear on either pane when its content overflows.
+- The file-open browser (`O`) now lists gzip-compressed captures
+  (`*.pcap.gz`, `*.cap.gz`, …), matching the loader, which decompresses them.
+
+### Fixed
+- File-open browser: when a directory can't be read — most often because sipnab
+  was started with `sudo` and dropped privileges to an unprivileged user that
+  can't read a `0700` home directory — it now shows the reason and a "run
+  without sudo" hint instead of an empty list.
+- The embedded git commit now refreshes reliably on new commits (the build
+  script watches the resolved `HEAD` ref and `packed-refs`), and the `-dirty`
+  marker reflects only tracked changes (untracked scratch paths such as a local
+  `harness/` or generated `website/public/` no longer mark a build dirty).
+
 ## [0.4.2] - 2026-06-13
 
 ### Added
