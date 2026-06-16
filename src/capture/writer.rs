@@ -242,6 +242,58 @@ impl PcapWriter {
         self.export_mode
     }
 
+    /// Write a Name Resolution Block (pcapng only) mapping IP addresses to
+    /// host/FQDN names.
+    ///
+    /// `entries` are `(ip, names)` pairs (e.g. from
+    /// [`crate::names::NameResolver::nrb_entries`]); names should already be
+    /// validated. A no-op for empty input or the plain-pcap backend. An
+    /// `opt_comment` records sipnab as the producer.
+    pub fn write_name_resolution_block(
+        &mut self,
+        entries: &[(std::net::IpAddr, Vec<String>)],
+    ) -> Result<()> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        match &mut self.backend {
+            WriterBackend::PcapNg(writer) => {
+                use pcap_file::pcapng::blocks::name_resolution::{
+                    Ipv4Record, Ipv6Record, NameResolutionBlock, NameResolutionOption, Record,
+                };
+                let mut records: Vec<Record> = Vec::with_capacity(entries.len());
+                for (ip, names) in entries {
+                    let names: Vec<Cow<str>> =
+                        names.iter().map(|n| Cow::Owned(n.clone())).collect();
+                    match ip {
+                        std::net::IpAddr::V4(v4) => records.push(Record::Ipv4(Ipv4Record {
+                            ip_addr: Cow::Owned(v4.octets().to_vec()),
+                            names,
+                        })),
+                        std::net::IpAddr::V6(v6) => records.push(Record::Ipv6(Ipv6Record {
+                            ip_addr: Cow::Owned(v6.octets().to_vec()),
+                            names,
+                        })),
+                    }
+                }
+                let block = NameResolutionBlock {
+                    records,
+                    options: vec![NameResolutionOption::Comment(Cow::Borrowed(
+                        "name resolution added by sipnab",
+                    ))],
+                };
+                writer
+                    .write_pcapng_block(block)
+                    .map_err(|e| anyhow::anyhow!("NRB write error: {e}"))?;
+                Ok(())
+            }
+            WriterBackend::Pcap(_) => {
+                tracing::warn!("Name Resolution Blocks require PCAP-NG format; skipping");
+                Ok(())
+            }
+        }
+    }
+
     /// Write a DSB from a keylog file, if the export mode requires it.
     ///
     /// Reads the SSLKEYLOGFILE at `keylog_path` and embeds its content as a
@@ -762,6 +814,62 @@ mod tests {
             let bytes = std::fs::read(&path).unwrap();
             assert!(bytes.len() > 28, "file should have content");
             assert_eq!(&bytes[0..4], &0x0A0D0D0Au32.to_le_bytes());
+        }
+
+        #[test]
+        fn name_resolution_block_round_trips() {
+            use pcap_file::pcapng::PcapNgReader;
+            use pcap_file::pcapng::blocks::name_resolution::Record;
+            use std::net::IpAddr;
+
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("names.pcapng");
+            let v6: IpAddr = "2001:db8::1".parse().unwrap();
+            {
+                let mut w =
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+                        .unwrap();
+                let entries = vec![
+                    (IpAddr::from([10, 0, 0, 2]), vec!["sbc-edge".to_string()]),
+                    (v6, vec!["v6".to_string(), "v6.example.com".to_string()]),
+                ];
+                w.write_name_resolution_block(&entries).unwrap();
+                w.write(&pkt(0, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            // Read the NRB back and confirm both records survive with names.
+            let bytes = std::fs::read(&path).unwrap();
+            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let mut v4_names: Vec<String> = Vec::new();
+            let mut v6_count = 0;
+            while let Some(Ok(block)) = reader.next_block() {
+                if let Some(nrb) = block.into_name_resolution() {
+                    for rec in &nrb.records {
+                        match rec {
+                            Record::Ipv4(r) if r.ip_addr.as_ref() == [10, 0, 0, 2] => {
+                                v4_names = r.names.iter().map(|n| n.to_string()).collect();
+                            }
+                            Record::Ipv6(r) => v6_count = r.names.len(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            assert_eq!(v4_names, vec!["sbc-edge".to_string()]);
+            assert_eq!(v6_count, 2, "IPv6 record should carry both names");
+        }
+
+        #[test]
+        fn name_resolution_block_empty_is_noop() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("empty.pcapng");
+            let mut w =
+                PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw).unwrap();
+            // Empty entries must not error and must not write a block.
+            w.write_name_resolution_block(&[]).unwrap();
+            w.finish().unwrap();
+            assert!(path.exists());
         }
 
         #[test]

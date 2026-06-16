@@ -5,6 +5,8 @@
 //! writing. It provides [`start_capture`] as the main entry point, which spawns
 //! a capture thread and returns a [`CaptureHandle`] for lifecycle management.
 
+#[cfg(feature = "native")]
+pub mod atomic;
 #[cfg(feature = "tls")]
 pub mod decrypt;
 #[cfg(feature = "native")]

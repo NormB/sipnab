@@ -278,29 +278,88 @@ secrets as something you routinely remove.
    sessions.
 7. **Ephemeral-only** — never persist secrets; decrypt in memory and discard.
 
-### 3.6 Recommendation
+### 3.6 Required behavior (decided)
 
-- **NRB (names): proceed** (low risk, high interop, opt-in) — §2.
-- **DSB (secrets): default to NOT embedding.** Concretely:
-  1. Keep secrets **external** (sidecar keylog) by default — stances 1 + 5.
-  2. **Build the sanitize side first and unconditionally:** detect-DSB-on-open +
-     a `strip-secrets` command + a visible "secrets present" marker. Pure upside,
-     no embed risk.
-  3. Treat **DSB embedding** as a *later*, explicit, heavily-guarded opt-in
-     (stances 2+3+4) — or **decline embedding entirely** (external-only + strip),
-     which is a defensible lower-liability posture given SIP's sensitivity.
-  4. **Absolute rule:** never place long-term private keys in a DSB.
+"With great power comes great responsibility." sipnab will support the full DSB
+lifecycle — **consume, store, delete, and alert** — with the safeguards below.
+
+1. **Consume embedded keys on read (required).** When an opened pcapng contains a
+   DSB, sipnab **uses** the embedded TLS Key Log secrets to decrypt the captured
+   SIP-over-TLS — like Wireshark. This is the safe, high-value side (you already
+   chose to open the file). Shares the pcapng metadata-read pass with NRB names.
+   On open, **alert** that the file carried secrets and they're in use.
+
+2. **Store secrets (guarded opt-in).** Embedding is **never default and never
+   silent**. It requires an explicit flag/command **and** an interactive
+   confirmation that spells out the implication ("the output file will contain
+   the keys to decrypt its traffic; anyone with the file can read it"). When
+   embedding:
+   - scope to **per-session** secrets for sessions in the capture; **never**
+     long-term private keys;
+   - write the output `0600`;
+   - stamp provenance: `shb_userappl`, and an `opt_comment` marker
+     "contains decryption secrets (added by sipnab)";
+   - report exactly what was embedded.
+
+3. **Delete secrets (strip).** A `strip-secrets` command removes all DSBs from a
+   file (the `editcap --discard-all-secrets` analog), writing the sanitized copy
+   **atomically** (never mutating the original in place; offer it as a new file
+   or an explicit `--replace`). Used to sanitize before sharing.
+
+4. **Alert (implications).** sipnab makes secret-bearing state visible at every
+   turn: a prominent banner/marker when a **loaded** file contains a DSB; a
+   blocking confirmation with the consequences before **writing** one; and a
+   clear "this file contains decryption secrets" indicator so a user never shares
+   one unknowingly. Default posture remains **external sidecar keylog**; embedding
+   is the deliberate, warned exception.
+
+5. **Absolute rule:** never place long-term private keys in a DSB — only
+   per-session TLS Key Log secrets.
 
 ---
 
-## 4. Recommended tracks
+## 3.7 What already exists in sipnab (audit)
 
-1. **Track 1 — NRB name metadata** (valuable, low-risk): operation A + B,
-   read-back, atomic-write helper, validation, tests. Build first.
-2. **Track 2 — DSB awareness/stripping** (sanitize-only, low-risk): detect on
-   open, `strip-secrets`, "secrets present" marker.
-3. **Track 3 — DSB embedding**: explicit later decision; default-off, guarded, or
-   declined.
+A code audit shows the TLS-secrets infrastructure is **largely already built** —
+so several of the requirements above are satisfied today and must **not** be
+re-implemented:
+
+- **External keylog file (Wireshark `SSLKEYLOGFILE` / NSS Key Log Format):**
+  `--keylog <FILE>` feeds `capture::decrypt::TlsDecryptor`; `--keylog-watch`
+  polls it live; `--dtls-keylog` covers DTLS. ✅ *(same format as Wireshark)*
+- **Store secrets (embed DSB):** `--pcap-export-mode encrypted+dsb` writes a DSB
+  (block type `0x0000000A`) from the keylog via
+  `PcapWriter::maybe_write_keylog_dsb` (written once per file, guarded). The
+  other modes are `decrypted` (write cleartext packets, no secrets in file) and
+  `raw`. ✅
+- **Decryptor pipeline:** `TlsDecryptor` (`new`, `poll_keylog_file`,
+  `process_record`, `try_decrypt`). ✅
+
+**Gaps** (the real remaining work):
+- **Consume embedded keys on read:** both readers (libpcap in `capture/file.rs`,
+  and the custom `capture/pcap_reader.rs` which handles only SHB/IDB/EPB) **skip
+  DSB and NRB blocks.** Opening a pcapng that already carries a DSB does **not**
+  yet use its secrets — this must be added.
+- **Strip/delete secrets:** no command to remove DSBs from a file yet.
+- **Alerts:** no banner when a loaded file contains a DSB, and no explicit
+  consequence-confirmation before writing one (`encrypted+dsb` is silent).
+- **NRB names:** entirely new (this doc, §2).
+
+## 4. Tracks (revised to reflect the audit)
+
+1. **Track 1 — NRB name metadata** (new; in progress): resolver serialization +
+   validation + atomic-write helper (done, tested), then writer integration
+   (operation A), verbatim convert (operation B), and read-back. Build first.
+2. **Track 2 — Consume embedded keys on read** (gap; required): a pcapng
+   metadata-read pass that extracts **DSB secrets → `TlsDecryptor`** *and* **NRB
+   names → resolver**, in one place. Plus an **alert** that a loaded file carried
+   secrets/names.
+3. **Track 3 — Strip + alerts** (gap): `strip-secrets` (remove DSBs, atomic,
+   never in-place by default) and "this file contains decryption secrets"
+   markers; a consequence-confirmation before `encrypted+dsb`.
+4. **(Existing) Store secrets** — `--pcap-export-mode encrypted+dsb` already
+   embeds a DSB; harden it with the §3.6 safeguards (0600 perms, provenance
+   comment, confirmation) rather than rebuild it.
 
 ## 5. References
 

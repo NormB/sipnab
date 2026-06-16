@@ -59,10 +59,26 @@ struct Inner {
     manual: HashMap<IpAddr, String>,
     /// Entries loaded from a hosts file.
     hosts: HashMap<IpAddr, String>,
+    /// Names read from a capture file's Name Resolution Block (untrusted hint).
+    file: HashMap<IpAddr, String>,
     /// Reverse-DNS results: `Some(name)` resolved, `None` looked-up-but-no-name.
     dns_cache: HashMap<IpAddr, Option<String>>,
     /// IPs already handed to the DNS worker, so we enqueue each at most once.
     dns_requested: HashSet<IpAddr>,
+}
+
+/// Maximum length (in bytes) of a name we will store/emit. DNS names are
+/// capped at 253 characters; we reject anything longer to keep records sane.
+pub const MAX_NAME_LEN: usize = 253;
+
+/// True if `name` is acceptable to store in a Name Resolution Block: non-empty,
+/// no interior NUL, within [`MAX_NAME_LEN`], and free of control characters.
+/// (UTF-8 validity is guaranteed by the `&str` type.)
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_NAME_LEN
+        && !name.bytes().any(|b| b == 0)
+        && !name.chars().any(|c| c.is_control())
 }
 
 /// Thread-safe IP -> name resolver shared across the TUI and output writers.
@@ -118,6 +134,9 @@ impl NameResolver {
                 return Some(n.clone());
             }
             if let Some(n) = inner.hosts.get(&ip) {
+                return Some(n.clone());
+            }
+            if let Some(n) = inner.file.get(&ip) {
                 return Some(n.clone());
             }
             if mode == NameMode::Dns {
@@ -192,6 +211,86 @@ impl NameResolver {
             .collect();
         v.sort_by_key(|(ip, _)| *ip);
         v
+    }
+
+    // ── Name Resolution Block (pcapng) serialization ───────────────────
+
+    /// Produce validated IP → names entries for a pcapng Name Resolution Block.
+    ///
+    /// One entry per IP, names ordered by source preference (manual, then
+    /// hosts, then file, then — only when `include_dns` — reverse DNS), with
+    /// duplicates and invalid names dropped. IPs with no valid name are omitted.
+    /// Sorted by IP for deterministic output.
+    pub fn nrb_entries(&self, include_dns: bool) -> Vec<(IpAddr, Vec<String>)> {
+        let inner = self.inner.read();
+        let mut ips: Vec<IpAddr> = inner
+            .manual
+            .keys()
+            .chain(inner.hosts.keys())
+            .chain(inner.file.keys())
+            .copied()
+            .collect();
+        if include_dns {
+            ips.extend(
+                inner
+                    .dns_cache
+                    .iter()
+                    .filter_map(|(ip, n)| n.as_ref().map(|_| *ip)),
+            );
+        }
+        ips.sort_unstable();
+        ips.dedup();
+
+        let mut out = Vec::new();
+        for ip in ips {
+            let mut names: Vec<String> = Vec::new();
+            let push = |candidate: Option<&String>, names: &mut Vec<String>| {
+                if let Some(n) = candidate
+                    && is_valid_name(n)
+                    && !names.iter().any(|e| e == n)
+                {
+                    names.push(n.clone());
+                }
+            };
+            push(inner.manual.get(&ip), &mut names);
+            push(inner.hosts.get(&ip), &mut names);
+            push(inner.file.get(&ip), &mut names);
+            if include_dns {
+                push(
+                    inner.dns_cache.get(&ip).and_then(|n| n.as_ref()),
+                    &mut names,
+                );
+            }
+            if !names.is_empty() {
+                out.push((ip, names));
+            }
+        }
+        out
+    }
+
+    /// Load IP → name pairs read from a capture file's Name Resolution Block
+    /// into the low-priority `file` source. Invalid names are skipped; the
+    /// first valid name for each IP wins. Returns how many were accepted.
+    pub fn load_file_names<I>(&self, entries: I) -> usize
+    where
+        I: IntoIterator<Item = (IpAddr, String)>,
+    {
+        let mut inner = self.inner.write();
+        let mut n = 0;
+        for (ip, name) in entries {
+            if is_valid_name(&name) {
+                inner.file.entry(ip).or_insert_with(|| {
+                    n += 1;
+                    name
+                });
+            }
+        }
+        n
+    }
+
+    /// Number of names currently loaded from capture files.
+    pub fn file_name_count(&self) -> usize {
+        self.inner.read().file.len()
     }
 
     // ── Hosts file ─────────────────────────────────────────────────────
@@ -452,6 +551,137 @@ mod tests {
         assert_eq!(
             r.label(ip("10.0.0.2"), 5060, NameMode::Dns),
             "10.0.0.2:5060"
+        );
+    }
+
+    // ── Name validation (success + failure) ────────────────────────────
+
+    #[test]
+    fn is_valid_name_accepts_reasonable_names() {
+        assert!(is_valid_name("pbx"));
+        assert!(is_valid_name("pbx.corp.example.com"));
+        assert!(is_valid_name("a")); // 1 char
+        assert!(is_valid_name(&"x".repeat(MAX_NAME_LEN))); // boundary
+    }
+
+    #[test]
+    fn is_valid_name_rejects_bad_names() {
+        assert!(!is_valid_name("")); // empty
+        assert!(!is_valid_name("a\0b")); // interior NUL
+        assert!(!is_valid_name("a\tb")); // control char (tab)
+        assert!(!is_valid_name("a\nb")); // control char (newline)
+        assert!(!is_valid_name(&"x".repeat(MAX_NAME_LEN + 1))); // too long
+    }
+
+    // ── NRB serialization (success + failure) ──────────────────────────
+
+    #[test]
+    fn nrb_entries_orders_sources_and_dedups() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.2"), "manual-name".into());
+        r.load_hosts_str("10.0.0.2 hosts-name\n10.0.0.3 only-hosts\n");
+        let e = r.nrb_entries(false);
+        // Sorted by IP; .2 carries manual THEN hosts (preferred first), .3 hosts only.
+        assert_eq!(e[0].0, ip("10.0.0.2"));
+        assert_eq!(
+            e[0].1,
+            vec!["manual-name".to_string(), "hosts-name".to_string()]
+        );
+        assert_eq!(e[1].0, ip("10.0.0.3"));
+        assert_eq!(e[1].1, vec!["only-hosts".to_string()]);
+    }
+
+    #[test]
+    fn nrb_entries_dedups_identical_names_across_sources() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.2"), "same".into());
+        r.load_hosts_str("10.0.0.2 same\n");
+        let e = r.nrb_entries(false);
+        assert_eq!(e[0].1, vec!["same".to_string()]); // not duplicated
+    }
+
+    #[test]
+    fn nrb_entries_dns_gated_by_flag() {
+        let r = NameResolver::new();
+        r.load_file_names([(ip("10.0.0.9"), "fromfile".to_string())]);
+        // Inject a DNS cache hit directly (no worker needed for the test).
+        r.inner
+            .write()
+            .dns_cache
+            .insert(ip("10.0.0.9"), Some("dnsname".into()));
+        assert_eq!(r.nrb_entries(false)[0].1, vec!["fromfile".to_string()]);
+        assert_eq!(
+            r.nrb_entries(true)[0].1,
+            vec!["fromfile".to_string(), "dnsname".to_string()]
+        );
+    }
+
+    #[test]
+    fn nrb_entries_skips_invalid_names_and_empty_result() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.2"), "ok".into());
+        r.set_manual(ip("10.0.0.3"), "bad\0name".into()); // invalid → skipped
+        let e = r.nrb_entries(false);
+        assert_eq!(e.len(), 1);
+        assert_eq!(e[0].0, ip("10.0.0.2"));
+
+        // A resolver with only invalid names yields nothing.
+        let empty = NameResolver::new();
+        empty.set_manual(ip("10.0.0.4"), String::new());
+        assert!(empty.nrb_entries(false).is_empty());
+    }
+
+    #[test]
+    fn nrb_entries_handles_ipv4_and_ipv6() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.2"), "v4".into());
+        r.set_manual(ip("2001:db8::1"), "v6".into());
+        let e = r.nrb_entries(false);
+        assert_eq!(e.len(), 2);
+        assert!(e.iter().any(|(i, n)| *i == ip("10.0.0.2") && n == &["v4"]));
+        assert!(
+            e.iter()
+                .any(|(i, n)| *i == ip("2001:db8::1") && n == &["v6"])
+        );
+    }
+
+    // ── Read-back (success + failure) ──────────────────────────────────
+
+    #[test]
+    fn load_file_names_accepts_valid_skips_invalid() {
+        let r = NameResolver::new();
+        let accepted = r.load_file_names([
+            (ip("10.0.0.2"), "good".to_string()),
+            (ip("10.0.0.3"), "bad\0".to_string()), // invalid → skipped
+            (ip("10.0.0.4"), String::new()),       // empty → skipped
+            (ip("10.0.0.2"), "dup".to_string()),   // first wins
+        ]);
+        assert_eq!(accepted, 1);
+        assert_eq!(r.file_name_count(), 1);
+        assert_eq!(
+            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            Some("good")
+        );
+        assert_eq!(r.name(ip("10.0.0.3"), NameMode::Names), None);
+    }
+
+    #[test]
+    fn file_source_ranks_below_manual_and_hosts() {
+        let r = NameResolver::new();
+        r.load_file_names([(ip("10.0.0.2"), "fromfile".to_string())]);
+        assert_eq!(
+            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            Some("fromfile")
+        );
+        r.load_hosts_str("10.0.0.2 fromhosts\n");
+        assert_eq!(
+            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            Some("fromhosts")
+        );
+        r.set_manual(ip("10.0.0.2"), "frommanual".into());
+        assert_eq!(
+            r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
+            Some("frommanual")
         );
     }
 }
