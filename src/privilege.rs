@@ -86,6 +86,100 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     Ok(())
 }
 
+/// Linux capabilities a live capture needs: `CAP_NET_RAW` to open the packet
+/// socket and `CAP_NET_ADMIN` to put the interface into promiscuous mode.
+/// Both are placed in the effective+permitted file-capability sets (`+ep`).
+#[cfg(target_os = "linux")]
+const CAPTURE_CAPS: &str = "cap_net_raw,cap_net_admin+ep";
+
+/// Build the `setcap` command (program + args) that grants [`CAPTURE_CAPS`] to
+/// `exe`. When `as_root` is false the call is wrapped in `sudo` so it can
+/// elevate (prompting for a password on the controlling terminal if needed).
+///
+/// Factored out from [`setup_capabilities`] so the command shape is unit-testable
+/// without actually invoking the privileged `setcap`.
+#[cfg(target_os = "linux")]
+fn setcap_command(exe: &str, as_root: bool) -> (String, Vec<String>) {
+    if as_root {
+        (
+            "setcap".to_string(),
+            vec![CAPTURE_CAPS.to_string(), exe.to_string()],
+        )
+    } else {
+        (
+            "sudo".to_string(),
+            vec![
+                "setcap".to_string(),
+                CAPTURE_CAPS.to_string(),
+                exe.to_string(),
+            ],
+        )
+    }
+}
+
+/// Grant this binary the capabilities required for live capture so it can run
+/// without sudo, then return. Intended to back `sipnab --setup-caps`.
+///
+/// Resolves the running executable's real path (following symlinks so a PATH
+/// symlink isn't targeted instead of the real file), then runs `setcap`. When
+/// not already root it re-runs the command through `sudo`, which may prompt for
+/// a password on the terminal.
+///
+/// # Errors
+///
+/// Returns an error if the executable path can't be resolved, `setcap`/`sudo`
+/// can't be spawned (e.g. `libcap2-bin` not installed), or `setcap` exits
+/// non-zero.
+#[cfg(target_os = "linux")]
+pub fn setup_capabilities() -> Result<()> {
+    let exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("cannot resolve own executable path: {e}"))?;
+    // Follow symlinks so setcap targets the real binary, not a symlink in PATH.
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+    let exe_str = exe
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("executable path is not valid UTF-8"))?;
+
+    let root = is_root();
+    if !root {
+        tracing::info!(
+            "Not root — elevating via sudo to set capabilities (may prompt for a password)"
+        );
+    }
+    let (program, args) = setcap_command(exe_str, root);
+
+    let status = std::process::Command::new(&program)
+        .args(&args)
+        .status()
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to run '{program}' (is 'setcap' installed? on Debian: \
+                 'sudo apt install libcap2-bin'): {e}"
+            )
+        })?;
+
+    if !status.success() {
+        bail!("setcap failed (exit {:?}) on {}", status.code(), exe_str);
+    }
+
+    tracing::info!(
+        "Granted {} on {} — live capture now works without sudo",
+        CAPTURE_CAPS,
+        exe_str
+    );
+    Ok(())
+}
+
+/// On non-Linux platforms, file capabilities don't exist; the equivalent is
+/// running under sudo (or a BPF-device group on macOS).
+#[cfg(not(target_os = "linux"))]
+pub fn setup_capabilities() -> Result<()> {
+    bail!(
+        "--setup-caps is Linux-only (setcap / file capabilities are not available \
+         on this platform). Run sipnab under sudo for live capture instead."
+    )
+}
+
 /// Check if the current process is running as root (UID 0).
 pub fn is_root() -> bool {
     // SAFETY: getuid() is always safe — it reads kernel state and cannot fail.
@@ -341,6 +435,42 @@ mod tests {
         // As a non-root process, requesting a target user is still a no-op Ok
         // (the actual setuid path requires root and is exercised separately).
         assert!(drop_privileges(Some("nobody"), false).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setcap_command_root_is_direct() {
+        let (prog, args) = setcap_command("/usr/local/bin/sipnab", true);
+        assert_eq!(prog, "setcap");
+        assert_eq!(
+            args,
+            vec![
+                CAPTURE_CAPS.to_string(),
+                "/usr/local/bin/sipnab".to_string()
+            ]
+        );
+        // The executable must be the final argument setcap operates on.
+        assert_eq!(args.last().unwrap(), "/usr/local/bin/sipnab");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn setcap_command_non_root_wraps_sudo() {
+        let (prog, args) = setcap_command("/home/u/.cargo/bin/sipnab", false);
+        assert_eq!(prog, "sudo");
+        assert_eq!(args[0], "setcap");
+        assert_eq!(args[1], CAPTURE_CAPS);
+        assert_eq!(args.last().unwrap(), "/home/u/.cargo/bin/sipnab");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn capture_caps_cover_raw_and_admin() {
+        // CAP_NET_RAW opens the socket; CAP_NET_ADMIN enables promiscuous mode.
+        assert!(CAPTURE_CAPS.contains("cap_net_raw"));
+        assert!(CAPTURE_CAPS.contains("cap_net_admin"));
+        // Effective + permitted file-capability sets.
+        assert!(CAPTURE_CAPS.ends_with("+ep"));
     }
 
     #[test]

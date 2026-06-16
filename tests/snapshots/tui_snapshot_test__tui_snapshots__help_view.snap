@@ -7,6 +7,7 @@ expression: output
  Display Filter:
 ┌ Help (Esc to close) ─────────────────────────────────────────────────────────┐
 │sipnab — Keyboard Shortcuts                                                   │
+│vVERSION│
 │                                                                              │
 │CALL LIST:                                                                    │
 │  ↑/↓, j/k          Navigate dialogs                                          │
@@ -32,13 +33,12 @@ expression: output
 │  F9                Clear active filter                                       │
 │  F10               Column selector                                           │
 │  Tab               Switch to RTP Streams                                     │
+│  v                 Show version / git commit                                 │
 │                                                                              │
 │CALL FLOW:                                                                    │
 │  ↑/↓               Navigate messages (detail panel updates)                  │
 │  PgUp/PgDn         Page through messages                                     │
 │  Home/End          First/last message                                        │
 │  Enter             Full-screen raw message                                   │
-│  Space             Select message for diff (press twice to compare)          │
-│  Esc               Back to call list                                         │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

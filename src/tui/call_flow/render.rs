@@ -7,7 +7,9 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 
 use crate::sip::SipMessage;
 use crate::sip::dialog_store::DialogStore;
@@ -599,6 +601,11 @@ pub fn render_call_flow_direct_or_empty(
 }
 
 /// Render the message detail panel (right side of the split view).
+///
+/// `focused` highlights the border when the detail pane holds keyboard focus
+/// (Tab toggles it). Returns the number of content lines so the caller can
+/// clamp the scroll offset to the message length.
+#[allow(clippy::too_many_arguments)]
 pub fn render_message_detail(
     frame: &mut Frame,
     area: Rect,
@@ -606,14 +613,15 @@ pub fn render_message_detail(
     call_id: &str,
     selected_msg: usize,
     scroll_offset: u16,
+    focused: bool,
     theme: &Theme,
-) {
+) -> usize {
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
             let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.muted));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -623,7 +631,7 @@ pub fn render_message_detail(
             let para =
                 Paragraph::new("No message selected.").style(Style::default().fg(theme.muted));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -646,22 +654,91 @@ pub fn render_message_detail(
         },
     );
 
+    // A focused pane gets a bright, bold border so the user can see which side
+    // the arrow keys are driving.
+    let border_style = if focused {
+        Style::default()
+            .fg(theme.selected)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.border)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .style(Style::default().fg(theme.border));
+        .style(border_style);
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let raw_text = String::from_utf8_lossy(&msg.raw);
     let lines = highlight_sip_detail(&raw_text, theme);
+    let total_lines = lines.len();
+
+    // Clamp the display scroll so the End key (which sets a large value) and
+    // any stale offset never scroll the content entirely out of view.
+    let viewport = inner.height as usize;
+    let max_scroll = total_lines.saturating_sub(viewport);
+    let eff_scroll = (scroll_offset as usize).min(max_scroll) as u16;
 
     let para = Paragraph::new(lines)
-        .scroll((scroll_offset, 0))
+        .scroll((eff_scroll, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(para, inner);
+
+    // Vertical scrollbar on the right border when the message overflows.
+    if total_lines > viewport {
+        let mut sb_state = ScrollbarState::new(total_lines)
+            .viewport_content_length(viewport)
+            .position(eff_scroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_style(Style::default().fg(theme.selected))
+            .track_style(Style::default().fg(theme.muted));
+        frame.render_stateful_widget(scrollbar, area, &mut sb_state);
+    }
+
+    total_lines
+}
+
+/// Total logical rows the ladder occupies. Each message paints `1 + extra_lines`
+/// rows; this matches the row accounting in [`render_call_flow_direct`] and so
+/// is the correct content length for the ladder scrollbar.
+pub fn ladder_total_rows(messages: &[FormattedMessage]) -> usize {
+    messages.iter().map(|m| 1 + m.extra_lines.len()).sum()
+}
+
+/// Number of ladder rows visible at once for a given pane height. The ladder
+/// reserves two rows at the top (participant labels + pipes) and two at the
+/// bottom (footer), so the scrollable window is `height - 4`.
+pub fn ladder_visible_rows(height: u16) -> usize {
+    (height as usize).saturating_sub(4)
+}
+
+/// Render a vertical scrollbar on the right edge of the ladder pane when the
+/// flow is taller than the pane. No-op when everything already fits.
+pub fn render_ladder_scrollbar(
+    frame: &mut Frame,
+    area: Rect,
+    total_rows: usize,
+    position: usize,
+    theme: &Theme,
+) {
+    let visible = ladder_visible_rows(area.height);
+    if total_rows <= visible || area.height < 5 {
+        return;
+    }
+    let mut sb_state = ScrollbarState::new(total_rows)
+        .viewport_content_length(visible)
+        .position(position);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .thumb_style(Style::default().fg(theme.selected))
+        .track_style(Style::default().fg(theme.muted));
+    frame.render_stateful_widget(scrollbar, area, &mut sb_state);
 }
 
 /// Highlight a raw SIP message for the detail panel.
@@ -1552,5 +1629,106 @@ mod tests {
         term.draw(|f| render_call_flow_lines(f, area, "x@test", 0, &theme, || None))
             .unwrap();
         assert!(buffer_text(&term).contains("Dialog not found or empty"));
+    }
+
+    // ── scrollbar / focus helpers ──────────────────────────────────────
+
+    #[test]
+    fn ladder_visible_rows_reserves_header_footer() {
+        // 2 rows for participant labels + pipes, 2 for footer.
+        assert_eq!(ladder_visible_rows(30), 26);
+        assert_eq!(ladder_visible_rows(4), 0);
+        assert_eq!(ladder_visible_rows(0), 0);
+    }
+
+    #[test]
+    fn message_detail_reports_lines_and_renders_scrollbar() {
+        let theme = Theme::default();
+        let store = store_full_dialog("detail@test");
+        // A short pane forces the SIP message to overflow → scrollbar path.
+        let mut term = terminal(40, 6);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut lines = 0usize;
+        term.draw(|f| {
+            lines = render_message_detail(f, area, &store, "detail@test", 0, 0, true, &theme);
+        })
+        .unwrap();
+        assert!(
+            lines > 0,
+            "detail panel should report its content line count"
+        );
+        // The thumb glyph '█' is unique to the scrollbar (the block border uses
+        // box-drawing chars), so its presence proves the scrollbar painted.
+        let text = buffer_text(&term);
+        assert!(
+            text.contains('\u{2588}'),
+            "scrollbar thumb not painted:\n{text}"
+        );
+    }
+
+    #[test]
+    fn message_detail_no_scrollbar_when_it_fits() {
+        let theme = Theme::default();
+        let store = store_full_dialog("detail@test");
+        // A tall pane fits the whole message → no scrollbar.
+        let mut term = terminal(60, 40);
+        let area = Rect::new(0, 0, 60, 40);
+        term.draw(|f| {
+            render_message_detail(f, area, &store, "detail@test", 0, 0, false, &theme);
+        })
+        .unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            !text.contains('\u{2588}'),
+            "scrollbar should be absent when content fits:\n{text}"
+        );
+    }
+
+    #[test]
+    fn ladder_scrollbar_paints_when_overflowing() {
+        let theme = Theme::default();
+        // viewport rows = 9 - 4 = 5; 20 logical rows overflow it.
+        let mut term = terminal(60, 9);
+        let area = Rect::new(0, 0, 60, 9);
+        term.draw(|f| render_ladder_scrollbar(f, area, 20, 0, &theme))
+            .unwrap();
+        let text = buffer_text(&term);
+        assert!(
+            text.contains('\u{2588}'),
+            "ladder scrollbar thumb not painted:\n{text}"
+        );
+    }
+
+    #[test]
+    fn ladder_scrollbar_absent_when_fits() {
+        let theme = Theme::default();
+        let mut term = terminal(60, 30);
+        let area = Rect::new(0, 0, 60, 30);
+        // 3 rows into a 26-row viewport → nothing to scroll.
+        term.draw(|f| render_ladder_scrollbar(f, area, 3, 0, &theme))
+            .unwrap();
+        let text = buffer_text(&term);
+        assert!(text.trim().is_empty(), "no scrollbar expected:\n{text}");
+    }
+
+    #[test]
+    fn message_detail_focus_highlights_border() {
+        let theme = Theme::default();
+        let store = store_full_dialog("detail@test");
+        // Render focused vs unfocused; both must paint without panicking and
+        // report the same line count (focus only changes styling).
+        let area = Rect::new(0, 0, 50, 20);
+        let mut a = 0usize;
+        let mut b = 0usize;
+        let mut term = terminal(50, 20);
+        term.draw(|f| {
+            a = render_message_detail(f, area, &store, "detail@test", 0, 0, true, &theme)
+        })
+        .unwrap();
+        term.draw(|f| {
+            b = render_message_detail(f, area, &store, "detail@test", 0, 0, false, &theme)
+        })
+        .unwrap();
+        assert_eq!(a, b);
     }
 }

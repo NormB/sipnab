@@ -37,6 +37,7 @@ CALL LIST:
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams
+  v                Show version / git commit
 
 CALL FLOW:
   \u{2191}/\u{2193}             Navigate messages (detail panel updates)
@@ -45,12 +46,14 @@ CALL FLOW:
   Enter            Full-screen raw message
   Space            Select message for diff (press twice to compare)
   Esc              Back to call list
+  Tab              Switch focus: ladder <-> detail pane
+  \u{2191}/\u{2193}             Navigate ladder, or scroll detail when focused
   d                Cycle SDP display (none / summary / full)
   t                Cycle timestamps (absolute / delta-prev / delta-first)
   c                Cycle colors (method / call-id / cseq)
   R                Toggle detail panel
   9/0, +/-, ←/→    Resize ladder/detail split
-  [ / ]            Scroll detail panel
+  [ / ]            Scroll detail panel (any focus)
   F2               Save
   F4, x            Extended multi-leg flow
   F6               Toggle RTP display
@@ -99,6 +102,11 @@ fn build_help_lines(theme: &super::Theme) -> Vec<Line<'static>> {
                 Style::default()
                     .fg(theme.header)
                     .add_modifier(Modifier::BOLD),
+            )));
+            // Version (with git commit + enabled features) just under the title.
+            lines.push(Line::from(Span::styled(
+                format!("v{}", crate::cli::build_version()),
+                Style::default().fg(theme.muted),
             )));
         } else if !text_line.starts_with(' ') && text_line.ends_with(':') {
             // Section headers
@@ -216,5 +224,26 @@ mod tests {
         let lines = build_help_lines(&theme);
         assert!(!lines.is_empty());
         assert!(lines.len() > 10);
+    }
+
+    #[test]
+    fn help_text_documents_version_key() {
+        assert!(HELP_TEXT.contains("Show version"));
+    }
+
+    #[test]
+    fn build_help_lines_includes_version() {
+        let theme = crate::tui::Theme::default();
+        let lines = build_help_lines(&theme);
+        // The crate version appears on the line just under the title.
+        let rendered: String = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            rendered.contains(env!("CARGO_PKG_VERSION")),
+            "got: {rendered}"
+        );
     }
 }

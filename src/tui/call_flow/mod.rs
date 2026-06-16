@@ -43,8 +43,9 @@ pub use prepare::{
 };
 pub use render::{
     build_call_flow_lines, build_call_flow_lines_with_options, build_call_flow_lines_with_width,
-    build_extended_flow_lines, render_call_flow, render_call_flow_direct,
-    render_call_flow_direct_or_empty, render_call_flow_lines, render_message_detail,
+    build_extended_flow_lines, ladder_total_rows, ladder_visible_rows, render_call_flow,
+    render_call_flow_direct, render_call_flow_direct_or_empty, render_call_flow_lines,
+    render_ladder_scrollbar, render_message_detail,
 };
 
 // ── Layout constants ────────────────────────────────────────────────

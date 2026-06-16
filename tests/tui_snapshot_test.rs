@@ -370,6 +370,46 @@ mod tui_snapshots {
     }
 
     #[test]
+    fn call_flow_split_focus_detail() {
+        // Open the call flow split, then Tab to focus the detail pane. The
+        // status line should read "Focus: Detail" and the detail border should
+        // be highlighted — locked in by the snapshot.
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(KeyCode::Enter); // open call flow
+        app.handle_key(KeyCode::Tab); // focus detail pane
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains("Focus: Detail"),
+            "focus indicator missing:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn call_flow_detail_scrollbar_on_overflow() {
+        // A short terminal forces the detail pane to overflow, so the vertical
+        // scrollbar (thumb glyph) must appear on the right border.
+        let backend = TestBackend::new(100, 10);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(KeyCode::Enter); // open call flow (split on by default)
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains('\u{2588}'),
+            "scrollbar thumb missing:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
     fn raw_message_view() {
         let backend = TestBackend::new(90, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -394,6 +434,12 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
 
         let output = buffer_to_string(&terminal);
+        // The help screen shows the running version, which embeds the git commit,
+        // a `-dirty` marker, and the compiled feature list — all of which vary by
+        // build (e.g. `--features tui` vs `--features full`) and by commit. Redact
+        // that one line so the snapshot stays deterministic.
+        let re = regex::Regex::new(r"v\d+\.\d+\.\d+ \([^)]*\) features: [^\u{2502}\n]*").unwrap();
+        let output = re.replace(&output, "vVERSION").into_owned();
         insta::assert_snapshot!(output);
     }
 

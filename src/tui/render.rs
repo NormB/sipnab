@@ -245,17 +245,37 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &app.theme,
                 );
 
+                // Ladder scrollbar when the flow is taller than the pane.
+                if let Some((_, ref msgs)) = prepared {
+                    let total_rows = call_flow::ladder_total_rows(msgs);
+                    call_flow::render_ladder_scrollbar(
+                        frame,
+                        ladder_area,
+                        total_rows,
+                        scroll,
+                        &app.theme,
+                    );
+                }
+
                 // Render message detail panel (right side) if split is active
                 if let Some(detail_area) = detail_area {
-                    call_flow::render_message_detail(
+                    let total_lines = call_flow::render_message_detail(
                         frame,
                         detail_area,
                         &store,
                         &cid,
                         sel,
                         app.detail_scroll,
+                        app.call_flow_detail_focused,
                         &app.theme,
                     );
+                    // Keep the stored scroll offset within the message length so
+                    // End / repeated Down never strand the view past the content.
+                    let viewport = detail_area.height.saturating_sub(2);
+                    let max_scroll = (total_lines as u16).saturating_sub(viewport);
+                    if app.detail_scroll > max_scroll {
+                        app.detail_scroll = max_scroll;
+                    }
                 }
             }
         }
@@ -447,8 +467,18 @@ pub(super) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &
     } else if let View::CallFlow(_) = app.current_view {
         // In call flow: show current display modes so user knows what t/d/c do
         let cyan = Style::default().fg(app.theme.header);
+        // Show focused pane (Tab to switch) only when the split is visible.
+        let focus = if app.raw_preview {
+            if app.call_flow_detail_focused {
+                " | Focus: Detail (Tab)"
+            } else {
+                " | Focus: Ladder (Tab)"
+            }
+        } else {
+            ""
+        };
         let content = format!(
-            " {} | {} | {} | Split: {}%",
+            " {} | {} | {} | Split: {}%{}",
             app.timestamp_mode.label(),
             app.sdp_display_mode.label(),
             app.color_mode.label(),
@@ -457,6 +487,7 @@ pub(super) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &
             } else {
                 0
             },
+            focus,
         );
         let trailing = " ".repeat(w.saturating_sub(content.len()));
         vec![Span::styled(content, cyan), Span::raw(trailing)]

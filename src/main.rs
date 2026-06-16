@@ -121,6 +121,19 @@ fn main() {
     let _ = tracing::subscriber::set_global_default(subscriber);
     let _ = tracing_log::LogTracer::init();
 
+    // --setup-caps: grant this binary the capabilities needed for live capture
+    // and exit. Handled before any config/capture setup so it works right after
+    // a fresh `cargo install` with no config present.
+    if cli.setup_caps {
+        match privilege::setup_capabilities() {
+            Ok(()) => return,
+            Err(e) => {
+                tracing::error!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // 3. Install signal handlers
     signals::install_handlers();
 
@@ -432,10 +445,13 @@ fn main() {
                     _ => "capture source",
                 };
                 tracing::error!(
-                    "Permission denied on '{}'. Run with sudo or set capabilities:\n  \
+                    "Permission denied on '{}'. Grant capture capabilities once \
+                     (Linux), then re-run without sudo:\n  \
+                     sipnab --setup-caps\n  \
+                     # or run this invocation under sudo:\n  \
                      sudo sipnab\n  \
-                     # or (Linux only):\n  \
-                     sudo setcap cap_net_raw+ep $(which sipnab)",
+                     # equivalent manual step:\n  \
+                     sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)",
                     dev_name
                 );
             } else {
