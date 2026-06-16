@@ -33,6 +33,15 @@ pub(super) fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Global: cycle name-resolution mode (Off / Static / DNS). Refresh the call
+    // flow cache so resolved participant labels update on the next render.
+    if key.code == KeyCode::Char('n') {
+        app.name_mode = app.name_mode.next();
+        app.call_flow_cache.clear();
+        app.status_error = Some(app.name_mode.label().to_string());
+        return;
+    }
+
     match &app.current_view {
         View::CallList => handle_call_list_key(app, key),
         View::StreamList => handle_stream_list_key(app, key),
@@ -202,6 +211,12 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('O') => {
             open_file_dialog(app);
         }
+        // N — Name the selected dialog's source address
+        KeyCode::Char('N') => {
+            if let Some(ip) = get_selected_dialog_src(app) {
+                open_name_dialog(app, ip);
+            }
+        }
         KeyCode::Char('s') => app.current_view = View::Statistics,
         _ => {}
     }
@@ -342,6 +357,12 @@ pub(super) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
                 app.stream_detail_scroll = 0;
                 app.stream_detail_return_view = Some(View::StreamList);
                 app.current_view = View::StreamDetail(key);
+            }
+        }
+        // N — Name the selected stream's source address
+        KeyCode::Char('N') => {
+            if let Some(key) = get_selected_stream_key(app) {
+                open_name_dialog(app, key.src.ip());
             }
         }
         KeyCode::Esc => app.current_view = View::CallList,
@@ -611,6 +632,23 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // Jump to RTP Streams view
             app.current_view = View::StreamList;
         }
+        // N — Name the selected message's source address
+        KeyCode::Char('N') => {
+            if let View::CallFlow(ref call_id) = app.current_view {
+                let sel = app.selected_msg_index;
+                let ip = app.dialog_store.try_read().and_then(|s| {
+                    s.get(call_id).map(|d| {
+                        d.messages
+                            .get(sel)
+                            .map(|m| m.src_addr)
+                            .unwrap_or(d.src_addr)
+                    })
+                });
+                if let Some(ip) = ip {
+                    open_name_dialog(app, ip);
+                }
+            }
+        }
         KeyCode::Char('d') => {
             // Toggle SDP display mode
             app.sdp_display_mode = app.sdp_display_mode.next();
@@ -719,6 +757,8 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         show_rtp: app.show_rtp_in_flow,
                         selected_msg: None,
                         theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
                     };
                     let (participants, msgs) = call_flow::prepare_messages(
                         &d.messages,
@@ -905,6 +945,7 @@ pub(super) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::FilterDialog => handle_filter_popup_key(app, key),
         Popup::SettingsDialog => handle_settings_popup_key(app, key),
         Popup::FileOpenDialog => handle_file_open_popup_key(app, key),
+        Popup::NameAddress => handle_name_popup_key(app, key),
     }
 }
 
@@ -1658,6 +1699,109 @@ pub(super) fn get_selected_call_id(app: &App) -> Option<String> {
     dialogs.get(idx).map(|d| d.call_id.clone())
 }
 
+/// Source IP of the selected call-list dialog (for the Name Address popup).
+pub(super) fn get_selected_dialog_src(app: &App) -> Option<std::net::IpAddr> {
+    let store = app.dialog_store.read();
+    let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
+        store
+            .iter()
+            .filter(|d| filter.matches_dialog(d, &[]))
+            .collect()
+    } else {
+        store.iter().collect()
+    };
+    dialogs.get(app.call_list.selected()).map(|d| d.src_addr)
+}
+
+/// Open the "Name Address" popup pre-filled with `ip` and its existing name.
+pub(super) fn open_name_dialog(app: &mut App, ip: std::net::IpAddr) {
+    let existing = app
+        .resolver
+        .manual_entries()
+        .into_iter()
+        .find(|(i, _)| *i == ip)
+        .map(|(_, n)| n)
+        .unwrap_or_default();
+    app.name_dialog.cursor = existing.len();
+    app.name_dialog.name = existing;
+    app.name_dialog.ip = ip.to_string();
+    app.active_popup = Some(Popup::NameAddress);
+}
+
+/// Handle keys in the "Name Address" popup (single editable name field).
+pub(super) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Esc => {
+            app.active_popup = None;
+        }
+        KeyCode::Enter => {
+            apply_name_dialog(app);
+            app.active_popup = None;
+        }
+        KeyCode::Backspace => {
+            if app.name_dialog.cursor > 0 {
+                let prev = app.name_dialog.name[..app.name_dialog.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                app.name_dialog.name.remove(prev);
+                app.name_dialog.cursor = prev;
+            }
+        }
+        KeyCode::Left => {
+            if app.name_dialog.cursor > 0 {
+                app.name_dialog.cursor = app.name_dialog.name[..app.name_dialog.cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+            }
+        }
+        KeyCode::Right => {
+            if app.name_dialog.cursor < app.name_dialog.name.len() {
+                app.name_dialog.cursor = app.name_dialog.name[app.name_dialog.cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(i, _)| app.name_dialog.cursor + i)
+                    .unwrap_or(app.name_dialog.name.len());
+            }
+        }
+        KeyCode::Home => app.name_dialog.cursor = 0,
+        KeyCode::End => app.name_dialog.cursor = app.name_dialog.name.len(),
+        KeyCode::Char(c) => {
+            app.name_dialog.name.insert(app.name_dialog.cursor, c);
+            app.name_dialog.cursor += c.len_utf8();
+        }
+        _ => {}
+    }
+}
+
+/// Apply the Name Address popup: set or clear the manual mapping, persist it,
+/// and turn name resolution on so the change is visible immediately.
+fn apply_name_dialog(app: &mut App) {
+    let Ok(ip) = app.name_dialog.ip.parse::<std::net::IpAddr>() else {
+        return;
+    };
+    let name = app.name_dialog.name.trim().to_string();
+    if name.is_empty() {
+        app.resolver.remove_manual(&ip);
+        app.status_error = Some(format!("Cleared name for {ip}"));
+    } else {
+        app.resolver.set_manual(ip, name.clone());
+        app.status_error = Some(format!("{ip} \u{2192} {name}"));
+        if app.name_mode == crate::names::NameMode::Off {
+            app.name_mode = crate::names::NameMode::Names;
+        }
+    }
+    app.call_flow_cache.clear();
+    if let Some(path) = app.names_save_path.clone()
+        && let Err(e) = app.resolver.save_manual_file(&path)
+    {
+        app.status_error = Some(format!("Named, but couldn't save {}: {e}", path.display()));
+    }
+}
+
 /// Count dialogs visible after applying the active filter.
 pub(super) fn filtered_dialog_count(app: &App) -> usize {
     let store = app.dialog_store.read();
@@ -1909,6 +2053,61 @@ mod tests {
         let mut app = App::new_test();
         handle_key_event(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn key_event_n_cycles_name_mode() {
+        let mut app = App::new_test();
+        assert_eq!(app.name_mode(), crate::names::NameMode::Off);
+        handle_key_event(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.name_mode(), crate::names::NameMode::Names);
+        handle_key_event(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.name_mode(), crate::names::NameMode::Dns);
+        handle_key_event(&mut app, key(KeyCode::Char('n')));
+        assert_eq!(app.name_mode(), crate::names::NameMode::Off);
+    }
+
+    #[test]
+    fn call_list_shift_n_opens_name_dialog_for_source() {
+        let mut app = app_with_dialogs();
+        handle_call_list_key(&mut app, key(KeyCode::Char('N')));
+        assert_eq!(app.active_popup, Some(Popup::NameAddress));
+        // Pre-filled with the selected dialog's source IP.
+        assert_eq!(app.name_dialog.ip, "10.0.0.1");
+    }
+
+    #[test]
+    fn name_dialog_sets_mapping_and_enables_resolution() {
+        let mut app = app_with_dialogs();
+        open_name_dialog(&mut app, addr_a());
+        for c in "sbc-edge".chars() {
+            handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_name_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.active_popup, None);
+        // Naming an address turns resolution on so the change is visible.
+        assert_eq!(app.name_mode(), crate::names::NameMode::Names);
+        assert_eq!(
+            app.resolver()
+                .label_ip(addr_a(), crate::names::NameMode::Names),
+            "sbc-edge"
+        );
+    }
+
+    #[test]
+    fn name_dialog_empty_clears_mapping() {
+        let mut app = app_with_dialogs();
+        app.resolver().set_manual(addr_a(), "old".into());
+        open_name_dialog(&mut app, addr_a());
+        for _ in 0.."old".len() {
+            handle_name_popup_key(&mut app, key(KeyCode::Backspace));
+        }
+        handle_name_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(
+            app.resolver()
+                .label_ip(addr_a(), crate::names::NameMode::Names),
+            "10.0.0.1"
+        );
     }
 
     #[test]

@@ -264,4 +264,27 @@ mod tui_e2e {
         s.literal("O"); // open file browser
         s.wait_for("sip_call.pcap");
     }
+
+    #[test]
+    #[ignore]
+    fn tui_name_address_resolves_in_columns() {
+        let s = TuiSession::launch_sip_call();
+        s.wait_for("Dialogs:");
+        // N opens the Name Address popup for the selected dialog's source.
+        s.literal("N");
+        s.wait_for("Name Address");
+        s.literal("edge-proxy");
+        s.key("Enter");
+        // Resolution auto-enables; the name now shows in the Source column.
+        let named = s.wait_for("edge-proxy");
+        assert!(named.contains("edge-proxy"), "name not shown:\n{named}");
+        // Toggling name mode back to Off restores the raw IP (no name).
+        s.literal("n"); // Static -> DNS
+        s.literal("n"); // DNS -> Off
+        let off = s.screen();
+        assert!(
+            !off.contains("edge-proxy"),
+            "name should be hidden when Off:\n{off}"
+        );
+    }
 }

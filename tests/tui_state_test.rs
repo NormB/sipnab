@@ -2713,6 +2713,8 @@ mod tui_state {
             show_rtp: false,
             selected_msg: None,
             theme: &theme,
+            resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
+            name_mode: sipnab::names::NameMode::Off,
         };
         let (participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -3156,6 +3158,8 @@ mod tui_state {
             show_rtp: true,
             selected_msg: None,
             theme: &theme,
+            resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
+            name_mode: sipnab::names::NameMode::Off,
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);
@@ -3215,6 +3219,8 @@ mod tui_state {
             show_rtp: true,
             selected_msg: None,
             theme: &theme,
+            resolver: Box::leak(Box::new(sipnab::names::NameResolver::new())),
+            name_mode: sipnab::names::NameMode::Off,
         };
         let (_participants, formatted) =
             prepare_messages(&messages, t0, None, &flow_opts, &fold_expanded);

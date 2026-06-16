@@ -25,6 +25,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "privilege",
             "theme",
             "keybindings",
+            "names",
         ]
         .as_slice(),
     );
@@ -63,6 +64,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
         .as_slice(),
     );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
+    m.insert("names", ["enabled", "reverse_dns", "hosts_file"].as_slice());
     m.insert(
         "theme",
         [
@@ -158,6 +160,9 @@ pub struct Config {
     /// TUI key bindings.
     #[serde(default)]
     pub keybindings: KeybindingsConfig,
+    /// Address name-resolution settings.
+    #[serde(default)]
+    pub names: NamesConfig,
 }
 
 /// Packet capture configuration.
@@ -299,6 +304,18 @@ pub struct PrivilegeConfig {
     pub no_priv_drop: Option<bool>,
     /// Chroot directory.
     pub chroot: Option<String>,
+}
+
+/// Address name-resolution settings.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct NamesConfig {
+    /// Start with name resolution enabled (offline sources).
+    pub enabled: Option<bool>,
+    /// Also use reverse DNS (PTR) lookups. Off by default.
+    pub reverse_dns: Option<bool>,
+    /// `/etc/hosts`-format file of IP -> name mappings to preload.
+    pub hosts_file: Option<String>,
 }
 
 /// TUI theme configuration — semantic color slots.

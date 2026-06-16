@@ -301,6 +301,8 @@ pub struct CallListDisplay<'a> {
     pub search_query: &'a str,
     pub timestamp_mode: TimestampMode,
     pub theme: &'a super::Theme,
+    pub resolver: &'a crate::names::NameResolver,
+    pub name_mode: crate::names::NameMode,
 }
 
 /// Render the call list table into the given area.
@@ -557,8 +559,16 @@ pub fn render_call_list(
                 Cell::from(Span::styled(dialog.method.as_str(), method_style)),
                 Cell::from(Span::raw(dialog.from_user.as_deref().unwrap_or("-"))),
                 Cell::from(Span::raw(dialog.to_user.as_deref().unwrap_or("-"))),
-                Cell::from(Span::raw(dialog.src_addr.to_string())),
-                Cell::from(Span::raw(dialog.dst_addr.to_string())),
+                Cell::from(Span::raw(
+                    display
+                        .resolver
+                        .label_ip(dialog.src_addr, display.name_mode),
+                )),
+                Cell::from(Span::raw(
+                    display
+                        .resolver
+                        .label_ip(dialog.dst_addr, display.name_mode),
+                )),
                 Cell::from(Span::styled(
                     state_display_str(dialog.state()),
                     state_style(dialog.state(), theme),

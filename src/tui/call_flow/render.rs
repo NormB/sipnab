@@ -1277,6 +1277,8 @@ mod tests {
     }
 
     fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
+        let resolver: &'static crate::names::NameResolver =
+            Box::leak(Box::new(crate::names::NameResolver::new()));
         FlowDisplayOptions {
             sdp_mode: SdpDisplayMode::None,
             ts_mode: TimestampMode::Absolute,
@@ -1284,6 +1286,8 @@ mod tests {
             show_rtp: false,
             selected_msg: None,
             theme,
+            resolver,
+            name_mode: crate::names::NameMode::Off,
         }
     }
 

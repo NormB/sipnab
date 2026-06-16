@@ -31,6 +31,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
+use crate::names::{NameMode, NameResolver};
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::FilterExpr;
@@ -326,6 +327,17 @@ struct SettingsDialogState {
     focused_item: usize,
 }
 
+/// State for the "Name Address" popup (map an IP to a host/FQDN).
+#[derive(Debug, Clone, Default)]
+struct NameDialogState {
+    /// The IP being named (display only; the resolution key).
+    ip: String,
+    /// Editable name text field.
+    name: String,
+    /// Cursor position within `name`.
+    cursor: usize,
+}
+
 /// Structured state for the sngrep-style filter dialog.
 #[derive(Debug, Clone, Default)]
 pub struct FilterDialogState {
@@ -591,6 +603,8 @@ pub enum Popup {
     SettingsDialog,
     /// File-open dialog for loading a pcap file.
     FileOpenDialog,
+    /// "Name Address" popup: map the selected IP to a host/FQDN.
+    NameAddress,
 }
 
 // ── App state ───────────────────────────────────────────────────────
@@ -683,6 +697,14 @@ pub struct App {
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
+    /// Name-resolution display mode (Off / Names / Dns).
+    name_mode: NameMode,
+    /// Shared IP -> name resolver (manual mappings, hosts, reverse DNS).
+    resolver: Arc<NameResolver>,
+    /// Path the manual mappings persist to (set from config/CLI).
+    names_save_path: Option<PathBuf>,
+    /// "Name Address" popup state.
+    name_dialog: NameDialogState,
     sdp_display_mode: SdpDisplayMode,
     /// Timestamp display mode (Absolute / Delta-prev / Delta-first).
     timestamp_mode: TimestampMode,
@@ -782,6 +804,10 @@ impl App {
             open_filter: String::new(),
             open_manual_mode: false,
             open_error: None,
+            name_mode: NameMode::default(),
+            resolver: Arc::new(NameResolver::new()),
+            names_save_path: None,
+            name_dialog: NameDialogState::default(),
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
@@ -865,6 +891,26 @@ impl Drop for TerminalGuard {
 /// # Errors
 ///
 /// Returns an error if terminal initialization or rendering fails.
+/// Name-resolution wiring passed into the TUI from CLI/config.
+pub struct NameSetup {
+    /// Shared resolver (already populated with hosts / manual mappings).
+    pub resolver: Arc<NameResolver>,
+    /// Initial name-resolution display mode.
+    pub mode: NameMode,
+    /// Where the TUI persists manual mappings edited via the `N` dialog.
+    pub save_path: Option<PathBuf>,
+}
+
+impl Default for NameSetup {
+    fn default() -> Self {
+        Self {
+            resolver: Arc::new(NameResolver::new()),
+            mode: NameMode::Off,
+            save_path: None,
+        }
+    }
+}
+
 pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
@@ -876,6 +922,7 @@ pub fn run_tui(
         Theme::default(),
         Keymap::default(),
         None,
+        NameSetup::default(),
     )
 }
 
@@ -883,6 +930,7 @@ pub fn run_tui(
 ///
 /// When `paused_flag` is `Some`, the flag is shared with the processing
 /// thread so that toggling pause in the TUI also pauses packet processing.
+#[allow(clippy::too_many_arguments)]
 pub fn run_tui_with_pause(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
@@ -890,6 +938,7 @@ pub fn run_tui_with_pause(
     theme: Theme,
     keymap: Keymap,
     visible_columns: Option<Vec<String>>,
+    name_setup: NameSetup,
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -915,6 +964,9 @@ pub fn run_tui_with_pause(
     if let Some(ref cols) = visible_columns {
         app.call_list.apply_visible_columns(cols);
     }
+    app.set_resolver(name_setup.resolver);
+    app.set_name_mode(name_setup.mode);
+    app.set_names_save_path(name_setup.save_path);
 
     // Main event loop
     loop {
@@ -1039,6 +1091,31 @@ impl App {
     /// Return the current timestamp display mode.
     pub fn timestamp_mode(&self) -> TimestampMode {
         self.timestamp_mode
+    }
+
+    /// Current name-resolution display mode.
+    pub fn name_mode(&self) -> NameMode {
+        self.name_mode
+    }
+
+    /// Set the name-resolution display mode.
+    pub fn set_name_mode(&mut self, mode: NameMode) {
+        self.name_mode = mode;
+    }
+
+    /// Shared name resolver (manual mappings, hosts file, reverse DNS).
+    pub fn resolver(&self) -> &Arc<NameResolver> {
+        &self.resolver
+    }
+
+    /// Inject the shared resolver (built from config/CLI in `run`).
+    pub fn set_resolver(&mut self, resolver: Arc<NameResolver>) {
+        self.resolver = resolver;
+    }
+
+    /// Where to persist manual name mappings when edited in the TUI.
+    pub fn set_names_save_path(&mut self, path: Option<PathBuf>) {
+        self.names_save_path = path;
     }
 
     /// Count dialogs visible after applying the active filter.

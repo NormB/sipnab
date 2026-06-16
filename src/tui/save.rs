@@ -144,6 +144,8 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
         show_rtp: false,
         selected_msg: None,
         theme: &app.theme,
+        resolver: app.resolver.as_ref(),
+        name_mode: app.name_mode,
     };
     let (participants, msgs) = call_flow::prepare_messages(
         &messages,

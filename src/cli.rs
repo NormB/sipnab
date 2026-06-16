@@ -179,6 +179,22 @@ pub struct Cli {
     #[arg(short = 'q', long = "quiet")]
     pub quiet: bool,
 
+    // ── Name resolution ──────────────────────────────────────────────
+    /// Resolve IP addresses to names for display (manual mappings + hosts).
+    /// Sets the TUI's initial name-resolution mode; press `n` to cycle it
+    /// (Off / Static / DNS).
+    #[arg(long = "resolve")]
+    pub resolve: bool,
+
+    /// Also use reverse DNS (PTR) lookups for name resolution. Implies
+    /// `--resolve`. Off by default (it emits DNS queries for captured IPs).
+    #[arg(long = "reverse-dns")]
+    pub reverse_dns: bool,
+
+    /// Load IP -> name mappings from an `/etc/hosts`-format file. Repeatable.
+    #[arg(long = "names", value_name = "FILE")]
+    pub names: Vec<String>,
+
     // ── Matching ─────────────────────────────────────────────────────
     /// Case-insensitive matching for header filters and patterns.
     #[arg(short = 'i', long = "ignore-case")]
@@ -749,6 +765,25 @@ mod tests {
     fn setup_caps_flag_parses() {
         let cli = Cli::parse_from_args(["sipnab", "--setup-caps"]);
         assert!(cli.setup_caps);
+    }
+
+    #[test]
+    fn name_resolution_flags_parse() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "--resolve",
+            "--reverse-dns",
+            "--names",
+            "/etc/hosts",
+            "--names",
+            "/tmp/names",
+        ]);
+        assert!(cli.resolve);
+        assert!(cli.reverse_dns);
+        assert_eq!(
+            cli.names,
+            vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
+        );
     }
 
     #[test]

@@ -736,6 +736,63 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
 /// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
 /// the TUI event loop on the main thread.
 #[cfg(feature = "tui")]
+/// Build the TUI name-resolution setup from CLI flags and config:
+/// construct the resolver (with a reverse-DNS worker when requested), load the
+/// system hosts file plus any operator mapping files, and pick the initial mode.
+fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
+    use sipnab::names::{NameMode, NameResolver};
+
+    let cfg = &config.names;
+    let reverse = cli.reverse_dns || cfg.reverse_dns.unwrap_or(false);
+    let resolve = cli.resolve
+        || reverse
+        || cfg.enabled.unwrap_or(false)
+        || !cli.names.is_empty()
+        || cfg.hosts_file.is_some();
+
+    let resolver = Arc::new(NameResolver::with_reverse_dns(reverse));
+    // System hosts table (offline, cheap).
+    let _ = resolver.load_hosts_file(std::path::Path::new("/etc/hosts"));
+    // Operator-provided mapping files (manual layer, highest priority).
+    for f in &cli.names {
+        if let Err(e) = resolver.load_manual_file(std::path::Path::new(f)) {
+            tracing::warn!("could not load names file {f}: {e}");
+        }
+    }
+    if let Some(hf) = &cfg.hosts_file {
+        let _ = resolver.load_manual_file(std::path::Path::new(hf));
+    }
+    // Default persistence file for the in-TUI `N` dialog; preload it.
+    let save_path = default_names_path();
+    if let Some(p) = &save_path {
+        let _ = resolver.load_manual_file(p);
+    }
+
+    let mode = if reverse {
+        NameMode::Dns
+    } else if resolve {
+        NameMode::Names
+    } else {
+        NameMode::Off
+    };
+    sipnab::tui::NameSetup {
+        resolver,
+        mode,
+        save_path,
+    }
+}
+
+/// Default file where in-TUI manual name mappings persist:
+/// `$XDG_CONFIG_HOME/sipnab/hosts`, falling back to `~/.config/sipnab/hosts`.
+fn default_names_path() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("sipnab").join("hosts"))
+}
+
 fn run_tui_mode(
     cli: Cli,
     config: Config,
@@ -919,6 +976,7 @@ fn run_tui_mode(
     // Build resolved theme and keymap from config
     let theme = sipnab::tui::Theme::from_config(&config.theme);
     let keymap = sipnab::tui::Keymap::from_config(&config.keybindings);
+    let name_setup = build_name_setup(&cli, &config);
 
     // Run TUI on the main thread
     if let Err(e) = sipnab::tui::run_tui_with_pause(
@@ -928,6 +986,7 @@ fn run_tui_mode(
         theme,
         keymap,
         config.display.visible_columns.clone(),
+        name_setup,
     ) {
         tracing::error!("TUI error: {e}");
     }

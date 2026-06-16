@@ -58,28 +58,31 @@ pub fn prepare_messages(
         return (Vec::new(), Vec::new());
     }
 
-    // Discover all unique endpoints
-    let mut endpoint_addrs: Vec<String> = Vec::new();
+    // Discover all unique endpoints, keyed by (ip, port). The raw `ip:port`
+    // string remains the matching key; the displayed label may be a resolved
+    // name when name resolution is active.
+    let mut endpoints: Vec<(std::net::IpAddr, u16)> = Vec::new();
     for msg in messages {
-        let src = format!("{}:{}", msg.src_addr, msg.src_port);
-        let dst = format!("{}:{}", msg.dst_addr, msg.dst_port);
-        if !endpoint_addrs.contains(&src) {
-            endpoint_addrs.push(src);
-        }
-        if !endpoint_addrs.contains(&dst) {
-            endpoint_addrs.push(dst);
+        for ep in [(msg.src_addr, msg.src_port), (msg.dst_addr, msg.dst_port)] {
+            if !endpoints.contains(&ep) {
+                endpoints.push(ep);
+            }
         }
     }
     // Cap at 6 to prevent layout overflow
-    if endpoint_addrs.len() > 6 {
-        endpoint_addrs.truncate(6);
+    if endpoints.len() > 6 {
+        endpoints.truncate(6);
     }
 
-    let participants: Vec<Participant> = endpoint_addrs
+    let participants: Vec<Participant> = endpoints
         .iter()
-        .map(|addr| Participant {
-            addr: addr.clone(),
-            label: truncate(addr, 20),
+        .map(|&(ip, port)| {
+            let addr = format!("{ip}:{port}");
+            let display = opts.resolver.label(ip, port, opts.name_mode);
+            Participant {
+                addr,
+                label: truncate(&display, 20),
+            }
         })
         .collect();
 
@@ -203,14 +206,14 @@ pub fn prepare_messages(
 
         let src_addr = format!("{}:{}", msg.src_addr, msg.src_port);
         let dst_addr = format!("{}:{}", msg.dst_addr, msg.dst_port);
-        let src_col = endpoint_addrs
+        let src_col = participants
             .iter()
-            .position(|a| a == &src_addr)
+            .position(|p| p.addr == src_addr)
             .unwrap_or(0);
-        let dst_col = endpoint_addrs
+        let dst_col = participants
             .iter()
-            .position(|a| a == &dst_addr)
-            .unwrap_or(1.min(endpoint_addrs.len().saturating_sub(1)));
+            .position(|p| p.addr == dst_addr)
+            .unwrap_or(1.min(participants.len().saturating_sub(1)));
 
         let mut pdd_note = None;
         if !pdd_done
@@ -953,6 +956,10 @@ mod tests {
     }
 
     fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
+        // Leak a default resolver so it satisfies the borrow without threading
+        // a separate owner through every test caller (test-only).
+        let resolver: &'static crate::names::NameResolver =
+            Box::leak(Box::new(crate::names::NameResolver::new()));
         FlowDisplayOptions {
             sdp_mode: SdpDisplayMode::None,
             ts_mode: TimestampMode::Absolute,
@@ -960,6 +967,8 @@ mod tests {
             show_rtp: false,
             selected_msg: None,
             theme,
+            resolver,
+            name_mode: crate::names::NameMode::Off,
         }
     }
 

@@ -34,6 +34,8 @@ pub struct FlowDisplayOptions<'a> {
     pub show_rtp: bool,
     pub selected_msg: Option<usize>,
     pub theme: &'a Theme,
+    pub resolver: &'a crate::names::NameResolver,
+    pub name_mode: crate::names::NameMode,
 }
 
 // Re-export everything that external code uses.

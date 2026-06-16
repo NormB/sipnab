@@ -136,6 +136,23 @@ no_priv_drop = false
 chroot = "/var/lib/sipnab"
 ```
 
+### [names]
+
+Address name-resolution settings (display `host:port` instead of `ip:port`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Start with name resolution on (offline sources) |
+| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
+| `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
+
+```toml
+[names]
+enabled = true
+reverse_dns = false
+hosts_file = "/etc/sipnab/hosts"
+```
+
 ### [theme]
 
 TUI color theme with 11 semantic color slots. Each field accepts a color name or a hex RGB value. Unset fields use built-in defaults. See [theme-guide.md](theme-guide.md) for a full customization guide.

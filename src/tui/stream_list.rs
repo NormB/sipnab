@@ -124,12 +124,15 @@ impl Default for StreamListState {
 ///
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
+#[allow(clippy::too_many_arguments)]
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
     theme: &super::Theme,
+    resolver: &crate::names::NameResolver,
+    name_mode: crate::names::NameMode,
 ) {
     // The entire area is used for the table (no title line)
     let table_area = area;
@@ -214,8 +217,8 @@ pub fn render_stream_list(
         let row = Row::new(vec![
             Cell::from(Span::raw(format!("{:08X}", stream.key.ssrc))),
             Cell::from(Span::raw(stream.codec.as_deref().unwrap_or("?"))),
-            Cell::from(Span::raw(stream.key.src.to_string())),
-            Cell::from(Span::raw(stream.key.dst.to_string())),
+            Cell::from(Span::raw(resolver.label_socket(stream.key.src, name_mode))),
+            Cell::from(Span::raw(resolver.label_socket(stream.key.dst, name_mode))),
             Cell::from(Span::raw(stream.packet_count.to_string())),
             Cell::from(Span::raw(format!("{:.1}ms", stream.jitter))),
             Cell::from(Span::raw(format!("{:.1}%", loss_pct))),
