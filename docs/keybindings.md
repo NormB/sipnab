@@ -11,6 +11,8 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | Ctrl+C | Force quit |
 | Ctrl+L | Redraw screen |
 | v | Show version (with git commit) in the status line |
+| n | Cycle name resolution (Off / Static / DNS) |
+| N | Name the selected address (map IP → host/FQDN) |
 
 ## Call List
 
@@ -215,3 +217,32 @@ Press `t` in the Call List or Call Flow to cycle through three timestamp modes (
    - Red: 1 s - 5 s
    - Bold red: > 5 s
 3. **Delta-first** -- `+N.NNNs` cumulative time from first entry
+
+## Name Resolution
+
+sipnab can display host names instead of raw IP addresses (Wireshark-style),
+in the call list **Source**/**Destination** columns, call-flow participant
+labels, and the RTP stream views. Press **`n`** to cycle the mode (shown
+briefly in the status line):
+
+1. **Off** (default) -- raw `ip:port`
+2. **Static** -- operator mappings + the system `/etc/hosts`; no network traffic
+3. **DNS** -- additionally resolves via reverse DNS (PTR), looked up on a
+   background worker and cached (so the UI never blocks)
+
+Names come from three sources, highest priority first: operator-entered
+mappings, then `/etc/hosts` (or a `--names` / `[names] hosts_file`), then
+reverse DNS. Only the IP is substituted; the `:port` is preserved
+(`sbc-edge:5060`).
+
+To name an address **in context**, select a call-list row, stream row, or
+call-flow message and press **`N`**. A popup opens pre-filled with that IP;
+type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
+address turns resolution on automatically, and the mapping is saved to
+`$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
+across runs.
+
+Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
+PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
+`/etc/hosts`-format mapping file, repeatable). See
+[cli-reference.md](cli-reference.md) and the `[names]` config section.

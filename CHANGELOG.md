@@ -5,6 +5,13 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- Address name resolution (Wireshark-style): display `host:port` / `fqdn:port`
+  instead of `ip:port` in the call list, call-flow participants, and RTP stream
+  views. Press `n` to cycle Off / Static / DNS; press `N` to name the selected
+  address in context (saved to `~/.config/sipnab/hosts`). Sources, in priority
+  order: operator mappings, `/etc/hosts`, then reverse DNS (PTR, on a
+  background worker, off by default). New `--resolve`, `--reverse-dns`, and
+  `--names <FILE>` flags and a `[names]` config section.
 - `--version` / `-V` now embeds the git commit (and a `-dirty` marker) alongside
   the version and feature list. In the TUI, press `v` to show it in the status
   line; it also appears on the help screen.

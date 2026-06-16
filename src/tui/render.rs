@@ -104,6 +104,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         search_query: &app.search_query,
                         timestamp_mode: app.timestamp_mode,
                         theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
                     },
                 );
             }
@@ -116,6 +118,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &mut app.stream_list,
                     &store,
                     &app.theme,
+                    app.resolver.as_ref(),
+                    app.name_mode,
                 );
             }
         }
@@ -128,6 +132,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &store,
                     app.stream_detail_scroll,
                     &app.theme,
+                    app.resolver.as_ref(),
+                    app.name_mode,
                 );
             }
         }
@@ -174,6 +180,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 show_rtp: false,
                                 selected_msg: Some(sel),
                                 theme: &app.theme,
+                                resolver: app.resolver.as_ref(),
+                                name_mode: app.name_mode,
                             };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 &owned,
@@ -202,6 +210,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 show_rtp: app.show_rtp_in_flow,
                                 selected_msg: Some(sel),
                                 theme: &app.theme,
+                                resolver: app.resolver.as_ref(),
+                                name_mode: app.name_mode,
                             };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 &d.messages,
@@ -340,6 +350,9 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             }
             Popup::FileOpenDialog => {
                 render_file_open_popup(frame, area, app);
+            }
+            Popup::NameAddress => {
+                render_name_popup(frame, area, app);
             }
         }
     }
@@ -546,6 +559,7 @@ pub(super) fn fkey_bar_items(
                 ("Tab", "Type path"),
                 ("Esc", "Cancel"),
             ],
+            Popup::NameAddress => vec![("Enter", "Save"), ("Esc", "Cancel")],
         }
     } else {
         match view {
@@ -886,6 +900,59 @@ pub(super) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
 ///
 /// Two modes: a directory browser (default) that lists subdirectories and
 /// pcap/pcapng/cap files, or a manual-path text input (toggled with Tab).
+/// Render the "Name Address" popup: an IP (read-only) and an editable name.
+pub(super) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let popup_width = 60.min(area.width.saturating_sub(4));
+    let popup_height = 8.min(area.height.saturating_sub(2));
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Name Address ")
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    lines.push(Line::from(vec![
+        Span::styled("  IP:   ", Style::default().fg(app.theme.muted)),
+        Span::styled(
+            app.name_dialog.ip.clone(),
+            Style::default()
+                .fg(app.theme.header)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    // Name field with a visible cursor block at the edit position.
+    let name = &app.name_dialog.name;
+    let cursor = app.name_dialog.cursor.min(name.len());
+    let (before, after) = name.split_at(cursor);
+    let mut field: Vec<Span<'_>> = vec![
+        Span::styled("  Name: ", Style::default().fg(app.theme.muted)),
+        Span::raw(before.to_string()),
+    ];
+    let mut rest = after.chars();
+    match rest.next() {
+        Some(c) => {
+            field.push(Span::styled(
+                c.to_string(),
+                Style::default().bg(app.theme.selected).fg(Color::Black),
+            ));
+            field.push(Span::raw(rest.as_str().to_string()));
+        }
+        None => field.push(Span::styled(" ", Style::default().bg(app.theme.selected))),
+    }
+    lines.push(Line::from(field));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Enter save · empty name clears · Esc cancel",
+        Style::default().fg(app.theme.muted),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 pub(super) fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width = 80.min(area.width.saturating_sub(4));
     let popup_height = 22.min(area.height.saturating_sub(2));

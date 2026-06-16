@@ -48,6 +48,16 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 | `--ua` | `<PATTERN>` | -- | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md) |
 
+## Name Resolution
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--resolve` | -- | off | Start the TUI with name resolution on (manual mappings + `/etc/hosts`). Press `n` to cycle Off / Static / DNS |
+| `--reverse-dns` | -- | off | Also use reverse DNS (PTR) lookups. Implies `--resolve`. Emits DNS queries for captured IPs |
+| `--names` | `<FILE>` | -- | Preload IP → name mappings from an `/etc/hosts`-format file. Repeatable |
+
+See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming (`N`) and persistence.
+
 ## Diagnostic Aliases
 
 Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](filter-dsl.md) for the exact expansion of each alias.

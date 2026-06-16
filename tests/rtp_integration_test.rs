@@ -1489,7 +1489,16 @@ fn stream_detail_render_does_not_panic() {
     terminal
         .draw(|frame| {
             let area = Rect::new(0, 0, 120, 40);
-            render_stream_detail(frame, area, &key, &store, 0, &theme);
+            render_stream_detail(
+                frame,
+                area,
+                &key,
+                &store,
+                0,
+                &theme,
+                &sipnab::names::NameResolver::new(),
+                sipnab::names::NameMode::Off,
+            );
         })
         .expect("render should not panic");
 

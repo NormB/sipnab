@@ -12,6 +12,7 @@ use crate::rtp::stream_store::StreamStore;
 use super::Theme;
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
+#[allow(clippy::too_many_arguments)]
 pub fn render_stream_detail(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -19,6 +20,8 @@ pub fn render_stream_detail(
     store: &StreamStore,
     scroll: usize,
     theme: &Theme,
+    resolver: &crate::names::NameResolver,
+    name_mode: crate::names::NameMode,
 ) {
     let stream = match store.get(key) {
         Some(s) => s,
@@ -57,12 +60,12 @@ pub fn render_stream_detail(
 
     lines.push(Line::from(vec![
         Span::styled(
-            stream.key.src.to_string(),
+            resolver.label_socket(stream.key.src, name_mode),
             Style::default().fg(theme.accent),
         ),
         Span::raw(" → "),
         Span::styled(
-            stream.key.dst.to_string(),
+            resolver.label_socket(stream.key.dst, name_mode),
             Style::default().fg(theme.accent),
         ),
         Span::raw("  Dialog: "),
@@ -605,7 +608,16 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_stream_detail(frame, area, key, store, 0, &theme);
+                render_stream_detail(
+                    frame,
+                    area,
+                    key,
+                    store,
+                    0,
+                    &theme,
+                    &crate::names::NameResolver::new(),
+                    crate::names::NameMode::Off,
+                );
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -635,7 +647,16 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_stream_detail(frame, area, &key, &store, 0, &theme);
+                render_stream_detail(
+                    frame,
+                    area,
+                    &key,
+                    &store,
+                    0,
+                    &theme,
+                    &crate::names::NameResolver::new(),
+                    crate::names::NameMode::Off,
+                );
             })
             .unwrap();
         let buf = terminal.backend().buffer();
