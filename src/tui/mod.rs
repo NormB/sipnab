@@ -676,6 +676,10 @@ pub struct App {
     open_filter: String,
     /// File-open dialog: manual-path edit mode (Tab toggles).
     open_manual_mode: bool,
+    /// File-open dialog: error from the last directory read (e.g. permission
+    /// denied after a privilege drop), shown in the browser instead of a blank
+    /// list. `None` when the directory was read successfully.
+    open_error: Option<String>,
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
@@ -777,6 +781,7 @@ impl App {
             open_selected: 0,
             open_filter: String::new(),
             open_manual_mode: false,
+            open_error: None,
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),

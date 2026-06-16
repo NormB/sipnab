@@ -1042,39 +1042,60 @@ pub(super) fn refresh_file_entries(app: &mut App) {
         });
     }
 
-    if let Ok(read_dir) = std::fs::read_dir(&app.open_dir) {
-        let filter_lc = app.open_filter.to_lowercase();
-        for entry in read_dir.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') && !filter_lc.starts_with('.') {
-                continue;
-            }
-            let is_dir = match entry.file_type() {
-                // `file_type()` does not follow symlinks, so a symlinked
-                // directory reports `is_dir() == false`. Resolve via
-                // `metadata()` (which does follow) so directory symlinks
-                // still appear in the browser. Broken or unreadable links
-                // fall through as non-directories.
-                Ok(ft) if ft.is_symlink() => std::fs::metadata(entry.path())
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false),
-                Ok(ft) => ft.is_dir(),
-                Err(_) => false,
+    match std::fs::read_dir(&app.open_dir) {
+        Err(e) => {
+            // Surface the failure instead of showing a blank list. The most
+            // common cause is running under sudo: the capture process drops
+            // privileges to an unprivileged user that can't read the (0700)
+            // home directory.
+            let hint = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                " — the capture process dropped privileges to an unprivileged \
+                 user; run sipnab without sudo to browse your own files"
+            } else {
+                ""
             };
+            app.open_error = Some(format!(
+                "Cannot read {}: {}{}",
+                app.open_dir.display(),
+                e,
+                hint
+            ));
+        }
+        Ok(read_dir) => {
+            app.open_error = None;
+            let filter_lc = app.open_filter.to_lowercase();
+            for entry in read_dir.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') && !filter_lc.starts_with('.') {
+                    continue;
+                }
+                let is_dir = match entry.file_type() {
+                    // `file_type()` does not follow symlinks, so a symlinked
+                    // directory reports `is_dir() == false`. Resolve via
+                    // `metadata()` (which does follow) so directory symlinks
+                    // still appear in the browser. Broken or unreadable links
+                    // fall through as non-directories.
+                    Ok(ft) if ft.is_symlink() => std::fs::metadata(entry.path())
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false),
+                    Ok(ft) => ft.is_dir(),
+                    Err(_) => false,
+                };
 
-            if !is_dir && !is_browsable_capture(&name) {
-                continue;
+                if !is_dir && !is_browsable_capture(&name) {
+                    continue;
+                }
+
+                if !filter_lc.is_empty() && !name.to_lowercase().contains(&filter_lc) {
+                    continue;
+                }
+
+                entries.push(FileEntry {
+                    name,
+                    path: entry.path(),
+                    is_dir,
+                });
             }
-
-            if !filter_lc.is_empty() && !name.to_lowercase().contains(&filter_lc) {
-                continue;
-            }
-
-            entries.push(FileEntry {
-                name,
-                path: entry.path(),
-                is_dir,
-            });
         }
     }
 
@@ -1781,6 +1802,55 @@ mod tests {
         assert!(!names.contains(&"notes.txt"), "listed: {names:?}");
         // Gzipped captures are loadable but currently filtered out by the browser.
         assert!(names.contains(&"gz.pcap.gz"), "listed: {names:?}");
+        // A readable directory produces no error.
+        assert!(app.open_error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refresh_file_entries_reports_unreadable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root bypasses directory permissions, so this scenario (the sudo /
+        // privilege-drop case) only reproduces for an unprivileged user.
+        if crate::privilege::is_root() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::write(locked.join("a.pcap"), b"x").unwrap();
+        // Strip all permissions so read_dir fails with PermissionDenied.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let mut app = App::new_test();
+        app.set_open_dir_for_test(locked.clone());
+        refresh_file_entries(&mut app);
+        let err = app.open_error.clone();
+
+        // Restore perms so the tempdir can be cleaned up.
+        let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
+
+        let err = err.expect("unreadable dir should set open_error");
+        assert!(err.contains("Cannot read"), "got: {err}");
+        assert!(
+            err.contains("without sudo"),
+            "missing privilege-drop hint: {err}"
+        );
+    }
+
+    #[test]
+    fn refresh_file_entries_clears_stale_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
+        let mut app = App::new_test();
+        app.open_error = Some("stale".to_string());
+        app.set_open_dir_for_test(dir.path().to_path_buf());
+        refresh_file_entries(&mut app);
+        assert!(
+            app.open_error.is_none(),
+            "readable dir must clear the error"
+        );
+        assert!(app.open_entries.iter().any(|e| e.name == "a.pcap"));
     }
 
     fn app_with_dialogs() -> App {

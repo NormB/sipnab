@@ -908,6 +908,34 @@ pub(super) fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app
     }
 }
 
+/// Word-wrap `text` to `width` columns (best-effort, on whitespace). Used for
+/// the file-browser error message, since the dialog Paragraph does not wrap.
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(word);
+        } else if cur.chars().count() + 1 + word.chars().count() <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 /// Render the directory-browser variant of the Open dialog.
 pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
     let header = format!("  Dir: {}", app.open_dir.display());
@@ -929,6 +957,21 @@ pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, 
         Style::default().fg(app.theme.muted),
     )));
     lines.push(Line::from(""));
+
+    // If the directory couldn't be read, show why (e.g. privileges dropped to
+    // 'nobody' under sudo) instead of a blank list.
+    if let Some(err) = &app.open_error {
+        let wrap_width = (inner.width as usize).saturating_sub(4).max(10);
+        for chunk in wrap_to_width(err, wrap_width) {
+            lines.push(Line::from(Span::styled(
+                format!("  {chunk}"),
+                Style::default()
+                    .fg(app.theme.bad)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        lines.push(Line::from(""));
+    }
 
     let list_rows = (inner.height as usize).saturating_sub(5);
     if app.open_entries.is_empty() {
