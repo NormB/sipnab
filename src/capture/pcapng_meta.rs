@@ -101,6 +101,78 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// Write a copy of the pcapng at `src` to `dst` with every Decryption Secrets
+/// Block removed (the `editcap --discard-all-secrets` analog). All other blocks
+/// are copied byte-for-byte. Written atomically (temp+rename) so a failure never
+/// corrupts `dst`, and `src` is never modified. Returns the number of DSBs
+/// stripped.
+pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
+    use std::io::{Error, ErrorKind};
+    const DSB_TYPE: u32 = 0x0000_000A;
+    // The Section Header Block type 0x0A0D0D0A is byte-symmetric, so it reads
+    // the same regardless of section byte order.
+    const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
+
+    let bytes = std::fs::read(src)?;
+    if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "not a pcapng (missing Section Header Block)",
+        ));
+    }
+    let mut be = byte_order_from_shb(&bytes[8..12])
+        .ok_or_else(|| Error::new(ErrorKind::InvalidData, "invalid SHB byte-order magic"))?;
+
+    let mut kept: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut stripped = 0usize;
+    let mut off = 0usize;
+    while off + 8 <= bytes.len() {
+        // A new section (another SHB) resets the byte order.
+        if bytes[off..off + 4] == SHB_BYTES
+            && let Some(b) = bytes.get(off + 8..off + 12).and_then(byte_order_from_shb)
+        {
+            be = b;
+        }
+        let btype = rd_u32(&bytes[off..off + 4], be);
+        let total_len = rd_u32(&bytes[off + 4..off + 8], be) as usize;
+        if total_len < 12 || off + total_len > bytes.len() {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "truncated or invalid pcapng block length",
+            ));
+        }
+        if btype == DSB_TYPE {
+            stripped += 1; // drop this Decryption Secrets Block
+        } else {
+            kept.extend_from_slice(&bytes[off..off + total_len]);
+        }
+        off += total_len;
+    }
+
+    crate::capture::atomic::write_atomic(dst, |w| w.write_all(&kept))?;
+    Ok(stripped)
+}
+
+/// Read a u32 from a 4-byte slice in the given byte order.
+fn rd_u32(b: &[u8], be: bool) -> u32 {
+    let a: [u8; 4] = b.try_into().unwrap_or([0; 4]);
+    if be {
+        u32::from_be_bytes(a)
+    } else {
+        u32::from_le_bytes(a)
+    }
+}
+
+/// Section byte order from an SHB byte-order magic field: `Some(true)` for
+/// big-endian (`1A2B3C4D`), `Some(false)` for little-endian (`4D3C2B1A`).
+fn byte_order_from_shb(magic: &[u8]) -> Option<bool> {
+    match magic {
+        [0x1A, 0x2B, 0x3C, 0x4D] => Some(true),
+        [0x4D, 0x3C, 0x2B, 0x1A] => Some(false),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,5 +255,69 @@ mod tests {
     fn missing_file_errors() {
         let meta = read_pcapng_metadata(Path::new("/no/such/file.pcapng"));
         assert!(meta.is_err());
+    }
+
+    /// Write a pcapng carrying an NRB and (optionally) a DSB.
+    fn write_pcapng_with(dir: &Path, name: &str, with_dsb: bool) -> std::path::PathBuf {
+        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+        let path = dir.join(name);
+        let mut w =
+            PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::EncryptedWithDsb)
+                .unwrap();
+        w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])
+            .unwrap();
+        if with_dsb {
+            let keylog = dir.join("k.txt");
+            std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn strip_secrets_removes_dsb_keeps_names_and_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
+        let dst = dir.path().join("clean.pcapng");
+
+        let n = strip_secrets(&src, &dst).unwrap();
+        assert_eq!(n, 1, "one DSB stripped");
+
+        // Output: no secrets, names preserved.
+        let after = read_pcapng_metadata(&dst).unwrap();
+        assert!(after.tls_secrets.is_empty(), "secrets must be gone");
+        assert!(
+            after.names.iter().any(|(_, name)| name == "sbc-edge"),
+            "names preserved: {:?}",
+            after.names
+        );
+        // Source untouched.
+        let src_meta = read_pcapng_metadata(&src).unwrap();
+        assert_eq!(
+            src_meta.tls_secrets.len(),
+            1,
+            "source DSB must remain intact"
+        );
+    }
+
+    #[test]
+    fn strip_secrets_no_dsb_returns_zero_and_copies() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = write_pcapng_with(dir.path(), "nodsb.pcapng", false);
+        let dst = dir.path().join("copy.pcapng");
+        assert_eq!(strip_secrets(&src, &dst).unwrap(), 0);
+        // Faithful copy: names still present.
+        let after = read_pcapng_metadata(&dst).unwrap();
+        assert!(after.names.iter().any(|(_, name)| name == "sbc-edge"));
+    }
+
+    #[test]
+    fn strip_secrets_non_pcapng_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("notpcapng.bin");
+        std::fs::write(&src, b"definitely not a pcapng file").unwrap();
+        let dst = dir.path().join("out.pcapng");
+        assert!(strip_secrets(&src, &dst).is_err());
     }
 }
