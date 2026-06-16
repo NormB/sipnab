@@ -25,6 +25,14 @@ pub(super) fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Global: show the version (with git commit) in the status line. Works in
+    // any view; search and popups are handled above, so typing 'v' there is
+    // unaffected.
+    if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
+        app.status_error = Some(format!("sipnab {}", crate::cli::build_version()));
+        return;
+    }
+
     match &app.current_view {
         View::CallList => handle_call_list_key(app, key),
         View::StreamList => handle_stream_list_key(app, key),
@@ -464,8 +472,24 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         app.selected_msg_index = msg_count - 1;
     }
 
+    // In the split view, Tab moves focus between the ladder (left) and detail
+    // (right) panes; the directional keys below then act on the focused pane.
+    let detail_focused = app.raw_preview && app.call_flow_detail_focused;
+
     match key.code {
         k if k == app.keymap.quit => app.should_quit = true,
+        KeyCode::Tab | KeyCode::BackTab => {
+            // Only meaningful when the detail pane is visible.
+            if app.raw_preview {
+                app.call_flow_detail_focused = !app.call_flow_detail_focused;
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') if detail_focused => {
+            app.detail_scroll = app.detail_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') if detail_focused => {
+            app.detail_scroll = app.detail_scroll.saturating_add(1);
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             if app.selected_msg_index > 0 {
                 app.selected_msg_index -= 1;
@@ -487,6 +511,15 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             if app.selected_msg_index >= visible_rows {
                 app.call_flow_scroll = app.selected_msg_index.saturating_sub(10);
             }
+        }
+        KeyCode::PageUp if detail_focused => {
+            app.detail_scroll = app.detail_scroll.saturating_sub(20);
+        }
+        KeyCode::PageDown if detail_focused => {
+            app.detail_scroll = app.detail_scroll.saturating_add(20);
+        }
+        KeyCode::Home if detail_focused => {
+            app.detail_scroll = 0;
         }
         KeyCode::PageUp => {
             app.selected_msg_index = app.selected_msg_index.saturating_sub(20);
@@ -599,6 +632,10 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('R') => {
             // Toggle raw preview split
             app.raw_preview = !app.raw_preview;
+            if !app.raw_preview {
+                // No detail pane to focus once the split is hidden.
+                app.call_flow_detail_focused = false;
+            }
             app.status_error = Some(if app.raw_preview {
                 "Raw preview: ON".to_string()
             } else {
@@ -975,6 +1012,23 @@ pub(super) fn open_file_dialog(app: &mut App) {
 /// Extensions recognised as pcap/pcapng files by the file browser.
 pub(super) const PCAP_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
 
+/// True if `name` is a capture file the browser should list: a bare
+/// pcap/pcapng/cap file, or a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…).
+///
+/// [`crate::capture::file::open_offline`] transparently decompresses gzip
+/// captures (it sniffs the `1f 8b` magic), so hiding `*.gz` here would let the
+/// browser refuse files the loader can actually open. Case-insensitive.
+pub(super) fn is_browsable_capture(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    // Peel an optional `.gz` so `foo.pcap.gz` is judged by its `.pcap` stem.
+    let stem = lower.strip_suffix(".gz").unwrap_or(lower.as_str());
+    std::path::Path::new(stem)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| PCAP_EXTENSIONS.iter().any(|p| p == &e))
+        .unwrap_or(false)
+}
+
 /// Rebuild [`App::open_entries`] from the current [`App::open_dir`], applying
 /// [`App::open_filter`] and sorting dirs-first / alphabetical.
 pub(super) fn refresh_file_entries(app: &mut App) {
@@ -1008,15 +1062,8 @@ pub(super) fn refresh_file_entries(app: &mut App) {
                 Err(_) => false,
             };
 
-            if !is_dir {
-                let ext_ok = std::path::Path::new(&name)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| PCAP_EXTENSIONS.iter().any(|p| p.eq_ignore_ascii_case(e)))
-                    .unwrap_or(false);
-                if !ext_ok {
-                    continue;
-                }
+            if !is_dir && !is_browsable_capture(&name) {
+                continue;
             }
 
             if !filter_lc.is_empty() && !name.to_lowercase().contains(&filter_lc) {
@@ -1684,6 +1731,58 @@ mod tests {
         .expect("parse 200")
     }
 
+    #[test]
+    fn is_browsable_capture_matrix() {
+        // Plain captures, any case.
+        assert!(is_browsable_capture("a.pcap"));
+        assert!(is_browsable_capture("a.pcapng"));
+        assert!(is_browsable_capture("a.cap"));
+        assert!(is_browsable_capture("A.PCAP"));
+        assert!(is_browsable_capture("UPPER.PcApNg"));
+        // Dotted/UUID stems keep working (extension is the final component).
+        assert!(is_browsable_capture("9bbc-71.62.x.pcap"));
+        // Gzip-compressed captures — loadable, so listable.
+        assert!(is_browsable_capture("a.pcap.gz"));
+        assert!(is_browsable_capture("a.cap.GZ"));
+        assert!(is_browsable_capture("a.pcapng.gz"));
+        // Non-captures and traps.
+        assert!(!is_browsable_capture("notes.txt"));
+        assert!(!is_browsable_capture("archive.gz")); // bare .gz isn't a capture
+        assert!(!is_browsable_capture("notes.txt.gz"));
+        assert!(!is_browsable_capture("pcap")); // no extension
+        assert!(!is_browsable_capture(""));
+        assert!(!is_browsable_capture(".pcap")); // dotfile, extension-less stem
+    }
+
+    #[test]
+    fn refresh_file_entries_repro() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path();
+        std::fs::write(p.join("9bbc7162-978d-4456-b81c-496ccb2b1200.pcap"), b"x").unwrap();
+        std::fs::write(p.join("plain.pcap"), b"x").unwrap();
+        std::fs::write(p.join("ng.pcapng"), b"x").unwrap();
+        std::fs::write(p.join("legacy.cap"), b"x").unwrap();
+        std::fs::write(p.join("gz.pcap.gz"), b"x").unwrap();
+        std::fs::write(p.join("upper.PCAP"), b"x").unwrap();
+        std::fs::write(p.join("notes.txt"), b"x").unwrap();
+        std::fs::create_dir(p.join("subdir")).unwrap();
+
+        let mut app = App::new_test();
+        app.set_open_dir_for_test(p.to_path_buf());
+        refresh_file_entries(&mut app);
+
+        let names: Vec<&str> = app.open_entries.iter().map(|e| e.name.as_str()).collect();
+        // Diagnostic: surface exactly what the browser would show.
+        assert!(names.contains(&"plain.pcap"), "listed: {names:?}");
+        assert!(names.contains(&"ng.pcapng"), "listed: {names:?}");
+        assert!(names.contains(&"legacy.cap"), "listed: {names:?}");
+        assert!(names.contains(&"upper.PCAP"), "listed: {names:?}");
+        assert!(names.contains(&"subdir"), "listed: {names:?}");
+        assert!(!names.contains(&"notes.txt"), "listed: {names:?}");
+        // Gzipped captures are loadable but currently filtered out by the browser.
+        assert!(names.contains(&"gz.pcap.gz"), "listed: {names:?}");
+    }
+
     fn app_with_dialogs() -> App {
         let t0 = base_ts();
         App::with_processed_messages(vec![
@@ -1740,6 +1839,37 @@ mod tests {
         let mut app = App::new_test();
         handle_key_event(&mut app, key(KeyCode::Tab));
         assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn key_event_v_shows_version_globally() {
+        let mut app = App::new_test();
+        handle_key_event(&mut app, key(KeyCode::Char('v')));
+        let status = app.status_error.clone().expect("version status set");
+        assert!(status.starts_with("sipnab"), "got: {status}");
+        assert!(status.contains(env!("CARGO_PKG_VERSION")), "got: {status}");
+        // Showing the version must not change the current view.
+        assert_eq!(app.current_view, View::CallList);
+    }
+
+    #[test]
+    fn key_event_shift_v_shows_version_in_any_view() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_key_event(&mut app, key(KeyCode::Char('V')));
+        let status = app.status_error.clone().expect("version status set");
+        assert!(status.contains(env!("CARGO_PKG_VERSION")), "got: {status}");
+        assert_eq!(app.current_view, View::StreamList);
+    }
+
+    #[test]
+    fn key_event_v_typed_into_search_not_version() {
+        let mut app = App::new_test();
+        app.search_active = true;
+        handle_key_event(&mut app, key(KeyCode::Char('v')));
+        // Search input takes priority — 'v' is a search character, not a command.
+        assert_eq!(app.search_query, "v");
+        assert!(app.status_error.is_none());
     }
 
     // ── handle_search_input ──────────────────────────────────────────
@@ -2193,6 +2323,68 @@ mod tests {
         assert_eq!(app.selected_msg_index, 1);
         handle_call_flow_key(&mut app, key(KeyCode::PageUp));
         assert_eq!(app.selected_msg_index, 0);
+    }
+
+    #[test]
+    fn call_flow_tab_toggles_pane_focus() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        assert!(app.raw_preview, "split is on by default");
+        assert!(!app.call_flow_detail_focused, "ladder focused initially");
+        handle_call_flow_key(&mut app, key(KeyCode::Tab));
+        assert!(app.call_flow_detail_focused, "Tab focuses detail pane");
+        handle_call_flow_key(&mut app, key(KeyCode::Tab));
+        assert!(!app.call_flow_detail_focused, "Tab toggles back to ladder");
+    }
+
+    #[test]
+    fn call_flow_tab_noop_without_split() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        app.raw_preview = false;
+        handle_call_flow_key(&mut app, key(KeyCode::Tab));
+        assert!(!app.call_flow_detail_focused, "no detail pane to focus");
+    }
+
+    #[test]
+    fn call_flow_detail_focus_scrolls_detail_not_selection() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Tab)); // focus detail
+        let sel = app.selected_msg_index;
+        assert_eq!(app.detail_scroll, 0);
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.detail_scroll, 1, "Down scrolls the detail pane");
+        assert_eq!(
+            app.selected_msg_index, sel,
+            "selection unchanged while detail focused"
+        );
+        handle_call_flow_key(&mut app, key(KeyCode::Up));
+        assert_eq!(app.detail_scroll, 0, "Up scrolls the detail pane back");
+    }
+
+    #[test]
+    fn call_flow_ladder_focus_moves_selection() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        // Default focus is the ladder: Down advances the selected message.
+        handle_call_flow_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.selected_msg_index, 1);
+        assert_eq!(app.detail_scroll, 0);
+    }
+
+    #[test]
+    fn call_flow_toggle_split_off_clears_focus() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Tab)); // focus detail
+        assert!(app.call_flow_detail_focused);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('R'))); // hide split
+        assert!(!app.raw_preview);
+        assert!(
+            !app.call_flow_detail_focused,
+            "focus reset when split is hidden"
+        );
     }
 
     #[test]

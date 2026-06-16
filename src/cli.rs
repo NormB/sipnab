@@ -589,6 +589,12 @@ pub struct Cli {
     #[arg(long, value_name = "DIR")]
     pub chroot: Option<String>,
 
+    /// Grant this binary the Linux capabilities needed for live capture
+    /// (`cap_net_raw,cap_net_admin+ep` via setcap) so it can run without
+    /// sudo, then exit. Re-invokes itself through sudo when not already root.
+    #[arg(long = "setup-caps")]
+    pub setup_caps: bool,
+
     // ── Resource limits ──────────────────────────────────────────────
     /// Maximum concurrent TCP/TLS reassembly sessions.
     #[arg(long, value_name = "N", default_value = "10000")]
@@ -736,6 +742,13 @@ mod tests {
         assert_eq!(cli.max_reassembly, 10000);
         assert_eq!(cli.color, "auto");
         assert!(!cli.no_tui);
+        assert!(!cli.setup_caps);
+    }
+
+    #[test]
+    fn setup_caps_flag_parses() {
+        let cli = Cli::parse_from_args(["sipnab", "--setup-caps"]);
+        assert!(cli.setup_caps);
     }
 
     #[test]

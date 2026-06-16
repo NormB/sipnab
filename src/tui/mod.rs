@@ -693,6 +693,10 @@ pub struct App {
     selected_msg_index: usize,
     /// Scroll offset for the detail (right) panel in split view.
     detail_scroll: u16,
+    /// In the call flow split view, whether keyboard focus is on the detail
+    /// (right) pane. `false` = ladder (left). Toggled with Tab. Only meaningful
+    /// while [`Self::raw_preview`] is on; navigation keys act on the focused pane.
+    call_flow_detail_focused: bool,
     /// Whether extended (multi-leg) flow is active.
     extended_flow: bool,
     /// Whether RTP stream info is displayed in the call flow.
@@ -780,6 +784,7 @@ impl App {
             raw_preview_pct: 40,
             selected_msg_index: 0,
             detail_scroll: 0,
+            call_flow_detail_focused: false,
             extended_flow: false,
             show_rtp_in_flow: false,
             diff_selected_msg: None,
