@@ -1284,6 +1284,7 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 0);
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn feed_embedded_secrets_loads_dsb_into_decryptor() {
         use crate::capture::{PcapExportMode, PcapWriter};
@@ -1315,6 +1316,7 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 1);
     }
 
+    #[cfg(feature = "native")]
     #[test]
     fn feed_embedded_secrets_no_dsb_is_noop() {
         use crate::capture::{PcapExportMode, PcapWriter};
