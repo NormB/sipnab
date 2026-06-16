@@ -195,6 +195,11 @@ pub struct Cli {
     #[arg(long = "names", value_name = "FILE")]
     pub names: Vec<String>,
 
+    /// Write a copy of the input pcapng (`-I`) to this path with all decryption
+    /// secrets (DSBs) removed, then exit. The input is never modified.
+    #[arg(long = "strip-secrets", value_name = "OUTPUT")]
+    pub strip_secrets: Option<String>,
+
     // ── Matching ─────────────────────────────────────────────────────
     /// Case-insensitive matching for header filters and patterns.
     #[arg(short = 'i', long = "ignore-case")]
@@ -784,6 +789,13 @@ mod tests {
             cli.names,
             vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
         );
+    }
+
+    #[test]
+    fn strip_secrets_flag_parses() {
+        let cli =
+            Cli::parse_from_args(["sipnab", "-I", "in.pcapng", "--strip-secrets", "out.pcapng"]);
+        assert_eq!(cli.strip_secrets.as_deref(), Some("out.pcapng"));
     }
 
     #[test]

@@ -134,6 +134,28 @@ fn main() {
         }
     }
 
+    // 2b. --strip-secrets: write a DSB-free copy of the input pcapng and exit.
+    // The input is never modified; the output is written atomically.
+    if let Some(ref out) = cli.strip_secrets {
+        let Some(ref input) = cli.input else {
+            tracing::error!("--strip-secrets requires an input file (-I <file>)");
+            std::process::exit(1);
+        };
+        match sipnab::capture::pcapng_meta::strip_secrets(
+            std::path::Path::new(input),
+            std::path::Path::new(out),
+        ) {
+            Ok(n) => {
+                tracing::info!("Stripped {n} decryption secret(s): {input} -> {out}");
+                return;
+            }
+            Err(e) => {
+                tracing::error!("--strip-secrets failed: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // 3. Install signal handlers
     signals::install_handlers();
 
