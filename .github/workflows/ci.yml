@@ -100,27 +100,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.94.1
 
-      # Cache keys must not contain commas, and matrix.features has them
-      # (e.g. "native,tui,audio"). GitHub expressions have no replace(), so
-      # derive a comma-free fragment here.
-      - name: Derive cache key fragment
-        run: echo "FEATURES_KEY=$(echo '${{ matrix.features }}' | tr ',' '_')" >> "$GITHUB_ENV"
-
       - uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             target
-          # Key the cache per feature combo. A shared key (or broad
-          # restore-keys) lets one combo's `target/` be restored into another;
-          # cargo then serves a stale `libsipnab` rmeta built for a different
-          # feature set, yielding impossible errors (e.g. a tui-only symbol
-          # flagged dead-code in a native-only build). Scope restore-keys to
-          # the same combo so a job only ever reuses its own prior target.
-          key: ${{ runner.os }}-features-${{ env.FEATURES_KEY }}-${{ hashFiles('**/Cargo.lock') }}
+          # Cache keys must not contain commas, and matrix.features has them
+          # (e.g. "native,tui,audio"); key on the lockfile only.
+          key: ${{ runner.os }}-features-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-features-${{ env.FEATURES_KEY }}-
+            ${{ runner.os }}-features-
+            ${{ runner.os }}-cargo-
 
       # wasm is lib-only: its test/bin targets are meaningless on the host.
       - name: Check (lib only, wasm)
