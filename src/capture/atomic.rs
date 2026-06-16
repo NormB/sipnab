@@ -76,7 +76,7 @@ mod tests {
         // The writer fails partway; the original must be untouched.
         let err = write_atomic(&path, |w| {
             w.write_all(b"partial")?;
-            Err(io::Error::new(io::ErrorKind::Other, "boom"))
+            Err(io::Error::other("boom"))
         });
         assert!(err.is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"original");

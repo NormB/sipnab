@@ -815,6 +815,7 @@ fn default_names_path() -> Option<std::path::PathBuf> {
     Some(base.join("sipnab").join("hosts"))
 }
 
+#[cfg(feature = "tui")]
 fn run_tui_mode(
     cli: Cli,
     config: Config,
