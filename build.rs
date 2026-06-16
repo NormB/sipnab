@@ -10,7 +10,11 @@ fn main() {
 
     let commit = git(&["rev-parse", "--short=8", "HEAD"]).unwrap_or_default();
     let tag = git(&["describe", "--tags", "--exact-match", "HEAD"]).unwrap_or_default();
-    let dirty = git(&["status", "--porcelain"])
+    // "-dirty" reflects only TRACKED modifications. `--untracked-files=no` keeps
+    // untracked scratch paths (e.g. the `harness/` integration harness or the
+    // Zola-generated `website/public/`) from marking an otherwise-clean build
+    // dirty; only edits to checked-in files count.
+    let dirty = git(&["status", "--porcelain", "--untracked-files=no"])
         .map(|s| if s.is_empty() { "" } else { "-dirty" })
         .unwrap_or("");
 
