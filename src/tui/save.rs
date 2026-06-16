@@ -34,6 +34,17 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
         Err(e) => return format!("Save failed: {e}"),
     };
 
+    // Embed name resolution (NRB) before the packets, when name resolution is
+    // active (opt-in via the mode). DNS-derived names are included only in DNS
+    // mode. No-op for plain pcap or when there are no validated names.
+    if pcapng && app.name_mode() != crate::names::NameMode::Off {
+        let include_dns = app.name_mode() == crate::names::NameMode::Dns;
+        let entries = app.resolver().nrb_entries(include_dns);
+        if let Err(e) = writer.write_name_resolution_block(&entries) {
+            return format!("Save failed writing name resolution: {e}");
+        }
+    }
+
     let fmt_label = if pcapng { "pcapng" } else { "pcap" };
     let mut count = 0;
     for msg in &messages {
@@ -796,6 +807,64 @@ mod tests {
             make_invite("call-2@test", "1003", "1004", t0 + TimeDelta::seconds(5)),
             make_ok("call-2@test", t0 + TimeDelta::seconds(6)),
         ])
+    }
+
+    /// Scan a pcapng file's Name Resolution Blocks for the names mapped to `ip`.
+    fn nrb_names_for(path: &std::path::Path, ip: [u8; 4]) -> Vec<String> {
+        use pcap_file::pcapng::PcapNgReader;
+        use pcap_file::pcapng::blocks::name_resolution::Record;
+        let bytes = std::fs::read(path).unwrap();
+        let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+        let mut names = Vec::new();
+        while let Some(Ok(block)) = reader.next_block() {
+            if let Some(nrb) = block.into_name_resolution() {
+                for rec in &nrb.records {
+                    if let Record::Ipv4(r) = rec
+                        && r.ip_addr.as_ref() == ip
+                    {
+                        names = r.names.iter().map(|n| n.to_string()).collect();
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    #[test]
+    fn pcapng_save_includes_name_resolution_block() {
+        // SUCCESS case: name resolution on + a mapping → the saved pcapng
+        // carries an NRB that maps the source IP to the operator's name.
+        let mut app = app_with_dialogs();
+        app.resolver().set_manual(addr_a(), "sbc-edge".into());
+        app.set_name_mode(crate::names::NameMode::Names);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("named.pcapng");
+        let msg = save_to_pcap_path(&app, path.to_str().unwrap(), true);
+        assert!(msg.starts_with("Saved"), "save failed: {msg}");
+
+        assert_eq!(
+            nrb_names_for(&path, [10, 0, 0, 1]),
+            vec!["sbc-edge".to_string()]
+        );
+    }
+
+    #[test]
+    fn pcapng_save_without_resolution_writes_no_nrb() {
+        // FAILURE/negative case: name resolution Off (default) → no NRB at all,
+        // even if a mapping happens to exist.
+        let mut app = app_with_dialogs();
+        app.resolver().set_manual(addr_a(), "sbc-edge".into());
+        app.set_name_mode(crate::names::NameMode::Off);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.pcapng");
+        save_to_pcap_path(&app, path.to_str().unwrap(), true);
+
+        assert!(
+            nrb_names_for(&path, [10, 0, 0, 1]).is_empty(),
+            "no NRB expected when name resolution is Off"
+        );
     }
 
     /// Build a minimal RTP packet (12-byte header + payload) and feed it to
