@@ -414,6 +414,25 @@ impl TlsDecryptor {
         self.keylog_entries.len()
     }
 
+    /// Ingest NSS Key Log text into the decryptor — e.g. secrets extracted from
+    /// a pcapng Decryption Secrets Block. Parses one entry per line, skipping
+    /// blanks, `#` comments, and any malformed line (untrusted-input safe).
+    /// Returns the number of valid entries added.
+    pub fn add_keylog_text(&mut self, text: &str) -> usize {
+        let before = self.keylog_entries.len();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            // Malformed lines are skipped (DSB content may be untrusted).
+            if let Ok(entry) = super::tls::parse_keylog_line(line) {
+                self.keylog_entries.push(entry);
+            }
+        }
+        self.keylog_entries.len() - before
+    }
+
     /// Poll the keylog file for new entries (for --keylog-watch).
     ///
     /// Checks if the file has grown since the last poll. If so, reads
@@ -856,6 +875,22 @@ fn hex_id(cr: &[u8; 32]) -> String {
     format!("{:02x}{:02x}{:02x}{:02x}...", cr[0], cr[1], cr[2], cr[3])
 }
 
+/// Load any TLS Key Log secrets embedded in the pcapng at `path` (Decryption
+/// Secrets Blocks) into `decryptor`, so a self-contained capture decrypts
+/// without an external `--keylog`. Returns the number of keylog entries added;
+/// a no-op (0) for non-pcapng files or files without a TLS DSB.
+#[cfg(feature = "native")]
+pub fn feed_embedded_secrets(path: &Path, decryptor: &mut TlsDecryptor) -> usize {
+    match crate::capture::pcapng_meta::read_pcapng_metadata(path) {
+        Ok(meta) => meta
+            .tls_secrets
+            .iter()
+            .map(|s| decryptor.add_keylog_text(s))
+            .sum(),
+        Err(_) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1221,6 +1256,79 @@ mod tests {
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
         }
+    }
+
+    const CLIENT_RANDOM_LINE: &str = "CLIENT_RANDOM \
+        aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd \
+        00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    #[test]
+    fn add_keylog_text_ingests_valid_lines_skips_junk() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        assert_eq!(d.keylog_entry_count(), 0);
+        let text = format!("# comment\n\n{CLIENT_RANDOM_LINE}\nthis is not a keylog line\n");
+        let added = d.add_keylog_text(&text);
+        assert_eq!(added, 1, "one valid entry; comment/blank/junk skipped");
+        assert_eq!(d.keylog_entry_count(), 1);
+    }
+
+    #[test]
+    fn add_keylog_text_empty_or_all_junk_adds_nothing() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        assert_eq!(d.add_keylog_text(""), 0);
+        assert_eq!(d.add_keylog_text("# only a comment\ngarbage line\n"), 0);
+        assert_eq!(d.keylog_entry_count(), 0);
+    }
+
+    #[test]
+    fn feed_embedded_secrets_loads_dsb_into_decryptor() {
+        use crate::capture::{PcapExportMode, PcapWriter};
+        let dir = tempfile::tempdir().unwrap();
+        let keylog = dir.path().join("k.txt");
+        std::fs::write(&keylog, format!("{CLIENT_RANDOM_LINE}\n")).unwrap();
+        let path = dir.path().join("withdsb.pcapng");
+        {
+            let mut w = PcapWriter::with_format(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::EncryptedWithDsb,
+            )
+            .unwrap();
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            w.finish().unwrap();
+        }
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let added = super::feed_embedded_secrets(&path, &mut d);
+        assert_eq!(
+            added, 1,
+            "the embedded DSB secret should reach the decryptor"
+        );
+        assert_eq!(d.keylog_entry_count(), 1);
+    }
+
+    #[test]
+    fn feed_embedded_secrets_no_dsb_is_noop() {
+        use crate::capture::{PcapExportMode, PcapWriter};
+        // A pcapng with no DSB → nothing fed.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.pcapng");
+        PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        assert_eq!(super::feed_embedded_secrets(&path, &mut d), 0);
     }
 
     /// A minimal but well-formed ServerHello handshake payload advertising

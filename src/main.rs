@@ -1176,6 +1176,31 @@ fn run_batch_mode(
         None
     };
 
+    // 17d. Feed TLS secrets embedded in a pcapng (Decryption Secrets Block) into
+    // the decryptor, so a self-contained capture decrypts without an external
+    // --keylog. Creates a decryptor on demand when the file carries secrets.
+    #[cfg(feature = "tls")]
+    if let Some(ref input) = cli.input {
+        let path = std::path::Path::new(input);
+        if let Some(ref mut dec) = tls_decryptor {
+            let added = sipnab::capture::decrypt::feed_embedded_secrets(path, dec);
+            if added > 0 {
+                tracing::info!("TLS decryption: +{added} embedded DSB secret(s) from {input}");
+            }
+        } else if let Ok(meta) = sipnab::capture::pcapng_meta::read_pcapng_metadata(path)
+            && !meta.tls_secrets.is_empty()
+            && let Ok(mut d) = TlsDecryptor::new(None, sipnab::crypto::default_backend())
+        {
+            let added: usize = meta.tls_secrets.iter().map(|s| d.add_keylog_text(s)).sum();
+            if added > 0 {
+                tracing::info!(
+                    "TLS decryption active: {added} secret(s) from embedded DSB in {input}"
+                );
+                tls_decryptor = Some(d);
+            }
+        }
+    }
+
     // Start API server if --api is specified (feature-gated)
     // The API reads from the SAME stores the packet loop writes to —
     // no mirror, no second parse.
