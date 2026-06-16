@@ -36,6 +36,8 @@
       <button class="demo-tab" onclick="showDemo(2, this)">Search</button>
       <button class="demo-tab" onclick="showDemo(3, this)">File Open</button>
       <button class="demo-tab" onclick="showDemo(4, this)">RTP Quality</button>
+      <button class="demo-tab" onclick="showDemo(5, this)">RTP Detail</button>
+      <button class="demo-tab" onclick="showDemo(6, this)">CLI &amp; JSON</button>
     </div>
     <div class="demo-panels">
       <div class="demo-panel active" data-demo="0">
@@ -57,6 +59,14 @@
       <div class="demo-panel" data-demo="4">
         <p class="demo-desc">Press <kbd>Tab</kbd> to switch to <strong>RTP Streams</strong> — see SSRC, codec, jitter, packet loss, and duration for every media stream. Call flow shows RTP quality bars inline.</p>
         <img src="{{ get_url(path='demos/08-rtp-tui.gif') }}?v=2" alt="sipnab RTP streams TUI demo" loading="lazy">
+      </div>
+      <div class="demo-panel" data-demo="5">
+        <p class="demo-desc">Walk the call-flow ladder past the SIP messages into the <strong>RTP media bars</strong>, then open a stream to inspect its per-interval quality and jitter.</p>
+        <img src="{{ get_url(path='demos/06-rtp-quality.gif') }}?v=1" alt="sipnab RTP stream detail demo" loading="lazy">
+      </div>
+      <div class="demo-panel" data-demo="6">
+        <p class="demo-desc">Run sipnab headless: emit dialogs as <kbd>--json</kbd>, surface trouble calls with <kbd>--problems</kbd>, and print a full call report with <kbd>--report</kbd>.</p>
+        <img src="{{ get_url(path='demos/07-rtp-cli.gif') }}?v=1" alt="sipnab CLI JSON and report demo" loading="lazy">
       </div>
     </div>
   </div>
