@@ -23,6 +23,10 @@ exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-sa
 [dependencies]
 # Phase 1: Capture & core
 pcap = { version = "2", optional = true }
+# Transparent decompression of gzip-compressed capture files (libpcap, unlike
+# Wireshark, cannot read them directly). Native-only; see the `native` feature.
+flate2 = { version = "1", optional = true }
+tempfile = { version = "3", optional = true }
 etherparse = "0.20"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
 regex = "1"
@@ -121,7 +125,7 @@ harness = false
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
-native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log"]
+native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:flate2", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
 hep = ["native"]
