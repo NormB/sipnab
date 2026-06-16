@@ -58,6 +58,17 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 
 See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming (`N`) and persistence.
 
+## pcapng Metadata
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. The input is never modified; the output is written atomically. |
+
+Note: name mappings are saved into a pcapng Name Resolution Block when saving with
+resolution active, and embedded NRB names / DSB TLS secrets are read back (and
+used for decryption) when a pcapng is opened. See
+[the design doc](design/pcapng-metadata.md).
+
 ## Diagnostic Aliases
 
 Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl.md](filter-dsl.md) for the exact expansion of each alias.

@@ -24,6 +24,13 @@ All notable changes to sipnab will be documented in this file.
   vertical scrollbars appear on either pane when its content overflows.
 - The file-open browser (`O`) now lists gzip-compressed captures
   (`*.pcap.gz`, `*.cap.gz`, …), matching the loader, which decompresses them.
+- pcapng metadata: name mappings are persisted into a Name Resolution Block
+  (NRB) when saving with resolution active, and embedded NRB names are read back
+  when a pcapng is opened. Embedded TLS Decryption Secrets Blocks (DSB) are fed
+  to the decryptor on open (with a status-line alert that the file carries
+  secrets), and `--strip-secrets <OUTPUT>` writes a secret-free copy of an input
+  pcapng (the `editcap --discard-all-secrets` analog) without touching the
+  original. See `docs/design/pcapng-metadata.md`.
 
 ### Fixed
 - File-open browser: when a directory can't be read — most often because sipnab
