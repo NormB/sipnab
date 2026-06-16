@@ -1468,6 +1468,21 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.set_capture_mode(format!("Offline ({filename})"));
     app.mark_data_updated();
 
+    // Read pcapng metadata blocks that the libpcap reader ignores: load embedded
+    // Name Resolution Block names into the resolver, and surface any embedded
+    // Decryption Secrets Block so the operator is alerted the file carries keys.
+    let mut names_loaded = 0;
+    let mut secrets_present = 0;
+    if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
+        if !meta.names.is_empty() {
+            names_loaded = app.resolver.load_file_names(meta.names);
+            if names_loaded > 0 && app.name_mode == crate::names::NameMode::Off {
+                app.name_mode = crate::names::NameMode::Names;
+            }
+        }
+        secrets_present = meta.tls_secrets.len();
+    }
+
     // If the pcap had no SIP but did have RTP streams, jump straight to the
     // stream list so playback / WAV export are immediately reachable.
     let stream_count = app.stream_store.read().len();
@@ -1480,8 +1495,18 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     } else {
         String::new()
     };
+    let names_suffix = if names_loaded > 0 {
+        format!(", {names_loaded} name(s)")
+    } else {
+        String::new()
+    };
+    let secrets_suffix = if secrets_present > 0 {
+        format!(" \u{26a0} file contains {secrets_present} embedded decryption secret(s)")
+    } else {
+        String::new()
+    };
     format!(
-        "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename})"
+        "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix}{names_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename}){secrets_suffix}"
     )
 }
 
@@ -3025,5 +3050,61 @@ mod tests {
         let mut app = App::new_test();
         let msg = load_pcap_file(&mut app, "/nonexistent/path/file.pcap");
         assert!(msg.contains("File not found"), "got: {msg}");
+    }
+
+    #[test]
+    fn load_pcap_file_reads_embedded_nrb_names() {
+        use crate::capture::{PcapExportMode, PcapWriter};
+        use std::net::IpAddr;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("named.pcapng");
+        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+        {
+            let mut w =
+                PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw).unwrap();
+            w.write_name_resolution_block(&[(ip, vec!["sbc-edge".to_string()])])
+                .unwrap();
+            w.finish().unwrap();
+        }
+        let mut app = App::new_test();
+        load_pcap_file(&mut app, path.to_str().unwrap());
+        // The embedded NRB name is now resolvable (libpcap ignores the block;
+        // our metadata pass loads it).
+        assert_eq!(
+            app.resolver()
+                .name(ip, crate::names::NameMode::Names)
+                .as_deref(),
+            Some("sbc-edge")
+        );
+    }
+
+    #[test]
+    fn load_pcap_file_alerts_on_embedded_secrets() {
+        use crate::capture::{PcapExportMode, PcapWriter};
+        let dir = tempfile::tempdir().unwrap();
+        let keylog = dir.path().join("keys.txt");
+        std::fs::write(&keylog, b"CLIENT_RANDOM aabbccdd 00112233\n").unwrap();
+        // Filename deliberately free of "secret" so the assertion can't pass
+        // trivially on the path.
+        let path = dir.path().join("withkeys.pcapng");
+        {
+            let mut w = PcapWriter::with_format(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::EncryptedWithDsb,
+            )
+            .unwrap();
+            w.maybe_write_keylog_dsb(&keylog).unwrap();
+            w.finish().unwrap();
+        }
+        let mut app = App::new_test();
+        let msg = load_pcap_file(&mut app, path.to_str().unwrap());
+        assert!(
+            msg.to_lowercase().contains("decryption secret"),
+            "status should warn about embedded secrets: {msg}"
+        );
     }
 }

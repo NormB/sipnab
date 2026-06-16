@@ -20,6 +20,8 @@ pub mod live;
 pub mod packet;
 pub mod parse;
 pub mod pcap_reader;
+#[cfg(feature = "native")]
+pub mod pcapng_meta;
 pub mod reassembly;
 #[cfg(feature = "tls")]
 pub mod tls;
