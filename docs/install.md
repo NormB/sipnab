@@ -81,6 +81,36 @@ cargo build --release --features full
 SIPNAB_LOG=trace cargo run -- -N -I test.pcap
 ```
 
+## Live Capture Permissions
+
+Live capture (`sipnab -d <iface>` or the default `any` device) needs raw-socket
+access. Rather than running the whole TUI as root, grant the binary the Linux
+capabilities once and then run it as your normal user:
+
+```bash
+sudo sipnab --setup-caps
+# equivalent to: sudo setcap cap_net_raw,cap_net_admin+ep $(command -v sipnab)
+```
+
+`--setup-caps` runs `setcap` on the sipnab binary (re-invoking through `sudo`
+itself when not already root) and exits. After that, **run sipnab without
+`sudo`**:
+
+```bash
+sipnab            # live capture works; no sudo needed
+```
+
+Prefer this to `sudo sipnab`. When started as root, sipnab opens the capture
+device and then drops privileges to an unprivileged user (`nobody` by default,
+or `--user <name>`). That dropped user usually **cannot read your home
+directory**, so the in-TUI file browser (`O`) comes up empty — it will show a
+"run without sudo" message explaining why. Running unprivileged with
+capabilities avoids this entirely. (Re-running `--setup-caps` is needed after
+each reinstall, since replacing the file clears its capabilities.)
+
+> macOS and other non-Linux platforms have no file capabilities; run live
+> capture under `sudo` there.
+
 ## Feature Flags
 
 sipnab uses Cargo feature flags to control optional functionality. The default build includes `native`, `tui`, and `audio`.

@@ -10,6 +10,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 |-----|--------|
 | Ctrl+C | Force quit |
 | Ctrl+L | Redraw screen |
+| v | Show version (with git commit) in the status line |
 
 ## Call List
 
@@ -49,11 +50,12 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 
 | Key | Action |
 |-----|--------|
-| Up / k | Navigate to previous message (detail panel updates) |
-| Down / j | Navigate to next message |
-| PgUp | Page up through messages |
-| PgDn | Page down through messages |
-| Home | Jump to first message |
+| Tab | Switch focus between the ladder (left) and detail (right) panes |
+| Up / k | Previous message — or scroll detail up when the detail pane is focused |
+| Down / j | Next message — or scroll detail down when the detail pane is focused |
+| PgUp | Page up (ladder, or detail when focused) |
+| PgDn | Page down (ladder, or detail when focused) |
+| Home | Jump to first message (or top of detail when focused) |
 | End | Jump to last message |
 | Enter | Open full-screen raw message view |
 | Space | Select message for diff (press on two messages to compare) |
@@ -77,6 +79,12 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | F6 | Toggle RTP display in flow |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter |
+
+In the split view, `Tab` moves keyboard focus between the two panes; the
+focused pane is shown in the status line (`Focus: Ladder` / `Focus: Detail`)
+and gets a highlighted border. When either pane has more rows than fit, a
+vertical scrollbar appears on its right edge. `[` and `]` always scroll the
+detail pane regardless of focus.
 
 ## Raw Message
 
@@ -178,6 +186,14 @@ Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display
 | Home / End | Jump to start/end of path |
 | Backspace | Delete character before cursor |
 | (any char) | Insert character |
+
+The browser lists `.pcap`, `.pcapng`, and `.cap` files, plus their
+gzip-compressed forms (`*.pcap.gz`, …), which sipnab decompresses on the fly.
+If the directory can't be read — most often because sipnab was started with
+`sudo` and dropped privileges to an unprivileged user that can't read your
+home directory — the dialog shows the reason instead of a blank list. Run
+sipnab **without** `sudo` (see [install.md](install.md) for capabilities) to
+browse your own files.
 
 ## Column Selector
 
