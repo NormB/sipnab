@@ -92,8 +92,16 @@ services:
       MCP_ALLOWED_HOST: ${SIPNAB_MCP_ALLOWED_HOST:-*}
       CAPTURE_IFACE: eth0
       SIP_PORTRANGE: ${SIP_PORT:-5060}-5061
+      # Rotating short-lived bearer tokens minted from the signing key. Keep
+      # MCP_ROTATE_INTERVAL <= MCP_TOKEN_TTL/2 so the published token always has
+      # comfortable remaining validity.
+      MCP_TOKEN_TTL: ${SIPNAB_MCP_TOKEN_TTL:-600}
+      MCP_ROTATE_INTERVAL: ${SIPNAB_MCP_ROTATE_INTERVAL:-300}
     volumes:
-      - ./secrets/mcp.token:/run/secrets/mcp.token:ro
+      # Whole secrets dir mounted rw: the entrypoint reads mcp.signing-key and
+      # the rotator atomically renames mcp.token within this dir (a single-file
+      # bind mount would make the rename fail with EBUSY).
+      - ./secrets:/run/secrets
       - ./captures:/captures
 
   # ---- SIPp UAS: answers calls relayed by opensips-1 -----------------------

@@ -93,8 +93,14 @@ Then ask the agent to diagnose `opensips-1`:
 - *"Show RTP quality — MOS, jitter, packet loss — for the current streams."*
 - *"Any security findings: scanners, malformed messages, digest leaks?"*
 
-The token is in `secrets/mcp.token`. The host must allow inbound TCP on the
-MCP port (default 8731) from your laptop.
+The token is in `secrets/mcp.token`. It is **short-lived and rotated**: the
+sipnab container mints a fresh bearer from the long-lived HMAC signing key
+(`secrets/mcp.signing-key`, generated once by `make signing-key`) every
+`SIPNAB_MCP_ROTATE_INTERVAL` seconds with a `SIPNAB_MCP_TOKEN_TTL`-second
+lifetime (defaults: re-mint every 300s, 600s TTL). Your laptop client stores a
+*static* header, so when it starts returning `401`, re-run `make laptop` to grab
+the current token. The signing key never leaves the host. The host must allow
+inbound TCP on the MCP port (default 8731) from your laptop.
 
 ## Your laptop as a SIP endpoint
 
@@ -151,11 +157,38 @@ your `.git` into the build context.)
 ## Security notes
 
 - MCP is **read-only** by design; no tool sends SIP or mutates state.
-- The non-loopback MCP bind **requires** the bearer token (sipnab refuses to
-  start otherwise). Keep `secrets/mcp.token` secret; it is git-ignored.
+- The non-loopback MCP bind **requires** auth (sipnab refuses to start
+  otherwise). The harness uses an HMAC **signing key** (`secrets/mcp.signing-key`)
+  and serves rotating short-lived bearer tokens minted from it — see *Token
+  rotation* below. Keep `secrets/mcp.signing-key` secret; both it and the rotated
+  `secrets/mcp.token` are git-ignored.
 - `SIPNAB_MCP_ALLOWED_HOST` defaults to `*` (host-header check disabled) for
   convenience. For a hardened setup, set it to your host's name/IP and front
   sipnab with nginx/TLS, or restrict the port with a firewall.
+
+### Token rotation
+
+This harness dog-foods sipnab's own short-lived-token support instead of a
+static shared secret:
+
+- **Signing key** (`secrets/mcp.signing-key`, `make signing-key`, generated
+  once) is the long-lived HMAC secret. It stays on the host and is never sent to
+  a client. The server runs with `--mcp-signing-key-file`.
+- **Bearer token** (`secrets/mcp.token`) is a self-describing `s1.` token with an
+  embedded expiry, minted from the signing key by `scripts/rotate-token.sh`. The
+  sipnab container mints one at startup and re-mints every
+  `SIPNAB_MCP_ROTATE_INTERVAL`s with a `SIPNAB_MCP_TOKEN_TTL`s TTL
+  (defaults 300 / 600 — a TTL/2 overlap, so the published token always has
+  ≥ 5 min of validity). Writes are atomic (temp file + rename), so readers never
+  see a half-written token.
+- The server verifies statelessly: signature valid + not expired + id not
+  revoked (`--mcp-revoked-file`). Force a rotation by hand with
+  `docker compose exec sipnab rotate-token.sh /run/secrets/mcp.signing-key /run/secrets/mcp.token 600 sipnab`.
+
+Because a client stores a *static* `Authorization` header, rotation can't push a
+new token to it — the laptop re-pulls via `make laptop` when it starts seeing
+`401`s. `make laptop` / `make mcp-test` always read the current published token,
+which the rotator keeps valid.
 
 ## Troubleshooting
 
@@ -168,9 +201,14 @@ your `.git` into the build context.)
   invalidates theirs. Use `make recreate` (or
   `docker compose up -d --force-recreate`) rather than restarting `opensips-1`
   alone.
-- **`sipnab` keeps restarting with a token permission error.** The token is read
-  after sipnab drops to `nobody`; `make token` writes it world-readable (644) for
-  this reason. If you created it by hand, `chmod 644 secrets/mcp.token`.
+- **`sipnab` keeps restarting with a signing-key permission error.** The key is
+  read after sipnab drops to `nobody`; `make signing-key` and the rotator write
+  world-readable (644) for this reason. If you created it by hand,
+  `chmod 644 secrets/mcp.signing-key`.
+- **Laptop client suddenly gets `401`s.** Expected — the bearer token rotates and
+  yours expired. Re-run `make laptop` for the current token. To slow rotation,
+  raise `SIPNAB_MCP_TOKEN_TTL` / `SIPNAB_MCP_ROTATE_INTERVAL` in `.env`. Watch
+  rotations with `make logs-sipnab`.
 - **Port already in use on `make up`.** Another service holds 5060/8731/RTP on the
   host. Change `SIP_HOST_PORT` / `MCP_PORT` / `RTP_MIN..RTP_MAX` in `.env`.
 - **`stream_count: 0` but dialogs appear.** RTP isn't being captured — confirm the

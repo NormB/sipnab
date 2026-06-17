@@ -5,7 +5,7 @@ set -euo pipefail
 HOST="${1:-<this-host-ip>}"
 PORT="${2:-8731}"
 TOKENF="${3:-secrets/mcp.token}"
-TOKEN="$(cat "$TOKENF" 2>/dev/null || echo '<run: make token>')"
+TOKEN="$(cat "$TOKENF" 2>/dev/null || echo '<not minted yet: make up, then make logs-sipnab>')"
 URL="http://${HOST}:${PORT}/mcp"
 
 cat <<EOF
@@ -45,5 +45,9 @@ NOTE: the host running this stack must allow inbound TCP ${PORT} from your
 laptop (firewall / security group). The bearer token is required; keep it
 secret. If SIPNAB_MCP_ALLOWED_HOST is not '*', it must match the host name/IP
 your laptop uses in the URL above.
+
+NOTE: this bearer token is short-lived and ROTATES (the sipnab container
+re-mints it on a timer). When your client starts getting 401s, re-run
+'make laptop' to grab the current token. The signing key behind it stays put.
 ==========================================================================
 EOF

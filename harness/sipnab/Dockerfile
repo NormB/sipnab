@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/sipnab /usr/local/bin/sipnab
 COPY harness/sipnab/entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+COPY harness/scripts/rotate-token.sh /usr/local/bin/rotate-token.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/rotate-token.sh
 # Runs as root: live capture needs CAP_NET_RAW and the MCP bind is >=1024.
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
