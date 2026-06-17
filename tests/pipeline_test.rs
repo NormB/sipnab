@@ -70,7 +70,15 @@ impl Harness {
     }
 
     fn run(&mut self, pp: &ParsedPacket, opts: &PipelineOptions) {
-        pipeline::process_packet(pp, &self.ds, &self.ss, &mut self.heuristic, opts);
+        let mut decrypt = pipeline::MediaDecrypt::default();
+        pipeline::process_packet(
+            pp,
+            &self.ds,
+            &self.ss,
+            &mut self.heuristic,
+            opts,
+            &mut decrypt,
+        );
     }
 }
 

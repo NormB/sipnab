@@ -80,6 +80,14 @@ struct ProcessingState<'a> {
     stream_store: &'a mut StreamStore,
     rtp_heuristic: &'a mut rtp::heuristic::RtpHeuristic,
     event_exec: &'a mut EventExecEngine,
+    /// SRTP decryption context (keys from `--srtp-keys` + SDES `a=crypto`),
+    /// used to authenticate and decrypt RTP payloads before media analysis.
+    #[cfg(feature = "tls")]
+    srtp: Option<&'a mut sipnab::rtp::srtp::SrtpContext>,
+    /// DTLS-SRTP extractor (`--dtls-keylog`): recovers SRTP keys from observed
+    /// DTLS handshakes and feeds them into `srtp`.
+    #[cfg(feature = "tls")]
+    dtls: Option<&'a mut sipnab::capture::dtls::DtlsSrtpExtractor>,
 }
 
 /// Capture split/stop policy.
@@ -584,21 +592,8 @@ fn main() {
         }
     }
 
-    // 16f. Load DTLS keylog if --dtls-keylog is set
-    #[cfg(feature = "tls")]
-    if let Some(ref dtls_path) = cli.dtls_keylog {
-        match sipnab::capture::decrypt::TlsDecryptor::load_dtls_keylog(std::path::Path::new(
-            dtls_path,
-        )) {
-            Ok(count) => {
-                tracing::info!("DTLS keylog: {count} entries loaded from {dtls_path}");
-            }
-            Err(e) => {
-                tracing::error!("Failed to load DTLS keylog: {e}");
-                std::process::exit(1);
-            }
-        }
-    }
+    // 16f. --dtls-keylog: the DTLS-SRTP extractor is constructed later (alongside
+    // the SRTP context); here we only enforce the feature gate.
     #[cfg(not(feature = "tls"))]
     if cli.dtls_keylog.is_some() {
         tracing::error!("--dtls-keylog requires the 'tls' feature (not compiled in)");
@@ -875,6 +870,32 @@ fn run_tui_mode(
             let mut processor =
                 capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+
+            // SRTP/DTLS-SRTP media-decryption state for the live pipeline.
+            #[cfg(feature = "tls")]
+            let mut srtp_context: Option<sipnab::rtp::srtp::SrtpContext> = {
+                let backend = sipnab::crypto::default_backend();
+                match cli_clone.srtp_keys.as_deref() {
+                    Some(keyfile) => sipnab::rtp::srtp::SrtpContext::from_key_file(
+                        std::path::Path::new(keyfile),
+                        backend,
+                    )
+                    .map_err(|e| tracing::error!("Failed to load --srtp-keys {keyfile}: {e}"))
+                    .ok(),
+                    // No key file, but SDES keys may still arrive via SDP.
+                    None => Some(sipnab::rtp::srtp::SrtpContext::new(Vec::new(), backend)),
+                }
+            };
+            #[cfg(feature = "tls")]
+            let mut dtls_extractor: Option<sipnab::capture::dtls::DtlsSrtpExtractor> =
+                cli_clone.dtls_keylog.as_deref().and_then(|keylog| {
+                    sipnab::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
+                        std::path::Path::new(keylog),
+                        sipnab::crypto::default_backend(),
+                    )
+                    .map_err(|e| tracing::error!("Failed to load --dtls-keylog {keylog}: {e}"))
+                    .ok()
+                });
             let mut writer: Option<PcapWriter> = None;
             let tui_export_mode = PcapExportMode::parse_mode(&cli_clone.pcap_export_mode)
                 .unwrap_or(PcapExportMode::Decrypted);
@@ -952,6 +973,13 @@ fn run_tui_mode(
                     if paused_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
                         continue;
                     }
+                    #[cfg(feature = "tls")]
+                    let mut media_decrypt = sipnab::pipeline::MediaDecrypt {
+                        srtp: srtp_context.as_mut(),
+                        dtls: dtls_extractor.as_mut(),
+                    };
+                    #[cfg(not(feature = "tls"))]
+                    let mut media_decrypt = sipnab::pipeline::MediaDecrypt::default();
                     sipnab::pipeline::process_packet(
                         pp,
                         &ds,
@@ -961,6 +989,7 @@ fn run_tui_mode(
                             no_dialog: cli_clone.no_dialog,
                             no_rtp,
                         },
+                        &mut media_decrypt,
                     );
                 }
 
@@ -1176,18 +1205,36 @@ fn run_batch_mode(
         kill_response_code,
     };
 
-    // 17c. Initialize TLS decryptor if --keylog is provided
+    // 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
     #[cfg(feature = "tls")]
-    let mut tls_decryptor: Option<TlsDecryptor> = if cli.keylog.is_some() {
+    let mut tls_decryptor: Option<TlsDecryptor> = if cli.keylog.is_some() || cli.tls_key.is_some() {
         let keylog_path = cli.keylog.as_deref().map(std::path::Path::new);
         let crypto = sipnab::crypto::default_backend();
         match TlsDecryptor::new(keylog_path, crypto) {
-            Ok(d) => {
+            Ok(mut d) => {
                 if d.keylog_entry_count() > 0 {
                     tracing::info!(
                         "sipnab: TLS decryption active (keylog loaded). \
                          Decrypted traffic visible in output."
                     );
+                }
+                // Load the RSA private key for TLS 1.2 RSA-key-exchange decryption.
+                if let Some(ref keyfile) = cli.tls_key {
+                    match sipnab::capture::rsa_key::RsaKey::from_pem_file(std::path::Path::new(
+                        keyfile,
+                    )) {
+                        Ok(k) => {
+                            d.set_rsa_key(k);
+                            tracing::info!(
+                                "sipnab: TLS decryption active (--tls-key loaded; \
+                                 decrypts TLS 1.2 RSA-key-exchange handshakes only)."
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to load --tls-key {keyfile}: {e}");
+                            std::process::exit(1);
+                        }
+                    }
                 }
                 Some(d)
             }
@@ -1224,6 +1271,63 @@ fn run_batch_mode(
             }
         }
     }
+
+    // 17e. Initialize the SRTP decryption context from --srtp-keys (and, later,
+    // SDES `a=crypto` lines fed in as SDP is parsed). Authenticated RTP payloads
+    // are decrypted in place before stream/audio analysis.
+    #[cfg(feature = "tls")]
+    let mut srtp_context: Option<sipnab::rtp::srtp::SrtpContext> =
+        if let Some(ref keyfile) = cli.srtp_keys {
+            match sipnab::rtp::srtp::SrtpContext::from_key_file(
+                std::path::Path::new(keyfile),
+                sipnab::crypto::default_backend(),
+            ) {
+                Ok(ctx) => {
+                    tracing::info!(
+                        "SRTP decryption active: {} key(s) from {keyfile}",
+                        ctx.key_count()
+                    );
+                    Some(ctx)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load --srtp-keys {keyfile}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // No key file, but SDES keys may still arrive via SDP — start empty
+            // and let `add_sdes` populate it as `a=crypto` lines are seen.
+            Some(sipnab::rtp::srtp::SrtpContext::new(
+                Vec::new(),
+                sipnab::crypto::default_backend(),
+            ))
+        };
+
+    // 17f. Initialize the DTLS-SRTP extractor from --dtls-keylog. It recovers
+    // SRTP master keys from the DTLS handshake (RFC 5764 exporter) and feeds
+    // them into the SRTP context as handshakes are observed.
+    #[cfg(feature = "tls")]
+    let mut dtls_extractor: Option<sipnab::capture::dtls::DtlsSrtpExtractor> =
+        if let Some(ref keylog) = cli.dtls_keylog {
+            match sipnab::capture::dtls::DtlsSrtpExtractor::from_keylog_file(
+                std::path::Path::new(keylog),
+                sipnab::crypto::default_backend(),
+            ) {
+                Ok(ex) => {
+                    tracing::info!(
+                        "DTLS-SRTP active: {} keylog entr(ies) from {keylog}",
+                        ex.keylog_len()
+                    );
+                    Some(ex)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to load --dtls-keylog {keylog}: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
 
     // Start API server if --api is specified (feature-gated)
     // The API reads from the SAME stores the packet loop writes to —
@@ -1418,6 +1522,10 @@ fn run_batch_mode(
                     stream_store: &mut ss_guard,
                     rtp_heuristic: &mut rtp_heuristic,
                     event_exec: &mut event_exec,
+                    #[cfg(feature = "tls")]
+                    srtp: srtp_context.as_mut(),
+                    #[cfg(feature = "tls")]
+                    dtls: dtls_extractor.as_mut(),
                 };
                 process_parsed_packet(
                     effective_pp,
@@ -1638,6 +1746,8 @@ fn process_parsed_packet(
     let stream_store = &mut *state.stream_store;
     let rtp_heuristic = &mut *state.rtp_heuristic;
     let event_exec = &mut *state.event_exec;
+    #[cfg(feature = "tls")]
+    let srtp = &mut state.srtp;
     let scanner_detector = &mut engines.scanner;
     let fraud_detector = &mut engines.fraud;
     let digest_detector = &mut engines.digest;
@@ -1735,11 +1845,28 @@ fn process_parsed_packet(
                     {
                         for media in &sdp.media {
                             let addr_str = sip::sdp::effective_address(media, &sdp);
-                            if let Some(addr) = addr_str
+                            if let Some(addr) = &addr_str
                                 && let Ok(ip) = addr.parse::<std::net::IpAddr>()
                             {
                                 stream_store
                                     .link_to_dialog_with_sdp(ip, media.port, call_id, media);
+                            }
+                            // Feed SDES `a=crypto` key material into the SRTP
+                            // context so authenticated media on this endpoint
+                            // can be decrypted.
+                            #[cfg(feature = "tls")]
+                            if !media.crypto.is_empty()
+                                && let Some(ctx) = srtp.as_deref_mut()
+                            {
+                                let added =
+                                    ctx.add_sdes(addr_str.clone(), Some(media.port), &media.crypto);
+                                if added > 0 {
+                                    tracing::info!(
+                                        "SRTP: +{added} SDES key(s) from SDP for {}:{}",
+                                        addr_str.as_deref().unwrap_or("?"),
+                                        media.port
+                                    );
+                                }
                             }
                         }
                     }
@@ -1910,6 +2037,23 @@ fn process_parsed_packet(
         return;
     }
 
+    // DTLS-SRTP: feed DTLS handshake packets to the extractor; any SRTP keys it
+    // recovers (RFC 5764 exporter) are handed to the SRTP context so subsequent
+    // media decrypts. DTLS packets are not RTP, so handle and return.
+    #[cfg(feature = "tls")]
+    if let Some(ext) = state.dtls.as_deref_mut()
+        && sipnab::capture::dtls::is_dtls(&pp.payload)
+    {
+        let keys = ext.process_dtls(&pp.payload);
+        if !keys.is_empty()
+            && let Some(ctx) = srtp.as_deref_mut()
+        {
+            let n = ctx.add_keys(keys);
+            tracing::info!("DTLS-SRTP: +{n} SRTP key(s) handed to the media decryptor");
+        }
+        return;
+    }
+
     // RTCP detection: odd port, version=2, PT in 200-204 range
     if sipnab::pipeline::is_rtcp_packet(&pp.payload, pp.dst_port) {
         let rtcp_packets = parse_rtcp(&pp.payload);
@@ -1923,14 +2067,30 @@ fn process_parsed_packet(
     if rtp::is_rtp_packet(&pp.payload)
         && let Ok(rtp_hdr) = parse_rtp_header(&pp.payload)
     {
-        stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
+        // SRTP: if a key authenticates this packet, decrypt the payload and
+        // substitute a synthetic plaintext packet for media analysis. The auth
+        // tag is the gate — a wrong key never produces plaintext.
+        #[cfg(feature = "tls")]
+        let srtp_decrypted: Option<ParsedPacket> = srtp.as_deref_mut().and_then(|ctx| {
+            ctx.decrypt(&pp.payload, rtp_hdr.payload_offset)
+                .map(|plain| {
+                    let mut d = pp.clone();
+                    d.payload = plain.into();
+                    d
+                })
+        });
+        #[cfg(not(feature = "tls"))]
+        let srtp_decrypted: Option<ParsedPacket> = None;
+        let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
+
+        stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
         *rtp_count += 1;
 
         // DTMF extraction (I2): if --telephone-event is set and we
         // have the RTP payload after the header, attempt DTMF decode.
         // Uses a default telephone-event PT of 101 (common convention).
-        if cli.telephone_event && rtp_hdr.payload_offset < pp.payload.len() {
-            let rtp_payload = &pp.payload[rtp_hdr.payload_offset..];
+        if cli.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+            let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
             if let Some(dtmf) = rtp::dtmf::extract_dtmf(
                 rtp_payload,
                 rtp_hdr.payload_type,
@@ -1988,6 +2148,13 @@ fn try_tls_decrypt(
 
     let records = tls::parse_tls_records(&pp.payload);
     for record in &records {
+        // Feed Handshake records (ClientHello/ServerHello/ClientKeyExchange) so
+        // the decryptor can capture randoms + the RSA-encrypted pre-master for
+        // the --tls-key path and the TLS 1.2 CLIENT_RANDOM keylog path.
+        if record.content_type == tls::TlsContentType::Handshake {
+            decryptor.process_record(record);
+            continue;
+        }
         if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
             && sip::is_sip_message(&plaintext)
         {
@@ -2846,10 +3013,106 @@ mod tests {
             stream_store: &mut stream_store,
             rtp_heuristic: &mut rtp_heuristic,
             event_exec: &mut event_exec,
+            #[cfg(feature = "tls")]
+            srtp: None,
+            #[cfg(feature = "tls")]
+            dtls: None,
         };
 
         process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, false);
         (counters.sip_count, counters.rtp_count)
+    }
+
+    /// Drive a packet through `process_parsed_packet` with an active SRTP
+    /// context, returning the rtp_count so wiring can be asserted.
+    #[cfg(feature = "tls")]
+    fn drive_packet_with_srtp(
+        cli: &Cli,
+        pp: &ParsedPacket,
+        portrange: (u16, u16),
+        srtp: &mut sipnab::rtp::srtp::SrtpContext,
+    ) -> u64 {
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange,
+        };
+        let mut state = ProcessingState {
+            dialog_store: &mut dialog_store,
+            stream_store: &mut stream_store,
+            rtp_heuristic: &mut rtp_heuristic,
+            event_exec: &mut event_exec,
+            srtp: Some(srtp),
+            dtls: None,
+        };
+        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, false);
+        counters.rtp_count
+    }
+
+    /// A plaintext (non-SRTP) RTP packet must pass through an active SRTP
+    /// context untouched: the auth tag never verifies on ordinary RTP, so the
+    /// pipeline must NOT mangle it as a false "decryption". This guards the
+    /// wiring's safety property at the binary layer.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_context_never_false_decrypts_plain_rtp() {
+        use sipnab::rtp::srtp::{SrtpContext, SrtpKeyMaterial, SrtpSuite};
+
+        // A loaded context with one master key.
+        let key = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: vec![0x01u8; 16],
+            master_salt: vec![0x02u8; 14],
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        let mut srtp = SrtpContext::new(vec![key], sipnab::crypto::default_backend());
+
+        // Ordinary RTP: 12-byte header (V=2, PT=0/PCMU) + 20 bytes payload.
+        let mut payload = vec![0x80u8, 0x00, 0x00, 0x2A, 0x00, 0x00, 0x10, 0x00];
+        payload.extend_from_slice(&[0x00, 0x00, 0xAB, 0xCD]); // SSRC
+        payload.extend_from_slice(&[0x7Fu8; 20]); // PCMU silence-ish payload
+        let pp = ParsedPacket {
+            payload: payload.into(),
+            ..parsed_sip_packet(invite_bytes("x@y"), 40000, 40000)
+        };
+
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+        let rtp = drive_packet_with_srtp(&cli, &pp, (5060, 5061), &mut srtp);
+        assert_eq!(rtp, 1, "the RTP packet must still be counted/processed");
+        assert_eq!(
+            srtp.decrypted_count, 0,
+            "ordinary RTP must never be falsely decrypted (auth-tag gate)"
+        );
     }
 
     #[test]

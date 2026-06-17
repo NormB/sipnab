@@ -1,0 +1,115 @@
+#
+# opensips-1 -- minimal registrar + stateful proxy with rtpengine media anchor.
+# Placeholders (@NAME@) are substituted by entrypoint.sh at container start.
+#
+# Routing policy: REGISTER is saved to in-memory usrloc; initial INVITE/etc.
+# are routed to a registered AOR if one exists, otherwise forced to the SIPp
+# UAS. All media is anchored through rtpengine so every RTP packet transits
+# this container's namespace (where sipnab captures).
+
+log_level=3
+stderror_enabled=yes
+
+udp_workers=4
+
+socket=udp:@OPENSIPS_IP@:5060
+
+mpath="@MPATH@"
+
+loadmodule "proto_udp.so"
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "rr.so"
+loadmodule "maxfwd.so"
+loadmodule "sipmsgops.so"
+loadmodule "textops.so"
+loadmodule "usrloc.so"
+loadmodule "registrar.so"
+loadmodule "nathelper.so"
+loadmodule "rtpengine.so"
+loadmodule "mi_fifo.so"
+
+modparam("mi_fifo", "fifo_name", "/tmp/opensips_fifo")
+# usrloc defaults to in-memory storage when no db_url is configured.
+modparam("rtpengine", "rtpengine_sock", "@RTPENGINE_SOCK@")
+
+route {
+    if (!mf_process_maxfwd_header(10)) {
+        sl_send_reply(483, "Too Many Hops");
+        exit;
+    }
+
+    # ---- Sequential (in-dialog) requests ----
+    if (has_totag()) {
+        loose_route();    # consume our own Route header if the UA included a route set
+
+        if (is_method("ACK") && t_check_trans()) {
+            t_relay();                            # ACK for a locally generated reply
+            exit;
+        }
+        if (is_method("BYE")) {
+            rtpengine_delete();
+        }
+        if (is_method("INVITE")) {                # re-INVITE / hold / reanchor
+            rtpengine_offer();
+            t_on_reply("handle_reply");
+        }
+        # Many stock SIPp scenarios hard-code the in-dialog R-URI to the proxy and
+        # carry no usable route set, so loose_route() leaves the request pointing at
+        # us. In this fixed UAC<->proxy<->UAS topology, forward those to the UAS so
+        # the call can complete (BYE / ACK / re-INVITE).
+        if ($rd == "@OPENSIPS_IP@") {
+            $du = "sip:@UAS_TARGET@";
+        }
+        if (!t_relay()) {
+            sl_reply_error();
+        }
+        exit;
+    }
+
+    # ---- Out-of-dialog hop-by-hop methods ----
+    if (is_method("CANCEL")) {
+        if (t_check_trans()) { t_relay(); }
+        exit;
+    }
+    if (is_method("ACK")) {
+        if (t_check_trans()) { t_relay(); }
+        exit;
+    }
+
+    # ---- Registration ----
+    if (is_method("REGISTER")) {
+        save("location");
+        exit;
+    }
+
+    # ---- Proxy stat / keepalive: answer OPTIONS locally ----
+    if (is_method("OPTIONS")) {
+        sl_send_reply(200, "OK");
+        exit;
+    }
+
+    # ---- Initial requests: route to AOR if registered, else to the UAS ----
+    record_route();
+
+    if (!lookup("location")) {
+        $du = "sip:@UAS_TARGET@";
+    }
+
+    if (is_method("INVITE")) {
+        rtpengine_offer();
+        t_on_reply("handle_reply");
+    }
+
+    if (!t_relay()) {
+        sl_reply_error();
+    }
+    exit;
+}
+
+onreply_route[handle_reply] {
+    if (has_body("application/sdp")) {
+        rtpengine_answer();
+    }
+}

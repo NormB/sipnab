@@ -75,6 +75,9 @@ ring = { version = "0.17", optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
 aes = { version = "0.9", optional = true }
 cbc = { version = "0.2", features = ["alloc"], optional = true }
+# RSA private-key (`--tls-key`) decryption of the TLS 1.2 RSA-kx pre-master
+# secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
+rsa = { version = "0.9", default-features = false, features = ["std", "pem"], optional = true }
 
 # Audio playback (feature-gated). The rodio/ALSA dependency lives in the
 # `sipnab-audio` cdylib plugin (crates/sipnab-audio); the main binary only
@@ -126,7 +129,7 @@ default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:flate2", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
-tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64"]
+tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa"]
 hep = ["native"]
 audio = ["dep:libloading", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2"]
