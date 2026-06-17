@@ -367,6 +367,10 @@ fn aes_cm_prf(
 /// index in octets 8..14, leaving octets 14..16 as the per-block counter.
 #[cfg(feature = "tls")]
 fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16] {
+    // The IV is NOT hard-coded: this zero-initialized block is fully populated
+    // below with the per-stream session salt, then XOR'd with the per-packet
+    // SSRC and SRTP index (RFC 3711 §4.1.1). Each packet therefore gets a unique
+    // IV. (Guards against false-positive CodeQL `rust/hard-coded-cryptographic-value`.)
     let mut iv = [0u8; 16];
     let n = session_salt.len().min(14);
     iv[..n].copy_from_slice(&session_salt[..n]);
@@ -1220,6 +1224,59 @@ mod tests {
             want[8 + i] ^= b;
         }
         assert_eq!(iv, want, "SSRC/index must XOR into octets 4..8 / 8..14");
+    }
+
+    /// Regression guard for CodeQL `rust/hard-coded-cryptographic-value`
+    /// (alert #87): the `[0u8; 16]` buffer inside [`srtp_cipher_iv`] is a
+    /// zero-initialized scratch block that is fully overwritten with the
+    /// per-stream session salt and XOR'd with the per-packet SSRC and SRTP
+    /// index (RFC 3711 §4.1.1). It is therefore NOT a hard-coded IV — the
+    /// produced IV must vary with the salt, the SSRC, and the packet index.
+    /// This test proves that property so the value can never silently collapse
+    /// to a constant.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_cipher_iv_is_derived_not_hardcoded() {
+        let salt_a = B2_SESSION_SALT;
+        let mut salt_b = B2_SESSION_SALT;
+        salt_b[0] ^= 0xFF; // a different per-stream salt
+
+        // The IV must never equal the zero block (the flagged literal): with a
+        // non-zero salt every IV carries salt material.
+        let base = srtp_cipher_iv(&salt_a, 0, 0);
+        assert_ne!(base, [0u8; 16], "IV must not be the hard-coded zero block");
+
+        // Varying the per-stream salt changes the IV.
+        assert_ne!(
+            srtp_cipher_iv(&salt_a, 0x1234_5678, 0x0000_0001_0002),
+            srtp_cipher_iv(&salt_b, 0x1234_5678, 0x0000_0001_0002),
+            "IV must depend on the per-stream session salt",
+        );
+
+        // Varying the SSRC changes the IV (octets 4..8).
+        assert_ne!(
+            srtp_cipher_iv(&salt_a, 0x0000_0001, 7),
+            srtp_cipher_iv(&salt_a, 0x0000_0002, 7),
+            "IV must depend on the per-packet SSRC",
+        );
+
+        // Varying the SRTP packet index changes the IV (octets 8..14).
+        assert_ne!(
+            srtp_cipher_iv(&salt_a, 0xDEAD_BEEF, 100),
+            srtp_cipher_iv(&salt_a, 0xDEAD_BEEF, 101),
+            "IV must depend on the per-packet SRTP index",
+        );
+
+        // Two distinct packets in the same stream produce distinct IVs — the
+        // core anti-keystream-reuse property the scanner is protecting.
+        let ssrc = 0xCAFE_BABEu32;
+        let mut seen = std::collections::HashSet::new();
+        for index in 0u64..256 {
+            assert!(
+                seen.insert(srtp_cipher_iv(&salt_a, ssrc, index)),
+                "IV collision at index {index}: keystream would be reused",
+            );
+        }
     }
 
     #[cfg(feature = "tls")]
