@@ -49,6 +49,10 @@ All notable changes to sipnab will be documented in this file.
 - New `SrtpRocTracker` verifies SRTP auth tags with stateful per-SSRC rollover
   tracking (RFC 3711 §3.3.1 index estimation), so streams longer than 65536
   packets verify correctly instead of relying on the stateless two-epoch guess.
+- User resolution (`--user` / privilege drop) now uses the reentrant
+  `getpwnam_r` instead of `getpwnam`, which returns a pointer into a shared
+  static buffer that a concurrent lookup on another thread can overwrite mid-read
+  (a data race that surfaced as a flaky `nobody`-resolution test).
 - TLS 1.2 CBC records are no longer decrypted: those suites are MAC-then-encrypt
   and the record MAC was not verified, so a crafted capture could inject forged
   "decrypted" SIP. The decryptor now declines CBC and emits nothing rather than

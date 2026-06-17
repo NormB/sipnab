@@ -233,16 +233,53 @@ pub fn disable_core_dumps() -> Result<()> {
 }
 
 /// Resolve a username to its UID and primary GID via the system password database.
+///
+/// Uses the reentrant `getpwnam_r` (caller-owned `passwd` + scratch buffer)
+/// rather than `getpwnam`, which returns a pointer into a shared static buffer
+/// that a concurrent `getpwnam`/`getpwuid` on another thread can overwrite
+/// between the lookup and reading the fields. Production resolution happens once
+/// at single-threaded startup, but the reentrant call is correct regardless.
 fn resolve_user(username: &str) -> Result<(u32, u32)> {
     let c_user = std::ffi::CString::new(username)
         .map_err(|_| anyhow::anyhow!("Username '{}' contains a null byte", username))?;
 
-    // SAFETY: getpwnam is given a valid C string and returns a pointer to
-    // a static passwd struct (or null). We read and copy the fields
-    // immediately, so the borrow does not escape.
-    unsafe {
-        let pw = libc::getpwnam(c_user.as_ptr());
-        if pw.is_null() {
+    // Initial scratch-buffer size for the string fields; grow on ERANGE.
+    let mut buf_len: usize = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
+        n if n > 0 => n as usize,
+        _ => 16_384,
+    };
+
+    loop {
+        let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut buf = vec![0 as libc::c_char; buf_len];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+
+        // SAFETY: `getpwnam_r` writes the entry into our owned `pwd` and the
+        // string fields into our owned `buf`; on success `result` is set to
+        // `&pwd`. No shared static state is involved, so the call is
+        // thread-safe. We copy out only the scalar uid/gid before `pwd` drops.
+        let ret = unsafe {
+            libc::getpwnam_r(
+                c_user.as_ptr(),
+                &mut pwd,
+                buf.as_mut_ptr(),
+                buf_len,
+                &mut result,
+            )
+        };
+
+        if ret == libc::ERANGE && buf_len < (1 << 20) {
+            buf_len *= 2; // buffer too small — retry larger
+            continue;
+        }
+        if ret != 0 {
+            bail!(
+                "Failed to resolve user '{}': {}",
+                username,
+                std::io::Error::from_raw_os_error(ret)
+            );
+        }
+        if result.is_null() {
             bail!(
                 "User '{}' not found. Create it with \
                  'useradd -r -s /usr/sbin/nologin {}' or use --user <name>",
@@ -250,7 +287,7 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
                 username
             );
         }
-        Ok(((*pw).pw_uid, (*pw).pw_gid))
+        return Ok((pwd.pw_uid, pwd.pw_gid));
     }
 }
 
