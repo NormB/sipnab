@@ -339,8 +339,11 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         offset += chunk_len;
     }
 
+    // `ts_usec` is attacker-controlled; widen and clamp before the µs→ns
+    // conversion so it can't overflow u32 (panic in debug / wrap in release).
+    let nanos = (ts_usec as u64 * 1000).min(999_999_999) as u32;
     let timestamp = Utc
-        .timestamp_opt(ts_sec as i64, ts_usec * 1000)
+        .timestamp_opt(ts_sec as i64, nanos)
         .single()
         .unwrap_or_else(Utc::now);
 
@@ -1705,5 +1708,18 @@ mod tests {
         assert_eq!(&parsed.payload[..], payload);
         assert_eq!(parsed.timestamp.timestamp(), 1234567890);
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 250_000);
+    }
+
+    #[test]
+    fn parse_hep_v3_huge_ts_usec_does_not_panic() {
+        // A crafted HEP packet can carry a TS_USEC far outside [0, 1_000_000).
+        // The microsecond→nanosecond conversion (`ts_usec * 1000`) must not
+        // overflow u32 (panics in debug / wraps in release); the packet should
+        // still parse cleanly.
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
+        let data = make_hep_v3(src, dst, 5060, 5061, 1_700_000_000, u32::MAX, 1, b"hello");
+        let hep = parse_hep(&data).expect("packet with garbage ts_usec must still parse");
+        assert_eq!(hep.src_addr, src);
     }
 }

@@ -368,7 +368,9 @@ pub fn verify_srtp_auth_tag(
     let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input)?;
     let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
 
-    Ok(computed_tag == received_tag)
+    // Constant-time comparison: a MAC verifier must not leak, via timing, how
+    // many leading bytes of a forged tag matched.
+    Ok(crate::crypto::constant_time_eq(computed_tag, received_tag))
 }
 
 #[cfg(test)]
@@ -569,6 +571,15 @@ mod tests {
 
         let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
         assert!(result, "Auth tag should verify with correct key");
+
+        // Tamper a single tag byte: the (constant-time) comparison must still
+        // reject it. Flipping the last byte exercises the full-length compare
+        // path rather than an early mismatch.
+        let mut tampered = packet.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        let bad = verify_srtp_auth_tag(&tampered, &material, &crypto).unwrap();
+        assert!(!bad, "a tampered auth tag must not verify");
     }
 
     #[cfg(feature = "tls")]

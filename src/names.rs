@@ -325,11 +325,28 @@ impl NameResolver {
     }
 
     /// Persist manual mappings to `path` in `/etc/hosts` line format.
+    ///
+    /// Writes atomically (temp file in the same directory + rename) so an
+    /// interrupted or failing write never truncates the operator's existing
+    /// names file, and a symlink at `path` is replaced rather than written
+    /// through. The atomic helper depends on `tempfile` (a `native` dep); the
+    /// sole caller is the native TUI, but this method compiles in every feature
+    /// combo, so non-native builds fall back to a plain write.
     pub fn save_manual_file(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, self.manual_to_hosts_format())
+        let contents = self.manual_to_hosts_format();
+        #[cfg(feature = "native")]
+        {
+            // `w` is `&mut dyn Write`; trait methods are callable on the trait
+            // object without importing the trait.
+            crate::capture::atomic::write_atomic(path, |w| w.write_all(contents.as_bytes()))
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            std::fs::write(path, contents)
+        }
     }
 }
 
@@ -683,5 +700,33 @@ mod tests {
             r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
             Some("frommanual")
         );
+    }
+
+    // ── Persistence (atomic, symlink-safe) ─────────────────────────────
+
+    #[test]
+    #[cfg(all(unix, feature = "native"))]
+    fn save_manual_file_replaces_symlink_not_target() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.txt");
+        std::fs::write(&target, "DO NOT CLOBBER").unwrap();
+        let link = dir.path().join("names_link");
+        symlink(&target, &link).unwrap();
+
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.1"), "host-a".into());
+        r.save_manual_file(&link).unwrap();
+
+        // A plain `fs::write` follows the symlink and clobbers `target`; an
+        // atomic temp-in-dir + rename replaces the link itself, so the original
+        // target is left intact and the path becomes a regular file.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "DO NOT CLOBBER");
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(
+            meta.file_type().is_file(),
+            "save should replace the symlink with a regular file"
+        );
+        assert!(std::fs::read_to_string(&link).unwrap().contains("host-a"));
     }
 }

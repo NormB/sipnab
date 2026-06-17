@@ -196,7 +196,11 @@ pub fn capture_file(
 
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
 fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
-    Utc.timestamp_opt(ts.tv_sec, (ts.tv_usec as u32) * 1000)
+    // tv_usec is attacker-controllable in a crafted capture; clamp to a valid
+    // microsecond before the µs→ns multiply so it can overflow neither u64 (the
+    // clamp bounds the operand) nor the resulting u32.
+    let nanos = ts.tv_usec.clamp(0, 999_999) as u32 * 1000;
+    Utc.timestamp_opt(ts.tv_sec, nanos)
         .single()
         .unwrap_or_else(Utc::now)
 }
@@ -205,6 +209,25 @@ fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crossbeam_channel::unbounded;
+
+    #[test]
+    fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
+        // A corrupt/hostile pcap can carry tv_usec outside [0, 1_000_000).
+        // The microsecond→nanosecond conversion must clamp rather than overflow
+        // u32 (which panics in debug / wraps in release).
+        let _ = pcap_ts_to_chrono(libc::timeval {
+            tv_sec: 0,
+            tv_usec: 4_294_968, // * 1000 overflows u32
+        });
+        let _ = pcap_ts_to_chrono(libc::timeval {
+            tv_sec: 0,
+            tv_usec: i64::MAX,
+        });
+        let _ = pcap_ts_to_chrono(libc::timeval {
+            tv_sec: 0,
+            tv_usec: -1,
+        });
+    }
 
     /// Helper: path to the test fixture pcap.
     fn fixture_path() -> std::path::PathBuf {

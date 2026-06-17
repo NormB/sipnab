@@ -32,7 +32,19 @@ All notable changes to sipnab will be documented in this file.
   pcapng (the `editcap --discard-all-secrets` analog) without touching the
   original. See `docs/design/pcapng-metadata.md`.
 
+### Security
+- SRTP auth-tag verification now uses a constant-time comparison (shared with
+  the API/MCP token check) instead of `==`, closing a MAC timing side channel.
+- Manual name mappings are now persisted atomically (temp file in the same
+  directory + rename): an interrupted or failing write can no longer truncate
+  the operator's names file, and a symlink at the destination is replaced rather
+  than written through.
+
 ### Fixed
+- Timestamp conversion no longer overflows on a crafted capture/HEP packet: a
+  `tv_usec`/`TS_USEC` outside `[0, 1_000_000)` is clamped before the µs→ns
+  multiply, which previously panicked in debug/test builds (overflow-checked)
+  and wrapped silently in release.
 - File-open browser: when a directory can't be read — most often because sipnab
   was started with `sudo` and dropped privileges to an unprivileged user that
   can't read a `0700` home directory — it now shows the reason and a "run
