@@ -35,6 +35,11 @@ All notable changes to sipnab will be documented in this file.
 ### Security
 - SRTP auth-tag verification now uses a constant-time comparison (shared with
   the API/MCP token check) instead of `==`, closing a MAC timing side channel.
+- TLS 1.2 CBC records are no longer decrypted: those suites are MAC-then-encrypt
+  and the record MAC was not verified, so a crafted capture could inject forged
+  "decrypted" SIP. The decryptor now declines CBC and emits nothing rather than
+  surfacing unauthenticated plaintext. AEAD suites (AES-GCM), which `ring`
+  authenticates on decrypt, are unaffected and remain the supported path.
 - Manual name mappings are now persisted atomically (temp file in the same
   directory + rename): an interrupted or failing write can no longer truncate
   the operator's names file, and a symlink at the destination is replaced rather

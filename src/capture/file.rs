@@ -214,18 +214,20 @@ mod tests {
     fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
         // A corrupt/hostile pcap can carry tv_usec outside [0, 1_000_000).
         // The microsecond→nanosecond conversion must clamp rather than overflow
-        // u32 (which panics in debug / wraps in release).
+        // u32 (which panics in debug / wraps in release). Values are chosen to
+        // fit `suseconds_t` on every target (i32 on macOS, i64 on Linux) while
+        // still overflowing the old `as u32 * 1000`.
         let _ = pcap_ts_to_chrono(libc::timeval {
             tv_sec: 0,
             tv_usec: 4_294_968, // * 1000 overflows u32
         });
         let _ = pcap_ts_to_chrono(libc::timeval {
             tv_sec: 0,
-            tv_usec: i64::MAX,
+            tv_usec: 2_000_000_000, // fits i32; * 1000 overflows u32
         });
         let _ = pcap_ts_to_chrono(libc::timeval {
             tv_sec: 0,
-            tv_usec: -1,
+            tv_usec: -1, // as u32 → huge → overflow in old code
         });
     }
 

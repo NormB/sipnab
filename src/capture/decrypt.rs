@@ -742,7 +742,19 @@ impl TlsDecryptor {
             vec![true, false]
         };
 
-        let is_cbc = session.cipher_suite.is_cbc();
+        // Refuse TLS 1.2 CBC: those suites are MAC-then-encrypt and we do not
+        // verify the record MAC, so emitting CBC plaintext would surface
+        // unauthenticated data — a crafted capture could inject forged
+        // "decrypted" SIP. AEAD suites (AES-GCM), which are authenticated by
+        // `ring`'s `open_in_place`, remain fully supported.
+        if session.cipher_suite.is_cbc() {
+            tracing::debug!(
+                "TLS 1.2 CBC record not decrypted (suite {:?}): MAC verification \
+                 unsupported; refusing to emit unauthenticated plaintext",
+                session.cipher_suite
+            );
+            return None;
+        }
 
         for is_client_to_server in directions {
             let (write_key, write_iv, seq) = if is_client_to_server {
@@ -759,19 +771,8 @@ impl TlsDecryptor {
                 )
             };
 
-            let decrypt_result = if is_cbc {
-                // TLS 1.2 CBC: the record payload starts with an explicit IV
-                // (16 bytes for AES), followed by the ciphertext.
-                let iv_len = write_iv.len(); // 16 for AES-CBC
-                if record.payload.len() <= iv_len {
-                    continue;
-                }
-                let explicit_iv = &record.payload[..iv_len];
-                let ciphertext = &record.payload[iv_len..];
-                self.crypto
-                    .aes_cbc_decrypt(write_key, explicit_iv, ciphertext)
-            } else {
-                // GCM (TLS 1.3 or 1.2 GCM): IV XOR sequence number
+            // GCM (TLS 1.3 or 1.2 GCM): nonce = write_iv XOR sequence number.
+            let decrypt_result = {
                 let mut nonce = write_iv.clone();
                 let seq_bytes = seq.to_be_bytes();
                 let offset = nonce.len().saturating_sub(seq_bytes.len());
@@ -786,10 +787,8 @@ impl TlsDecryptor {
             };
 
             if let Ok(mut plaintext) = decrypt_result {
-                if !is_cbc {
-                    // TLS 1.3: strip inner content type and zero padding
-                    strip_tls13_padding(&mut plaintext);
-                }
+                // TLS 1.3: strip inner content type and zero padding.
+                strip_tls13_padding(&mut plaintext);
 
                 // Update direction tracking and sequence number
                 if session.client_addr.is_none() {
@@ -1572,29 +1571,32 @@ mod tests {
     }
 
     #[test]
-    fn cbc_record_decrypts() {
+    fn cbc_record_refused_not_emitted_unauthenticated() {
+        // TLS 1.2 CBC is MAC-then-encrypt; without verifying the record MAC we
+        // must not surface (possibly forged) plaintext. The decryptor refuses
+        // even when the underlying CBC primitive would return bytes.
         let key = TlsSessionKey {
             client_random: [0x10u8; 32],
         };
         let mut d = decryptor_with(Box::new(CbcMock));
         insert_cbc_session(&mut d, &key);
 
-        // Payload longer than the 16-byte explicit IV.
         let record = TlsRecord {
             content_type: TlsContentType::ApplicationData,
             version: TlsVersion::Tls12,
             length: 48,
             payload: vec![0xABu8; 48],
         };
-        let out = d
-            .try_decrypt(
-                &record,
-                "10.0.0.1".parse().unwrap(),
-                "10.0.0.2".parse().unwrap(),
-            )
-            .expect("cbc record should decrypt");
-        assert!(out.starts_with(b"MESSAGE sip:"));
-        assert_eq!(d.decrypted_count, 1);
+        let out = d.try_decrypt(
+            &record,
+            "10.0.0.1".parse().unwrap(),
+            "10.0.0.2".parse().unwrap(),
+        );
+        assert!(
+            out.is_none(),
+            "CBC plaintext must not be emitted unverified"
+        );
+        assert_eq!(d.decrypted_count, 0, "no record counted as decrypted");
     }
 
     #[test]
