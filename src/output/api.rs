@@ -149,6 +149,24 @@ pub struct StreamListParams {
 
 // ── Router construction ─────────────────────────────────────────────
 
+/// Per-request wall-clock cap. The API is request/response (no streaming), so a
+/// blanket timeout is safe and stops a slow client from pinning a connection.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Max request body accepted (defense in depth; the API is GET-only today).
+const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Middleware: fail a request exceeding [`REQUEST_TIMEOUT`] with 408 rather than
+/// letting it hold a connection slot indefinitely.
+async fn request_timeout_mw(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+        Ok(resp) => resp,
+        Err(_) => StatusCode::REQUEST_TIMEOUT.into_response(),
+    }
+}
+
 /// Build the axum [`Router`] with all API endpoints.
 ///
 /// The returned router expects an [`ApiState`] to be supplied as shared state.
@@ -163,6 +181,9 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/stats", get(get_stats))
         .route("/metrics", get(get_metrics))
         .with_state(state)
+        // Request hardening on every route.
+        .layer(axum::middleware::from_fn(request_timeout_mw))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
 }
 
 /// Parse a bind address string into a [`SocketAddr`].
@@ -236,6 +257,7 @@ pub async fn run_server(
         ));
     }
 
+    enforce_bind_auth_policy(&bind_addr, &state.verifier)?;
     if !bind_addr.ip().is_loopback() {
         tracing::warn!(
             "API server binding to non-loopback address {} without TLS — \
@@ -289,6 +311,23 @@ pub async fn run_server(
 }
 
 // ── Auth + rate-limit helpers ───────────────────────────────────────
+
+/// Refuse to start a non-loopback bind when no authentication is configured,
+/// matching the MCP HTTP transport's rule. A public, unauthenticated REST API
+/// would expose all captured SIP/RTP metadata to anyone who can reach the port.
+fn enforce_bind_auth_policy(
+    bind_addr: &SocketAddr,
+    verifier: &crate::auth::TokenVerifier,
+) -> Result<(), crate::Error> {
+    if !bind_addr.ip().is_loopback() && verifier.is_unconfigured() {
+        return Err(crate::Error::Server(format!(
+            "REST API refuses to start: --api-bind {bind_addr} is non-loopback but no \
+             --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY \
+             was supplied. Bind 127.0.0.1, or configure authentication."
+        )));
+    }
+    Ok(())
+}
 
 /// Check authentication. Returns `Err(StatusCode)` if auth fails.
 fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
@@ -780,6 +819,22 @@ mod tests {
             )),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(100))),
         }
+    }
+
+    #[test]
+    fn refuses_non_loopback_bind_without_auth() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let public: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 8080);
+        let loopback: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080);
+
+        // Public bind with no auth configured → refuse to start.
+        let unconfigured = make_state();
+        assert!(enforce_bind_auth_policy(&public, &unconfigured.verifier).is_err());
+        // Loopback with no auth → allowed (unchanged behavior).
+        assert!(enforce_bind_auth_policy(&loopback, &unconfigured.verifier).is_ok());
+        // Public bind WITH auth → allowed.
+        let configured = make_state_with_key("supersecret");
+        assert!(enforce_bind_auth_policy(&public, &configured.verifier).is_ok());
     }
 
     use crate::test_utils::build_sip_message as build_sip;

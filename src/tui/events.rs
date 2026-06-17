@@ -1812,6 +1812,10 @@ fn apply_name_dialog(app: &mut App) {
     if name.is_empty() {
         app.resolver.remove_manual(&ip);
         app.status_error = Some(format!("Cleared name for {ip}"));
+    } else if !crate::names::is_valid_name(&name) {
+        app.status_error =
+            Some("Invalid name (control characters or too long); not saved".to_string());
+        return;
     } else {
         app.resolver.set_manual(ip, name.clone());
         app.status_error = Some(format!("{ip} \u{2192} {name}"));
