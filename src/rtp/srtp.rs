@@ -14,7 +14,10 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use crate::sip::sdp::SdpCrypto;
 
 /// SRTP key material extracted from an SDP `a=crypto` line or manual key file.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is implemented by hand to redact the key/salt — the derived `Debug`
+/// would print the raw master key and salt to any log that formats this struct.
+#[derive(Clone)]
 pub struct SrtpKeyMaterial {
     /// The crypto attribute tag number from the SDP offer/answer.
     pub tag: u32,
@@ -32,13 +35,41 @@ pub struct SrtpKeyMaterial {
     pub media_port: Option<u16>,
 }
 
-#[cfg(feature = "tls")]
+impl std::fmt::Debug for SrtpKeyMaterial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Never print key material; show only its shape.
+        f.debug_struct("SrtpKeyMaterial")
+            .field("tag", &self.tag)
+            .field("suite", &self.suite)
+            .field(
+                "master_key",
+                &format_args!("<{} bytes redacted>", self.master_key.len()),
+            )
+            .field(
+                "master_salt",
+                &format_args!("<{} bytes redacted>", self.master_salt.len()),
+            )
+            .field("ssrc", &self.ssrc)
+            .field("media_addr", &self.media_addr)
+            .field("media_port", &self.media_port)
+            .finish()
+    }
+}
+
 impl Drop for SrtpKeyMaterial {
     fn drop(&mut self) {
-        // Zeroize key material on drop to prevent key leakage via memory.
-        use zeroize::Zeroize;
-        self.master_key.zeroize();
-        self.master_salt.zeroize();
+        // Always wipe key material on drop (previously gated behind `tls`, so
+        // non-tls builds leaked keys to freed heap). Best-effort manual zeroize
+        // avoids requiring the `zeroize` crate outside the `tls` feature;
+        // `black_box` blocks dead-store elimination of the writes.
+        for b in self.master_key.iter_mut() {
+            *b = 0;
+        }
+        for b in self.master_salt.iter_mut() {
+            *b = 0;
+        }
+        std::hint::black_box(self.master_key.as_ptr());
+        std::hint::black_box(self.master_salt.as_ptr());
     }
 }
 
@@ -259,29 +290,75 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
     }
 }
 
-/// Derive an SRTP session key using a simplified KDF based on RFC 3711 Section 4.3.1.
+/// RFC 3711 §4.3.3 AES-CM key-derivation PRF.
 ///
-/// The full SRTP KDF uses AES-CM (counter mode) as the PRF, keyed with the
-/// master key, to derive session keys from `label XOR master_salt`. Since
-/// AES-CM is not directly exposed by our [`CryptoBackend`] trait, this
-/// implementation uses HMAC-SHA1(master_key, label || master_salt) as a
-/// key-separation step. This is not strictly RFC 3711 compliant (the spec
-/// mandates AES-CM), but it provides proper key separation between the
-/// master key and the session authentication key — vastly better than using
-/// the master key directly as the HMAC key.
+/// Builds the 128-bit initial counter from the master salt with `label` mixed
+/// in at the `2^48` octet (per `key_id = label || r`, `r = 0` with
+/// key-derivation-rate 0, `x = key_id XOR master_salt`), then runs AES in
+/// counter mode keyed with the master key, taking the first `output_len` bytes.
+/// This is the spec PRF, so the derived session keys match any interoperable
+/// SRTP endpoint (validated against the RFC 3711 Appendix B.3 test vectors).
+#[cfg(feature = "tls")]
+fn aes_cm_prf(
+    master_key: &[u8],
+    master_salt: &[u8],
+    label: u8,
+    output_len: usize,
+) -> Result<Vec<u8>> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+
+    if master_salt.len() > 14 {
+        anyhow::bail!(
+            "SRTP master salt too long: {} bytes (max 14)",
+            master_salt.len()
+        );
+    }
+
+    // x = master_salt (left-aligned, padded to 14 bytes) XOR (label << 48); the
+    // low 16 bits are the AES-CM block counter, starting at 0.
+    let mut iv = [0u8; 16];
+    iv[..master_salt.len()].copy_from_slice(master_salt);
+    iv[7] ^= label; // 2^48 ⇒ octet index 7 within the 14-byte salt
+
+    // Encrypt one counter block with the correctly-sized AES key.
+    let encrypt_block = |block: &mut [u8; 16]| -> Result<()> {
+        let mut b = aes::Block::from(*block);
+        match master_key.len() {
+            16 => aes::Aes128::new_from_slice(master_key)
+                .map_err(|e| anyhow::anyhow!("AES-128 key error: {e}"))?
+                .encrypt_block(&mut b),
+            32 => aes::Aes256::new_from_slice(master_key)
+                .map_err(|e| anyhow::anyhow!("AES-256 key error: {e}"))?
+                .encrypt_block(&mut b),
+            n => anyhow::bail!("SRTP master key must be 16 or 32 bytes, got {n}"),
+        }
+        block.copy_from_slice(b.as_slice());
+        Ok(())
+    };
+
+    let mut out = Vec::with_capacity(output_len + 16);
+    let mut counter: u16 = 0;
+    while out.len() < output_len {
+        let mut block = iv;
+        block[14] = (counter >> 8) as u8;
+        block[15] = (counter & 0xff) as u8;
+        encrypt_block(&mut block)?;
+        out.extend_from_slice(&block);
+        counter = counter.wrapping_add(1);
+    }
+    out.truncate(output_len);
+    Ok(out)
+}
+
+/// Derive an SRTP session key (RFC 3711 §4.3.1).
 ///
-/// # Arguments
+/// With the `tls` feature this is the spec AES-CM PRF ([`aes_cm_prf`]), so the
+/// result interoperates with real SRTP endpoints. Without `tls` there is no AES
+/// primitive available, so it falls back to an HMAC-SHA1 key-separation step
+/// (non-interoperable — but the verifier needs a real crypto backend anyway).
 ///
-/// * `master_key` — The SRTP master key.
-/// * `master_salt` — The SRTP master salt (typically 14 bytes / 112 bits).
-/// * `label` — The SRTP key derivation label (0x00 = cipher, 0x01 = auth,
-///   0x02 = salt for SRTP; 0x03/0x04/0x05 for SRTCP).
-/// * `output_len` — Desired output length in bytes (e.g., 20 for auth key).
-/// * `crypto` — The crypto backend for HMAC computation.
-///
-/// # Returns
-///
-/// The derived session key, truncated to `output_len` bytes.
+/// * `label` — 0x00 cipher, 0x01 auth, 0x02 salt (SRTP); 0x03/0x04/0x05 SRTCP.
+/// * `output_len` — desired key length in bytes (e.g. 20 for the auth key).
 fn derive_session_key(
     master_key: &[u8],
     master_salt: &[u8],
@@ -289,23 +366,25 @@ fn derive_session_key(
     output_len: usize,
     crypto: &dyn crate::crypto::CryptoBackend,
 ) -> Result<Vec<u8>> {
-    // RFC 3711 Section 4.3.1: x = label * 2^48 XOR master_salt (padded to 112 bits)
-    // We construct the KDF input as: label byte || master_salt, which provides
-    // domain separation between key types while incorporating the salt.
-    let mut kdf_input = Vec::with_capacity(1 + master_salt.len());
-    kdf_input.push(label);
-    kdf_input.extend_from_slice(master_salt);
-
-    let derived = crypto.hmac_sha1(master_key, &kdf_input)?;
-
-    // HMAC-SHA1 produces 20 bytes; truncate to the requested length.
-    if output_len > derived.len() {
-        anyhow::bail!(
-            "Requested KDF output length ({output_len}) exceeds HMAC-SHA1 output ({})",
-            derived.len()
-        );
+    #[cfg(feature = "tls")]
+    {
+        let _ = crypto;
+        aes_cm_prf(master_key, master_salt, label, output_len)
     }
-    Ok(derived[..output_len].to_vec())
+    #[cfg(not(feature = "tls"))]
+    {
+        let mut kdf_input = Vec::with_capacity(1 + master_salt.len());
+        kdf_input.push(label);
+        kdf_input.extend_from_slice(master_salt);
+        let derived = crypto.hmac_sha1(master_key, &kdf_input)?;
+        if output_len > derived.len() {
+            anyhow::bail!(
+                "Requested KDF output length ({output_len}) exceeds HMAC-SHA1 output ({})",
+                derived.len()
+            );
+        }
+        Ok(derived[..output_len].to_vec())
+    }
 }
 
 /// SRTP KDF label for the session authentication key (RFC 3711 Section 4.3.1).
@@ -316,14 +395,15 @@ const SRTP_AUTH_KEY_LEN: usize = 20;
 /// Verify the SRTP authentication tag on an SRTP packet.
 ///
 /// The SRTP packet format is: `[RTP header + encrypted payload] [auth tag]`.
-/// The authentication tag is computed as HMAC-SHA1 over the authenticated
-/// portion (everything before the tag) with the ROC (rollover counter)
-/// appended. For simplicity, this implementation assumes ROC = 0 (valid
-/// for the first 65535 packets of a session).
+/// The authentication tag is HMAC-SHA1 over the authenticated portion
+/// (everything before the tag) with the 32-bit ROC (rollover counter) appended.
+/// Being stateless, this verifier tries the first two ROC epochs (~131072
+/// packets); longer sessions need stateful per-SSRC ROC tracking.
 ///
-/// The session authentication key is derived from the master key and salt
-/// via [`derive_session_key`] with label 0x01 (RFC 3711 Section 4.3.1),
-/// rather than using the master key directly.
+/// The session authentication key is derived from the master key and salt via
+/// the RFC 3711 §4.3.1 AES-CM KDF ([`derive_session_key`], label 0x01), so it
+/// interoperates with standard SRTP endpoints when built with the `tls`
+/// feature.
 ///
 /// Returns `Ok(true)` if the tag is valid, `Ok(false)` if the tag does
 /// not match, or `Err` if the crypto operation fails.
@@ -360,17 +440,25 @@ pub fn verify_srtp_auth_tag(
         crypto,
     )?;
 
-    // HMAC-SHA1(session_auth_key, auth_portion || ROC)
-    let mut hmac_input = auth_portion.to_vec();
-    // Append ROC (assumed 0 for initial implementation)
-    hmac_input.extend_from_slice(&0u32.to_be_bytes());
-
-    let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input)?;
-    let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
-
-    // Constant-time comparison: a MAC verifier must not leak, via timing, how
-    // many leading bytes of a forged tag matched.
-    Ok(crate::crypto::constant_time_eq(computed_tag, received_tag))
+    // RFC 3711 §4.1: the auth tag is HMAC-SHA1 over (authenticated portion ||
+    // ROC). This verifier is stateless and cannot know the true rollover count,
+    // so it tries the first two ROC epochs — covering the first ~131072 packets
+    // of a session (the 16-bit RTP sequence number wraps every 65536). Long
+    // streams need stateful per-SSRC ROC tracking; that remains a limitation.
+    // Trying two ROCs only doubles the (already negligible, 2^-tagbits) chance
+    // of accepting a forgery.
+    for roc in 0u32..=1 {
+        let mut hmac_input = auth_portion.to_vec();
+        hmac_input.extend_from_slice(&roc.to_be_bytes());
+        let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input)?;
+        let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
+        // Constant-time comparison: a MAC verifier must not leak, via timing,
+        // how many leading bytes of a forged tag matched.
+        if crate::crypto::constant_time_eq(computed_tag, received_tag) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -527,6 +615,69 @@ mod tests {
     #[test]
     fn auth_tag_len_unknown_defaults_to_80bit() {
         assert_eq!(auth_tag_len(&SrtpSuite::Unknown("CUSTOM".to_string())), 10);
+    }
+
+    #[test]
+    fn debug_redacts_key_material() {
+        let m = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: vec![0xAB; 16], // 0xAB == 171 decimal in Vec<u8> Debug
+            master_salt: vec![0xCD; 14], // 0xCD == 205
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        let s = format!("{m:?}");
+        assert!(
+            s.contains("redacted"),
+            "Debug must mark key material redacted"
+        );
+        assert!(
+            !s.contains("171"),
+            "master key bytes must not appear in Debug"
+        );
+        assert!(
+            !s.contains("205"),
+            "master salt bytes must not appear in Debug"
+        );
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn aes_cm_prf_matches_rfc3711_b3_vectors() {
+        // RFC 3711 Appendix B.3 known-answer test for the AES-CM KDF. Matching
+        // these proves the derivation interoperates with standard SRTP.
+        let master_key = [
+            0xE1, 0xF9, 0x7A, 0x0D, 0x3E, 0x01, 0x8B, 0xE0, 0xD6, 0x4F, 0xA3, 0x2C, 0x06, 0xDE,
+            0x41, 0x39,
+        ];
+        let master_salt = [
+            0x0E, 0xC6, 0x75, 0xAD, 0x49, 0x8A, 0xFE, 0xEB, 0xB6, 0x96, 0x0B, 0x3A, 0xAB, 0xE6,
+        ];
+        // label 0x00 → session cipher key (128 bits)
+        assert_eq!(
+            aes_cm_prf(&master_key, &master_salt, 0x00, 16).unwrap(),
+            vec![
+                0xC6, 0x1E, 0x7A, 0x93, 0x74, 0x4F, 0x39, 0xEE, 0x10, 0x73, 0x4A, 0xFE, 0x3F, 0xF7,
+                0xA0, 0x87
+            ]
+        );
+        // label 0x02 → session salt key (112 bits)
+        assert_eq!(
+            aes_cm_prf(&master_key, &master_salt, 0x02, 14).unwrap(),
+            vec![
+                0x30, 0xCB, 0xBC, 0x08, 0x86, 0x3D, 0x8C, 0x85, 0xD4, 0x9D, 0xB3, 0x4A, 0x9A, 0xE1
+            ]
+        );
+        // label 0x01 → session auth key (160 bits)
+        assert_eq!(
+            aes_cm_prf(&master_key, &master_salt, 0x01, 20).unwrap(),
+            vec![
+                0xCE, 0xBE, 0x32, 0x1F, 0x6F, 0xF7, 0x71, 0x6B, 0x6F, 0xD4, 0xAB, 0x49, 0xAF, 0x25,
+                0x6A, 0x15, 0x6D, 0x38, 0xBA, 0xA4
+            ]
+        );
     }
 
     #[cfg(feature = "tls")]
