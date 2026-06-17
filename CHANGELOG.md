@@ -35,6 +35,15 @@ All notable changes to sipnab will be documented in this file.
 ### Security
 - SRTP auth-tag verification now uses a constant-time comparison (shared with
   the API/MCP token check) instead of `==`, closing a MAC timing side channel.
+- SRTP session-key derivation now uses the real RFC 3711 §4.3.1 AES-CM KDF
+  (validated against the RFC 3711 Appendix B.3 test vectors) instead of an
+  HMAC stand-in, so the auth-tag verifier interoperates with standard SRTP.
+  Verification also tries the first two ROC epochs (~131072 packets) rather
+  than assuming ROC 0; long sessions still need stateful ROC tracking.
+- SRTP key material is no longer exposed: `SrtpKeyMaterial` has a hand-written
+  `Debug` that redacts the master key/salt, and the keys are now always wiped
+  on drop (the zeroizing `Drop` was previously gated behind the `tls` feature,
+  so non-tls builds left keys in freed heap).
 - TLS 1.2 CBC records are no longer decrypted: those suites are MAC-then-encrypt
   and the record MAC was not verified, so a crafted capture could inject forged
   "decrypted" SIP. The decryptor now declines CBC and emits nothing rather than
