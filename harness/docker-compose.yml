@@ -1,0 +1,138 @@
+# sipnab MCP diagnostic harness
+#
+# Topology (single shared network namespace owned by opensips-1):
+#
+#   sipp-uac ──┐                         ┌── (network_mode: service:opensips-1)
+#   (172.28.0.21)                        │     rtpengine   (media anchor, userspace)
+#              ├──> opensips-1 ──────────┤     sipnab      (capture + MCP HTTP server)
+#   sipp-uas ──┘    (172.28.0.10)        └──
+#   (172.28.0.20)   owns netns + ports
+#
+# opensips-1 anchors all media through rtpengine, so every SIP message AND
+# every RTP packet transits the opensips-1 network namespace -- a single
+# capture point for sipnab. An external system (your laptop) reaches the
+# sipnab MCP server on <host>:${MCP_PORT} and can also register/call into
+# opensips-1 on <host>:${SIP_PORT}/udp.
+
+name: ${COMPOSE_PROJECT_NAME:-sipnab-harness}
+
+services:
+  # ---- SIP core: OpenSIPS proxy/registrar (owns the shared netns) ----------
+  opensips-1:
+    build:
+      context: ./opensips
+      network: host          # RUN steps need the host resolver (daemon DNS is blocked)
+      args:
+        OPENSIPS_GIT_URL: ${OPENSIPS_GIT_URL:-https://github.com/NormB/opensips.git}
+        OPENSIPS_GIT_REF: ${OPENSIPS_GIT_REF:-d8586fa6}
+    image: sipnab-harness/opensips:local
+    container_name: opensips-1
+    hostname: opensips-1
+    restart: unless-stopped
+    init: true                 # tini as PID 1 -> clean signal handling for opensips
+    cap_add:
+      - NET_RAW      # rtpengine + sipnab (sharing this netns) capture here
+      - NET_ADMIN
+    environment:
+      OPENSIPS_IP: ${OPENSIPS_IP:-172.28.0.10}
+      UAS_TARGET: ${UAS_IP:-172.28.0.20}:5060          # internal SIP port is fixed
+      RTPENGINE_SOCK: udp:127.0.0.1:22222
+    ports:
+      # host_port:container_port -- internal ports are fixed; only host-side
+      # ports are configurable (to dodge conflicts with a host SIP service).
+      - "${SIP_HOST_PORT:-5060}:5060/udp"                              # SIP (laptop can register/call in)
+      - "${MCP_PORT:-8731}:8731/tcp"                                   # sipnab MCP HTTP (laptop agent)
+      - "${RTP_MIN:-30000}-${RTP_MAX:-30050}:30000-30050/udp"          # rtpengine media (laptop RTP)
+    networks:
+      sipnet:
+        ipv4_address: ${OPENSIPS_IP:-172.28.0.10}
+    healthcheck:
+      test: ["CMD-SHELL", "ss -uln | grep -q ':5060' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---- Media anchor: rtpengine in userspace mode, shares opensips netns ----
+  rtpengine:
+    build:
+      context: ./rtpengine
+      network: host
+    image: sipnab-harness/rtpengine:local
+    container_name: rtpengine
+    restart: unless-stopped
+    network_mode: "service:opensips-1"
+    depends_on:
+      - opensips-1
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      RTPENGINE_IF: ${OPENSIPS_IP:-172.28.0.10}
+      RTP_MIN: ${RTP_MIN:-30000}
+      RTP_MAX: ${RTP_MAX:-30050}
+
+  # ---- sipnab: capture (shared netns) + MCP HTTP server --------------------
+  sipnab:
+    build:
+      context: ..
+      dockerfile: harness/sipnab/Dockerfile
+      network: host
+    image: sipnab-harness/sipnab:local
+    container_name: sipnab
+    restart: unless-stopped
+    network_mode: "service:opensips-1"
+    depends_on:
+      - opensips-1
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      MCP_BIND: 0.0.0.0:8731
+      MCP_ALLOWED_HOST: ${SIPNAB_MCP_ALLOWED_HOST:-*}
+      CAPTURE_IFACE: eth0
+      SIP_PORTRANGE: ${SIP_PORT:-5060}-5061
+    volumes:
+      - ./secrets/mcp.token:/run/secrets/mcp.token:ro
+      - ./captures:/captures
+
+  # ---- SIPp UAS: answers calls relayed by opensips-1 -----------------------
+  sipp-uas:
+    build:
+      context: ./sipp
+      network: host
+    image: sipnab-harness/sipp:local
+    container_name: sipp-uas
+    restart: unless-stopped
+    depends_on:
+      - opensips-1
+    networks:
+      sipnet:
+        ipv4_address: ${UAS_IP:-172.28.0.20}
+    entrypoint: ["/harness/run-uas.sh"]
+
+  # ---- SIPp UAC: loops public scenarios through opensips-1 -----------------
+  sipp-uac:
+    image: sipnab-harness/sipp:local
+    container_name: sipp-uac
+    restart: unless-stopped
+    depends_on:
+      - opensips-1
+      - sipp-uas
+      - rtpengine
+    environment:
+      PROXY: ${OPENSIPS_IP:-172.28.0.10}:5060          # internal SIP port is fixed
+      UAS_AOR: ${UAS_IP:-172.28.0.20}
+      LOOP_PAUSE: ${LOOP_PAUSE:-5}
+    networks:
+      sipnet:
+        ipv4_address: ${UAC_IP:-172.28.0.21}
+    entrypoint: ["/harness/run-uac-loop.sh"]
+
+networks:
+  sipnet:
+    name: ${COMPOSE_PROJECT_NAME:-sipnab-harness}_sipnet
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${SIPNET_SUBNET:-172.28.0.0/24}

@@ -1,0 +1,18 @@
+Scenarios the UAC loop cycles through (source: ~/sipp-scenarios), each call
+routed UAC -> opensips-1 -> UAS with media anchored by rtpengine.
+
+happy path (complete cleanly):
+  uac_basic.xml       INVITE / 180 / 200 / ACK / BYE
+  uac_options.xml     OPTIONS / 200 (answered by opensips-1)
+  uac_register.xml    REGISTER / 200 (no-auth, AOR regtest@opensips-1)
+  uac_hold.xml        INVITE + re-INVITE hold/unhold, RTP from g711a.pcap
+  uac_pcap_g711a.xml  INVITE + G.711a RTP playback (real media via rtpengine)
+  uac_pcap_g722.xml   INVITE + G.722 RTP playback
+
+fault injection (expected to error / time out -- problems to diagnose):
+  uac_broken_sdp.xml  INVITE with malformed SDP body
+  uac_bad_message.xml MESSAGE with mismatched Content-Length
+  uac_bogus_codec.xml INVITE advertising a bogus codec / rtpmap
+
+Edit harness/sipp/run-uac-loop.sh to add/remove scenarios. Any of the ~60
+files in ~/sipp-scenarios can be dropped into harness/sipp/scenarios/.

@@ -1,0 +1,7 @@
+# Generated / local-only
+.env
+secrets/mcp.token
+captures/*.pcap
+captures/*.pcapng
+captures/*.json
+*.log
