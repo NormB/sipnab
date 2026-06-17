@@ -142,9 +142,13 @@ pub fn extract_srtp_keys(crypto: &SdpCrypto) -> Result<SrtpKeyMaterial> {
     // Strip optional session parameters after '|'
     let b64_part = inline_data.split('|').next().unwrap_or(inline_data);
 
-    let decoded = BASE64
-        .decode(b64_part)
-        .with_context(|| format!("Invalid base64 in SRTP key_params: {b64_part}"))?;
+    let decoded = BASE64.decode(b64_part).with_context(|| {
+        // Never echo the candidate key material into the error/log.
+        format!(
+            "Invalid base64 in SRTP key_params ({} chars)",
+            b64_part.len()
+        )
+    })?;
 
     // Split into key and salt based on suite expectations
     let (master_key, master_salt) = split_key_salt(&suite, &decoded)?;
@@ -255,12 +259,13 @@ fn parse_srtp_key_line(line: &str) -> Result<SrtpKeyMaterial> {
 
     let key_bytes = BASE64
         .decode(key_b64)
-        .with_context(|| format!("Invalid base64 in key: {key_b64}"))?;
+        // Never echo the candidate key material into the error/log.
+        .with_context(|| format!("Invalid base64 in key ({} chars)", key_b64.len()))?;
 
     let (master_key, master_salt) = if let Some(sb64) = salt_b64 {
         let salt_bytes = BASE64
             .decode(sb64)
-            .with_context(|| format!("Invalid base64 in salt: {sb64}"))?;
+            .with_context(|| format!("Invalid base64 in salt ({} chars)", sb64.len()))?;
         (key_bytes, salt_bytes)
     } else {
         // key contains key||salt concatenated
@@ -443,22 +448,159 @@ pub fn verify_srtp_auth_tag(
     // RFC 3711 §4.1: the auth tag is HMAC-SHA1 over (authenticated portion ||
     // ROC). This verifier is stateless and cannot know the true rollover count,
     // so it tries the first two ROC epochs — covering the first ~131072 packets
-    // of a session (the 16-bit RTP sequence number wraps every 65536). Long
-    // streams need stateful per-SSRC ROC tracking; that remains a limitation.
-    // Trying two ROCs only doubles the (already negligible, 2^-tagbits) chance
-    // of accepting a forgery.
+    // of a session (the 16-bit RTP sequence number wraps every 65536). For long
+    // streams use [`SrtpRocTracker`], which tracks ROC per SSRC. Trying two ROCs
+    // only doubles the (already negligible, 2^-tagbits) forgery chance.
     for roc in 0u32..=1 {
-        let mut hmac_input = auth_portion.to_vec();
-        hmac_input.extend_from_slice(&roc.to_be_bytes());
-        let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input)?;
-        let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
-        // Constant-time comparison: a MAC verifier must not leak, via timing,
-        // how many leading bytes of a forged tag matched.
-        if crate::crypto::constant_time_eq(computed_tag, received_tag) {
+        if srtp_tag_matches(
+            auth_portion,
+            received_tag,
+            &session_auth_key,
+            roc,
+            tag_len,
+            crypto,
+        )? {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Compute the SRTP auth tag over `auth_portion || roc` and constant-time
+/// compare it to `received_tag`.
+fn srtp_tag_matches(
+    auth_portion: &[u8],
+    received_tag: &[u8],
+    session_auth_key: &[u8],
+    roc: u32,
+    tag_len: usize,
+    crypto: &dyn crate::crypto::CryptoBackend,
+) -> Result<bool> {
+    let mut hmac_input = auth_portion.to_vec();
+    hmac_input.extend_from_slice(&roc.to_be_bytes());
+    let full_tag = crypto.hmac_sha1(session_auth_key, &hmac_input)?;
+    let computed_tag = &full_tag[..tag_len.min(full_tag.len())];
+    // Constant-time comparison: a MAC verifier must not leak, via timing, how
+    // many leading bytes of a forged tag matched.
+    Ok(crate::crypto::constant_time_eq(computed_tag, received_tag))
+}
+
+/// Per-SSRC rollover-counter (ROC) state for stateful SRTP auth verification.
+#[derive(Clone, Copy, Debug)]
+struct RocState {
+    /// Rollover counter for this SSRC.
+    roc: u32,
+    /// Highest sequence number seen (`s_l` in RFC 3711).
+    s_l: u16,
+}
+
+/// Estimate the ROC for an incoming sequence number (RFC 3711 §3.3.1), given
+/// the locally maintained `roc` and highest-seen sequence `s_l`.
+fn estimate_roc(roc: u32, s_l: u16, seq: u16) -> u32 {
+    let seq = seq as i32;
+    let s_l = s_l as i32;
+    const HALF: i32 = 1 << 15; // 2^15
+    if s_l < HALF {
+        if seq - s_l > HALF {
+            roc.wrapping_sub(1) // an old packet from the previous epoch
+        } else {
+            roc
+        }
+    } else if s_l - HALF > seq {
+        roc.wrapping_add(1) // sequence wrapped into the next epoch
+    } else {
+        roc
+    }
+}
+
+/// Stateful SRTP authentication-tag verifier that tracks the rollover counter
+/// per SSRC, so streams longer than 65536 packets verify correctly.
+///
+/// The ROC for each packet is estimated from the stored highest sequence number
+/// (RFC 3711 §3.3.1) and advanced when the sequence number wraps. The first
+/// packet seen for an SSRC is assumed to start at ROC 0 (joining a stream
+/// mid-session with a non-zero ROC cannot be detected from the wire and will
+/// not verify — an inherent limitation of passive analysis).
+#[derive(Debug, Default)]
+pub struct SrtpRocTracker {
+    per_ssrc: std::collections::HashMap<u32, RocState>,
+}
+
+impl SrtpRocTracker {
+    /// Create an empty tracker.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Verify a packet's auth tag, estimating and advancing the ROC for the
+    /// packet's SSRC. Returns `Ok(true)` on a valid tag, `Ok(false)` on a
+    /// mismatch (state is left unchanged on mismatch), or `Err` on a crypto
+    /// failure or a packet too short to contain header + tag.
+    pub fn verify(
+        &mut self,
+        packet: &[u8],
+        key_material: &SrtpKeyMaterial,
+        crypto: &dyn crate::crypto::CryptoBackend,
+    ) -> Result<bool> {
+        let tag_len = auth_tag_len(&key_material.suite);
+        if packet.len() < 12 + tag_len {
+            anyhow::bail!(
+                "SRTP packet too short for auth tag verification: {} bytes",
+                packet.len()
+            );
+        }
+        let seq = u16::from_be_bytes([packet[2], packet[3]]);
+        let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+
+        let auth_portion_len = packet.len() - tag_len;
+        let auth_portion = &packet[..auth_portion_len];
+        let received_tag = &packet[auth_portion_len..];
+
+        let session_auth_key = derive_session_key(
+            &key_material.master_key,
+            &key_material.master_salt,
+            SRTP_LABEL_AUTH,
+            SRTP_AUTH_KEY_LEN,
+            crypto,
+        )?;
+
+        // First packet for this SSRC starts at ROC 0; otherwise estimate.
+        let existing = self.per_ssrc.get(&ssrc).copied();
+        let roc = match existing {
+            Some(st) => estimate_roc(st.roc, st.s_l, seq),
+            None => 0,
+        };
+
+        if !srtp_tag_matches(
+            auth_portion,
+            received_tag,
+            &session_auth_key,
+            roc,
+            tag_len,
+            crypto,
+        )? {
+            return Ok(false); // leave state untouched on a failed/forged tag
+        }
+
+        // Authenticated: advance ROC / highest-seq for this SSRC.
+        let new = match existing {
+            None => RocState { roc: 0, s_l: seq },
+            Some(prev) => {
+                // Advance when the packet wrapped into the next epoch, or is the
+                // newest seen in the current one; otherwise it is an older /
+                // replayed in-window packet and state is kept.
+                let advanced =
+                    roc == prev.roc.wrapping_add(1) || (roc == prev.roc && seq > prev.s_l);
+                if advanced {
+                    RocState { roc, s_l: seq }
+                } else {
+                    prev
+                }
+            }
+        };
+        self.per_ssrc.insert(ssrc, new);
+        Ok(true)
+    }
 }
 
 #[cfg(test)]
@@ -538,6 +680,41 @@ mod tests {
         assert!(
             extract_srtp_keys(&crypto).is_err(),
             "Invalid base64 should error"
+        );
+    }
+
+    #[test]
+    fn invalid_base64_errors_do_not_leak_key_material() {
+        // SDP a=crypto path.
+        let crypto = SdpCrypto {
+            tag: 1,
+            suite: "AES_CM_128_HMAC_SHA1_80".to_string(),
+            key_params: "inline:SUPERSECRETKEYMATERIAL_not_base64_@@@".to_string(),
+        };
+        let msg = format!("{:#}", extract_srtp_keys(&crypto).unwrap_err());
+        assert!(
+            !msg.contains("SUPERSECRET"),
+            "key material must not appear in error: {msg}"
+        );
+        assert!(msg.contains("chars"), "error should report length: {msg}");
+
+        // Manual key-file path (key= and salt=).
+        let msg = format!(
+            "{:#}",
+            parse_srtp_key_line("ssrc=1 key=BADKEYSECRET_@@@").unwrap_err()
+        );
+        assert!(
+            !msg.contains("BADKEYSECRET"),
+            "key material must not appear in error: {msg}"
+        );
+
+        let msg = format!(
+            "{:#}",
+            parse_srtp_key_line("ssrc=1 key=AAAA salt=BADSALTSECRET_@@@").unwrap_err()
+        );
+        assert!(
+            !msg.contains("BADSALTSECRET"),
+            "salt material must not appear in error: {msg}"
         );
     }
 
@@ -768,6 +945,71 @@ mod tests {
 
         let result = verify_srtp_auth_tag(&packet, &material, &crypto).unwrap();
         assert!(!result, "Auth tag should fail with wrong key");
+    }
+
+    #[test]
+    fn estimate_roc_handles_wrap_and_reorder() {
+        // No state advance yet: within the first epoch, ROC stays 0.
+        assert_eq!(estimate_roc(0, 100, 200), 0);
+        // Sequence wrapped (high s_l, low seq) ⇒ next epoch.
+        assert_eq!(estimate_roc(0, 65000, 200), 1);
+        // Old packet arriving after a wrap (low s_l, high seq) ⇒ previous epoch.
+        assert_eq!(estimate_roc(1, 100, 65000), 0);
+        // Normal advance in a high epoch, no wrap.
+        assert_eq!(estimate_roc(5, 40000, 41000), 5);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn roc_tracker_follows_sequence_rollover() {
+        use crate::crypto::RingCryptoBackend;
+
+        let key = vec![0x01u8; 16];
+        let salt = vec![0x02u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: key.clone(),
+            master_salt: salt.clone(),
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        let crypto = RingCryptoBackend;
+        let session_auth_key =
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
+
+        // Build an SRTP packet with a valid 80-bit tag for the given seq/ROC.
+        let build = |seq: u16, ssrc: u32, roc: u32| -> Vec<u8> {
+            let mut p = vec![0x80, 0x00];
+            p.extend_from_slice(&seq.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // timestamp
+            p.extend_from_slice(&ssrc.to_be_bytes());
+            p.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]); // payload
+            let mut hmac_input = p.clone();
+            hmac_input.extend_from_slice(&roc.to_be_bytes());
+            let full = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
+            p.extend_from_slice(&full[..10]);
+            p
+        };
+
+        let mut tr = SrtpRocTracker::new();
+        let ssrc = 0x1234_5678;
+        // First packet near the top of epoch 0.
+        assert!(
+            tr.verify(&build(65000, ssrc, 0), &material, &crypto)
+                .unwrap()
+        );
+        // Sequence wraps → tracker must advance to ROC 1 and still verify.
+        assert!(tr.verify(&build(200, ssrc, 1), &material, &crypto).unwrap());
+        // Continue in epoch 1.
+        assert!(tr.verify(&build(300, ssrc, 1), &material, &crypto).unwrap());
+        // A tag computed with the wrong (stale) ROC must be rejected.
+        assert!(!tr.verify(&build(400, ssrc, 0), &material, &crypto).unwrap());
+        // A tampered tag must be rejected.
+        let mut bad = build(500, ssrc, 1);
+        *bad.last_mut().unwrap() ^= 0xFF;
+        assert!(!tr.verify(&bad, &material, &crypto).unwrap());
     }
 
     #[cfg(feature = "tls")]

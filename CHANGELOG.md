@@ -44,6 +44,11 @@ All notable changes to sipnab will be documented in this file.
   `Debug` that redacts the master key/salt, and the keys are now always wiped
   on drop (the zeroizing `Drop` was previously gated behind the `tls` feature,
   so non-tls builds left keys in freed heap).
+- SRTP key-parsing error messages (SDP `a=crypto` and the manual key file) no
+  longer echo the candidate base64 key/salt bytes — they report only the length.
+- New `SrtpRocTracker` verifies SRTP auth tags with stateful per-SSRC rollover
+  tracking (RFC 3711 §3.3.1 index estimation), so streams longer than 65536
+  packets verify correctly instead of relying on the stateless two-epoch guess.
 - TLS 1.2 CBC records are no longer decrypted: those suites are MAC-then-encrypt
   and the record MAC was not verified, so a crafted capture could inject forged
   "decrypted" SIP. The decryptor now declines CBC and emits nothing rather than
