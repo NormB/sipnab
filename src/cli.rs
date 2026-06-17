@@ -569,7 +569,8 @@ pub struct Cli {
     pub syslog: bool,
 
     // ── TLS / Decryption ─────────────────────────────────────────────
-    /// TLS private key file for SIP-TLS decryption.
+    /// TLS private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Only
+    /// non-PFS RSA handshakes; ECDHE/DHE (forward secrecy) need --keylog.
     #[arg(short = 'k', long = "tls-key", value_name = "FILE")]
     pub tls_key: Option<String>,
 
@@ -581,11 +582,13 @@ pub struct Cli {
     #[arg(long)]
     pub keylog_watch: bool,
 
-    /// DTLS key log file for SRTP key extraction.
+    /// DTLS key log (NSS SSLKEYLOGFILE): extracts SRTP keys from DTLS-SRTP
+    /// handshakes via the RFC 5764 exporter (AES-CM profiles).
     #[arg(long, value_name = "FILE")]
     pub dtls_keylog: Option<String>,
 
-    /// SRTP master keys file for RTP decryption.
+    /// SRTP master-keys file for media decryption (AES-CM, RFC 3711). Also
+    /// honors SDES `a=crypto` keys learned from SDP.
     #[arg(long, value_name = "FILE")]
     pub srtp_keys: Option<String>,
 

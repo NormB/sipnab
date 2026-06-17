@@ -15,7 +15,27 @@ use std::path::Path;
 use anyhow::{Context, Result};
 
 use super::tls::{KeyLogEntry, TlsContentType, TlsRecord, parse_keylog_file};
+use crate::capture::rsa_key::RsaKey;
 use crate::crypto::CryptoBackend;
+
+/// Accumulated TLS 1.2 RSA-key-exchange handshake state for `--tls-key`.
+///
+/// Records arrive in wire order; we collect the ClientHello `client_random`,
+/// the ServerHello `server_random` + negotiated cipher, and finally the
+/// `ClientKeyExchange` RSA-encrypted pre-master. When all are present we
+/// recover the master secret and derive the session keys. This pairs the
+/// fields of a single handshake; interleaved concurrent RSA handshakes in one
+/// capture cannot be correlated from the wire (a passive-analysis limitation).
+struct RsaHandshakeState {
+    /// The server's RSA private key.
+    key: RsaKey,
+    /// `client_random` from the most recent ClientHello.
+    client_random: Option<[u8; 32]>,
+    /// `server_random` from the most recent ServerHello.
+    server_random: Option<[u8; 32]>,
+    /// Negotiated cipher suite code point from the ServerHello.
+    cipher: Option<u16>,
+}
 
 // ---------------------------------------------------------------------------
 // Cipher suite identification
@@ -43,12 +63,22 @@ impl CipherSuite {
         }
     }
 
-    /// IV (nonce) length in bytes.
+    /// IV (nonce) length in bytes — the full TLS 1.3 per-record nonce width.
     fn iv_len(self) -> usize {
         match self {
             Self::Aes128Gcm | Self::Aes256Gcm => 12,
             Self::Aes128CbcSha => 16,
             Self::Aes256CbcSha256 => 16,
+        }
+    }
+
+    /// Fixed (implicit) IV length carried in the TLS 1.2 key block. For GCM this
+    /// is the 4-byte salt (RFC 5288); the remaining 8 nonce bytes are the
+    /// explicit per-record nonce. CBC uses a full 16-byte IV.
+    fn tls12_fixed_iv_len(self) -> usize {
+        match self {
+            Self::Aes128Gcm | Self::Aes256Gcm => 4,
+            Self::Aes128CbcSha | Self::Aes256CbcSha256 => 16,
         }
     }
 
@@ -103,8 +133,23 @@ struct TlsSessionKey {
     client_random: [u8; 32],
 }
 
+/// TLS record-layer version for a session — selects the AEAD record framing.
+///
+/// TLS 1.2 GCM (RFC 5246 §6.2.3.3, RFC 5288): a 4-byte fixed (implicit) IV plus
+/// an 8-byte explicit nonce carried in each record, with a 13-byte AAD that
+/// includes the 64-bit sequence number. TLS 1.3 (RFC 8446 §5.2): a 12-byte
+/// per-record nonce derived as `write_iv XOR seq`, a 5-byte AAD, and an inner
+/// content-type byte appended to the plaintext.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SessionVersion {
+    Tls12,
+    Tls13,
+}
+
 /// Derived per-direction key material for a TLS session.
 struct TlsSession {
+    /// Record-layer version (TLS 1.2 vs 1.3 AEAD framing).
+    version: SessionVersion,
     /// Encryption key for client-to-server records.
     client_write_key: Vec<u8>,
     /// Encryption key for server-to-client records.
@@ -185,7 +230,7 @@ fn derive_key_iv(
 /// A(0) = seed
 /// A(i) = HMAC(secret, A(i-1))
 /// ```
-fn tls12_prf(
+pub(crate) fn tls12_prf(
     crypto: &dyn CryptoBackend,
     secret: &[u8],
     label: &[u8],
@@ -247,7 +292,9 @@ fn derive_tls12_keys(
     let seed = [server_random.as_slice(), client_random.as_slice()].concat();
     let mac_len = suite.mac_key_len();
     let key_len = suite.key_len();
-    let iv_len = suite.iv_len();
+    // TLS 1.2 key block uses the fixed/implicit IV width (4 bytes for GCM),
+    // not the full 12-byte TLS 1.3 nonce.
+    let iv_len = suite.tls12_fixed_iv_len();
 
     let needed = 2 * mac_len + 2 * key_len + 2 * iv_len;
     let key_block = tls12_prf(crypto, master_secret, b"key expansion", &seed, needed)?;
@@ -340,6 +387,34 @@ fn parse_server_hello(handshake_data: &[u8]) -> Option<HandshakeInfo> {
     })
 }
 
+/// Extract `client_random` (32 bytes) from a ClientHello handshake message.
+///
+/// Layout mirrors ServerHello: `msg_type(1)=1 ‖ length(3) ‖ version(2) ‖
+/// random(32) ‖ …`, so the random sits at offset 6..38.
+fn parse_client_hello_random(handshake_data: &[u8]) -> Option<[u8; 32]> {
+    if handshake_data.len() < 38 || handshake_data[0] != 1 {
+        return None;
+    }
+    let mut cr = [0u8; 32];
+    cr.copy_from_slice(&handshake_data[6..38]);
+    Some(cr)
+}
+
+/// Extract the RSA-encrypted pre-master secret from a TLS 1.2 ClientKeyExchange.
+///
+/// Layout: `msg_type(1)=16 ‖ length(3) ‖ EncryptedPreMasterSecret`, where the
+/// `EncryptedPreMasterSecret` is itself `uint16 length ‖ opaque[length]`
+/// (RFC 5246 §7.4.7.1). Returns the ciphertext bytes.
+fn parse_client_key_exchange_rsa(handshake_data: &[u8]) -> Option<&[u8]> {
+    if handshake_data.len() < 6 || handshake_data[0] != 16 {
+        return None;
+    }
+    let body = &handshake_data[4..];
+    let ct_len = u16::from_be_bytes([body[0], body[1]]) as usize;
+    let ct = body.get(2..2 + ct_len)?;
+    Some(ct)
+}
+
 // ---------------------------------------------------------------------------
 // TlsDecryptor
 // ---------------------------------------------------------------------------
@@ -372,6 +447,8 @@ pub struct TlsDecryptor {
     /// Number of keylog entries already processed into sessions.
     /// Avoids rebuilding the group map on every ApplicationData record.
     keylog_processed_count: usize,
+    /// RSA private-key handshake state (`--tls-key`); `None` unless a key is set.
+    rsa: Option<RsaHandshakeState>,
 }
 
 impl TlsDecryptor {
@@ -406,12 +483,30 @@ impl TlsDecryptor {
             last_keylog_size,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         })
     }
 
     /// Return the number of loaded keylog entries.
     pub fn keylog_entry_count(&self) -> usize {
         self.keylog_entries.len()
+    }
+
+    /// Install an RSA private key (`--tls-key`) to recover the pre-master secret
+    /// of TLS 1.2 RSA-key-exchange handshakes observed on the wire. Only non-PFS
+    /// RSA suites are decryptable this way; ECDHE/DHE handshakes are unaffected.
+    pub fn set_rsa_key(&mut self, key: RsaKey) {
+        self.rsa = Some(RsaHandshakeState {
+            key,
+            client_random: None,
+            server_random: None,
+            cipher: None,
+        });
+    }
+
+    /// Whether an RSA private key has been installed.
+    pub fn has_rsa_key(&self) -> bool {
+        self.rsa.is_some()
     }
 
     /// Ingest NSS Key Log text into the decryptor — e.g. secrets extracted from
@@ -495,11 +590,12 @@ impl TlsDecryptor {
         Ok(new_count)
     }
 
-    /// Load DTLS keylog entries from a file.
+    /// Count the entries in a DTLS keylog file (NSS `SSLKEYLOGFILE` format).
     ///
-    /// DTLS keylog files use the same NSS SSLKEYLOGFILE format as TLS.
-    /// The entries are appended to the existing keylog entries and can be
-    /// used for DTLS-SRTP key extraction when that feature is implemented.
+    /// DTLS-SRTP key extraction itself is performed by
+    /// [`DtlsSrtpExtractor`](crate::capture::dtls::DtlsSrtpExtractor), which runs
+    /// the RFC 5764 exporter over these entries. This helper is retained for a
+    /// quick validity/count check of the keylog file.
     ///
     /// Returns the number of entries loaded.
     pub fn load_dtls_keylog(path: &Path) -> Result<usize> {
@@ -522,17 +618,99 @@ impl TlsDecryptor {
     /// observed on the wire so that TLS 1.2 CLIENT_RANDOM key derivation
     /// can find the server_random and negotiated cipher suite.
     pub fn process_record(&mut self, record: &TlsRecord) {
-        if record.content_type == TlsContentType::Handshake
-            && let Some(info) = parse_server_hello(&record.payload)
-        {
-            tracing::debug!(
-                "Observed ServerHello: cipher=0x{:04X}",
-                info.cipher_suite_code.unwrap_or(0)
-            );
-            self.observed_handshakes.push(info);
-            // Clear sessions so they get re-derived with the new handshake info
-            self.sessions.clear();
+        if record.content_type != TlsContentType::Handshake {
+            return;
         }
+        // Dispatch on the first handshake message's type. Handshake messages are
+        // parsed from offset 0 (tolerating trailing coalesced messages like
+        // Certificate/ServerHelloDone), matching `parse_server_hello`.
+        match record.payload.first() {
+            // ClientHello — capture client_random for RSA key exchange.
+            Some(1) => {
+                if let Some(cr) = parse_client_hello_random(&record.payload)
+                    && let Some(rsa) = self.rsa.as_mut()
+                {
+                    rsa.client_random = Some(cr);
+                }
+            }
+            // ServerHello — server_random + negotiated cipher.
+            Some(2) => {
+                if let Some(info) = parse_server_hello(&record.payload) {
+                    tracing::debug!(
+                        "Observed ServerHello: cipher=0x{:04X}",
+                        info.cipher_suite_code.unwrap_or(0)
+                    );
+                    if let Some(rsa) = self.rsa.as_mut() {
+                        rsa.server_random = info.server_random;
+                        rsa.cipher = info.cipher_suite_code;
+                    }
+                    self.observed_handshakes.push(info);
+                    // Clear sessions so they get re-derived with the new handshake info
+                    self.sessions.clear();
+                }
+            }
+            // ClientKeyExchange — RSA-encrypted pre-master; derive the session.
+            Some(16) => {
+                if self.rsa.is_some()
+                    && let Some(ct) = parse_client_key_exchange_rsa(&record.payload)
+                    && let Some((skey, session)) = self.derive_rsa_session(ct)
+                {
+                    tracing::info!(
+                        "TLS RSA session ready [session={}, cipher={}]",
+                        hex_id(&skey.client_random),
+                        session.cipher_suite
+                    );
+                    self.sessions.insert(skey, session);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Recover a TLS 1.2 session from the RSA-encrypted pre-master secret using
+    /// the installed private key and the captured client/server randoms.
+    /// Returns the derived session keyed by `client_random`, or `None` if the
+    /// handshake state is incomplete, the suite is unsupported, or decryption
+    /// fails. Classic (non-extended) master-secret derivation only — handshakes
+    /// negotiating Extended Master Secret (RFC 7627) will not decrypt.
+    fn derive_rsa_session(&self, premaster_ct: &[u8]) -> Option<(TlsSessionKey, TlsSession)> {
+        let rsa = self.rsa.as_ref()?;
+        let cr = rsa.client_random?;
+        let sr = rsa.server_random?;
+        let suite = CipherSuite::from_code_point(rsa.cipher?)?;
+
+        let pm = match rsa.key.decrypt_premaster(premaster_ct) {
+            Ok(pm) => pm,
+            Err(e) => {
+                tracing::debug!("RSA pre-master decryption failed: {e}");
+                return None;
+            }
+        };
+        if pm.len() != 48 {
+            tracing::debug!("RSA pre-master has unexpected length {}", pm.len());
+            return None;
+        }
+
+        // master_secret = PRF(pre_master, "master secret", client_random ‖ server_random)[..48]
+        let seed = [cr.as_slice(), sr.as_slice()].concat();
+        let master = tls12_prf(self.crypto.as_ref(), &pm, b"master secret", &seed, 48).ok()?;
+        let (ck, sk, civ, siv) =
+            derive_tls12_keys(self.crypto.as_ref(), &master, &cr, &sr, suite).ok()?;
+
+        Some((
+            TlsSessionKey { client_random: cr },
+            TlsSession {
+                version: SessionVersion::Tls12,
+                client_write_key: ck,
+                server_write_key: sk,
+                client_write_iv: civ,
+                server_write_iv: siv,
+                cipher_suite: suite,
+                sequence_client: 0,
+                sequence_server: 0,
+                client_addr: None,
+            },
+        ))
     }
 
     /// Attempt to decrypt a TLS ApplicationData record.
@@ -646,6 +824,7 @@ impl TlsDecryptor {
                         self.sessions.insert(
                             session_key.clone(),
                             TlsSession {
+                                version: SessionVersion::Tls13,
                                 client_write_key: ck,
                                 server_write_key: sk,
                                 client_write_iv: civ,
@@ -699,6 +878,7 @@ impl TlsDecryptor {
                             self.sessions.insert(
                                 session_key.clone(),
                                 TlsSession {
+                                    version: SessionVersion::Tls12,
                                     client_write_key: ck,
                                     server_write_key: sk,
                                     client_write_iv: civ,
@@ -756,6 +936,8 @@ impl TlsDecryptor {
             return None;
         }
 
+        let version = session.version;
+
         for is_client_to_server in directions {
             let (write_key, write_iv, seq) = if is_client_to_server {
                 (
@@ -771,25 +953,36 @@ impl TlsDecryptor {
                 )
             };
 
-            // GCM (TLS 1.3 or 1.2 GCM): nonce = write_iv XOR sequence number.
-            let decrypt_result = {
-                let mut nonce = write_iv.clone();
-                let seq_bytes = seq.to_be_bytes();
-                let offset = nonce.len().saturating_sub(seq_bytes.len());
-                for (i, &b) in seq_bytes.iter().enumerate() {
-                    if offset + i < nonce.len() {
-                        nonce[offset + i] ^= b;
+            // Decrypt with the per-version AEAD framing. On success both paths
+            // return (plaintext, matched_seq) so the per-direction counter can
+            // resync — important for TLS 1.2, where the encrypted Finished is a
+            // Handshake record we never see, leaving the app-data counter offset.
+            let decrypted: Option<(Vec<u8>, u64)> = match version {
+                SessionVersion::Tls13 => {
+                    let mut nonce = write_iv.clone();
+                    let seq_bytes = seq.to_be_bytes();
+                    let offset = nonce.len().saturating_sub(seq_bytes.len());
+                    for (i, &b) in seq_bytes.iter().enumerate() {
+                        if offset + i < nonce.len() {
+                            nonce[offset + i] ^= b;
+                        }
                     }
+                    let aad = build_record_aad(record);
+                    self.crypto
+                        .aes_gcm_decrypt(write_key, &nonce, &aad, &record.payload)
+                        .ok()
+                        .map(|mut pt| {
+                            // TLS 1.3: strip inner content type and zero padding.
+                            strip_tls13_padding(&mut pt);
+                            (pt, seq)
+                        })
                 }
-                let aad = build_record_aad(record);
-                self.crypto
-                    .aes_gcm_decrypt(write_key, &nonce, &aad, &record.payload)
+                SessionVersion::Tls12 => {
+                    decrypt_tls12_gcm_record(self.crypto.as_ref(), write_key, write_iv, seq, record)
+                }
             };
 
-            if let Ok(mut plaintext) = decrypt_result {
-                // TLS 1.3: strip inner content type and zero padding.
-                strip_tls13_padding(&mut plaintext);
-
+            if let Some((plaintext, used_seq)) = decrypted {
                 // Update direction tracking and sequence number
                 if session.client_addr.is_none() {
                     session.client_addr = Some(if is_client_to_server {
@@ -801,10 +994,10 @@ impl TlsDecryptor {
 
                 if is_client_to_server {
                     if let Some(s) = self.sessions.get_mut(session_key) {
-                        s.sequence_client = seq + 1;
+                        s.sequence_client = used_seq + 1;
                     }
                 } else if let Some(s) = self.sessions.get_mut(session_key) {
-                    s.sequence_server = seq + 1;
+                    s.sequence_server = used_seq + 1;
                 }
 
                 return Some(plaintext);
@@ -813,6 +1006,66 @@ impl TlsDecryptor {
 
         None
     }
+}
+
+/// Decrypt a TLS 1.2 AES-GCM record (RFC 5246 §6.2.3.3, RFC 5288).
+///
+/// The record payload is `explicit_nonce(8) ‖ ciphertext ‖ tag(16)`. The AEAD
+/// nonce is `fixed_iv(4) ‖ explicit_nonce(8)` and the additional data is
+/// `seq_num(8) ‖ type(1) ‖ version(2) ‖ plaintext_len(2)`.
+///
+/// Because the encrypted Finished message (a Handshake record) is never offered
+/// to this decryptor, the application-data sequence counter can be offset; we
+/// search a small forward window of sequence numbers. GCM's tag authenticates
+/// the choice, so only the correct sequence yields plaintext. Returns
+/// `(plaintext, matched_seq)` on success.
+fn decrypt_tls12_gcm_record(
+    crypto: &dyn CryptoBackend,
+    write_key: &[u8],
+    fixed_iv: &[u8],
+    seq_start: u64,
+    record: &TlsRecord,
+) -> Option<(Vec<u8>, u64)> {
+    const EXPLICIT_NONCE_LEN: usize = 8;
+    const TAG_LEN: usize = 16;
+    if fixed_iv.len() < 4 || record.payload.len() < EXPLICIT_NONCE_LEN + TAG_LEN {
+        return None;
+    }
+
+    let explicit_nonce = &record.payload[..EXPLICIT_NONCE_LEN];
+    let aead_input = &record.payload[EXPLICIT_NONCE_LEN..]; // ciphertext ‖ tag
+    let plaintext_len = (aead_input.len() - TAG_LEN) as u16;
+
+    let mut nonce = [0u8; 12];
+    nonce[..4].copy_from_slice(&fixed_iv[..4]);
+    nonce[4..].copy_from_slice(explicit_nonce);
+
+    // Content type + record version come from the 5-byte TLS 1.3-style header
+    // helper (it computes the same type/version bytes we need here).
+    let hdr = build_record_aad(record);
+    let content_type = hdr[0];
+    let version = u16::from_be_bytes([hdr[1], hdr[2]]);
+
+    // Bounded sequence-number search to resync past unseen encrypted records.
+    const SEQ_WINDOW: u64 = 16;
+    for seq in seq_start..=seq_start.saturating_add(SEQ_WINDOW) {
+        let aad = build_tls12_gcm_aad(seq, content_type, version, plaintext_len);
+        if let Ok(pt) = crypto.aes_gcm_decrypt(write_key, &nonce, &aad, aead_input) {
+            return Some((pt, seq));
+        }
+    }
+    None
+}
+
+/// Build the 13-byte TLS 1.2 AEAD additional data: `seq(8) ‖ type(1) ‖
+/// version(2) ‖ plaintext_len(2)` (RFC 5246 §6.2.3.3).
+fn build_tls12_gcm_aad(seq: u64, content_type: u8, version: u16, plaintext_len: u16) -> [u8; 13] {
+    let mut aad = [0u8; 13];
+    aad[..8].copy_from_slice(&seq.to_be_bytes());
+    aad[8] = content_type;
+    aad[9..11].copy_from_slice(&version.to_be_bytes());
+    aad[11..13].copy_from_slice(&plaintext_len.to_be_bytes());
+    aad
 }
 
 /// Build the 5-byte AAD for a TLS record (used as additional authenticated data).
@@ -1001,6 +1254,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         d.ensure_sessions_populated();
@@ -1026,6 +1280,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         let record = TlsRecord {
@@ -1060,6 +1315,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         let record = TlsRecord {
@@ -1093,6 +1349,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         let record = TlsRecord {
@@ -1126,6 +1383,128 @@ mod tests {
         data.push(23); // content type, no padding
         strip_tls13_padding(&mut data);
         assert_eq!(data, b"hello");
+    }
+
+    // ── --tls-key RSA key exchange end-to-end ──────────────────────────
+
+    #[cfg(feature = "tls")]
+    const RSA_KEY_PEM: &str = include_str!("../../tests/fixtures/tls_rsa/key.pem");
+    #[cfg(feature = "tls")]
+    const RSA_PREMASTER_CT: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster_ct.bin");
+    #[cfg(feature = "tls")]
+    const RSA_PREMASTER: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster.bin");
+
+    /// A ClientHello handshake record carrying `client_random`.
+    fn client_hello_record(client_random: &[u8; 32]) -> TlsRecord {
+        let mut hs = vec![1u8, 0, 0, 0, 0x03, 0x03]; // type=ClientHello, len, version
+        hs.extend_from_slice(client_random);
+        hs.push(0); // session_id length
+        TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: hs.len() as u16,
+            payload: hs,
+        }
+    }
+
+    /// A ClientKeyExchange record wrapping the RSA-encrypted pre-master.
+    fn client_key_exchange_record(ct: &[u8]) -> TlsRecord {
+        let mut hs = vec![16u8]; // type = ClientKeyExchange
+        let body_len = 2 + ct.len();
+        hs.extend_from_slice(&[
+            (body_len >> 16) as u8,
+            (body_len >> 8) as u8,
+            body_len as u8,
+        ]);
+        hs.extend_from_slice(&(ct.len() as u16).to_be_bytes());
+        hs.extend_from_slice(ct);
+        TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: hs.len() as u16,
+            payload: hs,
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tls_key_rsa_handshake_decrypts_tls12_gcm_appdata() {
+        use crate::crypto::RingCryptoBackend;
+        use ring::aead;
+
+        let client_random = [0xAAu8; 32];
+        // server_hello(0x009C, 0) advertises TLS_RSA_WITH_AES_128_GCM_SHA256
+        // with server_random = [0x5A; 32].
+        let server_random = [0x5Au8; 32];
+        let suite = CipherSuite::Aes128Gcm;
+
+        // Independently derive the session keys from the known fixture premaster,
+        // mirroring what the decryptor will compute from the RSA ciphertext.
+        let backend = RingCryptoBackend;
+        let seed = [client_random.as_slice(), server_random.as_slice()].concat();
+        let master = tls12_prf(&backend, RSA_PREMASTER, b"master secret", &seed, 48).unwrap();
+        let (client_write_key, _swk, client_write_iv, _swiv) =
+            derive_tls12_keys(&backend, &master, &client_random, &server_random, suite).unwrap();
+        assert_eq!(client_write_iv.len(), 4, "TLS 1.2 GCM fixed IV is 4 bytes");
+
+        // Encrypt a SIP message as a TLS 1.2 AES-128-GCM ApplicationData record
+        // (client→server, seq 0): payload = explicit_nonce(8) ‖ ciphertext ‖ tag.
+        let sip = b"REGISTER sip:example.com SIP/2.0\r\nVia: SIP/2.0/TLS\r\n\r\n".to_vec();
+        let explicit_nonce = [0x11u8; 8];
+        let mut nonce = [0u8; 12];
+        nonce[..4].copy_from_slice(&client_write_iv);
+        nonce[4..].copy_from_slice(&explicit_nonce);
+        let aad = build_tls12_gcm_aad(0, 23, 0x0303, sip.len() as u16);
+
+        let unbound = aead::UnboundKey::new(&aead::AES_128_GCM, &client_write_key).unwrap();
+        let sealing = aead::LessSafeKey::new(unbound);
+        let mut in_out = sip.clone();
+        sealing
+            .seal_in_place_append_tag(
+                aead::Nonce::assume_unique_for_key(nonce),
+                aead::Aad::from(&aad),
+                &mut in_out,
+            )
+            .unwrap();
+        let mut rec_payload = explicit_nonce.to_vec();
+        rec_payload.extend_from_slice(&in_out);
+        let appdata = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: rec_payload.len() as u16,
+            payload: rec_payload,
+        };
+
+        // Build the decryptor with the RSA private key and feed the handshake.
+        let mut d = TlsDecryptor::new(None, Box::new(RingCryptoBackend)).unwrap();
+        d.set_rsa_key(RsaKey::from_pem(RSA_KEY_PEM).unwrap());
+        assert!(d.has_rsa_key());
+
+        d.process_record(&client_hello_record(&client_random));
+        d.process_record(&server_hello_record(0x009C));
+        d.process_record(&client_key_exchange_record(RSA_PREMASTER_CT));
+
+        // The RSA session must now decrypt the application data back to the SIP.
+        let client = "10.0.0.1".parse().unwrap();
+        let server = "10.0.0.2".parse().unwrap();
+        let out = d
+            .try_decrypt(&appdata, client, server)
+            .expect("RSA-derived decrypt");
+        assert_eq!(
+            out, sip,
+            "decrypted ApplicationData must equal the SIP message"
+        );
+        assert_eq!(d.decrypted_count, 1);
+    }
+
+    /// A ServerHello carried in a real TLS record (wraps `server_hello`).
+    fn server_hello_record(cipher: u16) -> TlsRecord {
+        TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload: server_hello(cipher, 0),
+        }
     }
 
     #[test]
@@ -1169,6 +1548,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         // First call: should create sessions
@@ -1212,6 +1592,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         };
 
         d.ensure_sessions_populated();
@@ -1254,6 +1635,7 @@ mod tests {
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
             keylog_processed_count: 0,
+            rsa: None,
         }
     }
 
@@ -1481,9 +1863,9 @@ mod tests {
         let key = TlsSessionKey { client_random: cr };
         let session = d.sessions.get(&key).expect("TLS 1.2 session derived");
         assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
-        // GCM key/iv lengths for AES-128.
+        // TLS 1.2 AES-128-GCM: 16-byte key, 4-byte fixed (implicit) IV.
         assert_eq!(session.client_write_key.len(), 16);
-        assert_eq!(session.client_write_iv.len(), 12);
+        assert_eq!(session.client_write_iv.len(), 4);
     }
 
     #[test]
@@ -1558,6 +1940,7 @@ mod tests {
         d.sessions.insert(
             key.clone(),
             TlsSession {
+                version: SessionVersion::Tls12,
                 client_write_key: vec![0u8; 16],
                 server_write_key: vec![0u8; 16],
                 client_write_iv: vec![0u8; 16],

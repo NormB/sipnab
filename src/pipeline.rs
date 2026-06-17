@@ -78,6 +78,22 @@ pub struct PipelineOptions {
     pub no_rtp: bool,
 }
 
+/// Optional media-decryption state threaded through the live pipeline: the SRTP
+/// context (`--srtp-keys` + SDES `a=crypto`) and the DTLS-SRTP extractor
+/// (`--dtls-keylog`). Both absent in non-`tls` builds; construct with
+/// [`Default`] and populate the fields when a `tls` build has keys.
+#[derive(Default)]
+pub struct MediaDecrypt<'a> {
+    /// SRTP context that authenticates and decrypts RTP payloads in place.
+    #[cfg(feature = "tls")]
+    pub srtp: Option<&'a mut crate::rtp::srtp::SrtpContext>,
+    /// DTLS-SRTP extractor that recovers SRTP keys from DTLS handshakes.
+    #[cfg(feature = "tls")]
+    pub dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+    #[cfg(not(feature = "tls"))]
+    _marker: std::marker::PhantomData<&'a ()>,
+}
+
 /// Route one parsed packet into the dialog / stream stores.
 ///
 /// The shared-store protocol pipeline: WebSocket unwrap, SIP parse +
@@ -85,13 +101,22 @@ pub struct PipelineOptions {
 /// or heuristic). Parsing happens OUTSIDE the store locks; each store
 /// is write-locked once, briefly. This is the TUI-mode per-packet path
 /// and the testable core that batch mode's richer pipeline mirrors.
+///
+/// `decrypt` carries optional SRTP/DTLS-SRTP key state; when present, SRTP
+/// payloads are authenticated and decrypted before media analysis, SDES keys
+/// are learned from SDP, and DTLS handshakes feed the SRTP key store.
 pub fn process_packet(
     pp: &ParsedPacket,
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
 ) {
+    // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
+    #[cfg(not(feature = "tls"))]
+    let _ = &decrypt;
+
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
     let effective_transport = if ws_payload.is_some() {
@@ -151,12 +176,39 @@ pub fn process_packet(
                     ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
+
+            // Feed SDES `a=crypto` key material into the SRTP context.
+            #[cfg(feature = "tls")]
+            if let Some(ctx) = decrypt.srtp.as_deref_mut() {
+                for (ip, port, _cid, media) in &sdp_links {
+                    if !media.crypto.is_empty() {
+                        ctx.add_sdes(Some(ip.to_string()), Some(*port), &media.crypto);
+                    }
+                }
+            }
         }
         return;
     }
 
     // RTP/RTCP detection
     if opts.no_rtp || pp.transport != TransportProto::Udp {
+        return;
+    }
+
+    // DTLS-SRTP: recover SRTP keys from DTLS handshakes and hand them to the
+    // SRTP context. DTLS packets are not RTP, so handle and return.
+    #[cfg(feature = "tls")]
+    if crate::capture::dtls::is_dtls(&pp.payload) {
+        let keys = decrypt
+            .dtls
+            .as_deref_mut()
+            .map(|ext| ext.process_dtls(&pp.payload))
+            .unwrap_or_default();
+        if !keys.is_empty()
+            && let Some(ctx) = decrypt.srtp.as_deref_mut()
+        {
+            ctx.add_keys(keys);
+        }
         return;
     }
 
@@ -171,7 +223,23 @@ pub fn process_packet(
     if rtp::is_rtp_packet(&pp.payload)
         && let Ok(rtp_hdr) = rtp::parser::parse_rtp_header(&pp.payload)
     {
-        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
+        // SRTP: substitute a decrypted payload when a key authenticates it.
+        #[cfg(feature = "tls")]
+        let srtp_pp: Option<ParsedPacket> = decrypt.srtp.as_deref_mut().and_then(|ctx| {
+            ctx.decrypt(&pp.payload, rtp_hdr.payload_offset)
+                .map(|plain| {
+                    let mut d = pp.clone();
+                    d.payload = plain.into();
+                    d
+                })
+        });
+        #[cfg(not(feature = "tls"))]
+        let srtp_pp: Option<ParsedPacket> = None;
+        let rtp_pp: &ParsedPacket = srtp_pp.as_ref().unwrap_or(pp);
+
+        stream_store
+            .write()
+            .process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
         return;
     }
 

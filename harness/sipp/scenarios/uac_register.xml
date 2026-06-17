@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE scenario SYSTEM "sipp.dtd">
+<!-- Minimal no-auth REGISTER: opensips-1's registrar saves the AOR and
+     answers 200. Uses a distinct user (regtest) so it never collides with
+     the 'service' AOR the INVITE scenarios call. -->
+<scenario name="UAC REGISTER (no auth)">
+  <send retrans="500">
+    <![CDATA[
+
+      REGISTER sip:[field1] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      Max-Forwards: 70
+      From: <sip:[field0]@[field1]>;tag=[pid]SIPpTagREG[call_number]
+      To: <sip:[field0]@[field1]>
+      Call-ID: [call_id]
+      CSeq: 1 REGISTER
+      Contact: <sip:[field0]@[local_ip]:[local_port]>;expires=300
+      Expires: 300
+      Content-Length: 0
+
+    ]]>
+  </send>
+
+  <recv response="100" optional="true"/>
+  <recv response="200" rtd="true"/>
+
+</scenario>

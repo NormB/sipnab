@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0a0e14">
+  <title>Output Formats -- sipnab</title>
+  <meta name="description" content="Machine-readable output: NDJSON, summary reports, dialog&#x2F;stream JSON, and pcap&#x2F;pcapng.">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="sipnab">
+  <meta property="og:description" content="SIP &amp; RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;output-formats&#x2F;">
+  <meta property="og:site_name" content="sipnab">
+  <meta property="og:image" content="https:&#x2F;&#x2F;www.sipnab.com/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="sipnab — SIP & RTP analysis tool, with a SIP call-flow ladder diagram">
+
+  <!-- Twitter / X -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https:&#x2F;&#x2F;www.sipnab.com/og-image.png">
+
+  <!-- Canonical -->
+  <link rel="canonical" href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;output-formats&#x2F;">
+
+  <!-- Favicon (inline SVG — amber "s" in monospace) -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.bunny.net">
+  <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
+
+  <!-- Styles -->
+  <link rel="stylesheet" href="https://www.sipnab.com/style.css?v=2">
+
+  <!-- Search -->
+  
+  <script src="https://www.sipnab.com/elasticlunr.min.js" defer></script>
+  
+
+  <!-- Structured data -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "sipnab",
+    "applicationCategory": "DeveloperApplication",
+    "applicationSubCategory": "SecurityApplication",
+    "operatingSystem": "macOS, Linux",
+    "url": "https://www.sipnab.com",
+    "description": "SIP & RTP capture, analysis, and security tool. One binary. One dependency (libpcap). Built in Rust.",
+    "offers": {
+      "@type": "Offer",
+      "price": "0",
+      "priceCurrency": "USD"
+    }
+  }
+  </script>
+
+  
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  
+  <nav class="topnav" id="topnav">
+    <div class="nav-inner">
+      <a href="https:&#x2F;&#x2F;www.sipnab.com" class="nav-logo">sipnab</a>
+
+      <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+
+      <div class="nav-links" id="nav-links">
+        <a href="https://www.sipnab.com/download/" >Download</a>
+        <a href="https://www.sipnab.com/#metrics">Metrics</a>
+        <a href="https://www.sipnab.com/analyze/" >Analyze</a>
+        <a href="https://www.sipnab.com/docs/" class="active">Docs</a>
+        <a href="https://www.sipnab.com/docs/install/" >Install</a>
+        <a href="https://www.sipnab.com/docs/cli/" >CLI</a>
+        <a href="https://www.sipnab.com/docs/config/" >Config</a>
+        <a href="https://www.sipnab.com/docs/keybindings/" >Keys</a>
+        <a href="https://www.sipnab.com/docs/filter-dsl/" >Filter DSL</a>
+        <a href="https://www.sipnab.com/docs/theme/" >Theme</a>
+        <a href="https://www.sipnab.com/docs/api/" >API</a>
+      </div>
+
+      <div class="nav-right">
+        <a href="https:&#x2F;&#x2F;www.patreon.com&#x2F;c&#x2F;NormB975" class="nav-sponsor" aria-label="Sponsor sipnab on Patreon"><span class="nav-sponsor-text">Sponsor</span> <span class="heart">&#9829;</span></a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;sponsors&#x2F;NormB" class="nav-gh-sponsor" aria-label="Sponsor sipnab on GitHub Sponsors" title="GitHub Sponsors" target="_blank" rel="noopener">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+        </a>
+        <button class="search-trigger" id="search-trigger" aria-label="Search">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab" class="nav-github" aria-label="GitHub">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+        </a>
+      </div>
+    </div>
+  </nav>
+  
+
+  <!-- Search overlay -->
+  <div class="search-overlay" id="search-overlay">
+    <div class="search-modal">
+      <div class="search-input-wrap">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input type="text" id="search-input" placeholder="Search documentation..." autocomplete="off" autofocus>
+        <kbd>Esc</kbd>
+      </div>
+      <div class="search-results" id="search-results"></div>
+    </div>
+  </div>
+
+  <main id="main">
+    
+<div class="doc-layout">
+  <article class="doc-content">
+    <header class="doc-header">
+      <p class="doc-kicker">Documentation</p>
+      <h1>Output Formats</h1>
+      
+      <p class="doc-lead">Machine-readable output: NDJSON, summary reports, dialog&#x2F;stream JSON, and pcap&#x2F;pcapng.</p>
+      
+    </header>
+
+    <div class="doc-body">
+      <p>sipnab has four output modes: interactive TUI (default), per-message CLI
+text (<code>-N</code>), structured NDJSON (<code>--json</code>), and the <a href="https://www.sipnab.com/docs/mcp/">MCP server</a>.
+This page documents the machine-readable formats.</p>
+<h2 id="ndjson-json">NDJSON (<code>--json</code>)</h2>
+<p><code>--json</code> emits one JSON object per SIP message — newline-delimited, so
+each line is independently parseable and the stream is pipe-friendly:</p>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash">sipnab -N -I capture.pcap --json | jq .
+</code></pre>
+<p>Message record (fields with no value are omitted, not null):</p>
+<pre data-lang="json" class="language-json "><code class="language-json" data-lang="json">{
+  &quot;schema_version&quot;: 1,
+  &quot;timestamp&quot;: &quot;2026-06-12T14:03:21.412345+00:00&quot;,
+  &quot;src&quot;: &quot;10.0.0.1&quot;,
+  &quot;src_port&quot;: 5060,
+  &quot;dst&quot;: &quot;10.0.0.2&quot;,
+  &quot;dst_port&quot;: 5060,
+  &quot;transport&quot;: &quot;UDP&quot;,
+  &quot;is_request&quot;: true,
+  &quot;method&quot;: &quot;INVITE&quot;,
+  &quot;call_id&quot;: &quot;abc123@10.0.0.1&quot;,
+  &quot;from&quot;: &quot;1001&quot;,
+  &quot;to&quot;: &quot;1002&quot;,
+  &quot;ua&quot;: &quot;FreePBX-16&quot;
+}
+</code></pre>
+<p>Responses carry <code>status_code</code>, <code>reason</code>, and <code>response_context</code> (what the
+response answers) instead of <code>method</code>.</p>
+<p><code>schema_version</code> increments on breaking field changes — pin your
+consumers to it.</p>
+<h3 id="jq-recipes">jq recipes</h3>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Only INVITEs
+sipnab -N -I capture.pcap --json | jq &#x27;select(.method == &quot;INVITE&quot;)&#x27;
+
+# Calls from a specific user
+sipnab -N -I capture.pcap --json | jq &#x27;select(.from == &quot;1001&quot;)&#x27;
+
+# Count messages per method
+sipnab -N -I capture.pcap --json \
+  | jq -s &#x27;group_by(.method) | map({method: .[0].method, n: length})&#x27;
+
+# Failed responses (4xx&#x2F;5xx&#x2F;6xx) with their reason
+sipnab -N -I capture.pcap --json \
+  | jq &#x27;select(.status_code != null and .status_code &gt;= 400)
+        | {ts: .timestamp, code: .status_code, reason, call_id}&#x27;
+
+# Distinct Call-IDs seen (feed into --call-report)
+sipnab -N -I capture.pcap --json | jq -r &#x27;.call_id&#x27; | sort -u
+</code></pre>
+<h2 id="summary-only-output">Summary-only output</h2>
+<p><code>--json</code> prints a line per message. For end-of-run summaries instead,
+combine the report flags with <code>--no-cli-print</code> (which suppresses the
+per-message stream but not the report):</p>
+<pre data-lang="bash" class="language-bash "><code class="language-bash" data-lang="bash"># Aggregate report only
+sipnab -N -I capture.pcap --report --no-cli-print
+
+# Single-call deep dive only
+sipnab -N -I capture.pcap --call-report &#x27;abc123@10.0.0.1&#x27; --no-cli-print
+</code></pre>
+<h2 id="dialog-stream-json">Dialog / stream JSON</h2>
+<p>The richer dialog object (state, timing with PDD/setup/ring/teardown
+milliseconds, retransmit counts, SDP timeline, RTP streams with
+jitter/loss/MOS, and media diagnosis flags like <code>one_way_audio</code>) is the
+payload of:</p>
+<ul>
+<li><code>SIPNAB_JSON</code> in <code>--on-dialog-exec</code> / <code>--on-quality-exec</code> hooks</li>
+<li>MCP tool responses (see the <a href="https://www.sipnab.com/docs/mcp/">MCP server</a> reference)</li>
+</ul>
+<h2 id="pcap-pcapng">pcap / pcapng</h2>
+<p><code>-O &lt;file&gt;</code> writes captured packets; <code>--pcapng</code> selects PCAP-NG. With TLS
+decryption, <code>--pcap-export-mode</code> controls whether decryption secrets
+(DSBs) are embedded for Wireshark. Rotation: <code>--split filesize:N</code> /
+<code>--split duration:N</code>, or SIGUSR1 on demand.</p>
+
+    </div>
+
+    <!-- Prev/Next nav -->
+    
+    <nav class="doc-prevnext" aria-label="Documentation pages">
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;api&#x2F;" class="doc-pn doc-prev">
+        <span class="doc-pn-dir">&larr; Previous</span>
+        <span class="doc-pn-title">REST API &amp; Metrics</span>
+      </a>
+      
+      
+      <a href="https:&#x2F;&#x2F;www.sipnab.com&#x2F;docs&#x2F;mcp&#x2F;" class="doc-pn doc-next">
+        <span class="doc-pn-dir">Next &rarr;</span>
+        <span class="doc-pn-title">MCP Server</span>
+      </a>
+      
+    </nav>
+    
+  </article>
+
+  <!-- Mini TOC -->
+  
+  <aside class="doc-toc" aria-label="Table of contents">
+    <nav class="doc-toc-inner">
+      <span class="doc-toc-title">On this page</span>
+      <ul>
+        
+        <li><a href="#ndjson-json" class="doc-toc-link">NDJSON (--json)</a>
+          
+          <ul>
+            
+            <li><a href="#jq-recipes" class="doc-toc-link">jq recipes</a></li>
+            
+          </ul>
+          
+        </li>
+        
+        <li><a href="#summary-only-output" class="doc-toc-link">Summary-only output</a>
+          
+        </li>
+        
+        <li><a href="#dialog-stream-json" class="doc-toc-link">Dialog &#x2F; stream JSON</a>
+          
+        </li>
+        
+        <li><a href="#pcap-pcapng" class="doc-toc-link">pcap &#x2F; pcapng</a>
+          
+        </li>
+        
+      </ul>
+    </nav>
+  </aside>
+  
+</div>
+
+
+<script>
+(function () {
+  var links = Array.prototype.slice.call(document.querySelectorAll(".doc-toc-link"));
+  if (!links.length) return;
+  var map = {};
+  var targets = [];
+  links.forEach(function (link) {
+    var id = decodeURIComponent((link.getAttribute("href") || "").slice(1));
+    var el = id && document.getElementById(id);
+    if (el) { map[id] = link; targets.push(el); }
+  });
+  if (!targets.length) return;
+
+  var current = null;
+  function setActive(id) {
+    if (id === current) return;
+    current = id;
+    links.forEach(function (l) { l.classList.remove("active"); });
+    if (map[id]) map[id].classList.add("active");
+  }
+
+  var observer = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting) setActive(entry.target.id);
+    });
+  }, { rootMargin: "-80px 0px -70% 0px", threshold: 0 });
+
+  targets.forEach(function (t) { observer.observe(t); });
+})();
+</script>
+
+
+  </main>
+
+  
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <div class="footer-col">
+        <span class="footer-logo">sipnab</span>
+        <span class="footer-version">v0.4.2</span>
+      </div>
+      <div class="footer-col footer-links">
+        <a href="https://www.sipnab.com/docs/">Documentation</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab">GitHub</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-MIT">License: MIT</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/LICENSE-APACHE">Apache-2.0</a>
+        <a href="https:&#x2F;&#x2F;github.com&#x2F;NormB&#x2F;sipnab/blob/main/CHANGELOG.md">Changelog</a>
+      </div>
+      <div class="footer-col footer-meta">
+        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.linkedin.com&#x2F;in&#x2F;nbrandinger">Norm Brandinger</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;www.patreon.com&#x2F;c&#x2F;NormB975">Support on Patreon</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https:&#x2F;&#x2F;github.com&#x2F;sponsors&#x2F;NormB">GitHub Sponsors</a></span>
+        <span class="footer-sep">&middot;</span>
+        <span class="footer-credit"><a href="https://www.sipnab.com">sipnab.com</a></span>
+      </div>
+    </div>
+  </footer>
+  
+
+  <script>
+  // Mobile nav toggle
+  document.getElementById('nav-toggle').addEventListener('click', function() {
+    document.getElementById('nav-links').classList.toggle('open');
+  });
+
+  // Search
+  (function() {
+    var overlay = document.getElementById('search-overlay');
+    var input = document.getElementById('search-input');
+    var resultsEl = document.getElementById('search-results');
+    var trigger = document.getElementById('search-trigger');
+    var idx = null;
+
+    function openSearch() {
+      overlay.classList.add('active');
+      input.focus();
+      input.value = '';
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+    }
+    function closeSearch() {
+      overlay.classList.remove('active');
+    }
+
+    function escapeText(str) {
+      var d = document.createElement('div');
+      d.textContent = str;
+      return d.textContent;
+    }
+
+    trigger.addEventListener('click', openSearch);
+    overlay.addEventListener('click', function(e) {
+      if (e.target === overlay) closeSearch();
+    });
+    document.addEventListener('keydown', function(e) {
+      if ((e.key === '/' || (e.key === 'k' && (e.metaKey || e.ctrlKey))) && !overlay.classList.contains('active')) {
+        e.preventDefault();
+        openSearch();
+      }
+      if (e.key === 'Escape') closeSearch();
+    });
+
+    input.addEventListener('input', function() {
+      var query = input.value.trim();
+      while (resultsEl.firstChild) resultsEl.removeChild(resultsEl.firstChild);
+      if (query.length < 2) return;
+      if (!idx) {
+        var xhr = new XMLHttpRequest();
+        xhr.open('GET', 'https://www.sipnab.com/search_index.en.json', false);
+        xhr.send();
+        if (xhr.status === 200) {
+          idx = elasticlunr.Index.load(JSON.parse(xhr.responseText));
+        }
+      }
+      if (!idx) return;
+      var hits = idx.search(query, { fields: { title: {boost: 3}, body: {boost: 1} }, expand: true });
+      if (hits.length === 0) {
+        var noRes = document.createElement('div');
+        noRes.className = 'search-no-results';
+        noRes.textContent = 'No results found.';
+        resultsEl.appendChild(noRes);
+        return;
+      }
+      for (var i = 0; i < Math.min(hits.length, 10); i++) {
+        var doc = idx.documentStore.getDoc(hits[i].ref);
+        var a = document.createElement('a');
+        a.className = 'search-result';
+        a.href = hits[i].ref;
+        var titleSpan = document.createElement('span');
+        titleSpan.className = 'search-result-title';
+        titleSpan.textContent = doc.title;
+        var bodySpan = document.createElement('span');
+        bodySpan.className = 'search-result-body';
+        bodySpan.textContent = (doc.body || '').substring(0, 150) + '...';
+        a.appendChild(titleSpan);
+        a.appendChild(bodySpan);
+        resultsEl.appendChild(a);
+      }
+    });
+  })();
+  </script>
+</body>
+</html>

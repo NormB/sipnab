@@ -11,6 +11,8 @@ pub mod atomic;
 pub mod decrypt;
 #[cfg(feature = "native")]
 pub mod device;
+#[cfg(feature = "tls")]
+pub mod dtls;
 #[cfg(feature = "native")]
 pub mod file;
 #[cfg(feature = "hep")]
@@ -23,6 +25,8 @@ pub mod pcap_reader;
 #[cfg(feature = "native")]
 pub mod pcapng_meta;
 pub mod reassembly;
+#[cfg(feature = "tls")]
+pub mod rsa_key;
 #[cfg(feature = "tls")]
 pub mod tls;
 pub mod websocket;
