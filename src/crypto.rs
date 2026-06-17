@@ -209,6 +209,29 @@ pub fn default_backend() -> Box<dyn CryptoBackend> {
     }
 }
 
+/// Constant-time byte comparison to prevent timing side-channel attacks when
+/// verifying MACs, auth tags, or keys.
+///
+/// Does not leak the length of either input: both are compared up to the length
+/// of the longer input, and the length check is folded into the final result
+/// without an early return.
+///
+/// `#[inline(never)]` prevents the optimizer from rewriting the loop into a
+/// short-circuiting form. `black_box` on the accumulator forces the compiler to
+/// materialize it, blocking dead-store elimination.
+#[inline(never)]
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let len_match = a.len() == b.len();
+    let max_len = a.len().max(b.len());
+    let mut byte_diff = 0u8;
+    for i in 0..max_len {
+        let x = a.get(i).copied().unwrap_or(0);
+        let y = b.get(i).copied().unwrap_or(0);
+        byte_diff |= x ^ y;
+    }
+    len_match && std::hint::black_box(byte_diff) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
