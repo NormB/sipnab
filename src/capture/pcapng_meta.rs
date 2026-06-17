@@ -13,6 +13,23 @@
 use std::net::IpAddr;
 use std::path::Path;
 
+/// Cap on a file we slurp entirely into memory for metadata extraction or
+/// secret stripping. Generous enough for real captures while preventing a
+/// hostile multi-GB "pcapng" from OOMing the process (`strip_secrets` holds
+/// roughly 2× the input). Streaming would lift this; until then, fail loudly.
+const MAX_METADATA_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024; // 2 GiB
+
+/// Reject a file larger than `max` before we read it into memory.
+fn ensure_within_size_cap(len: u64, max: u64) -> std::io::Result<()> {
+    if len > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("pcapng too large to process in memory: {len} bytes (cap {max})"),
+        ));
+    }
+    Ok(())
+}
+
 /// Metadata extracted from a pcapng file's non-packet blocks.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct PcapngMetadata {
@@ -29,6 +46,7 @@ pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     let mut meta = PcapngMetadata::default();
+    ensure_within_size_cap(std::fs::metadata(path)?.len(), MAX_METADATA_FILE_BYTES)?;
     let bytes = std::fs::read(path)?;
     // A non-pcapng file (e.g. legacy pcap) simply carries no metadata blocks.
     let mut reader = match pcap_file::pcapng::PcapNgReader::new(&bytes[..]) {
@@ -113,6 +131,7 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     // the same regardless of section byte order.
     const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
 
+    ensure_within_size_cap(std::fs::metadata(src)?.len(), MAX_METADATA_FILE_BYTES)?;
     let bytes = std::fs::read(src)?;
     if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
         return Err(Error::new(
@@ -177,6 +196,16 @@ fn byte_order_from_shb(magic: &[u8]) -> Option<bool> {
 mod tests {
     use super::*;
     use crate::capture::{PcapExportMode, PcapWriter};
+
+    #[test]
+    fn size_cap_rejects_oversized_and_allows_normal() {
+        // At/under the cap is fine; over it is rejected as invalid data so a
+        // multi-GB "pcapng" can't OOM the metadata reader / stripper.
+        assert!(ensure_within_size_cap(100, 1024).is_ok());
+        assert!(ensure_within_size_cap(1024, 1024).is_ok());
+        let err = ensure_within_size_cap(1025, 1024).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
 
     /// Helper: write a pcapng carrying an NRB for the given entries.
     fn write_pcapng_with_nrb(path: &Path, entries: &[(IpAddr, Vec<String>)]) {

@@ -319,6 +319,12 @@ impl NameResolver {
     pub fn manual_to_hosts_format(&self) -> String {
         let mut out = String::new();
         for (ip, name) in self.manual_entries() {
+            // Defense in depth: never emit a name that would corrupt the
+            // hosts-format round-trip (an embedded newline injects a second
+            // record; a tab/`#`/control char breaks the IP↔name split).
+            if !is_valid_name(&name) {
+                continue;
+            }
             out.push_str(&format!("{ip}\t{name}\n"));
         }
         out
@@ -700,6 +706,25 @@ mod tests {
             r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
             Some("frommanual")
         );
+    }
+
+    #[test]
+    fn manual_to_hosts_format_skips_invalid_names() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.1"), "good".into());
+        // A newline-bearing name would inject a second hosts record on reload.
+        r.set_manual(ip("10.0.0.2"), "evil\n6.6.6.6 attacker".into());
+        // A tab/control char would corrupt the IP↔name split too.
+        r.set_manual(ip("10.0.0.3"), "bad\tname".into());
+        let out = r.manual_to_hosts_format();
+        assert!(out.contains("good"), "valid name kept");
+        assert!(
+            !out.contains("6.6.6.6"),
+            "newline-injected name must be skipped, not written"
+        );
+        assert!(!out.contains("bad\tname"));
+        // Exactly one valid record emitted.
+        assert_eq!(out.lines().count(), 1);
     }
 
     // ── Persistence (atomic, symlink-safe) ─────────────────────────────

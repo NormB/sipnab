@@ -149,6 +149,10 @@ mod http {
             .nest_service("/mcp", mcp_service)
             .route("/health", axum::routing::get(|| async { "ok" }))
             .route_layer(middleware::from_fn_with_state(state.clone(), auth_layer))
+            // Cap the JSON-RPC request body so an oversized POST can't exhaust
+            // memory. No blanket request timeout here: the streamable-HTTP
+            // transport keeps long-lived connections for server-sent events.
+            .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
             .with_state(state);
 
         let listener = tokio::net::TcpListener::bind(bind).await?;

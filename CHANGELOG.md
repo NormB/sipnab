@@ -39,6 +39,19 @@ All notable changes to sipnab will be documented in this file.
   directory + rename): an interrupted or failing write can no longer truncate
   the operator's names file, and a symlink at the destination is replaced rather
   than written through.
+- The REST API now refuses to start on a non-loopback bind when no
+  authentication is configured (matching the MCP HTTP transport), instead of
+  serving an open, unauthenticated read API. Bind `127.0.0.1` or configure
+  `--api-key` / `--api-signing-key`.
+- Manual names are validated (`is_valid_name`) before they reach the
+  hosts-format file: a name containing a newline / tab / control char can no
+  longer inject a second host record on round-trip. The in-TUI `N` dialog
+  rejects such names, and the serializer skips them as defense in depth.
+- The API and MCP HTTP servers now cap request body size, and the REST API
+  applies a per-request timeout, so a slow or oversized client cannot pin a
+  connection slot.
+- pcapng metadata reading and `--strip-secrets` now reject files above a 2 GiB
+  in-memory cap instead of risking an OOM on a hostile multi-GB "pcapng".
 
 ### Fixed
 - Timestamp conversion no longer overflows on a crafted capture/HEP packet: a
