@@ -24,7 +24,7 @@ security analysis.
 - **Security analysis** -- scanner detection, registration flood, digest leak, STIR/SHAKEN, fraud heuristics
 - **Event execution** -- run commands on dialog state changes or quality drops
 - **HEP v3** -- send/receive Homer Encapsulation Protocol
-- **TLS/SRTP decryption** -- private key, keylog file, DTLS support
+- **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, RFC 5764)
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
 - **MCP server mode** -- expose read-only analysis (dialogs, streams, RTP, security findings) as Model Context Protocol tools an AI agent can call. Stdio + HTTP transports. See [`docs/mcp-overview.md`](./docs/mcp-overview.md).

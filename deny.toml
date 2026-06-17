@@ -3,7 +3,15 @@
 
 [advisories]
 # Advisories with no explicit ignore are denied by default.
-ignore = []
+ignore = [
+    # rsa "Marvin Attack" timing sidechannel. This is an ONLINE chosen-ciphertext
+    # oracle attack against a service that decrypts attacker-supplied RSA
+    # ciphertexts and leaks decryption timing. sipnab uses `rsa` only for
+    # offline, passive decryption of a captured TLS handshake's pre-master
+    # secret (`--tls-key`); there is no network-facing decryption oracle, so the
+    # attack does not apply. No fixed `rsa` release exists as of 0.9.x.
+    "RUSTSEC-2023-0071",
+]
 
 [licenses]
 allow = [

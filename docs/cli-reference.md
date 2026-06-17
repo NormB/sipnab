@@ -182,11 +182,11 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-k`, `--tls-key` | `<FILE>` | -- | TLS private key file for SIP-TLS decryption. Feature: `tls` |
+| `-k`, `--tls-key` | `<FILE>` | -- | RSA private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Non-PFS RSA only; ECDHE/DHE need `--keylog`. Feature: `tls` |
 | `--keylog` | `<FILE>` | -- | TLS key log file (NSS `SSLKEYLOGFILE` format). Feature: `tls` |
 | `--keylog-watch` | -- | off | Watch key log file for new entries (live decryption). Feature: `tls` |
-| `--dtls-keylog` | `<FILE>` | -- | DTLS key log file for SRTP key extraction. Feature: `tls` |
-| `--srtp-keys` | `<FILE>` | -- | SRTP master keys file for RTP decryption. Feature: `tls` |
+| `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes (RFC 5764 exporter, AES-CM profiles). Feature: `tls` |
+| `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, RFC 3711); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
 | `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 

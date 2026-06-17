@@ -355,6 +355,157 @@ fn aes_cm_prf(
     Ok(out)
 }
 
+/// Build the 128-bit AES-CM input block for SRTP payload encryption
+/// (RFC 3711 §4.1.1):
+///
+/// ```text
+/// IV = (session_salt ‖ 0x0000) XOR (SSRC * 2^64) XOR (packet_index * 2^16)
+/// ```
+///
+/// `session_salt` is the 112-bit (14-byte) session salt; `packet_index` is the
+/// 48-bit SRTP index `ROC * 2^16 + SEQ`. The SSRC lands in octets 4..8 and the
+/// index in octets 8..14, leaving octets 14..16 as the per-block counter.
+#[cfg(feature = "tls")]
+fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16] {
+    let mut iv = [0u8; 16];
+    let n = session_salt.len().min(14);
+    iv[..n].copy_from_slice(&session_salt[..n]);
+
+    // SSRC * 2^64 → octets 4..8.
+    for (i, b) in ssrc.to_be_bytes().iter().enumerate() {
+        iv[4 + i] ^= b;
+    }
+
+    // packet_index (48 bits) * 2^16 → octets 8..14. Take the low 6 bytes of the
+    // 8-byte big-endian index (octets 2..8 of the encoding).
+    let idx = (packet_index & 0xFFFF_FFFF_FFFF).to_be_bytes();
+    for (i, b) in idx[2..8].iter().enumerate() {
+        iv[8 + i] ^= b;
+    }
+    iv
+}
+
+/// Generate `len` bytes of AES-CM keystream from `session_key`, starting at
+/// counter block `iv` and incrementing the full 128-bit block big-endian for
+/// each successive block (RFC 3711 §4.1.1). The session key is 16 or 32 bytes.
+#[cfg(feature = "tls")]
+fn srtp_aes_cm_keystream(session_key: &[u8], iv: [u8; 16], len: usize) -> Result<Vec<u8>> {
+    use aes::cipher::{BlockCipherEncrypt, KeyInit};
+
+    // Lay out successive counter blocks (iv, iv+1, iv+2, …), then encrypt each
+    // in place. The block cipher is instantiated once for the whole keystream.
+    let block_count = len.div_ceil(16);
+    let mut out = vec![0u8; block_count * 16];
+    let mut counter = iv;
+    for chunk in out.chunks_mut(16) {
+        chunk.copy_from_slice(&counter);
+        incr_be_128(&mut counter);
+    }
+
+    let mut encrypt_all = |cipher_block: &mut dyn FnMut(&mut aes::Block)| {
+        // `out` is sized to a whole number of 16-byte blocks, so every chunk is
+        // exactly 16 bytes — copy into a fixed array (no fallible conversion).
+        for chunk in out.chunks_mut(16) {
+            let mut arr = [0u8; 16];
+            arr.copy_from_slice(chunk);
+            let mut b = aes::Block::from(arr);
+            cipher_block(&mut b);
+            chunk.copy_from_slice(b.as_slice());
+        }
+    };
+
+    match session_key.len() {
+        16 => {
+            let c = aes::Aes128::new_from_slice(session_key)
+                .map_err(|e| anyhow::anyhow!("AES-128 key error: {e}"))?;
+            encrypt_all(&mut |b| c.encrypt_block(b));
+        }
+        32 => {
+            let c = aes::Aes256::new_from_slice(session_key)
+                .map_err(|e| anyhow::anyhow!("AES-256 key error: {e}"))?;
+            encrypt_all(&mut |b| c.encrypt_block(b));
+        }
+        n => anyhow::bail!("SRTP session key must be 16 or 32 bytes, got {n}"),
+    }
+
+    out.truncate(len);
+    Ok(out)
+}
+
+/// Increment a 128-bit big-endian counter block by one (with carry).
+#[cfg(feature = "tls")]
+fn incr_be_128(block: &mut [u8; 16]) {
+    for byte in block.iter_mut().rev() {
+        let (v, carry) = byte.overflowing_add(1);
+        *byte = v;
+        if !carry {
+            break;
+        }
+    }
+}
+
+/// Decrypt an SRTP packet's payload in place (RFC 3711 AES-CM), returning the
+/// recovered RTP payload (the bytes from `payload_offset` up to the auth tag).
+///
+/// * `packet` — the full SRTP packet: RTP header ‖ encrypted payload ‖ auth tag.
+/// * `payload_offset` — byte offset where the encrypted payload starts (from
+///   [`crate::rtp::parser::parse_rtp_header`]).
+/// * `key_material` — SRTP master key/salt and suite.
+/// * `roc` — rollover counter for this packet's SSRC (0 for short streams; use
+///   [`SrtpRocTracker`] for the authenticated ROC).
+///
+/// This does NOT verify the auth tag — callers should verify first via
+/// [`verify_srtp_auth_tag`] / [`SrtpRocTracker::verify`] and only decrypt
+/// authenticated packets.
+#[cfg(feature = "tls")]
+pub fn decrypt_srtp_payload(
+    packet: &[u8],
+    payload_offset: usize,
+    key_material: &SrtpKeyMaterial,
+    roc: u32,
+    crypto: &dyn crate::crypto::CryptoBackend,
+) -> Result<Vec<u8>> {
+    let _ = crypto; // AES-CM uses the `aes` crate directly (tls feature).
+
+    let tag_len = auth_tag_len(&key_material.suite);
+    if packet.len() < payload_offset + tag_len || payload_offset < 12 {
+        anyhow::bail!(
+            "SRTP packet too short to decrypt: {} bytes (payload_offset={payload_offset}, tag_len={tag_len})",
+            packet.len()
+        );
+    }
+
+    let seq = u16::from_be_bytes([packet[2], packet[3]]);
+    let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+    let packet_index = ((roc as u64) << 16) | seq as u64;
+
+    // Session cipher key (label 0x00) and session salt (label 0x02), RFC 3711
+    // §4.3.1. The cipher key matches the master key length (16 or 32 bytes).
+    let session_key = aes_cm_prf(
+        &key_material.master_key,
+        &key_material.master_salt,
+        0x00,
+        key_material.master_key.len(),
+    )?;
+    let session_salt = aes_cm_prf(
+        &key_material.master_key,
+        &key_material.master_salt,
+        0x02,
+        14,
+    )?;
+
+    let ciphertext = &packet[payload_offset..packet.len() - tag_len];
+    let iv = srtp_cipher_iv(&session_salt, ssrc, packet_index);
+    let keystream = srtp_aes_cm_keystream(&session_key, iv, ciphertext.len())?;
+
+    let plaintext: Vec<u8> = ciphertext
+        .iter()
+        .zip(&keystream)
+        .map(|(c, k)| c ^ k)
+        .collect();
+    Ok(plaintext)
+}
+
 /// Derive an SRTP session key (RFC 3711 §4.3.1).
 ///
 /// With the `tls` feature this is the spec AES-CM PRF ([`aes_cm_prf`]), so the
@@ -542,6 +693,19 @@ impl SrtpRocTracker {
         key_material: &SrtpKeyMaterial,
         crypto: &dyn crate::crypto::CryptoBackend,
     ) -> Result<bool> {
+        Ok(self.verify_roc(packet, key_material, crypto)?.is_some())
+    }
+
+    /// Like [`verify`](Self::verify), but on success returns `Some(roc)` — the
+    /// rollover counter that authenticated the packet — so the caller can
+    /// decrypt the payload with the matching SRTP index. Returns `Ok(None)` on
+    /// a tag mismatch (state untouched).
+    pub fn verify_roc(
+        &mut self,
+        packet: &[u8],
+        key_material: &SrtpKeyMaterial,
+        crypto: &dyn crate::crypto::CryptoBackend,
+    ) -> Result<Option<u32>> {
         let tag_len = auth_tag_len(&key_material.suite);
         if packet.len() < 12 + tag_len {
             anyhow::bail!(
@@ -579,7 +743,7 @@ impl SrtpRocTracker {
             tag_len,
             crypto,
         )? {
-            return Ok(false); // leave state untouched on a failed/forged tag
+            return Ok(None); // leave state untouched on a failed/forged tag
         }
 
         // Authenticated: advance ROC / highest-seq for this SSRC.
@@ -599,7 +763,173 @@ impl SrtpRocTracker {
             }
         };
         self.per_ssrc.insert(ssrc, new);
-        Ok(true)
+        Ok(Some(roc))
+    }
+}
+
+/// A keyed SRTP decryption context: holds candidate master keys (from
+/// `--srtp-keys` and/or SDES `a=crypto` lines), the per-SSRC rollover-counter
+/// tracker, and a crypto backend. For each RTP packet it finds the key whose
+/// auth tag verifies, then decrypts the payload (RFC 3711 AES-CM).
+///
+/// Authentication is the gate: a packet is only decrypted if a candidate key's
+/// HMAC-SHA1 tag verifies, so a wrong or unrelated key never yields plaintext.
+pub struct SrtpContext {
+    keys: Vec<SrtpKeyMaterial>,
+    tracker: SrtpRocTracker,
+    crypto: Box<dyn crate::crypto::CryptoBackend>,
+    /// Number of packets successfully authenticated and decrypted.
+    pub decrypted_count: u64,
+}
+
+impl SrtpContext {
+    /// Create a context from pre-extracted key material.
+    pub fn new(keys: Vec<SrtpKeyMaterial>, crypto: Box<dyn crate::crypto::CryptoBackend>) -> Self {
+        Self {
+            keys,
+            tracker: SrtpRocTracker::new(),
+            crypto,
+            decrypted_count: 0,
+        }
+    }
+
+    /// Load key material from a manual `--srtp-keys` file.
+    pub fn from_key_file(
+        path: &Path,
+        crypto: Box<dyn crate::crypto::CryptoBackend>,
+    ) -> Result<Self> {
+        Ok(Self::new(parse_srtp_key_file(path)?, crypto))
+    }
+
+    /// Whether the context has no keys (nothing to try).
+    pub fn is_empty(&self) -> bool {
+        self.keys.is_empty()
+    }
+
+    /// Append already-extracted key material (e.g. from DTLS-SRTP). Returns the
+    /// number of keys added.
+    pub fn add_keys(&mut self, keys: Vec<SrtpKeyMaterial>) -> usize {
+        let n = keys.len();
+        self.keys.extend(keys);
+        n
+    }
+
+    /// Number of candidate keys held.
+    pub fn key_count(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Ingest SDES `a=crypto` key material from an SDP media section, tagging it
+    /// with the media address/port for provenance. Malformed/unsupported crypto
+    /// lines are skipped. Returns the number of keys added.
+    pub fn add_sdes(
+        &mut self,
+        media_addr: Option<String>,
+        media_port: Option<u16>,
+        cryptos: &[SdpCrypto],
+    ) -> usize {
+        let before = self.keys.len();
+        for c in cryptos {
+            if let Ok(mut km) = extract_srtp_keys(c) {
+                km.media_addr = media_addr.clone();
+                km.media_port = media_port;
+                self.keys.push(km);
+            }
+        }
+        self.keys.len() - before
+    }
+
+    /// Try to decrypt one SRTP packet. Returns `Some(plaintext_packet)` — the
+    /// RTP header followed by the decrypted payload (auth tag stripped) — when a
+    /// candidate key authenticates the packet, or `None` if none do.
+    ///
+    /// `payload_offset` is the RTP payload start from
+    /// [`crate::rtp::parser::parse_rtp_header`].
+    pub fn decrypt(&mut self, packet: &[u8], payload_offset: usize) -> Option<Vec<u8>> {
+        if self.keys.is_empty() || packet.len() < 12 || payload_offset < 12 {
+            return None;
+        }
+        let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+
+        // Prefer keys pinned to this SSRC, then unpinned (file/SDES) keys.
+        let order: Vec<usize> = (0..self.keys.len())
+            .filter(|&i| self.keys[i].ssrc == Some(ssrc))
+            .chain((0..self.keys.len()).filter(|&i| self.keys[i].ssrc.is_none()))
+            .collect();
+
+        for i in order {
+            // Clone the (small) key material so the tracker can borrow &mut self
+            // fields without aliasing the key slice.
+            let key = self.keys[i].clone();
+            match self.tracker.verify_roc(packet, &key, &*self.crypto) {
+                Ok(Some(roc)) => {
+                    match decrypt_srtp_payload(packet, payload_offset, &key, roc, &*self.crypto) {
+                        Ok(plaintext) => {
+                            let mut out = packet[..payload_offset].to_vec();
+                            out.extend_from_slice(&plaintext);
+                            self.decrypted_count += 1;
+                            return Some(out);
+                        }
+                        Err(e) => {
+                            tracing::debug!("SRTP authenticated but decrypt failed: {e}");
+                            return None;
+                        }
+                    }
+                }
+                Ok(None) => continue, // tag mismatch — try the next key
+                Err(_) => continue,   // too short / crypto error for this suite
+            }
+        }
+        None
+    }
+}
+
+/// Test-only helpers shared across the crate's test modules (e.g. DTLS-SRTP).
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::crypto::{CryptoBackend, RingCryptoBackend};
+
+    /// Build a fully valid SRTP packet (AES-CM-encrypted payload + correct
+    /// 80-bit HMAC-SHA1 auth tag) for the given master key/salt and identifiers.
+    pub fn build_srtp_packet(
+        master_key: &[u8],
+        master_salt: &[u8],
+        ssrc: u32,
+        seq: u16,
+        roc: u32,
+        plaintext: &[u8],
+    ) -> Vec<u8> {
+        let crypto = RingCryptoBackend;
+
+        let mut header = vec![0x80, 0x00];
+        header.extend_from_slice(&seq.to_be_bytes());
+        header.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
+        header.extend_from_slice(&ssrc.to_be_bytes());
+
+        let session_key = aes_cm_prf(master_key, master_salt, 0x00, master_key.len()).unwrap();
+        let session_salt = aes_cm_prf(master_key, master_salt, 0x02, 14).unwrap();
+        let index = ((roc as u64) << 16) | seq as u64;
+        let iv = srtp_cipher_iv(&session_salt, ssrc, index);
+        let ks = srtp_aes_cm_keystream(&session_key, iv, plaintext.len()).unwrap();
+        let ciphertext: Vec<u8> = plaintext.iter().zip(&ks).map(|(p, k)| p ^ k).collect();
+
+        let mut packet = header;
+        packet.extend_from_slice(&ciphertext);
+
+        let auth_key = derive_session_key(
+            master_key,
+            master_salt,
+            SRTP_LABEL_AUTH,
+            SRTP_AUTH_KEY_LEN,
+            &crypto,
+        )
+        .unwrap();
+        let mut hmac_input = packet.clone();
+        hmac_input.extend_from_slice(&roc.to_be_bytes());
+        let tag = crypto.hmac_sha1(&auth_key, &hmac_input).unwrap();
+        packet.extend_from_slice(&tag[..10]); // 80-bit tag
+        packet
     }
 }
 
@@ -855,6 +1185,252 @@ mod tests {
                 0x6A, 0x15, 0x6D, 0x38, 0xBA, 0xA4
             ]
         );
+    }
+
+    // ── SRTP AES-CM payload cipher (RFC 3711 §4.1) ─────────────────────
+
+    /// RFC 3711 Appendix B.2 session salt (112-bit) for the AES-CM KAT.
+    #[cfg(feature = "tls")]
+    const B2_SESSION_SALT: [u8; 14] = [
+        0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD,
+    ];
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_cipher_iv_rfc3711_b2_and_xor_placement() {
+        // B.2: SSRC=0, index=0 ⇒ IV = salt ‖ 0x0000.
+        let iv = srtp_cipher_iv(&B2_SESSION_SALT, 0, 0);
+        let mut expected = [0u8; 16];
+        expected[..14].copy_from_slice(&B2_SESSION_SALT);
+        assert_eq!(iv, expected, "B.2 IV must be the salt padded with 0x0000");
+
+        // SSRC lands in octets 4..8, the 48-bit index in octets 8..14.
+        let ssrc = 0xCAFE_BABEu32;
+        let roc = 1u32;
+        let seq = 0x0002u16;
+        let index = ((roc as u64) << 16) | seq as u64; // 0x0001_0002
+        let iv = srtp_cipher_iv(&B2_SESSION_SALT, ssrc, index);
+        let mut want = [0u8; 16];
+        want[..14].copy_from_slice(&B2_SESSION_SALT);
+        for (i, b) in ssrc.to_be_bytes().iter().enumerate() {
+            want[4 + i] ^= b;
+        }
+        // index low 6 bytes: 00 00 00 01 00 02
+        for (i, b) in [0x00u8, 0x00, 0x00, 0x01, 0x00, 0x02].iter().enumerate() {
+            want[8 + i] ^= b;
+        }
+        assert_eq!(iv, want, "SSRC/index must XOR into octets 4..8 / 8..14");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_aes_cm_keystream_matches_rfc3711_b2() {
+        // RFC 3711 Appendix B.2 known-answer test for AES-128 Counter Mode.
+        // Session key 2B7E1516…CF4F3C with the B.2 IV must produce this
+        // keystream prefix — proving the IV layout and counter increment.
+        let session_key = [
+            0x2B, 0x7E, 0x15, 0x16, 0x28, 0xAE, 0xD2, 0xA6, 0xAB, 0xF7, 0x15, 0x88, 0x09, 0xCF,
+            0x4F, 0x3C,
+        ];
+        let iv = srtp_cipher_iv(&B2_SESSION_SALT, 0, 0);
+        let ks = srtp_aes_cm_keystream(&session_key, iv, 32).unwrap();
+        let expected: [u8; 32] = [
+            0xE0, 0x3E, 0xAD, 0x09, 0x35, 0xC9, 0x5E, 0x80, 0xE1, 0x66, 0xB1, 0x6D, 0xD9, 0x2B,
+            0x4E, 0xB4, 0xD2, 0x35, 0x13, 0x16, 0x2B, 0x02, 0xD0, 0xF7, 0x2A, 0x43, 0xA2, 0xFE,
+            0x4A, 0x5F, 0x97, 0xAB,
+        ];
+        assert_eq!(ks, expected, "AES-CM keystream must match RFC 3711 B.2");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn decrypt_srtp_payload_roundtrip_recovers_plaintext() {
+        use crate::crypto::RingCryptoBackend;
+
+        let crypto = RingCryptoBackend;
+        let master_key = vec![0x11u8; 16];
+        let master_salt = vec![0x22u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: master_key.clone(),
+            master_salt: master_salt.clone(),
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        // RTP header (12 bytes): V=2, PT=0, seq=0x0007, ts, ssrc=0x1234_5678.
+        let ssrc = 0x1234_5678u32;
+        let seq = 0x0007u16;
+        let roc = 0u32;
+        let mut header = vec![0x80, 0x00];
+        header.extend_from_slice(&seq.to_be_bytes());
+        header.extend_from_slice(&[0x00, 0x00, 0x10, 0x00]); // timestamp
+        header.extend_from_slice(&ssrc.to_be_bytes());
+
+        let plaintext = b"the quick brown fox jumps over the lazy SRTP payload".to_vec();
+
+        // Encrypt the payload with the same session cipher key/salt the
+        // decryptor will derive, then append a 10-byte dummy auth tag.
+        let session_key = aes_cm_prf(&master_key, &master_salt, 0x00, 16).unwrap();
+        let session_salt = aes_cm_prf(&master_key, &master_salt, 0x02, 14).unwrap();
+        let index = ((roc as u64) << 16) | seq as u64;
+        let iv = srtp_cipher_iv(&session_salt, ssrc, index);
+        let ks = srtp_aes_cm_keystream(&session_key, iv, plaintext.len()).unwrap();
+        let ciphertext: Vec<u8> = plaintext.iter().zip(&ks).map(|(p, k)| p ^ k).collect();
+
+        let mut packet = header.clone();
+        packet.extend_from_slice(&ciphertext);
+        packet.extend_from_slice(&[0u8; 10]); // dummy auth tag (10-byte / 80-bit)
+
+        let recovered =
+            decrypt_srtp_payload(&packet, header.len(), &material, roc, &crypto).unwrap();
+        assert_eq!(
+            recovered, plaintext,
+            "AES-CM decrypt must recover plaintext"
+        );
+    }
+
+    /// Build a fully valid SRTP packet — delegates to the shared test helper.
+    #[cfg(feature = "tls")]
+    fn build_valid_srtp_packet(
+        master_key: &[u8],
+        master_salt: &[u8],
+        ssrc: u32,
+        seq: u16,
+        roc: u32,
+        plaintext: &[u8],
+    ) -> Vec<u8> {
+        super::test_support::build_srtp_packet(master_key, master_salt, ssrc, seq, roc, plaintext)
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_context_authenticates_and_decrypts() {
+        use crate::crypto::RingCryptoBackend;
+        let mk = vec![0x33u8; 16];
+        let ms = vec![0x44u8; 14];
+        let ssrc = 0xDEAD_BEEFu32;
+        let plaintext = b"\x00\x01\x02\x03 decrypted media frame payload".to_vec();
+        let packet = build_valid_srtp_packet(&mk, &ms, ssrc, 42, 0, &plaintext);
+
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: mk,
+            master_salt: ms,
+            ssrc: None, // unpinned (as from --srtp-keys without ssrc=)
+            media_addr: None,
+            media_port: None,
+        };
+        let mut ctx = SrtpContext::new(vec![material], Box::new(RingCryptoBackend));
+        let out = ctx
+            .decrypt(&packet, 12)
+            .expect("authenticated packet decrypts");
+        assert_eq!(&out[..12], &packet[..12], "RTP header preserved");
+        assert_eq!(
+            &out[12..],
+            &plaintext[..],
+            "payload decrypted, tag stripped"
+        );
+        assert_eq!(ctx.decrypted_count, 1);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_context_rejects_wrong_key() {
+        use crate::crypto::RingCryptoBackend;
+        let packet =
+            build_valid_srtp_packet(&[0x33u8; 16], &[0x44u8; 14], 0xCAFE, 7, 0, b"payload");
+        // Context holds an unrelated key: auth tag must not verify ⇒ no plaintext.
+        let wrong = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: vec![0xFFu8; 16],
+            master_salt: vec![0xEEu8; 14],
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        let mut ctx = SrtpContext::new(vec![wrong], Box::new(RingCryptoBackend));
+        assert!(ctx.decrypt(&packet, 12).is_none());
+        assert_eq!(ctx.decrypted_count, 0);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn srtp_context_add_sdes_then_decrypts() {
+        use crate::crypto::RingCryptoBackend;
+        // SDES inline key||salt for AES_CM_128_HMAC_SHA1_80.
+        let mk = vec![0x01u8; 16];
+        let ms = vec![0x02u8; 14];
+        let mut combined = mk.clone();
+        combined.extend_from_slice(&ms);
+        let b64 = BASE64.encode(&combined);
+        let sdp_crypto = SdpCrypto {
+            tag: 1,
+            suite: "AES_CM_128_HMAC_SHA1_80".to_string(),
+            key_params: format!("inline:{b64}"),
+        };
+
+        let mut ctx = SrtpContext::new(Vec::new(), Box::new(RingCryptoBackend));
+        assert!(ctx.is_empty());
+        let added = ctx.add_sdes(Some("10.0.0.5".into()), Some(40000), &[sdp_crypto]);
+        assert_eq!(added, 1);
+        assert_eq!(ctx.key_count(), 1);
+
+        let packet = build_valid_srtp_packet(&mk, &ms, 0x1111_2222, 100, 0, b"hello srtp");
+        let out = ctx.decrypt(&packet, 12).expect("SDES key decrypts");
+        assert_eq!(&out[12..], b"hello srtp");
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn verify_roc_returns_authenticating_roc() {
+        use crate::crypto::RingCryptoBackend;
+        let mk = vec![0x33u8; 16];
+        let ms = vec![0x44u8; 14];
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: mk.clone(),
+            master_salt: ms.clone(),
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        let crypto = RingCryptoBackend;
+        let mut tr = SrtpRocTracker::new();
+        // First packet for the SSRC authenticates at ROC 0.
+        let p0 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 65000, 0, b"a");
+        assert_eq!(tr.verify_roc(&p0, &material, &crypto).unwrap(), Some(0));
+        // After a sequence wrap, it authenticates at ROC 1.
+        let p1 = build_valid_srtp_packet(&mk, &ms, 0xABCD, 5, 1, b"b");
+        assert_eq!(tr.verify_roc(&p1, &material, &crypto).unwrap(), Some(1));
+        // A forged tag yields None (state untouched).
+        let mut bad = p1.clone();
+        *bad.last_mut().unwrap() ^= 0xFF;
+        assert_eq!(tr.verify_roc(&bad, &material, &crypto).unwrap(), None);
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn decrypt_srtp_payload_rejects_short_packet() {
+        use crate::crypto::RingCryptoBackend;
+        let material = SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80, // tag_len = 10
+            master_key: vec![0u8; 16],
+            master_salt: vec![0u8; 14],
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+        // 12-byte header + 10-byte tag region = 22; a 20-byte packet leaves no
+        // room for header+tag and must error rather than panic-slice.
+        let packet = vec![0x80u8; 20];
+        assert!(decrypt_srtp_payload(&packet, 12, &material, 0, &RingCryptoBackend).is_err());
     }
 
     #[cfg(feature = "tls")]

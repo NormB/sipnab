@@ -88,6 +88,8 @@ jobs:
           - "tls,api"
           - "native,tui,audio"
           - "native,tui,tls,hep,api"
+          # The documented headless server build (README "Headless capture host").
+          - "native,hep,api,mcp,mcp-http"
           - wasm
     steps:
       - uses: actions/checkout@v6
@@ -122,10 +124,12 @@ jobs:
         if: matrix.features != 'wasm'
         run: cargo check --no-default-features --features "${{ matrix.features }}" --tests
 
-      # The headless recipe is the documented server build; run its full
-      # test suite, not just a compile check.
+      # The headless recipe is the documented server build (README:
+      # "Headless capture host with HEP listener + REST API + MCP HTTP").
+      # Run its full test suite, not just a compile check, so the exact
+      # feature set users are told to ship stays green.
       - name: Test (headless recipe)
-        if: matrix.features == 'native,tui,tls,hep,api'
+        if: matrix.features == 'native,hep,api,mcp,mcp-http'
         run: cargo test --no-default-features --features "${{ matrix.features }}"
 
   audit:
@@ -150,7 +154,13 @@ jobs:
           tool: cargo-deny
 
       - name: Cargo audit
-        run: cargo audit
+        # RUSTSEC-2023-0071 (rsa "Marvin" timing sidechannel) is an ONLINE
+        # chosen-ciphertext oracle attack against a service that decrypts
+        # attacker-supplied RSA ciphertexts and leaks timing. sipnab only uses
+        # the `rsa` crate for offline, passive decryption of a captured TLS
+        # handshake's pre-master (`--tls-key`) — no decryption oracle exists, so
+        # the advisory does not apply. No fixed `rsa` release is available.
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
       - name: Cargo deny
         run: cargo deny check
