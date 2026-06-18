@@ -65,6 +65,49 @@ pub fn list_devices() -> Vec<String> {
         .collect()
 }
 
+/// Parse and validate a user-supplied interface selection for multi-device
+/// capture (the `-d eth0,docker0 --multi-device` form).
+///
+/// Splits on commas, trims surrounding whitespace from each entry, and:
+/// - rejects an empty or whitespace-only spec (no interface selected),
+/// - rejects empty entries from stray/doubled/leading/trailing commas,
+/// - rejects names containing an embedded NUL byte (it would silently
+///   truncate when handed to libpcap's C string API),
+/// - removes duplicates while preserving first-seen order.
+///
+/// Otherwise-unusual names (backslashes, colons, dots — as in Windows NPF
+/// device paths) are passed through unchanged; whether the interface actually
+/// exists is left to the capture layer, which produces a precise OS error.
+pub fn parse_device_list(spec: &str) -> Result<Vec<String>> {
+    if spec.trim().is_empty() {
+        anyhow::bail!("no interface specified: device list is empty");
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    for (idx, raw) in spec.split(',').enumerate() {
+        let name = raw.trim();
+        if name.is_empty() {
+            anyhow::bail!(
+                "empty interface name at position {} in device list '{}' \
+                 (check for a stray, doubled, leading, or trailing comma)",
+                idx + 1,
+                spec
+            );
+        }
+        if name.contains('\0') {
+            anyhow::bail!(
+                "interface name '{}' contains an embedded NUL byte",
+                name.escape_default()
+            );
+        }
+        if !out.iter().any(|d| d == name) {
+            out.push(name.to_string());
+        }
+    }
+
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +139,107 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The headline contract: with no interface selected, Linux must capture
+    /// from ALL interfaces via the "any" pseudo-device (not a single NIC).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn default_device_is_all_interfaces_on_linux() {
+        let dev = find_default_device().expect("Linux default is always 'any'");
+        assert_eq!(
+            dev, "any",
+            "Linux default capture must be the 'any' pseudo-device (all interfaces)"
+        );
+    }
+
+    // ── parse_device_list: selected-interface parsing/validation ─────────
+
+    #[test]
+    fn device_list_single() {
+        assert_eq!(parse_device_list("eth0").unwrap(), vec!["eth0"]);
+    }
+
+    #[test]
+    fn device_list_multiple_in_order() {
+        assert_eq!(
+            parse_device_list("eth0,docker0,lo").unwrap(),
+            vec!["eth0", "docker0", "lo"]
+        );
+    }
+
+    #[test]
+    fn device_list_trims_surrounding_whitespace() {
+        assert_eq!(
+            parse_device_list("  eth0 ,\tdocker0  ").unwrap(),
+            vec!["eth0", "docker0"]
+        );
+    }
+
+    #[test]
+    fn device_list_dedups_preserving_first_seen_order() {
+        assert_eq!(
+            parse_device_list("eth0,docker0,eth0,lo,docker0").unwrap(),
+            vec!["eth0", "docker0", "lo"]
+        );
+    }
+
+    // ── Failure / adversarial cases ──────────────────────────────────────
+
+    #[test]
+    fn device_list_rejects_empty_string() {
+        let err = parse_device_list("").unwrap_err().to_string();
+        assert!(err.contains("empty"), "got: {err}");
+    }
+
+    #[test]
+    fn device_list_rejects_whitespace_only() {
+        assert!(parse_device_list("   \t ").is_err());
+    }
+
+    #[test]
+    fn device_list_rejects_doubled_comma() {
+        // The classic typo: "eth0,,docker0" must fail loudly, not silently
+        // try to open an interface named "".
+        let err = parse_device_list("eth0,,docker0").unwrap_err().to_string();
+        assert!(err.contains("empty interface name"), "got: {err}");
+    }
+
+    #[test]
+    fn device_list_rejects_leading_comma() {
+        assert!(parse_device_list(",eth0").is_err());
+    }
+
+    #[test]
+    fn device_list_rejects_trailing_comma() {
+        assert!(parse_device_list("eth0,").is_err());
+    }
+
+    #[test]
+    fn device_list_rejects_bare_comma() {
+        assert!(parse_device_list(",").is_err());
+    }
+
+    #[test]
+    fn device_list_rejects_embedded_nul() {
+        // A NUL would truncate when passed to libpcap's C API — reject it
+        // rather than silently capture on a different (or no) interface.
+        let err = parse_device_list("eth0\0evil").unwrap_err().to_string();
+        assert!(err.contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn device_list_rejects_nul_only_entry() {
+        assert!(parse_device_list("eth0,\0,docker0").is_err());
+    }
+
+    #[test]
+    fn device_list_preserves_unusual_but_valid_names() {
+        // Backslashes/dots/colons appear in real capture device names on some
+        // platforms (e.g. Windows "\\Device\\NPF_{...}"); they must pass through.
+        assert_eq!(
+            parse_device_list(r"\Device\NPF_{abc},en0.1").unwrap(),
+            vec![r"\Device\NPF_{abc}", "en0.1"]
+        );
     }
 }
