@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-06-18
+
 ### Added
 - Address name resolution (Wireshark-style): display `host:port` / `fqdn:port`
   instead of `ip:port` in the call list, call-flow participants, and RTP stream
