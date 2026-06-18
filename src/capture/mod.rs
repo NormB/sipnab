@@ -209,11 +209,10 @@ pub fn start_multi_capture(
     tx: Sender<Packet>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<CaptureHandle> {
-    let device_list: Vec<String> = devices.split(',').map(|s| s.trim().to_string()).collect();
-
-    if device_list.is_empty() {
-        anyhow::bail!("No devices specified for multi-device capture");
-    }
+    // Parse + validate the selected-interface list up front so a malformed
+    // spec (empty, doubled/stray comma, embedded NUL) fails with a precise
+    // message *before* we spawn any capture threads.
+    let device_list = device::parse_device_list(devices)?;
 
     if device_list.len() == 1 {
         // Single device: fall back to normal capture
@@ -548,6 +547,27 @@ mod tests {
         handle.thread.join().expect("capture thread panicked").ok();
         let packets: Vec<_> = pkt_rx.try_iter().collect();
         assert!(!packets.is_empty(), "Expected packets from fixture file");
+    }
+
+    // ── start_multi_capture input validation ────────────────────────────
+    #[cfg(feature = "native")]
+    #[test]
+    fn multi_capture_rejects_malformed_device_spec_before_spawning() {
+        // A doubled comma is a validation error: start_multi_capture must
+        // return Err immediately, without spawning any capture thread.
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        match start_multi_capture("eth0,,docker0", CaptureConfig::default(), tx, None) {
+            Ok(_) => panic!("malformed device spec must be rejected"),
+            Err(e) => assert!(e.to_string().contains("empty interface name"), "got: {e}"),
+        }
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn multi_capture_rejects_empty_device_spec() {
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        assert!(start_multi_capture("   ", CaptureConfig::default(), tx, None).is_err());
+        // (Ok(_) is not Debug; .is_err() avoids unwrapping the handle.)
     }
 
     // ── PacketProcessor::process dispatch (device-free) ─────────────────
