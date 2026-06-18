@@ -122,7 +122,10 @@ pub struct Cli {
     #[arg(long, value_name = "RANGE", default_value = "5060-5061")]
     pub portrange: String,
 
-    /// Capture on all available interfaces.
+    /// Capture on the selected interfaces given as a comma-separated list to
+    /// `-d` (e.g. `-d eth0,docker0 --multi-device`), opening one capture per
+    /// interface. Without this flag, the zero-argument default already sniffs
+    /// ALL interfaces via the "any" pseudo-device.
     #[arg(long)]
     pub multi_device: bool,
 
