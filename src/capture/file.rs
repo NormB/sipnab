@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
+use super::channel::PacketTx;
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
-use crossbeam_channel::Sender;
 
 use super::CaptureConfig;
 use super::packet::Packet;
@@ -80,7 +80,7 @@ pub fn open_offline(
 pub fn capture_file(
     path: &Path,
     config: &CaptureConfig,
-    tx: Sender<Packet>,
+    tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
     // `_gz_guard` owns any decompressed temp file; it must outlive all reads
@@ -207,8 +207,12 @@ fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::channel::packet_channel;
     use super::*;
-    use crossbeam_channel::unbounded;
+
+    /// A capacity large enough that `capture_file` (which sends every packet
+    /// before the test drains) never blocks on the cap.
+    const TEST_CAP: usize = 1 << 20;
 
     #[test]
     fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
@@ -249,7 +253,7 @@ mod tests {
 
     /// Read a capture file via `capture_file` and return the packet count.
     fn count_packets(path: &Path) -> usize {
-        let (tx, rx) = unbounded();
+        let (tx, rx) = packet_channel(TEST_CAP);
         capture_file(path, &CaptureConfig::default(), tx, None).unwrap();
         rx.try_iter().count()
     }
@@ -298,7 +302,7 @@ mod tests {
             return;
         }
 
-        let (tx, rx) = unbounded();
+        let (tx, rx) = packet_channel(TEST_CAP);
         let config = CaptureConfig::default();
         capture_file(&path, &config, tx, None).unwrap();
 

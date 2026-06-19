@@ -111,6 +111,7 @@ sipnab -N -I capture.pcap --json \
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | OS default | Kernel capture buffer size in MiB |
+| `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue (grows under load up to this, capped; shrinks when idle). Overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | OS default | Snapshot length for packet capture (bytes) |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
