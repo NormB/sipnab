@@ -164,6 +164,20 @@ impl SipMessage {
         extract_uri_user(self.to_header()?)
     }
 
+    /// Extract the host (with optional `:port`) from the `From` URI.
+    ///
+    /// For `From: <sip:1001@example.com:5060>;tag=abc` returns
+    /// `Some("example.com:5060")`. Returns `None` for URIs without a host
+    /// (e.g. `tel:`).
+    pub fn from_host(&self) -> Option<String> {
+        extract_uri_host_port(self.from_header()?)
+    }
+
+    /// Extract the host (with optional `:port`) from the `To` URI.
+    pub fn to_host(&self) -> Option<String> {
+        extract_uri_host_port(self.to_header()?)
+    }
+
     /// Extract the `tag` parameter from the `From` header.
     pub fn from_tag(&self) -> Option<&str> {
         extract_tag(self.from_header()?)
@@ -215,6 +229,43 @@ fn extract_uri_user(header_value: &str) -> Option<String> {
         return None;
     }
     Some(user.to_string())
+}
+
+/// Extract the host (with optional `:port`) from a SIP URI inside a header value.
+///
+/// Handles `<sip:user@host:port;params>`, bare `sip:host`, and bracketed IPv6
+/// hosts (`sip:user@[2001:db8::1]:5060`). Returns `None` for non-SIP URIs (e.g.
+/// `tel:`) or when no host is present (RFC 3261 § 19.1).
+fn extract_uri_host_port(header_value: &str) -> Option<String> {
+    let scheme_pos = header_value
+        .find("<sip:")
+        .or_else(|| header_value.find("<sips:"))
+        .or_else(|| header_value.find("sip:"))
+        .or_else(|| header_value.find("sips:"))?;
+
+    let after_scheme = &header_value[scheme_pos..];
+    // Skip past the scheme name to just after its ':'.
+    let colon_pos = after_scheme.find(':')?;
+    let mut rest = &after_scheme[colon_pos + 1..];
+
+    // Drop the userinfo (everything up to and including the first '@'). Hosts
+    // never contain '@', and IPv6 literals are bracketed, so this is safe.
+    if let Some(at) = rest.find('@') {
+        rest = &rest[at + 1..];
+    }
+
+    // host[:port] ends at the first URI delimiter: ';' (uri-parameters), '>'
+    // (end of angle form), '?' (headers), ',' (next header value), or
+    // whitespace. ':' is left intact so it can carry the port (and IPv6 colons).
+    let end = rest
+        .find(|c: char| matches!(c, ';' | '>' | '?' | ',') || c.is_whitespace())
+        .unwrap_or(rest.len());
+    let host_port = rest[..end].trim();
+
+    if host_port.is_empty() {
+        return None;
+    }
+    Some(host_port.to_string())
 }
 
 /// Extract the display name from a SIP From/To header value.
@@ -352,6 +403,86 @@ mod tests {
         assert_eq!(
             extract_uri_user("Alice <sip:alice@host>"),
             Some("alice".to_string())
+        );
+    }
+
+    // ── extract_uri_host_port ────────────────────────────────────────
+
+    #[test]
+    fn host_port_with_user_and_port() {
+        assert_eq!(
+            extract_uri_host_port(r#""Alice" <sip:1001@example.com:5060>;tag=abc"#),
+            Some("example.com:5060".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_no_port() {
+        assert_eq!(
+            extract_uri_host_port("<sip:1002@example.com>"),
+            Some("example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_no_user() {
+        // A URI with no userinfo (e.g. a registrar/domain target).
+        assert_eq!(
+            extract_uri_host_port("<sip:example.com:5061>"),
+            Some("example.com:5061".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_ipv6_bracketed_with_port() {
+        assert_eq!(
+            extract_uri_host_port("<sip:bob@[2001:db8::1]:5060>;transport=udp"),
+            Some("[2001:db8::1]:5060".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_ipv6_no_port() {
+        assert_eq!(
+            extract_uri_host_port("<sip:[2001:db8::1]>"),
+            Some("[2001:db8::1]".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_strips_uri_params() {
+        assert_eq!(
+            extract_uri_host_port("<sip:1001@10.0.0.1:5060;transport=tcp;lr>"),
+            Some("10.0.0.1:5060".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_bare_uri() {
+        assert_eq!(
+            extract_uri_host_port("sip:alice@host.example:5070"),
+            Some("host.example:5070".to_string())
+        );
+        assert_eq!(
+            extract_uri_host_port("sips:bob@secure.example"),
+            Some("secure.example".to_string())
+        );
+    }
+
+    #[test]
+    fn host_port_tel_uri_has_no_host() {
+        // tel: URIs carry no host — fall back to None (caller shows user or '-').
+        assert_eq!(extract_uri_host_port("<tel:+15551234567>"), None);
+    }
+
+    #[test]
+    fn host_port_empty_or_garbage() {
+        assert_eq!(extract_uri_host_port(""), None);
+        assert_eq!(extract_uri_host_port("not a uri at all"), None);
+        // Backslash / odd chars must not panic.
+        assert_eq!(
+            extract_uri_host_port(r"<sip:a\b@ho\st>"),
+            Some(r"ho\st".to_string())
         );
     }
 }

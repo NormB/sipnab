@@ -1031,6 +1031,22 @@ fn run_tui_mode(
     let keymap = sipnab::tui::Keymap::from_config(&config.keybindings);
     let name_setup = build_name_setup(&cli, &config);
 
+    // From/To column default: CLI flag wins, then the [display] from_to config
+    // value (warned + ignored if invalid), else the built-in Default.
+    let from_to_mode = cli
+        .from_to_mode
+        .map(|a| sipnab::tui::FromToMode::parse(a.as_str()).unwrap_or_default())
+        .or_else(|| {
+            config.display.from_to.as_deref().and_then(|s| {
+                let m = sipnab::tui::FromToMode::parse(s);
+                if m.is_none() {
+                    tracing::warn!("ignoring invalid [display] from_to = {s:?}");
+                }
+                m
+            })
+        })
+        .unwrap_or_default();
+
     // Run TUI on the main thread
     if let Err(e) = sipnab::tui::run_tui_with_pause(
         Arc::clone(&dialog_store),
@@ -1040,6 +1056,7 @@ fn run_tui_mode(
         keymap,
         config.display.visible_columns.clone(),
         name_setup,
+        from_to_mode,
     ) {
         tracing::error!("TUI error: {e}");
     }

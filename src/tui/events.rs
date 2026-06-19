@@ -137,6 +137,11 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.timestamp_mode = app.timestamp_mode.next();
             app.status_error = Some(app.timestamp_mode.label().to_string());
         }
+        // u — Cycle From/To column display (user / host:port / both)
+        KeyCode::Char('u') => {
+            app.from_to_mode = app.from_to_mode.next();
+            app.status_error = Some(app.from_to_mode.label().to_string());
+        }
         // F10 — Column selector popup
         k if k == app.keymap.column_selector => {
             app.call_list.column_selector_open = true;
@@ -2057,6 +2062,26 @@ mod tests {
     fn open_call_flow(app: &mut App) {
         handle_call_list_key(app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn call_list_u_cycles_from_to_mode() {
+        let mut app = App::new_test();
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::HostPort);
+        // Status line reflects the new mode.
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("From/To")
+        );
+        // Cycles through all four back to Default.
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
     }
 
     // ── handle_key_event: dispatch & global ──────────────────────────

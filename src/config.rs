@@ -198,6 +198,9 @@ pub struct DisplayConfig {
     /// When set, only the listed columns are shown; unlisted columns are hidden.
     /// When unset, all columns are visible (the default).
     pub visible_columns: Option<Vec<String>>,
+    /// Default From/To column display mode. One of `"default"`, `"host-port"`,
+    /// `"user"`, `"user-host-port"`. Cycled at runtime with the `u` key.
+    pub from_to: Option<String>,
 }
 
 /// Filter presets.
@@ -614,6 +617,17 @@ device = "eth0"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.capture.device.as_deref(), Some("eth0"));
         assert!(config.display.color.is_none());
+        assert!(config.display.from_to.is_none());
+    }
+
+    #[test]
+    fn parse_display_from_to() {
+        let toml_str = r#"
+[display]
+from_to = "user-host-port"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
     }
 
     #[test]

@@ -149,6 +149,82 @@ impl ColorMode {
     }
 }
 
+/// How the call-list From/To columns render a SIP address.
+///
+/// Cycled with the `u` key. The username is often absent (e.g. domain-only or
+/// device URIs), so the default falls back to the host instead of a bare `-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FromToMode {
+    /// Username if present, else host[:port] (else `-`).
+    #[default]
+    Default,
+    /// Host[:port] only (else `-`).
+    HostPort,
+    /// Username only (else `-`) — the legacy behavior.
+    User,
+    /// `user@host:port` when both exist, else whichever exists (else `-`).
+    UserHostPort,
+}
+
+impl FromToMode {
+    /// Cycle to the next mode.
+    fn next(self) -> Self {
+        match self {
+            Self::Default => Self::HostPort,
+            Self::HostPort => Self::User,
+            Self::User => Self::UserHostPort,
+            Self::UserHostPort => Self::Default,
+        }
+    }
+
+    /// Human-readable label for the status bar.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "From/To: Default (user or host)",
+            Self::HostPort => "From/To: Host:port",
+            Self::User => "From/To: User only",
+            Self::UserHostPort => "From/To: User@host:port",
+        }
+    }
+
+    /// Stable string used in config (`[display] from_to = ...`) and the CLI.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::HostPort => "host-port",
+            Self::User => "user",
+            Self::UserHostPort => "user-host-port",
+        }
+    }
+
+    /// Parse a config/CLI value into a mode. Returns `None` for unknown values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "default" => Some(Self::Default),
+            "host-port" => Some(Self::HostPort),
+            "user" => Some(Self::User),
+            "user-host-port" => Some(Self::UserHostPort),
+            _ => None,
+        }
+    }
+
+    /// Format a From/To cell from the (already name-resolved) user and host.
+    fn format(self, user: Option<&str>, host: Option<&str>) -> String {
+        const DASH: &str = "-";
+        match self {
+            Self::Default => user.or(host).unwrap_or(DASH).to_string(),
+            Self::HostPort => host.unwrap_or(DASH).to_string(),
+            Self::User => user.unwrap_or(DASH).to_string(),
+            Self::UserHostPort => match (user, host) {
+                (Some(u), Some(h)) => format!("{u}@{h}"),
+                (Some(u), None) => u.to_string(),
+                (None, Some(h)) => h.to_string(),
+                (None, None) => DASH.to_string(),
+            },
+        }
+    }
+}
+
 /// A single entry in the file-open browser's directory listing.
 #[derive(Debug, Clone)]
 struct FileEntry {
@@ -740,6 +816,8 @@ pub struct App {
     timestamp_mode: TimestampMode,
     /// Color mode for arrows (Method / CallId / CSeq).
     color_mode: ColorMode,
+    /// How the call-list From/To columns render (user / host:port / both).
+    from_to_mode: FromToMode,
     /// Whether the raw preview split is active in call flow view.
     /// Default is `true` (matching sngrep: split view on by default).
     raw_preview: bool,
@@ -842,6 +920,7 @@ impl App {
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
+            from_to_mode: FromToMode::default(),
             raw_preview: true,
             raw_preview_pct: 40,
             selected_msg_index: 0,
@@ -954,6 +1033,7 @@ pub fn run_tui(
         Keymap::default(),
         None,
         NameSetup::default(),
+        FromToMode::default(),
     )
 }
 
@@ -970,6 +1050,7 @@ pub fn run_tui_with_pause(
     keymap: Keymap,
     visible_columns: Option<Vec<String>>,
     name_setup: NameSetup,
+    from_to_mode: FromToMode,
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -995,6 +1076,7 @@ pub fn run_tui_with_pause(
     if let Some(ref cols) = visible_columns {
         app.call_list.apply_visible_columns(cols);
     }
+    app.set_from_to_mode(from_to_mode);
     app.set_resolver(name_setup.resolver);
     app.set_name_mode(name_setup.mode);
     app.set_names_save_path(name_setup.save_path);
@@ -1140,6 +1222,17 @@ impl App {
     /// Return the current timestamp display mode.
     pub fn timestamp_mode(&self) -> TimestampMode {
         self.timestamp_mode
+    }
+
+    /// Return the current From/To column display mode.
+    pub fn from_to_mode(&self) -> FromToMode {
+        self.from_to_mode
+    }
+
+    /// Set the From/To column display mode (used to apply the startup default
+    /// from config/CLI).
+    pub fn set_from_to_mode(&mut self, mode: FromToMode) {
+        self.from_to_mode = mode;
     }
 
     /// Current name-resolution display mode.
@@ -1651,9 +1744,11 @@ mod tests {
 
     #[test]
     fn filter_dialog_clear_resets_to_all_checked() {
-        let mut st = FilterDialogState::default();
-        st.methods = [false; 10];
-        st.sip_from = "x".to_string();
+        let mut st = FilterDialogState {
+            methods: [false; 10],
+            sip_from: "x".to_string(),
+            ..Default::default()
+        };
         st.clear();
         assert!(
             st.methods.iter().all(|&v| v),
@@ -1679,8 +1774,10 @@ mod tests {
     fn filter_dialog_uncheck_one_excludes_that_method() {
         // From the all-checked default, unchecking INVITE (index 2) must produce
         // a method filter over the OTHER nine and exclude INVITE.
-        let mut st = FilterDialogState::default();
-        st.focused_field = FILTER_TEXT_FIELD_COUNT + 2; // INVITE
+        let mut st = FilterDialogState {
+            focused_field: FILTER_TEXT_FIELD_COUNT + 2, // INVITE
+            ..Default::default()
+        };
         st.toggle_checkbox();
         assert!(!st.methods[2], "INVITE now unchecked");
         let expr = st
@@ -1736,6 +1833,75 @@ mod tests {
         };
         st.sync_cursor();
         assert_eq!(st.cursor_pos, 5);
+    }
+
+    // ── FromToMode ───────────────────────────────────────────────────
+
+    #[test]
+    fn from_to_mode_default_prefers_user_then_host() {
+        let m = FromToMode::Default;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001");
+        assert_eq!(m.format(None, Some("h:5060")), "h:5060");
+        assert_eq!(m.format(None, None), "-");
+    }
+
+    #[test]
+    fn from_to_mode_host_port_only() {
+        let m = FromToMode::HostPort;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "h:5060");
+        assert_eq!(
+            m.format(Some("1001"), None),
+            "-",
+            "host mode ignores the user"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_user_only_is_legacy_behavior() {
+        let m = FromToMode::User;
+        assert_eq!(m.format(Some("1001"), Some("h")), "1001");
+        assert_eq!(
+            m.format(None, Some("h")),
+            "-",
+            "user mode shows '-' when no user"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_user_host_combines() {
+        let m = FromToMode::UserHostPort;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001@h:5060");
+        assert_eq!(m.format(Some("1001"), None), "1001");
+        assert_eq!(m.format(None, Some("h:5060")), "h:5060");
+        assert_eq!(m.format(None, None), "-");
+    }
+
+    #[test]
+    fn from_to_mode_cycle_is_four_states() {
+        let m = FromToMode::default();
+        assert_eq!(m, FromToMode::Default);
+        assert_eq!(m.next(), FromToMode::HostPort);
+        assert_eq!(m.next().next(), FromToMode::User);
+        assert_eq!(m.next().next().next(), FromToMode::UserHostPort);
+        assert_eq!(
+            m.next().next().next().next(),
+            FromToMode::Default,
+            "cycles back to Default"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_parse_roundtrip_and_invalid() {
+        for m in [
+            FromToMode::Default,
+            FromToMode::HostPort,
+            FromToMode::User,
+            FromToMode::UserHostPort,
+        ] {
+            assert_eq!(FromToMode::parse(m.as_config_str()), Some(m));
+        }
+        assert_eq!(FromToMode::parse("bogus"), None);
+        assert_eq!(FromToMode::parse(""), None);
     }
 
     // ── App state setters ───────────────────────────────────────────

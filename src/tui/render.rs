@@ -103,6 +103,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         filter: app.active_filter.as_ref(),
                         search_query: &app.search_query,
                         timestamp_mode: app.timestamp_mode,
+                        from_to_mode: app.from_to_mode,
                         theme: &app.theme,
                         resolver: app.resolver.as_ref(),
                         name_mode: app.name_mode,

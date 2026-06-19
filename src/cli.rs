@@ -198,6 +198,11 @@ pub struct Cli {
     #[arg(long = "names", value_name = "FILE")]
     pub names: Vec<String>,
 
+    /// Default From/To column display mode in the TUI. Cycled at runtime with
+    /// the `u` key. Overrides the `[display] from_to` config value.
+    #[arg(long = "from-to-mode", value_enum, value_name = "MODE")]
+    pub from_to_mode: Option<FromToModeArg>,
+
     /// Write a copy of the input pcapng (`-I`) to this path with all decryption
     /// secrets (DSBs) removed, then exit. The input is never modified.
     #[arg(long = "strip-secrets", value_name = "OUTPUT")]
@@ -658,6 +663,31 @@ pub struct Cli {
     pub bpf_filter: Vec<String>,
 }
 
+/// From/To column display mode selectable on the command line.
+///
+/// clap renders the variants in kebab-case (`default`, `host-port`, `user`,
+/// `user-host-port`), matching the `[display] from_to` config spellings and
+/// `tui::FromToMode::as_config_str`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum FromToModeArg {
+    Default,
+    HostPort,
+    User,
+    UserHostPort,
+}
+
+impl FromToModeArg {
+    /// The canonical config/string spelling for this mode.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::HostPort => "host-port",
+            Self::User => "user",
+            Self::UserHostPort => "user-host-port",
+        }
+    }
+}
+
 impl Cli {
     /// Parse CLI arguments from the real process arguments.
     pub fn parse_args() -> Self {
@@ -795,6 +825,18 @@ mod tests {
             cli.names,
             vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
         );
+    }
+
+    #[test]
+    fn from_to_mode_flag_parses_and_rejects_invalid() {
+        let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "host-port"]);
+        assert_eq!(cli.from_to_mode, Some(FromToModeArg::HostPort));
+        let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "user-host-port"]);
+        assert_eq!(cli.from_to_mode, Some(FromToModeArg::UserHostPort));
+        // Absent → None (falls back to config/default).
+        assert_eq!(Cli::parse_from_args(["sipnab"]).from_to_mode, None);
+        // Invalid value is rejected by clap (I4).
+        assert!(Cli::try_parse_from(["sipnab", "--from-to-mode", "bogus"]).is_err());
     }
 
     #[test]
