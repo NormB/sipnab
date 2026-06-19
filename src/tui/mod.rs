@@ -751,6 +751,8 @@ pub struct App {
     call_flow_scroll: usize,
     /// Scroll offset for raw message view.
     raw_msg_scroll: u16,
+    /// Scroll offset for the F1 help view (clamped to content height in render).
+    help_scroll: u16,
     /// Search query for inline search.
     search_query: String,
     /// Whether search input mode is active.
@@ -893,6 +895,7 @@ impl App {
             status_error: None,
             call_flow_scroll: 0,
             raw_msg_scroll: 0,
+            help_scroll: 0,
             search_query: String::new(),
             search_active: false,
             capture_mode: "Online (any)".to_string(),

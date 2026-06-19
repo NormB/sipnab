@@ -5,7 +5,7 @@ expression: output
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-┌ Help (Esc to close) ─────────────────────────────────────────────────────────┐
+┌ Help (↑/↓ scroll, Esc to close) ─────────────────────────────────────────────┐
 │sipnab — Keyboard Shortcuts                                                   │
 │v0.0.0-test                                                                   │
 │                                                                              │
@@ -26,19 +26,19 @@ expression: output
 │  F1                This help                                                 │
 │  F2                Save capture (PCAP/PCAP-NG/TXT)                           │
 │  F3                Search (same as /)                                        │
-│  F5                Clear calls                                               │
-│  F6                Show raw SIP message                                      │
+│  F5, Ctrl+L        Clear calls                                               │
+│  r, F6             Show raw SIP message                                      │
 │  F7                Filter dialog                                             │
+│  F8                Settings                                                  │
 │  t                 Cycle timestamps (absolute / delta-prev / delta-first)    │
+│  u                 Cycle From/To column (user / host:port / both)            │
+│  n                 Cycle name resolution (off / static / DNS)                │
+│  N                 Name selected address (IP -> host / FQDN)                 │
+│  O                 Open pcap file                                            │
+│  s                 Statistics view                                           │
 │  F9                Clear active filter                                       │
 │  F10               Column selector                                           │
 │  Tab               Switch to RTP Streams                                     │
 │  v                 Show version / git commit                                 │
-│                                                                              │
-│CALL FLOW:                                                                    │
-│  ↑/↓               Navigate messages (detail panel updates)                  │
-│  PgUp/PgDn         Page through messages                                     │
-│  Home/End          First/last message                                        │
-│  Enter             Full-screen raw message                                   │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

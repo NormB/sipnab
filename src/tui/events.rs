@@ -909,7 +909,16 @@ pub(super) fn handle_help_key(app: &mut App, key: KeyEvent) {
     match key.code {
         k if k == KeyCode::Esc || k == app.keymap.help || k == app.keymap.quit => {
             app.current_view = View::CallList;
+            app.help_scroll = 0; // start at the top next time
         }
+        // The help can exceed the screen; allow scrolling. render() clamps the
+        // offset to the content height, so over-scrolling self-corrects.
+        KeyCode::Down | KeyCode::Char('j') => app.help_scroll = app.help_scroll.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => app.help_scroll = app.help_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+        KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+        KeyCode::Home => app.help_scroll = 0,
+        KeyCode::End => app.help_scroll = u16::MAX, // clamped to content in render
         _ => {}
     }
 }

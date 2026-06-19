@@ -321,7 +321,12 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             }
         }
         View::Help => {
-            help::render_help(frame, main_area, &app.theme, &app.version);
+            // Clamp the scroll to the content height so you can't scroll past
+            // the end (self-corrects an over-eager PgDn on the next frame).
+            let visible = main_area.height.saturating_sub(2) as usize;
+            let max_scroll = help::help_line_count().saturating_sub(visible) as u16;
+            app.help_scroll = app.help_scroll.min(max_scroll);
+            help::render_help(frame, main_area, &app.theme, &app.version, app.help_scroll);
         }
         View::Statistics => {
             render_statistics(frame, main_area, app);

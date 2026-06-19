@@ -60,6 +60,7 @@ Output and TUI display settings.
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"` |
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
+| `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides |
 | `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive, must match `COLUMN_LABELS` in `src/tui/call_list.rs`): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"` |
 
 ```toml
