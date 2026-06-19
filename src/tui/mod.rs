@@ -625,6 +625,10 @@ pub struct App {
     stream_list: StreamListState,
     /// Set to `true` to exit the event loop.
     should_quit: bool,
+    /// Version string (semver + git commit + compiled feature list) shown in
+    /// the help view. Stored on the App so tests can inject a deterministic
+    /// value instead of the build-dependent `cli::build_version()` output.
+    version: String,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
     last_known_dialog_count: usize,
@@ -765,6 +769,7 @@ impl App {
         Self {
             dialog_store,
             stream_store,
+            version: crate::cli::build_version(),
             current_view: View::CallList,
             active_popup: None,
             call_list: CallListState::new(),
@@ -1011,7 +1016,17 @@ impl App {
     pub fn new_test() -> Self {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
-        Self::new(ds, ss, Theme::default(), Keymap::default())
+        let mut app = Self::new(ds, ss, Theme::default(), Keymap::default());
+        // Pin a deterministic version so help-view snapshots don't depend on
+        // the build's git commit/tag/dirty state or the compiled feature set.
+        app.version = "0.0.0-test".to_string();
+        app
+    }
+
+    /// Override the version string shown in the help view (test helper).
+    #[doc(hidden)]
+    pub fn set_version_for_test(&mut self, version: impl Into<String>) {
+        self.version = version.into();
     }
 
     /// Create an App whose dialog store already contains the given messages.

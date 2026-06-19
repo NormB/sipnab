@@ -320,7 +320,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             }
         }
         View::Help => {
-            help::render_help(frame, main_area, &app.theme);
+            help::render_help(frame, main_area, &app.theme, &app.version);
         }
         View::Statistics => {
             render_statistics(frame, main_area, app);
