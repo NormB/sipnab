@@ -765,7 +765,8 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
         || reverse
         || cfg.enabled.unwrap_or(false)
         || !cli.names.is_empty()
-        || cfg.hosts_file.is_some();
+        || cfg.hosts_file.is_some()
+        || cfg.manual.as_ref().is_some_and(|m| !m.is_empty());
 
     let resolver = Arc::new(NameResolver::with_reverse_dns(reverse));
     // System hosts table (offline, cheap).
@@ -779,11 +780,29 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
     if let Some(hf) = &cfg.hosts_file {
         let _ = resolver.load_manual_file(std::path::Path::new(hf));
     }
+    // Inline [names.manual] table from the config (highest-priority manual layer).
+    if let Some(manual) = &cfg.manual {
+        for (ip_str, name) in manual {
+            match ip_str.parse::<std::net::IpAddr>() {
+                Ok(ip) if sipnab::names::is_valid_name(name) => {
+                    resolver.set_manual(ip, name.clone());
+                }
+                Ok(_) => tracing::warn!("ignoring invalid name for {ip_str:?} in [names.manual]"),
+                Err(_) => tracing::warn!("ignoring invalid IP key {ip_str:?} in [names.manual]"),
+            }
+        }
+    }
     // Default persistence file for the in-TUI `N` dialog; preload it.
     let save_path = default_names_path();
     if let Some(p) = &save_path {
         let _ = resolver.load_manual_file(p);
     }
+    // Opt-in: also persist `N`-dialog edits into the user's sipnabrc.
+    let config_path = if cfg.persist_to_config.unwrap_or(false) {
+        sipnab::config::default_user_config_path()
+    } else {
+        None
+    };
 
     let mode = if reverse {
         NameMode::Dns
@@ -796,6 +815,7 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
         resolver,
         mode,
         save_path,
+        config_path,
     }
 }
 

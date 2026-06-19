@@ -809,6 +809,9 @@ pub struct App {
     resolver: Arc<NameResolver>,
     /// Path the manual mappings persist to (set from config/CLI).
     names_save_path: Option<PathBuf>,
+    /// When `Some`, `N`-dialog edits are also written into this sipnabrc's
+    /// `[names.manual]` table (opt-in via `[names] persist_to_config`).
+    names_config_path: Option<PathBuf>,
     /// "Name Address" popup state.
     name_dialog: NameDialogState,
     sdp_display_mode: SdpDisplayMode,
@@ -916,6 +919,7 @@ impl App {
             name_mode: NameMode::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
+            names_config_path: None,
             name_dialog: NameDialogState::default(),
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
@@ -1009,6 +1013,9 @@ pub struct NameSetup {
     pub mode: NameMode,
     /// Where the TUI persists manual mappings edited via the `N` dialog.
     pub save_path: Option<PathBuf>,
+    /// When `Some`, `N`-dialog edits are ALSO written into the `[names.manual]`
+    /// table of this sipnabrc (opt-in via `[names] persist_to_config`).
+    pub config_path: Option<PathBuf>,
 }
 
 impl Default for NameSetup {
@@ -1017,6 +1024,7 @@ impl Default for NameSetup {
             resolver: Arc::new(NameResolver::new()),
             mode: NameMode::Off,
             save_path: None,
+            config_path: None,
         }
     }
 }
@@ -1080,6 +1088,7 @@ pub fn run_tui_with_pause(
     app.set_resolver(name_setup.resolver);
     app.set_name_mode(name_setup.mode);
     app.set_names_save_path(name_setup.save_path);
+    app.set_names_config_path(name_setup.config_path);
 
     // Main event loop
     loop {
@@ -1258,6 +1267,12 @@ impl App {
     /// Where to persist manual name mappings when edited in the TUI.
     pub fn set_names_save_path(&mut self, path: Option<PathBuf>) {
         self.names_save_path = path;
+    }
+
+    /// When `Some`, `N`-dialog edits also persist into this sipnabrc's
+    /// `[names.manual]` table.
+    pub fn set_names_config_path(&mut self, path: Option<PathBuf>) {
+        self.names_config_path = path;
     }
 
     /// Count dialogs visible after applying the active filter.

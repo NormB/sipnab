@@ -1843,6 +1843,22 @@ fn apply_name_dialog(app: &mut App) {
     {
         app.status_error = Some(format!("Named, but couldn't save {}: {e}", path.display()));
     }
+    // Opt-in: also persist the full manual table into the user's sipnabrc,
+    // preserving comments and other sections.
+    if let Some(path) = app.names_config_path.clone() {
+        let entries: Vec<(String, String)> = app
+            .resolver
+            .manual_entries()
+            .into_iter()
+            .map(|(ip, n)| (ip.to_string(), n))
+            .collect();
+        if let Err(e) = crate::config::write_manual_mappings_file(&path, &entries) {
+            app.status_error = Some(format!(
+                "Named, but couldn't update {}: {e}",
+                path.display()
+            ));
+        }
+    }
 }
 
 /// Count dialogs visible after applying the active filter.

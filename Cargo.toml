@@ -46,6 +46,9 @@ libc = { version = "0.2", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+# Format-preserving TOML editing for surgical writes to the user's sipnabrc
+# (updates the [names.manual] table without clobbering comments/other sections).
+toml_edit = "0.22"
 pcap-file = { version = "2", optional = true }
 nom = "8"
 indexmap = "2"
