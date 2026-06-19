@@ -31,7 +31,15 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     );
     m.insert(
         "capture",
-        ["device", "portrange", "snaplen", "buffer", "no_rtp"].as_slice(),
+        [
+            "device",
+            "portrange",
+            "snaplen",
+            "buffer",
+            "buffer_budget_mb",
+            "no_rtp",
+        ]
+        .as_slice(),
     );
     m.insert(
         "display",
@@ -194,6 +202,10 @@ pub struct CaptureConfig {
     pub snaplen: Option<u32>,
     /// Kernel buffer size (MiB).
     pub buffer: Option<u32>,
+    /// Memory budget (MiB) for the in-flight packet queue between capture and
+    /// processing (default 64). Grows under load up to this budget, shrinks when
+    /// idle. `--buffer-budget` overrides this.
+    pub buffer_budget_mb: Option<u32>,
     /// Disable RTP capture by default.
     pub no_rtp: Option<bool>,
 }
@@ -803,6 +815,16 @@ enabled = true
         let config: Config = toml::from_str(toml_str).unwrap();
         let manual = config.names.manual.expect("manual table");
         assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc"));
+    }
+
+    #[test]
+    fn parse_capture_buffer_budget() {
+        let toml_str = r#"
+[capture]
+buffer_budget_mb = 128
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.capture.buffer_budget_mb, Some(128));
     }
 
     #[test]

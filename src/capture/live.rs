@@ -5,9 +5,9 @@
 //! the global shutdown flag from [`crate::signals`] and applies optional BPF
 //! filters, packet count limits, and duration limits.
 
+use super::channel::PacketTx;
 use anyhow::{Context, Result};
 use chrono::{DateTime, TimeZone, Utc};
-use crossbeam_channel::Sender;
 
 use super::CaptureConfig;
 use super::packet::Packet;
@@ -99,7 +99,7 @@ fn wait_readable(
 pub fn capture_live(
     device: &str,
     config: &CaptureConfig,
-    tx: Sender<Packet>,
+    tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
     // The "any" pseudo-device on Linux does not support promiscuous mode.

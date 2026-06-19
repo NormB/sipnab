@@ -7,6 +7,8 @@
 
 #[cfg(feature = "native")]
 pub mod atomic;
+#[cfg(feature = "native")]
+pub mod channel;
 #[cfg(feature = "tls")]
 pub mod decrypt;
 #[cfg(feature = "native")]
@@ -37,7 +39,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 #[cfg(feature = "native")]
-use crossbeam_channel::Sender;
+use channel::PacketTx;
 #[cfg(feature = "native")]
 use std::thread;
 
@@ -94,6 +96,9 @@ pub struct CaptureConfig {
     pub duration: Option<Duration>,
     /// Replay pcap file with original inter-packet timing.
     pub replay: bool,
+    /// Memory budget (MiB) for the in-flight packet queue between capture and
+    /// processing. Converted to a packet-count cap via [`Self::channel_capacity`].
+    pub buffer_budget_mb: u32,
 }
 
 #[cfg(feature = "native")]
@@ -106,7 +111,29 @@ impl Default for CaptureConfig {
             count: None,
             duration: None,
             replay: false,
+            buffer_budget_mb: 64,
         }
+    }
+}
+
+#[cfg(feature = "native")]
+impl CaptureConfig {
+    /// Assumed average bytes per buffered packet (mixed SIP signaling + small
+    /// RTP) when converting the memory budget to a packet count.
+    const EST_AVG_PACKET_BYTES: usize = 2048;
+    /// Floor so the cap never regresses below the historical fixed default.
+    const MIN_CHANNEL_CAPACITY: usize = 10_000;
+    /// Ceiling so a huge budget can't request an absurd permit pool.
+    const MAX_CHANNEL_CAPACITY: usize = 5_000_000;
+
+    /// Packet-count cap for the capture→processing queue, derived from
+    /// `buffer_budget_mb`. Worst-case memory is `capacity × snaplen`; typical
+    /// memory is far lower (packets are usually 0.2–5 KiB). Clamped to
+    /// `[MIN_CHANNEL_CAPACITY, MAX_CHANNEL_CAPACITY]`.
+    pub fn channel_capacity(&self) -> usize {
+        let budget = (self.buffer_budget_mb as usize).saturating_mul(1024 * 1024);
+        (budget / Self::EST_AVG_PACKET_BYTES)
+            .clamp(Self::MIN_CHANNEL_CAPACITY, Self::MAX_CHANNEL_CAPACITY)
     }
 }
 
@@ -142,7 +169,7 @@ pub struct CaptureHandle {
 pub fn start_capture(
     source: CaptureSource,
     config: CaptureConfig,
-    tx: Sender<Packet>,
+    tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<CaptureHandle> {
     let source_clone = source.clone();
@@ -206,7 +233,7 @@ pub fn start_capture(
 pub fn start_multi_capture(
     devices: &str,
     config: CaptureConfig,
-    tx: Sender<Packet>,
+    tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<CaptureHandle> {
     // Parse + validate the selected-interface list up front so a malformed
@@ -492,6 +519,25 @@ mod tests {
         assert!(config.bpf_filter.is_none());
         assert!(config.count.is_none());
         assert!(config.duration.is_none());
+        assert_eq!(config.buffer_budget_mb, 64);
+    }
+
+    #[cfg(feature = "native")]
+    #[test]
+    fn channel_capacity_derives_from_budget_and_clamps() {
+        let cfg = |mb: u32| CaptureConfig {
+            buffer_budget_mb: mb,
+            ..CaptureConfig::default()
+        };
+        // 64 MiB / 2 KiB = 32768, inside the clamp range.
+        assert_eq!(cfg(64).channel_capacity(), 64 * 1024 * 1024 / 2048);
+        // A tiny budget clamps up to the 10k floor (no regression below today).
+        assert_eq!(cfg(1).channel_capacity(), 10_000);
+        assert_eq!(cfg(0).channel_capacity(), 10_000);
+        // A huge budget clamps to the ceiling.
+        assert_eq!(cfg(1_000_000).channel_capacity(), 5_000_000);
+        // Monotonic in between.
+        assert!(cfg(256).channel_capacity() > cfg(64).channel_capacity());
     }
 
     #[cfg(feature = "native")]
@@ -522,7 +568,7 @@ mod tests {
             return;
         }
 
-        let (pkt_tx, pkt_rx) = crossbeam_channel::unbounded();
+        let (pkt_tx, pkt_rx) = channel::packet_channel(1 << 20);
         let (ready_tx, ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
         let config = CaptureConfig::default();
 
@@ -555,7 +601,7 @@ mod tests {
     fn multi_capture_rejects_malformed_device_spec_before_spawning() {
         // A doubled comma is a validation error: start_multi_capture must
         // return Err immediately, without spawning any capture thread.
-        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (tx, _rx) = channel::packet_channel(1 << 20);
         match start_multi_capture("eth0,,docker0", CaptureConfig::default(), tx, None) {
             Ok(_) => panic!("malformed device spec must be rejected"),
             Err(e) => assert!(e.to_string().contains("empty interface name"), "got: {e}"),
@@ -565,7 +611,7 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn multi_capture_rejects_empty_device_spec() {
-        let (tx, _rx) = crossbeam_channel::unbounded();
+        let (tx, _rx) = channel::packet_channel(1 << 20);
         assert!(start_multi_capture("   ", CaptureConfig::default(), tx, None).is_err());
         // (Ok(_) is not Debug; .is_err() avoids unwrapping the handle.)
     }

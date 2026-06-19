@@ -12,6 +12,7 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
 | `-B`, `--buffer` | `<MIB>` | OS default | Kernel capture buffer size in MiB |
+| `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | OS default | Snapshot length for packet capture (bytes) |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |

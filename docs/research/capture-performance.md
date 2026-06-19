@@ -44,8 +44,11 @@ and a large cut in pipeline-induced drops.
 
 - [ ] Raise default kernel buffer 2 MiB → 64 MiB (`--buffer-mb` default in
       `src/capture/mod.rs`); document a 128 MiB recommendation for gigabit media.
-- [ ] Raise the capture→processing channel 10_000 → 100_000 (`src/main.rs:428`),
-      and/or make it configurable.
+- [x] **Done:** the capture→processing channel is now an auto-grow, capped queue
+      (`src/capture/channel.rs`) — unbounded storage (frees segments when idle) +
+      a `bounded(capacity)` semaphore for backpressure. Capacity derives from
+      `[capture] buffer_budget_mb` / `--buffer-budget` (default 64 MiB);
+      `sipnab_capture_queue_depth_packets` / `_backpressure_blocks_total` exported.
 - [ ] Buffer pool to eliminate per-packet `to_vec()` (`live.rs:221`) — recycle
       fixed buffers instead of allocating per packet.
 - [ ] Stronger default auto-BPF filter when none supplied (push more drops into
