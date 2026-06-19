@@ -339,7 +339,7 @@ struct NameDialogState {
 }
 
 /// Structured state for the sngrep-style filter dialog.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FilterDialogState {
     /// SIP From header filter text.
     sip_from: String,
@@ -360,7 +360,30 @@ pub struct FilterDialogState {
     cursor_pos: usize,
 }
 
+impl Default for FilterDialogState {
+    fn default() -> Self {
+        Self {
+            sip_from: String::new(),
+            sip_to: String::new(),
+            source: String::new(),
+            destination: String::new(),
+            payload: String::new(),
+            // All SIP methods checked by default == show every message. The
+            // method filter only narrows once the user unchecks something.
+            methods: [true; 10],
+            focused_field: 0,
+            cursor_pos: 0,
+        }
+    }
+}
+
 impl FilterDialogState {
+    /// Whether at least one SIP method checkbox is checked. When none are
+    /// checked the call list shows nothing (see `apply_filter_dialog`).
+    fn any_method_checked(&self) -> bool {
+        self.methods.iter().any(|&v| v)
+    }
+
     /// Get a reference to the text field at the given index (0-4).
     fn text_field(&self, idx: usize) -> &str {
         match idx {
@@ -535,7 +558,9 @@ impl FilterDialogState {
         self.source.clear();
         self.destination.clear();
         self.payload.clear();
-        self.methods = [false; 10];
+        // Re-check every method so "clear filter" means show all, matching the
+        // dialog's default state.
+        self.methods = [true; 10];
         self.focused_field = 0;
         self.cursor_pos = 0;
     }
@@ -553,7 +578,8 @@ impl FilterDialogState {
             && self.source.is_empty()
             && self.destination.is_empty()
             && self.payload.is_empty()
-            && self.methods.iter().all(|&v| !v)
+            // All methods checked == no method narrowing == an "empty" filter.
+            && self.methods.iter().all(|&v| v)
     }
 }
 
@@ -1055,6 +1081,14 @@ impl App {
     pub fn open_path_clear_for_test(&mut self) {
         self.open_path.clear();
         self.open_cursor = 0;
+    }
+
+    /// Set the filter-dialog SIP-method checkboxes and apply the filter, exactly
+    /// as pressing Enter in the dialog would (test helper for set/unset scenarios).
+    #[doc(hidden)]
+    pub fn apply_method_filter_for_test(&mut self, methods: [bool; 10]) {
+        self.filter_dialog.methods = methods;
+        apply_filter_dialog(self);
     }
 
     #[doc(hidden)]
@@ -1600,26 +1634,70 @@ mod tests {
     }
 
     #[test]
-    fn filter_dialog_toggle_and_build_expression() {
-        let mut st = FilterDialogState::default();
-        // Empty → no expression.
+    fn filter_dialog_default_all_methods_checked() {
+        // SIP messages must be checked by default → no narrowing → no expression.
+        let st = FilterDialogState::default();
+        assert!(
+            st.methods.iter().all(|&v| v),
+            "all methods should default to checked"
+        );
+        assert!(st.any_method_checked());
+        assert!(
+            st.is_empty(),
+            "all-checked + empty text == no active filter"
+        );
         assert!(st.build_filter_expression().is_none());
+    }
+
+    #[test]
+    fn filter_dialog_clear_resets_to_all_checked() {
+        let mut st = FilterDialogState::default();
+        st.methods = [false; 10];
+        st.sip_from = "x".to_string();
+        st.clear();
+        assert!(
+            st.methods.iter().all(|&v| v),
+            "clear() must re-check all methods (show all)"
+        );
         assert!(st.is_empty());
+    }
 
-        // Toggle INVITE checkbox (index 2).
-        st.focused_field = FILTER_TEXT_FIELD_COUNT + 2;
+    #[test]
+    fn filter_dialog_any_method_checked_tracks_state() {
+        let mut st = FilterDialogState::default();
+        assert!(st.any_method_checked());
+        st.methods = [false; 10];
+        assert!(
+            !st.any_method_checked(),
+            "no methods checked → show nothing"
+        );
+        st.methods[3] = true;
+        assert!(st.any_method_checked());
+    }
+
+    #[test]
+    fn filter_dialog_uncheck_one_excludes_that_method() {
+        // From the all-checked default, unchecking INVITE (index 2) must produce
+        // a method filter over the OTHER nine and exclude INVITE.
+        let mut st = FilterDialogState::default();
+        st.focused_field = FILTER_TEXT_FIELD_COUNT + 2; // INVITE
         st.toggle_checkbox();
-        assert!(st.methods[2]);
-        let expr = st.build_filter_expression().expect("some methods checked");
-        assert!(expr.contains("method == 'INVITE'"));
+        assert!(!st.methods[2], "INVITE now unchecked");
+        let expr = st
+            .build_filter_expression()
+            .expect("partial selection → expression");
+        assert!(
+            !expr.contains("'INVITE'"),
+            "unchecked INVITE must be excluded: {expr}"
+        );
+        assert!(expr.contains("method == 'REGISTER'"));
+        assert!(expr.contains(" OR "));
 
-        // Add text fields → AND-joined.
+        // Text fields AND-join with the method clause.
         st.sip_from = "1001".to_string();
         st.source = "10.0.0.1".to_string();
         let expr = st.build_filter_expression().unwrap();
-        assert!(expr.contains("from.user"));
-        assert!(expr.contains("src.ip"));
-        assert!(expr.contains(" AND "));
+        assert!(expr.contains("from.user") && expr.contains("src.ip") && expr.contains(" AND "));
     }
 
     #[test]

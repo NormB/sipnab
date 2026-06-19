@@ -1529,6 +1529,15 @@ pub(super) fn is_rtcp_offline(data: &[u8], dst_port: u16) -> bool {
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
 pub(super) fn apply_filter_dialog(app: &mut App) {
+    // No SIP methods selected => show nothing. This is the explicit "mute
+    // everything" state (distinct from all-checked, which shows everything).
+    if !app.filter_dialog.any_method_checked() {
+        app.active_filter = Some(FilterExpr::never());
+        app.active_filter_text = "(no methods selected)".to_string();
+        app.status_error = None;
+        app.active_popup = None;
+        return;
+    }
     match app.filter_dialog.build_filter_expression() {
         Some(expr_text) => match FilterExpr::parse(&expr_text) {
             Ok(expr) => {

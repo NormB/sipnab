@@ -12,11 +12,11 @@ expression: output
   If reading│  Destination: [                                   ]  │
   Press 'q' │  Payload:     [                                   ]  │
             │  ──────────────────────────────────────────────────  │
-            │  REGISTER  [ ]             OPTIONS   [ ]             │
-            │  INVITE    [ ]             PUBLISH   [ ]             │
-            │  SUBSCRIBE [ ]             MESSAGE   [ ]             │
-            │  NOTIFY    [ ]             REFER     [ ]             │
-            │  INFO      [ ]             UPDATE    [ ]             │
+            │  REGISTER  [*]             OPTIONS   [*]             │
+            │  INVITE    [*]             PUBLISH   [*]             │
+            │  SUBSCRIBE [*]             MESSAGE   [*]             │
+            │  NOTIFY    [*]             REFER     [*]             │
+            │  INFO      [*]             UPDATE    [*]             │
             │                                                      │
             │     [ Filter ]                 [ Cancel ]            │
             │                                                      │
