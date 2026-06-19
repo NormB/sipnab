@@ -29,6 +29,10 @@ pub struct PrometheusMetrics {
     pub rtp_streams_total: HashMap<String, u64>,
     /// Total captured packets.
     pub capture_packets_total: u64,
+    /// Packets currently buffered in the capture→processing queue (gauge).
+    pub capture_queue_depth_packets: u64,
+    /// Times a capture send had to block because the queue cap was reached.
+    pub capture_backpressure_blocks_total: u64,
     /// Security alert counts by type (e.g., `"reg_flood"`, `"scanner"`).
     pub security_alerts_total: HashMap<String, u64>,
     /// Post-dial delay observations in seconds for histogram bucketing.
@@ -115,6 +119,32 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         out,
         "sipnab_capture_packets_total {}",
         metrics.capture_packets_total
+    );
+    out.push('\n');
+
+    // Capture queue (the dynamic, capped capture→processing buffer)
+    write_help_type(
+        &mut out,
+        "sipnab_capture_queue_depth_packets",
+        "Packets currently buffered between capture and processing",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_queue_depth_packets {}",
+        metrics.capture_queue_depth_packets
+    );
+    out.push('\n');
+    write_help_type(
+        &mut out,
+        "sipnab_capture_backpressure_blocks_total",
+        "Times a capture send blocked because the queue cap was reached",
+        "counter",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_capture_backpressure_blocks_total {}",
+        metrics.capture_backpressure_blocks_total
     );
     out.push('\n');
 

@@ -114,6 +114,12 @@ pub struct Cli {
     #[arg(short = 'B', long = "buffer", value_name = "MIB")]
     pub buffer: Option<u32>,
 
+    /// Memory budget in MiB for the in-flight packet queue between capture and
+    /// processing (default 64). The queue grows under load up to this budget and
+    /// shrinks when idle; overrides `[capture] buffer_budget_mb`.
+    #[arg(long = "buffer-budget", value_name = "MIB")]
+    pub buffer_budget: Option<u32>,
+
     /// Snapshot length for packet capture (bytes).
     #[arg(long, value_name = "BYTES")]
     pub snaplen: Option<u32>,
@@ -825,6 +831,26 @@ mod tests {
             cli.names,
             vec!["/etc/hosts".to_string(), "/tmp/names".to_string()]
         );
+    }
+
+    #[test]
+    fn buffer_flags_parse_and_reject_invalid() {
+        // Kernel capture buffer (--buffer / -B).
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--buffer", "32"]).buffer,
+            Some(32)
+        );
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "-B", "16"]).buffer,
+            Some(16)
+        );
+        // In-flight queue memory budget (--buffer-budget).
+        let cli = Cli::parse_from_args(["sipnab", "--buffer-budget", "128"]);
+        assert_eq!(cli.buffer_budget, Some(128));
+        assert_eq!(Cli::parse_from_args(["sipnab"]).buffer_budget, None);
+        // Non-numeric values are rejected by clap.
+        assert!(Cli::try_parse_from(["sipnab", "--buffer-budget", "huge"]).is_err());
+        assert!(Cli::try_parse_from(["sipnab", "--buffer", "huge"]).is_err());
     }
 
     #[test]

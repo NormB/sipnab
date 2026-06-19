@@ -40,6 +40,7 @@ Packet capture defaults.
 | `portrange` | string | `"5060-5061"` | SIP port range |
 | `snaplen` | integer | OS default | Snapshot length in bytes |
 | `buffer` | integer | OS default | Kernel capture buffer size in MiB |
+| `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue (grows under load up to this, capped; shrinks when idle). `--buffer-budget` overrides |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
 
 ```toml

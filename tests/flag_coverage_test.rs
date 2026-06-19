@@ -41,7 +41,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     // ── Root / system services (cannot run in the sandbox) ──────────────────
     "chroot", // requires root to chroot()
     "syslog", // requires a syslog daemon to observe alerts
-    "buffer", // kernel capture-buffer sizing — live capture only
     // ── Standalone servers that need a live source to stay alive ────────────
     "metrics",      // metrics-only process exits after an offline pcap read
     "metrics-auth", // (auth logic is unit-tested in prometheus_server.rs)

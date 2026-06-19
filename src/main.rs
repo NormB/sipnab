@@ -424,8 +424,10 @@ fn main() {
         cli.quality_threshold,
     );
 
-    // 14. Create the packet channel
-    let (tx, rx) = crossbeam_channel::bounded(10_000);
+    // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
+    //     grows under load up to the cap and the (unbounded) storage frees its
+    //     segments when idle. Capacity is derived from the memory budget.
+    let (tx, rx) = capture::channel::packet_channel(capture_config.channel_capacity());
 
     // 15. Start the capture thread (multi-device aware).
     //     Use a rendezvous channel so the capture thread can signal that the
@@ -837,7 +839,7 @@ fn run_tui_mode(
     config: Config,
     capture_config: CaptureConfig,
     handle: capture::CaptureHandle,
-    rx: crossbeam_channel::Receiver<capture::Packet>,
+    rx: capture::channel::PacketRx,
     policy: CapturePolicy,
     #[cfg(feature = "api")] metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
@@ -863,6 +865,7 @@ fn run_tui_mode(
             Arc::clone(&dialog_store),
             Arc::clone(&stream_store),
             cli.metrics_auth.clone(),
+            Some(rx.meter()),
         ) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -1100,7 +1103,7 @@ fn run_batch_mode(
     config: &Config,
     capture_config: CaptureConfig,
     handle: capture::CaptureHandle,
-    rx: crossbeam_channel::Receiver<capture::Packet>,
+    rx: capture::channel::PacketRx,
     batch: BatchProcessing,
     policy: CapturePolicy,
 ) {
@@ -2364,6 +2367,12 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
 
     let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);
 
+    // Memory budget for the in-flight packet queue (capture→processing).
+    let buffer_budget_mb = cli
+        .buffer_budget
+        .or(config.capture.buffer_budget_mb)
+        .unwrap_or(64);
+
     // BPF filter: --bpf-file takes precedence, then positional args
     let bpf_filter = if let Some(ref bpf_file) = cli.bpf_file {
         match std::fs::read_to_string(bpf_file) {
@@ -2399,6 +2408,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         count,
         duration,
         replay: cli.replay,
+        buffer_budget_mb,
     }
 }
 

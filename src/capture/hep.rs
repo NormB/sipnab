@@ -24,9 +24,9 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::time::{Duration, Instant};
 
+use super::channel::PacketTx;
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, TimeZone, Utc};
-use crossbeam_channel::Sender;
 
 use super::CaptureConfig;
 use super::packet::{Packet, PreParsed};
@@ -726,7 +726,7 @@ impl IdleWatch {
 pub fn capture_hep(
     bind_addr: &str,
     config: &CaptureConfig,
-    tx: Sender<Packet>,
+    tx: PacketTx,
     allowlist: &[CidrRange],
     rate_limit: u64,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,

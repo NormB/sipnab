@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use crossbeam_channel::unbounded;
+use sipnab::capture::channel::packet_channel;
 use sipnab::capture::file::capture_file;
 use sipnab::capture::packet::Packet;
 use sipnab::capture::parse::{TransportProto, parse_packet};
@@ -24,7 +24,7 @@ fn fixture_path() -> PathBuf {
 
 /// Collect all packets from a file capture with the given config.
 fn collect_packets(config: CaptureConfig) -> Vec<Packet> {
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     capture_file(&fixture_path(), &config, tx, None).expect("capture_file should succeed");
     rx.try_iter().collect()
 }
@@ -141,7 +141,7 @@ fn writer_roundtrip() {
     }
 
     // Re-read the written file
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
     let reread: Vec<Packet> = rx.try_iter().collect();
 
@@ -181,7 +181,7 @@ fn writer_with_count_limit() {
     }
 
     // Re-read
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(
@@ -230,7 +230,7 @@ fn pcap_roundtrip_preserves_linktype_and_magic() {
         "unexpected pcap magic: {magic:02x?}"
     );
 
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read");
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(reread.len(), packets.len(), "count must survive roundtrip");
@@ -269,7 +269,7 @@ fn pcapng_roundtrip_and_magic() {
         "pcapng Section Header Block magic missing"
     );
 
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     capture_file(&output_path, &CaptureConfig::default(), tx, None).expect("re-read pcapng");
     let reread: Vec<Packet> = rx.try_iter().collect();
     assert_eq!(
@@ -285,7 +285,7 @@ fn pcapng_roundtrip_and_magic() {
 fn start_capture_file_source() {
     use sipnab::capture::{CaptureSource, start_capture};
 
-    let (tx, rx) = unbounded();
+    let (tx, rx) = packet_channel(1 << 20);
     let source = CaptureSource::File {
         path: fixture_path(),
     };

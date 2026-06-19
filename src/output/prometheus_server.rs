@@ -30,6 +30,7 @@ pub fn start_metrics_server(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
     basic_auth: Option<String>,
+    capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| anyhow::anyhow!("Failed to bind metrics server on {bind_addr}: {e}"))?;
@@ -119,7 +120,8 @@ pub fn start_metrics_server(
                 }
 
                 if path == "/metrics" {
-                    let metrics = collect_metrics(&dialog_store, &stream_store);
+                    let metrics =
+                        collect_metrics(&dialog_store, &stream_store, capture_meter.as_ref());
                     let body = format_metrics(&metrics);
                     let response = format!(
                         "HTTP/1.1 200 OK\r\n\
@@ -223,8 +225,14 @@ fn parse_metrics_addr_inner(addr: &str) -> Result<SocketAddr, String> {
 fn collect_metrics(
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
+    capture_meter: Option<&crate::capture::channel::CaptureMeter>,
 ) -> PrometheusMetrics {
     let mut metrics = PrometheusMetrics::default();
+
+    if let Some(meter) = capture_meter {
+        metrics.capture_queue_depth_packets = meter.in_flight() as u64;
+        metrics.capture_backpressure_blocks_total = meter.backpressure_blocks();
+    }
 
     // Dialog metrics
     {
@@ -403,6 +411,7 @@ mod tests {
             populated_dialog_store(),
             populated_stream_store(),
             None,
+            None,
         )
         .expect("server should bind");
 
@@ -424,6 +433,7 @@ mod tests {
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             None,
+            None,
         )
         .expect("server should bind");
 
@@ -439,6 +449,7 @@ mod tests {
             Arc::new(RwLock::new(DialogStore::new(10, false))),
             Arc::new(RwLock::new(StreamStore::new(10))),
             Some("user:pass".to_string()),
+            None,
         )
         .expect("server should bind");
 
@@ -470,11 +481,34 @@ mod tests {
 
     #[test]
     fn collect_metrics_counts_dialogs_and_active_streams() {
-        let metrics = collect_metrics(&populated_dialog_store(), &populated_stream_store());
+        let metrics = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
         // One INVITE dialog was inserted.
         assert!(metrics.messages_total.values().sum::<u64>() >= 1);
         assert!(!metrics.dialogs_total.is_empty());
         // The stream was created with a near-now timestamp, so it counts active.
         assert_eq!(metrics.rtp_streams_active, 1);
+    }
+
+    #[test]
+    fn collect_metrics_reports_capture_queue_depth() {
+        use crate::capture::channel::packet_channel;
+        use crate::capture::packet::Packet;
+
+        let (tx, rx) = packet_channel(8);
+        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        tx.send(Packet::new(ts, vec![0u8; 32], 32, 32, None, 1))
+            .unwrap();
+        tx.send(Packet::new(ts, vec![0u8; 32], 32, 32, None, 1))
+            .unwrap();
+
+        let m = collect_metrics(
+            &populated_dialog_store(),
+            &populated_stream_store(),
+            Some(&rx.meter()),
+        );
+        assert_eq!(m.capture_queue_depth_packets, 2);
+        // Without a meter the gauge stays at its default 0.
+        let m0 = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
+        assert_eq!(m0.capture_queue_depth_packets, 0);
     }
 }
