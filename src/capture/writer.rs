@@ -537,6 +537,59 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
 mod tests {
     use super::*;
 
+    /// A Name Resolution Block written into a PCAP-NG capture must survive a
+    /// round trip: reading the file back recovers the IP → name mappings. This
+    /// is the write half of the name-resolution feature (the read half powers
+    /// loading names from a capture on open).
+    #[test]
+    fn pcapng_name_resolution_block_round_trips() {
+        use std::collections::HashMap;
+        use std::net::IpAddr;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("names.pcapng");
+        let entries: Vec<(IpAddr, Vec<String>)> = vec![
+            ("10.0.0.1".parse().unwrap(), vec!["sbc-edge".to_string()]),
+            ("2001:db8::1".parse().unwrap(), vec!["core6".to_string()]),
+        ];
+        {
+            let mut w = PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+                .expect("create pcapng writer");
+            w.write_name_resolution_block(&entries).expect("write NRB");
+            w.finish().expect("finish");
+        }
+
+        let meta = crate::capture::pcapng_meta::read_pcapng_metadata(&path).expect("read metadata");
+        let names: HashMap<IpAddr, String> = meta.names.into_iter().collect();
+        assert_eq!(
+            names
+                .get(&"10.0.0.1".parse::<IpAddr>().unwrap())
+                .map(String::as_str),
+            Some("sbc-edge")
+        );
+        assert_eq!(
+            names
+                .get(&"2001:db8::1".parse::<IpAddr>().unwrap())
+                .map(String::as_str),
+            Some("core6")
+        );
+    }
+
+    /// Writing a Name Resolution Block to a plain (non-PCAP-NG) capture is a
+    /// no-op, not an error — NRBs only exist in the -ng format.
+    #[test]
+    fn name_resolution_block_skipped_for_plain_pcap() {
+        use std::net::IpAddr;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("plain.pcap");
+        let mut w = PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw)
+            .expect("create pcap writer");
+        let entries: Vec<(IpAddr, Vec<String>)> =
+            vec![("10.0.0.1".parse().unwrap(), vec!["x".to_string()])];
+        assert!(w.write_name_resolution_block(&entries).is_ok());
+        w.finish().expect("finish");
+    }
+
     /// ENOSPC regression tests using /dev/full, which fails every write
     /// with "No space left on device" without filling a real disk.
     #[cfg(target_os = "linux")]

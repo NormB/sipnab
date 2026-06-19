@@ -96,6 +96,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--show-empty` | -- | off | Show messages with empty bodies |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
+| `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to` |
 | `--payload-limit` | `<BYTES>` | -- | Maximum payload bytes to display |
 | `-T`, `--text-dump` | -- | off | Dump raw SIP message text (like sipgrep `-T`) |
 | `--no-cli-print` | -- | off | Suppress per-message CLI output (useful with `--report` / `--call-report` so only the post-capture summary reaches stdout) |

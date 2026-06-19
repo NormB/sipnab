@@ -4,6 +4,29 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-06-19
+
+### Added
+- Cycleable From/To column display (press `u`): when a SIP URI has no username
+  the column now falls back to the host (and optional port) instead of a bare
+  `-`. Four modes — default (user else host:port), host:port, user, and
+  user@host:port. Set the startup default with `--from-to-mode` or
+  `[display] from_to`. IP-literal hosts are name-resolved like Source/Dest.
+- Name mappings can be persisted into sipnabrc: `[names] persist_to_config`
+  writes `N`-dialog edits into a `[names.manual]` table (comments and other
+  sections preserved), and that table is loaded at startup. Mappings continue to
+  embed into PCAP-NG Name Resolution Blocks on save.
+- The in-TUI F1 help now documents every keybinding (including name resolution
+  `n`/`N`, statistics `s`, open `O`, settings `F8`, audio `Shift+P`, and the new
+  `u`) and is scrollable (`↑`/`↓`/`PgUp`/`PgDn`). A test guards against future
+  keybinding/help drift.
+
+### Fixed
+- Filter dialog: SIP method checkboxes now start **all checked** (show
+  everything) and toggling them actually filters. Unchecking every method shows
+  nothing; clearing (`F9`) restores show-all.
+- Corrected the `Ctrl+L` documentation (it clears calls, same as `F5`).
+
 ## [0.4.3] - 2026-06-18
 
 ### Added

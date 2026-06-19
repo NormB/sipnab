@@ -75,6 +75,10 @@ pub struct SipDialog {
     pub from_user: Option<String>,
     /// User part extracted from the To URI.
     pub to_user: Option<String>,
+    /// Host (with optional `:port`) extracted from the From URI.
+    pub from_host: Option<String>,
+    /// Host (with optional `:port`) extracted from the To URI.
+    pub to_host: Option<String>,
     /// Tag parameter from the From header.
     pub from_tag: Option<String>,
     /// Tag parameter from the To header.
@@ -167,6 +171,8 @@ impl SipDialog {
             call_id,
             from_user: msg.from_user(),
             to_user: msg.to_user(),
+            from_host: msg.from_host(),
+            to_host: msg.to_host(),
             from_tag: msg.from_tag().map(str::to_string),
             to_tag: msg.to_tag().map(str::to_string),
             from_display: msg.from_display(),

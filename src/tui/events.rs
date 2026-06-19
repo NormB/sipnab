@@ -137,6 +137,11 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.timestamp_mode = app.timestamp_mode.next();
             app.status_error = Some(app.timestamp_mode.label().to_string());
         }
+        // u — Cycle From/To column display (user / host:port / both)
+        KeyCode::Char('u') => {
+            app.from_to_mode = app.from_to_mode.next();
+            app.status_error = Some(app.from_to_mode.label().to_string());
+        }
         // F10 — Column selector popup
         k if k == app.keymap.column_selector => {
             app.call_list.column_selector_open = true;
@@ -904,7 +909,16 @@ pub(super) fn handle_help_key(app: &mut App, key: KeyEvent) {
     match key.code {
         k if k == KeyCode::Esc || k == app.keymap.help || k == app.keymap.quit => {
             app.current_view = View::CallList;
+            app.help_scroll = 0; // start at the top next time
         }
+        // The help can exceed the screen; allow scrolling. render() clamps the
+        // offset to the content height, so over-scrolling self-corrects.
+        KeyCode::Down | KeyCode::Char('j') => app.help_scroll = app.help_scroll.saturating_add(1),
+        KeyCode::Up | KeyCode::Char('k') => app.help_scroll = app.help_scroll.saturating_sub(1),
+        KeyCode::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+        KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+        KeyCode::Home => app.help_scroll = 0,
+        KeyCode::End => app.help_scroll = u16::MAX, // clamped to content in render
         _ => {}
     }
 }
@@ -1529,6 +1543,15 @@ pub(super) fn is_rtcp_offline(data: &[u8], dst_port: u16) -> bool {
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
 pub(super) fn apply_filter_dialog(app: &mut App) {
+    // No SIP methods selected => show nothing. This is the explicit "mute
+    // everything" state (distinct from all-checked, which shows everything).
+    if !app.filter_dialog.any_method_checked() {
+        app.active_filter = Some(FilterExpr::never());
+        app.active_filter_text = "(no methods selected)".to_string();
+        app.status_error = None;
+        app.active_popup = None;
+        return;
+    }
     match app.filter_dialog.build_filter_expression() {
         Some(expr_text) => match FilterExpr::parse(&expr_text) {
             Ok(expr) => {
@@ -1829,6 +1852,22 @@ fn apply_name_dialog(app: &mut App) {
     {
         app.status_error = Some(format!("Named, but couldn't save {}: {e}", path.display()));
     }
+    // Opt-in: also persist the full manual table into the user's sipnabrc,
+    // preserving comments and other sections.
+    if let Some(path) = app.names_config_path.clone() {
+        let entries: Vec<(String, String)> = app
+            .resolver
+            .manual_entries()
+            .into_iter()
+            .map(|(ip, n)| (ip.to_string(), n))
+            .collect();
+        if let Err(e) = crate::config::write_manual_mappings_file(&path, &entries) {
+            app.status_error = Some(format!(
+                "Named, but couldn't update {}: {e}",
+                path.display()
+            ));
+        }
+    }
 }
 
 /// Count dialogs visible after applying the active filter.
@@ -2048,6 +2087,26 @@ mod tests {
     fn open_call_flow(app: &mut App) {
         handle_call_list_key(app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn call_list_u_cycles_from_to_mode() {
+        let mut app = App::new_test();
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::HostPort);
+        // Status line reflects the new mode.
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("From/To")
+        );
+        // Cycles through all four back to Default.
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        handle_call_list_key(&mut app, key(KeyCode::Char('u')));
+        assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
     }
 
     // ── handle_key_event: dispatch & global ──────────────────────────

@@ -233,6 +233,7 @@ Toggle display options without leaving the TUI.
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
 | O | Open pcap file (File Open dialog) |
@@ -323,6 +324,7 @@ Toggle display options without leaving the TUI.
 | Down / j | Scroll down |
 | PgUp | Page up |
 | PgDn | Page down |
+| Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
 | Esc | Back to RTP Streams list or Call Flow |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.

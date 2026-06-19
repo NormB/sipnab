@@ -172,6 +172,32 @@ pub fn expand_alias(alias: &str) -> Option<&'static str> {
 // ── FilterExpr public API ───────────────────────────────────────────
 
 impl FilterExpr {
+    /// An expression that matches **no** dialog.
+    ///
+    /// Used to represent "show nothing" — e.g. the filter dialog with every SIP
+    /// method unchecked — so the call-list filter path keeps funnelling through
+    /// a single `Option<FilterExpr>` instead of growing a special case.
+    ///
+    /// `one_way` is a concrete per-dialog boolean, so requiring it to be both
+    /// `true` and `false` is unsatisfiable for every dialog.
+    #[must_use]
+    pub fn never() -> Self {
+        FilterExpr {
+            root: Expr::And(
+                Box::new(Expr::Compare(
+                    Field::OneWay,
+                    Operator::Eq,
+                    Value::Bool(true),
+                )),
+                Box::new(Expr::Compare(
+                    Field::OneWay,
+                    Operator::Eq,
+                    Value::Bool(false),
+                )),
+            ),
+        }
+    }
+
     /// Parse a filter expression string into a compiled [`FilterExpr`].
     ///
     /// The grammar is:
@@ -1427,6 +1453,38 @@ mod tests {
         // one_way is false with no streams, so == false matches.
         let filter = FilterExpr::parse("one_way == false").expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[]));
+    }
+
+    #[test]
+    fn partial_method_filter_excludes_unlisted_method() {
+        // C1: a dialog whose initial method is not one of the filter checkboxes
+        // (e.g. BYE) must be HIDDEN by a partial method selection — only the
+        // explicitly-checked methods are shown. (All-checked yields no filter at
+        // the dialog layer, so such dialogs are shown then.)
+        let bye = make_dialog("1001", "2002", "BYE");
+        let partial = FilterExpr::parse("(method == 'REGISTER' OR method == 'INVITE')")
+            .expect("should parse");
+        assert!(
+            !partial.matches_dialog(&bye, &[]),
+            "a partial method selection must not match an unlisted-method dialog"
+        );
+        // And it does match a dialog whose method IS in the selection.
+        let invite = make_dialog("1001", "2002", "INVITE");
+        assert!(partial.matches_dialog(&invite, &[]));
+    }
+
+    #[test]
+    fn never_matches_no_dialog() {
+        // `FilterExpr::never()` represents "show nothing" — it must reject every
+        // dialog regardless of method, users, or RTP state.
+        let never = FilterExpr::never();
+        for method in ["INVITE", "REGISTER", "BYE", "OPTIONS"] {
+            let dialog = make_dialog("1001", "2002", method);
+            assert!(
+                !never.matches_dialog(&dialog, &[]),
+                "never() must not match a {method} dialog"
+            );
+        }
     }
 
     // ── compare_str: every operator + type mismatch ─────────────────────

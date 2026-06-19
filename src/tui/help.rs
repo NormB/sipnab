@@ -30,10 +30,16 @@ CALL LIST:
   F1               This help
   F2               Save capture (PCAP/PCAP-NG/TXT)
   F3               Search (same as /)
-  F5               Clear calls
-  F6               Show raw SIP message
+  F5, Ctrl+L       Clear calls
+  r, F6            Show raw SIP message
   F7               Filter dialog
+  F8               Settings
   t                Cycle timestamps (absolute / delta-prev / delta-first)
+  u                Cycle From/To column (user / host:port / both)
+  n                Cycle name resolution (off / static / DNS)
+  N                Name selected address (IP -> host / FQDN)
+  O                Open pcap file
+  s                Statistics view
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams
@@ -52,11 +58,16 @@ CALL FLOW:
   t                Cycle timestamps (absolute / delta-prev / delta-first)
   c                Cycle colors (method / call-id / cseq)
   R                Toggle detail panel
+  m / M            Mark message / clear marks
+  e                Fold / expand retransmits
+  E                Export Mermaid sequence diagram
   9/0, +/-, ←/→    Resize ladder/detail split
   [ / ]            Scroll detail panel (any focus)
   F2               Save
   F4, x            Extended multi-leg flow
   F6               Toggle RTP display
+  r                Jump to RTP Streams
+  N                Name selected address (IP -> host / FQDN)
 
 RAW MESSAGE:
   \u{2191}/\u{2193}             Scroll
@@ -68,15 +79,28 @@ RAW MESSAGE:
 
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams
+  Enter            Stream detail
   Tab              Switch to Call List
   F1               Help
   F7               Filter
+  N                Name selected address (IP -> host / FQDN)
   Esc              Back to Call List
+
+STREAM DETAIL:
+  \u{2191}/\u{2193}             Scroll
+  Shift+P          Play / stop audio (G.711, audio build)
+  Esc              Back to RTP Streams
 
 Press Esc or F1 to close this help.";
 
 /// Render the help view.
-pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme, version: &str) {
+pub fn render_help(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &super::Theme,
+    version: &str,
+    scroll: u16,
+) {
     // Inner width inside the bordered block (one column per side border). The
     // version line is constrained to this width so a long version string
     // (tag + commit + "-dirty" + the full feature list) cannot wrap onto a
@@ -86,13 +110,20 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme, version:
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Help (Esc to close) ");
+        .title(" Help (\u{2191}/\u{2193} scroll, Esc to close) ");
 
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
 
     frame.render_widget(paragraph, area);
+}
+
+/// Number of rendered help lines (one per `HELP_TEXT` line, plus the version
+/// line inserted under the title). Used to clamp the scroll offset.
+pub fn help_line_count() -> usize {
+    HELP_TEXT.lines().count() + 1
 }
 
 /// Build styled help lines from the help text.

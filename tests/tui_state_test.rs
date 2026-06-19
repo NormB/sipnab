@@ -360,6 +360,98 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
+    // ── SIP method checkbox set/unset scenarios ──────────────────────────
+    // All three fixture dialogs are INVITEs. INVITE is checkbox index 2.
+    const INVITE_IDX: usize = 2;
+
+    #[test]
+    fn filter_default_open_apply_shows_all_messages() {
+        // SIP messages are checked by default → applying with nothing changed
+        // shows every dialog (the reported bug was the opposite).
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(7));
+        app.handle_key(KeyCode::Enter); // apply with all methods still checked
+        assert_eq!(app.active_popup(), None);
+        assert_eq!(app.visible_dialog_count(), 3);
+    }
+
+    #[test]
+    fn filter_uncheck_all_methods_shows_nothing() {
+        let mut app = app_with_three_dialogs();
+        app.apply_method_filter_for_test([false; 10]);
+        assert_eq!(
+            app.visible_dialog_count(),
+            0,
+            "no methods selected → show nothing"
+        );
+    }
+
+    #[test]
+    fn filter_only_invite_checked_shows_invite_dialogs() {
+        let mut app = app_with_three_dialogs();
+        let mut methods = [false; 10];
+        methods[INVITE_IDX] = true; // only INVITE
+        app.apply_method_filter_for_test(methods);
+        assert_eq!(app.visible_dialog_count(), 3, "all fixtures are INVITE");
+    }
+
+    #[test]
+    fn filter_uncheck_invite_hides_invite_dialogs() {
+        let mut app = app_with_three_dialogs();
+        let mut methods = [true; 10];
+        methods[INVITE_IDX] = false; // everything except INVITE
+        app.apply_method_filter_for_test(methods);
+        assert_eq!(
+            app.visible_dialog_count(),
+            0,
+            "INVITE excluded → none of the fixtures match"
+        );
+    }
+
+    #[test]
+    fn filter_recheck_all_after_unchecking_shows_all_again() {
+        let mut app = app_with_three_dialogs();
+        app.apply_method_filter_for_test([false; 10]);
+        assert_eq!(app.visible_dialog_count(), 0);
+        app.apply_method_filter_for_test([true; 10]);
+        assert_eq!(
+            app.visible_dialog_count(),
+            3,
+            "re-checking all methods shows everything"
+        );
+    }
+
+    #[test]
+    fn filter_space_toggles_method_via_keys() {
+        // Drive the real key path: F7, move focus to the INVITE checkbox, Space
+        // to uncheck it, Enter to apply. With INVITE unchecked the INVITE
+        // fixtures must disappear.
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(7));
+        // Focus starts on text field 0. Tab advances one element at a time:
+        // 5 text fields then the checkboxes, so 7 Tabs lands on checkbox index 2
+        // (INVITE).
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.handle_key(KeyCode::Char(' ')); // uncheck INVITE
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(
+            app.visible_dialog_count(),
+            0,
+            "unchecking INVITE hid the INVITE dialogs"
+        );
+    }
+
+    #[test]
+    fn filter_f9_clears_method_filter_to_show_all() {
+        let mut app = app_with_three_dialogs();
+        app.apply_method_filter_for_test([false; 10]);
+        assert_eq!(app.visible_dialog_count(), 0);
+        app.handle_key(KeyCode::F(9)); // clear filter
+        assert_eq!(app.visible_dialog_count(), 3, "F9 clear restores show-all");
+    }
+
     // ── Filter dialog checkbox grid navigation ─────────────────────────
 
     #[test]
