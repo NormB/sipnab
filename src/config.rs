@@ -8,7 +8,7 @@
 //! compatibility when configs are shared across versions.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Known valid keys per config section.
@@ -35,7 +35,14 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     );
     m.insert(
         "display",
-        ["color", "payload_limit", "delta_time", "visible_columns"].as_slice(),
+        [
+            "color",
+            "payload_limit",
+            "delta_time",
+            "visible_columns",
+            "from_to",
+        ]
+        .as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
     m.insert(
@@ -64,7 +71,17 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
         .as_slice(),
     );
     m.insert("privilege", ["user", "no_priv_drop", "chroot"].as_slice());
-    m.insert("names", ["enabled", "reverse_dns", "hosts_file"].as_slice());
+    m.insert(
+        "names",
+        [
+            "enabled",
+            "reverse_dns",
+            "hosts_file",
+            "manual",
+            "persist_to_config",
+        ]
+        .as_slice(),
+    );
     m.insert(
         "theme",
         [
@@ -198,6 +215,9 @@ pub struct DisplayConfig {
     /// When set, only the listed columns are shown; unlisted columns are hidden.
     /// When unset, all columns are visible (the default).
     pub visible_columns: Option<Vec<String>>,
+    /// Default From/To column display mode. One of `"default"`, `"host-port"`,
+    /// `"user"`, `"user-host-port"`. Cycled at runtime with the `u` key.
+    pub from_to: Option<String>,
 }
 
 /// Filter presets.
@@ -316,6 +336,18 @@ pub struct NamesConfig {
     pub reverse_dns: Option<bool>,
     /// `/etc/hosts`-format file of IP -> name mappings to preload.
     pub hosts_file: Option<String>,
+    /// Inline IP -> name mappings, loaded at startup (highest-priority manual
+    /// layer). Written by the in-TUI `N` dialog when [`persist_to_config`] is on.
+    ///
+    /// ```toml
+    /// [names.manual]
+    /// "10.0.0.1" = "sbc-edge"
+    /// ```
+    pub manual: Option<BTreeMap<String, String>>,
+    /// When true, editing a name in the TUI (`N`) also writes the mapping back
+    /// into the `[names.manual]` table of the user's sipnabrc, preserving the
+    /// rest of the file. Defaults to off (mappings persist to the hosts file).
+    pub persist_to_config: Option<bool>,
 }
 
 /// TUI theme configuration — semantic color slots.
@@ -574,6 +606,44 @@ impl Config {
     }
 }
 
+/// Surgically update the `[names.manual]` table of a sipnabrc document.
+///
+/// Parses `existing` (the current file contents; may be empty), replaces the
+/// `[names.manual]` table with `entries` (IP string → name), and returns the
+/// new document text with all comments, key ordering, and other sections
+/// preserved. The previous manual mappings are fully replaced so deletions
+/// propagate.
+///
+/// IP keys are emitted as quoted strings because they contain `.`/`:`, which
+/// would otherwise be parsed as dotted (nested) keys.
+pub fn upsert_manual_mappings(
+    existing: &str,
+    entries: &[(String, String)],
+) -> Result<String, crate::Error> {
+    use toml_edit::{DocumentMut, Item, Table, value};
+
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| crate::Error::ConfigInvalid(format!("sipnabrc is not valid TOML: {e}")))?;
+
+    // Ensure [names] exists and is a table.
+    if doc.get("names").is_none() {
+        doc["names"] = Item::Table(Table::new());
+    }
+    let names = doc["names"]
+        .as_table_mut()
+        .ok_or_else(|| crate::Error::ConfigInvalid("[names] is not a table".into()))?;
+
+    // Rebuild the manual sub-table from scratch so removed mappings disappear.
+    let mut manual = Table::new();
+    for (ip, name) in entries {
+        manual[ip.as_str()] = value(name.as_str());
+    }
+    names["manual"] = Item::Table(manual);
+
+    Ok(doc.to_string())
+}
+
 /// Return the default config file search paths (items 3-5).
 fn default_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -590,6 +660,31 @@ fn default_config_paths() -> Vec<PathBuf> {
 /// Get the user's home directory.
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
+}
+
+/// The user's preferred sipnabrc path (`~/.config/sipnab/sipnab.toml`), used as
+/// the write target when persisting name mappings into the config.
+pub fn default_user_config_path() -> Option<PathBuf> {
+    home_dir().map(|h| h.join(".config").join("sipnab").join("sipnab.toml"))
+}
+
+/// Write the current manual name mappings into the `[names.manual]` table of the
+/// sipnabrc at `path`, preserving the rest of the file (see
+/// [`upsert_manual_mappings`]). Creates the file and parent directory if needed.
+pub fn write_manual_mappings_file(
+    path: &Path,
+    entries: &[(String, String)],
+) -> Result<(), crate::Error> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let updated = upsert_manual_mappings(&existing, entries)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
+        })?;
+    }
+    std::fs::write(path, updated)
+        .map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -614,6 +709,110 @@ device = "eth0"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.capture.device.as_deref(), Some("eth0"));
         assert!(config.display.color.is_none());
+        assert!(config.display.from_to.is_none());
+    }
+
+    #[test]
+    fn upsert_manual_preserves_comments_and_other_sections() {
+        let existing = r#"# my sipnab config
+[capture]
+device = "eth0"  # capture NIC
+
+[names]
+enabled = true
+"#;
+        let entries = vec![
+            ("10.0.0.1".to_string(), "sbc-edge".to_string()),
+            ("2001:db8::1".to_string(), "core6".to_string()),
+        ];
+        let out = upsert_manual_mappings(existing, &entries).expect("valid toml");
+        // Comments and the unrelated section survive.
+        assert!(out.contains("# my sipnab config"));
+        assert!(out.contains("device = \"eth0\"  # capture NIC"));
+        assert!(out.contains("enabled = true"));
+        // The manual table is present with quoted IP keys (dots/colons need quoting).
+        assert!(out.contains("[names.manual]"), "got:\n{out}");
+        assert!(out.contains(r#""10.0.0.1" = "sbc-edge""#), "got:\n{out}");
+        assert!(out.contains(r#""2001:db8::1" = "core6""#), "got:\n{out}");
+        // Re-parsing yields the same mappings (round-trip).
+        let cfg: Config = toml::from_str(&out).unwrap();
+        let manual = cfg.names.manual.unwrap();
+        assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc-edge"));
+        assert_eq!(manual.get("2001:db8::1").map(String::as_str), Some("core6"));
+    }
+
+    #[test]
+    fn upsert_manual_into_empty_and_replaces_existing() {
+        // Empty input → creates [names.manual] from scratch.
+        let out =
+            upsert_manual_mappings("", &[("1.2.3.4".to_string(), "host".to_string())]).unwrap();
+        assert!(out.contains("[names.manual]"));
+        assert!(out.contains(r#""1.2.3.4" = "host""#));
+
+        // Existing manual entries are fully replaced by the new set.
+        let existing = "[names.manual]\n\"9.9.9.9\" = \"old\"\n";
+        let out = upsert_manual_mappings(existing, &[("1.1.1.1".to_string(), "new".to_string())])
+            .unwrap();
+        assert!(out.contains(r#""1.1.1.1" = "new""#));
+        assert!(
+            !out.contains("9.9.9.9"),
+            "stale entries must be removed:\n{out}"
+        );
+    }
+
+    #[test]
+    fn upsert_manual_rejects_invalid_toml() {
+        assert!(upsert_manual_mappings("this is = = not toml", &[]).is_err());
+    }
+
+    #[test]
+    fn write_manual_mappings_file_creates_dirs_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nested path exercises parent-dir creation.
+        let path = dir.path().join("nested/sipnab.toml");
+        write_manual_mappings_file(&path, &[("10.0.0.1".to_string(), "sbc".to_string())]).unwrap();
+        let cfg = Config::load(Some(path.to_str().unwrap()), false)
+            .unwrap()
+            .config;
+        assert_eq!(
+            cfg.names
+                .manual
+                .as_ref()
+                .unwrap()
+                .get("10.0.0.1")
+                .map(String::as_str),
+            Some("sbc")
+        );
+
+        // A second write replaces the set (deletion propagates).
+        write_manual_mappings_file(&path, &[("10.0.0.2".to_string(), "core".to_string())]).unwrap();
+        let cfg = Config::load(Some(path.to_str().unwrap()), false)
+            .unwrap()
+            .config;
+        let m = cfg.names.manual.unwrap();
+        assert_eq!(m.get("10.0.0.2").map(String::as_str), Some("core"));
+        assert!(!m.contains_key("10.0.0.1"));
+    }
+
+    #[test]
+    fn parse_names_manual_table() {
+        let toml_str = r#"
+[names.manual]
+"10.0.0.1" = "sbc"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let manual = config.names.manual.expect("manual table");
+        assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc"));
+    }
+
+    #[test]
+    fn parse_display_from_to() {
+        let toml_str = r#"
+[display]
+from_to = "user-host-port"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
     }
 
     #[test]

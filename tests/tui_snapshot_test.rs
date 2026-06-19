@@ -444,10 +444,11 @@ mod tui_snapshots {
     /// list, e.g. a dirty build sitting on a release tag) must not wrap inside
     /// the help box and shove the last keybinding off the bottom. Regression
     /// test for the non-deterministic `help_view` snapshot: the version line is
-    /// truncated to a single row, so every binding stays visible regardless of
-    /// how long the version string is.
+    /// truncated to a single row so it can never wrap and shove the rest of the
+    /// help down. (The help itself is scrollable, so not every binding is on
+    /// screen at once — this asserts the *version line* behavior specifically.)
     #[test]
-    fn help_view_long_version_keeps_all_bindings() {
+    fn help_view_long_version_does_not_wrap() {
         let backend = TestBackend::new(80, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new_test();
@@ -459,20 +460,46 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let output = buffer_to_string(&terminal);
 
-        // The last keybinding in the help text must survive the long version.
+        // The version line is present (truncated to one row).
         assert!(
-            output.contains("Full-screen raw message"),
-            "long version pushed the last keybinding off the help box:\n{output}"
+            output.contains("v0.4.3 (v0.4.3 a84ac0ca-dirty) features:"),
+            "version line missing from help box:\n{output}"
         );
-        // The wrapped tail of the feature list must not leak onto its own row.
+        // It must NOT wrap: the feature-list tail must not leak onto its own row.
         assert!(
             !output.contains("\u{2502}native,tui"),
             "version line wrapped instead of being truncated:\n{output}"
         );
-        // The version line is still present (truncated with an ellipsis).
+        // Because the version stayed on one row, the first section header is
+        // still visible immediately below it (not pushed off by a wrap).
         assert!(
-            output.contains("v0.4.3 (v0.4.3 a84ac0ca-dirty) features:"),
-            "version line missing from help box:\n{output}"
+            output.contains("CALL LIST:"),
+            "a wrapped version line pushed the help body down:\n{output}"
+        );
+    }
+
+    /// The F1 help exceeds an 80x40 screen, so it must be scrollable: bindings
+    /// in later sections become visible after scrolling down.
+    #[test]
+    fn help_view_scrolls_to_later_sections() {
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new_test();
+        app.handle_key(crossterm::event::KeyCode::F(1)); // open help
+
+        // At the top, a CALL FLOW-only binding is below the fold.
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert!(!buffer_to_string(&terminal).contains("Export Mermaid sequence diagram"));
+
+        // Scroll down a page; the later section comes into view.
+        for _ in 0..40 {
+            app.handle_key(crossterm::event::KeyCode::PageDown);
+        }
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let scrolled = buffer_to_string(&terminal);
+        assert!(
+            scrolled.contains("Export Mermaid sequence diagram"),
+            "scrolling did not reveal the later help section:\n{scrolled}"
         );
     }
 

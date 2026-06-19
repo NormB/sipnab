@@ -149,6 +149,82 @@ impl ColorMode {
     }
 }
 
+/// How the call-list From/To columns render a SIP address.
+///
+/// Cycled with the `u` key. The username is often absent (e.g. domain-only or
+/// device URIs), so the default falls back to the host instead of a bare `-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FromToMode {
+    /// Username if present, else host[:port] (else `-`).
+    #[default]
+    Default,
+    /// Host[:port] only (else `-`).
+    HostPort,
+    /// Username only (else `-`) — the legacy behavior.
+    User,
+    /// `user@host:port` when both exist, else whichever exists (else `-`).
+    UserHostPort,
+}
+
+impl FromToMode {
+    /// Cycle to the next mode.
+    fn next(self) -> Self {
+        match self {
+            Self::Default => Self::HostPort,
+            Self::HostPort => Self::User,
+            Self::User => Self::UserHostPort,
+            Self::UserHostPort => Self::Default,
+        }
+    }
+
+    /// Human-readable label for the status bar.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Default => "From/To: Default (user or host)",
+            Self::HostPort => "From/To: Host:port",
+            Self::User => "From/To: User only",
+            Self::UserHostPort => "From/To: User@host:port",
+        }
+    }
+
+    /// Stable string used in config (`[display] from_to = ...`) and the CLI.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::HostPort => "host-port",
+            Self::User => "user",
+            Self::UserHostPort => "user-host-port",
+        }
+    }
+
+    /// Parse a config/CLI value into a mode. Returns `None` for unknown values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "default" => Some(Self::Default),
+            "host-port" => Some(Self::HostPort),
+            "user" => Some(Self::User),
+            "user-host-port" => Some(Self::UserHostPort),
+            _ => None,
+        }
+    }
+
+    /// Format a From/To cell from the (already name-resolved) user and host.
+    fn format(self, user: Option<&str>, host: Option<&str>) -> String {
+        const DASH: &str = "-";
+        match self {
+            Self::Default => user.or(host).unwrap_or(DASH).to_string(),
+            Self::HostPort => host.unwrap_or(DASH).to_string(),
+            Self::User => user.unwrap_or(DASH).to_string(),
+            Self::UserHostPort => match (user, host) {
+                (Some(u), Some(h)) => format!("{u}@{h}"),
+                (Some(u), None) => u.to_string(),
+                (None, Some(h)) => h.to_string(),
+                (None, None) => DASH.to_string(),
+            },
+        }
+    }
+}
+
 /// A single entry in the file-open browser's directory listing.
 #[derive(Debug, Clone)]
 struct FileEntry {
@@ -339,7 +415,7 @@ struct NameDialogState {
 }
 
 /// Structured state for the sngrep-style filter dialog.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FilterDialogState {
     /// SIP From header filter text.
     sip_from: String,
@@ -360,7 +436,30 @@ pub struct FilterDialogState {
     cursor_pos: usize,
 }
 
+impl Default for FilterDialogState {
+    fn default() -> Self {
+        Self {
+            sip_from: String::new(),
+            sip_to: String::new(),
+            source: String::new(),
+            destination: String::new(),
+            payload: String::new(),
+            // All SIP methods checked by default == show every message. The
+            // method filter only narrows once the user unchecks something.
+            methods: [true; 10],
+            focused_field: 0,
+            cursor_pos: 0,
+        }
+    }
+}
+
 impl FilterDialogState {
+    /// Whether at least one SIP method checkbox is checked. When none are
+    /// checked the call list shows nothing (see `apply_filter_dialog`).
+    fn any_method_checked(&self) -> bool {
+        self.methods.iter().any(|&v| v)
+    }
+
     /// Get a reference to the text field at the given index (0-4).
     fn text_field(&self, idx: usize) -> &str {
         match idx {
@@ -535,7 +634,9 @@ impl FilterDialogState {
         self.source.clear();
         self.destination.clear();
         self.payload.clear();
-        self.methods = [false; 10];
+        // Re-check every method so "clear filter" means show all, matching the
+        // dialog's default state.
+        self.methods = [true; 10];
         self.focused_field = 0;
         self.cursor_pos = 0;
     }
@@ -553,7 +654,8 @@ impl FilterDialogState {
             && self.source.is_empty()
             && self.destination.is_empty()
             && self.payload.is_empty()
-            && self.methods.iter().all(|&v| !v)
+            // All methods checked == no method narrowing == an "empty" filter.
+            && self.methods.iter().all(|&v| v)
     }
 }
 
@@ -649,6 +751,8 @@ pub struct App {
     call_flow_scroll: usize,
     /// Scroll offset for raw message view.
     raw_msg_scroll: u16,
+    /// Scroll offset for the F1 help view (clamped to content height in render).
+    help_scroll: u16,
     /// Search query for inline search.
     search_query: String,
     /// Whether search input mode is active.
@@ -707,6 +811,9 @@ pub struct App {
     resolver: Arc<NameResolver>,
     /// Path the manual mappings persist to (set from config/CLI).
     names_save_path: Option<PathBuf>,
+    /// When `Some`, `N`-dialog edits are also written into this sipnabrc's
+    /// `[names.manual]` table (opt-in via `[names] persist_to_config`).
+    names_config_path: Option<PathBuf>,
     /// "Name Address" popup state.
     name_dialog: NameDialogState,
     sdp_display_mode: SdpDisplayMode,
@@ -714,6 +821,8 @@ pub struct App {
     timestamp_mode: TimestampMode,
     /// Color mode for arrows (Method / CallId / CSeq).
     color_mode: ColorMode,
+    /// How the call-list From/To columns render (user / host:port / both).
+    from_to_mode: FromToMode,
     /// Whether the raw preview split is active in call flow view.
     /// Default is `true` (matching sngrep: split view on by default).
     raw_preview: bool,
@@ -786,6 +895,7 @@ impl App {
             status_error: None,
             call_flow_scroll: 0,
             raw_msg_scroll: 0,
+            help_scroll: 0,
             search_query: String::new(),
             search_active: false,
             capture_mode: "Online (any)".to_string(),
@@ -812,10 +922,12 @@ impl App {
             name_mode: NameMode::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
+            names_config_path: None,
             name_dialog: NameDialogState::default(),
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
+            from_to_mode: FromToMode::default(),
             raw_preview: true,
             raw_preview_pct: 40,
             selected_msg_index: 0,
@@ -904,6 +1016,9 @@ pub struct NameSetup {
     pub mode: NameMode,
     /// Where the TUI persists manual mappings edited via the `N` dialog.
     pub save_path: Option<PathBuf>,
+    /// When `Some`, `N`-dialog edits are ALSO written into the `[names.manual]`
+    /// table of this sipnabrc (opt-in via `[names] persist_to_config`).
+    pub config_path: Option<PathBuf>,
 }
 
 impl Default for NameSetup {
@@ -912,6 +1027,7 @@ impl Default for NameSetup {
             resolver: Arc::new(NameResolver::new()),
             mode: NameMode::Off,
             save_path: None,
+            config_path: None,
         }
     }
 }
@@ -928,6 +1044,7 @@ pub fn run_tui(
         Keymap::default(),
         None,
         NameSetup::default(),
+        FromToMode::default(),
     )
 }
 
@@ -944,6 +1061,7 @@ pub fn run_tui_with_pause(
     keymap: Keymap,
     visible_columns: Option<Vec<String>>,
     name_setup: NameSetup,
+    from_to_mode: FromToMode,
 ) -> Result<()> {
     // Setup terminal
     terminal::enable_raw_mode()?;
@@ -969,9 +1087,11 @@ pub fn run_tui_with_pause(
     if let Some(ref cols) = visible_columns {
         app.call_list.apply_visible_columns(cols);
     }
+    app.set_from_to_mode(from_to_mode);
     app.set_resolver(name_setup.resolver);
     app.set_name_mode(name_setup.mode);
     app.set_names_save_path(name_setup.save_path);
+    app.set_names_config_path(name_setup.config_path);
 
     // Main event loop
     loop {
@@ -1057,6 +1177,14 @@ impl App {
         self.open_cursor = 0;
     }
 
+    /// Set the filter-dialog SIP-method checkboxes and apply the filter, exactly
+    /// as pressing Enter in the dialog would (test helper for set/unset scenarios).
+    #[doc(hidden)]
+    pub fn apply_method_filter_for_test(&mut self, methods: [bool; 10]) {
+        self.filter_dialog.methods = methods;
+        apply_filter_dialog(self);
+    }
+
     #[doc(hidden)]
     pub fn set_open_dir_for_test(&mut self, dir: PathBuf) {
         self.open_dir = dir;
@@ -1108,6 +1236,17 @@ impl App {
         self.timestamp_mode
     }
 
+    /// Return the current From/To column display mode.
+    pub fn from_to_mode(&self) -> FromToMode {
+        self.from_to_mode
+    }
+
+    /// Set the From/To column display mode (used to apply the startup default
+    /// from config/CLI).
+    pub fn set_from_to_mode(&mut self, mode: FromToMode) {
+        self.from_to_mode = mode;
+    }
+
     /// Current name-resolution display mode.
     pub fn name_mode(&self) -> NameMode {
         self.name_mode
@@ -1131,6 +1270,12 @@ impl App {
     /// Where to persist manual name mappings when edited in the TUI.
     pub fn set_names_save_path(&mut self, path: Option<PathBuf>) {
         self.names_save_path = path;
+    }
+
+    /// When `Some`, `N`-dialog edits also persist into this sipnabrc's
+    /// `[names.manual]` table.
+    pub fn set_names_config_path(&mut self, path: Option<PathBuf>) {
+        self.names_config_path = path;
     }
 
     /// Count dialogs visible after applying the active filter.
@@ -1600,26 +1745,74 @@ mod tests {
     }
 
     #[test]
-    fn filter_dialog_toggle_and_build_expression() {
-        let mut st = FilterDialogState::default();
-        // Empty → no expression.
+    fn filter_dialog_default_all_methods_checked() {
+        // SIP messages must be checked by default → no narrowing → no expression.
+        let st = FilterDialogState::default();
+        assert!(
+            st.methods.iter().all(|&v| v),
+            "all methods should default to checked"
+        );
+        assert!(st.any_method_checked());
+        assert!(
+            st.is_empty(),
+            "all-checked + empty text == no active filter"
+        );
         assert!(st.build_filter_expression().is_none());
+    }
+
+    #[test]
+    fn filter_dialog_clear_resets_to_all_checked() {
+        let mut st = FilterDialogState {
+            methods: [false; 10],
+            sip_from: "x".to_string(),
+            ..Default::default()
+        };
+        st.clear();
+        assert!(
+            st.methods.iter().all(|&v| v),
+            "clear() must re-check all methods (show all)"
+        );
         assert!(st.is_empty());
+    }
 
-        // Toggle INVITE checkbox (index 2).
-        st.focused_field = FILTER_TEXT_FIELD_COUNT + 2;
+    #[test]
+    fn filter_dialog_any_method_checked_tracks_state() {
+        let mut st = FilterDialogState::default();
+        assert!(st.any_method_checked());
+        st.methods = [false; 10];
+        assert!(
+            !st.any_method_checked(),
+            "no methods checked → show nothing"
+        );
+        st.methods[3] = true;
+        assert!(st.any_method_checked());
+    }
+
+    #[test]
+    fn filter_dialog_uncheck_one_excludes_that_method() {
+        // From the all-checked default, unchecking INVITE (index 2) must produce
+        // a method filter over the OTHER nine and exclude INVITE.
+        let mut st = FilterDialogState {
+            focused_field: FILTER_TEXT_FIELD_COUNT + 2, // INVITE
+            ..Default::default()
+        };
         st.toggle_checkbox();
-        assert!(st.methods[2]);
-        let expr = st.build_filter_expression().expect("some methods checked");
-        assert!(expr.contains("method == 'INVITE'"));
+        assert!(!st.methods[2], "INVITE now unchecked");
+        let expr = st
+            .build_filter_expression()
+            .expect("partial selection → expression");
+        assert!(
+            !expr.contains("'INVITE'"),
+            "unchecked INVITE must be excluded: {expr}"
+        );
+        assert!(expr.contains("method == 'REGISTER'"));
+        assert!(expr.contains(" OR "));
 
-        // Add text fields → AND-joined.
+        // Text fields AND-join with the method clause.
         st.sip_from = "1001".to_string();
         st.source = "10.0.0.1".to_string();
         let expr = st.build_filter_expression().unwrap();
-        assert!(expr.contains("from.user"));
-        assert!(expr.contains("src.ip"));
-        assert!(expr.contains(" AND "));
+        assert!(expr.contains("from.user") && expr.contains("src.ip") && expr.contains(" AND "));
     }
 
     #[test]
@@ -1658,6 +1851,75 @@ mod tests {
         };
         st.sync_cursor();
         assert_eq!(st.cursor_pos, 5);
+    }
+
+    // ── FromToMode ───────────────────────────────────────────────────
+
+    #[test]
+    fn from_to_mode_default_prefers_user_then_host() {
+        let m = FromToMode::Default;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001");
+        assert_eq!(m.format(None, Some("h:5060")), "h:5060");
+        assert_eq!(m.format(None, None), "-");
+    }
+
+    #[test]
+    fn from_to_mode_host_port_only() {
+        let m = FromToMode::HostPort;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "h:5060");
+        assert_eq!(
+            m.format(Some("1001"), None),
+            "-",
+            "host mode ignores the user"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_user_only_is_legacy_behavior() {
+        let m = FromToMode::User;
+        assert_eq!(m.format(Some("1001"), Some("h")), "1001");
+        assert_eq!(
+            m.format(None, Some("h")),
+            "-",
+            "user mode shows '-' when no user"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_user_host_combines() {
+        let m = FromToMode::UserHostPort;
+        assert_eq!(m.format(Some("1001"), Some("h:5060")), "1001@h:5060");
+        assert_eq!(m.format(Some("1001"), None), "1001");
+        assert_eq!(m.format(None, Some("h:5060")), "h:5060");
+        assert_eq!(m.format(None, None), "-");
+    }
+
+    #[test]
+    fn from_to_mode_cycle_is_four_states() {
+        let m = FromToMode::default();
+        assert_eq!(m, FromToMode::Default);
+        assert_eq!(m.next(), FromToMode::HostPort);
+        assert_eq!(m.next().next(), FromToMode::User);
+        assert_eq!(m.next().next().next(), FromToMode::UserHostPort);
+        assert_eq!(
+            m.next().next().next().next(),
+            FromToMode::Default,
+            "cycles back to Default"
+        );
+    }
+
+    #[test]
+    fn from_to_mode_parse_roundtrip_and_invalid() {
+        for m in [
+            FromToMode::Default,
+            FromToMode::HostPort,
+            FromToMode::User,
+            FromToMode::UserHostPort,
+        ] {
+            assert_eq!(FromToMode::parse(m.as_config_str()), Some(m));
+        }
+        assert_eq!(FromToMode::parse("bogus"), None);
+        assert_eq!(FromToMode::parse(""), None);
     }
 
     // ── App state setters ───────────────────────────────────────────

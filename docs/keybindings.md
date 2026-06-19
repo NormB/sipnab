@@ -9,7 +9,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | Key | Action |
 |-----|--------|
 | Ctrl+C | Force quit |
-| Ctrl+L | Redraw screen |
+| Ctrl+L | Clear all calls (same as F5) |
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
@@ -36,9 +36,11 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
 | O | Open pcap file (File Open dialog) |
+| F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
@@ -75,6 +77,8 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** |
+| r | Jump to RTP Streams view |
+| N | Name the selected message's source address (map IP → host/FQDN) |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Start compare mode **(configurable: `clear_calls`)** |
@@ -118,10 +122,23 @@ detail pane regardless of focus.
 | Down / j | Navigate down |
 | Home | Jump to first stream |
 | End | Jump to last stream |
+| Enter | Open stream detail |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
+| N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 | Help **(configurable: `help`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
+
+## Stream Detail
+
+| Key | Action |
+|-----|--------|
+| Up / k | Scroll up |
+| Down / j | Scroll down |
+| PgUp / PgDn | Page scroll |
+| Home | Scroll to top |
+| Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| Esc | Back to RTP Streams |
 
 ## Statistics
 
@@ -241,6 +258,19 @@ type a host/FQDN and press Enter (an empty name clears the mapping). Naming an
 address turns resolution on automatically, and the mapping is saved to
 `$XDG_CONFIG_HOME/sipnab/hosts` (`~/.config/sipnab/hosts`) so it persists
 across runs.
+
+Mappings can also be persisted into your **sipnabrc**: set
+`[names] persist_to_config = true` and `N`-dialog edits are written into the
+`[names.manual]` table of `~/.config/sipnab/sipnab.toml` (comments and other
+sections are preserved). You can also pre-declare mappings there by hand:
+
+```toml
+[names.manual]
+"10.0.0.1" = "sbc-edge"
+```
+
+When saving a capture as **PCAP-NG** with resolution active, the mappings are
+embedded as a Name Resolution Block (and read back when the file is reopened).
 
 Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
 PTR lookups; implies `--resolve`), `--names <FILE>` (preload an

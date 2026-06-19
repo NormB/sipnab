@@ -54,12 +54,14 @@ Output and TUI display settings.
 | `color` | string | `"auto"` | Color mode: `"auto"`, `"always"`, `"never"` |
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
+| `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
 
 ```toml
 [display]
 color = "always"
 payload_limit = 4096
 delta_time = true
+from_to = "user-host-port"
 ```
 
 ### [filter]
@@ -145,12 +147,20 @@ Address name-resolution settings (display `host:port` instead of `ip:port`).
 | `enabled` | boolean | `false` | Start with name resolution on (offline sources) |
 | `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
 | `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
+| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
+| `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
 
 ```toml
 [names]
 enabled = true
 reverse_dns = false
 hosts_file = "/etc/sipnab/hosts"
+persist_to_config = true
+
+# Inline mappings (also written here when persist_to_config = true):
+[names.manual]
+"10.0.0.1" = "sbc-edge"
+"2001:db8::1" = "core6"
 ```
 
 ### [theme]

@@ -300,6 +300,7 @@ pub struct CallListDisplay<'a> {
     pub filter: Option<&'a FilterExpr>,
     pub search_query: &'a str,
     pub timestamp_mode: TimestampMode,
+    pub from_to_mode: super::FromToMode,
     pub theme: &'a super::Theme,
     pub resolver: &'a crate::names::NameResolver,
     pub name_mode: crate::names::NameMode,
@@ -557,8 +558,20 @@ pub fn render_call_list(
             let all_cells = [
                 Cell::from(Span::raw(format!("{}{}", checkbox, idx + 1))),
                 Cell::from(Span::styled(dialog.method.as_str(), method_style)),
-                Cell::from(Span::raw(dialog.from_user.as_deref().unwrap_or("-"))),
-                Cell::from(Span::raw(dialog.to_user.as_deref().unwrap_or("-"))),
+                Cell::from(Span::raw(format_from_to(
+                    display.from_to_mode,
+                    dialog.from_user.as_deref(),
+                    dialog.from_host.as_deref(),
+                    display.resolver,
+                    display.name_mode,
+                ))),
+                Cell::from(Span::raw(format_from_to(
+                    display.from_to_mode,
+                    dialog.to_user.as_deref(),
+                    dialog.to_host.as_deref(),
+                    display.resolver,
+                    display.name_mode,
+                ))),
                 Cell::from(Span::raw(
                     display
                         .resolver
@@ -815,11 +828,170 @@ fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
     }
 }
 
+/// Resolve an IP-literal host (with optional `:port`) through the name resolver
+/// so the From/To columns stay consistent with the Source/Dest columns. FQDN
+/// hosts, and IP hosts with no mapping, are returned unchanged.
+fn resolve_host_label(
+    host: &str,
+    resolver: &crate::names::NameResolver,
+    name_mode: crate::names::NameMode,
+) -> String {
+    use std::net::IpAddr;
+    if name_mode == crate::names::NameMode::Off {
+        return host.to_string();
+    }
+    // Bracketed IPv6: `[addr]` or `[addr]:port`.
+    if let Some(rest) = host.strip_prefix('[') {
+        if let Some(close) = rest.find(']') {
+            let addr = &rest[..close];
+            let suffix = &rest[close + 1..]; // ":5060" or ""
+            if let Ok(ip) = addr.parse::<IpAddr>()
+                && let Some(name) = resolver.name(ip, name_mode)
+            {
+                return format!("{name}{suffix}");
+            }
+        }
+        return host.to_string();
+    }
+    // IPv4 / hostname with an optional numeric `:port`.
+    let (addr, suffix) = match host.rsplit_once(':') {
+        Some((a, p)) if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) => {
+            (a, format!(":{p}"))
+        }
+        _ => (host, String::new()),
+    };
+    if let Ok(ip) = addr.parse::<IpAddr>()
+        && let Some(name) = resolver.name(ip, name_mode)
+    {
+        return format!("{name}{suffix}");
+    }
+    host.to_string()
+}
+
+/// Format a From/To column cell for the given [`FromToMode`](super::FromToMode),
+/// resolving IP-literal hosts through the name resolver.
+fn format_from_to(
+    mode: super::FromToMode,
+    user: Option<&str>,
+    host: Option<&str>,
+    resolver: &crate::names::NameResolver,
+    name_mode: crate::names::NameMode,
+) -> String {
+    let resolved = host.map(|h| resolve_host_label(h, resolver, name_mode));
+    mode.format(user, resolved.as_deref())
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::names::{NameMode, NameResolver};
+    use std::net::IpAddr;
+
+    #[test]
+    fn format_from_to_shows_host_when_user_missing() {
+        let r = NameResolver::new();
+        // Default mode: username present wins.
+        assert_eq!(
+            format_from_to(
+                super::super::FromToMode::Default,
+                Some("1001"),
+                Some("pbx.example:5060"),
+                &r,
+                NameMode::Off
+            ),
+            "1001"
+        );
+        // Default mode: no username → host[:port] instead of a bare dash.
+        assert_eq!(
+            format_from_to(
+                super::super::FromToMode::Default,
+                None,
+                Some("pbx.example:5060"),
+                &r,
+                NameMode::Off
+            ),
+            "pbx.example:5060"
+        );
+        // No user and no host → dash.
+        assert_eq!(
+            format_from_to(
+                super::super::FromToMode::Default,
+                None,
+                None,
+                &r,
+                NameMode::Off
+            ),
+            "-"
+        );
+    }
+
+    #[test]
+    fn format_from_to_user_host_combines_long_value() {
+        let r = NameResolver::new();
+        // UserHostPort with a bracketed IPv6 host must build a single long
+        // string without panicking (column truncation is ratatui's job).
+        let out = format_from_to(
+            super::super::FromToMode::UserHostPort,
+            Some("1001"),
+            Some("[2001:db8::1]:5060"),
+            &r,
+            NameMode::Off,
+        );
+        assert_eq!(out, "1001@[2001:db8::1]:5060");
+    }
+
+    #[test]
+    fn resolve_host_label_maps_ip_literals_preserving_port() {
+        let r = NameResolver::new();
+        r.set_manual(
+            "10.0.0.7".parse::<IpAddr>().unwrap(),
+            "sbc-edge".to_string(),
+        );
+        // IPv4 with port → name + port.
+        assert_eq!(
+            resolve_host_label("10.0.0.7:5060", &r, NameMode::Names),
+            "sbc-edge:5060"
+        );
+        // IPv4 no port → bare name.
+        assert_eq!(
+            resolve_host_label("10.0.0.7", &r, NameMode::Names),
+            "sbc-edge"
+        );
+        // Off mode → never resolves.
+        assert_eq!(
+            resolve_host_label("10.0.0.7", &r, NameMode::Off),
+            "10.0.0.7"
+        );
+        // Unmapped IP → unchanged.
+        assert_eq!(
+            resolve_host_label("10.0.0.99:5060", &r, NameMode::Names),
+            "10.0.0.99:5060"
+        );
+        // FQDN host → never touched.
+        assert_eq!(
+            resolve_host_label("pbx.example:5060", &r, NameMode::Names),
+            "pbx.example:5060"
+        );
+    }
+
+    #[test]
+    fn resolve_host_label_maps_bracketed_ipv6() {
+        let r = NameResolver::new();
+        r.set_manual(
+            "2001:db8::1".parse::<IpAddr>().unwrap(),
+            "core6".to_string(),
+        );
+        assert_eq!(
+            resolve_host_label("[2001:db8::1]:5060", &r, NameMode::Names),
+            "core6:5060"
+        );
+        assert_eq!(
+            resolve_host_label("[2001:db8::1]", &r, NameMode::Names),
+            "core6"
+        );
+    }
 
     #[test]
     fn call_list_state_move_up_from_zero_stays() {
