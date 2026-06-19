@@ -76,8 +76,13 @@ RTP STREAMS (Tab):
 Press Esc or F1 to close this help.";
 
 /// Render the help view.
-pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme) {
-    let lines = build_help_lines(theme);
+pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme, version: &str) {
+    // Inner width inside the bordered block (one column per side border). The
+    // version line is constrained to this width so a long version string
+    // (tag + commit + "-dirty" + the full feature list) cannot wrap onto a
+    // second row and push the last keybinding off the bottom of the box.
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let lines = build_help_lines(theme, version, inner_width);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -91,7 +96,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &super::Theme) {
 }
 
 /// Build styled help lines from the help text.
-fn build_help_lines(theme: &super::Theme) -> Vec<Line<'static>> {
+fn build_help_lines(theme: &super::Theme, version: &str, inner_width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
     for text_line in HELP_TEXT.lines() {
@@ -104,8 +109,11 @@ fn build_help_lines(theme: &super::Theme) -> Vec<Line<'static>> {
                     .add_modifier(Modifier::BOLD),
             )));
             // Version (with git commit + enabled features) just under the title.
+            // Truncate to the box width so a long version (tag + commit +
+            // "-dirty" + full feature list) renders on a single row instead of
+            // wrapping and pushing the last keybinding off the bottom.
             lines.push(Line::from(Span::styled(
-                format!("v{}", crate::cli::build_version()),
+                truncate_to_width(&format!("v{version}"), inner_width),
                 Style::default().fg(theme.muted),
             )));
         } else if !text_line.starts_with(' ') && text_line.ends_with(':') {
@@ -167,6 +175,22 @@ fn find_description_start(line: &str) -> Option<usize> {
     None
 }
 
+/// Truncate `s` to at most `max` display columns, appending an ellipsis ('…')
+/// when it would otherwise overflow. The help version string is ASCII (semver,
+/// hex commit, "-dirty", feature names) so a char count equals its column
+/// width; the ellipsis itself occupies the final column when truncating.
+fn truncate_to_width(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(max - 1).collect();
+    out.push('\u{2026}');
+    out
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -221,7 +245,7 @@ mod tests {
     #[test]
     fn build_help_lines_non_empty() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme);
+        let lines = build_help_lines(&theme, "1.2.3", 78);
         assert!(!lines.is_empty());
         assert!(lines.len() > 10);
     }
@@ -234,16 +258,55 @@ mod tests {
     #[test]
     fn build_help_lines_includes_version() {
         let theme = crate::tui::Theme::default();
-        let lines = build_help_lines(&theme);
-        // The crate version appears on the line just under the title.
+        let lines = build_help_lines(&theme, "9.9.9 (abc) features: tui", 78);
+        // The injected version appears on the line just under the title.
         let rendered: String = lines
             .iter()
             .flat_map(|l| l.spans.iter())
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            rendered.contains(env!("CARGO_PKG_VERSION")),
+            rendered.contains("9.9.9 (abc) features: tui"),
             "got: {rendered}"
         );
+    }
+
+    #[test]
+    fn truncate_to_width_passes_short_strings_through() {
+        assert_eq!(truncate_to_width("v1.2.3", 78), "v1.2.3");
+        // Exactly at the limit is untouched.
+        assert_eq!(truncate_to_width("abcd", 4), "abcd");
+    }
+
+    #[test]
+    fn truncate_to_width_elides_overflow() {
+        // 5 chars into width 4 -> 3 kept + ellipsis, total 4 columns.
+        let out = truncate_to_width("abcde", 4);
+        assert_eq!(out, "abc\u{2026}");
+        assert_eq!(out.chars().count(), 4);
+    }
+
+    #[test]
+    fn truncate_to_width_zero_width_is_empty() {
+        assert_eq!(truncate_to_width("anything", 0), "");
+    }
+
+    #[test]
+    fn truncate_to_width_long_version_fits_in_box() {
+        let v =
+            "v0.4.3 (v0.4.3 a84ac0ca-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http";
+        let out = truncate_to_width(v, 78);
+        assert!(out.chars().count() <= 78);
+        assert!(out.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn truncate_to_width_handles_multibyte_and_control_chars() {
+        // Backslashes / embedded control chars must not panic or split a char.
+        assert_eq!(truncate_to_width("a\\b\tc", 99), "a\\b\tc");
+        // Multibyte input truncated on a char boundary (no byte-slice panic).
+        let out = truncate_to_width("ααααα", 3);
+        assert_eq!(out.chars().count(), 3);
+        assert!(out.ends_with('\u{2026}'));
     }
 }

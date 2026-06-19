@@ -433,14 +433,47 @@ mod tui_snapshots {
 
         terminal.draw(|frame| app.render(frame)).unwrap();
 
+        // `App::new_test()` pins the version to a fixed "0.0.0-test", so the
+        // help view no longer embeds the build's git commit / feature list and
+        // the snapshot is deterministic without any post-render redaction.
         let output = buffer_to_string(&terminal);
-        // The help screen shows the running version, which embeds the git commit,
-        // a `-dirty` marker, and the compiled feature list — all of which vary by
-        // build (e.g. `--features tui` vs `--features full`) and by commit. Redact
-        // that one line so the snapshot stays deterministic.
-        let re = regex::Regex::new(r"v\d+\.\d+\.\d+ \([^)]*\) features: [^\u{2502}\n]*").unwrap();
-        let output = re.replace(&output, "vVERSION").into_owned();
         insta::assert_snapshot!(output);
+    }
+
+    /// A long version string (release tag + dirty marker + the full feature
+    /// list, e.g. a dirty build sitting on a release tag) must not wrap inside
+    /// the help box and shove the last keybinding off the bottom. Regression
+    /// test for the non-deterministic `help_view` snapshot: the version line is
+    /// truncated to a single row, so every binding stays visible regardless of
+    /// how long the version string is.
+    #[test]
+    fn help_view_long_version_keeps_all_bindings() {
+        let backend = TestBackend::new(80, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new_test();
+        app.set_version_for_test(
+            "0.4.3 (v0.4.3 a84ac0ca-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http",
+        );
+        app.handle_key(crossterm::event::KeyCode::F(1)); // open help
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+
+        // The last keybinding in the help text must survive the long version.
+        assert!(
+            output.contains("Full-screen raw message"),
+            "long version pushed the last keybinding off the help box:\n{output}"
+        );
+        // The wrapped tail of the feature list must not leak onto its own row.
+        assert!(
+            !output.contains("\u{2502}native,tui"),
+            "version line wrapped instead of being truncated:\n{output}"
+        );
+        // The version line is still present (truncated with an ellipsis).
+        assert!(
+            output.contains("v0.4.3 (v0.4.3 a84ac0ca-dirty) features:"),
+            "version line missing from help box:\n{output}"
+        );
     }
 
     #[test]
