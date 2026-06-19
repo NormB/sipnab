@@ -444,6 +444,103 @@ mod tui_state {
     }
 
     #[test]
+    fn filter_right_column_reachable_by_tab_and_toggle() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        // 5 text fields (focus 0..4) then checkbox 0 (focus 5), checkbox 1 (focus 6).
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab);
+        }
+        let (focus, _) = app.filter_focus_and_methods_for_test();
+        assert_eq!(
+            focus, 6,
+            "6 Tabs should land on right-column checkbox 1 (OPTIONS)"
+        );
+        app.handle_key(KeyCode::Char(' '));
+        let (_, methods) = app.filter_focus_and_methods_for_test();
+        assert!(
+            !methods[1],
+            "Space should toggle OPTIONS (index 1) off; methods={methods:?}"
+        );
+    }
+
+    #[test]
+    fn filter_right_column_focus_renders_bold() {
+        use ratatui::style::Modifier;
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        for _ in 0..6 {
+            app.handle_key(KeyCode::Tab); // focus checkbox 1 (OPTIONS, right column)
+        }
+        terminal.draw(|f| app.render(f)).unwrap();
+        // Collect the text of all BOLD cells (the focus highlight is bold+selected).
+        let buf = terminal.backend().buffer();
+        let mut bold = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.modifier.contains(Modifier::BOLD) {
+                    bold.push_str(cell.symbol());
+                }
+            }
+        }
+        assert!(
+            bold.contains("OPTIONS"),
+            "focused right-column checkbox OPTIONS should render bold; bold cells were: {bold:?}"
+        );
+    }
+
+    #[test]
+    fn filter_down_arrow_reaches_second_column() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        // Into the checkbox grid: 5 Tabs -> checkbox 0 (REGISTER, focus 5).
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        // Down 4 times walks the left column to INFO (idx 8, focus 13).
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Down);
+        }
+        assert_eq!(
+            app.filter_focus_and_methods_for_test().0,
+            5 + 8,
+            "Down reaches INFO (left col bottom)"
+        );
+        // One more Down must enter the SECOND column (OPTIONS, idx 1) rather than
+        // skipping straight to the buttons — otherwise the right column is
+        // unreachable by vertical navigation.
+        app.handle_key(KeyCode::Down);
+        assert_eq!(
+            app.filter_focus_and_methods_for_test().0,
+            5 + 1,
+            "Down from the bottom of column 1 must reach column 2 (OPTIONS)"
+        );
+    }
+
+    #[test]
+    fn filter_right_arrow_reaches_second_column() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        // Tab into the checkbox grid: 5 tabs -> checkbox 0 (REGISTER, focus 5).
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Tab);
+        }
+        assert_eq!(app.filter_focus_and_methods_for_test().0, 5);
+        // Right arrow should move into the second column (checkbox 1, focus 6).
+        app.handle_key(KeyCode::Right);
+        assert_eq!(
+            app.filter_focus_and_methods_for_test().0,
+            6,
+            "Right arrow should move from REGISTER into OPTIONS (second column)"
+        );
+        app.handle_key(KeyCode::Char(' '));
+        assert!(!app.filter_focus_and_methods_for_test().1[1]);
+    }
+
+    #[test]
     fn filter_f9_clears_method_filter_to_show_all() {
         let mut app = app_with_three_dialogs();
         app.apply_method_filter_for_test([false; 10]);
@@ -484,7 +581,16 @@ mod tui_state {
         app.handle_key(KeyCode::Down);
         assert_eq!(app.filter_dialog.focused_field(), 13); // INFO (idx 8)
 
-        // Down from bottom row -> buttons (ff=15)
+        // Down from the bottom of the LEFT column continues into the RIGHT
+        // column (OPTIONS, idx 1, ff=6) so it's reachable by vertical nav.
+        app.handle_key(KeyCode::Down);
+        assert_eq!(app.filter_dialog.focused_field(), 6); // OPTIONS (idx 1)
+        // ...down the right column: PUBLISH(3,8) MESSAGE(5,10) REFER(7,12) UPDATE(9,14)
+        for expected in [8, 10, 12, 14] {
+            app.handle_key(KeyCode::Down);
+            assert_eq!(app.filter_dialog.focused_field(), expected);
+        }
+        // Down from the bottom of the RIGHT column -> buttons (ff=15).
         app.handle_key(KeyCode::Down);
         assert_eq!(app.filter_dialog.focused_field(), 15); // Filter button
     }
