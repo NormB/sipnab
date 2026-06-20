@@ -85,7 +85,7 @@ rsa = { version = "0.9", default-features = false, features = ["std", "pem"], op
 # Audio playback (feature-gated). The rodio/ALSA dependency lives in the
 # `sipnab-audio` cdylib plugin (crates/sipnab-audio); the main binary only
 # dlopen's it lazily via libloading so there is no load-time libasound NEEDED.
-libloading = { version = "0.8", optional = true }
+libloading = { version = "0.9", optional = true }
 
 # Opus codec (pure Rust, no FFI — always available for WAV export)
 opus-decoder = "0.1"
