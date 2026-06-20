@@ -531,26 +531,39 @@ impl FilterDialogState {
         }
     }
 
-    /// Move checkbox focus down one row (same column).
+    /// Move checkbox focus down one row.
+    ///
+    /// The checkboxes are a 2-column grid (left = even indices, right = odd).
+    /// Down walks a column to its bottom, then continues into the top of the
+    /// next column, then to the buttons — so vertical navigation alone reaches
+    /// every checkbox (the right column was previously unreachable this way).
     fn checkbox_down(&mut self) {
         if let Some(idx) = self.checkbox_index() {
             let next = idx + 2;
             if next < FILTER_METHODS.len() {
+                // Same column, one row down.
                 self.focused_field = FILTER_TEXT_FIELD_COUNT + next;
+            } else if idx % 2 == 0 {
+                // Bottom of the LEFT column -> top of the RIGHT column.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + 1;
             } else {
-                // Move to buttons row
+                // Bottom of the RIGHT column -> buttons row.
                 self.focused_field = FILTER_BUTTON_IDX;
             }
         }
     }
 
-    /// Move checkbox focus up one row (same column).
+    /// Move checkbox focus up one row (reverse of [`Self::checkbox_down`]).
     fn checkbox_up(&mut self) {
         if let Some(idx) = self.checkbox_index() {
             if idx >= 2 {
+                // Same column, one row up.
                 self.focused_field = FILTER_TEXT_FIELD_COUNT + (idx - 2);
+            } else if idx == 1 {
+                // Top of the RIGHT column -> bottom of the LEFT column.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + (FILTER_METHODS.len() - 2);
             } else {
-                // Move up to last text field
+                // Top of the LEFT column -> last text field.
                 self.focused_field = FILTER_TEXT_FIELD_COUNT - 1;
                 self.sync_cursor();
             }
@@ -1185,6 +1198,13 @@ impl App {
         apply_filter_dialog(self);
     }
 
+    /// Inspect the filter dialog's focused element and method-checkbox states
+    /// (test helper for navigation/toggle scenarios).
+    #[doc(hidden)]
+    pub fn filter_focus_and_methods_for_test(&self) -> (usize, [bool; 10]) {
+        (self.filter_dialog.focused_field, self.filter_dialog.methods)
+    }
+
     #[doc(hidden)]
     pub fn set_open_dir_for_test(&mut self, dir: PathBuf) {
         self.open_dir = dir;
@@ -1733,15 +1753,31 @@ mod tests {
     }
 
     #[test]
-    fn filter_dialog_checkbox_down_to_buttons() {
+    fn filter_dialog_checkbox_down_traverses_both_columns_then_buttons() {
+        // Down walks the LEFT column to its bottom, then continues into the
+        // RIGHT column, then to the buttons — so the right column is reachable
+        // by vertical navigation.
         let mut st = FilterDialogState {
-            focused_field: FILTER_TEXT_FIELD_COUNT + 8,
+            focused_field: FILTER_TEXT_FIELD_COUNT + 8, // INFO (left col bottom, idx 8)
             ..Default::default()
         };
-        // Last reachable checkbox in a column → down goes to buttons.
-        // index 8 (INFO) -> +2 = 10 (out of range) -> Filter button.
-        st.checkbox_down();
+        st.checkbox_down(); // -> top of RIGHT column (OPTIONS, idx 1)
+        assert_eq!(st.checkbox_index(), Some(1));
+        st.checkbox_down(); // idx 1 -> 3
+        st.checkbox_down(); // 3 -> 5
+        st.checkbox_down(); // 5 -> 7
+        st.checkbox_down(); // 7 -> 9 (UPDATE, right col bottom)
+        assert_eq!(st.checkbox_index(), Some(9));
+        st.checkbox_down(); // bottom of RIGHT column -> buttons
         assert_eq!(st.focused_field(), FILTER_BUTTON_IDX);
+
+        // Up reverses: from OPTIONS (idx 1) back to INFO (idx 8).
+        let mut st = FilterDialogState {
+            focused_field: FILTER_TEXT_FIELD_COUNT + 1,
+            ..Default::default()
+        };
+        st.checkbox_up();
+        assert_eq!(st.checkbox_index(), Some(8));
     }
 
     #[test]
