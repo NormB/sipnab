@@ -748,17 +748,15 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
     }
 }
 
-// ── TUI mode ────────────────────────────────────────────────────────
-
-/// Run sipnab in interactive TUI mode.
-///
-/// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
-/// the TUI event loop on the main thread.
-#[cfg(feature = "tui")]
-/// Build the TUI name-resolution setup from CLI flags and config:
-/// construct the resolver (with a reverse-DNS worker when requested), load the
-/// system hosts file plus any operator mapping files, and pick the initial mode.
-fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
+/// Build a name resolver and the active name mode from CLI flags + config,
+/// usable in any mode (TUI or headless). Loads the system hosts table, any
+/// operator `--names` mapping files, the configured hosts file, and the inline
+/// `[names.manual]` table. The TUI layer ([`build_name_setup`]) adds its own
+/// persistence-file handling on top of this.
+fn build_resolver(
+    cli: &Cli,
+    config: &Config,
+) -> (Arc<sipnab::names::NameResolver>, sipnab::names::NameMode) {
     use sipnab::names::{NameMode, NameResolver};
 
     let cfg = &config.names;
@@ -794,6 +792,31 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
             }
         }
     }
+
+    let mode = if reverse {
+        NameMode::Dns
+    } else if resolve {
+        NameMode::Names
+    } else {
+        NameMode::Off
+    };
+    (resolver, mode)
+}
+
+// ── TUI mode ────────────────────────────────────────────────────────
+
+/// Run sipnab in interactive TUI mode.
+///
+/// Wraps stores in `Arc<RwLock>`, spawns a processing thread, and runs
+/// the TUI event loop on the main thread.
+#[cfg(feature = "tui")]
+/// Build the TUI name-resolution setup from CLI flags and config:
+/// construct the resolver (with a reverse-DNS worker when requested), load the
+/// system hosts file plus any operator mapping files, and pick the initial mode.
+fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
+    let cfg = &config.names;
+    let (resolver, mode) = build_resolver(cli, config);
+
     // Default persistence file for the in-TUI `N` dialog; preload it.
     let save_path = default_names_path();
     if let Some(p) = &save_path {
@@ -806,13 +829,6 @@ fn build_name_setup(cli: &Cli, config: &Config) -> sipnab::tui::NameSetup {
         None
     };
 
-    let mode = if reverse {
-        NameMode::Dns
-    } else if resolve {
-        NameMode::Names
-    } else {
-        NameMode::Off
-    };
     sipnab::tui::NameSetup {
         resolver,
         mode,
@@ -956,13 +972,17 @@ fn run_tui_mode(
                 if writer.is_none()
                     && let Some(ref output_path) = cli_clone.output
                 {
-                    match PcapWriter::with_format(
+                    // Record the capture source as the pcapng interface name
+                    // (SNB-0001): the capture device for live, input for replay.
+                    let capture_source = cli_clone.device.as_deref().or(cli_clone.input.as_deref());
+                    match PcapWriter::with_interface(
                         &PathBuf::from(output_path),
                         packet.link_type,
                         policy.split_bytes,
                         policy.split_duration,
                         cli_clone.pcapng,
                         tui_export_mode,
+                        capture_source,
                     ) {
                         Ok(mut w) => {
                             // Write DSB with keylog content if mode requires it
@@ -1476,13 +1496,17 @@ fn run_batch_mode(
         if writer.is_none()
             && let Some(ref output_path) = cli.output
         {
-            match PcapWriter::with_format(
+            // Record the capture source as the pcapng interface name (SNB-0001):
+            // the capture device for live, the input file for replay.
+            let capture_source = cli.device.as_deref().or(cli.input.as_deref());
+            match PcapWriter::with_interface(
                 &PathBuf::from(output_path),
                 packet.link_type,
                 split_bytes,
                 split_duration,
                 use_pcapng,
                 export_mode,
+                capture_source,
             ) {
                 Ok(mut w) => {
                     // Write DSB with keylog content if mode requires it
@@ -1490,6 +1514,19 @@ fn run_batch_mode(
                         && let Err(e) = w.maybe_write_keylog_dsb(std::path::Path::new(keylog_path))
                     {
                         tracing::warn!("Failed to write DSB: {e}");
+                    }
+                    // Embed a Name Resolution Block when name resolution is active
+                    // (SNB-0001): headless `--names`/`--resolve` should travel with
+                    // the capture, mirroring the TUI save path. Before packets.
+                    if use_pcapng {
+                        let (resolver, mode) = build_resolver(&cli, config);
+                        if mode != sipnab::names::NameMode::Off {
+                            let include_dns = mode == sipnab::names::NameMode::Dns;
+                            let entries = resolver.nrb_entries(include_dns);
+                            if let Err(e) = w.write_name_resolution_block(&entries) {
+                                tracing::warn!("Failed to write name resolution block: {e}");
+                            }
+                        }
                     }
                     writer = Some(w);
                 }
