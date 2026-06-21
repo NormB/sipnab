@@ -287,3 +287,59 @@ fn text_dump_shows_raw_sip() {
         "text dump should contain Call-ID header"
     );
 }
+
+// ── Self-describing pcapng export (SNB-0001) ────────────────────────
+
+#[test]
+fn headless_pcapng_export_is_self_describing() {
+    // SNB-0001: a headless `-O --pcapng` export must be self-describing —
+    // carrying a Name Resolution Block when `--names/--resolve` are active, the
+    // capture source as the interface name, and the producing app/OS — so
+    // tshark/capinfos no longer show "unknown"/no application. Pre-fix, none of
+    // these were written by the headless path.
+    let dir = std::env::temp_dir().join(format!("sipnab-snb0001-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let names = dir.join("names.hosts");
+    std::fs::write(&names, "1.2.3.4 sbc-edge.example\n").unwrap();
+    let out = dir.join("export.pcapng");
+    let fixture = sip_call_fixture();
+
+    let (_stdout, stderr, code) = run_sipnab(&[
+        "-N",
+        "-I",
+        fixture.to_str().unwrap(),
+        "-O",
+        out.to_str().unwrap(),
+        "--pcapng",
+        "--names",
+        names.to_str().unwrap(),
+        "--resolve",
+        "-q",
+    ]);
+    assert_eq!(code, 0, "sipnab should exit 0; stderr:\n{stderr}");
+
+    let bytes = std::fs::read(&out).expect("export file should exist");
+    let hay = String::from_utf8_lossy(&bytes);
+
+    // (1) NRB present with sipnab's producer comment + the resolved record.
+    assert!(
+        hay.contains("name resolution added by sipnab"),
+        "NRB producer comment missing from export"
+    );
+    assert!(
+        hay.contains("sbc-edge.example"),
+        "NRB should carry the resolved name record"
+    );
+    // (2) SHB carries the producing application (capinfos "Capture application").
+    assert!(
+        hay.contains(&format!("sipnab {}", env!("CARGO_PKG_VERSION"))),
+        "SHB UserApplication (app+version) missing"
+    );
+    // (3) IDB interface name = capture source (no longer "unknown" in tshark).
+    assert!(
+        hay.contains("sip_call.pcap"),
+        "IDB interface name (input source) missing"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

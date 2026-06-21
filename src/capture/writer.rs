@@ -14,9 +14,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use pcap_file::DataLink;
+use pcap_file::Endianness;
 use pcap_file::pcapng::PcapNgWriter as PcapFileNgWriter;
 use pcap_file::pcapng::blocks::enhanced_packet::EnhancedPacketBlock;
-use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionBlock;
+use pcap_file::pcapng::blocks::interface_description::{
+    InterfaceDescriptionBlock, InterfaceDescriptionOption,
+};
+use pcap_file::pcapng::blocks::section_header::{SectionHeaderBlock, SectionHeaderOption};
 
 use super::packet::Packet;
 use crate::signals;
@@ -95,6 +99,8 @@ pub struct PcapWriter {
     export_mode: PcapExportMode,
     /// Whether a DSB has already been written to the current file.
     dsb_written: bool,
+    /// Capture interface name embedded in pcapng IDBs (carried across rotation).
+    interface_name: Option<String>,
 }
 
 impl PcapWriter {
@@ -126,7 +132,8 @@ impl PcapWriter {
     ///
     /// When `pcapng` is `true`, the output uses PCAP-NG format; otherwise
     /// standard pcap. The `export_mode` controls whether DSB blocks are
-    /// written for TLS key material.
+    /// written for TLS key material. The capture interface is left unrecorded;
+    /// use [`with_interface`](Self::with_interface) to embed it.
     pub fn with_format(
         path: &Path,
         link_type: i32,
@@ -134,6 +141,31 @@ impl PcapWriter {
         max_file_duration: Option<std::time::Duration>,
         pcapng: bool,
         export_mode: PcapExportMode,
+    ) -> Result<Self> {
+        Self::with_interface(
+            path,
+            link_type,
+            max_file_bytes,
+            max_file_duration,
+            pcapng,
+            export_mode,
+            None,
+        )
+    }
+
+    /// As [`with_format`](Self::with_format), but records the capture
+    /// `interface` name in the pcapng Interface Description Block so the export
+    /// is self-describing (SNB-0001). Pass the capture device for live capture
+    /// or the input source for replay; `None` (or empty) records no name.
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_interface(
+        path: &Path,
+        link_type: i32,
+        max_file_bytes: Option<u64>,
+        max_file_duration: Option<std::time::Duration>,
+        pcapng: bool,
+        export_mode: PcapExportMode,
+        interface: Option<&str>,
     ) -> Result<Self> {
         // M5: Warn on path traversal components
         if path
@@ -146,8 +178,10 @@ impl PcapWriter {
             );
         }
 
+        let interface_name = interface.filter(|n| !n.is_empty()).map(|n| n.to_string());
+
         let backend = if pcapng {
-            create_pcapng_backend(path, link_type)?
+            create_pcapng_backend(path, link_type, interface_name.as_deref())?
         } else {
             let linktype = pcap::Linktype(link_type);
             WriterBackend::Pcap(create_savefile(path, linktype)?)
@@ -176,6 +210,7 @@ impl PcapWriter {
             max_file_duration,
             export_mode,
             dsb_written: false,
+            interface_name,
         })
     }
 
@@ -420,7 +455,11 @@ impl PcapWriter {
 
         // Drop the old backend (flushes and closes) by replacing it
         self.backend = if self.use_pcapng {
-            create_pcapng_backend(&new_path, self.link_type_raw)?
+            create_pcapng_backend(
+                &new_path,
+                self.link_type_raw,
+                self.interface_name.as_deref(),
+            )?
         } else {
             let linktype = pcap::Linktype(self.link_type_raw);
             WriterBackend::Pcap(create_savefile(&new_path, linktype)?)
@@ -472,19 +511,53 @@ fn create_savefile(path: &Path, linktype: pcap::Linktype) -> Result<pcap::Savefi
 }
 
 /// Create a PCAP-NG writer backend at the given path.
-fn create_pcapng_backend(path: &Path, link_type: i32) -> Result<WriterBackend> {
+/// Producer string embedded in exported pcapng metadata (SHB UserApplication,
+/// IDB description), e.g. `"sipnab 0.4.4"`.
+fn app_version() -> String {
+    format!("sipnab {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Create a PCAP-NG backend whose Section Header and Interface Description
+/// blocks carry self-describing metadata (SNB-0001): the producing application
+/// and OS in the SHB, and the OS, a human description, and — when known — the
+/// capture interface name in the IDB. Without this, `tshark` shows
+/// `Interface name: unknown` and `capinfos` reports no application/OS.
+fn create_pcapng_backend(
+    path: &Path,
+    link_type: i32,
+    interface: Option<&str>,
+) -> Result<WriterBackend> {
     let file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
     let buf_writer = BufWriter::new(file);
 
-    let mut writer = PcapFileNgWriter::new(buf_writer)
+    // Section Header Block with producer + OS, so the file is self-describing.
+    let section = SectionHeaderBlock {
+        endianness: Endianness::native(),
+        options: vec![
+            SectionHeaderOption::UserApplication(Cow::Owned(app_version())),
+            SectionHeaderOption::OS(Cow::Borrowed(std::env::consts::OS)),
+        ],
+        ..Default::default()
+    };
+    let mut writer = PcapFileNgWriter::with_section_header(buf_writer, section)
         .map_err(|e| anyhow::anyhow!("Failed to create PCAP-NG writer: {e}"))?;
 
-    // Write the Interface Description Block
+    // Interface Description Block: OS + description always, interface name when
+    // the caller knows it (capture device for live, input source for replay).
+    let mut options = vec![
+        InterfaceDescriptionOption::IfDescription(Cow::Owned(format!("{} capture", app_version()))),
+        InterfaceDescriptionOption::IfOs(Cow::Borrowed(std::env::consts::OS)),
+    ];
+    if let Some(name) = interface.filter(|n| !n.is_empty()) {
+        options.push(InterfaceDescriptionOption::IfName(Cow::Owned(
+            name.to_string(),
+        )));
+    }
     let idb = InterfaceDescriptionBlock {
         linktype: DataLink::from(link_type as u32),
         snaplen: 0xFFFF,
-        options: vec![],
+        options,
     };
     writer
         .write_pcapng_block(idb)
@@ -911,6 +984,151 @@ mod tests {
             }
             assert_eq!(v4_names, vec!["sbc-edge".to_string()]);
             assert_eq!(v6_count, 2, "IPv6 record should carry both names");
+        }
+
+        /// Read back the SHB UserApplication/OS and the first IDB's
+        /// IfName/IfDescription/IfOs options (owned), for metadata assertions.
+        #[allow(clippy::type_complexity)]
+        fn read_export_metadata(
+            path: &Path,
+        ) -> (
+            (Option<String>, Option<String>), // (shb_user_app, shb_os)
+            (Option<String>, Option<String>, Option<String>), // (if_name, if_desc, if_os)
+        ) {
+            use pcap_file::pcapng::PcapNgReader;
+            use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+            use pcap_file::pcapng::blocks::section_header::SectionHeaderOption;
+
+            let bytes = std::fs::read(path).unwrap();
+            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let (mut app, mut os) = (None, None);
+            // The Section Header Block is parsed in `new()` and exposed here;
+            // `next_block()` yields only the blocks that follow it.
+            for opt in &reader.section().options {
+                match opt {
+                    SectionHeaderOption::UserApplication(s) => app = Some(s.to_string()),
+                    SectionHeaderOption::OS(s) => os = Some(s.to_string()),
+                    _ => {}
+                }
+            }
+            let (mut if_name, mut if_desc, mut if_os) = (None, None, None);
+            while let Some(Ok(block)) = reader.next_block() {
+                if let Some(idb) = block.into_interface_description() {
+                    for opt in &idb.options {
+                        match opt {
+                            InterfaceDescriptionOption::IfName(s) => if_name = Some(s.to_string()),
+                            InterfaceDescriptionOption::IfDescription(s) => {
+                                if_desc = Some(s.to_string())
+                            }
+                            InterfaceDescriptionOption::IfOs(s) => if_os = Some(s.to_string()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            ((app, os), (if_name, if_desc, if_os))
+        }
+
+        #[test]
+        fn pcapng_export_embeds_app_and_os_metadata() {
+            // SNB-0001: a headless pcapng export must be self-describing — the SHB
+            // carries the producing application + OS, and the IDB an OS + a
+            // human description (so capinfos/tshark show real metadata).
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("meta.pcapng");
+            {
+                let mut w =
+                    PcapWriter::with_format(&path, 1, None, None, true, PcapExportMode::Raw)
+                        .unwrap();
+                w.write(&pkt(0, 40)).unwrap();
+                w.finish().unwrap();
+            }
+            let ((app, os), (_if_name, if_desc, if_os)) = read_export_metadata(&path);
+            let app = app.expect("SHB UserApplication must be set");
+            assert!(app.contains("sipnab"), "app = {app:?}");
+            assert!(
+                app.contains(env!("CARGO_PKG_VERSION")),
+                "app has version: {app:?}"
+            );
+            assert_eq!(os.as_deref(), Some(std::env::consts::OS), "SHB OS");
+            assert_eq!(if_os.as_deref(), Some(std::env::consts::OS), "IDB IfOs");
+            let desc = if_desc.expect("IDB IfDescription must be set");
+            assert!(desc.contains("sipnab"), "desc = {desc:?}");
+        }
+
+        #[test]
+        fn pcapng_export_records_interface_name() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("iface.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                w.write(&pkt(0, 40)).unwrap();
+                w.finish().unwrap();
+            }
+            let (_, (if_name, _, _)) = read_export_metadata(&path);
+            assert_eq!(if_name.as_deref(), Some("eth0"), "IDB IfName");
+        }
+
+        #[test]
+        fn pcapng_export_interface_name_special_chars_round_trip() {
+            // Adversarial: a device/source name with unicode, spaces, a
+            // backslash, and a tab must round-trip verbatim, never truncate.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("weird.pcapng");
+            let weird = "réseau 0\\1\tπ";
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some(weird),
+                )
+                .unwrap();
+                w.write(&pkt(0, 40)).unwrap();
+                w.finish().unwrap();
+            }
+            let (_, (if_name, _, _)) = read_export_metadata(&path);
+            assert_eq!(if_name.as_deref(), Some(weird));
+        }
+
+        #[test]
+        fn pcapng_export_empty_interface_records_no_name() {
+            // Boundary: an empty interface name records no IfName (avoids an
+            // empty, misleading option) but still carries the description/OS.
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("emptyiface.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some(""),
+                )
+                .unwrap();
+                w.write(&pkt(0, 40)).unwrap();
+                w.finish().unwrap();
+            }
+            let (_, (if_name, if_desc, _)) = read_export_metadata(&path);
+            assert!(
+                if_name.is_none(),
+                "empty interface → no IfName, got {if_name:?}"
+            );
+            assert!(if_desc.is_some(), "description still present");
         }
 
         #[test]
