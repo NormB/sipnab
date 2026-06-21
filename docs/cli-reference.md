@@ -53,7 +53,7 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--resolve` | -- | off | Start the TUI with name resolution on (manual mappings + `/etc/hosts`). Press `n` to cycle Off / Static / DNS |
+| `--resolve` | -- | off | Turn name resolution on (manual mappings + `/etc/hosts`). In the TUI, press `n` to cycle Off / Static / DNS; in headless `-O --pcapng` export it embeds a Name Resolution Block |
 | `--reverse-dns` | -- | off | Also use reverse DNS (PTR) lookups. Implies `--resolve`. Emits DNS queries for captured IPs |
 | `--names` | `<FILE>` | -- | Preload IP → name mappings from an `/etc/hosts`-format file. Repeatable |
 
@@ -66,8 +66,12 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 | `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. The input is never modified; the output is written atomically. |
 
 Note: name mappings are saved into a pcapng Name Resolution Block when saving with
-resolution active, and embedded NRB names / DSB TLS secrets are read back (and
-used for decryption) when a pcapng is opened. See
+resolution active — both the TUI save path and headless `-O --pcapng` export
+(when `--resolve`/`--names` are set). Headless pcapng exports are also
+self-describing: the Section Header Block records the producing application
+(`sipnab <version>`) and OS, and the Interface Description Block records the
+capture source as the interface name. Embedded NRB names / DSB TLS secrets are
+read back (and used for decryption) when a pcapng is opened. See
 [the design doc](design/pcapng-metadata.md).
 
 ## Diagnostic Aliases
