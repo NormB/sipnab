@@ -48,7 +48,7 @@ serde_json = "1"
 toml = "1"
 # Format-preserving TOML editing for surgical writes to the user's sipnabrc
 # (updates the [names.manual] table without clobbering comments/other sections).
-toml_edit = "0.22"
+toml_edit = "0.25"
 pcap-file = { version = "2", optional = true }
 nom = "8"
 indexmap = "2"
