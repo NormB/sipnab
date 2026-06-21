@@ -69,8 +69,8 @@ base64 = { version = "0.22", optional = true }
 # Auth: HMAC self-describing bearer tokens (pure-Rust RustCrypto). Available
 # whenever `api` OR `mcp` is enabled; deliberately NOT tied to the `tls`
 # feature (no `ring`).
-hmac = { version = "0.12", optional = true }
-sha2 = { version = "0.10", optional = true }
+hmac = { version = "0.13", optional = true }
+sha2 = { version = "0.11", optional = true }
 
 # Phase 5: TLS/Crypto (feature-gated)
 zeroize = { version = "1", features = ["derive"], optional = true }
