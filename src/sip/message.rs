@@ -150,6 +150,55 @@ impl SipMessage {
             .collect()
     }
 
+    /// Detect structural malformations (SNB-0003, spec §5.2): defects that make
+    /// this a crafted/broken message rather than valid SIP. Returns a list of
+    /// human-readable reasons (empty for a well-formed message). The doctrine is
+    /// "detect & highlight" — surface the anomaly, never silently accept it.
+    ///
+    /// Checks: missing mandatory headers (`Call-ID`/`CSeq`/`From`/`To`/`Via`,
+    /// RFC 3261 §8.1.1/§8.2), an unparseable `CSeq`, a `Content-Length` larger
+    /// than the body actually present (truncated/lying length), and control/NUL
+    /// bytes in a header name or value (injection / parser-abuse). Tab (LWS) is
+    /// allowed; CR/LF cannot survive line parsing.
+    pub fn malformations(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
+
+        for (name, present) in [
+            ("Call-ID", self.header("Call-ID").is_some()),
+            ("CSeq", self.header("CSeq").is_some()),
+            ("From", self.header("From").is_some()),
+            ("To", self.header("To").is_some()),
+            ("Via", !self.via_headers().is_empty()),
+        ] {
+            if !present {
+                reasons.push(format!("missing mandatory header: {name}"));
+            }
+        }
+
+        if self.header("CSeq").is_some() && self.cseq().is_none() {
+            reasons.push("malformed CSeq header (not '<number> <method>')".to_string());
+        }
+
+        if let Some(declared) = self
+            .header("Content-Length")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+            && declared > self.body.len()
+        {
+            reasons.push(format!(
+                "content-length mismatch: declared {declared}, body {} bytes present",
+                self.body.len()
+            ));
+        }
+
+        for h in &self.headers {
+            if has_control_bytes(&h.name) || has_control_bytes(&h.value) {
+                reasons.push(format!("control character in header: {}", h.name));
+            }
+        }
+
+        reasons
+    }
+
     /// Extract the user part from the `From` URI.
     ///
     /// For `From: "Alice" <sip:1001@example.com>;tag=abc` returns `Some("1001")`.
@@ -202,6 +251,13 @@ impl SipMessage {
     pub fn to_display(&self) -> Option<String> {
         extract_display_name(self.to_header()?)
     }
+}
+
+/// True if `s` contains a C0 control byte or DEL — excluding tab (`\t`), which
+/// is legal linear whitespace in a header value. CR/LF never survive line
+/// parsing, so their presence here would also be anomalous.
+fn has_control_bytes(s: &str) -> bool {
+    s.bytes().any(|b| (b < 0x20 && b != b'\t') || b == 0x7f)
 }
 
 /// Extract the user part from a SIP URI inside a header value.
@@ -321,6 +377,169 @@ fn extract_tag(header_value: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── malformation detection (SNB-0003, spec §5.2) ───────────────────
+    fn ts() -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    fn parse_msg(first: &str, headers: &[&str], body: &[u8]) -> SipMessage {
+        let raw = crate::test_utils::build_sip_message(first, headers, body);
+        let lo = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+        crate::sip::parser::parse_sip(&raw, ts(), lo, lo, 5060, 5060, TransportProto::Udp)
+            .expect("should parse")
+    }
+
+    /// A complete, well-formed OPTIONS request.
+    fn well_formed() -> SipMessage {
+        parse_msg(
+            "OPTIONS sip:a@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: ok@example.com",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        )
+    }
+
+    #[test]
+    fn well_formed_has_no_malformations() {
+        assert!(well_formed().malformations().is_empty());
+    }
+
+    #[test]
+    fn well_formed_invite_with_sdp_no_false_positive() {
+        let sdp = b"v=0\r\no=- 0 0 IN IP4 10.0.0.1\r\ns=-\r\nc=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 40000 RTP/AVP 0\r\n";
+        let msg = parse_msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK2",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: invite@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", sdp.len()),
+            ],
+            sdp,
+        );
+        assert!(
+            msg.malformations().is_empty(),
+            "got {:?}",
+            msg.malformations()
+        );
+    }
+
+    #[test]
+    fn missing_mandatory_headers_flagged() {
+        for drop in ["Call-ID", "CSeq", "From", "To", "Via"] {
+            let hdrs: Vec<&str> = [
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: x@example.com",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ]
+            .into_iter()
+            .filter(|h| !h.starts_with(drop))
+            .collect();
+            let msg = parse_msg("OPTIONS sip:a@example.com SIP/2.0", &hdrs, b"");
+            let m = msg.malformations();
+            assert!(
+                m.iter().any(|r| r.contains(drop)),
+                "dropping {drop} should flag it; got {m:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lying_content_length_flagged() {
+        // declares 500 bytes, datagram carries none → truncated/lying length.
+        let msg = parse_msg(
+            "OPTIONS sip:a@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: cl@example.com",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 500",
+            ],
+            b"",
+        );
+        let m = msg.malformations();
+        assert!(m.iter().any(|r| r.contains("content-length")), "got {m:?}");
+    }
+
+    #[test]
+    fn nul_in_header_value_flagged() {
+        let msg = parse_msg(
+            "OPTIONS sip:a@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1\u{0}BAD",
+                "To: <sip:b@example.com>",
+                "Call-ID: nul@example.com",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let m = msg.malformations();
+        assert!(
+            m.iter().any(|r| r.to_lowercase().contains("control")),
+            "embedded NUL must be flagged; got {m:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_cseq_flagged() {
+        let msg = parse_msg(
+            "OPTIONS sip:a@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: badcseq@example.com",
+                "CSeq: not-a-number OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let m = msg.malformations();
+        assert!(
+            m.iter().any(|r| r.to_lowercase().contains("cseq")),
+            "got {m:?}"
+        );
+    }
+
+    #[test]
+    fn tab_in_header_value_is_not_flagged() {
+        // a tab is legal linear whitespace inside a header value (not a control bug)
+        let msg = parse_msg(
+            "OPTIONS sip:a@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: tab@example.com",
+                "CSeq: 1 OPTIONS",
+                "User-Agent: my\tagent",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        assert!(
+            msg.malformations().is_empty(),
+            "tab is LWS, not malformed; got {:?}",
+            msg.malformations()
+        );
+    }
 
     #[test]
     fn extract_user_with_display_name() {
