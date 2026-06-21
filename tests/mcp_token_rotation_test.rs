@@ -311,8 +311,19 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
     let (child, addr) = spawn_http(&["--mcp-signing-key-file", key.to_str().unwrap()])
         .expect("server should start");
 
-    // Rotate a 1-second token: valid immediately…
-    let (ok, e) = rotate(&key, &token_path, 1);
+    // Rotate a short-TTL token: valid immediately…
+    //
+    // TTL margins matter here. Minting runs through a subprocess
+    // (`rotate-token.sh` → the sipnab binary), so the window between the token's
+    // `exp` being stamped and the "valid now" check below covers a process
+    // teardown, a file read, and an HTTP round-trip. Under the full suite's load
+    // that window was occasionally exceeding a 1s TTL, expiring the token before
+    // the immediate check and flaking the 200. Use a TTL with ample headroom for
+    // the "valid" check, and sleep comfortably past it for the "expired" check —
+    // `thread::sleep` guarantees *at least* its duration, so once SHORT_TTL has
+    // elapsed the rejection is deterministic.
+    const SHORT_TTL: i64 = 5;
+    let (ok, e) = rotate(&key, &token_path, SHORT_TTL);
     assert!(ok, "short-TTL rotation should succeed; stderr: {e}");
     let short = std::fs::read_to_string(&token_path)
         .expect("token")
@@ -324,8 +335,8 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
         "freshly rotated short-TTL token → 200"
     );
 
-    // …expires once its TTL elapses.
-    thread::sleep(Duration::from_secs(2));
+    // …expires once its TTL elapses (sleep > SHORT_TTL, with margin).
+    thread::sleep(Duration::from_secs(SHORT_TTL as u64 + 2));
     assert_eq!(
         initialize_status(&addr, Some(&short)),
         401,
