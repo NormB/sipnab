@@ -28,7 +28,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
@@ -92,7 +92,7 @@ jobs:
           - "native,hep,api,mcp,mcp-http"
           - wasm
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         # `|| true`: don't let a flaky preconfigured third-party apt repo
@@ -136,7 +136,7 @@ jobs:
     name: Security audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
@@ -169,7 +169,7 @@ jobs:
     name: Fuzz targets compile
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install libpcap
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
