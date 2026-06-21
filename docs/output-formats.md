@@ -28,14 +28,21 @@ Message record (fields with no value are omitted, not null):
   "is_request": true,
   "method": "INVITE",
   "call_id": "abc123@10.0.0.1",
+  "cseq": { "number": 1, "method": "INVITE" },
   "from": "1001",
   "to": "1002",
   "ua": "FreePBX-16"
 }
 ```
 
-Responses carry `status_code`, `reason`, and `response_context` (what the
-response answers) instead of `method`.
+`cseq` (the parsed `CSeq` header — `{ number, method }`) is emitted on **every**
+message, requests included, so re-requests within a dialog (e.g. two REGISTERs
+with `CSeq` 1 and 2) stay distinguishable. It is omitted only when the `CSeq`
+header is absent or unparseable.
+
+Responses carry `status_code` and `reason` instead of `method`, plus
+`response_context` (`"<num> <method>"`, what the response answers) — now
+redundant with `cseq` and retained only for backward compatibility.
 
 `schema_version` increments on breaking field changes — pin your
 consumers to it.

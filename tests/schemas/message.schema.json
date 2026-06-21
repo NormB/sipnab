@@ -31,6 +31,15 @@
     "from": { "type": "string" },
     "to": { "type": "string" },
     "ua": { "type": "string" },
+    "cseq": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number", "method"],
+      "properties": {
+        "number": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "method": { "type": "string" }
+      }
+    },
     "response_context": { "type": "string" }
   }
 }

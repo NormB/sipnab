@@ -39,8 +39,22 @@ struct MessageJson<'a> {
     to: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ua: Option<&'a str>,
+    /// Parsed `CSeq` (number + method) on **every** message — requests included,
+    /// so re-requests within a dialog stay distinguishable (SNB-0002). Omitted
+    /// only when the `CSeq` header is absent or unparseable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cseq: Option<CSeqJson<'a>>,
+    /// Deprecated alias of `cseq` on responses ("<num> <method>"), retained for
+    /// backward compatibility under schema_version 1. Prefer `cseq`.
     #[serde(skip_serializing_if = "Option::is_none")]
     response_context: Option<String>,
+}
+
+/// JSON representation of a parsed `CSeq` header.
+#[derive(Serialize)]
+struct CSeqJson<'a> {
+    number: u32,
+    method: &'a str,
 }
 
 /// JSON representation of dialog timing.
@@ -148,6 +162,9 @@ struct DialogJson {
 /// Returns a single JSON line with a trailing newline, suitable for
 /// piping to `jq` or other stream processors.
 pub fn message_to_json(msg: &SipMessage) -> String {
+    let cseq = msg
+        .cseq()
+        .map(|(number, method)| CSeqJson { number, method });
     let response_context = if !msg.is_request {
         msg.cseq().map(|(seq, method)| format!("{seq} {method}"))
     } else {
@@ -170,6 +187,7 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         from: msg.from_header(),
         to: msg.to_header(),
         ua: msg.user_agent(),
+        cseq,
         response_context,
     };
 
@@ -424,6 +442,129 @@ mod tests {
         assert_eq!(parsed["status_code"], 200);
         assert_eq!(parsed["is_request"], false);
         assert!(parsed["response_context"].is_string());
+    }
+
+    /// Parse a REGISTER request carrying exactly `headers`.
+    fn req_with_headers(headers: &[&str]) -> SipMessage {
+        let raw = build_sip("REGISTER sip:example.com SIP/2.0", headers, b"");
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse")
+    }
+
+    fn parsed_json(msg: &SipMessage) -> serde_json::Value {
+        serde_json::from_str(message_to_json(msg).trim()).expect("valid JSON")
+    }
+
+    #[test]
+    fn message_to_json_request_includes_cseq() {
+        // SNB-0002: requests MUST carry CSeq so re-requests within a dialog are
+        // distinguishable — previously only responses got it (response_context).
+        let parsed = parsed_json(&make_invite()); // CSeq: 1 INVITE
+        assert_eq!(parsed["is_request"], true);
+        assert_eq!(parsed["cseq"]["number"], 1);
+        assert_eq!(parsed["cseq"]["method"], "INVITE");
+    }
+
+    #[test]
+    fn message_to_json_response_includes_cseq() {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "Call-ID: resp-cseq@example.com",
+                "CSeq: 7 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        let parsed = parsed_json(&msg);
+        assert_eq!(parsed["is_request"], false);
+        assert_eq!(parsed["cseq"]["number"], 7);
+        assert_eq!(parsed["cseq"]["method"], "INVITE");
+        // response_context retained for backward compatibility (schema_version 1).
+        assert_eq!(parsed["response_context"], "7 INVITE");
+    }
+
+    #[test]
+    fn message_to_json_re_requests_are_distinguishable() {
+        // The exact SNB-0002 regression: two REGISTERs in one dialog differ only
+        // by CSeq number; their JSON must reflect that, not collapse.
+        let mk = |cseq: &str| {
+            req_with_headers(&[
+                &format!("CSeq: {cseq}"),
+                "Call-ID: same-dialog@example.com",
+                "Content-Length: 0",
+            ])
+        };
+        let a = parsed_json(&mk("1 REGISTER"));
+        let b = parsed_json(&mk("2 REGISTER"));
+        assert_ne!(a["cseq"], b["cseq"], "distinct CSeq must not collapse");
+        assert_eq!(a["cseq"]["number"], 1);
+        assert_eq!(b["cseq"]["number"], 2);
+        assert_eq!(a["cseq"]["method"], "REGISTER");
+    }
+
+    #[test]
+    fn message_to_json_cseq_absent_when_header_missing() {
+        let msg = req_with_headers(&["Call-ID: no-cseq@example.com", "Content-Length: 0"]);
+        let parsed = parsed_json(&msg);
+        assert!(
+            parsed.get("cseq").is_none(),
+            "cseq omitted when CSeq header absent, got {:?}",
+            parsed.get("cseq")
+        );
+    }
+
+    #[test]
+    fn message_to_json_cseq_omitted_when_malformed_or_boundary() {
+        // Adversarial / boundary: non-numeric seq, number-without-method, empty,
+        // whitespace-only, and a u32-overflowing sequence are all unparseable per
+        // RFC 3261 — the field is omitted entirely, never emitted garbled.
+        for bad in [
+            "CSeq: garbage INVITE",    // non-numeric sequence
+            "CSeq: 5",                 // sequence with no method
+            "CSeq: ",                  // empty value
+            "CSeq: \t",                // whitespace-only value
+            "CSeq: 4294967296 INVITE", // u32::MAX + 1 → overflow
+        ] {
+            let msg = req_with_headers(&[bad, "Call-ID: bad@example.com", "Content-Length: 0"]);
+            let parsed = parsed_json(&msg);
+            assert!(
+                parsed.get("cseq").is_none(),
+                "cseq must be omitted for malformed {bad:?}, got {:?}",
+                parsed.get("cseq")
+            );
+        }
+    }
+
+    #[test]
+    fn message_to_json_cseq_max_u32_boundary() {
+        // u32::MAX is a valid CSeq sequence and must round-trip.
+        let msg = req_with_headers(&[
+            "CSeq: 4294967295 OPTIONS",
+            "Call-ID: max-cseq@example.com",
+            "Content-Length: 0",
+        ]);
+        let parsed = parsed_json(&msg);
+        assert_eq!(parsed["cseq"]["number"], 4294967295u32);
+        assert_eq!(parsed["cseq"]["method"], "OPTIONS");
     }
 
     #[test]
