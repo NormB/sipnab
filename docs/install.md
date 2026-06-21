@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Rust 1.92+** (for building from source)
+- **Rust 1.94+** (for building from source)
 - **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
 - **pkg-config** (for libpcap detection during build)
 
@@ -205,7 +205,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
 docker build -t sipnab .
 ```
 
-The multi-stage Dockerfile uses `rust:1.92-slim-bookworm` for the build stage and `debian:bookworm-slim` for the runtime image. The runtime image includes only `libpcap0.8` and runs as a non-root `sipnab` user.
+The multi-stage Dockerfile uses `rust:1.94-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
 
 ## Platform Notes
 
