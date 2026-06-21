@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust 1.92+ (edition 2024)
+- Rust 1.94+ (edition 2024)
 - libpcap headers
   - macOS: `xcode-select --install`
   - Debian/Ubuntu: `apt install libpcap-dev`

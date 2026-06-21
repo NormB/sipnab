@@ -2,7 +2,7 @@
 # Build context is the sipnab repo root (see docker-compose.yml: context ../..).
 # Feature set: capture (native) + MCP HTTP (pulls mcp + api) + TLS/SRTP.
 # Deliberately excludes tui and audio so the runtime needs no libasound.
-FROM rust:1.92-slim-bookworm AS builder
+FROM rust:1.94-slim-trixie AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap-dev pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -12,9 +12,10 @@ RUN cargo build --release --locked \
         --no-default-features --features "native,mcp-http,tls" \
     && strip target/release/sipnab
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
+# trixie renamed libpcap0.8 -> libpcap0.8t64 (64-bit time_t transition).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libpcap0.8 tcpdump iproute2 ca-certificates \
+        libpcap0.8t64 tcpdump iproute2 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /build/target/release/sipnab /usr/local/bin/sipnab
 COPY harness/sipnab/entrypoint.sh /usr/local/bin/entrypoint.sh
