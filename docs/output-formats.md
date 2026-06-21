@@ -44,6 +44,13 @@ Responses carry `status_code` and `reason` instead of `method`, plus
 `response_context` (`"<num> <method>"`, what the response answers) — now
 redundant with `cseq` and retained only for backward compatibility.
 
+`malformed` is a list of structural-defect diagnostics, present **only** when a
+message is malformed (a well-formed message omits the field). It surfaces crafted
+or broken input rather than silently accepting it: missing mandatory headers
+(`Call-ID`/`CSeq`/`From`/`To`/`Via`), an unparseable `CSeq`, a `Content-Length`
+larger than the body actually present (truncated/lying length), and control/NUL
+bytes in a header. Example: `"malformed": ["missing mandatory header: Call-ID"]`.
+
 `schema_version` increments on breaking field changes — pin your
 consumers to it.
 

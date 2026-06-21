@@ -48,6 +48,11 @@ struct MessageJson<'a> {
     /// backward compatibility under schema_version 1. Prefer `cseq`.
     #[serde(skip_serializing_if = "Option::is_none")]
     response_context: Option<String>,
+    /// Structural-malformation diagnostics (SNB-0003, spec §5.2): present and
+    /// non-empty only when the message is malformed (missing mandatory header,
+    /// content-length mismatch, control bytes, …). A well-formed message omits it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    malformed: Vec<String>,
 }
 
 /// JSON representation of a parsed `CSeq` header.
@@ -189,6 +194,7 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         ua: msg.user_agent(),
         cseq,
         response_context,
+        malformed: msg.malformations(),
     };
 
     // serde_json::to_string should not fail on these well-typed fields
@@ -565,6 +571,46 @@ mod tests {
         let parsed = parsed_json(&msg);
         assert_eq!(parsed["cseq"]["number"], 4294967295u32);
         assert_eq!(parsed["cseq"]["method"], "OPTIONS");
+    }
+
+    #[test]
+    fn message_to_json_flags_malformed() {
+        // SNB-0003: a malformed message (missing mandatory Call-ID) carries a
+        // `malformed` diagnostic array naming the defect.
+        let msg = req_with_headers(&[
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: <sip:a@x>;tag=1",
+            "To: <sip:b@x>",
+            "CSeq: 1 REGISTER",
+            "Content-Length: 0",
+        ]);
+        let parsed = parsed_json(&msg);
+        let m = parsed["malformed"]
+            .as_array()
+            .expect("malformed should be an array");
+        assert!(
+            m.iter()
+                .any(|r| r.as_str().unwrap_or("").contains("Call-ID")),
+            "expected a Call-ID reason, got {m:?}"
+        );
+    }
+
+    #[test]
+    fn message_to_json_well_formed_omits_malformed() {
+        let msg = req_with_headers(&[
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1",
+            "From: <sip:a@x>;tag=1",
+            "To: <sip:b@x>",
+            "Call-ID: clean@x",
+            "CSeq: 1 REGISTER",
+            "Content-Length: 0",
+        ]);
+        let parsed = parsed_json(&msg);
+        assert!(
+            parsed.get("malformed").is_none(),
+            "well-formed message must omit `malformed`, got {:?}",
+            parsed.get("malformed")
+        );
     }
 
     #[test]
