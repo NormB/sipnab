@@ -2,7 +2,7 @@
 name = "sipnab-audio"
 version = "0.4.2"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.94"
 authors = ["Norm Brandinger"]
 description = "sipnab audio playback plugin (rodio/ALSA) — dlopen'd by the sipnab binary"
 license = "MIT OR Apache-2.0"
