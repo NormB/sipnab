@@ -142,6 +142,41 @@ impl SipDialog {
         &self.state
     }
 
+    /// The final SIP response code of the call's INVITE transaction — the code
+    /// that determined the outcome behind the [`DialogState`] word: 200 for an
+    /// answered call (`InCall`/`Completed`), the 4xx/5xx/6xx for a `Failed` one
+    /// (486 busy vs 503 unavailable vs 404 …), 487 for `Cancelled`. Returns
+    /// `None` while the call is still in progress (no final response yet), so a
+    /// `Ringing`/`Trying` dialog shows no code.
+    ///
+    /// Considers final (`>= 200`) responses carrying a CSeq method of `INVITE`
+    /// (responses to CANCEL/BYE — their own CSeq — are excluded, so a cancelled
+    /// call reports 487, not the 200 that acknowledged its CANCEL). Auth
+    /// challenges (401/407) are *intermediate* — a call challenged then answered
+    /// reports its real outcome (200), not the 407 — so they are ignored unless
+    /// the call was *only* ever challenged (never authenticated), in which case
+    /// the challenge is the outcome.
+    pub fn final_status_code(&self) -> Option<u16> {
+        let invite_finals: Vec<u16> = self
+            .messages
+            .iter()
+            .filter(|m| !m.is_request)
+            .filter(|m| {
+                m.cseq()
+                    .map(|(_, method)| method == "INVITE")
+                    .unwrap_or(false)
+            })
+            .filter_map(|m| m.status_code)
+            .filter(|&code| code >= 200)
+            .collect();
+        invite_finals
+            .iter()
+            .copied()
+            .filter(|&code| code != 401 && code != 407)
+            .max()
+            .or_else(|| invite_finals.iter().copied().max())
+    }
+
     /// Create a new dialog from the first message in a conversation.
     ///
     /// Initializes the dialog state based on the message's method:

@@ -4,6 +4,22 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-06-22
+
+### Added
+- Dialog report (`--report`) gains a `Code` column showing the terminating SIP
+  response behind each dialog's `State` — `Completed 200`, `Failed 486`,
+  `Cancelled 487` — so the precise outcome (486 busy vs 503 unavailable vs 408
+  timeout …) is visible, not just the generic state word. Backed by a new
+  `SipDialog::final_status_code()` (highest final response on the INVITE CSeq;
+  `-` while the call is still in progress).
+
+### Fixed
+- Auth-challenged calls no longer report the 401/407 challenge as their outcome.
+  An INVITE challenged with 407 (or 401) and then answered now reports `200`
+  (the challenge is an intermediate step); a call that is only ever challenged,
+  with no authenticated retry, still reports the 401/407.
+
 ## [0.4.4] - 2026-06-19
 
 ### Added

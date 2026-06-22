@@ -23,16 +23,22 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
     // ── Dialog summary table ────────────────────────────────────────
     let _ = writeln!(
         out,
-        "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8} {:<16}",
-        "Call-ID", "From", "To", "State", "Duration", "Msgs", "PDD", "Tags"
+        "{:<32} {:<14} {:<14} {:<12} {:<6} {:<10} {:<6} {:<8} {:<16}",
+        "Call-ID", "From", "To", "State", "Code", "Duration", "Msgs", "PDD", "Tags"
     );
-    let _ = writeln!(out, "{}", "-".repeat(114));
+    let _ = writeln!(out, "{}", "-".repeat(121));
 
     for dialog in dialogs {
         let call_id = truncate_str(&dialog.call_id, 30);
         let from = dialog.from_user.as_deref().unwrap_or("-");
         let to = dialog.to_user.as_deref().unwrap_or("-");
         let state = state_str(dialog.state());
+        // The precise SIP response behind the State word (486/503/487/200);
+        // "-" while the call is still in progress (no final response yet).
+        let code = dialog
+            .final_status_code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let duration = format_duration(dialog);
         let msg_count = dialog.messages.len();
         let pdd = dialog
@@ -48,8 +54,8 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
 
         let _ = writeln!(
             out,
-            "{:<32} {:<14} {:<14} {:<12} {:<10} {:<6} {:<8} {:<16}",
-            call_id, from, to, state, duration, msg_count, pdd, tags
+            "{:<32} {:<14} {:<14} {:<12} {:<6} {:<10} {:<6} {:<8} {:<16}",
+            call_id, from, to, state, code, duration, msg_count, pdd, tags
         );
     }
 
@@ -278,6 +284,190 @@ mod tests {
         assert!(
             report.contains("Msgs"),
             "should contain message count header"
+        );
+    }
+
+    /// Build an INVITE dialog and drive it with the given follow-up messages
+    /// (each: start-line + CSeq), so we can craft Failed/Cancelled outcomes.
+    fn make_dialog(call_id: &str, followups: &[(&str, &str, bool)]) -> SipDialog {
+        let t0 = base_ts();
+        let raw_invite = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let invite = parse_sip(
+            &raw_invite,
+            t0,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse invite");
+        let mut dialog = SipDialog::new(&invite).expect("create dialog");
+
+        for (i, (start, cseq, with_tag)) in followups.iter().enumerate() {
+            let to = if *with_tag {
+                "To: <sip:1002@example.com>;tag=t2"
+            } else {
+                "To: <sip:1002@example.com>"
+            };
+            let raw = build_sip(
+                start,
+                &[
+                    "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                    to,
+                    &format!("Call-ID: {call_id}"),
+                    cseq,
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = parse_sip(
+                &raw,
+                t0 + TimeDelta::seconds(1 + i as i64),
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse followup");
+            crate::sip::dialog::update_state(&mut dialog, &msg);
+            dialog.messages.push(msg);
+        }
+        dialog
+    }
+
+    #[test]
+    fn report_has_code_column_header() {
+        let dialog = make_completed_dialog();
+        let report = print_dialog_report(&[&dialog], &[]);
+        assert!(
+            report.contains("Code"),
+            "report should have a Code column header: {report}"
+        );
+    }
+
+    #[test]
+    fn completed_dialog_shows_final_code_200() {
+        // A real answered+ended call: INVITE -> 200 (INVITE) -> BYE.
+        let dialog = make_dialog(
+            "done@example.com",
+            &[
+                ("SIP/2.0 200 OK", "CSeq: 1 INVITE", true),
+                ("BYE sip:1002@example.com SIP/2.0", "CSeq: 2 BYE", true),
+            ],
+        );
+        assert_eq!(dialog.state(), &DialogState::Completed);
+        let report = print_dialog_report(&[&dialog], &[]);
+        assert!(
+            report.contains("200"),
+            "completed dialog should show final code 200: {report}"
+        );
+    }
+
+    #[test]
+    fn failed_dialog_shows_response_code() {
+        // INVITE rejected with 486 Busy Here -> State Failed, Code 486.
+        let dialog = make_dialog(
+            "busy@example.com",
+            &[("SIP/2.0 486 Busy Here", "CSeq: 1 INVITE", true)],
+        );
+        let report = print_dialog_report(&[&dialog], &[]);
+        assert!(report.contains("Failed"), "should be Failed: {report}");
+        assert!(
+            report.contains("486"),
+            "failed dialog should show its 486 code, not just 'Failed': {report}"
+        );
+    }
+
+    #[test]
+    fn cancelled_dialog_shows_487() {
+        // INVITE cancelled before answer -> State Cancelled, Code 487.
+        let dialog = make_dialog(
+            "cxl@example.com",
+            &[
+                (
+                    "CANCEL sip:1002@example.com SIP/2.0",
+                    "CSeq: 1 CANCEL",
+                    false,
+                ),
+                ("SIP/2.0 487 Request Terminated", "CSeq: 1 INVITE", true),
+            ],
+        );
+        let report = print_dialog_report(&[&dialog], &[]);
+        assert!(
+            report.contains("Cancelled"),
+            "should be Cancelled: {report}"
+        );
+        assert!(
+            report.contains("487"),
+            "cancelled dialog should show its 487 code: {report}"
+        );
+    }
+
+    #[test]
+    fn auth_challenged_call_reports_final_200_not_407() {
+        // INVITE -> 407 (challenge) -> authed INVITE -> 200 -> BYE. The 407 is an
+        // intermediate auth step; the call's outcome is 200, not 407.
+        let dialog = make_dialog(
+            "auth@example.com",
+            &[
+                (
+                    "SIP/2.0 407 Proxy Authentication Required",
+                    "CSeq: 1 INVITE",
+                    true,
+                ),
+                ("SIP/2.0 200 OK", "CSeq: 2 INVITE", true),
+                ("BYE sip:1002@example.com SIP/2.0", "CSeq: 3 BYE", true),
+            ],
+        );
+        assert_eq!(
+            dialog.final_status_code(),
+            Some(200),
+            "an auth-challenged call that then succeeds reports 200, not the 407 challenge"
+        );
+        let report = print_dialog_report(&[&dialog], &[]);
+        assert!(
+            !report.contains("407"),
+            "report must not surface the intermediate 407 as the outcome: {report}"
+        );
+    }
+
+    #[test]
+    fn unauthenticated_call_still_reports_the_challenge() {
+        // 407 with no authenticated retry: the challenge IS the outcome.
+        let dialog = make_dialog(
+            "noauth@example.com",
+            &[(
+                "SIP/2.0 407 Proxy Authentication Required",
+                "CSeq: 1 INVITE",
+                true,
+            )],
+        );
+        assert_eq!(dialog.final_status_code(), Some(407));
+    }
+
+    #[test]
+    fn in_progress_dialog_has_no_final_code() {
+        // INVITE + 180 Ringing only — no final response yet -> Code "-".
+        let dialog = make_dialog(
+            "ring@example.com",
+            &[("SIP/2.0 180 Ringing", "CSeq: 1 INVITE", true)],
+        );
+        assert_eq!(
+            dialog.final_status_code(),
+            None,
+            "a ringing dialog has no final status code yet"
         );
     }
 
