@@ -27,6 +27,10 @@ use super::{
     TS_COL_WIDTH,
 };
 
+/// Background applied across the full width of the current (selected) message
+/// row — a subtle highlight that marks the cursor without shifting content.
+const SELECTION_BG: Color = Color::Rgb(40, 40, 60);
+
 // ── Paragraph-based rendering (legacy path) ────────────────────────
 
 /// Build the formatted lines for a call flow ladder diagram.
@@ -417,15 +421,14 @@ pub fn render_call_flow_direct(
                 continue;
             }
 
-            // Selection accent marker + timestamp
+            // Timestamp column. The current row is shown by a full-row
+            // background highlight applied after all content is drawn (see
+            // below) — never a leading marker glyph, which would shift the
+            // whole row's content right by one column as the cursor moves.
             match msg.selection_state {
                 SelectionState::Selected => {
-                    let marker_style = Style::default()
-                        .fg(theme.selected)
-                        .add_modifier(Modifier::BOLD);
-                    buf.set_string(ts_col, y, "\u{258E}", marker_style); // ▎
                     if !msg.timestamp.is_empty() {
-                        buf.set_string(ts_col + 1, y, &msg.timestamp, msg.timestamp_style);
+                        buf.set_string(ts_col, y, &msg.timestamp, msg.timestamp_style);
                     }
                 }
                 SelectionState::Normal => {
@@ -471,10 +474,9 @@ pub fn render_call_flow_direct(
                     label.to_string()
                 };
                 let bar_style = match msg.selection_state {
-                    SelectionState::Selected => msg
-                        .style
-                        .bg(Color::Rgb(40, 40, 60))
-                        .add_modifier(Modifier::BOLD),
+                    SelectionState::Selected => {
+                        msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
+                    }
                     _ => msg.style,
                 };
                 buf.set_string(bar_x, y, &padded, bar_style);
@@ -486,10 +488,9 @@ pub fn render_call_flow_direct(
                     let (arrow_str, arrow_x) =
                         format_arrow(&msg.label, src_x, dst_x, msg.is_response);
                     let arrow_style = match msg.selection_state {
-                        SelectionState::Selected => msg
-                            .style
-                            .bg(Color::Rgb(40, 40, 60))
-                            .add_modifier(Modifier::BOLD),
+                        SelectionState::Selected => {
+                            msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
+                        }
                         SelectionState::Related => msg.style,
                         SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
                     };
@@ -524,6 +525,16 @@ pub fn render_call_flow_direct(
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC);
                 buf.set_string(annotation_x, y, &fold_str, fold_style);
+            }
+
+            // Full-row highlight for the current message: patch a background
+            // across the whole row (content keeps its own fg). This marks the
+            // cursor without shifting any content horizontally.
+            if msg.selection_state == SelectionState::Selected {
+                buf.set_style(
+                    Rect::new(area.x, y, area.width, 1),
+                    Style::default().bg(SELECTION_BG),
+                );
             }
 
             row += 1;
@@ -1354,6 +1365,99 @@ mod tests {
             out.push('\n');
         }
         out
+    }
+
+    // ── direct-path selection highlight (R2: no shifting marker) ────────
+
+    fn fmt_msg(
+        ts: &str,
+        state: SelectionState,
+        src_col: usize,
+        dst_col: usize,
+    ) -> FormattedMessage {
+        FormattedMessage {
+            timestamp: ts.to_string(),
+            timestamp_style: Style::default(),
+            label: "INVITE".to_string(),
+            style: Style::default(),
+            src_col,
+            dst_col,
+            pdd_note: None,
+            extra_lines: Vec::new(),
+            selected: matches!(state, SelectionState::Selected),
+            call_id: "c@test".to_string(),
+            selection_state: state,
+            is_response: false,
+            raw_timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+            folded_count: 0,
+            fold_label: None,
+            is_spacer: false,
+            sdp_badge: None,
+            is_retransmission: false,
+            is_rtp_bar: false,
+        }
+    }
+
+    // The current row is marked by a full-width background highlight, never a
+    // leading glyph: no '▎'/'>' anywhere, and content is NOT shifted right —
+    // the selected row's timestamp still begins in column 0 (SNB UX fix R2).
+    #[test]
+    fn direct_render_selection_highlights_row_without_shifting() {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: "10.0.0.1:5060".into(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".into(),
+                label: "10.0.0.2:5060".into(),
+            },
+        ];
+        let msgs = vec![
+            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1),
+            fmt_msg("12:00:00.100", SelectionState::Normal, 1, 0),
+        ];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+        };
+        let mut term = terminal(80, 24);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+
+        // No leading marker glyph survived anywhere.
+        assert!(
+            !buffer_text(&term).contains('\u{258E}'),
+            "marker '▎' must be gone"
+        );
+
+        // Exactly one row carries the selection background, and on that row the
+        // selected timestamp starts at column 0 (not shifted to column 1).
+        let mut highlit_rows = Vec::new();
+        for y in 0..buf.area.height {
+            if buf.cell((0, y)).unwrap().style().bg == Some(SELECTION_BG) {
+                highlit_rows.push(y);
+            }
+        }
+        assert_eq!(
+            highlit_rows.len(),
+            1,
+            "exactly one highlighted (selected) row"
+        );
+        let y = highlit_rows[0];
+        let row: String = (0..buf.area.width)
+            .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+            .collect();
+        assert!(
+            row.starts_with("12:00:00.000"),
+            "ts at col 0, unshifted: {row:?}"
+        );
     }
 
     // ── build_call_flow_lines / _with_width ────────────────────────────

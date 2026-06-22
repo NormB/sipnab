@@ -49,6 +49,7 @@ pub(super) fn handle_key_event(app: &mut App, key: KeyEvent) {
         View::CallFlow(_) => handle_call_flow_key(app, key),
         View::RawMessage { .. } => handle_raw_message_key(app, key),
         View::MessageDiff { .. } => handle_message_diff_key(app, key),
+        View::CombinedDetail { .. } => handle_combined_detail_key(app, key),
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
     }
@@ -105,6 +106,7 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 app.call_flow_scroll = 0;
                 app.selected_msg_index = 0;
                 app.detail_scroll = 0;
+                app.flow_filter = None;
                 app.current_view = View::CallFlow(call_id);
             }
         }
@@ -191,6 +193,7 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 app.call_flow_scroll = 0;
                 app.selected_msg_index = 0;
                 app.detail_scroll = 0;
+                app.flow_filter = None;
                 app.call_flow_cache.clear();
                 app.current_view = View::CallFlow(call_id);
             }
@@ -216,10 +219,10 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char('O') => {
             open_file_dialog(app);
         }
-        // N — Name the selected dialog's source address
+        // N — Name the selected dialog's endpoints (source focused; Tab → dest).
         KeyCode::Char('N') => {
-            if let Some(ip) = get_selected_dialog_src(app) {
-                open_name_dialog(app, ip);
+            if let Some((src, dst)) = get_selected_dialog_endpoints(app) {
+                open_name_dialog_for(app, vec![src, dst], 0);
             }
         }
         KeyCode::Char('s') => app.current_view = View::Statistics,
@@ -364,10 +367,10 @@ pub(super) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
                 app.current_view = View::StreamDetail(key);
             }
         }
-        // N — Name the selected stream's source address
+        // N — Name the selected stream's endpoints (source focused; Tab → dest).
         KeyCode::Char('N') => {
             if let Some(key) = get_selected_stream_key(app) {
-                open_name_dialog(app, key.src.ip());
+                open_name_dialog_for(app, vec![key.src.ip(), key.dst.ip()], 0);
             }
         }
         KeyCode::Esc => app.current_view = View::CallList,
@@ -457,6 +460,30 @@ pub(super) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::S
     streams.get(idx).map(|s| s.key.clone())
 }
 
+/// Map the call-flow selection (a *displayed* row position) back to the index
+/// into the dialog's full message list. They differ only when the transaction
+/// filter is active, in which case the ladder shows a subset; this re-projects
+/// the selection onto the original messages so raw/diff/name/detail stay correct.
+fn flow_selected_original_index(app: &App, call_id: &str) -> usize {
+    let sel = app.selected_msg_index;
+    let Some(key) = app.flow_filter.as_ref() else {
+        return sel;
+    };
+    let Some(store) = app.dialog_store.try_read() else {
+        return sel;
+    };
+    let Some(d) = store.get(call_id) else {
+        return sel;
+    };
+    d.messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| crate::tui::call_flow::transaction_key(m).as_ref() == Some(key))
+        .map(|(i, _)| i)
+        .nth(sel)
+        .unwrap_or(sel)
+}
+
 /// Handle keys in the call flow view.
 pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     // Use the rendered (folded) message count. For extended flow, this includes
@@ -479,7 +506,20 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         } else {
             app.dialog_store
                 .try_read()
-                .and_then(|s| s.get(call_id).map(|d| d.messages.len()))
+                .and_then(|s| {
+                    s.get(call_id).map(|d| match app.flow_filter.as_ref() {
+                        // Filtered: only the active transaction's messages are
+                        // reachable, so navigation must clamp to that subset.
+                        Some(key) => d
+                            .messages
+                            .iter()
+                            .filter(|m| {
+                                crate::tui::call_flow::transaction_key(m).as_ref() == Some(key)
+                            })
+                            .count(),
+                        None => d.messages.len(),
+                    })
+                })
                 .unwrap_or(0)
         }
     } else {
@@ -598,10 +638,11 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 } else {
                     // Open full-screen raw message view for the selected message
                     let cid = call_id.clone();
+                    let message_index = flow_selected_original_index(app, &cid);
                     app.raw_msg_scroll = 0;
                     app.current_view = View::RawMessage {
                         call_id: cid,
-                        message_index: app.selected_msg_index,
+                        message_index,
                     };
                 }
             }
@@ -611,24 +652,24 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             if let View::CallFlow(ref call_id) = app.current_view
                 && app.selected_msg_index < msg_count
             {
+                let cur = flow_selected_original_index(app, call_id);
                 if let Some(first) = app.diff_selected_msg {
-                    if first != app.selected_msg_index {
+                    if first != cur {
                         // Second selection — open diff view
                         let cid = call_id.clone();
-                        let msg2 = app.selected_msg_index;
                         app.diff_selected_msg = None;
                         app.current_view = View::MessageDiff {
                             call_id: cid,
                             msg1_idx: first,
-                            msg2_idx: msg2,
+                            msg2_idx: cur,
                         };
                     }
                 } else {
                     // First selection
-                    app.diff_selected_msg = Some(app.selected_msg_index);
+                    app.diff_selected_msg = Some(cur);
                     app.status_error = Some(format!(
                         "Selected: message {} (press Space on another to diff)",
-                        app.selected_msg_index + 1
+                        cur + 1
                     ));
                 }
             }
@@ -637,21 +678,105 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // Jump to RTP Streams view
             app.current_view = View::StreamList;
         }
-        // N — Name the selected message's source address
+        // N — Name any participant. Offers every endpoint in the flow; the
+        // selected message's source is focused first. Tab switches columns.
         KeyCode::Char('N') => {
             if let View::CallFlow(ref call_id) = app.current_view {
-                let sel = app.selected_msg_index;
-                let ip = app.dialog_store.try_read().and_then(|s| {
+                let sel = flow_selected_original_index(app, call_id);
+                let gathered = app.dialog_store.try_read().and_then(|s| {
                     s.get(call_id).map(|d| {
-                        d.messages
+                        let sel_ip = d
+                            .messages
                             .get(sel)
                             .map(|m| m.src_addr)
-                            .unwrap_or(d.src_addr)
+                            .unwrap_or(d.src_addr);
+                        let mut ips: Vec<std::net::IpAddr> = Vec::new();
+                        for m in &d.messages {
+                            for ip in [m.src_addr, m.dst_addr] {
+                                if !ips.contains(&ip) {
+                                    ips.push(ip);
+                                }
+                            }
+                        }
+                        if ips.is_empty() {
+                            ips.push(d.src_addr);
+                        }
+                        let active = ips.iter().position(|i| *i == sel_ip).unwrap_or(0);
+                        (ips, active)
                     })
                 });
-                if let Some(ip) = ip {
-                    open_name_dialog(app, ip);
+                if let Some((ips, active)) = gathered {
+                    open_name_dialog_for(app, ips, active);
                 }
+            }
+        }
+        // a — combined detail of the selected message's transaction;
+        // A — combined detail of the whole dialog. Both stack every message's
+        // full text into one scrollable view.
+        KeyCode::Char('a') | KeyCode::Char('A') => {
+            if let View::CallFlow(ref call_id) = app.current_view {
+                let sel = flow_selected_original_index(app, call_id);
+                let whole = key.code == KeyCode::Char('A');
+                let indices = app.dialog_store.try_read().and_then(|s| {
+                    s.get(call_id).map(|d| {
+                        if whole {
+                            (0..d.messages.len()).collect::<Vec<_>>()
+                        } else {
+                            crate::tui::call_flow::transaction_indices(&d.messages, sel)
+                        }
+                    })
+                });
+                if let Some(indices) = indices
+                    && !indices.is_empty()
+                {
+                    let cid = call_id.clone();
+                    app.raw_msg_scroll = 0;
+                    app.current_view = View::CombinedDetail {
+                        call_id: cid,
+                        indices,
+                        scope: if whole { "Dialog" } else { "Transaction" },
+                    };
+                }
+            }
+        }
+        // f — toggle the ladder filter between "this transaction only" and the
+        // whole dialog, keeping the same message selected across the switch.
+        KeyCode::Char('f') => {
+            if let View::CallFlow(ref call_id) = app.current_view {
+                if app.flow_filter.is_some() {
+                    let orig = flow_selected_original_index(app, call_id);
+                    app.flow_filter = None;
+                    app.selected_msg_index = orig;
+                    app.call_flow_scroll = 0;
+                    app.status_error = Some("Filter off: whole dialog".to_string());
+                } else {
+                    let orig = app.selected_msg_index;
+                    let info = app.dialog_store.try_read().and_then(|s| {
+                        s.get(call_id).and_then(|d| {
+                            let key = d
+                                .messages
+                                .get(orig)
+                                .and_then(crate::tui::call_flow::transaction_key)?;
+                            let pos = d
+                                .messages
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, m)| {
+                                    crate::tui::call_flow::transaction_key(m).as_ref() == Some(&key)
+                                })
+                                .position(|(i, _)| i == orig)
+                                .unwrap_or(0);
+                            Some((key, pos))
+                        })
+                    });
+                    if let Some((key, pos)) = info {
+                        app.status_error = Some(format!("Filter: transaction {} {}", key.0, key.1));
+                        app.flow_filter = Some(key);
+                        app.selected_msg_index = pos;
+                        app.call_flow_scroll = 0;
+                    }
+                }
+                app.call_flow_cache.clear();
             }
         }
         KeyCode::Char('d') => {
@@ -899,6 +1024,31 @@ pub(super) fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
                 app.current_view = View::CallFlow(cid);
             }
         }
+        KeyCode::F(1) => app.current_view = View::Help,
+        _ => {}
+    }
+}
+
+/// Handle keys in the combined transaction/dialog detail view.
+pub(super) fn handle_combined_detail_key(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Esc => {
+            if let View::CombinedDetail { ref call_id, .. } = app.current_view {
+                let cid = call_id.clone();
+                app.current_view = View::CallFlow(cid);
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.raw_msg_scroll = app.raw_msg_scroll.saturating_add(1);
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.raw_msg_scroll = app.raw_msg_scroll.saturating_sub(1);
+        }
+        KeyCode::PageDown => app.raw_msg_scroll = app.raw_msg_scroll.saturating_add(20),
+        KeyCode::PageUp => app.raw_msg_scroll = app.raw_msg_scroll.saturating_sub(20),
+        KeyCode::Home => app.raw_msg_scroll = 0,
+        KeyCode::End => app.raw_msg_scroll = u16::MAX, // clamped to content in render
         KeyCode::F(1) => app.current_view = View::Help,
         _ => {}
     }
@@ -1748,7 +1898,10 @@ pub(super) fn get_selected_call_id(app: &App) -> Option<String> {
 }
 
 /// Source IP of the selected call-list dialog (for the Name Address popup).
-pub(super) fn get_selected_dialog_src(app: &App) -> Option<std::net::IpAddr> {
+/// Source + destination IPs of the selected dialog (honoring the active filter).
+pub(super) fn get_selected_dialog_endpoints(
+    app: &App,
+) -> Option<(std::net::IpAddr, std::net::IpAddr)> {
     let store = app.dialog_store.read();
     let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
         store
@@ -1758,25 +1911,43 @@ pub(super) fn get_selected_dialog_src(app: &App) -> Option<std::net::IpAddr> {
     } else {
         store.iter().collect()
     };
-    dialogs.get(app.call_list.selected()).map(|d| d.src_addr)
+    dialogs
+        .get(app.call_list.selected())
+        .map(|d| (d.src_addr, d.dst_addr))
 }
 
-/// Open the "Name Address" popup pre-filled with `ip` and its existing name.
-pub(super) fn open_name_dialog(app: &mut App, ip: std::net::IpAddr) {
-    let existing = app
-        .resolver
-        .manual_entries()
-        .into_iter()
-        .find(|(i, _)| *i == ip)
-        .map(|(_, n)| n)
-        .unwrap_or_default();
-    app.name_dialog.cursor = existing.len();
-    app.name_dialog.name = existing;
-    app.name_dialog.ip = ip.to_string();
+/// Open the "Name Address" popup offering every endpoint in `ips` (de-duplicated,
+/// order preserved), with `active` initially focused. Each target is pre-filled
+/// with its existing manual name. `Tab`/`Shift-Tab` switch between them.
+pub(super) fn open_name_dialog_for(app: &mut App, ips: Vec<std::net::IpAddr>, active: usize) {
+    let manual = app.resolver.manual_entries();
+    let mut targets: Vec<super::NameTarget> = Vec::new();
+    for ip in ips {
+        if targets.iter().any(|t| t.ip == ip.to_string()) {
+            continue; // de-dupe (e.g. loopback src == dst)
+        }
+        let existing = manual
+            .iter()
+            .find(|(i, _)| *i == ip)
+            .map(|(_, n)| n.clone())
+            .unwrap_or_default();
+        targets.push(super::NameTarget {
+            ip: ip.to_string(),
+            name: existing,
+        });
+    }
+    if targets.is_empty() {
+        return;
+    }
+    let active = active.min(targets.len() - 1);
+    app.name_dialog.cursor = targets[active].name.len();
+    app.name_dialog.targets = targets;
+    app.name_dialog.active = active;
     app.active_popup = Some(Popup::NameAddress);
 }
 
-/// Handle keys in the "Name Address" popup (single editable name field).
+/// Handle keys in the "Name Address" popup. `Tab`/`Shift-Tab` move between the
+/// offered endpoints; the other keys edit the active endpoint's name.
 pub(super) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -1786,20 +1957,27 @@ pub(super) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
             apply_name_dialog(app);
             app.active_popup = None;
         }
+        KeyCode::Tab => app.name_dialog.focus_next(),
+        KeyCode::BackTab => app.name_dialog.focus_prev(),
         KeyCode::Backspace => {
-            if app.name_dialog.cursor > 0 {
-                let prev = app.name_dialog.name[..app.name_dialog.cursor]
+            let cur = app.name_dialog.cursor;
+            if cur > 0
+                && let Some(name) = app.name_dialog.active_name_mut()
+            {
+                let prev = name[..cur]
                     .char_indices()
                     .next_back()
                     .map(|(i, _)| i)
                     .unwrap_or(0);
-                app.name_dialog.name.remove(prev);
+                name.remove(prev);
                 app.name_dialog.cursor = prev;
             }
         }
         KeyCode::Left => {
-            if app.name_dialog.cursor > 0 {
-                app.name_dialog.cursor = app.name_dialog.name[..app.name_dialog.cursor]
+            let name = app.name_dialog.active_name();
+            let cur = app.name_dialog.cursor;
+            if cur > 0 {
+                app.name_dialog.cursor = name[..cur]
                     .char_indices()
                     .next_back()
                     .map(|(i, _)| i)
@@ -1807,45 +1985,71 @@ pub(super) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Right => {
-            if app.name_dialog.cursor < app.name_dialog.name.len() {
-                app.name_dialog.cursor = app.name_dialog.name[app.name_dialog.cursor..]
+            let name = app.name_dialog.active_name();
+            let cur = app.name_dialog.cursor;
+            if cur < name.len() {
+                app.name_dialog.cursor = name[cur..]
                     .char_indices()
                     .nth(1)
-                    .map(|(i, _)| app.name_dialog.cursor + i)
-                    .unwrap_or(app.name_dialog.name.len());
+                    .map(|(i, _)| cur + i)
+                    .unwrap_or(name.len());
             }
         }
         KeyCode::Home => app.name_dialog.cursor = 0,
-        KeyCode::End => app.name_dialog.cursor = app.name_dialog.name.len(),
+        KeyCode::End => app.name_dialog.cursor = app.name_dialog.active_name().len(),
         KeyCode::Char(c) => {
-            app.name_dialog.name.insert(app.name_dialog.cursor, c);
-            app.name_dialog.cursor += c.len_utf8();
+            let cur = app.name_dialog.cursor;
+            if let Some(name) = app.name_dialog.active_name_mut() {
+                name.insert(cur, c);
+                app.name_dialog.cursor += c.len_utf8();
+            }
         }
         _ => {}
     }
 }
 
-/// Apply the Name Address popup: set or clear the manual mapping, persist it,
-/// and turn name resolution on so the change is visible immediately.
+/// Apply the Name Address popup: set or clear the manual mapping for every
+/// offered endpoint, persist the table, and turn name resolution on so the
+/// changes are visible immediately.
 fn apply_name_dialog(app: &mut App) {
-    let Ok(ip) = app.name_dialog.ip.parse::<std::net::IpAddr>() else {
-        return;
-    };
-    let name = app.name_dialog.name.trim().to_string();
-    if name.is_empty() {
-        app.resolver.remove_manual(&ip);
-        app.status_error = Some(format!("Cleared name for {ip}"));
-    } else if !crate::names::is_valid_name(&name) {
-        app.status_error =
-            Some("Invalid name (control characters or too long); not saved".to_string());
-        return;
-    } else {
-        app.resolver.set_manual(ip, name.clone());
-        app.status_error = Some(format!("{ip} \u{2192} {name}"));
-        if app.name_mode == crate::names::NameMode::Off {
-            app.name_mode = crate::names::NameMode::Names;
+    let mut set = 0usize;
+    let mut cleared = 0usize;
+    let mut last: Option<String> = None;
+    // Snapshot targets so we don't borrow name_dialog across resolver calls.
+    let targets: Vec<(String, String)> = app
+        .name_dialog
+        .targets
+        .iter()
+        .map(|t| (t.ip.clone(), t.name.trim().to_string()))
+        .collect();
+    for (ip_str, name) in targets {
+        let Ok(ip) = ip_str.parse::<std::net::IpAddr>() else {
+            continue;
+        };
+        if name.is_empty() {
+            if app.resolver.remove_manual(&ip).is_some() {
+                cleared += 1;
+            }
+        } else if !crate::names::is_valid_name(&name) {
+            app.status_error =
+                Some("Invalid name (control characters or too long); not saved".to_string());
+            return;
+        } else {
+            app.resolver.set_manual(ip, name.clone());
+            set += 1;
+            last = Some(format!("{ip} \u{2192} {name}"));
         }
     }
+    if set > 0 && app.name_mode == crate::names::NameMode::Off {
+        app.name_mode = crate::names::NameMode::Names;
+    }
+    app.status_error = match (set, cleared) {
+        (0, 0) => None,
+        (1, 0) => last,
+        (s, 0) => Some(format!("Named {s} endpoints")),
+        (0, c) => Some(format!("Cleared {c} name(s)")),
+        (s, c) => Some(format!("Named {s}, cleared {c}")),
+    };
     app.call_flow_cache.clear();
     if let Some(path) = app.names_save_path.clone()
         && let Err(e) = app.resolver.save_manual_file(&path)
@@ -2160,14 +2364,14 @@ mod tests {
         let mut app = app_with_dialogs();
         handle_call_list_key(&mut app, key(KeyCode::Char('N')));
         assert_eq!(app.active_popup, Some(Popup::NameAddress));
-        // Pre-filled with the selected dialog's source IP.
-        assert_eq!(app.name_dialog.ip, "10.0.0.1");
+        // The source endpoint is focused first (Tab switches to the dest).
+        assert_eq!(app.name_dialog.active_ip(), "10.0.0.1");
     }
 
     #[test]
     fn name_dialog_sets_mapping_and_enables_resolution() {
         let mut app = app_with_dialogs();
-        open_name_dialog(&mut app, addr_a());
+        open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for c in "sbc-edge".chars() {
             handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
         }
@@ -2182,11 +2386,46 @@ mod tests {
         );
     }
 
+    // R1: the popup offers every endpoint; Tab/Shift-Tab switch between them,
+    // each keeps its own edited name, and Enter applies them all.
+    #[test]
+    fn name_dialog_tab_edits_multiple_endpoints() {
+        let mut app = app_with_dialogs();
+        open_name_dialog_for(&mut app, vec![addr_a(), addr_b()], 0);
+        assert_eq!(app.name_dialog.active_ip(), addr_a().to_string());
+        for c in "alice".chars() {
+            handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        // Tab to the second endpoint and name it.
+        handle_name_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.name_dialog.active_ip(), addr_b().to_string());
+        for c in "bob".chars() {
+            handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        // Shift-Tab back: the first endpoint's edit is preserved (not clobbered).
+        handle_name_popup_key(&mut app, key(KeyCode::BackTab));
+        assert_eq!(app.name_dialog.active_ip(), addr_a().to_string());
+        assert_eq!(app.name_dialog.active_name(), "alice");
+        // Enter applies BOTH endpoints.
+        handle_name_popup_key(&mut app, key(KeyCode::Enter));
+        assert_eq!(app.active_popup, None);
+        assert_eq!(
+            app.resolver()
+                .label_ip(addr_a(), crate::names::NameMode::Names),
+            "alice"
+        );
+        assert_eq!(
+            app.resolver()
+                .label_ip(addr_b(), crate::names::NameMode::Names),
+            "bob"
+        );
+    }
+
     #[test]
     fn name_dialog_empty_clears_mapping() {
         let mut app = app_with_dialogs();
         app.resolver().set_manual(addr_a(), "old".into());
-        open_name_dialog(&mut app, addr_a());
+        open_name_dialog_for(&mut app, vec![addr_a()], 0);
         for _ in 0.."old".len() {
             handle_name_popup_key(&mut app, key(KeyCode::Backspace));
         }
@@ -2761,6 +3000,119 @@ mod tests {
         handle_call_flow_key(&mut app, key(KeyCode::Down));
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
         assert!(matches!(app.current_view, View::MessageDiff { .. }));
+    }
+
+    // R5a: `f` filters the ladder to the selected message's transaction and
+    // re-projects the selection; raw/diff/name still resolve original indices.
+    #[test]
+    fn call_flow_f_filters_to_transaction_and_maps_back() {
+        let t0 = base_ts();
+        let mk = |start: &str, cseq: &str, ts: DateTime<Utc>| -> SipMessage {
+            let raw = raw_sip(
+                start,
+                &[
+                    "From: \"a\" <sip:a@x>;tag=t1",
+                    "To: \"b\" <sip:b@x>",
+                    "Call-ID: call-f@test",
+                    cseq,
+                    "Content-Length: 0",
+                ],
+            );
+            parse_sip(
+                &raw,
+                ts,
+                addr_a(),
+                addr_b(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("parse")
+        };
+        let mut app = App::with_processed_messages(vec![
+            mk("INVITE sip:b@x SIP/2.0", "CSeq: 1 INVITE", t0),
+            mk(
+                "SIP/2.0 200 OK",
+                "CSeq: 1 INVITE",
+                t0 + TimeDelta::seconds(1),
+            ),
+            mk(
+                "BYE sip:b@x SIP/2.0",
+                "CSeq: 2 BYE",
+                t0 + TimeDelta::seconds(2),
+            ),
+            mk("SIP/2.0 200 OK", "CSeq: 2 BYE", t0 + TimeDelta::seconds(3)),
+        ]);
+        app.current_view = View::CallFlow("call-f@test".to_string());
+        app.selected_msg_index = 2; // the BYE (original index 2)
+
+        // Toggle on → filter to the BYE transaction, selection re-projected to 0.
+        handle_call_flow_key(&mut app, key(KeyCode::Char('f')));
+        assert_eq!(
+            app.flow_filter.as_ref().map(|(n, m)| (*n, m.as_str())),
+            Some((2, "BYE"))
+        );
+        assert_eq!(app.selected_msg_index, 0);
+
+        // Enter opens the raw view of the ORIGINAL message (BYE = index 2).
+        handle_call_flow_key(&mut app, key(KeyCode::Enter));
+        match &app.current_view {
+            View::RawMessage { message_index, .. } => assert_eq!(*message_index, 2),
+            v => panic!("expected RawMessage at original index 2, got {v:?}"),
+        }
+
+        // Back to the (still filtered) ladder, then toggle off → selection
+        // restored to the original index in the full dialog.
+        app.current_view = View::CallFlow("call-f@test".to_string());
+        handle_call_flow_key(&mut app, key(KeyCode::Char('f')));
+        assert!(app.flow_filter.is_none());
+        assert_eq!(app.selected_msg_index, 2);
+    }
+
+    // R4: `a` opens the selected message's transaction; `A` the whole dialog.
+    #[test]
+    fn call_flow_a_opens_transaction_combined_detail() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('a')));
+        match &app.current_view {
+            View::CombinedDetail { indices, scope, .. } => {
+                assert_eq!(*scope, "Transaction");
+                assert!(!indices.is_empty());
+            }
+            v => panic!("expected CombinedDetail, got {v:?}"),
+        }
+        // Esc returns to the ladder.
+        handle_combined_detail_key(&mut app, key(KeyCode::Esc));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+    }
+
+    #[test]
+    fn call_flow_shift_a_opens_dialog_combined_detail() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('A')));
+        match &app.current_view {
+            View::CombinedDetail { indices, scope, .. } => {
+                assert_eq!(*scope, "Dialog");
+                assert_eq!(indices.len(), 2, "INVITE + 200 OK");
+            }
+            v => panic!("expected CombinedDetail, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn combined_detail_scrolls_and_pages() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('A')));
+        assert_eq!(app.raw_msg_scroll, 0);
+        handle_combined_detail_key(&mut app, key(KeyCode::Down));
+        assert_eq!(app.raw_msg_scroll, 1);
+        handle_combined_detail_key(&mut app, key(KeyCode::PageDown));
+        assert_eq!(app.raw_msg_scroll, 21);
+        handle_combined_detail_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.raw_msg_scroll, 0);
     }
 
     #[test]

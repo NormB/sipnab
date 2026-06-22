@@ -50,6 +50,41 @@ pub use render::{
     render_ladder_scrollbar, render_message_detail,
 };
 
+// ── Transaction grouping ────────────────────────────────────────────
+
+use crate::sip::SipMessage;
+
+/// SIP transaction grouping key: the CSeq sequence number plus method, with
+/// `ACK` folded into the `INVITE` transaction it completes — so a call's
+/// INVITE / 1xx / 2xx / ACK read as one unit, while a separate BYE (different
+/// CSeq number) is its own transaction. Returns `None` for a message with no
+/// parseable CSeq.
+pub fn transaction_key(msg: &SipMessage) -> Option<(u32, String)> {
+    let (num, method) = msg.cseq()?;
+    let method = method.trim().to_ascii_uppercase();
+    let method = if method == "ACK" {
+        "INVITE".to_string()
+    } else {
+        method
+    };
+    Some((num, method))
+}
+
+/// Indices of every message belonging to the same transaction as
+/// `messages[selected]`. Falls back to *all* indices when the selected message
+/// has no CSeq, so callers always receive a non-empty, sensible set.
+pub fn transaction_indices(messages: &[SipMessage], selected: usize) -> Vec<usize> {
+    match messages.get(selected).and_then(transaction_key) {
+        Some(key) => messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| transaction_key(m).as_ref() == Some(&key))
+            .map(|(i, _)| i)
+            .collect(),
+        None => (0..messages.len()).collect(),
+    }
+}
+
 // ── Layout constants ────────────────────────────────────────────────
 
 /// Minimum width for the arrow shaft (dashes) between endpoints.
@@ -124,4 +159,75 @@ pub struct FormattedMessage {
     pub is_retransmission: bool,
     /// Whether this message has an RTP bar in its extra_lines (for drill-down to stream detail).
     pub is_rtp_bar: bool,
+}
+
+#[cfg(test)]
+mod txn_tests {
+    use super::*;
+    use crate::capture::parse::TransportProto;
+    use chrono::Utc;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn msg(start_line: &str, cseq: &str) -> SipMessage {
+        let raw = format!(
+            "{start_line}\r\nVia: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKx\r\n\
+             From: <sip:a@x>;tag=1\r\nTo: <sip:b@x>\r\nCall-ID: c@x\r\n\
+             CSeq: {cseq}\r\nContent-Length: 0\r\n\r\n"
+        );
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        crate::sip::parser::parse_sip(
+            raw.as_bytes(),
+            Utc::now(),
+            ip,
+            ip,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse")
+    }
+
+    fn sample_dialog() -> Vec<SipMessage> {
+        vec![
+            msg("INVITE sip:b@x SIP/2.0", "1 INVITE"), // 0
+            msg("SIP/2.0 180 Ringing", "1 INVITE"),    // 1
+            msg("SIP/2.0 200 OK", "1 INVITE"),         // 2
+            msg("ACK sip:b@x SIP/2.0", "1 ACK"),       // 3
+            msg("BYE sip:b@x SIP/2.0", "2 BYE"),       // 4
+            msg("SIP/2.0 200 OK", "2 BYE"),            // 5
+        ]
+    }
+
+    #[test]
+    fn ack_and_responses_group_with_invite() {
+        let d = sample_dialog();
+        // Selecting any message of the INVITE transaction yields INVITE+1xx+2xx+ACK.
+        for sel in [0usize, 1, 2, 3] {
+            assert_eq!(transaction_indices(&d, sel), vec![0, 1, 2, 3], "sel={sel}");
+        }
+    }
+
+    #[test]
+    fn bye_transaction_is_separate() {
+        let d = sample_dialog();
+        assert_eq!(transaction_indices(&d, 4), vec![4, 5]);
+        assert_eq!(transaction_indices(&d, 5), vec![4, 5]);
+    }
+
+    #[test]
+    fn key_folds_ack_into_invite_but_keeps_bye_distinct() {
+        let d = sample_dialog();
+        assert_eq!(transaction_key(&d[0]), Some((1, "INVITE".to_string())));
+        assert_eq!(transaction_key(&d[3]), Some((1, "INVITE".to_string()))); // ACK → INVITE
+        assert_eq!(transaction_key(&d[4]), Some((2, "BYE".to_string())));
+    }
+
+    #[test]
+    fn missing_cseq_falls_back_to_all() {
+        // A selected message with no CSeq must not yield an empty set.
+        let d = vec![msg("INVITE sip:b@x SIP/2.0", "7 INVITE")];
+        assert_eq!(transaction_indices(&d, 0), vec![0]);
+        // Out-of-range selection also falls back to all.
+        assert_eq!(transaction_indices(&d, 99), vec![0]);
+    }
 }
