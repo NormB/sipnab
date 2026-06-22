@@ -199,10 +199,25 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 } else {
                     let dialog = store.get(&cid);
                     if let Some(d) = dialog {
-                        if d.messages.is_empty() {
+                        // Transaction filter (R5a): when active, show only the
+                        // anchored transaction's messages. A stale key that
+                        // matches nothing falls back to the whole dialog.
+                        let filtered: Option<Vec<crate::sip::SipMessage>> =
+                            app.flow_filter.as_ref().and_then(|key| {
+                                let v: Vec<crate::sip::SipMessage> = d
+                                    .messages
+                                    .iter()
+                                    .filter(|m| call_flow::transaction_key(m).as_ref() == Some(key))
+                                    .cloned()
+                                    .collect();
+                                (!v.is_empty()).then_some(v)
+                            });
+                        let msgs_ref: &[crate::sip::SipMessage] =
+                            filtered.as_deref().unwrap_or(&d.messages);
+                        if msgs_ref.is_empty() {
                             None
                         } else {
-                            let ft = d.messages[0].timestamp;
+                            let ft = msgs_ref[0].timestamp;
                             let pdd = d.timing.pdd_ms();
                             let flow_opts = call_flow::FlowDisplayOptions {
                                 sdp_mode: app.sdp_display_mode,
@@ -215,7 +230,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 name_mode: app.name_mode,
                             };
                             let (participants, msgs) = call_flow::prepare_messages(
-                                &d.messages,
+                                msgs_ref,
                                 ft,
                                 pdd,
                                 &flow_opts,
@@ -317,6 +332,26 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             if let Some(store) = app.dialog_store.try_read() {
                 render_message_diff(
                     frame, main_area, &store, call_id, *msg1_idx, *msg2_idx, &app.theme,
+                );
+            }
+        }
+        View::CombinedDetail {
+            call_id,
+            indices,
+            scope,
+        } => {
+            if let Some(store) = app.dialog_store.try_read() {
+                msg_raw::render_combined_detail(
+                    frame,
+                    main_area,
+                    &store,
+                    &msg_raw::CombinedDetailView {
+                        call_id,
+                        indices,
+                        scope,
+                        scroll_offset: app.raw_msg_scroll,
+                        theme: &app.theme,
+                    },
                 );
             }
         }
@@ -565,7 +600,7 @@ pub(super) fn fkey_bar_items(
                 ("Tab", "Type path"),
                 ("Esc", "Cancel"),
             ],
-            Popup::NameAddress => vec![("Enter", "Save"), ("Esc", "Cancel")],
+            Popup::NameAddress => vec![("Tab", "Endpoint"), ("Enter", "Save"), ("Esc", "Cancel")],
         }
     } else {
         match view {
@@ -637,12 +672,20 @@ pub(super) fn fkey_bar_items(
                         ("t", "Time"),
                         ("c", "Color"),
                         ("R", "Split"),
-                        ("9/0", "Resize"),
+                        ("a/A", "Txn/Dlg"),
+                        ("f", "Filter"),
                         ("F4", "Extend"),
                         ("r", "Streams"),
                         ("F6", "RTP"),
                     ]
                 }
+            }
+            View::CombinedDetail { .. } => {
+                vec![
+                    ("Esc", "Back"),
+                    ("\u{2191}\u{2193}", "Scroll"),
+                    ("PgUp/Dn", "Page"),
+                ]
             }
             View::RawMessage { .. } => {
                 if width < 80 {
@@ -906,10 +949,12 @@ pub(super) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
 ///
 /// Two modes: a directory browser (default) that lists subdirectories and
 /// pcap/pcapng/cap files, or a manual-path text input (toggled with Tab).
-/// Render the "Name Address" popup: an IP (read-only) and an editable name.
+/// Render the "Name Address" popup: a row of the view's endpoints (Tab to
+/// switch), the active IP (read-only), and that IP's editable name.
 pub(super) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let multi = app.name_dialog.targets.len() > 1;
     let popup_width = 60.min(area.width.saturating_sub(4));
-    let popup_height = 8.min(area.height.saturating_sub(2));
+    let popup_height = (if multi { 10 } else { 8 }).min(area.height.saturating_sub(2));
     let popup_area = centered_popup(area, popup_width, popup_height);
 
     frame.render_widget(Clear, popup_area);
@@ -921,17 +966,37 @@ pub(super) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
     frame.render_widget(block, popup_area);
 
     let mut lines: Vec<Line<'_>> = Vec::new();
+    // Endpoint selector row (only when more than one endpoint is offered).
+    if multi {
+        let mut spans: Vec<Span<'_>> = vec![Span::styled(
+            "  Endpoint: ",
+            Style::default().fg(app.theme.muted),
+        )];
+        for (i, t) in app.name_dialog.targets.iter().enumerate() {
+            let style = if i == app.name_dialog.active {
+                Style::default()
+                    .bg(app.theme.selected)
+                    .fg(Color::Black)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.muted)
+            };
+            spans.push(Span::styled(format!(" {} ", t.ip), style));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
     lines.push(Line::from(vec![
         Span::styled("  IP:   ", Style::default().fg(app.theme.muted)),
         Span::styled(
-            app.name_dialog.ip.clone(),
+            app.name_dialog.active_ip().to_string(),
             Style::default()
                 .fg(app.theme.header)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
     // Name field with a visible cursor block at the edit position.
-    let name = &app.name_dialog.name;
+    let name = app.name_dialog.active_name();
     let cursor = app.name_dialog.cursor.min(name.len());
     let (before, after) = name.split_at(cursor);
     let mut field: Vec<Span<'_>> = vec![
@@ -951,8 +1016,13 @@ pub(super) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
     }
     lines.push(Line::from(field));
     lines.push(Line::from(""));
+    let hint = if multi {
+        "  Tab switch endpoint · Enter save all · empty clears · Esc cancel"
+    } else {
+        "  Enter save · empty name clears · Esc cancel"
+    };
     lines.push(Line::from(Span::styled(
-        "  Enter save · empty name clears · Esc cancel",
+        hint,
         Style::default().fg(app.theme.muted),
     )));
 

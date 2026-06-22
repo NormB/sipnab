@@ -17,6 +17,21 @@ use super::stream::{RtpStream, StreamKey};
 use crate::capture::ParsedPacket;
 use crate::sip::sdp::SdpMedia;
 
+/// A media endpoint negotiated in SDP, retained so an RTP stream that appears
+/// *after* its SDP (the usual order — INVITE/200 precede the first RTP packet,
+/// and in offline pcap replay always do) resolves its codec, clock rate, and
+/// dialog the moment it is created. Resolving the clock at creation is what
+/// keeps RFC 3550 jitter correct: jitter is accumulated per packet scaled by
+/// the clock rate, so a dynamic payload type left at the 8 kHz default until a
+/// post-hoc fixup would bake in a wrong (≈11× inflated for 90 kHz) estimate
+/// that cannot be recomputed (SNB-0007).
+#[derive(Debug, Clone)]
+struct SdpEndpoint {
+    call_id: String,
+    /// `a=rtpmap` entries as `(payload_type, encoding, clock_rate)`.
+    rtpmap: Vec<(u8, String, u32)>,
+}
+
 /// Central store for all tracked RTP streams.
 ///
 /// Streams are indexed by [`StreamKey`] for O(1) lookup. When the store
@@ -39,6 +54,12 @@ pub struct StreamStore {
     /// batch mode turns it off — nothing there ever reads the buffers, so
     /// buffering was a per-packet allocation for nothing.
     audio_capture: bool,
+    /// SDP-negotiated media endpoints seen so far, keyed by `(addr, port)` in
+    /// insertion order. Consulted when a stream is first created so dynamic
+    /// payload types resolve from packet one (see [`SdpEndpoint`]). Bounded to
+    /// `max_streams` with oldest-out eviction so a flood of unique calls can't
+    /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
+    sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint>,
 }
 
 impl StreamStore {
@@ -50,6 +71,7 @@ impl StreamStore {
             max_streams,
             max_audio_frames: 1500,
             audio_capture: true,
+            sdp_endpoints: IndexMap::new(),
         }
     }
 
@@ -98,6 +120,9 @@ impl StreamStore {
             self.ensure_capacity();
             let mut stream = RtpStream::new(key.clone(), rtp, timestamp);
             stream.octet_count = payload_len as u64;
+            // Resolve codec/clock/dialog from any SDP already seen for this
+            // endpoint, before any packet feeds the jitter estimate (SNB-0007).
+            self.resolve_from_sdp(&mut stream);
             // Capture G.711 payload for audio export (first packet)
             if self.audio_capture && is_audio_capturable(stream.codec.as_deref()) {
                 let payload_start = rtp.payload_offset;
@@ -174,6 +199,34 @@ impl StreamStore {
         call_id: &str,
         media: &SdpMedia,
     ) {
+        let rtpmap: Vec<(u8, String, u32)> = media
+            .rtpmap
+            .iter()
+            .map(|rm| (rm.payload_type, rm.encoding.clone(), rm.clock_rate))
+            .collect();
+        self.link_endpoint(media_addr, media_port, call_id, &rtpmap);
+    }
+
+    /// Associate every RTP stream on `media_addr:media_port` to `call_id` and,
+    /// for dynamic payload types with no static codec, resolve codec + clock
+    /// rate from the SDP `a=rtpmap` (`(payload_type, encoding, clock_rate)`).
+    ///
+    /// Idempotent and order-independent: it only fills an unset association /
+    /// unknown codec, so it is safe to run both inline (as each SDP is seen)
+    /// and again as a post-capture pass — the latter is what resolves streams
+    /// created *after* their SDP, e.g. offline pcap replay where the INVITE/200
+    /// is parsed before any RTP packet exists (SNB-0007).
+    pub fn link_endpoint(
+        &mut self,
+        media_addr: IpAddr,
+        media_port: u16,
+        call_id: &str,
+        rtpmap: &[(u8, String, u32)],
+    ) {
+        // Remember this endpoint so a stream created *later* (the common
+        // ordering) resolves codec/clock/dialog at creation — see process_rtp.
+        self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap);
+
         for stream in self.streams.values_mut() {
             let src_match =
                 stream.key.src.ip() == media_addr && stream.key.src.port() == media_port;
@@ -190,14 +243,73 @@ impl StreamStore {
                 // Only update if the stream's codec is unknown (dynamic PT with
                 // no static mapping).
                 if stream.codec.is_none()
-                    && let Some(rtpmap) = media
-                        .rtpmap
-                        .iter()
-                        .find(|rm| rm.payload_type == stream.payload_type)
+                    && let Some((_, encoding, clock_rate)) =
+                        rtpmap.iter().find(|(pt, _, _)| *pt == stream.payload_type)
                 {
-                    stream.codec = Some(rtpmap.encoding.clone());
-                    stream.clock_rate = rtpmap.clock_rate;
+                    stream.codec = Some(encoding.clone());
+                    stream.clock_rate = *clock_rate;
                 }
+            }
+        }
+    }
+
+    /// Record an SDP-negotiated endpoint for later stream resolution, bounded
+    /// to `max_streams` entries (oldest-out). A repeated offer/answer for the
+    /// same endpoint refreshes it; a re-offer that drops the rtpmap does not
+    /// clobber a previously-learned one.
+    fn remember_sdp_endpoint(
+        &mut self,
+        addr: IpAddr,
+        port: u16,
+        call_id: &str,
+        rtpmap: &[(u8, String, u32)],
+    ) {
+        match self.sdp_endpoints.get_mut(&(addr, port)) {
+            Some(existing) => {
+                existing.call_id = call_id.to_string();
+                if !rtpmap.is_empty() {
+                    existing.rtpmap = rtpmap.to_vec();
+                }
+            }
+            None => {
+                if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {
+                    self.sdp_endpoints.shift_remove_index(0);
+                }
+                self.sdp_endpoints.insert(
+                    (addr, port),
+                    SdpEndpoint {
+                        call_id: call_id.to_string(),
+                        rtpmap: rtpmap.to_vec(),
+                    },
+                );
+            }
+        }
+    }
+
+    /// Resolve a freshly-created stream's dialog + (for dynamic payload types)
+    /// codec/clock from any SDP endpoint seen earlier for its source or
+    /// destination. Run at creation so the clock rate is correct before the
+    /// first jitter sample (SNB-0007).
+    fn resolve_from_sdp(&self, stream: &mut RtpStream) {
+        for (ip, port) in [
+            (stream.key.src.ip(), stream.key.src.port()),
+            (stream.key.dst.ip(), stream.key.dst.port()),
+        ] {
+            let Some(endpoint) = self.sdp_endpoints.get(&(ip, port)) else {
+                continue;
+            };
+            if stream.associated_dialog.is_none() {
+                stream.associated_dialog = Some(endpoint.call_id.clone());
+                stream.orphaned = false;
+            }
+            if stream.codec.is_none()
+                && let Some((_, encoding, clock_rate)) = endpoint
+                    .rtpmap
+                    .iter()
+                    .find(|(pt, _, _)| *pt == stream.payload_type)
+            {
+                stream.codec = Some(encoding.clone());
+                stream.clock_rate = *clock_rate;
             }
         }
     }
@@ -321,6 +433,130 @@ mod tests {
 
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid")
+    }
+
+    fn ts_ms(ms: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid")
+    }
+
+    fn rtp_pkt(ssrc: u32, seq: u16, payload_type: u8, rtp_ts: u32) -> RtpHeader {
+        RtpHeader {
+            payload_type,
+            sequence: seq,
+            timestamp: rtp_ts,
+            ..make_rtp_header(ssrc, seq)
+        }
+    }
+
+    // SNB-0007: the SDP (carrying `a=rtpmap`) is normally processed BEFORE the
+    // first RTP packet — always so in offline pcap replay. The endpoint is
+    // remembered, so when the stream is created its dynamic payload type
+    // resolves to codec + clock + dialog from packet one, not "Codec ?".
+    #[test]
+    fn dynamic_pt_resolved_at_creation_when_sdp_seen_first() {
+        let mut store = StreamStore::new(100);
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let port = 20000u16;
+        // H.264 on dynamic PT 96 @ 90 kHz — no static payload-type mapping.
+        let rtpmap = vec![(96u8, "H264".to_string(), 90000u32)];
+
+        // SDP link runs first; no stream exists yet, so it creates none.
+        store.link_endpoint(addr, port, "call-1", &rtpmap);
+        assert_eq!(store.len(), 0, "an SDP link must not create a stream");
+
+        // RTP arrives -> stream created and immediately resolved from the SDP.
+        let parsed = make_parsed(port, 30000, 160);
+        store.process_rtp(&parsed, &rtp_pkt(0x00C0FFEE, 1, 96, 0), ts(0));
+        let key = StreamKey {
+            ssrc: 0x00C0FFEE,
+            src: SocketAddr::new(addr, port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let s = store.get(&key).expect("stream should exist");
+        assert_eq!(
+            s.codec.as_deref(),
+            Some("H264"),
+            "codec resolved from rtpmap"
+        );
+        assert_eq!(s.clock_rate, 90000, "clock resolved from rtpmap");
+        assert_eq!(s.associated_dialog.as_deref(), Some("call-1"), "associated");
+    }
+
+    // The other ordering: RTP first (stream exists, dynamic PT unknown), then
+    // the SDP — link_endpoint must enrich the existing stream + associate it.
+    #[test]
+    fn dynamic_pt_resolved_when_rtp_precedes_sdp() {
+        let mut store = StreamStore::new(100);
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let port = 20000u16;
+        let parsed = make_parsed(port, 30000, 160);
+
+        store.process_rtp(&parsed, &rtp_pkt(0x00C0FFEE, 1, 96, 0), ts(0));
+        let key = StreamKey {
+            ssrc: 0x00C0FFEE,
+            src: SocketAddr::new(addr, port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        assert!(
+            store.get(&key).unwrap().codec.is_none(),
+            "dynamic PT 96 has no static codec before SDP"
+        );
+
+        store.link_endpoint(addr, port, "call-1", &[(96, "H264".to_string(), 90000)]);
+        let s = store.get(&key).unwrap();
+        assert_eq!(s.codec.as_deref(), Some("H264"));
+        assert_eq!(s.clock_rate, 90000);
+        assert_eq!(s.associated_dialog.as_deref(), Some("call-1"));
+    }
+
+    // Resolving the clock at creation is what keeps jitter correct: a 90 kHz
+    // video stream whose frames (3000 ticks) arrive at the matching 33 ms pace
+    // has near-zero jitter. The dynamic PT 96 resolved from SDP must yield the
+    // SAME jitter as the static 90 kHz PT 34 — and far less than the inflated
+    // estimate produced if it were left at the 8 kHz default.
+    #[test]
+    fn dynamic_pt_jitter_matches_static_clock() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let port = 20000u16;
+        let parsed = make_parsed(port, 30000, 160);
+        let key = StreamKey {
+            ssrc: 0xBEEF,
+            src: SocketAddr::new(addr, port),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        // Feed a 90 kHz, 33 ms-spaced stream of `pt` to a store, optionally
+        // seeding the SDP for the endpoint first; return the final jitter (ms).
+        let run = |pt: u8, sdp: bool| -> f64 {
+            let mut store = StreamStore::new(100);
+            if sdp {
+                store.link_endpoint(addr, port, "c", &[(96, "H264".to_string(), 90000)]);
+            }
+            for i in 0..8u32 {
+                store.process_rtp(
+                    &parsed,
+                    &rtp_pkt(0xBEEF, i as u16 + 1, pt, i * 3000),
+                    ts_ms(i as i64 * 33),
+                );
+            }
+            store.get(&key).unwrap().jitter
+        };
+
+        let static_90k = run(34, false); // static 90 kHz reference
+        let dynamic_resolved = run(96, true); // PT 96 resolved to 90 kHz via SDP
+        let dynamic_unresolved = run(96, false); // PT 96 left at 8 kHz default (the bug)
+
+        assert!(
+            static_90k < 5.0,
+            "static 90 kHz stream is near-zero jitter: {static_90k}"
+        );
+        assert!(
+            (dynamic_resolved - static_90k).abs() < 1.0,
+            "resolved dynamic PT jitter ({dynamic_resolved}) must match static ({static_90k})"
+        );
+        assert!(
+            dynamic_unresolved > 10.0 * dynamic_resolved.max(0.1),
+            "unresolved (8 kHz) jitter ({dynamic_unresolved}) is wildly inflated vs resolved ({dynamic_resolved})"
+        );
     }
 
     #[test]

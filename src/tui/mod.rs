@@ -403,15 +403,66 @@ struct SettingsDialogState {
     focused_item: usize,
 }
 
-/// State for the "Name Address" popup (map an IP to a host/FQDN).
+/// One endpoint offered for naming in the "Name Address" popup.
+#[derive(Debug, Clone, Default)]
+struct NameTarget {
+    /// The IP being named (display + resolution key).
+    ip: String,
+    /// Editable name text for this IP.
+    name: String,
+}
+
+/// State for the "Name Address" popup (map IPs to host/FQDN names).
+///
+/// Holds every endpoint the current view exposes — a call's participants, or a
+/// stream's two ends — so the user can `Tab`/`Shift-Tab` between them and edit
+/// any one's name, not just the first. Each target keeps its own edited text;
+/// `Enter` applies them all.
 #[derive(Debug, Clone, Default)]
 struct NameDialogState {
-    /// The IP being named (display only; the resolution key).
-    ip: String,
-    /// Editable name text field.
-    name: String,
-    /// Cursor position within `name`.
+    /// Endpoints available to name, in display order.
+    targets: Vec<NameTarget>,
+    /// Index of the endpoint currently being edited.
+    active: usize,
+    /// Cursor position within the active target's name.
     cursor: usize,
+}
+
+impl NameDialogState {
+    /// IP string of the active target (empty if none).
+    fn active_ip(&self) -> &str {
+        self.targets.get(self.active).map_or("", |t| t.ip.as_str())
+    }
+
+    /// Editable name of the active target (empty if none).
+    fn active_name(&self) -> &str {
+        self.targets
+            .get(self.active)
+            .map_or("", |t| t.name.as_str())
+    }
+
+    /// Mutable handle to the active target's name, if any.
+    fn active_name_mut(&mut self) -> Option<&mut String> {
+        let a = self.active;
+        self.targets.get_mut(a).map(|t| &mut t.name)
+    }
+
+    /// Move the active target to the next endpoint (wraps), placing the cursor
+    /// at the end of its current name.
+    fn focus_next(&mut self) {
+        if !self.targets.is_empty() {
+            self.active = (self.active + 1) % self.targets.len();
+            self.cursor = self.active_name().len();
+        }
+    }
+
+    /// Move the active target to the previous endpoint (wraps).
+    fn focus_prev(&mut self) {
+        if !self.targets.is_empty() {
+            self.active = (self.active + self.targets.len() - 1) % self.targets.len();
+            self.cursor = self.active_name().len();
+        }
+    }
 }
 
 /// Structured state for the sngrep-style filter dialog.
@@ -699,6 +750,16 @@ pub enum View {
         /// Index of the second message.
         msg2_idx: usize,
     },
+    /// Combined raw detail of several messages (one transaction or the whole
+    /// dialog) stacked into a single scrollable view.
+    CombinedDetail {
+        /// Call-ID of the dialog.
+        call_id: String,
+        /// Original message indices to show, in order.
+        indices: Vec<usize>,
+        /// Scope label for the title (e.g. "transaction" or "dialog").
+        scope: &'static str,
+    },
     /// Keybinding help overlay.
     Help,
     /// Statistics summary view.
@@ -851,6 +912,10 @@ pub struct App {
     call_flow_detail_focused: bool,
     /// Whether extended (multi-leg) flow is active.
     extended_flow: bool,
+    /// When set, the call-flow ladder is filtered to a single transaction —
+    /// the CSeq grouping key (number + method) anchored when the filter was
+    /// toggled on. `None` shows the whole dialog. See [`call_flow::transaction_key`].
+    flow_filter: Option<(u32, String)>,
     /// Whether RTP stream info is displayed in the call flow.
     show_rtp_in_flow: bool,
     /// First selected message index for diff comparison (Space key).
@@ -947,6 +1012,7 @@ impl App {
             detail_scroll: 0,
             call_flow_detail_focused: false,
             extended_flow: false,
+            flow_filter: None,
             show_rtp_in_flow: false,
             diff_selected_msg: None,
             mark_index: None,

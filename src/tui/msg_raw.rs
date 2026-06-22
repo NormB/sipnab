@@ -87,6 +87,85 @@ pub fn render_raw_message(
     frame.render_widget(para, area);
 }
 
+/// Navigation and display state for the combined (transaction/dialog) viewer.
+pub struct CombinedDetailView<'a> {
+    pub call_id: &'a str,
+    /// Original message indices to show, in order.
+    pub indices: &'a [usize],
+    /// Scope label for the title (e.g. "Transaction" / "Dialog").
+    pub scope: &'a str,
+    pub scroll_offset: u16,
+    pub theme: &'a super::Theme,
+}
+
+/// Render several messages' raw detail stacked into one scrollable view —
+/// every message of a transaction or dialog read together. `indices` are
+/// original positions into the dialog's message list.
+pub fn render_combined_detail(
+    frame: &mut Frame,
+    area: Rect,
+    store: &DialogStore,
+    view: &CombinedDetailView<'_>,
+) {
+    let call_id = view.call_id;
+    let indices = view.indices;
+    let scope = view.scope;
+    let scroll_offset = view.scroll_offset;
+    let theme = view.theme;
+    let title = format!(
+        " {scope} detail — {} message(s) (Esc: Back · ↑/↓ PgUp/PgDn scroll) ",
+        indices.len()
+    );
+    let block = Block::default().borders(Borders::ALL).title(title);
+
+    let dialog = match store.get(call_id) {
+        Some(d) => d,
+        None => {
+            let para = Paragraph::new("Dialog not found.")
+                .block(block)
+                .style(Style::default().fg(theme.bad));
+            frame.render_widget(para, area);
+            return;
+        }
+    };
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    let total = indices.len();
+    for (n, &idx) in indices.iter().enumerate() {
+        let Some(msg) = dialog.messages.get(idx) else {
+            continue;
+        };
+        if n > 0 {
+            lines.push(Line::from(""));
+        }
+        // Separator header: position + the message's request/status line.
+        let raw_text = String::from_utf8_lossy(&msg.raw);
+        let start_line = raw_text.lines().next().unwrap_or("").trim();
+        lines.push(Line::from(Span::styled(
+            format!("──── [{}/{total}] {start_line} ", n + 1),
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
+        let info = format!(
+            "{} {}:{} -> {}:{} [{}]",
+            msg.timestamp.format("%H:%M:%S%.3f"),
+            msg.src_addr,
+            msg.src_port,
+            msg.dst_addr,
+            msg.dst_port,
+            msg.transport,
+        );
+        lines.extend(highlight_sip_message(&info, &raw_text, "", theme));
+    }
+
+    let para = Paragraph::new(lines)
+        .block(block)
+        .scroll((scroll_offset, 0))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(para, area);
+}
+
 // ── Syntax highlighting ─────────────────────────────────────────────
 
 /// Highlight a SIP message with basic syntax coloring.
