@@ -320,40 +320,6 @@ fn after_shows_trailing_context() {
 }
 
 #[test]
-fn rotate_discards_oldest_dialog() {
-    // The RTP fixture has two dialogs (1-1966 then 1-1968). --limit 1 keeps the
-    // FIRST; --limit 1 --rotate discards the oldest and keeps the NEWEST.
-    let rtp = "tests/pcap-samples/sip-rtp-g711.pcap";
-    let no_rotate = run(&[
-        "-N",
-        "-I",
-        rtp,
-        "--limit",
-        "1",
-        "--report",
-        "--no-cli-print",
-    ]);
-    assert!(
-        no_rotate.contains("1-1966@") && !no_rotate.contains("1-1968@"),
-        "--limit 1 (no rotate) keeps the first dialog"
-    );
-    let rotated = run(&[
-        "-N",
-        "-I",
-        rtp,
-        "--limit",
-        "1",
-        "--rotate",
-        "--report",
-        "--no-cli-print",
-    ]);
-    assert!(
-        rotated.contains("1-1968@") && !rotated.contains("1-1966@"),
-        "--rotate keeps the newest dialog and discards the oldest"
-    );
-}
-
-#[test]
 fn tag_labels_dialogs() {
     // --tag applies the given tag to dialogs; it shows in the report Tags column.
     let out = run(&[
@@ -368,5 +334,34 @@ fn tag_labels_dialogs() {
     assert!(
         out.contains("burndown-tag"),
         "--tag value must appear in the report:\n{out}"
+    );
+}
+
+/// SNB-0004: dialog rotation is ON by default. With `--limit` below the call
+/// count and no `--rotate` flag, the store must evict the OLDEST dialog (keep the
+/// newest) — not drop new legitimate calls. `--no-rotate` inverts it. This runs
+/// the real binary end-to-end so a miswired call site (there are two) can't pass
+/// silently. The fixture has two sequential calls: 1-1966 (older) then 1-1968.
+#[test]
+fn dialog_rotation_defaults_on_keep_newest() {
+    let fx = "tests/pcap-samples/sip-rtp-g711.pcap";
+    let default = run(&["-N", "-I", fx, "--limit", "1", "--report", "--no-cli-print"]);
+    assert!(
+        default.contains("1-1968@10.0.2.20") && !default.contains("1-1966@10.0.2.20"),
+        "default rotation must keep the NEWEST call (1-1968), evicting 1-1966:\n{default}"
+    );
+    let no_rotate = run(&[
+        "-N",
+        "-I",
+        fx,
+        "--limit",
+        "1",
+        "--no-rotate",
+        "--report",
+        "--no-cli-print",
+    ]);
+    assert!(
+        no_rotate.contains("1-1966@10.0.2.20") && !no_rotate.contains("1-1968@10.0.2.20"),
+        "--no-rotate must keep the OLDEST call (1-1966), dropping 1-1968:\n{no_rotate}"
     );
 }

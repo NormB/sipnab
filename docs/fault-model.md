@@ -57,7 +57,7 @@ The #1 memory-DoS surface: an attacker invents unlimited unique Call-IDs
 
 | Store | Cap | Policy | Bound proven by |
 |-------|-----|--------|-----------------|
-| `DialogStore` | `--limit` | `--rotate`: LRU evict; else drop-new at cap | `tests/resource_bounds_test.rs` (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
+| `DialogStore` | `--limit` | LRU evict oldest at cap (default); `--no-rotate` → drop-new at cap | `tests/resource_bounds_test.rs` (50k unique Call-IDs, both modes, `len() ≤ cap` at every step) |
 | `StreamStore` | `--max-streams` | always evict oldest | same test (50k unique SSRCs) |
 | per-dialog messages | 500 | drop past cap | `dialog_store.rs` unit tests |
 | per-stream audio frames | 1500 | ring buffer | `stream_store.rs` |

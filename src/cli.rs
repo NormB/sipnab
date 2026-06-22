@@ -361,9 +361,16 @@ pub struct Cli {
     )]
     pub limit: u64,
 
-    /// Rotate dialog storage when limit is reached (discard oldest).
-    #[arg(short = 'R', long = "rotate")]
+    /// Evict the oldest dialog when the `--limit` capacity is reached (LRU).
+    /// This is the **default**; the flag is kept for back-compat / explicitness.
+    #[arg(short = 'R', long = "rotate", overrides_with = "no_rotate")]
     pub rotate: bool,
+
+    /// Disable dialog rotation: at `--limit` capacity, drop *new* dialogs instead
+    /// of evicting the oldest. Inverts the safe default (which rotates) — only use
+    /// when you must preserve the earliest dialogs and accept losing newer ones.
+    #[arg(long = "no-rotate", overrides_with = "rotate")]
+    pub no_rotate: bool,
 
     /// Track dialogs using this method (e.g., "call-id", "branch").
     #[arg(long, value_name = "METHOD")]
@@ -700,6 +707,13 @@ impl Cli {
         Cli::parse()
     }
 
+    /// Whether the dialog store evicts the oldest dialog at `--limit` capacity.
+    /// Defaults to `true` (SNB-0004): a privileged sniffer must bound dialog
+    /// state safely without dropping new legitimate calls. `--no-rotate` opts out.
+    pub fn rotate_enabled(&self) -> bool {
+        !self.no_rotate
+    }
+
     /// Parse CLI arguments from an iterator (for testing).
     pub fn parse_from_args<I, T>(args: I) -> Self
     where
@@ -806,6 +820,24 @@ mod tests {
         assert_eq!(cli.color, "auto");
         assert!(!cli.no_tui);
         assert!(!cli.setup_caps);
+        // Dialog rotation is ON by default (SNB-0004): at --limit capacity the
+        // store evicts the oldest dialog rather than dropping new legitimate
+        // calls — a privileged sniffer must bound dialog state safely by default.
+        assert!(cli.rotate_enabled(), "rotate must default ON");
+    }
+
+    #[test]
+    fn rotate_defaults_on_and_negation_works() {
+        // default: rotate on
+        assert!(Cli::parse_from_args(["sipnab"]).rotate_enabled());
+        // explicit --rotate / -R: still on (affirms the default, back-compat)
+        assert!(Cli::parse_from_args(["sipnab", "--rotate"]).rotate_enabled());
+        assert!(Cli::parse_from_args(["sipnab", "-R"]).rotate_enabled());
+        // --no-rotate opts out → drop-new-at-capacity
+        assert!(!Cli::parse_from_args(["sipnab", "--no-rotate"]).rotate_enabled());
+        // last flag wins when both are given
+        assert!(!Cli::parse_from_args(["sipnab", "--rotate", "--no-rotate"]).rotate_enabled());
+        assert!(Cli::parse_from_args(["sipnab", "--no-rotate", "--rotate"]).rotate_enabled());
     }
 
     #[test]
