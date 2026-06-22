@@ -4,6 +4,33 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.7] - 2026-06-22
+
+### Fixed
+- **Dynamic RTP payload types now resolve codec and clock rate from the SDP
+  `a=rtpmap`** (SNB-0007). Streams created after their SDP (the normal order —
+  always so in offline pcap replay, where the INVITE/200 is parsed before any
+  RTP packet) were left at the 8 kHz default, reporting `Codec ?` and a wrongly
+  ~11×-inflated RFC-3550 jitter for 90 kHz media. The negotiated endpoint is now
+  remembered and applied at stream creation, so e.g. H.264 on PT 96 reports
+  `H264 / 90000` with correct jitter, and the stream associates to its dialog.
+
+### Added
+- **TUI call flow: combined transaction/dialog detail.** `a` opens a single
+  scrollable view stacking the full raw text of every message in the selected
+  message's transaction; `A` does the same for the whole dialog.
+- **TUI call flow: transaction filter.** `f` toggles the ladder between showing
+  only the selected message's transaction (CSeq number + method, with ACK folded
+  into its INVITE) and the whole dialog.
+- **TUI Name popup: multi-endpoint.** `N` now offers every participant of the
+  flow (or both ends of a stream/dialog); `Tab`/`Shift-Tab` switch between them
+  and `Enter` applies all — previously only the first endpoint was editable.
+
+### Changed
+- **TUI call flow: the current row is shown by a full-row highlight** instead of
+  a leading accent glyph that shifted the whole row's content right by one column
+  as the cursor moved.
+
 ## [0.4.6] - 2026-06-22
 
 ### Added

@@ -51,6 +51,8 @@ CALL FLOW:
   Home/End         First/last message
   Enter            Full-screen raw message
   Space            Select message for diff (press twice to compare)
+  a / A            Combined detail: this transaction / whole dialog
+  f                Filter ladder to this transaction (toggle)
   Esc              Back to call list
   Tab              Switch focus: ladder <-> detail pane
   \u{2191}/\u{2193}             Navigate ladder, or scroll detail when focused
@@ -67,7 +69,7 @@ CALL FLOW:
   F4, x            Extended multi-leg flow
   F6               Toggle RTP display
   r                Jump to RTP Streams
-  N                Name selected address (IP -> host / FQDN)
+  N                Name endpoints (Tab/Shift-Tab between participants)
 
 RAW MESSAGE:
   \u{2191}/\u{2193}             Scroll
