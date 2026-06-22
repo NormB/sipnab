@@ -4,6 +4,16 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.6] - 2026-06-22
+
+### Added
+- Dialog report (`--report`) RTP Streams table gains critical per-stream analysis
+  columns alongside SSRC/Codec/Source/Destination: **PT** (payload type number),
+  **Clock** (RTP clock rate), **Lost** (absolute count) next to **Loss%**,
+  **Dur** (stream duration), and **Kbps** (mean payload bitrate). Makes
+  codec/clock mismatches, one-way/short streams, and bitrate anomalies visible
+  at a glance.
+
 ## [0.4.5] - 2026-06-22
 
 ### Added

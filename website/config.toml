@@ -22,7 +22,7 @@ enabled = true
 theme = "ayu-dark"
 
 [extra]
-version = "0.4.4"
+version = "0.4.6"
 github_url = "https://github.com/NormB/sipnab"
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"
