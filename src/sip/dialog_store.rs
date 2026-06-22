@@ -73,11 +73,13 @@ pub struct DialogStore {
 
 /// A dialog idle longer than this has its stored messages compacted.
 ///
-/// Per-dialog message Vecs are capped in *count* but never shrank: with
-/// the default `rotate=false`, a weeks-long capture accumulates idle
-/// dialogs each pinning up to `MAX_MESSAGES_PER_DIALOG` full messages
-/// (raw bytes + bodies) forever. Ten minutes of silence on a dialog
-/// means the call is over or stale; the message tail is enough context.
+/// Per-dialog message Vecs are capped in *count* but never shrank: a
+/// weeks-long capture accumulates idle dialogs each pinning up to
+/// `MAX_MESSAGES_PER_DIALOG` full messages (raw bytes + bodies) forever.
+/// Ten minutes of silence on a dialog means the call is over or stale; the
+/// message tail is enough context. (Dialog *count* is separately bounded by
+/// the store capacity, which evicts the oldest dialog when `rotate` is on —
+/// the default since SNB-0004.)
 pub const IDLE_COMPACT_AFTER: chrono::TimeDelta = chrono::TimeDelta::minutes(10);
 
 /// How many of the most recent messages an idle dialog keeps.
