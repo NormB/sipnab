@@ -706,6 +706,19 @@ impl IdleWatch {
     }
 }
 
+/// Whether a `recv_from` error is transient (retry) rather than fatal. The
+/// read-timeout poll makes `WouldBlock`/`TimedOut` routine, and a signal can
+/// interrupt the blocking call (`Interrupted`/EINTR) at any time — none of these
+/// mean the socket is broken, so the listener must retry, not die.
+fn is_transient_recv_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted
+    )
+}
+
 /// HEP listener: binds a UDP socket and receives HEP packets.
 ///
 /// Each received HEP packet is parsed and converted via [`hep_to_packet`]
@@ -800,10 +813,11 @@ pub fn capture_hep(
 
         let (n, peer) = match socket.recv_from(&mut buf) {
             Ok((n, peer)) => (n, peer),
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
+            // EINTR: a signal interrupted the blocking recv — retry immediately,
+            // silently. Treating it as fatal let a single stray signal kill the
+            // listener (the read-timeout poll makes EINTR routine here).
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(ref e) if is_transient_recv_error(e.kind()) => {
                 if let Some(idle) = idle_watch.check(std::time::Instant::now()) {
                     tracing::warn!(
                         "HEP listener on {bind_addr}: no packets for {}s — \
@@ -934,6 +948,21 @@ impl HepSender {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn eintr_and_read_timeouts_are_transient_not_fatal() {
+        use std::io::ErrorKind;
+        // EINTR (a signal interrupting the blocking recv) must be retried, not
+        // treated as a fatal socket error — a single SIGCHLD/SIGWINCH would
+        // otherwise kill the HEP listener (regression: it did).
+        assert!(is_transient_recv_error(ErrorKind::Interrupted));
+        // Read-timeout polling errors are also transient.
+        assert!(is_transient_recv_error(ErrorKind::WouldBlock));
+        assert!(is_transient_recv_error(ErrorKind::TimedOut));
+        // A genuinely broken socket is fatal.
+        assert!(!is_transient_recv_error(ErrorKind::ConnectionReset));
+        assert!(!is_transient_recv_error(ErrorKind::AddrNotAvailable));
+    }
 
     /// Helper: build a minimal valid HEP v3 packet with the given fields.
     #[allow(clippy::too_many_arguments)]
