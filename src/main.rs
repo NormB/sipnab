@@ -863,7 +863,7 @@ fn run_tui_mode(
 
     let dialog_store = Arc::new(RwLock::new(DialogStore::new(
         cli.limit as usize,
-        cli.rotate,
+        cli.rotate_enabled(),
     )));
     let stream_store = {
         let mut ss = StreamStore::new(cli.max_streams as usize);
@@ -1168,7 +1168,7 @@ fn run_batch_mode(
     let mut processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
     let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(DialogStore::new(
         cli.limit as usize,
-        cli.rotate,
+        cli.rotate_enabled(),
     )));
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
     let stream_store: Arc<RwLock<StreamStore>> = {

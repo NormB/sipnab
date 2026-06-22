@@ -378,9 +378,14 @@ fn default_limit() {
 }
 
 #[test]
-fn default_rotate_is_false() {
+fn dialog_rotation_is_enabled_by_default() {
+    // SNB-0004: rotation is ON by default — at --limit capacity the store evicts
+    // the oldest dialog (LRU) rather than dropping new legitimate calls. The bare
+    // `--rotate` flag field stays false-by-absence; the effective policy is via
+    // rotate_enabled() (`--no-rotate` opts out).
     let cli = defaults();
-    assert!(!cli.rotate, "rotate should default to false");
+    assert!(cli.rotate_enabled(), "dialog rotation must default ON");
+    assert!(!cli.no_rotate, "--no-rotate is off by default");
 }
 
 #[test]

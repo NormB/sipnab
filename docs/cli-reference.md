@@ -114,8 +114,9 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously |
-| `-R`, `--rotate` | -- | off | Rotate dialog storage when limit is reached (discard oldest) |
+| `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously (the dialog-state memory bound; lower it for untrusted/high-volume capture) |
+| `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; kept for back-compat/explicitness |
+| `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest (inverts the safe default) |
 | `--dialog-track` | `<METHOD>` | -- | Dialog tracking method: `call-id` or `branch` |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
