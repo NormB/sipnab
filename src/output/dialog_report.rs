@@ -64,12 +64,26 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
     if !associated.is_empty() {
         let _ = writeln!(out);
         let _ = writeln!(out, "RTP Streams:");
+        // PT (payload type) and Clock disambiguate the codec (e.g. dynamic PTs,
+        // a clock-rate mismatch); Lost/Loss%/Jitter are the quality signals;
+        // Dur + Kbps catch one-way/short streams and bitrate anomalies.
         let _ = writeln!(
             out,
-            "{:<12} {:<8} {:<24} {:<24} {:<8} {:<10} {:<8}",
-            "SSRC", "Codec", "Source", "Destination", "Pkts", "Jitter", "Loss"
+            "{:<12} {:<4} {:<8} {:<6} {:<21} {:<21} {:<7} {:<6} {:<7} {:<8} {:<6} {:<7}",
+            "SSRC",
+            "PT",
+            "Codec",
+            "Clock",
+            "Source",
+            "Destination",
+            "Pkts",
+            "Lost",
+            "Loss%",
+            "Jitter",
+            "Dur",
+            "Kbps"
         );
-        let _ = writeln!(out, "{}", "-".repeat(96));
+        let _ = writeln!(out, "{}", "-".repeat(122));
 
         for stream in &associated {
             let ssrc = format!("0x{:08x}", stream.key.ssrc);
@@ -82,17 +96,33 @@ pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> St
             } else {
                 0.0
             };
+            let dur_s = stream
+                .last_seen
+                .signed_duration_since(stream.first_seen)
+                .num_milliseconds() as f64
+                / 1000.0;
+            // mean bitrate over the stream's lifetime (payload octets only).
+            let kbps = if dur_s > 0.0 {
+                (stream.octet_count as f64 * 8.0) / dur_s / 1000.0
+            } else {
+                0.0
+            };
 
             let _ = writeln!(
                 out,
-                "{:<12} {:<8} {:<24} {:<24} {:<8} {:<10} {:<8}",
+                "{:<12} {:<4} {:<8} {:<6} {:<21} {:<21} {:<7} {:<6} {:<7} {:<8} {:<6} {:<7}",
                 ssrc,
+                stream.payload_type,
                 codec,
+                stream.clock_rate,
                 src,
                 dst,
                 stream.packet_count,
-                format!("{:.0}ms", stream.jitter),
+                stream.lost_packets,
                 format!("{loss_pct:.1}%"),
+                format!("{:.0}ms", stream.jitter),
+                format!("{dur_s:.0}s"),
+                format!("{kbps:.0}"),
             );
         }
     }
@@ -469,6 +499,59 @@ mod tests {
             None,
             "a ringing dialog has no final status code yet"
         );
+    }
+
+    fn make_rtp_stream() -> crate::rtp::stream::RtpStream {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use std::net::SocketAddr;
+        let key = StreamKey {
+            ssrc: 0x0a0b0c0d,
+            src: "10.0.0.1:20000".parse::<SocketAddr>().unwrap(),
+            dst: "10.0.0.2:30000".parse::<SocketAddr>().unwrap(),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 8, // PCMA
+            sequence: 100,
+            timestamp: 0,
+            ssrc: 0x0a0b0c0d,
+            payload_offset: 12,
+        };
+        let mut s = RtpStream::new(key, &hdr, base_ts());
+        s.packet_count = 250;
+        s.octet_count = 40_000; // 40000 B * 8 / 5 s / 1000 = 64 kbps (G.711)
+        s.lost_packets = 5; // 5 / (250+5) = 2.0%
+        s.jitter = 12.0;
+        s.last_seen = base_ts() + TimeDelta::seconds(5);
+        s
+    }
+
+    #[test]
+    fn rtp_report_includes_pt_and_critical_fields() {
+        let s = make_rtp_stream();
+        let report = print_dialog_report(&[], &[&s]);
+        for col in ["PT", "Clock", "Lost", "Loss%", "Jitter", "Dur", "Kbps"] {
+            assert!(
+                report.contains(col),
+                "RTP header missing column {col}: {report}"
+            );
+        }
+        assert!(
+            report.contains("PCMA"),
+            "PT 8 should resolve to codec PCMA: {report}"
+        );
+        assert!(report.contains("8000"), "clock rate 8000 Hz: {report}");
+        assert!(
+            report.contains("64"),
+            "bitrate 64 kbps (40000 B over 5 s): {report}"
+        );
+        assert!(report.contains("5s"), "duration 5s: {report}");
+        assert!(report.contains("2.0%"), "loss 5/(250+5)=2.0%: {report}");
     }
 
     #[test]
