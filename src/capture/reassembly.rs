@@ -485,6 +485,14 @@ impl TcpReassembler {
         }
     }
 
+    /// Whether a stream for this (src, dst) direction is still tracked. A stream
+    /// is dropped on FIN/RST/timeout, so a `false` after an `insert` means the
+    /// connection ended on that packet — the SIP framer uses this to decide
+    /// whether to hold a partial message or flush it as a truncated tail.
+    pub fn contains(&self, src: SocketAddr, dst: SocketAddr) -> bool {
+        self.streams.contains_key(&TcpStreamKey { src, dst })
+    }
+
     /// Number of tracked TCP streams (for diagnostics).
     pub fn len(&self) -> usize {
         self.streams.len()
