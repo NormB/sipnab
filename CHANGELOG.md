@@ -4,6 +4,48 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-06-23
+
+Hardening release driven by an adversarial review of the `siptest` harness: new
+fixtures and a field-level cross-check surfaced five real defects, each fixed
+tests-first (red → green) with adversarial-input coverage.
+
+### Added
+- **`--json` now emits `contact` and the raw `sdp` body** (SNB-0009). `contact`
+  carries the `Contact` header; `sdp` is the raw body, emitted only for
+  `Content-Type: application/sdp` with a valid-UTF-8 body. Lets consumers
+  cross-check the routing target and the negotiated media (connection / `m=` /
+  `a=rtpmap`) that dynamic-PT decode relies on. `schema_version` stays 1
+  (optional fields); schema and `docs/output-formats.md` updated.
+- **Extension-enumeration detection** (SNB-0010). The scanner detector now tracks
+  the set of distinct target extensions (To user, falling back to R-URI) probed
+  by a single source within the window and raises `detection=enumeration` when it
+  exceeds a threshold — catching a **UA-randomized, INVITE-based, or low-and-slow**
+  sweep that signature (`ua_pattern`) and pure-rate detection both miss. INVITE is
+  now also counted toward the rate signal. Bounded per source.
+- **Deterministic parser-robustness test** (`tests/fuzz_corpus_replay.rs`): a
+  stable-toolchain no-panic gate driving `parse_sip`/`parse_sdp`/
+  `parse_rtp_header`/`parse_rtcp` with an adversarial seed set and a fixed
+  mutation sweep, complementing the nightly `cargo fuzz` targets.
+
+### Fixed
+- **IP-fragmented SIP is now reassembled and decoded** (SNB-0011). After IP
+  fragment reassembly the buffer is the full IP payload (transport header + data);
+  the transport header was never re-parsed, so ports stayed `0` and the SIP
+  parser saw the UDP header before the start line — dropping the message entirely
+  (e.g. a >MTU INVITE with a large SDP on a real NIC). Added
+  `parse::reparse_transport`, which recovers the ports/transport and strips the
+  header before SIP parsing.
+- **Out-of-order TCP: a gap-filling segment now completes a stalled push**
+  (SNB-0012). When the final segment (carrying PSH) arrived before an earlier
+  one, the push could not drain (gap) and the later gap-filling segment had no
+  PSH, so the now-contiguous data was buffered forever and never decoded. The
+  reassembler now remembers a pending push and flushes once the gap fills.
+- **stdio MCP server exits on client disconnect** (SNB-0013). `--mcp` over stdio
+  spun until SIGINT and ignored stdin EOF, leaking the process after a client
+  disconnected. The wait loop now also breaks when the stdio serve thread
+  finishes (HTTP transport, which only ends on a signal, is unaffected).
+
 ## [0.4.8] - 2026-06-23
 
 ### Fixed

@@ -272,6 +272,10 @@ struct TcpStream {
     initialized: bool,
     /// Whether a SYN was seen (meaning expected_seq is authoritative).
     syn_seen: bool,
+    /// A PSH was seen but its data could not yet be drained (a missing earlier
+    /// segment left a gap). Stays set until the gap fills and the data flushes,
+    /// so an out-of-order push completes instead of being buffered forever.
+    pending_flush: bool,
 }
 
 /// Reassembles TCP segments into ordered byte streams.
@@ -357,6 +361,7 @@ impl TcpReassembler {
                 buffered_bytes: 0,
                 initialized: false,
                 syn_seen: false,
+                pending_flush: false,
             });
 
         stream.last_seen = Instant::now();
@@ -394,6 +399,12 @@ impl TcpReassembler {
             stream.buffered_bytes += parsed.payload.len();
             stream.buffer.insert(seq, parsed.payload.clone());
         }
+        // A PSH requests delivery of the data up to here; record it while we hold
+        // the borrow. It may not be drainable yet (a gap before it) — the flush
+        // below retries it once a later out-of-order segment fills the gap.
+        if flags.psh {
+            stream.pending_flush = true;
+        }
 
         let mut results = Vec::new();
 
@@ -422,11 +433,18 @@ impl TcpReassembler {
             return results;
         }
 
-        // PSH: flush in-order data
-        if flags.psh {
+        // Flush if a push is pending — now, or one that earlier stalled on a
+        // missing segment that this (out-of-order) segment has just filled.
+        if self.streams.get(&key).is_some_and(|s| s.pending_flush) {
             let flushed = self.drain_in_order(&key);
             if !flushed.is_empty() {
                 results.push(flushed);
+            }
+            // Once the contiguous data is delivered, the push is satisfied.
+            if let Some(s) = self.streams.get_mut(&key)
+                && s.buffer.is_empty()
+            {
+                s.pending_flush = false;
             }
         }
 
@@ -601,6 +619,36 @@ mod tests {
             rst: false,
             psh: false,
         }
+    }
+
+    #[test]
+    fn tcp_psh_on_final_segment_arriving_first_flushes_when_gap_fills() {
+        // Real-world out-of-order: the FINAL segment (carrying PSH) arrives
+        // first; the earlier segment (no PSH) arrives last and fills the gap.
+        // The push stalled on the gap, so when the gap fills the now-contiguous
+        // data MUST be flushed — previously it was buffered forever (decoded 0).
+        let mut r = TcpReassembler::new();
+        // SYN establishes the sequence base (data starts at seq 100), so a later
+        // seg at 105 has a real gap rather than redefining the stream start.
+        let mut syn = default_tcp_flags();
+        syn.syn = true;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 99, syn, b""))
+                .is_empty()
+        );
+        let mut psh = default_tcp_flags();
+        psh.psh = true;
+        // seg2 = bytes [105..110) with PSH, arrives first
+        let seg2 = make_tcp_segment(5060, 5061, 105, psh, b"world");
+        assert!(r.insert(&seg2).is_empty(), "gap before it → nothing yet");
+        // seg1 = bytes [100..105), NO PSH, arrives last and fills the gap
+        let seg1 = make_tcp_segment(5060, 5061, 100, default_tcp_flags(), b"hello");
+        let result = r.insert(&seg1);
+        assert_eq!(
+            result,
+            vec![b"helloworld".to_vec()],
+            "filling the gap must complete the stalled push"
+        );
     }
 
     /// At large caps, eviction is batched (cap/100 at a time): the old
