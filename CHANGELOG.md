@@ -4,6 +4,22 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- **TCP: every SIP message in a coalesced segment is now decoded** (SNB-0008).
+  Over TCP, message boundaries are delimited by `Content-Length`, not packet
+  boundaries, so one segment can carry several complete messages. The reassembly
+  consumer previously wrapped each flush as a single message and parsed only the
+  first, silently dropping the rest — the classic sngrep (#466) weakness. The TCP
+  branch of `PacketProcessor::process` now frames the reassembled stream
+  message-by-message (`frame_tcp_sip`: scan to `\r\n\r\n`/`\n\n`, read
+  `Content-Length` incl. compact `l`, `message_end = headers_end + CL`), emitting
+  one packet per complete message. A trailing incomplete message is held as
+  bounded per-stream leftover (`tcp_sip_leftover`) and prepended to the next
+  flush, so a body split across segments completes cleanly instead of being
+  false-flagged malformed; on FIN/RST the held partial is surfaced (truncated)
+  rather than dropped. Framing is gated by `sip::is_sip_message`, so
+  TLS/WebSocket/binary TCP still passes through whole.
+
 ## [0.4.7] - 2026-06-22
 
 ### Fixed
