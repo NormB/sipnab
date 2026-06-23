@@ -33,7 +33,7 @@ const MAX_TCP_BUFFER: usize = 65536;
 struct FragmentKey {
     src: IpAddr,
     dst: IpAddr,
-    ip_id: u16,
+    ip_id: u32,
     protocol: u8,
 }
 
@@ -562,7 +562,7 @@ mod tests {
     fn make_fragment(
         src: IpAddr,
         dst: IpAddr,
-        ip_id: u16,
+        ip_id: u32,
         offset: u16, // in 8-byte units
         more_fragments: bool,
         payload: &[u8],
@@ -660,7 +660,7 @@ mod tests {
         let mut r = FragmentReassembler::with_limits(1000, DEFAULT_TTL);
         let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
         let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
-        for i in 0..1001u16 {
+        for i in 0..1001u32 {
             // Unique ip_id per fragment → unique reassembly key.
             let f = make_fragment(src, dst, i, 0, true, &[0xAA; 8]);
             r.insert(&f);

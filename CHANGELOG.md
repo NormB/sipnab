@@ -4,6 +4,22 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-06-23
+
+### Fixed
+- **IPv6-fragmented SIP is now reassembled and decoded** (SNB-0014). The
+  IPv4-fragment fix (SNB-0011, 0.4.9) handled IPv4 only. IPv6 carries
+  fragmentation in a **Fragment extension header**, not the base header, but
+  `parse_packet` hardcoded `ip_id`/`fragment_offset`/`more_fragments` to
+  `None/None/false` for IPv6 — so `PacketProcessor` never routed IPv6 fragments
+  to the reassembler and each fragment was mis-parsed as a whole datagram,
+  silently dropping the message (a large INVITE with SDP over IPv6 decoded to
+  0; tshark saw it). `parse_packet` now walks the IPv6 extension headers and, on
+  a Fragment header, pulls its offset / MF / 32-bit identification so the
+  reassembler keys and reassembles it; `reparse_transport` then recovers the
+  transport header from the reassembled payload. `ParsedPacket.ip_id` widened
+  `u16 → u32` (the IPv6 fragment id is 32-bit; the IPv4 16-bit id casts up).
+
 ## [0.4.9] - 2026-06-23
 
 Hardening release driven by an adversarial review of the `siptest` harness: new

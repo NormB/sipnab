@@ -9,7 +9,7 @@ use std::net::IpAddr;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use etherparse::{IpNumber, NetSlice, SlicedPacket, TransportSlice};
+use etherparse::{IpNumber, Ipv6ExtensionSlice, NetSlice, SlicedPacket, TransportSlice};
 
 use super::packet::Packet;
 
@@ -85,8 +85,10 @@ pub struct ParsedPacket {
     pub transport: TransportProto,
     /// Transport-layer payload bytes (e.g., SIP message body, RTP packet).
     pub payload: bytes::Bytes,
-    /// IPv4 identification field for fragment tracking (`None` for IPv6).
-    pub ip_id: Option<u16>,
+    /// IP fragment identification (IPv4 16-bit `Identification`, or the IPv6
+    /// Fragment extension header's 32-bit `Identification`) for reassembly
+    /// keying. `None` when the packet is not fragmented.
+    pub ip_id: Option<u32>,
     /// TCP sequence number (present only for TCP packets).
     pub tcp_seq: Option<u32>,
     /// TCP flags (present only for TCP packets).
@@ -407,7 +409,7 @@ fn extract_parsed_packet(
             (
                 IpAddr::V4(hdr.source_addr()),
                 IpAddr::V4(hdr.destination_addr()),
-                Some(hdr.identification()),
+                Some(u32::from(hdr.identification())),
                 Some(hdr.fragments_offset().value()),
                 hdr.more_fragments(),
                 hdr.protocol().0,
@@ -415,13 +417,31 @@ fn extract_parsed_packet(
         }
         NetSlice::Ipv6(v6) => {
             let hdr = v6.header();
+            // IPv6 fragmentation is carried in a Fragment extension header, not
+            // the base header — pull its offset / MF / 32-bit id so fragments
+            // are reassembled (otherwise each fragment is mis-parsed as a whole
+            // datagram and the SIP message is silently dropped).
+            let (foff, more, id) = {
+                let mut found = (None, false, None);
+                for ext in v6.extensions().clone() {
+                    if let Ipv6ExtensionSlice::Fragment(f) = ext {
+                        found = (
+                            Some(f.fragment_offset().value()),
+                            f.more_fragments(),
+                            Some(f.identification()),
+                        );
+                        break;
+                    }
+                }
+                found
+            };
             (
                 IpAddr::V6(hdr.source_addr()),
                 IpAddr::V6(hdr.destination_addr()),
-                None,
-                None,
-                false,
-                // For IPv6, use the ip_number from the payload (after ext headers)
+                id,
+                foff,
+                more,
+                // the ip_number from the payload (after ext headers)
                 v6.payload().ip_number.0,
             )
         }
