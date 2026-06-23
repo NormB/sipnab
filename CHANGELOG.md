@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-06-23
+
 ### Fixed
 - **TCP: every SIP message in a coalesced segment is now decoded** (SNB-0008).
   Over TCP, message boundaries are delimited by `Content-Length`, not packet
