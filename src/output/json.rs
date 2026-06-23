@@ -37,8 +37,16 @@ struct MessageJson<'a> {
     from: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<&'a str>,
+    /// `Contact` header (routing-critical, cross-checked by the field digest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    contact: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ua: Option<&'a str>,
+    /// Raw SDP body, emitted only when `Content-Type` is `application/sdp` and
+    /// the body is valid UTF-8 — so the cross-check can verify the negotiated
+    /// media (connection/media/rtpmap) the dynamic-PT decode relies on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sdp: Option<&'a str>,
     /// Parsed `CSeq` (number + method) on **every** message — requests included,
     /// so re-requests within a dialog stay distinguishable (SNB-0002). Omitted
     /// only when the `CSeq` header is absent or unparseable.
@@ -176,6 +184,18 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         None
     };
 
+    // Emit the raw SDP body only for application/sdp + valid UTF-8 (a non-UTF-8
+    // body is left to the malformed path, not surfaced as a comparable sdp).
+    let sdp = if msg
+        .content_type()
+        .map(|ct| ct.contains("application/sdp"))
+        .unwrap_or(false)
+    {
+        std::str::from_utf8(&msg.body).ok()
+    } else {
+        None
+    };
+
     let json = MessageJson {
         schema_version: 1,
         timestamp: msg.timestamp.to_rfc3339(),
@@ -191,7 +211,9 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         call_id: msg.call_id(),
         from: msg.from_header(),
         to: msg.to_header(),
+        contact: msg.contact(),
         ua: msg.user_agent(),
+        sdp,
         cseq,
         response_context,
         malformed: msg.malformations(),
@@ -448,6 +470,124 @@ mod tests {
         assert_eq!(parsed["status_code"], 200);
         assert_eq!(parsed["is_request"], false);
         assert!(parsed["response_context"].is_string());
+    }
+
+    #[test]
+    fn message_to_json_includes_contact_and_sdp() {
+        // Field-digest cross-check (item 1): sipnab must EMIT Contact + the SDP
+        // body so the comparator can verify them against tshark — without these
+        // a dropped/mangled rtpmap or a corrupt Contact is invisible.
+        let body = b"v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nc=IN IP4 127.0.0.1\r\nt=0 0\r\nm=audio 6000 RTP/AVP 8 96\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:96 telephone-event/8000\r\n";
+        let cl = format!("Content-Length: {}", body.len());
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>",
+                "Contact: <sip:1001@127.0.0.1:5062>",
+                "Call-ID: sdp-test@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &cl,
+            ],
+            body,
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        let parsed = parsed_json(&msg);
+        assert_eq!(parsed["contact"], "<sip:1001@127.0.0.1:5062>");
+        let sdp = parsed["sdp"].as_str().expect("sdp body present");
+        assert!(
+            sdp.contains("m=audio 6000 RTP/AVP 8 96"),
+            "sdp body emitted: {sdp}"
+        );
+        assert!(
+            sdp.contains("a=rtpmap:96 telephone-event/8000"),
+            "rtpmap present: {sdp}"
+        );
+    }
+
+    #[test]
+    fn message_to_json_omits_contact_and_sdp_when_absent() {
+        let parsed = parsed_json(&make_invite()); // no Contact, empty body
+        assert!(parsed.get("contact").is_none(), "no Contact header => omit");
+        assert!(parsed.get("sdp").is_none(), "no SDP body => omit");
+    }
+
+    #[test]
+    fn message_to_json_sdp_omitted_for_non_sdp_body() {
+        let body = b"plain text body";
+        let cl = format!("Content-Length: {}", body.len());
+        let raw = build_sip(
+            "MESSAGE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:a@h>;tag=t1",
+                "To: <sip:b@h>",
+                "Call-ID: txt@h",
+                "CSeq: 1 MESSAGE",
+                "Content-Type: text/plain",
+                &cl,
+            ],
+            body,
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(
+            parsed_json(&msg).get("sdp").is_none(),
+            "a non-application/sdp body must not be emitted as sdp"
+        );
+    }
+
+    #[test]
+    fn message_to_json_sdp_preserves_adversarial_bytes() {
+        // backslash + embedded quote in the SDP must round-trip through JSON
+        // string escaping intact (not corrupt the line or get dropped).
+        let body = b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 6000 RTP/AVP 8\r\na=label:a\\b\"c\r\n";
+        let cl = format!("Content-Length: {}", body.len());
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:a@h>;tag=t1",
+                "To: <sip:b@h>",
+                "Call-ID: adv@h",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &cl,
+            ],
+            body,
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        let parsed = parsed_json(&msg); // must still be valid JSON
+        let sdp = parsed["sdp"].as_str().expect("sdp present");
+        assert!(
+            sdp.contains("a=label:a\\b\"c"),
+            "adversarial bytes preserved: {sdp:?}"
+        );
     }
 
     /// Parse a REGISTER request carrying exactly `headers`.

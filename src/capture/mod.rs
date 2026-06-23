@@ -424,12 +424,22 @@ impl PacketProcessor {
         if is_fragment {
             return match self.fragment_reassembler.insert(&parsed) {
                 Some(reassembled) => {
-                    // Re-parse the reassembled datagram to get transport headers.
-                    // The reassembled data is the IP payload (transport header + data),
-                    // so we need to create a synthetic packet for re-parsing.
-                    // For now, emit the parsed packet with the reassembled payload.
+                    // The reassembled buffer is the full IP payload (transport
+                    // header + data). Re-parse the transport header so the ports
+                    // and offset are recovered — the fragments themselves carried
+                    // no usable transport header, so without this the payload
+                    // still begins with the UDP/TCP header and SIP parsing fails.
                     let mut completed = parsed;
-                    completed.payload = reassembled.into();
+                    if let Some((sp, dp, tp, hdr)) =
+                        parse::reparse_transport(completed.ip_protocol, &reassembled)
+                    {
+                        completed.src_port = sp;
+                        completed.dst_port = dp;
+                        completed.transport = tp;
+                        completed.payload = bytes::Bytes::copy_from_slice(&reassembled[hdr..]);
+                    } else {
+                        completed.payload = reassembled.into();
+                    }
                     completed.fragment_offset = Some(0);
                     completed.more_fragments = false;
                     vec![completed]

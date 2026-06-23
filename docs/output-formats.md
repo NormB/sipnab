@@ -40,6 +40,12 @@ message, requests included, so re-requests within a dialog (e.g. two REGISTERs
 with `CSeq` 1 and 2) stay distinguishable. It is omitted only when the `CSeq`
 header is absent or unparseable.
 
+`contact` is the `Contact` header value when present (routing-critical, omitted
+otherwise). `sdp` is the raw SDP body, emitted **only** when `Content-Type` is
+`application/sdp` and the body is valid UTF-8 — it lets a consumer verify the
+negotiated media (connection / `m=` / `a=rtpmap`) that dynamic-PT decode depends
+on; omitted for non-SDP or non-UTF-8 bodies.
+
 Responses carry `status_code` and `reason` instead of `method`, plus
 `response_context` (`"<num> <method>"`, what the response answers) — now
 redundant with `cseq` and retained only for backward compatibility.

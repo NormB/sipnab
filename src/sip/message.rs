@@ -263,7 +263,7 @@ fn has_control_bytes(s: &str) -> bool {
 /// Extract the user part from a SIP URI inside a header value.
 ///
 /// Handles both `<sip:user@host>` and bare `sip:user@host` forms (RFC 3261 § 20.20).
-fn extract_uri_user(header_value: &str) -> Option<String> {
+pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
     // Try angle-bracket form first: <sip:user@host> or <sips:user@host>
     // Fall back to bare form: sip:user@host or sips:user@host
     let scheme_pos = header_value

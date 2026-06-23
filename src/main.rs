@@ -1788,6 +1788,16 @@ fn run_batch_mode(
             tracing::info!("MCP server active — press Ctrl-C to stop");
         }
         while !signals::shutdown_requested() {
+            // A stdio MCP client owns the lifetime: when it closes stdin the
+            // serve thread finishes, and there is no client left to serve — so
+            // exit instead of spinning forever (otherwise the process leaks
+            // until SIGINT). HTTP's serve thread only finishes on a signal, so
+            // this is a no-op there.
+            #[cfg(feature = "mcp")]
+            if _mcp_thread.as_ref().is_some_and(|h| h.is_finished()) {
+                tracing::info!("MCP client disconnected — shutting down");
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
         #[cfg(feature = "api")]

@@ -161,6 +161,46 @@ fn slice_of(data: &bytes::Bytes, child: &[u8]) -> bytes::Bytes {
     }
 }
 
+/// Re-parse the transport header from a reassembled IP payload.
+///
+/// After IP-fragment reassembly the buffer is the full IP payload — i.e. the
+/// transport header (UDP/TCP) followed by the application data. The original
+/// fragment carried no usable transport header (non-first fragments have none,
+/// and the first fragment's UDP length covers the whole datagram), so the ports
+/// and the header length must be recovered here before the SIP/RTP parser sees
+/// the payload. Returns `(src_port, dst_port, transport, header_len)` or `None`
+/// for a truncated buffer or an unhandled protocol.
+pub(crate) fn reparse_transport(
+    ip_protocol: u8,
+    payload: &[u8],
+) -> Option<(u16, u16, TransportProto, usize)> {
+    match ip_protocol {
+        17 => {
+            // UDP: src(2) dst(2) len(2) cksum(2) = 8-byte fixed header.
+            if payload.len() < 8 {
+                return None;
+            }
+            let sp = u16::from_be_bytes([payload[0], payload[1]]);
+            let dp = u16::from_be_bytes([payload[2], payload[3]]);
+            Some((sp, dp, TransportProto::Udp, 8))
+        }
+        6 => {
+            // TCP: data offset (high nibble of byte 12) in 32-bit words.
+            if payload.len() < 20 {
+                return None;
+            }
+            let sp = u16::from_be_bytes([payload[0], payload[1]]);
+            let dp = u16::from_be_bytes([payload[2], payload[3]]);
+            let data_off = ((payload[12] >> 4) as usize) * 4;
+            if data_off < 20 || payload.len() < data_off {
+                return None;
+            }
+            Some((sp, dp, TransportProto::Tcp, data_off))
+        }
+        _ => None,
+    }
+}
+
 /// Parse a raw captured [`Packet`] into a [`ParsedPacket`].
 ///
 /// Walks through link-layer, network, and transport headers based on
@@ -504,6 +544,42 @@ fn extract_parsed_packet(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn reparse_transport_udp_recovers_ports_and_strips_header() {
+        // After IP reassembly the buffer is the IP payload = UDP header + body.
+        // reparse must recover the ports and the offset past the 8-byte header.
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&5060u16.to_be_bytes()); // src port
+        buf.extend_from_slice(&5062u16.to_be_bytes()); // dst port
+        buf.extend_from_slice(&0u16.to_be_bytes()); // len (ignored)
+        buf.extend_from_slice(&0u16.to_be_bytes()); // cksum
+        buf.extend_from_slice(b"OPTIONS sip:x SIP/2.0\r\n");
+        let (sp, dp, tp, hdr) = reparse_transport(17, &buf).expect("udp reparse");
+        assert_eq!((sp, dp), (5060, 5062));
+        assert_eq!(tp, TransportProto::Udp);
+        assert_eq!(&buf[hdr..hdr + 7], b"OPTIONS");
+    }
+
+    #[test]
+    fn reparse_transport_tcp_uses_data_offset() {
+        let mut buf = vec![0u8; 20];
+        buf[0..2].copy_from_slice(&5060u16.to_be_bytes());
+        buf[2..4].copy_from_slice(&40000u16.to_be_bytes());
+        buf[12] = 5 << 4; // data offset = 5 words = 20 bytes, no options
+        buf.extend_from_slice(b"INVITE");
+        let (sp, dp, tp, hdr) = reparse_transport(6, &buf).expect("tcp reparse");
+        assert_eq!((sp, dp), (5060, 40000));
+        assert_eq!(tp, TransportProto::Tcp);
+        assert_eq!(hdr, 20);
+    }
+
+    #[test]
+    fn reparse_transport_rejects_truncated_and_unknown() {
+        assert!(reparse_transport(17, &[0, 0, 0]).is_none()); // < 8 bytes
+        assert!(reparse_transport(6, &[0u8; 10]).is_none()); // < 20 bytes
+        assert!(reparse_transport(132, &[0u8; 40]).is_none()); // SCTP: not handled
+    }
 
     /// Build a minimal Ethernet + IPv4 + UDP packet.
     fn build_eth_ipv4_udp(
