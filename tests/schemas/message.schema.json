@@ -30,7 +30,9 @@
     "call_id": { "type": "string" },
     "from": { "type": "string" },
     "to": { "type": "string" },
+    "contact": { "type": "string" },
     "ua": { "type": "string" },
+    "sdp": { "type": "string" },
     "cseq": {
       "type": "object",
       "additionalProperties": false,
