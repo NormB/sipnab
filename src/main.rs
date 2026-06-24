@@ -1253,6 +1253,9 @@ fn run_batch_mode(
     if cli.syslog {
         alert_engine.set_syslog(true);
     }
+    if cli.alert_json {
+        alert_engine.set_json_output(true);
+    }
     let alert_engine = Arc::new(RwLock::new(alert_engine));
 
     let mut engines = DetectionEngines {

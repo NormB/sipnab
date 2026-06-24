@@ -4,6 +4,19 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-06-24
+
+### Added
+- **`--alert-json` structured alert channel.** Security alerts could previously
+  only be consumed by scraping the human `[ALERT] <type> src=<ip> <detail>`
+  stderr line, which is brittle to any format change. With `--alert-json`, each
+  fired alert is also emitted as one JSON object per line on **stderr** —
+  `{"ts","alert","src","detail"}` — a stable machine channel. stdout stays
+  reserved for `--json` message output and the stdio MCP wire, so the JSON alert
+  lines go to stderr (safe even mid-MCP-session). `serde_json` escapes
+  attacker-controlled detail, so a crafted UA/Call-ID can't break the line or
+  inject a field.
+
 ## [0.4.10] - 2026-06-23
 
 ### Fixed
