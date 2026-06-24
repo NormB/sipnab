@@ -1183,6 +1183,39 @@ fn run_batch_mode(
     };
     let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
+    // 17p. Offline multi-core reconstruction (`--jobs N`, N>1). Shard parsed
+    // packets by host pair across N workers with thread-local stores, merge, and
+    // report — covers dialog + RTP-stream reconstruction and `--report`/`--json`.
+    // Advanced features (live, per-message output ordering, security detectors,
+    // SRTP) use the single-threaded path below; this branch only triggers for an
+    // offline input file.
+    if cli.jobs > 1 && cli.input.is_some() {
+        let pcfg = sipnab::parallel::ParallelConfig {
+            jobs: cli.jobs,
+            max_streams: cli.max_streams as usize,
+            max_dialogs: cli.limit as usize,
+            rotate: cli.rotate_enabled(),
+            max_reassembly: cli.max_reassembly as usize,
+            portrange,
+            no_dialog: cli.no_dialog,
+            no_rtp,
+        };
+        let result = sipnab::parallel::run_offline_parallel(rx, pcfg);
+        let _ = handle.thread.join();
+        generate_reports(&cli, &result.dialog_store, &result.stream_store);
+        if !cli.quiet {
+            tracing::info!(
+                "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} workers)",
+                result.total_count,
+                result.sip_count,
+                result.rtp_count,
+                result.stream_store.len(),
+                cli.jobs,
+            );
+        }
+        return;
+    }
+
     // 17a. Initialize security detectors
     let kill_scanner_active = cli.kill_scanner || config.security.kill_scanner.unwrap_or(false);
     let scanner_detector = if kill_scanner_active {
@@ -2196,14 +2229,19 @@ fn process_parsed_packet(
             }
         }
 
-        // Fire quality events on each RTP packet (rate-limited internally)
-        let key = sipnab::rtp::stream::StreamKey {
-            ssrc: rtp_hdr.ssrc,
-            src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-            dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
-        };
-        if let Some(stream) = stream_store.get(&key) {
-            event_exec.fire_quality_event(stream);
+        // Fire quality events on each RTP packet (rate-limited internally). Guard
+        // on a configured command so the common no-`--on-quality` path skips the
+        // StreamKey rebuild + second store lookup entirely (per-RTP-packet
+        // constant-factor cut; fire_quality_event no-ops otherwise).
+        if event_exec.quality_events_enabled() {
+            let key = sipnab::rtp::stream::StreamKey {
+                ssrc: rtp_hdr.ssrc,
+                src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+                dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            };
+            if let Some(stream) = stream_store.get(&key) {
+                event_exec.fire_quality_event(stream);
+            }
         }
         return;
     }

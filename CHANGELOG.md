@@ -4,6 +4,28 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.13] - 2026-06-24
+
+### Added
+- **Multi-core offline reconstruction (`--jobs N`).** For an offline pcap (`-I`)
+  with `N>1`, a dispatcher runs the serial L2/L3/L4 parse + reassembly and shards
+  each packet by **host pair** (direction-independent, so a flow and its
+  bidirectional RTP stay on one worker) to `N` worker threads with thread-local
+  dialog + stream stores. At EOF the stores merge with a global stream↔dialog
+  reassociation, reproducing the single-threaded result even when a call's SDP and
+  its RTP were sharded to different workers. Default `--jobs 1` is unchanged.
+  Covers dialog + RTP-stream reconstruction and `--report`/`--json`; advanced
+  features (live capture, per-message output ordering, security detectors, SRTP)
+  stay single-threaded. Measured 2.14× on a 40k-call carrier corpus; parity
+  validated at jobs 1/2/4/8/12.
+
+### Fixed
+- **Per-RTP-packet quality-event overhead.** The hot path rebuilt a `StreamKey`
+  and did a second stream-store lookup for every RTP packet only to call
+  `fire_quality_event`, which no-ops when `--on-quality` is unset. Now guarded on
+  `EventExecEngine::quality_events_enabled()` — +21% throughput on the 20k-call
+  carrier corpus (5.15s → 4.07s).
+
 ## [0.4.12] - 2026-06-24
 
 ### Fixed
