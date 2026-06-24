@@ -2309,6 +2309,20 @@ fn dispatch_sip_output(
 
 /// Generate post-capture reports based on CLI flags.
 fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &StreamStore) {
+    // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
+    // scales with call count. `endpoint_link_scan_visits` is the cost that was
+    // O(calls²) before the endpoint index; it now grows ~linearly with streams.
+    // A value near streams² means the quadratic regression is back.
+    if std::env::var_os("SIPNAB_PERF_STATS").is_some() {
+        eprintln!(
+            "[perf-stats] dialogs={} streams={} endpoint_link_scan_visits={} evict_shift_work={}",
+            dialog_store.len(),
+            stream_store.len(),
+            stream_store.link_scan_iters(),
+            stream_store.evict_shift_work(),
+        );
+    }
+
     // --report: dialog summary table
     if cli.report && cli.no_tui {
         let dialogs: Vec<&sipnab::sip::dialog::SipDialog> = dialog_store.iter().collect();
