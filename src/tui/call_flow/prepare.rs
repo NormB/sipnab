@@ -261,6 +261,25 @@ pub fn prepare_messages(
 
         // RTP marker: placed on ACK to INVITE (media starts after ACK, not on 200 OK)
         if show_rtp {
+            // Early media: a provisional (1xx) response to the INVITE that
+            // carries SDP means media (ringback / IVR / announcement) flows
+            // BEFORE the 200 OK and ACK. In that case the channel opens here,
+            // at the provisional, not after the ACK. Setting in_call suppresses
+            // the normal after-ACK bar below so only one bar is emitted.
+            let is_invite_early_media = !msg.is_request
+                && msg.status_code.is_some_and(|s| (100..200).contains(&s))
+                && msg.cseq().is_some_and(|(_, method)| method == "INVITE")
+                && msg.sdp().is_some()
+                && !in_call;
+            if is_invite_early_media {
+                in_call = true;
+                let codec = msg.sdp().and_then(|ss| {
+                    let c = format_sdp_codecs(&ss);
+                    if c.is_empty() { None } else { Some(c) }
+                });
+                deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
+            }
+
             // Track the codec from 200 OK SDP for display on the ACK bar
             let is_invite_200 = !msg.is_request
                 && msg.status_code == Some(200)
@@ -276,7 +295,10 @@ pub fn prepare_messages(
                 });
             }
 
-            // Place RTP bar after ACK (media starts flowing after ACK completes handshake)
+            // Place RTP bar after ACK (media starts flowing after ACK completes
+            // the handshake) — the normal, no-early-media case. The label is the
+            // bare text; the renderer owns the `═` channel rails and centers it
+            // (see render::rtp_channel_bar), so no dashes are baked in here.
             // Created as a deferred entry — pushed as a separate FormattedMessage
             // AFTER the ACK so it's independently selectable with j/k navigation.
             let is_invite_ack = msg.is_request
@@ -284,14 +306,8 @@ pub fn prepare_messages(
                 && !in_call;
             if is_invite_ack {
                 in_call = true;
-                let rtp_label = if let Some(ref codec) = pending_rtp_codec {
-                    format!(
-                        "\u{2500}\u{2500} RTP \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}"
-                    )
-                } else {
-                    "\u{2500}\u{2500} RTP \u{00B7} active \u{2500}\u{2500}".to_string()
-                };
-                deferred_rtp_bar = Some((msg.timestamp, rtp_label));
+                deferred_rtp_bar =
+                    Some((msg.timestamp, rtp_flow_label(pending_rtp_codec.as_deref())));
                 pending_rtp_codec = None;
             }
             if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call
@@ -735,6 +751,18 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
 }
 
 /// Format SDP codec list from an SDP session for the summary display.
+/// The bare text for an RTP-in-flow channel bar, e.g. ` RTP · PCMU · active `
+/// (or ` RTP · active ` when the codec is unknown). The surrounding `═` channel
+/// rails are added by the renderer (see `render::rtp_channel_bar`), so this is
+/// just the centered label with a space on each side to keep the rails off the
+/// text.
+fn rtp_flow_label(codec: Option<&str>) -> String {
+    match codec {
+        Some(c) => format!(" RTP \u{00B7} {c} \u{00B7} active "),
+        None => " RTP \u{00B7} active ".to_string(),
+    }
+}
+
 pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
     let mut codecs = Vec::new();
     for media in &session.media {
@@ -933,6 +961,48 @@ mod tests {
                     "Content-Length: 0",
                 ],
                 "",
+            ),
+            ts,
+        )
+    }
+
+    /// A response carrying an SDP answer (e.g. a 183 Session Progress that
+    /// signals early media).
+    fn response_with_sdp(
+        cid: &str,
+        status: u16,
+        reason: &str,
+        cseq: u32,
+        method: &str,
+        codecs_line: &str,
+        rtpmaps: &[&str],
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let mut sdp = String::from(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 10.0.0.2\r\n\
+             s=-\r\n\
+             c=IN IP4 10.0.0.2\r\n\
+             t=0 0\r\n",
+        );
+        sdp.push_str(codecs_line);
+        sdp.push_str("\r\n");
+        for rm in rtpmaps {
+            sdp.push_str(rm);
+            sdp.push_str("\r\n");
+        }
+        parse_resp(
+            &build_raw(
+                &format!("SIP/2.0 {status} {reason}"),
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} {method}"),
+                    "Content-Type: application/sdp",
+                    &format!("Content-Length: {}", sdp.len()),
+                ],
+                &sdp,
             ),
             ts,
         )
@@ -1151,11 +1221,79 @@ mod tests {
             bye("crtp", 2, t0() + TimeDelta::seconds(10)),
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
-        // A deferred RTP bar row is added after the ACK → 5 rows total.
-        assert!(prepared.iter().any(|m| m.is_rtp_bar), "no RTP bar emitted");
+        // Exactly one RTP bar, and it sits immediately AFTER the ACK row.
+        let bar_idxs: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_rtp_bar)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(bar_idxs.len(), 1, "expected exactly one RTP bar");
+        let bar_i = bar_idxs[0];
+        assert_eq!(
+            prepared[bar_i - 1].label,
+            "ACK",
+            "RTP bar must directly follow the ACK"
+        );
+        let bar = &prepared[bar_i];
+        assert!(bar.label.contains("RTP"), "RTP label missing");
+        assert!(bar.label.contains("active"), "RTP label missing 'active'");
+        // The label is bare text — the renderer owns the channel rails, so no
+        // line glyphs are baked into the label.
         assert!(
-            prepared.iter().any(|m| m.label.contains("RTP")),
-            "RTP label missing"
+            !bar.label.contains('\u{2500}') && !bar.label.contains('\u{2550}'),
+            "rails must not be baked into the label: {:?}",
+            bar.label
+        );
+    }
+
+    #[test]
+    fn prepare_rtp_bar_early_media_after_provisional() {
+        // A 183 Session Progress carrying SDP = early media: the channel opens
+        // at the 183, BEFORE the 200 OK / ACK, and only one bar is emitted.
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite("cem", 1, t0()),
+            response_with_sdp(
+                "cem",
+                183,
+                "Session Progress",
+                1,
+                "INVITE",
+                "m=audio 20000 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::milliseconds(200),
+            ),
+            response("cem", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            ack("cem", 1, t0() + TimeDelta::seconds(1)),
+            bye("cem", 2, t0() + TimeDelta::seconds(10)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bar_idxs: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_rtp_bar)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            bar_idxs.len(),
+            1,
+            "early media must still emit exactly one bar, not two"
+        );
+        // The bar follows the 183, not the ACK.
+        let prev = &prepared[bar_idxs[0] - 1];
+        assert!(
+            prev.label.contains("183") || prev.label.contains("Session Progress"),
+            "early-media bar should follow the 183, got prev label {:?}",
+            prev.label
+        );
+        // Codec from the 183 SDP is shown.
+        assert!(
+            prepared[bar_idxs[0]].label.contains("PCMU"),
+            "early-media codec missing: {:?}",
+            prepared[bar_idxs[0]].label
         );
     }
 
