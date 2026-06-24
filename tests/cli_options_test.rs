@@ -774,6 +774,13 @@ fn alert_json_flag() {
 }
 
 #[test]
+fn alert_json_output_flag() {
+    // structured JSON alert channel (--alert-json) is accepted without crashing
+    let (_, _, code) = run_json(&["--alert-json"]);
+    assert_eq!(code, 0);
+}
+
+#[test]
 fn exec_rate_limit_flag() {
     let (_, _, code) = run_json(&["--exec-rate-limit", "5"]);
     assert_eq!(code, 0);
