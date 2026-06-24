@@ -245,7 +245,17 @@ pub fn run_offline_parallel_file(
     use crossbeam_channel::bounded;
     let n = cfg.cores.max(2);
 
-    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Packet>(8192)).unzip();
+    // The reader hands packets to workers in BATCHES rather than one at a time.
+    // Focused --cores research (SNB-0015 follow-up) showed the regression past
+    // cores 2 is NOT the reconstruction work — even with idle workers throughput
+    // halved from cores 2→4. The cost is the per-packet channel hop: every send
+    // bounces a cache line across cores, and that coherency traffic scales with
+    // worker count. Sending ~`BATCH` packets per channel op amortizes that hop
+    // by ~BATCH×, so the single reader can feed more workers before saturating.
+    // Channel depth is in batches; BATCH × depth keeps the in-flight packet cap
+    // (~8192) identical to the old per-packet bound.
+    const BATCH: usize = 128;
+    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Vec<Packet>>(64)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
         .map(|wrx| {
@@ -256,10 +266,12 @@ pub fn run_offline_parallel_file(
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false);
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
-                for packet in wrx.iter() {
-                    for pp in processor.process(&packet) {
-                        total += 1;
-                        reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                for batch in wrx.iter() {
+                    for packet in &batch {
+                        for pp in processor.process(packet) {
+                            total += 1;
+                            reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                        }
                     }
                 }
                 (ds, ss, sip, rtp, total)
@@ -268,8 +280,10 @@ pub fn run_offline_parallel_file(
         .collect();
 
     // Single reader+sharder: open the pcap (gzip-transparent), apply any BPF, and
-    // for each packet do the cheap host-pair peek + send to its worker. One thread,
-    // one copy, one channel hop.
+    // for each packet do the cheap host-pair peek + append to that worker's batch.
+    // A batch is flushed (one channel hop for ~BATCH packets) when it fills, and
+    // any partial batches are flushed at EOF. One thread, one copy, one hop per
+    // batch.
     let (mut cap, _gz_guard) = open_offline(path)?;
     if let Some(ref bpf) = capture_config.bpf_filter {
         cap.filter(bpf, true)
@@ -277,6 +291,7 @@ pub fn run_offline_parallel_file(
     }
     let link_type = cap.get_datalink().0;
     let mut count: u64 = 0;
+    let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
     loop {
         if let Some(max) = capture_config.count
             && count >= max
@@ -297,7 +312,11 @@ pub fn run_offline_parallel_file(
                     Some((a, b)) => shard_for(a, b, n),
                     None => 0,
                 };
-                let _ = txs[s].send(packet);
+                batches[s].push(packet);
+                if batches[s].len() >= BATCH {
+                    let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
+                    let _ = txs[s].send(full);
+                }
                 count += 1;
             }
             Err(pcap::Error::NoMorePackets) => break,
@@ -307,6 +326,12 @@ pub fn run_offline_parallel_file(
                     path.display()
                 ));
             }
+        }
+    }
+    // Flush every partial batch so no tail packets are lost.
+    for (s, b) in batches.into_iter().enumerate() {
+        if !b.is_empty() {
+            let _ = txs[s].send(b);
         }
     }
     drop(txs);
@@ -385,5 +410,91 @@ mod tests {
         for (w, &c) in buckets.iter().enumerate() {
             assert!(c > 0, "worker {w} got nothing — sharding not distributing");
         }
+    }
+
+    #[cfg(feature = "native")]
+    fn pcfg(cores: usize) -> ParallelConfig {
+        ParallelConfig {
+            cores,
+            max_streams: 100_000,
+            max_dialogs: 100_000,
+            rotate: false,
+            max_reassembly: 1024,
+            portrange: (1, 65535),
+            no_dialog: false,
+            no_rtp: false,
+        }
+    }
+
+    /// Batching the reader→worker hand-off must not change what gets
+    /// reconstructed. The corpus has 1042 packets across several host pairs —
+    /// well past any per-shard batch flush threshold — so running it at
+    /// cores 2/4/8 must yield byte-identical dialog/stream/SIP/RTP totals.
+    /// This is the regression guard for the batched dispatch: a botched flush
+    /// (dropped tail batch, off-by-one) would desync the counts here.
+    #[cfg(feature = "native")]
+    #[test]
+    fn batched_dispatch_is_core_count_invariant() {
+        use crate::capture::CaptureConfig;
+        let path = std::path::Path::new("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap");
+        let cc = CaptureConfig::default();
+
+        let runs: Vec<(usize, ReconResult)> = [2usize, 4, 8]
+            .into_iter()
+            .map(|c| (c, run_offline_parallel_file(path, &cc, pcfg(c)).unwrap()))
+            .collect();
+
+        let (base_c, base) = &runs[0];
+        // Sanity: the corpus actually exercised the pipeline (not an empty read).
+        assert!(base.total_count > 0, "fixture produced no packets");
+        for (c, r) in &runs[1..] {
+            assert_eq!(
+                r.dialog_store.len(),
+                base.dialog_store.len(),
+                "dialog count differs: cores {c} vs {base_c}"
+            );
+            assert_eq!(
+                r.stream_store.len(),
+                base.stream_store.len(),
+                "stream count differs: cores {c} vs {base_c}"
+            );
+            assert_eq!(
+                (r.sip_count, r.rtp_count, r.total_count),
+                (base.sip_count, base.rtp_count, base.total_count),
+                "SIP/RTP/total counts differ: cores {c} vs {base_c}"
+            );
+        }
+    }
+
+    /// End-to-end codec-negotiation fixture: the INVITE offered PCMU/PCMA/G722,
+    /// the call used PCMU, then a re-INVITE switched it to G722 — PCMA was
+    /// offered but never used. Reconstructing the capture must surface the two
+    /// *used* codecs (PCMU + G722) as the stream codecs, and never PCMA. This is
+    /// the real-RTP source the call-flow RTP-in-flow bar reads to label the used
+    /// codec rather than the SDP offer list.
+    #[cfg(feature = "native")]
+    #[test]
+    fn codec_negotiation_fixture_reconstructs_used_codecs() {
+        use crate::capture::CaptureConfig;
+        let path = std::path::Path::new("tests/pcap-samples/codec-negotiation.pcap");
+        let cc = CaptureConfig::default();
+        let r = run_offline_parallel_file(path, &cc, pcfg(2)).unwrap();
+        let codecs: std::collections::HashSet<String> = r
+            .stream_store
+            .iter()
+            .filter_map(|s| s.codec.clone())
+            .collect();
+        assert!(
+            codecs.contains("PCMU"),
+            "first segment used PCMU; got {codecs:?}"
+        );
+        assert!(
+            codecs.contains("G722"),
+            "re-INVITE switched to G722; got {codecs:?}"
+        );
+        assert!(
+            !codecs.contains("PCMA"),
+            "PCMA was offered but never used — must not appear: {codecs:?}"
+        );
     }
 }

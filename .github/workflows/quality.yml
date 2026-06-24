@@ -28,6 +28,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
+      # GHC, Swift, CodeQL bundle) we never use. A full --all-features
+      # --all-targets build plus the cargo cache and llvm-cov instrumentation
+      # can exhaust the runner disk ("No space left on device"); reclaim it up
+      # front so the build has headroom.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /usr/share/swift \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev
 
@@ -99,6 +112,19 @@ jobs:
       security-events: write
     steps:
       - uses: actions/checkout@v7
+
+      # ubuntu-latest ships ~25-30 GB of preinstalled SDKs (dotnet, Android,
+      # GHC, Swift, CodeQL bundle) we never use. A full --all-features
+      # --all-targets build plus the cargo cache and llvm-cov instrumentation
+      # can exhaust the runner disk ("No space left on device"); reclaim it up
+      # front so the build has headroom.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /usr/local/share/boost /usr/share/swift \
+                      /opt/hostedtoolcache/CodeQL "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
 
       - name: Install system deps
         run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev libasound2-dev

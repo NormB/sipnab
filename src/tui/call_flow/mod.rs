@@ -21,6 +21,22 @@ use super::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
 
 // ── Bundled display options ────────────────────────────────────────
 
+/// One observed RTP media segment for a dialog: the codec actually carried on
+/// the wire (resolved from the RTP payload type) and the time window it was
+/// seen. The RTP-in-flow bar uses these to label the *used* codec rather than
+/// the full SDP offer list — and a re-INVITE that switches codecs shows up as a
+/// later segment with a different codec. Empty when no RTP was captured
+/// (SIP-only), in which case the bar falls back to the negotiated SDP answer.
+#[derive(Debug, Clone)]
+pub struct RtpCodecSegment {
+    /// Resolved codec name, e.g. `PCMU`, `G722`.
+    pub codec: String,
+    /// First time a packet of this stream was seen.
+    pub start: chrono::DateTime<chrono::Utc>,
+    /// Last time a packet of this stream was seen.
+    pub end: chrono::DateTime<chrono::Utc>,
+}
+
 /// Display options for call flow rendering.
 ///
 /// Bundles the display mode parameters that are threaded through
@@ -36,6 +52,9 @@ pub struct FlowDisplayOptions<'a> {
     pub theme: &'a Theme,
     pub resolver: &'a crate::names::NameResolver,
     pub name_mode: crate::names::NameMode,
+    /// Observed RTP codec segments for this dialog (authoritative "used"
+    /// codec). Empty ⇒ fall back to the negotiated SDP answer codec.
+    pub rtp_segments: &'a [RtpCodecSegment],
 }
 
 // Re-export everything that external code uses.

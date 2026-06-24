@@ -8,3 +8,6 @@ sipnab-x86_64-linux
 *.swp
 *.swo
 *~
+
+# VHS intermediate output for the hero tape (PNG is the committed asset)
+demos/.hero-tmp.gif

@@ -233,6 +233,38 @@ pub fn render_call_flow_lines(
 
 // ── Direct buffer painting (TUI path) ───────────────────────────────
 
+/// Build an RTP-in-flow channel bar: center `label` within `width` columns and
+/// fill both sides with the double rail `═` (U+2550) so a live media stream
+/// reads as a continuous channel between the two endpoints — visually distinct
+/// from the single-line (`─`) SIP signaling arrows. The double rail looks like
+/// an elongated `=`, evoking a sustained two-way pipe rather than a one-shot
+/// message.
+///
+/// `label` is the bare text (e.g. ` RTP · PCMU · active `); the rails are owned
+/// here, not baked into the label, so the bar is always centered regardless of
+/// label width. If the label is as wide as or wider than `width` it is truncated
+/// to `width` columns (rails dropped) so it never overflows past the right pipe
+/// and never falls back to left-alignment. Width is counted in characters, not
+/// bytes, so multi-byte glyphs like `·` (U+00B7) don't skew the centering.
+pub(crate) fn rtp_channel_bar(label: &str, width: usize) -> String {
+    let lw = label.chars().count();
+    if lw >= width {
+        return label.chars().take(width).collect();
+    }
+    let pad = width - lw;
+    let left = pad / 2;
+    let right = pad - left;
+    let mut s = String::with_capacity(label.len() + (pad * 3));
+    for _ in 0..left {
+        s.push('\u{2550}');
+    }
+    s.push_str(label);
+    for _ in 0..right {
+        s.push('\u{2550}');
+    }
+    s
+}
+
 /// Navigation state for the call flow direct renderer.
 pub struct FlowNavigation {
     pub scroll_offset: usize,
@@ -459,20 +491,7 @@ pub fn render_call_flow_direct(
                 let right_pipe = pipe_positions.last().copied().unwrap_or(area.right());
                 let bar_x = left_pipe + 1;
                 let bar_width = right_pipe.saturating_sub(left_pipe).saturating_sub(1) as usize;
-                let label = &msg.label;
-                let padded = if label.len() < bar_width {
-                    let pad = bar_width.saturating_sub(label.len());
-                    let left_pad = pad / 2;
-                    let right_pad = pad - left_pad;
-                    format!(
-                        "{}{}{}",
-                        "\u{2500}".repeat(left_pad),
-                        label,
-                        "\u{2500}".repeat(right_pad),
-                    )
-                } else {
-                    label.to_string()
-                };
+                let padded = rtp_channel_bar(&msg.label, bar_width);
                 let bar_style = match msg.selection_state {
                     SelectionState::Selected => {
                         msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
@@ -1158,6 +1177,69 @@ mod tests {
     use super::*;
     use crate::capture::parse::TransportProto;
 
+    // ── rtp_channel_bar: double-rail centered media channel ───────────
+
+    const RAIL: char = '\u{2550}'; // ═
+
+    #[test]
+    fn rtp_bar_centers_with_double_rail() {
+        let bar = rtp_channel_bar(" RTP \u{00B7} PCMU \u{00B7} active ", 40);
+        // Exactly `width` display columns, rails on both ends, label intact.
+        assert_eq!(bar.chars().count(), 40);
+        assert_eq!(bar.chars().next(), Some(RAIL), "left rail missing");
+        assert_eq!(bar.chars().last(), Some(RAIL), "right rail missing");
+        assert!(
+            bar.contains("RTP \u{00B7} PCMU \u{00B7} active"),
+            "label lost"
+        );
+        // Centered: left/right rail runs differ by at most one (odd padding).
+        let left = bar.chars().take_while(|&c| c == RAIL).count();
+        let right = bar.chars().rev().take_while(|&c| c == RAIL).count();
+        assert!(
+            left.abs_diff(right) <= 1,
+            "not centered: {left} left vs {right} right rails"
+        );
+        // The rail must NOT be the single-line `─` used by SIP arrows.
+        assert!(
+            !bar.contains('\u{2500}'),
+            "used single line, not double rail"
+        );
+    }
+
+    #[test]
+    fn rtp_bar_truncates_instead_of_overflowing() {
+        // Label wider than the gap → truncated to width, never left-aligned
+        // overflow past the pipe. (This was the original bug.)
+        let bar = rtp_channel_bar(" RTP \u{00B7} PCMA, PCMU, G722, opus \u{00B7} active ", 8);
+        assert_eq!(bar.chars().count(), 8, "must clamp to width");
+    }
+
+    #[test]
+    fn rtp_bar_exact_width_is_label_only() {
+        let label = "RTP active"; // 10 chars
+        let bar = rtp_channel_bar(label, 10);
+        assert_eq!(bar, label, "exact fit should not add rails");
+    }
+
+    #[test]
+    fn rtp_bar_adversarial_inputs() {
+        // Empty label → pure rail.
+        let b = rtp_channel_bar("", 6);
+        assert_eq!(b, "\u{2550}".repeat(6));
+        // Zero width → empty, no panic.
+        assert_eq!(rtp_channel_bar(" RTP ", 0), "");
+        // Backslash / special chars in the label survive intact.
+        let b = rtp_channel_bar(r" a\b\c ", 20);
+        assert!(b.contains(r"a\b\c"), "backslashes mangled: {b}");
+        assert_eq!(b.chars().count(), 20);
+        // Embedded NUL is carried through without truncating the string.
+        let b = rtp_channel_bar(" a\0b ", 10);
+        assert!(b.contains('\0'), "NUL dropped");
+        assert_eq!(b.chars().count(), 10);
+        // Width 1, multi-char label → single truncated char, no panic.
+        assert_eq!(rtp_channel_bar("xyz", 1).chars().count(), 1);
+    }
+
     #[test]
     fn format_ladder_empty_messages() {
         let theme = crate::tui::Theme::default();
@@ -1299,6 +1381,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
+            rtp_segments: &[],
         }
     }
 

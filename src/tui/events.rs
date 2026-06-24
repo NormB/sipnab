@@ -892,6 +892,7 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     }
                     let ft = d.messages[0].timestamp;
                     let pdd = d.timing.pdd_ms();
+                    let rtp_segs = app.rtp_codec_segments(call_id);
                     let flow_opts = call_flow::FlowDisplayOptions {
                         sdp_mode: app.sdp_display_mode,
                         ts_mode: app.timestamp_mode,
@@ -901,6 +902,7 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         theme: &app.theme,
                         resolver: app.resolver.as_ref(),
                         name_mode: app.name_mode,
+                        rtp_segments: &rtp_segs,
                     };
                     let (participants, msgs) = call_flow::prepare_messages(
                         &d.messages,

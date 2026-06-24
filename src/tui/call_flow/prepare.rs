@@ -17,7 +17,7 @@ use crate::tui::TimestampMode;
 
 use super::FlowDisplayOptions;
 use super::arrows::truncate;
-use super::{FormattedMessage, Participant, SelectionState, TS_COL_WIDTH};
+use super::{FormattedMessage, Participant, RtpCodecSegment, SelectionState, TS_COL_WIDTH};
 
 /// Compute a color-coded style for a delta timestamp based on its magnitude.
 ///
@@ -52,6 +52,7 @@ pub fn prepare_messages(
     let ts_mode = opts.ts_mode;
     let color_mode = opts.color_mode;
     let show_rtp = opts.show_rtp;
+    let rtp_segments = opts.rtp_segments;
     let selected_msg = opts.selected_msg;
     let theme = opts.theme;
     if messages.is_empty() {
@@ -109,7 +110,11 @@ pub fn prepare_messages(
 
     let mut pdd_done = false;
     let mut in_call = false;
-    let mut pending_rtp_codec: Option<String> = None;
+    // Negotiated codec from the most recent INVITE 200 OK answer (single,
+    // preferred), pending display on the ACK bar. The codec of the last bar we
+    // emitted, so a re-INVITE that switches codecs draws a fresh bar.
+    let mut pending_answer_codec: Option<String> = None;
+    let mut last_bar_codec: Option<String> = None;
     let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
     let mut result = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
@@ -259,44 +264,65 @@ pub fn prepare_messages(
             }
         }
 
-        // RTP marker: placed on ACK to INVITE (media starts after ACK, not on 200 OK)
+        // RTP-in-flow bar. The codec shown is the one ACTUALLY USED, not the
+        // full SDP offer list: it comes from the observed RTP segment for this
+        // media phase (authoritative) and falls back to the single negotiated
+        // SDP answer codec when no RTP is linked. A re-INVITE that switches
+        // codecs (PCMU → G722) draws a fresh bar with the new codec.
         if show_rtp {
-            // Track the codec from 200 OK SDP for display on the ACK bar
+            // Early media: a provisional (1xx) response to the INVITE that
+            // carries SDP means media (ringback / IVR / announcement) flows
+            // BEFORE the 200 OK and ACK. The channel opens here, at the
+            // provisional. Setting in_call suppresses the after-ACK bar below.
+            let is_invite_early_media = !msg.is_request
+                && msg.status_code.is_some_and(|s| (100..200).contains(&s))
+                && msg.cseq().is_some_and(|(_, method)| method == "INVITE")
+                && msg.sdp().is_some()
+                && !in_call;
+            if is_invite_early_media {
+                in_call = true;
+                let codec = segment_codec_at(rtp_segments, msg.timestamp)
+                    .or_else(|| msg.sdp().and_then(|ss| first_sdp_codec(&ss)));
+                last_bar_codec = codec.clone();
+                deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
+            }
+
+            // Remember the negotiated (single, preferred) codec from a 200 OK to
+            // an INVITE — initial OR re-INVITE — to label the following ACK bar.
             let is_invite_200 = !msg.is_request
                 && msg.status_code == Some(200)
                 && msg.cseq().is_some_and(|(_, method)| method == "INVITE");
-            if is_invite_200 && !in_call {
-                pending_rtp_codec = msg.sdp().and_then(|ss| {
-                    let codecs = format_sdp_codecs(&ss);
-                    if codecs.is_empty() {
-                        None
-                    } else {
-                        Some(codecs)
-                    }
-                });
+            if is_invite_200 {
+                pending_answer_codec = msg.sdp().and_then(|ss| first_sdp_codec(&ss));
             }
 
-            // Place RTP bar after ACK (media starts flowing after ACK completes handshake)
-            // Created as a deferred entry — pushed as a separate FormattedMessage
-            // AFTER the ACK so it's independently selectable with j/k navigation.
-            let is_invite_ack = msg.is_request
-                && msg.method.as_ref() == Some(&crate::sip::SipMethod::Ack)
-                && !in_call;
+            // The ACK to an INVITE opens or updates the media channel. The label
+            // is bare text — the renderer owns the `═` channel rails and centers
+            // it (render::rtp_channel_bar). Emitted as a separate deferred
+            // FormattedMessage after the ACK so it's independently selectable.
+            // Emit for the first media, or whenever the used codec changes — so a
+            // re-INVITE renegotiation (PCMU → G722) gets its own bar while a
+            // re-INVITE that keeps the codec (hold/resume) does not duplicate it.
+            let is_invite_ack =
+                msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Ack);
             if is_invite_ack {
-                in_call = true;
-                let rtp_label = if let Some(ref codec) = pending_rtp_codec {
-                    format!(
-                        "\u{2500}\u{2500} RTP \u{00B7} {codec} \u{00B7} active \u{2500}\u{2500}"
-                    )
-                } else {
-                    "\u{2500}\u{2500} RTP \u{00B7} active \u{2500}\u{2500}".to_string()
-                };
-                deferred_rtp_bar = Some((msg.timestamp, rtp_label));
-                pending_rtp_codec = None;
+                let codec = segment_codec_at(rtp_segments, msg.timestamp)
+                    .or_else(|| pending_answer_codec.clone());
+                // First media always draws a bar. After that, only a *known*
+                // codec that differs draws a new one — a None (no SDP/RTP for
+                // this transaction, e.g. a re-INVITE for hold) must not override
+                // an already-established codec with a spurious second bar.
+                if !in_call || (codec.is_some() && codec != last_bar_codec) {
+                    in_call = true;
+                    last_bar_codec = codec.clone();
+                    deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
+                }
+                pending_answer_codec = None;
             }
             if msg.is_request && msg.method.as_ref() == Some(&crate::sip::SipMethod::Bye) && in_call
             {
                 in_call = false;
+                last_bar_codec = None;
             }
         }
 
@@ -735,6 +761,18 @@ pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
 }
 
 /// Format SDP codec list from an SDP session for the summary display.
+/// The bare text for an RTP-in-flow channel bar, e.g. ` RTP · PCMU · active `
+/// (or ` RTP · active ` when the codec is unknown). The surrounding `═` channel
+/// rails are added by the renderer (see `render::rtp_channel_bar`), so this is
+/// just the centered label with a space on each side to keep the rails off the
+/// text.
+fn rtp_flow_label(codec: Option<&str>) -> String {
+    match codec {
+        Some(c) => format!(" RTP \u{00B7} {c} \u{00B7} active "),
+        None => " RTP \u{00B7} active ".to_string(),
+    }
+}
+
 pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
     let mut codecs = Vec::new();
     for media in &session.media {
@@ -760,6 +798,35 @@ pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
         }
     }
     codecs.join(", ")
+}
+
+/// The single negotiated/preferred codec from an SDP body — the first codec of
+/// the first media line. For an SDP *answer* this is the codec the call will
+/// actually use, so the RTP-in-flow bar prefers it over the full offer list.
+/// `None` when the SDP carries no codec.
+fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
+    format_sdp_codecs(session)
+        .split(", ")
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// The codec carried by the RTP segment that flows *from* ladder time `ts` — the
+/// segment whose start is closest to `ts`. A media bar is emitted at an ACK (or
+/// early-media provisional), and that phase's RTP begins right after, so the
+/// nearest-starting segment is the media for this phase: the initial ACK maps to
+/// the first segment, and a re-INVITE ACK that renegotiates the codec maps to
+/// the later segment (PCMU → G722). Returns `None` only when no RTP is linked to
+/// the dialog, in which case the caller falls back to the negotiated SDP codec.
+fn segment_codec_at(
+    segments: &[RtpCodecSegment],
+    ts: chrono::DateTime<chrono::Utc>,
+) -> Option<String> {
+    segments
+        .iter()
+        .min_by_key(|s| (s.start - ts).num_milliseconds().abs())
+        .map(|s| s.codec.clone())
 }
 
 #[cfg(test)]
@@ -938,6 +1005,48 @@ mod tests {
         )
     }
 
+    /// A response carrying an SDP answer (e.g. a 183 Session Progress that
+    /// signals early media).
+    fn response_with_sdp(
+        cid: &str,
+        status: u16,
+        reason: &str,
+        cseq: u32,
+        method: &str,
+        codecs_line: &str,
+        rtpmaps: &[&str],
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let mut sdp = String::from(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 10.0.0.2\r\n\
+             s=-\r\n\
+             c=IN IP4 10.0.0.2\r\n\
+             t=0 0\r\n",
+        );
+        sdp.push_str(codecs_line);
+        sdp.push_str("\r\n");
+        for rm in rtpmaps {
+            sdp.push_str(rm);
+            sdp.push_str("\r\n");
+        }
+        parse_resp(
+            &build_raw(
+                &format!("SIP/2.0 {status} {reason}"),
+                &[
+                    "From: <sip:alice@10.0.0.1>;tag=t1",
+                    "To: <sip:bob@10.0.0.2>;tag=t2",
+                    &format!("Call-ID: {cid}"),
+                    &format!("CSeq: {cseq} {method}"),
+                    "Content-Type: application/sdp",
+                    &format!("Content-Length: {}", sdp.len()),
+                ],
+                &sdp,
+            ),
+            ts,
+        )
+    }
+
     fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         parse_req(
             &build_raw(
@@ -969,6 +1078,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
+            rtp_segments: &[],
         }
     }
 
@@ -1151,11 +1261,239 @@ mod tests {
             bye("crtp", 2, t0() + TimeDelta::seconds(10)),
         ];
         let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
-        // A deferred RTP bar row is added after the ACK → 5 rows total.
-        assert!(prepared.iter().any(|m| m.is_rtp_bar), "no RTP bar emitted");
+        // Exactly one RTP bar, and it sits immediately AFTER the ACK row.
+        let bar_idxs: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_rtp_bar)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(bar_idxs.len(), 1, "expected exactly one RTP bar");
+        let bar_i = bar_idxs[0];
+        assert_eq!(
+            prepared[bar_i - 1].label,
+            "ACK",
+            "RTP bar must directly follow the ACK"
+        );
+        let bar = &prepared[bar_i];
+        assert!(bar.label.contains("RTP"), "RTP label missing");
+        assert!(bar.label.contains("active"), "RTP label missing 'active'");
+        // The label is bare text — the renderer owns the channel rails, so no
+        // line glyphs are baked into the label.
         assert!(
-            prepared.iter().any(|m| m.label.contains("RTP")),
-            "RTP label missing"
+            !bar.label.contains('\u{2500}') && !bar.label.contains('\u{2550}'),
+            "rails must not be baked into the label: {:?}",
+            bar.label
+        );
+    }
+
+    #[test]
+    fn prepare_rtp_bar_early_media_after_provisional() {
+        // A 183 Session Progress carrying SDP = early media: the channel opens
+        // at the 183, BEFORE the 200 OK / ACK, and only one bar is emitted.
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite("cem", 1, t0()),
+            response_with_sdp(
+                "cem",
+                183,
+                "Session Progress",
+                1,
+                "INVITE",
+                "m=audio 20000 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::milliseconds(200),
+            ),
+            response("cem", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+            ack("cem", 1, t0() + TimeDelta::seconds(1)),
+            bye("cem", 2, t0() + TimeDelta::seconds(10)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bar_idxs: Vec<usize> = prepared
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.is_rtp_bar)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            bar_idxs.len(),
+            1,
+            "early media must still emit exactly one bar, not two"
+        );
+        // The bar follows the 183, not the ACK.
+        let prev = &prepared[bar_idxs[0] - 1];
+        assert!(
+            prev.label.contains("183") || prev.label.contains("Session Progress"),
+            "early-media bar should follow the 183, got prev label {:?}",
+            prev.label
+        );
+        // Codec from the 183 SDP is shown.
+        assert!(
+            prepared[bar_idxs[0]].label.contains("PCMU"),
+            "early-media codec missing: {:?}",
+            prepared[bar_idxs[0]].label
+        );
+    }
+
+    // ── prepare_messages: RTP bar shows the USED codec, not the offer ──
+
+    /// Offer lists three codecs; the answer narrows to one. The RTP-in-flow bar
+    /// must show the single negotiated codec (PCMU), not the whole offer list.
+    #[test]
+    fn prepare_rtp_bar_shows_negotiated_codec_not_offer_list() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite_with_sdp(
+                "cneg",
+                1,
+                "m=audio 20000 RTP/AVP 0 8 9",
+                &[
+                    "a=rtpmap:0 PCMU/8000",
+                    "a=rtpmap:8 PCMA/8000",
+                    "a=rtpmap:9 G722/8000",
+                ],
+                t0(),
+            ),
+            response_with_sdp(
+                "cneg",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                "m=audio 20002 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("cneg", 1, t0() + TimeDelta::seconds(1)),
+            bye("cneg", 2, t0() + TimeDelta::seconds(10)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bars: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
+        assert_eq!(bars.len(), 1, "expected exactly one media bar");
+        let label = &bars[0].label;
+        assert!(
+            label.contains("PCMU"),
+            "should show negotiated PCMU: {label:?}"
+        );
+        assert!(
+            !label.contains("PCMA") && !label.contains("G722"),
+            "must not show offered-but-unused codecs: {label:?}"
+        );
+    }
+
+    /// A re-INVITE that renegotiates the codec (PCMU → G722) draws a second bar
+    /// showing the new codec; subsequent RTP uses it.
+    #[test]
+    fn prepare_rtp_bar_reinvite_switches_codec() {
+        let theme = Theme::default();
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let msgs = vec![
+            invite_with_sdp(
+                "crei",
+                1,
+                "m=audio 20000 RTP/AVP 0 8",
+                &["a=rtpmap:0 PCMU/8000", "a=rtpmap:8 PCMA/8000"],
+                t0(),
+            ),
+            response_with_sdp(
+                "crei",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                "m=audio 20002 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("crei", 1, t0() + TimeDelta::seconds(1)),
+            // re-INVITE renegotiates to G722.
+            invite_with_sdp(
+                "crei",
+                2,
+                "m=audio 20000 RTP/AVP 9 0",
+                &["a=rtpmap:9 G722/8000", "a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::seconds(5),
+            ),
+            response_with_sdp(
+                "crei",
+                200,
+                "OK",
+                2,
+                "INVITE",
+                "m=audio 20002 RTP/AVP 9",
+                &["a=rtpmap:9 G722/8000"],
+                t0() + TimeDelta::seconds(6),
+            ),
+            ack("crei", 2, t0() + TimeDelta::seconds(6)),
+            bye("crei", 3, t0() + TimeDelta::seconds(20)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bars: Vec<&FormattedMessage> = prepared.iter().filter(|m| m.is_rtp_bar).collect();
+        assert_eq!(bars.len(), 2, "expected a bar per codec segment");
+        assert!(
+            bars[0].label.contains("PCMU"),
+            "first segment is PCMU: {:?}",
+            bars[0].label
+        );
+        assert!(
+            bars[1].label.contains("G722"),
+            "second segment is G722 after the re-INVITE: {:?}",
+            bars[1].label
+        );
+    }
+
+    /// When the answer non-conformantly lists several codecs but RTP actually
+    /// carries one, the observed RTP segment wins over the SDP-first codec.
+    #[test]
+    fn prepare_rtp_bar_prefers_observed_rtp_over_sdp() {
+        let theme = Theme::default();
+        // Observed RTP is PCMU, active across the call.
+        let segs = vec![RtpCodecSegment {
+            codec: "PCMU".to_string(),
+            start: t0() + TimeDelta::seconds(1),
+            end: t0() + TimeDelta::seconds(9),
+        }];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        o.rtp_segments = &segs;
+        let msgs = vec![
+            invite_with_sdp(
+                "crtpwin",
+                1,
+                "m=audio 20000 RTP/AVP 8 0",
+                &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
+                t0(),
+            ),
+            // Answer lists PCMA first (would be the SDP-derived pick) then PCMU.
+            response_with_sdp(
+                "crtpwin",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                "m=audio 20002 RTP/AVP 8 0",
+                &["a=rtpmap:8 PCMA/8000", "a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("crtpwin", 1, t0() + TimeDelta::seconds(1)),
+            bye("crtpwin", 2, t0() + TimeDelta::seconds(10)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bar = prepared.iter().find(|m| m.is_rtp_bar).expect("a media bar");
+        assert!(
+            bar.label.contains("PCMU"),
+            "observed RTP PCMU should win over SDP-first PCMA: {:?}",
+            bar.label
+        );
+        assert!(
+            !bar.label.contains("PCMA"),
+            "must not show SDP-first PCMA when RTP is PCMU: {:?}",
+            bar.label
         );
     }
 
