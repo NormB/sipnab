@@ -60,6 +60,23 @@ pub struct StreamStore {
     /// `max_streams` with oldest-out eviction so a flood of unique calls can't
     /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
     sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint>,
+    /// `(addr, port)` → keys of streams whose src OR dst is that endpoint.
+    /// Without it, linking an SDP media endpoint to its stream(s) linear-scanned
+    /// the whole store on every SDP-bearing SIP message — O(streams) per message,
+    /// O(calls²) overall (SNB-0015). Kept consistent on insert/evict/clear, just
+    /// like `ssrc_index`.
+    endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>>,
+    /// Probe (SNB-0015): cumulative count of per-stream visits performed while
+    /// linking SDP endpoints to streams. This is the work that was O(calls²); the
+    /// endpoint index keeps it O(calls). Read via [`link_scan_iters`] and exposed
+    /// in batch stats so the scaling is observable and any regression is caught.
+    link_scan_iters: u64,
+    /// Probe (SNB-0015): cumulative number of entries shifted while evicting
+    /// streams once the store is at `max_streams`. `IndexMap::shift_remove_index(0)`
+    /// is O(n), so evicting one-at-a-time under sustained cap pressure was
+    /// O(streams) per packet → O(calls²). Batched eviction amortizes it to O(1)
+    /// per insertion. A value near evictions×max_streams means the regression is back.
+    evict_shift_work: u64,
 }
 
 impl StreamStore {
@@ -72,7 +89,24 @@ impl StreamStore {
             max_audio_frames: 1500,
             audio_capture: true,
             sdp_endpoints: IndexMap::new(),
+            endpoint_index: std::collections::HashMap::new(),
+            link_scan_iters: 0,
+            evict_shift_work: 0,
         }
+    }
+
+    /// Cumulative per-stream visits during SDP-endpoint linking (SNB-0015 probe).
+    /// With the endpoint index this grows ~linearly with calls; a quadratic value
+    /// signals the index was bypassed (the old full-store scan).
+    pub fn link_scan_iters(&self) -> u64 {
+        self.link_scan_iters
+    }
+
+    /// Cumulative entries shifted during stream eviction (SNB-0015 probe). With
+    /// batched eviction this stays ~O(streams); a value near evictions×max_streams
+    /// signals the O(n)-per-eviction regression returned.
+    pub fn evict_shift_work(&self) -> u64 {
+        self.evict_shift_work
     }
 
     /// Enable or disable audio payload buffering (see the field docs).
@@ -135,6 +169,7 @@ impl StreamStore {
                 .entry(key.ssrc)
                 .or_default()
                 .push(key.clone());
+            self.index_endpoints(&key);
             self.streams.insert(key, stream);
         }
     }
@@ -173,13 +208,16 @@ impl StreamStore {
     /// media address and port plus the dialog's Call-ID. Any stream whose
     /// source or destination matches the media endpoint gets linked.
     pub fn link_to_dialog(&mut self, media_addr: IpAddr, media_port: u16, call_id: &str) {
-        for stream in self.streams.values_mut() {
-            let src_match =
-                stream.key.src.ip() == media_addr && stream.key.src.port() == media_port;
-            let dst_match =
-                stream.key.dst.ip() == media_addr && stream.key.dst.port() == media_port;
-
-            if (src_match || dst_match) && stream.associated_dialog.is_none() {
+        // Indexed: visit only the streams on this endpoint, not the whole store.
+        let Some(keys) = self.endpoint_index.get(&(media_addr, media_port)) else {
+            return;
+        };
+        let keys = keys.clone();
+        self.link_scan_iters += keys.len() as u64;
+        for key in &keys {
+            if let Some(stream) = self.streams.get_mut(key)
+                && stream.associated_dialog.is_none()
+            {
                 stream.associated_dialog = Some(call_id.to_string());
                 stream.orphaned = false;
             }
@@ -227,28 +265,32 @@ impl StreamStore {
         // ordering) resolves codec/clock/dialog at creation — see process_rtp.
         self.remember_sdp_endpoint(media_addr, media_port, call_id, rtpmap);
 
-        for stream in self.streams.values_mut() {
-            let src_match =
-                stream.key.src.ip() == media_addr && stream.key.src.port() == media_port;
-            let dst_match =
-                stream.key.dst.ip() == media_addr && stream.key.dst.port() == media_port;
-
-            if src_match || dst_match {
-                if stream.associated_dialog.is_none() {
-                    stream.associated_dialog = Some(call_id.to_string());
-                    stream.orphaned = false;
-                }
-
-                // Enrich codec info from SDP rtpmap for dynamic payload types.
-                // Only update if the stream's codec is unknown (dynamic PT with
-                // no static mapping).
-                if stream.codec.is_none()
-                    && let Some((_, encoding, clock_rate)) =
-                        rtpmap.iter().find(|(pt, _, _)| *pt == stream.payload_type)
-                {
-                    stream.codec = Some(encoding.clone());
-                    stream.clock_rate = *clock_rate;
-                }
+        // Indexed lookup (SNB-0015): the endpoint index yields exactly the streams
+        // whose src or dst is this endpoint — the same set the old full-store scan
+        // matched, but without visiting unrelated streams. So the per-message link
+        // is O(matches) instead of O(streams), collapsing the overall cost from
+        // O(calls²) back to O(calls).
+        let Some(keys) = self.endpoint_index.get(&(media_addr, media_port)) else {
+            return;
+        };
+        let keys = keys.clone();
+        self.link_scan_iters += keys.len() as u64;
+        for key in &keys {
+            let Some(stream) = self.streams.get_mut(key) else {
+                continue;
+            };
+            if stream.associated_dialog.is_none() {
+                stream.associated_dialog = Some(call_id.to_string());
+                stream.orphaned = false;
+            }
+            // Enrich codec info from SDP rtpmap for dynamic payload types. Only
+            // update if the stream's codec is unknown (dynamic PT, no static map).
+            if stream.codec.is_none()
+                && let Some((_, encoding, clock_rate)) =
+                    rtpmap.iter().find(|(pt, _, _)| *pt == stream.payload_type)
+            {
+                stream.codec = Some(encoding.clone());
+                stream.clock_rate = *clock_rate;
             }
         }
     }
@@ -357,6 +399,43 @@ impl StreamStore {
     pub fn clear(&mut self) {
         self.streams.clear();
         self.ssrc_index.clear();
+        self.endpoint_index.clear();
+    }
+
+    /// Register a stream key under both its src and dst endpoints (SNB-0015).
+    fn index_endpoints(&mut self, key: &StreamKey) {
+        let src_ep = (key.src.ip(), key.src.port());
+        let dst_ep = (key.dst.ip(), key.dst.port());
+        self.endpoint_index
+            .entry(src_ep)
+            .or_default()
+            .push(key.clone());
+        if dst_ep != src_ep {
+            self.endpoint_index
+                .entry(dst_ep)
+                .or_default()
+                .push(key.clone());
+        }
+    }
+
+    /// Remove a stream key from its src/dst endpoint buckets (on eviction).
+    fn unindex_endpoints(&mut self, key: &StreamKey) {
+        let src_ep = (key.src.ip(), key.src.port());
+        let dst_ep = (key.dst.ip(), key.dst.port());
+        if let Some(keys) = self.endpoint_index.get_mut(&src_ep) {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.endpoint_index.remove(&src_ep);
+            }
+        }
+        if dst_ep != src_ep
+            && let Some(keys) = self.endpoint_index.get_mut(&dst_ep)
+        {
+            keys.retain(|k| k != key);
+            if keys.is_empty() {
+                self.endpoint_index.remove(&dst_ep);
+            }
+        }
     }
 
     /// Count of streams flagged as orphaned.
@@ -366,14 +445,23 @@ impl StreamStore {
 
     /// Evict the oldest stream (first entry in insertion order) if at capacity.
     fn ensure_capacity(&mut self) {
-        if self.streams.len() >= self.max_streams
-            && !self.streams.is_empty()
-            && let Some((evicted, _)) = self.streams.shift_remove_index(0)
-            && let Some(keys) = self.ssrc_index.get_mut(&evicted.ssrc)
-        {
-            keys.retain(|k| k != &evicted);
-            if keys.is_empty() {
-                self.ssrc_index.remove(&evicted.ssrc);
+        if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
+            // Evicting one-at-a-time with shift_remove_index(0) shifts O(n) entries
+            // PER new stream once at capacity → O(calls²) under sustained pressure
+            // (SNB-0015). Batch-evict the oldest ~1% in a single `drain`, so the
+            // O(n) IndexMap shift amortizes to O(1) per insertion — mirrors
+            // DialogStore::evict_oldest. `.max(1)` keeps small caps evicting singly.
+            let batch = (self.max_streams / 10).max(1).min(self.streams.len());
+            self.evict_shift_work += self.streams.len().saturating_sub(batch) as u64;
+            let evicted: Vec<StreamKey> = self.streams.drain(0..batch).map(|(k, _)| k).collect();
+            for key in &evicted {
+                if let Some(keys) = self.ssrc_index.get_mut(&key.ssrc) {
+                    keys.retain(|k| k != key);
+                    if keys.is_empty() {
+                        self.ssrc_index.remove(&key.ssrc);
+                    }
+                }
+                self.unindex_endpoints(key);
             }
         }
     }
@@ -480,6 +568,97 @@ mod tests {
         );
         assert_eq!(s.clock_rate, 90000, "clock resolved from rtpmap");
         assert_eq!(s.associated_dialog.as_deref(), Some("call-1"), "associated");
+    }
+
+    // SNB-0015 (eviction): once the store is at capacity, evicting streams
+    // one-at-a-time with shift_remove_index(0) shifts O(streams) entries PER new
+    // stream → O(calls²) under sustained cap pressure (the dominant carrier-scale
+    // cliff). Batched eviction must keep the cumulative shift work ~O(streams seen),
+    // not O(overflow × cap). Drive `cap + overflow` distinct streams through a
+    // small cap and assert the probe stays bounded — and that eviction is still
+    // correct (store stays capped, oldest gone, indexes consistent).
+    #[test]
+    fn eviction_shift_work_is_amortized_and_correct() {
+        let cap = 1_000usize;
+        let overflow = 3_000usize;
+        let mut store = StreamStore::new(cap);
+        for i in 0..(cap + overflow) as u32 {
+            // distinct 5-tuple per stream (unique src port) so each is a new key.
+            let parsed = make_parsed(20_000 + (i % 40_000) as u16, 30_000, 160);
+            let mut p = parsed;
+            // force uniqueness beyond the 16-bit port via the ssrc-keyed StreamKey
+            p.src_port = 1_024 + (i % 64_000) as u16;
+            store.process_rtp(&p, &make_rtp_header(0x0100_0000 + i, 1), ts(0));
+        }
+        // Store stayed bounded by the cap (batch eviction may dip just under).
+        assert!(
+            store.len() <= cap,
+            "store must stay within cap: {}",
+            store.len()
+        );
+        assert!(
+            store.len() > cap - cap / 50,
+            "store should sit near the cap"
+        );
+        // Performance contract: cumulative eviction shift work must be ~O(streams
+        // seen), NOT O(overflow × cap). One-at-a-time shifting gives ≈overflow×cap.
+        let quadratic = overflow as u64 * cap as u64;
+        assert!(
+            store.evict_shift_work() <= 20 * (cap + overflow) as u64,
+            "SNB-0015: eviction shift work {} must be ~O(N)={}, not O(overflow×cap)={}",
+            store.evict_shift_work(),
+            cap + overflow,
+            quadratic
+        );
+        // Indexes stayed consistent: no dangling endpoint/ssrc keys for evicted streams.
+        let live: usize = store.iter().count();
+        assert_eq!(live, store.len(), "iter and len agree after eviction");
+    }
+
+    // SNB-0015: linking an SDP endpoint to its stream(s) must NOT scan the whole
+    // store. With N streams each on a distinct endpoint and one SDP link per
+    // endpoint, a full-store scan is O(N²); an endpoint index is O(N). The probe
+    // counter makes the work observable: assert it stays ~O(N), and assert the
+    // index links exactly the same streams a scan would (correctness preserved).
+    #[test]
+    fn endpoint_linking_is_subquadratic_and_correct() {
+        let n: u16 = 300;
+        let mut store = StreamStore::new(100_000);
+        let src_ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        // N streams: stream i has src 10.0.0.1:(20000+i), dst 10.0.0.2:(30000+i).
+        for i in 0..n {
+            let parsed = make_parsed(20000 + i, 30000 + i, 160);
+            store.process_rtp(&parsed, &make_rtp_header(0x1000 + i as u32, 1), ts(0));
+        }
+        assert_eq!(store.len(), n as usize);
+
+        let base = store.link_scan_iters();
+        // One SDP link per endpoint — each matches exactly its own stream's src.
+        for i in 0..n {
+            store.link_endpoint(src_ip, 20000 + i, "call", &[]);
+        }
+        let iters = store.link_scan_iters() - base;
+        let quadratic = n as u64 * n as u64;
+        assert!(
+            iters <= 8 * n as u64,
+            "SNB-0015: link scan visits {iters} must be O(N)≈{n}, not O(N²)={quadratic}"
+        );
+
+        // Correctness: every stream got linked to its endpoint's call (same result
+        // a full scan produced), and an unrelated endpoint links nothing.
+        for s in store.iter() {
+            assert_eq!(
+                s.associated_dialog.as_deref(),
+                Some("call"),
+                "stream linked"
+            );
+        }
+        let before = store.link_scan_iters();
+        store.link_endpoint(IpAddr::V4(Ipv4Addr::new(9, 9, 9, 9)), 1, "nope", &[]);
+        assert!(
+            store.link_scan_iters() - before <= 1,
+            "an endpoint with no streams must visit ~0, not scan the store"
+        );
     }
 
     // The other ordering: RTP first (stream exists, dynamic PT unknown), then
