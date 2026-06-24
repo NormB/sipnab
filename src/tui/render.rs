@@ -183,6 +183,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 theme: &app.theme,
                                 resolver: app.resolver.as_ref(),
                                 name_mode: app.name_mode,
+                                // Extended/combined view does not draw RTP bars.
+                                rtp_segments: &[],
                             };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 &owned,
@@ -219,6 +221,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         } else {
                             let ft = msgs_ref[0].timestamp;
                             let pdd = d.timing.pdd_ms();
+                            let rtp_segs = app.rtp_codec_segments(&cid);
                             let flow_opts = call_flow::FlowDisplayOptions {
                                 sdp_mode: app.sdp_display_mode,
                                 ts_mode: app.timestamp_mode,
@@ -228,6 +231,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 theme: &app.theme,
                                 resolver: app.resolver.as_ref(),
                                 name_mode: app.name_mode,
+                                rtp_segments: &rtp_segs,
                             };
                             let (participants, msgs) = call_flow::prepare_messages(
                                 msgs_ref,

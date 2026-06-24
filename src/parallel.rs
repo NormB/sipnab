@@ -465,4 +465,36 @@ mod tests {
             );
         }
     }
+
+    /// End-to-end codec-negotiation fixture: the INVITE offered PCMU/PCMA/G722,
+    /// the call used PCMU, then a re-INVITE switched it to G722 — PCMA was
+    /// offered but never used. Reconstructing the capture must surface the two
+    /// *used* codecs (PCMU + G722) as the stream codecs, and never PCMA. This is
+    /// the real-RTP source the call-flow RTP-in-flow bar reads to label the used
+    /// codec rather than the SDP offer list.
+    #[cfg(feature = "native")]
+    #[test]
+    fn codec_negotiation_fixture_reconstructs_used_codecs() {
+        use crate::capture::CaptureConfig;
+        let path = std::path::Path::new("tests/pcap-samples/codec-negotiation.pcap");
+        let cc = CaptureConfig::default();
+        let r = run_offline_parallel_file(path, &cc, pcfg(2)).unwrap();
+        let codecs: std::collections::HashSet<String> = r
+            .stream_store
+            .iter()
+            .filter_map(|s| s.codec.clone())
+            .collect();
+        assert!(
+            codecs.contains("PCMU"),
+            "first segment used PCMU; got {codecs:?}"
+        );
+        assert!(
+            codecs.contains("G722"),
+            "re-INVITE switched to G722; got {codecs:?}"
+        );
+        assert!(
+            !codecs.contains("PCMA"),
+            "PCMA was offered but never used — must not appear: {codecs:?}"
+        );
+    }
 }

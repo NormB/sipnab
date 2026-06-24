@@ -1375,6 +1375,31 @@ impl App {
         self.stream_store.read().len()
     }
 
+    /// Observed RTP codec segments for a dialog, oldest first — the codecs
+    /// actually carried on the wire (resolved from each stream's payload type),
+    /// each with the window it was seen. Drives the call-flow RTP-in-flow bar so
+    /// it shows the *used* codec (and a re-INVITE codec switch as a later
+    /// segment), not the full SDP offer. Empty when no RTP is linked to the
+    /// dialog, in which case the bar falls back to the negotiated SDP answer.
+    fn rtp_codec_segments(&self, call_id: &str) -> Vec<call_flow::RtpCodecSegment> {
+        let Some(store) = self.stream_store.try_read() else {
+            return Vec::new();
+        };
+        let mut segs: Vec<call_flow::RtpCodecSegment> = store
+            .iter()
+            .filter(|s| s.associated_dialog.as_deref() == Some(call_id))
+            .filter_map(|s| {
+                s.codec.clone().map(|codec| call_flow::RtpCodecSegment {
+                    codec,
+                    start: s.first_seen,
+                    end: s.last_seen,
+                })
+            })
+            .collect();
+        segs.sort_by_key(|s| s.start);
+        segs
+    }
+
     /// Return a reference to the filter dialog state (for tests).
     pub fn filter_dialog_state(&self) -> &FilterDialogState {
         &self.filter_dialog

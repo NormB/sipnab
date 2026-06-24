@@ -6,6 +6,21 @@ All notable changes to sipnab will be documented in this file.
 
 ## [0.4.16] - 2026-06-24
 
+### Call flow
+- **RTP-in-flow rendered as a centered double-rail channel.** The media bar in
+  the call-flow ladder now draws as a centered `═` double rail spanning the gap
+  between the two endpoint pipes (`render::rtp_channel_bar`) — a sustained media
+  channel, visually distinct from the single-line `─` SIP arrows. Fixes the old
+  byte-width centering that left a wide label aligned off to the left.
+- **The bar shows the codec actually USED, not the SDP offer list.** When an
+  INVITE offers several codecs but the call lands on one, the bar now shows that
+  single codec — sourced from the observed RTP stream's payload type
+  (authoritative), falling back to the negotiated SDP answer codec for SIP-only
+  captures. A re-INVITE that switches codecs (PCMU → G722) draws a fresh bar with
+  the new codec for the second media segment.
+- **Early-media placement.** A provisional (1xx) response carrying SDP opens the
+  channel at that point (ringback/IVR), rather than after the ACK.
+
 ### Performance
 - **Batched reader→worker hand-off removes the `--cores` regression.** Focused
   research isolated the cause of the throughput collapse past `--cores 2`: it was

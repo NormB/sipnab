@@ -1381,6 +1381,7 @@ mod tests {
             theme,
             resolver,
             name_mode: crate::names::NameMode::Off,
+            rtp_segments: &[],
         }
     }
 
