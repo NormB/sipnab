@@ -4,6 +4,35 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-06-24
+
+### Fixed
+- **O(n²) carrier-scale throughput collapse eliminated** (SNB-0015). Processing a
+  pcap with many concurrent calls collapsed super-linearly — at 20k→30k→40k calls
+  throughput fell 340k→116k→47k pkts/s (load ×1.6, wall-time ×10) despite idle
+  cores and <1 GiB RSS, i.e. algorithmic, not resource-bound. Two independent
+  O(n²) sources in `StreamStore`, both keyed on the active-stream count:
+  1. `link_endpoint`/`link_to_dialog` scanned the **entire** stream table on every
+     SDP-bearing SIP message to find the streams on a media endpoint — O(streams)
+     per message, O(calls²) overall. Now uses an `endpoint_index`
+     (`HashMap<(IpAddr,u16), Vec<StreamKey>>`, maintained on insert/evict/clear
+     like the existing `ssrc_index`), so linking is O(matching streams).
+  2. `ensure_capacity` evicted one stream at a time with `shift_remove_index(0)`,
+     which is O(n) on an `IndexMap`. Past `--max-streams` (default 50000, reached
+     at ~25k calls) every new stream paid an O(streams) shift → O(calls²) — the
+     **dominant** term, and the same bug `DialogStore` already fixed. Now evicts in
+     batches (10%) via `drain`, amortizing the shift to ~O(1) per insertion.
+
+  Result (14-core host, carrier SIP+RTP corpus ~93% RTP, offline): 30k calls
+  27.68s→8.19s (3.4×), 40k calls 90.95s→17.02s (5.3×), 40k throughput 47k→251k
+  pkts/s; all calls still reconstructed.
+
+### Added
+- **`SIPNAB_PERF_STATS=1` batch probe.** Emits `endpoint_link_scan_visits` and
+  `evict_shift_work` at end of a batch run — the per-run work that was quadratic —
+  so the scaling is observable and a regression is caught early. Each is guarded by
+  a performance-contract unit test.
+
 ## [0.4.11] - 2026-06-24
 
 ### Added
