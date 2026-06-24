@@ -651,6 +651,15 @@ pub struct Cli {
     #[arg(long, value_name = "N", default_value = "10000")]
     pub max_reassembly: u64,
 
+    /// Worker threads for OFFLINE pcap reconstruction (`-I`). 1 = the standard
+    /// single-threaded path. >1 shards packets by host pair across N workers for
+    /// multi-core throughput on large captures; covers dialog + RTP-stream
+    /// reconstruction and the `--report`/`--json` output. Advanced features
+    /// (live capture, per-message output ordering, security detectors, SRTP
+    /// decrypt) use the single-threaded path regardless.
+    #[arg(long, value_name = "N", default_value = "1")]
+    pub jobs: usize,
+
     // ── Token minting ────────────────────────────────────────────────
     /// Mint a signed bearer token from the first configured signing key,
     /// print it to stdout, and exit. TTL comes from --api-token-ttl (or
@@ -810,6 +819,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn jobs_flag_parses() {
+        // `--jobs N` selects the multi-core offline reconstruction worker count.
+        let cli = Cli::parse_from_args(["sipnab", "--jobs", "4", "-I", "x.pcap"]);
+        assert_eq!(cli.jobs, 4);
+    }
+
+    #[test]
     fn defaults_are_sane() {
         let cli = Cli::parse_from_args(["sipnab"]);
         assert_eq!(cli.portrange, "5060-5061");
@@ -823,6 +839,7 @@ mod tests {
         assert_eq!(cli.hep_rate_limit, 50000);
         assert_eq!(cli.pcap_export_mode, "decrypted");
         assert_eq!(cli.max_reassembly, 10000);
+        assert_eq!(cli.jobs, 1, "single-threaded by default");
         assert_eq!(cli.color, "auto");
         assert!(!cli.no_tui);
         assert!(!cli.setup_caps);

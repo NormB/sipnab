@@ -120,6 +120,14 @@ impl EventExecEngine {
         self.spawn_command(&cmd, &vars);
     }
 
+    /// Whether a quality-event command is configured. The per-RTP-packet hot path
+    /// guards on this so that, with no `--on-quality` (every batch benchmark, most
+    /// live runs), it skips rebuilding the `StreamKey` and the second stream-store
+    /// lookup — `fire_quality_event` no-ops anyway. Observationally identical.
+    pub fn quality_events_enabled(&self) -> bool {
+        self.on_quality_cmd.is_some()
+    }
+
     /// Fire a quality event if the stream's estimated MOS is below threshold.
     ///
     /// Environment variables set on the child process:
@@ -270,6 +278,18 @@ fn migrate_template_vars(template: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The per-RTP-packet hot path guards the quality-event work on this; it must
+    // be true iff a command is configured (else fire_quality_event no-ops and the
+    // guard lets the hot path skip the StreamKey rebuild + store lookup).
+    #[test]
+    fn quality_events_enabled_tracks_command() {
+        let off = EventExecEngine::new(None, None, 0, 4.0);
+        assert!(!off.quality_events_enabled());
+        let on = EventExecEngine::new(None, Some("echo hi".to_string()), 0, 4.0);
+        assert!(on.quality_events_enabled());
+    }
+
     use crate::capture::parse::TransportProto;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
