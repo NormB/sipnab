@@ -82,7 +82,17 @@ pub fn is_sip_message(data: &[u8]) -> bool {
 
 /// Find the position of the first `\r\n` in `data`.
 fn find_crlf(data: &[u8]) -> Option<usize> {
-    data.windows(2).position(|w| w == b"\r\n")
+    // SIMD \r search, then verify the following \n — byte-identical to the old
+    // windows(2) scan (bare \r is skipped; a trailing \r returns None).
+    let mut start = 0;
+    while let Some(i) = memchr::memchr(b'\r', &data[start..]) {
+        let abs = start + i;
+        if data.get(abs + 1) == Some(&b'\n') {
+            return Some(abs);
+        }
+        start = abs + 1;
+    }
+    None
 }
 
 #[cfg(test)]

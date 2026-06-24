@@ -429,6 +429,53 @@ fn main() {
         cli.quality_threshold,
     );
 
+    // 13b. Multi-core offline reconstruction (`--cores N`, offline file). Read the
+    //      pcap directly and shard packets across N worker threads, fusing
+    //      read+peek+shard into one stage — no capture reader thread, no semaphore
+    //      channel (that hand-off capped --cores scaling at ~2 workers). Bypasses
+    //      the single-threaded run_batch_mode path entirely for this case.
+    if cli.cores > 1
+        && cli.input.is_some()
+        && !cli.multi_device
+        && let Some(input) = cli.input.as_ref()
+    {
+        let no_rtp = cli.no_rtp || loaded.config.capture.no_rtp.unwrap_or(false);
+        let pcfg = sipnab::parallel::ParallelConfig {
+            cores: cli.cores,
+            max_streams: cli.max_streams as usize,
+            max_dialogs: cli.limit as usize,
+            rotate: cli.rotate_enabled(),
+            max_reassembly: cli.max_reassembly as usize,
+            portrange,
+            no_dialog: cli.no_dialog,
+            no_rtp,
+        };
+        match sipnab::parallel::run_offline_parallel_file(
+            std::path::Path::new(input),
+            &capture_config,
+            pcfg,
+        ) {
+            Ok(r) => {
+                generate_reports(&cli, &r.dialog_store, &r.stream_store);
+                if !cli.quiet {
+                    tracing::info!(
+                        "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
+                        r.total_count,
+                        r.sip_count,
+                        r.rtp_count,
+                        r.stream_store.len(),
+                        cli.cores,
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::error!("multi-core reconstruction failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     // 14. Create the packet channel: a capped, auto-shrinking queue. Occupancy
     //     grows under load up to the cap and the (unbounded) storage frees its
     //     segments when idle. Capacity is derived from the memory budget.
