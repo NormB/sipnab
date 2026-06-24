@@ -4,6 +4,21 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.17] - 2026-06-24
+
+### Call flow
+- **RTP-in-flow is shown in every media segment, not just the first.** A bar is
+  now drawn after each INVITE transaction that carries media — the initial call
+  *and* each re-INVITE that re-establishes the stream — keyed on the INVITE CSeq
+  so a single transaction (early media + its confirming ACK) still draws only
+  one. Previously a same-codec re-INVITE drew nothing, making the ladder look
+  like media stopped before the re-INVITE when it actually flowed through to the
+  BYE. A re-INVITE that switches codecs still shows the new codec.
+- **Dropped the redundant "active" from the bar label** — it now reads
+  `RTP · PCMU` (the codec on the in-flow channel already conveys "active").
+- Homepage hero regenerated: the call now shows RTP flowing in both segments
+  (before and after the re-INVITE), label `RTP · PCMA`.
+
 ## [0.4.16] - 2026-06-24
 
 ### Call flow

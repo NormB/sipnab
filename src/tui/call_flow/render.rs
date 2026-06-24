@@ -240,7 +240,7 @@ pub fn render_call_flow_lines(
 /// an elongated `=`, evoking a sustained two-way pipe rather than a one-shot
 /// message.
 ///
-/// `label` is the bare text (e.g. ` RTP · PCMU · active `); the rails are owned
+/// `label` is the bare text (e.g. ` RTP · PCMU `); the rails are owned
 /// here, not baked into the label, so the bar is always centered regardless of
 /// label width. If the label is as wide as or wider than `width` it is truncated
 /// to `width` columns (rails dropped) so it never overflows past the right pipe
@@ -1183,15 +1183,12 @@ mod tests {
 
     #[test]
     fn rtp_bar_centers_with_double_rail() {
-        let bar = rtp_channel_bar(" RTP \u{00B7} PCMU \u{00B7} active ", 40);
+        let bar = rtp_channel_bar(" RTP \u{00B7} PCMU ", 40);
         // Exactly `width` display columns, rails on both ends, label intact.
         assert_eq!(bar.chars().count(), 40);
         assert_eq!(bar.chars().next(), Some(RAIL), "left rail missing");
         assert_eq!(bar.chars().last(), Some(RAIL), "right rail missing");
-        assert!(
-            bar.contains("RTP \u{00B7} PCMU \u{00B7} active"),
-            "label lost"
-        );
+        assert!(bar.contains("RTP \u{00B7} PCMU"), "label lost");
         // Centered: left/right rail runs differ by at most one (odd padding).
         let left = bar.chars().take_while(|&c| c == RAIL).count();
         let right = bar.chars().rev().take_while(|&c| c == RAIL).count();
