@@ -51,8 +51,8 @@ use crate::sip::dialog_store::DialogStore;
 /// Configuration for the offline parallel reconstruction engine.
 #[derive(Clone)]
 pub struct ParallelConfig {
-    /// Number of worker threads (the dispatcher is additional).
-    pub jobs: usize,
+    /// Number of worker cores/threads (the reader + dispatcher are additional).
+    pub cores: usize,
     /// Per-worker stream-store capacity (`--max-streams`).
     pub max_streams: usize,
     /// Per-worker dialog-store capacity (`--limit`).
@@ -147,48 +147,56 @@ fn reconstruct(
     }
 }
 
-/// Offline multi-core reconstruction. A single dispatcher reads `rx`, runs the
-/// (stateful, serial) L2/L3/L4 parse + reassembly via one `PacketProcessor`, and
-/// shards each resulting `ParsedPacket` by host pair to one of `cfg.jobs` worker
-/// threads. Each worker owns thread-local stores and does the parallel-friendly
-/// work (SIP parse, RTP/RTCP classify, all store updates). At EOF the workers'
-/// stores are merged and stream↔dialog association is resolved globally.
+/// Offline multi-core reconstruction. A single dispatcher reads `rx` and, using a
+/// cheap host-pair peek ([`crate::capture::parse::peek_host_pair`] — link+IP
+/// headers only, no full parse), shards each RAW packet to one of `cfg.cores`
+/// worker threads. Each worker owns its own `PacketProcessor` (so reassembly
+/// stays per-flow correct — a flow's packets share a host pair and route to one
+/// worker) plus thread-local stores, and does the heavy work: the L2/L3/L4 parse,
+/// the SIP parse, RTP/RTCP classify, and all store updates — all in parallel. The
+/// dispatcher's per-packet cost is just the peek + a channel send, so the serial
+/// fraction is tiny and throughput scales with cores. At EOF the stores merge and
+/// stream↔dialog association is resolved globally.
 ///
 /// Returns the merged stores for report generation. Reconstruction only — see
 /// [`reconstruct`]; advanced features stay on the single-threaded path.
 pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
+    use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;
-    let n = cfg.jobs.max(2);
+    let n = cfg.cores.max(2);
 
-    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<ParsedPacket>(8192)).unzip();
+    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Packet>(8192)).unzip();
     let workers: Vec<_> = rxs
         .into_iter()
         .map(|wrx| {
             let cfg = cfg.clone();
             thread::spawn(move || {
+                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
                 let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
-                let (mut sip, mut rtp) = (0u64, 0u64);
-                for pp in wrx.iter() {
-                    reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
+                for packet in wrx.iter() {
+                    for pp in processor.process(&packet) {
+                        total += 1;
+                        reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                    }
                 }
-                (ds, ss, sip, rtp)
+                (ds, ss, sip, rtp, total)
             })
         })
         .collect();
 
-    // Dispatcher: serial parse + reassembly, shard parsed packets by host pair.
-    let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
-    let mut total = 0u64;
+    // Dispatcher: cheap host-pair peek, shard the RAW packet to a worker. A packet
+    // the peek can't read routes to worker 0 (still correct via its own reassembly).
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(packet) => {
-                for pp in processor.process(&packet) {
-                    total += 1;
-                    let s = shard_for(pp.src_addr, pp.dst_addr, n);
-                    let _ = txs[s].send(pp);
-                }
+                let s = match crate::capture::parse::peek_host_pair(&packet) {
+                    Some((a, b)) => shard_for(a, b, n),
+                    None => 0,
+                };
+                let _ = txs[s].send(packet);
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -199,13 +207,14 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     // Merge thread-local stores into one, then resolve cross-worker associations.
     let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
     let mut ss = StreamStore::new(cfg.max_streams);
-    let (mut sip_count, mut rtp_count) = (0u64, 0u64);
+    let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
-        if let Ok((wds, wss, wsip, wrtp)) = w.join() {
+        if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
             ds.merge(wds);
             ss.merge(wss);
             sip_count += wsip;
             rtp_count += wrtp;
+            total += wtot;
         }
     }
     ss.reassociate_all();

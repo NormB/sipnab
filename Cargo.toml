@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "sipnab"
-version = "0.4.13"
+version = "0.4.14"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Norm Brandinger"]
@@ -21,6 +21,11 @@ categories = ["network-programming", "command-line-utilities"]
 exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-samples/"]
 
 [dependencies]
+# Fast, DoS-resistant (random-seeded, AES-based) hasher for the per-packet
+# stores. Replaces the default SipHash on the hot path — every RTP packet does a
+# StreamStore key lookup — while keeping flood resistance for attacker-controlled
+# keys (5-tuple/SSRC, Call-ID). Profiled at ~7% of total instructions as SipHash.
+ahash = "0.8"
 # Phase 1: Capture & core
 pcap = { version = "2", optional = true }
 # Transparent decompression of gzip-compressed capture files (libpcap, unlike
@@ -104,6 +109,13 @@ js-sys = { version = "0.3", optional = true }
 web-sys = { version = "0.3", features = ["console"], optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 
+# Faster general-purpose allocator for the native binary. sipnab's offline
+# ingestion is allocation-heavy (one buffer per captured packet); mimalloc cuts
+# that malloc/free cost vs the system allocator. Native targets only — WASM keeps
+# its own allocator.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 bytes = "1"
 parking_lot = "0.12"
@@ -154,6 +166,15 @@ codegen-units = 1
 strip = true
 panic = "abort"
 debug = "line-tables-only"
+
+# Release codegen + full symbols, unstripped — for profilers (perf, valgrind
+# callgrind). `cargo build --profile profiling`. panic=unwind because callgrind
+# dislikes abort; otherwise identical optimization to release.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = true
+panic = "unwind"
 
 [[bin]]
 name = "sipnab"
