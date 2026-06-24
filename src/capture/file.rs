@@ -195,7 +195,7 @@ pub fn capture_file(
 }
 
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
-fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
+pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
     // tv_usec is attacker-controllable in a crafted capture; clamp to a valid
     // microsecond before the µs→ns multiply so it can overflow neither u64 (the
     // clamp bounds the operand) nor the resulting u32.

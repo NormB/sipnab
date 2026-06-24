@@ -354,7 +354,46 @@ fn expand_compact_header(name: &str) -> Cow<'static, str> {
 
 /// Find the position of the first `\r\n` in `data`.
 fn find_crlf(data: &[u8]) -> Option<usize> {
-    data.windows(2).position(|w| w == b"\r\n")
+    // SIMD \r search, then verify the following \n — byte-identical to the old
+    // windows(2) scan (bare \r is skipped; a trailing \r returns None).
+    let mut start = 0;
+    while let Some(i) = memchr::memchr(b'\r', &data[start..]) {
+        let abs = start + i;
+        if data.get(abs + 1) == Some(&b'\n') {
+            return Some(abs);
+        }
+        start = abs + 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod find_crlf_tests {
+    use super::find_crlf;
+    // The memchr-based find_crlf must be byte-identical to a scalar windows(2)
+    // scan across the adversarial boundary cases.
+    fn scalar(data: &[u8]) -> Option<usize> {
+        data.windows(2).position(|w| w == b"\r\n")
+    }
+    #[test]
+    fn parity_with_scalar() {
+        let cases: &[&[u8]] = &[
+            b"",
+            b"\r",
+            b"\n",
+            b"\r\n",
+            b"abc\r\n",
+            b"a\rb\r\nc",  // bare \r before the real \r\n
+            b"line\r",     // trailing \r, no \n
+            b"x\r\ny\r\n", // first match only
+            b"\x00\r\n",   // embedded NUL
+            b"no crlf here",
+            b"a\n\rb\r\n", // \n\r (not \r\n) then \r\n
+        ];
+        for c in cases {
+            assert_eq!(find_crlf(c), scalar(c), "mismatch on {c:?}");
+        }
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

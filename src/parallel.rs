@@ -228,6 +228,111 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     }
 }
 
+/// Like [`run_offline_parallel`], but reads the pcap FILE directly in this thread
+/// instead of consuming a [`PacketRx`] fed by a separate capture reader thread.
+/// This fuses pcap-read + host-pair peek + shard into a SINGLE serial stage —
+/// eliminating the dispatcher thread and the semaphore-capped capture channel
+/// that capped `--cores` scaling at ~2 workers (the read→dispatcher hand-off was
+/// two serial stages). Sharding/reassembly/merge are identical to
+/// [`run_offline_parallel`], so `--cores N` parity with `--cores 1` is preserved.
+pub fn run_offline_parallel_file(
+    path: &std::path::Path,
+    capture_config: &crate::capture::CaptureConfig,
+    cfg: ParallelConfig,
+) -> anyhow::Result<ReconResult> {
+    use crate::capture::file::{open_offline, pcap_ts_to_chrono};
+    use crate::capture::packet::Packet;
+    use crossbeam_channel::bounded;
+    let n = cfg.cores.max(2);
+
+    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Packet>(8192)).unzip();
+    let workers: Vec<_> = rxs
+        .into_iter()
+        .map(|wrx| {
+            let cfg = cfg.clone();
+            thread::spawn(move || {
+                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
+                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+                let mut ss = StreamStore::new(cfg.max_streams);
+                ss.set_audio_capture(false);
+                let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
+                for packet in wrx.iter() {
+                    for pp in processor.process(&packet) {
+                        total += 1;
+                        reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                    }
+                }
+                (ds, ss, sip, rtp, total)
+            })
+        })
+        .collect();
+
+    // Single reader+sharder: open the pcap (gzip-transparent), apply any BPF, and
+    // for each packet do the cheap host-pair peek + send to its worker. One thread,
+    // one copy, one channel hop.
+    let (mut cap, _gz_guard) = open_offline(path)?;
+    if let Some(ref bpf) = capture_config.bpf_filter {
+        cap.filter(bpf, true)
+            .map_err(|e| anyhow::anyhow!("Failed to compile BPF filter '{bpf}': {e}"))?;
+    }
+    let link_type = cap.get_datalink().0;
+    let mut count: u64 = 0;
+    loop {
+        if let Some(max) = capture_config.count
+            && count >= max
+        {
+            break;
+        }
+        match cap.next_packet() {
+            Ok(pkt) => {
+                let packet = Packet::new(
+                    pcap_ts_to_chrono(pkt.header.ts),
+                    pkt.data.to_vec(),
+                    pkt.header.caplen as usize,
+                    pkt.header.len as usize,
+                    None,
+                    link_type,
+                );
+                let s = match crate::capture::parse::peek_host_pair(&packet) {
+                    Some((a, b)) => shard_for(a, b, n),
+                    None => 0,
+                };
+                let _ = txs[s].send(packet);
+                count += 1;
+            }
+            Err(pcap::Error::NoMorePackets) => break,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Error reading pcap '{}': {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    drop(txs);
+
+    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+    let mut ss = StreamStore::new(cfg.max_streams);
+    let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
+    for w in workers {
+        if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
+            ds.merge(wds);
+            ss.merge(wss);
+            sip_count += wsip;
+            rtp_count += wrtp;
+            total += wtot;
+        }
+    }
+    ss.reassociate_all();
+    Ok(ReconResult {
+        dialog_store: ds,
+        stream_store: ss,
+        sip_count,
+        rtp_count,
+        total_count: total,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

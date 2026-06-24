@@ -4,6 +4,30 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-06-24
+
+### Performance
+- **SIMD CRLF scanning in the SIP parser** (`memchr`). `find_crlf` (called per
+  header line) replaced its scalar `windows(2).position()` with SIMD `memchr` —
+  byte-identical semantics, validated by a parity test over the adversarial edge
+  cases (bare `\r`, trailing `\r`, embedded NUL, empty).
+- **Fused offline multi-core front-end.** `--cores N` now reads the pcap directly
+  and shards in one thread (`run_offline_parallel_file` + `peek_host_pair`),
+  eliminating the separate capture-reader thread and the semaphore-capped channel
+  between read and shard. This lifts the `--cores 2` peak (carrier 40k corpus,
+  thor-02: ~1.81M pkts/s — **2.4× sngrep** while fully reconstructing calls + RTP
+  streams). `--cores 2` is the sweet spot; past 2–3 the single sequential pcap
+  reader (and SoC memory bandwidth) is the ceiling — not CPU count.
+
+### Added
+- **`Ctrl+R` toggles RTP-in-flow** in the TUI (alias for `F6`, for terminals/
+  recorders that can't send function keys).
+
+### Changed
+- Homepage hero now shows **real bidirectional RTP media** flowing in the
+  call-flow ladder (REGISTER → INVITE → RTP → re-INVITE → RTP → BYE), regenerated
+  from a real PII-free capture.
+
 ## [0.4.14] - 2026-06-24
 
 ### Changed

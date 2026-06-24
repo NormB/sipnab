@@ -674,6 +674,18 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                 }
             }
         }
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Ctrl+R — alias for F6: toggle RTP display in flow. F-keys aren't
+            // sendable by every headless front-end (e.g. the VHS hero recorder),
+            // so this keeps the toggle reachable. (Bare `r` keeps its meaning.)
+            app.show_rtp_in_flow = !app.show_rtp_in_flow;
+            app.call_flow_cache.clear();
+            app.status_error = Some(if app.show_rtp_in_flow {
+                "RTP in flow: ON".to_string()
+            } else {
+                "RTP in flow: OFF".to_string()
+            });
+        }
         KeyCode::Char('r') => {
             // Jump to RTP Streams view
             app.current_view = View::StreamList;
@@ -3171,6 +3183,35 @@ mod tests {
         let rtp = app.show_rtp_in_flow;
         handle_call_flow_key(&mut app, key(KeyCode::F(6)));
         assert_ne!(app.show_rtp_in_flow, rtp);
+    }
+
+    #[test]
+    fn call_flow_rtp_toggle_ctrl_r_alias() {
+        // Ctrl+R is an alias for F6 (toggle RTP-in-flow). F-keys can't be
+        // driven by some headless front-ends (e.g. the VHS hero recorder), so a
+        // Ctrl-modified alias keeps the toggle reachable. Both keys flip the
+        // same flag.
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        assert!(!app.show_rtp_in_flow, "RTP-in-flow defaults off");
+        handle_call_flow_key(&mut app, key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(app.show_rtp_in_flow, "Ctrl+R turns RTP-in-flow on");
+        handle_call_flow_key(&mut app, key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(!app.show_rtp_in_flow, "Ctrl+R toggles RTP-in-flow back off");
+        // And it stays consistent with the F6 path.
+        handle_call_flow_key(&mut app, key(KeyCode::F(6)));
+        assert!(app.show_rtp_in_flow, "F6 still toggles the same flag");
+    }
+
+    #[test]
+    fn call_flow_plain_r_still_jumps_to_rtp_streams() {
+        // The bare `r` (no modifier) must keep its existing meaning: jump to the
+        // RTP Streams view — the Ctrl+R alias must not shadow it.
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
+        assert!(matches!(app.current_view, View::StreamList));
+        assert!(!app.show_rtp_in_flow, "plain r does not toggle RTP-in-flow");
     }
 
     #[test]
