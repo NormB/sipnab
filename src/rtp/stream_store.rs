@@ -443,6 +443,47 @@ impl StreamStore {
         self.streams.values().filter(|s| s.orphaned).count()
     }
 
+    /// Fold another worker's store into this one (multi-core merge, `--jobs N`).
+    /// Streams sharded by host pair never collide across workers, so this is a
+    /// union; the ssrc/endpoint indexes are rebuilt for the moved streams and the
+    /// SDP endpoints are combined. Probe counters accumulate. Call
+    /// [`reassociate_all`](Self::reassociate_all) afterwards to link streams to a
+    /// dialog whose SDP was processed on a different worker.
+    pub fn merge(&mut self, other: StreamStore) {
+        for (key, stream) in other.streams {
+            if !self.streams.contains_key(&key) {
+                self.ssrc_index
+                    .entry(key.ssrc)
+                    .or_default()
+                    .push(key.clone());
+                self.index_endpoints(&key);
+                self.streams.insert(key, stream);
+            }
+        }
+        for (ep, sdp) in other.sdp_endpoints {
+            self.sdp_endpoints.entry(ep).or_insert(sdp);
+        }
+        self.link_scan_iters += other.link_scan_iters;
+        self.evict_shift_work += other.evict_shift_work;
+    }
+
+    /// Globally (re)link every stream to its dialog via the merged SDP endpoints.
+    /// Needed after [`merge`](Self::merge): when a stream and the SDP naming its
+    /// call were processed on different workers, the inline association never ran.
+    /// Idempotent and order-independent (only fills unset associations), so it
+    /// reproduces the single-threaded result. O(total streams) via the endpoint
+    /// index.
+    pub fn reassociate_all(&mut self) {
+        let eps: Vec<((IpAddr, u16), SdpEndpoint)> = self
+            .sdp_endpoints
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        for ((addr, port), ep) in eps {
+            self.link_endpoint(addr, port, &ep.call_id, &ep.rtpmap);
+        }
+    }
+
     /// Evict the oldest stream (first entry in insertion order) if at capacity.
     fn ensure_capacity(&mut self) {
         if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
@@ -658,6 +699,44 @@ mod tests {
         assert!(
             store.link_scan_iters() - before <= 1,
             "an endpoint with no streams must visit ~0, not scan the store"
+        );
+    }
+
+    // Multi-core (--jobs): a call's SDP (SIP) and its RTP can be sharded to
+    // DIFFERENT workers — in the carrier corpus the SDP advertises a separate
+    // media IP. Worker A sees the SDP (remembers the endpoint, no stream); worker
+    // B sees the RTP (creates the stream, no SDP → unassociated). merge() unions
+    // them and reassociate_all() links the stream to its call — reproducing the
+    // single-threaded result where association happens at stream creation.
+    #[test]
+    fn merge_reassociates_streams_whose_sdp_was_on_another_worker() {
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
+        let port = 20000u16;
+
+        let mut a = StreamStore::new(1000); // the "SIP" worker
+        a.link_endpoint(addr, port, "call-1", &[]);
+        assert_eq!(a.len(), 0, "SDP alone creates no stream");
+
+        let mut b = StreamStore::new(1000); // the "RTP" worker
+        let parsed = make_parsed(port, 30000, 160);
+        b.process_rtp(&parsed, &make_rtp_header(0xABCD, 1), ts(0));
+        assert_eq!(b.len(), 1);
+        assert!(
+            b.iter().next().unwrap().associated_dialog.is_none(),
+            "no SDP on the RTP worker → stream is unassociated"
+        );
+
+        a.merge(b);
+        assert_eq!(a.len(), 1, "merge unions the stream in");
+        assert!(
+            a.iter().next().unwrap().associated_dialog.is_none(),
+            "still unlinked until the global pass"
+        );
+        a.reassociate_all();
+        assert_eq!(
+            a.iter().next().unwrap().associated_dialog.as_deref(),
+            Some("call-1"),
+            "reassociate_all links the merged stream to its call's SDP"
         );
     }
 

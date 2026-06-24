@@ -38,6 +38,8 @@ pub use error::Error;
 pub mod mcp;
 #[cfg(feature = "native")]
 pub mod output;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod parallel;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod privilege;

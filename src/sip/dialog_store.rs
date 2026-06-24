@@ -283,6 +283,23 @@ impl DialogStore {
         self.dialogs.values()
     }
 
+    /// Fold another worker's dialogs into this one (multi-core merge, `--jobs N`).
+    /// A call's SIP is sharded by host pair, so a Call-ID is reconstructed on a
+    /// single worker and merging is a union. In the rare case the same Call-ID
+    /// appears on two workers (signaling split across host pairs), keep the more
+    /// complete reconstruction (more messages seen).
+    pub fn merge(&mut self, other: DialogStore) {
+        for (cid, dialog) in other.dialogs {
+            match self.dialogs.get(&cid) {
+                Some(existing) if existing.messages.len() >= dialog.messages.len() => {}
+                _ => {
+                    self.dialogs.insert(cid, dialog);
+                }
+            }
+        }
+        self.idle_messages_evicted += other.idle_messages_evicted;
+    }
+
     /// Return the total number of tracked dialogs.
     pub fn len(&self) -> usize {
         self.dialogs.len()
@@ -496,6 +513,34 @@ mod tests {
     }
 
     use crate::test_utils::build_sip_message as build_sip;
+
+    // Multi-core (--jobs): each worker reconstructs the calls sharded to it; the
+    // merge unions distinct Call-IDs and, on the rare same-Call-ID collision,
+    // keeps the more complete reconstruction.
+    #[test]
+    fn merge_unions_dialogs_keeping_the_more_complete() {
+        let t0 = base_ts();
+        let mut a = DialogStore::new(1000, true);
+        a.process_message(make_invite_msg("call-a@h", t0));
+        let mut b = DialogStore::new(1000, true);
+        b.process_message(make_invite_msg("call-b@h", t0));
+        a.merge(b);
+        assert_eq!(a.len(), 2, "distinct Call-IDs unioned");
+        assert!(a.get("call-a@h").is_some() && a.get("call-b@h").is_some());
+
+        // collision: keep the dialog that saw more messages.
+        let mut c = DialogStore::new(1000, true);
+        c.process_message(make_invite_msg("call-a@h", t0));
+        c.process_message(make_invite_msg("call-a@h", t0 + TimeDelta::seconds(1)));
+        let richer = c.get("call-a@h").unwrap().messages.len();
+        a.merge(c);
+        assert_eq!(a.len(), 2, "collision is not double-counted");
+        assert_eq!(
+            a.get("call-a@h").unwrap().messages.len(),
+            richer,
+            "kept the more complete reconstruction"
+        );
+    }
 
     fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
