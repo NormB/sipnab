@@ -4,6 +4,49 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-06-24
+
+### Call flow
+- **RTP-in-flow rendered as a centered double-rail channel.** The media bar in
+  the call-flow ladder now draws as a centered `═` double rail spanning the gap
+  between the two endpoint pipes (`render::rtp_channel_bar`) — a sustained media
+  channel, visually distinct from the single-line `─` SIP arrows. Fixes the old
+  byte-width centering that left a wide label aligned off to the left.
+- **The bar shows the codec actually USED, not the SDP offer list.** When an
+  INVITE offers several codecs but the call lands on one, the bar now shows that
+  single codec — sourced from the observed RTP stream's payload type
+  (authoritative), falling back to the negotiated SDP answer codec for SIP-only
+  captures. A re-INVITE that switches codecs (PCMU → G722) draws a fresh bar with
+  the new codec for the second media segment.
+- **Early-media placement.** A provisional (1xx) response carrying SDP opens the
+  channel at that point (ringback/IVR), rather than after the ACK.
+
+### Performance
+- **Batched reader→worker hand-off removes the `--cores` regression.** Focused
+  research isolated the cause of the throughput collapse past `--cores 2`: it was
+  *not* the RTP/dialog reconstruction (idle workers regressed identically) and
+  *not* CPU starvation (14 idle cores) — it was the **per-packet channel hop**.
+  Every send bounced a cache line across cores, and that coherency traffic scaled
+  with worker count. The reader now batches ~128 packets per shard into one
+  channel send (channel depth measured in batches, so the in-flight packet cap is
+  unchanged), amortizing the cross-core hop ~128×. On thor-02 (Jetson Thor, 14
+  cores, 535k-packet carrier corpus, median-of-5) the cliff is gone — throughput
+  holds **flat at ~2.2–2.5M pkts/s from cores 2 through 8** instead of collapsing
+  1.9M → 842k → 500k:
+
+  | cores | before | after |
+  |---|---|---|
+  | 2 | 1.91M | **2.51M** |
+  | 4 | 0.84M | **2.26M** |
+  | 8 | 0.50M | **2.16M** |
+
+  `--cores 4/8`, previously *slower* than single-threaded, are now the fastest.
+  The remaining flatness past cores 2 is the single sequential pcap reader's raw
+  ceiling (read + buffer copy + host-pair peek), the expected serial stage.
+  CPU pinning was measured and ruled out as a fix (+3–5% at cores 2/4 within
+  noise, ~0% at cores 8) — affinity cannot eliminate coherency traffic on a
+  single-cluster SoC with per-core-private L1d/L2.
+
 ## [0.4.15] - 2026-06-24
 
 ### Performance
