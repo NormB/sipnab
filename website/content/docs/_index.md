@@ -22,6 +22,7 @@ sipnab is a network analysis tool for Voice over IP. It captures and decodes SIP
 - [**MCP Server**](@/docs/mcp.md) -- Drive sipnab from an AI agent over stdio or HTTP
 - [**Output Formats**](@/docs/output-formats.md) -- NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng
 - [**Cookbook**](@/docs/cookbook.md) -- Step-by-step recipes for triage, filtering, HEP wiring, TLS decryption, MCP, observability, security, and audio export
+- [**Benchmarks**](@/docs/benchmarks.md) -- Reproducible throughput/memory numbers: multi-core scaling, and honest comparisons vs sngrep and voipmonitor
 
 ## Quick Start
 
