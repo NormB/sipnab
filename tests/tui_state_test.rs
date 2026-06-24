@@ -3446,10 +3446,10 @@ mod tui_state {
             "RTP bar label should contain 'PCMU' codec from 200 OK SDP, got: {bar_text}"
         );
 
-        // Should contain "active" status
+        // The codec alone marks the channel as in-flow — no redundant "active".
         assert!(
-            bar_text.contains("active"),
-            "RTP bar label should contain 'active' status, got: {bar_text}"
+            !bar_text.contains("active"),
+            "RTP bar label should no longer carry the redundant 'active', got: {bar_text}"
         );
 
         // The timestamp field should be populated (not empty)
