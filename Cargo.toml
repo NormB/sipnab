@@ -7,7 +7,7 @@ resolver = "2"
 
 [package]
 name = "sipnab"
-version = "0.4.14"
+version = "0.4.15"
 edition = "2024"
 rust-version = "1.94"
 authors = ["Norm Brandinger"]
@@ -26,6 +26,9 @@ exclude = ["website/", "demos/", "tasks/", "fuzz/", ".githooks/", "tests/pcap-sa
 # StreamStore key lookup — while keeping flood resistance for attacker-controlled
 # keys (5-tuple/SSRC, Call-ID). Profiled at ~7% of total instructions as SipHash.
 ahash = "0.8"
+# SIMD byte search for the SIP line scanner (CRLF). Already in the tree via
+# nom/regex/etherparse; promoted to a direct dep. Replaces scalar windows(2).
+memchr = "2"
 # Phase 1: Capture & core
 pcap = { version = "2", optional = true }
 # Transparent decompression of gzip-compressed capture files (libpcap, unlike
