@@ -39,12 +39,12 @@ struct SdpEndpoint {
 /// evicted to make room.
 pub struct StreamStore {
     /// All tracked streams, keyed by [`StreamKey`] in insertion order.
-    streams: IndexMap<StreamKey, RtpStream>,
+    streams: IndexMap<StreamKey, RtpStream, ahash::RandomState>,
     /// SSRC → keys of streams carrying it, in insertion order. RTCP
     /// reports identify streams by SSRC only; without this, every report
     /// block linear-scanned the whole store. Kept consistent on
     /// insert/evict/clear.
-    ssrc_index: std::collections::HashMap<u32, Vec<StreamKey>>,
+    ssrc_index: std::collections::HashMap<u32, Vec<StreamKey>, ahash::RandomState>,
     /// Maximum number of concurrent streams before eviction.
     max_streams: usize,
     /// Maximum number of audio frames to retain per stream for WAV export.
@@ -59,13 +59,13 @@ pub struct StreamStore {
     /// payload types resolve from packet one (see [`SdpEndpoint`]). Bounded to
     /// `max_streams` with oldest-out eviction so a flood of unique calls can't
     /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
-    sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint>,
+    sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint, ahash::RandomState>,
     /// `(addr, port)` → keys of streams whose src OR dst is that endpoint.
     /// Without it, linking an SDP media endpoint to its stream(s) linear-scanned
     /// the whole store on every SDP-bearing SIP message — O(streams) per message,
     /// O(calls²) overall (SNB-0015). Kept consistent on insert/evict/clear, just
     /// like `ssrc_index`.
-    endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>>,
+    endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>, ahash::RandomState>,
     /// Probe (SNB-0015): cumulative count of per-stream visits performed while
     /// linking SDP endpoints to streams. This is the work that was O(calls²); the
     /// endpoint index keeps it O(calls). Read via [`link_scan_iters`] and exposed
@@ -83,13 +83,16 @@ impl StreamStore {
     /// Create a new store with the given stream capacity limit.
     pub fn new(max_streams: usize) -> Self {
         Self {
-            streams: IndexMap::with_capacity(max_streams.min(1024)),
-            ssrc_index: std::collections::HashMap::new(),
+            streams: IndexMap::with_capacity_and_hasher(
+                max_streams.min(1024),
+                ahash::RandomState::default(),
+            ),
+            ssrc_index: std::collections::HashMap::default(),
             max_streams,
             max_audio_frames: 1500,
             audio_capture: true,
-            sdp_endpoints: IndexMap::new(),
-            endpoint_index: std::collections::HashMap::new(),
+            sdp_endpoints: IndexMap::default(),
+            endpoint_index: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
         }

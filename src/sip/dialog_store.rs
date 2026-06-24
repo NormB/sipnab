@@ -60,7 +60,7 @@ pub struct CorrelationResult<'a> {
 /// to make room for new ones.
 pub struct DialogStore {
     /// All tracked dialogs, keyed by Call-ID in insertion order.
-    dialogs: IndexMap<String, SipDialog>,
+    dialogs: IndexMap<String, SipDialog, ahash::RandomState>,
     /// Maximum number of dialogs to retain.
     max_dialogs: usize,
     /// Whether to evict the oldest dialog when at capacity.
@@ -105,7 +105,10 @@ impl DialogStore {
     ///   when at capacity.
     pub fn new(max_dialogs: usize, rotate: bool) -> Self {
         Self {
-            dialogs: IndexMap::with_capacity(max_dialogs.min(1024)),
+            dialogs: IndexMap::with_capacity_and_hasher(
+                max_dialogs.min(1024),
+                ahash::RandomState::default(),
+            ),
             max_dialogs,
             rotate,
             idle_messages_evicted: 0,

@@ -10,6 +10,11 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
+// Faster general-purpose allocator: sipnab's offline ingestion does one heap
+// allocation per captured packet, so the allocator is on the hot path.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::{
     self, CaptureConfig, CaptureSource, ParsedPacket, PcapExportMode, PcapWriter,
@@ -1189,9 +1194,9 @@ fn run_batch_mode(
     // Advanced features (live, per-message output ordering, security detectors,
     // SRTP) use the single-threaded path below; this branch only triggers for an
     // offline input file.
-    if cli.jobs > 1 && cli.input.is_some() {
+    if cli.cores > 1 && cli.input.is_some() {
         let pcfg = sipnab::parallel::ParallelConfig {
-            jobs: cli.jobs,
+            cores: cli.cores,
             max_streams: cli.max_streams as usize,
             max_dialogs: cli.limit as usize,
             rotate: cli.rotate_enabled(),
@@ -1205,12 +1210,12 @@ fn run_batch_mode(
         generate_reports(&cli, &result.dialog_store, &result.stream_store);
         if !cli.quiet {
             tracing::info!(
-                "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} workers)",
+                "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
                 result.total_count,
                 result.sip_count,
                 result.rtp_count,
                 result.stream_store.len(),
-                cli.jobs,
+                cli.cores,
             );
         }
         return;

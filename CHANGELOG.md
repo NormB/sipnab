@@ -4,6 +4,33 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-06-24
+
+### Changed
+- **`--jobs N` renamed to `--cores N`** (clearer for a capture analyzer; `--jobs`
+  was build-tool jargon). Same semantics — offline reconstruction worker count.
+
+### Added / Performance
+- **Parse parallelization.** The multi-core engine now shards *raw* packets (via a
+  cheap link+IP-header host-pair peek, `capture::parse::peek_host_pair`) so each
+  worker does its own parse + reassembly, instead of a single dispatcher parsing
+  serially. A flow's packets share a host pair and route to one worker, keeping
+  reassembly correct.
+- **mimalloc** is now the native binary's global allocator. Offline ingestion does
+  one heap allocation per packet, so the allocator was on the hot path (~7.5% of
+  instructions in a callgrind profile). This was the single biggest win.
+- **`ahash`** replaces SipHash for the per-packet stores (`StreamStore`,
+  `DialogStore` maps/indexes). SipHash was ~7% of instructions; ahash is far
+  faster while staying DoS-resistant (random-seeded) for attacker-controlled keys.
+- **`profiling` build profile** (`cargo build --profile profiling`) — release
+  codegen with full symbols for perf/valgrind.
+
+  Combined result (40k-call carrier corpus, thor-02): **`sipnab --cores 2` runs at
+  ~1.57M pkts/s — 1.87× faster than sngrep** (840k) while reconstructing all calls
+  and full RTP-stream stats (which sngrep does not). The sweet spot is 2–3 cores;
+  higher core counts regress (the single dispatcher + store merge is the next
+  bottleneck).
+
 ## [0.4.13] - 2026-06-24
 
 ### Added

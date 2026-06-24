@@ -112,6 +112,52 @@ const DLT_LINUX_SLL: i32 = 113;
 /// Pcap link type for Linux cooked capture v2 (DLT_LINUX_SLL2).
 const DLT_LINUX_SLL2: i32 = 276;
 
+/// Cheap outer host-pair extraction for multi-core sharding (`--jobs N`).
+///
+/// Reads ONLY the link + IP headers at fixed offsets to get the outer src/dst
+/// IPs — no transport/payload parse, no allocation, no `etherparse` slicing — so
+/// the dispatcher's per-packet serial cost stays tiny while the full parse +
+/// reassembly happen in the worker. Handles EN10MB (incl. 802.1Q/QinQ VLAN),
+/// Linux SLL v1/v2, and raw IP, for IPv4 and IPv6, plus pre-parsed (HEP) packets.
+/// Returns `None` for anything it can't cheaply read; the caller shards those to
+/// worker 0 (still correct — that worker has its own reassembly — just less
+/// balanced). All fragments / a flow's packets share an outer host pair, so they
+/// always route to the same worker, keeping reassembly correct.
+pub fn peek_host_pair(packet: &Packet) -> Option<(IpAddr, IpAddr)> {
+    if let Some(meta) = &packet.pre_parsed {
+        return Some((meta.src_addr, meta.dst_addr));
+    }
+    let d: &[u8] = &packet.data;
+    let ip_off = match packet.link_type {
+        DLT_EN10MB => {
+            let mut off = 12usize; // skip dst+src MAC
+            let mut et = u16::from_be_bytes([*d.get(off)?, *d.get(off + 1)?]);
+            while et == 0x8100 || et == 0x88a8 {
+                off += 4; // skip a VLAN tag (TPID+TCI)
+                et = u16::from_be_bytes([*d.get(off)?, *d.get(off + 1)?]);
+            }
+            off + 2 // past the ethertype
+        }
+        DLT_RAW => 0,
+        DLT_LINUX_SLL => 16,
+        DLT_LINUX_SLL2 => 20,
+        _ => return None,
+    };
+    match d.get(ip_off)? >> 4 {
+        4 => {
+            let s: [u8; 4] = d.get(ip_off + 12..ip_off + 16)?.try_into().ok()?;
+            let t: [u8; 4] = d.get(ip_off + 16..ip_off + 20)?.try_into().ok()?;
+            Some((IpAddr::V4(s.into()), IpAddr::V4(t.into())))
+        }
+        6 => {
+            let s: [u8; 16] = d.get(ip_off + 8..ip_off + 24)?.try_into().ok()?;
+            let t: [u8; 16] = d.get(ip_off + 24..ip_off + 40)?.try_into().ok()?;
+            Some((IpAddr::V6(s.into()), IpAddr::V6(t.into())))
+        }
+        _ => None,
+    }
+}
+
 // ── GRE constants ─────────────────────────────────────────────────────
 
 /// Minimum GRE header length (4 bytes: flags + protocol type).
@@ -564,6 +610,44 @@ fn extract_parsed_packet(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    // Multi-core sharding (--cores): the cheap host-pair peek must extract the
+    // outer src/dst IPs from the link+IP headers — for plain Ethernet, VLAN-tagged
+    // frames, and gracefully return None for non-IP / truncated input (those
+    // shard to worker 0). The peek must agree with the full parse on the IPs.
+    #[test]
+    fn peek_host_pair_extracts_endpoints() {
+        use std::net::{IpAddr, Ipv4Addr};
+        let a = Ipv4Addr::new(192, 0, 2, 10);
+        let b = Ipv4Addr::new(198, 51, 100, 20);
+
+        // plain Ethernet/IPv4
+        let pkt = make_packet(
+            build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x"),
+            DLT_EN10MB,
+        );
+        assert_eq!(peek_host_pair(&pkt), Some((IpAddr::V4(a), IpAddr::V4(b))));
+        // and it agrees with the full parse
+        let parsed = parse_packet(&pkt).expect("parses");
+        assert_eq!(
+            (parsed.src_addr, parsed.dst_addr),
+            (IpAddr::V4(a), IpAddr::V4(b))
+        );
+
+        // 802.1Q VLAN-tagged: insert TPID 0x8100 + TCI before the IPv4 ethertype.
+        let base = build_eth_ipv4_udp(a.octets(), b.octets(), 5060, 5062, b"x");
+        let mut vlan = base[0..12].to_vec(); // dst+src MAC
+        vlan.extend_from_slice(&[0x81, 0x00, 0x00, 0x64]); // VLAN tag, VID 100
+        vlan.extend_from_slice(&base[12..]); // ethertype 0x0800 + IPv4 …
+        assert_eq!(
+            peek_host_pair(&make_packet(vlan, DLT_EN10MB)),
+            Some((IpAddr::V4(a), IpAddr::V4(b)))
+        );
+
+        // non-IP / truncated → None (caller shards these to worker 0)
+        assert_eq!(peek_host_pair(&make_packet(vec![0u8; 8], DLT_EN10MB)), None);
+        assert_eq!(peek_host_pair(&make_packet(vec![], DLT_EN10MB)), None);
+    }
 
     #[test]
     fn reparse_transport_udp_recovers_ports_and_strips_header() {
