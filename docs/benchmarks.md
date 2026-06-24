@@ -14,7 +14,7 @@ host, corpus, tool versions, and exact commands are listed so you can re-run it.
 ## Test host & method
 
 - **Host:** `thor-02` — NVIDIA Jetson Thor (aarch64), 14 cores, PREEMPT_RT
-  kernel. (opensips-1, a 4-vCPU VM, is not used for throughput numbers.)
+  kernel. (A 4-vCPU VM is not used for throughput numbers.)
 - **Corpus:** a synthetic carrier capture — N concurrent calls, each
   `INVITE → … → 200 → ACK → [bidirectional RTP] → BYE`, ~93% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
@@ -40,21 +40,48 @@ removed the regression. CPU pinning was measured and made no meaningful
 difference (+3–5% within noise, ~0% at 8 cores) — the limit is data-movement, not
 scheduling.
 
-## vs sngrep
+## Four-tool comparison
 
-Same 535k-packet corpus, both reconstructing SIP + RTP:
+Same 535k-packet corpus, every tool driven offline/headless to parse the whole
+file and exit (median-of-5). The **what it reconstructs** column is the point — a
+throughput number only means something next to the work behind it.
 
 | tool | pkts/s | × sngrep | what it reconstructs |
 |---|---:|---:|---|
-| sngrep | 0.20M | 1.0× | SIP ladder + RTP (headless print capped at 100 dialogs) |
-| sipnab `--cores 1` | 1.24M | **6.2×** | full SIP dialog + 200 RTP streams |
-| sipnab `--cores 4` | 2.27M | **11.3×** | same |
+| sngrep 1.8.0 | 0.20M | 1.0× | SIP dialogs (100); no RTP-stream reconstruction headless |
+| sipgrep 2.2.0 | 2.46M | 12.2× | grep-style SIP line match + Call-ID grouping; **no RTP** |
+| voipmonitor 2026.05.0 | 0.73M | 3.7× | full call/CDR + RTP-stream association |
+| **sipnab 0.4.16 `--cores 1`** | 1.05M | **5.2×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.4.16 `--cores 4`** | 2.30M | **11.4×** | identical full SIP + RTP reconstruction |
 
-## vs voipmonitor (carrier scale)
+Read it in three buckets:
 
-voipmonitor is the closest peer — it also does full CDR + media work. Across a
-carrier-scale sweep, **both tools reconstruct every call correctly at every
-scale**; the difference is throughput and memory:
+- **Grep-class (sipgrep)** posts the fastest single number but does the least —
+  line-oriented SIP matching with **no RTP work at all** (it never associates the
+  500k RTP packets into streams). Its lead is mostly "it does less."
+- **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
+  voipmonitor and sipnab additionally associate RTP into media streams.
+- Within that class **sipnab wins**: single-core is **5.2× sngrep and 1.4×
+  voipmonitor**, four-core is **11.4× sngrep and 3.1× voipmonitor** — and four-core
+  matches grep-only sipgrep's wall-clock (0.23 s vs 0.22 s) *while also
+  reconstructing all 200 RTP streams*. There is no configuration where sipnab is
+  the slowest at comparable work.
+
+> **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
+> voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
+> duplicate-SDP streams; it was set to `0` so voipmonitor does full RTP
+> association on equal footing. All four tools parsed the same file to EOF.
+> sngrep and sipgrep report dialogs grouped by the 100 unique Call-IDs while
+> sipnab reports the finer 35k messages / 200 streams — a reporting-depth
+> difference, not a correctness one. sipnab's figures here come from an
+> independent timed session, so they differ by a few percent from the scaling
+> table above (normal run-to-run variance).
+
+## Throughput and memory at carrier scale (vs voipmonitor)
+
+The single-corpus table above is one operating point; this sweep shows how the
+closest peer behaves as call volume grows. **Both tools reconstruct every call
+correctly at every scale** — the difference is throughput and memory:
 
 | calls | pkts | voipmonitor | sipnab | sipnab speed-up | sipnab RSS edge |
 |------:|-----:|---|---|---:|---:|
@@ -67,25 +94,20 @@ scale**; the difference is throughput and memory:
 voipmonitor is multithreaded and its per-packet throughput *climbs* with scale
 (72k → 264k p/s), overtaking sipnab on raw speed at roughly ~40k calls. sipnab's
 standing advantage is **memory** — about 9.4× less RSS at 20k calls (0.5 GiB vs
-4.7 GiB), because voipmonitor buffers and spools heavily. This comparison is
-offline-only: voipmonitor's *live* capture reconstructed 0 calls on this box's
-virtual NIC (an mmap-ring quirk), so a live head-to-head was not possible here.
-
-## sipgrep
-
-`sipgrep` is a different category — a grep-style SIP line matcher, not a
-reconstructor — so it is not directly comparable on reconstruction throughput and
-is not benchmarked here.
+4.7 GiB), because voipmonitor buffers and spools heavily. (voipmonitor's *live*
+capture reconstructed 0 calls on this box's virtual NIC — an mmap-ring quirk — so
+this comparison is offline-only.)
 
 ## Reproduce
 
-```sh
-# sipnab — offline reconstruction, multi-core
-sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
+Each tool driven offline/headless to parse the whole file and exit:
 
-# sngrep — headless full-file parse
-sngrep -I corpus.pcap -r -N -q
+```sh
+sngrep       sngrep  -I corpus.pcap -r -N -q
+sipgrep      sipgrep -I corpus.pcap -C -G
+voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=vm.conf   # sdp_multiplication=0, save_*=no
+sipnab       sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
 ```
 
-The carrier corpus generator and the full comparison harness live in the
-companion `siptest` repo (`bench/carrier.py`, `bench/fourtool.sh`).
+The carrier corpus generator and the comparison harness live in the companion
+`siptest` repo (`bench/carrier.py`, `bench/fourtool.sh`).
