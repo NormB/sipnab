@@ -589,6 +589,12 @@ pub struct Cli {
     #[arg(long)]
     pub syslog: bool,
 
+    /// Emit each security alert as a structured JSON line on stderr (in addition
+    /// to the human `[ALERT]` line) — a stable machine channel that survives log
+    /// format changes. stdout stays reserved for `--json` / MCP.
+    #[arg(long)]
+    pub alert_json: bool,
+
     // ── TLS / Decryption ─────────────────────────────────────────────
     /// TLS private key (PEM) for TLS 1.2 RSA-key-exchange decryption. Only
     /// non-PFS RSA handshakes; ECDHE/DHE (forward secrecy) need --keylog.

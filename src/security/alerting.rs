@@ -152,6 +152,8 @@ pub struct AlertEngine {
     exec_cmd: Option<String>,
     /// Whether to send alerts to syslog via `libc::syslog()`.
     syslog_enabled: bool,
+    /// Whether to emit each fired alert as a structured JSON line on stderr.
+    json_output: bool,
     /// Tracked child processes from exec commands (for reaping).
     #[cfg(feature = "native")]
     children: Vec<std::process::Child>,
@@ -179,6 +181,7 @@ impl AlertEngine {
             cooldowns: HashMap::new(),
             exec_cmd: exec_cmd.map(|c| migrate_alert_template(&c)),
             syslog_enabled: false,
+            json_output: false,
             #[cfg(feature = "native")]
             children: Vec::new(),
             findings: std::collections::VecDeque::with_capacity(DEFAULT_FINDINGS_HISTORY),
@@ -230,6 +233,16 @@ impl AlertEngine {
         self.syslog_enabled = enabled;
     }
 
+    /// Enable or disable the structured JSON alert channel.
+    ///
+    /// When enabled, each fired alert is also written as one JSON object per
+    /// line to **stderr** (stdout is reserved for `--json` message output and
+    /// the stdio MCP wire) — a stable machine channel for consumers that
+    /// shouldn't have to scrape the human `[ALERT]` line.
+    pub fn set_json_output(&mut self, enabled: bool) {
+        self.json_output = enabled;
+    }
+
     /// Fire an alert for the given type and source.
     ///
     /// Checks cooldown for the (source, alert_type) pair. If cooled down,
@@ -273,6 +286,8 @@ impl AlertEngine {
         // Sanitize attacker-controlled values for log output (M3)
         let sanitized_detail = sanitize_log_value(detail);
 
+        let fired_at = chrono::Utc::now();
+
         // Phase 8.3 — store the finding in the ring buffer (after cooldown,
         // before any logging/syslog/exec) so deduplicated firings are
         // recorded once each.
@@ -284,7 +299,7 @@ impl AlertEngine {
                 rule_name: alert_type.to_string(),
                 src_ip,
                 detail: sanitized_detail.clone(),
-                timestamp: chrono::Utc::now(),
+                timestamp: fired_at,
             });
         }
 
@@ -296,6 +311,15 @@ impl AlertEngine {
             alert_type, %src_ip, %sanitized_detail,
             "[ALERT] {alert_type} src={src_ip} {sanitized_detail}"
         );
+
+        // Structured machine channel: one JSON object per line on STDERR (the
+        // MCP/`--json` wire is stdout, so stderr is safe even mid-session).
+        if self.json_output {
+            eprintln!(
+                "{}",
+                alert_json_line(alert_type, src_ip, &sanitized_detail, fired_at)
+            );
+        }
 
         // Send to syslog if enabled (native only — requires libc)
         #[cfg(feature = "native")]
@@ -352,6 +376,26 @@ fn migrate_alert_template(template: &str) -> String {
 /// Replaces `\r` and `\n` with spaces to prevent log injection attacks.
 pub fn sanitize_log_value(s: &str) -> String {
     s.replace(['\r', '\n'], " ")
+}
+
+/// Format one alert as a single JSON line for the `--alert-json` machine channel.
+///
+/// Fields: `ts` (RFC 3339), `alert` (type/rule), `src` (source IP), `detail`
+/// (the sanitized detail string). serde_json escapes attacker-controlled values,
+/// so a crafted UA/Call-ID can't break the line or inject fields.
+pub fn alert_json_line(
+    alert_type: &str,
+    src_ip: IpAddr,
+    detail: &str,
+    ts: chrono::DateTime<chrono::Utc>,
+) -> String {
+    serde_json::json!({
+        "ts": ts.to_rfc3339(),
+        "alert": alert_type,
+        "src": src_ip.to_string(),
+        "detail": detail,
+    })
+    .to_string()
 }
 
 // ── Syslog support (native only — requires libc) ────────────────────
@@ -594,5 +638,32 @@ mod tests {
             result, "hello  world",
             "\\r and \\n should each be replaced with a space"
         );
+    }
+
+    #[test]
+    fn alert_json_line_has_expected_fields() {
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 24, 1, 2, 3).unwrap();
+        let line = alert_json_line(
+            "scanner",
+            test_ip(),
+            "method=OPTIONS detection=enumeration",
+            ts,
+        );
+        let v: serde_json::Value = serde_json::from_str(&line).expect("valid JSON line");
+        assert_eq!(v["alert"], "scanner");
+        assert_eq!(v["src"], "10.0.0.1");
+        assert_eq!(v["detail"], "method=OPTIONS detection=enumeration");
+        assert!(v["ts"].as_str().unwrap().starts_with("2026-06-24T01:02:03"));
+    }
+
+    #[test]
+    fn alert_json_line_escapes_adversarial_detail() {
+        // a crafted detail (embedded quote/brace) must stay inside the string,
+        // not break the line or inject a sibling field.
+        let ts = chrono::Utc::now();
+        let line = alert_json_line("scanner", test_ip(), r#"ua="evil","injected":1"#, ts);
+        let v: serde_json::Value = serde_json::from_str(&line).expect("still valid JSON");
+        assert!(v.get("injected").is_none(), "no injected field");
+        assert_eq!(v["detail"], r#"ua="evil","injected":1"#);
     }
 }
