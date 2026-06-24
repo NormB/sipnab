@@ -4,6 +4,34 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-06-24
+
+### Performance
+- **Batched reader→worker hand-off removes the `--cores` regression.** Focused
+  research isolated the cause of the throughput collapse past `--cores 2`: it was
+  *not* the RTP/dialog reconstruction (idle workers regressed identically) and
+  *not* CPU starvation (14 idle cores) — it was the **per-packet channel hop**.
+  Every send bounced a cache line across cores, and that coherency traffic scaled
+  with worker count. The reader now batches ~128 packets per shard into one
+  channel send (channel depth measured in batches, so the in-flight packet cap is
+  unchanged), amortizing the cross-core hop ~128×. On thor-02 (Jetson Thor, 14
+  cores, 535k-packet carrier corpus, median-of-5) the cliff is gone — throughput
+  holds **flat at ~2.2–2.5M pkts/s from cores 2 through 8** instead of collapsing
+  1.9M → 842k → 500k:
+
+  | cores | before | after |
+  |---|---|---|
+  | 2 | 1.91M | **2.51M** |
+  | 4 | 0.84M | **2.26M** |
+  | 8 | 0.50M | **2.16M** |
+
+  `--cores 4/8`, previously *slower* than single-threaded, are now the fastest.
+  The remaining flatness past cores 2 is the single sequential pcap reader's raw
+  ceiling (read + buffer copy + host-pair peek), the expected serial stage.
+  CPU pinning was measured and ruled out as a fix (+3–5% at cores 2/4 within
+  noise, ~0% at cores 8) — affinity cannot eliminate coherency traffic on a
+  single-cluster SoC with per-core-private L1d/L2.
+
 ## [0.4.15] - 2026-06-24
 
 ### Performance
