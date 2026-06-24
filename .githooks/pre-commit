@@ -107,6 +107,26 @@ else
     echo -e "${YELLOW}SKIP (no website)${NC}"
 fi
 
+# ── 5b. Site version matches the crate version ─────────────────────
+# The homepage version badge and the (version-pinned) download links read
+# website/config.toml [extra] version. Keep it equal to the Cargo.toml crate
+# version so the site never advertises a stale release. (CI's Pages build also
+# re-derives it from Cargo.toml; this gate catches drift before it ships.)
+echo -n "  Site version matches crate... "
+if [ -f "website/config.toml" ]; then
+    CRATE_V=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+    SITE_V=$(grep -m1 '^version = ' website/config.toml | sed -E 's/version = "(.*)"/\1/')
+    if [ -n "$CRATE_V" ] && [ "$CRATE_V" != "$SITE_V" ]; then
+        echo -e "${RED}FAIL${NC}"
+        echo "  website/config.toml version is $SITE_V but Cargo.toml is $CRATE_V"
+        echo "  Update [extra] version in website/config.toml to $CRATE_V"
+        exit 1
+    fi
+    echo -e "${GREEN}OK ($SITE_V)${NC}"
+else
+    echo -e "${YELLOW}SKIP (no website)${NC}"
+fi
+
 # ── 6. No TODO stubs in production code ────────────────────────────
 echo -n "  No TODO stubs... "
 TODO_COUNT=$(grep -rn "TODO\|FIXME" src/ -g '*.rs' 2>/dev/null | grep -v test | grep -v '_test.rs' | wc -l | tr -d ' ')

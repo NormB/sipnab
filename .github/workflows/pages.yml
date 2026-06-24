@@ -35,6 +35,16 @@ jobs:
           sudo install -m 0755 zola /usr/local/bin/zola
           zola --version
 
+      # Single source of truth: derive the site version (homepage badge +
+      # download links) from the crate version in Cargo.toml so the published
+      # site always matches the released binary, with no second value to bump.
+      - name: Sync site version from Cargo.toml
+        run: |
+          V=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+          sed -i -E "s/^version = \".*\"/version = \"$V\"/" website/config.toml
+          echo "Site version set to $V"
+          grep -E '^version = ' website/config.toml
+
       - name: Build site
         working-directory: website
         run: zola build
