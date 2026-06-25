@@ -65,7 +65,13 @@ jobs:
           tool: cargo-llvm-cov
 
       - name: Collect coverage
-        run: cargo llvm-cov --all-features --workspace --no-report
+        # Skip the trycmd CLI-golden test under coverage: it spawns the
+        # instrumented binary as 13 parallel subprocesses, which collide on the
+        # llvm-cov merge-pool .profraw file ("LLVM Profile Error: ... File
+        # exists") and fail the run. The goldens are still validated by the CI
+        # workflow's plain `cargo test`; only their coverage contribution is
+        # dropped here.
+        run: cargo llvm-cov --all-features --workspace --no-report -- --skip cli_goldens
 
       - name: Coverage summary
         # Exclude the dev-only tools_gen_fixture.rs [[bin]] from every report
