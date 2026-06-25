@@ -22,7 +22,11 @@ enabled = true
 theme = "ayu-dark"
 
 [extra]
-version = "0.4.15"
+# Kept in sync with the crate version in Cargo.toml. The Pages workflow
+# overwrites this from Cargo.toml at build time (single source of truth), and a
+# pre-commit hook fails if the two drift — so the homepage version badge and the
+# download links always match the released crate. Update Cargo.toml, not this.
+version = "0.4.17"
 github_url = "https://github.com/NormB/sipnab"
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"

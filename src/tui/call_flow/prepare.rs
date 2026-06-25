@@ -1009,6 +1009,9 @@ mod tests {
 
     /// A response carrying an SDP answer (e.g. a 183 Session Progress that
     /// signals early media).
+    // A test fixture builder: each field maps to a distinct SIP/SDP element, so
+    // the argument count is inherent rather than a design smell.
+    #[allow(clippy::too_many_arguments)]
     fn response_with_sdp(
         cid: &str,
         status: u16,
