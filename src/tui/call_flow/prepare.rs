@@ -1558,6 +1558,34 @@ mod tests {
         );
     }
 
+    // ── Arrow direction: response reverses the request's swimlanes ────
+    // The direct-buffer (TUI) renderer draws each arrow from src_col→dst_col, so
+    // direction is decided here. A request is A→B; its response is B→A, so the
+    // response's (src_col, dst_col) must be the request's reversed. This is the
+    // end-to-end guard the UI tests previously lacked.
+    #[test]
+    fn prepare_response_reverses_request_columns() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let msgs = vec![
+            invite("cdir", 1, t0()), // request  A→B
+            response("cdir", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)), // response B→A
+        ];
+        let (parts, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(parts.len(), 2, "two distinct endpoints expected");
+        let reqm = prepared.iter().find(|m| !m.is_response).expect("request");
+        let respm = prepared.iter().find(|m| m.is_response).expect("response");
+        assert_ne!(
+            reqm.src_col, reqm.dst_col,
+            "request must span the two swimlanes"
+        );
+        assert_eq!(
+            (respm.src_col, respm.dst_col),
+            (reqm.dst_col, reqm.src_col),
+            "response columns must be the reverse of the request — i.e. the arrow points the other way"
+        );
+    }
+
     // ── prepare_messages: scaled spacer insertion ─────────────────────
 
     #[test]

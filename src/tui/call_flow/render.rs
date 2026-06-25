@@ -1244,6 +1244,83 @@ mod tests {
         assert_eq!(lines.len(), 1);
     }
 
+    // ── Arrow DIRECTION: requests and responses point opposite ways ────
+    // A request travels A→B (arrowhead ▶ on the right); its response travels
+    // B→A (arrowhead ◀ on the left). Regression guard for the gap where the
+    // ladder direction was never asserted end to end — only the request/response
+    // *src↔dst* swap makes the arrow flip, so this exercises real A→B / B→A
+    // messages, not the glyph helper in isolation.
+    #[test]
+    fn ladder_request_points_right_response_points_left() {
+        let theme = crate::tui::Theme::default();
+        // req() is A→B, resp() is B→A (src/dst swapped), as on a real wire.
+        let msgs = vec![
+            req("INVITE", "1 INVITE", "dir-call", base_ts()),
+            resp(200, "OK", "1 INVITE", "dir-call", base_ts()),
+        ];
+        let lines = format_ladder(&msgs, base_ts(), None, 48, &theme);
+        let text: Vec<String> = lines.iter().map(line_to_string).collect();
+        let invite = text
+            .iter()
+            .find(|l| l.contains("INVITE"))
+            .expect("INVITE row");
+        let ok = text.iter().find(|l| l.contains("200")).expect("200 OK row");
+
+        // Request: rightward only.
+        assert!(
+            invite.contains('\u{25B6}') && !invite.contains('\u{25C0}'),
+            "request must point right (▶), got: {invite:?}"
+        );
+        // Response: leftward only — the bug the perf.pcap capture *looked* like
+        // (it was actually one-directional synthetic data; here the response is
+        // genuinely B→A and must reverse).
+        assert!(
+            ok.contains('\u{25C0}') && !ok.contains('\u{25B6}'),
+            "response must point left (◀), got: {ok:?}"
+        );
+    }
+
+    // Faithful rendering: when a (malformed/synthetic) response carries the SAME
+    // src→dst as the request — e.g. a one-directional load corpus — the arrow
+    // follows the actual packet addresses (forward), it is NOT force-flipped by
+    // status code. This documents that arrow direction is wire-driven.
+    #[test]
+    fn ladder_arrow_follows_actual_src_dst_not_status() {
+        let theme = crate::tui::Theme::default();
+        // Build a 200 OK that (wrongly) travels A→B, like perf.pcap's responses.
+        let raw = build_raw(
+            "SIP/2.0 200 OK",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKfwd",
+                "From: \"Alice\" <sip:alice@10.0.0.1>;tag=t1",
+                "To: \"Bob\" <sip:bob@10.0.0.2>;tag=t2",
+                "Call-ID: fwd-call",
+                "CSeq: 1 INVITE",
+            ],
+            "",
+        );
+        let fwd_resp = crate::sip::parser::parse_sip(
+            &raw,
+            base_ts(),
+            ip_a(),
+            ip_b(), // A→B, NOT swapped
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
+        let msgs = vec![req("INVITE", "1 INVITE", "fwd-call", base_ts()), fwd_resp];
+        let lines = format_ladder(&msgs, base_ts(), None, 48, &theme);
+        let text: Vec<String> = lines.iter().map(line_to_string).collect();
+        let ok = text.iter().find(|l| l.contains("200")).expect("200 OK row");
+        // Same src→dst as the request ⇒ same (rightward) direction. Faithful to
+        // the wire, not flipped by the 2xx status.
+        assert!(
+            ok.contains('\u{25B6}') && !ok.contains('\u{25C0}'),
+            "a response that travels A→B on the wire must render forward, got: {ok:?}"
+        );
+    }
+
     #[test]
     fn format_ladder_produces_lines() {
         use crate::sip::parser::parse_sip;
