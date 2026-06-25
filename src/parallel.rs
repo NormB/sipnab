@@ -497,4 +497,24 @@ mod tests {
             "PCMA was offered but never used — must not appear: {codecs:?}"
         );
     }
+
+    /// Opus is a dynamic RTP payload type (here PT 96) with no entry in the
+    /// static PT→codec table; the codec is resolved from the dialog SDP's
+    /// `a=rtpmap:96 opus/48000`. Reconstructing the plain-Opus fixture must
+    /// surface the stream as `opus` at 48000 Hz — proving the SDP-driven dynamic
+    /// codec resolution works end to end through the offline engine.
+    #[cfg(feature = "native")]
+    #[test]
+    fn opus_fixture_reconstructs_dynamic_codec_from_sdp() {
+        use crate::capture::CaptureConfig;
+        let path = std::path::Path::new("tests/pcap-samples/invite-opus-bye.pcap");
+        let cc = CaptureConfig::default();
+        let r = run_offline_parallel_file(path, &cc, pcfg(2)).unwrap();
+        let opus = r
+            .stream_store
+            .iter()
+            .find(|s| s.codec.as_deref() == Some("opus"));
+        let opus = opus.expect("expected an opus stream resolved from the SDP rtpmap");
+        assert_eq!(opus.payload_type, 96, "opus carried on dynamic PT 96");
+    }
 }
