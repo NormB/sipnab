@@ -210,6 +210,7 @@ Toggle display options without leaving the TUI.
 |-----|--------|
 | Ctrl+C | Force quit |
 | Ctrl+L | Clear all calls (same as F5) |
+| Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
 
 ## Call List
 
@@ -232,7 +233,7 @@ Toggle display options without leaving the TUI.
 | / | Activate search **(configurable: `search`)** |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
@@ -260,14 +261,14 @@ Toggle display options without leaving the TUI.
 | Space | Select message for diff (press on two messages to compare) |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | c | Cycle color scheme (method / call-id / cseq) |
 | R | Toggle detail panel visibility |
-| 0 / + / = / Right | Increase ladder panel width |
-| 9 / - / Left | Decrease ladder panel width |
+| 0 / + / = / Right | Increase ladder panel width (with the split off, shows a hint instead) |
+| 9 / - / Left | Decrease ladder panel width (with the split off, shows a hint instead) |
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
-| e | Toggle fold/expand for selected message |
+| e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | m | Set mark at current message. Places a reference marker on the current message. Navigate to another message to see the **delta** time between the mark and your current position -- useful for measuring delays between specific SIP messages. |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
@@ -289,18 +290,22 @@ Toggle display options without leaving the TUI.
 | PgUp | Page up |
 | PgDn | Page down |
 | Home | Scroll to top |
+| End | Scroll to bottom |
 | / | Search within message |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
-| Esc | Back to call flow |
+| Esc | Back to the view it was opened from (call flow or call list) |
 
 ## Message Diff
 
 | Key | Action |
 |-----|--------|
-| q | Quit |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
-| F1 | Help |
+| F1 | Help **(configurable: `help`)** |
 
 ## RTP Streams
 
@@ -308,8 +313,10 @@ Toggle display options without leaving the TUI.
 |-----|--------|
 | Up / k | Navigate up |
 | Down / j | Navigate down |
+| PgUp / PgDn | Page scroll |
 | Home | Jump to first stream |
 | End | Jump to last stream |
+| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** |
 | Enter | Open Stream Detail view for the selected stream |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
@@ -333,6 +340,9 @@ The Stream Detail view shows comprehensive per-stream quality data: MOS score, j
 
 | Key | Action |
 |-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
 
 ## Help

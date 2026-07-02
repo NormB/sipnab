@@ -504,8 +504,18 @@ pub fn render_call_flow_direct(
                 let src_x = pipe_positions[src_col];
                 let dst_x = pipe_positions[dst_col];
                 if src_x != dst_x {
+                    // Retx fold headers carry their count ON the arrow: the
+                    // annotation zone right of the ladder may be covered by
+                    // the split detail pane, and a hidden fold reads as data
+                    // loss. (Auth fold headers already say so in the label.)
+                    let arrow_label = match &msg.fold_label {
+                        Some(fl) if msg.folded_count > 0 && fl.starts_with("(+") => {
+                            format!("{} (+{} retx)", msg.label, msg.folded_count)
+                        }
+                        _ => msg.label.clone(),
+                    };
                     let (arrow_str, arrow_x) =
-                        format_arrow(&msg.label, src_x, dst_x, msg.is_response);
+                        format_arrow(&arrow_label, src_x, dst_x, msg.is_response);
                     let arrow_style = match msg.selection_state {
                         SelectionState::Selected => {
                             msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD)
@@ -517,14 +527,29 @@ pub fn render_call_flow_direct(
                 }
             }
 
-            // PDD annotation after the rightmost pipe
+            // Annotations after the rightmost pipe. Clipped to the ladder
+            // area: anything written past it lands under the split detail
+            // pane (rendered later), so it would either vanish or corrupt
+            // that pane.
+            let right_edge = area.x + area.width;
             let mut annotation_x = {
                 let rightmost = pipe_positions.last().copied().unwrap_or(0);
                 rightmost + 1
             };
+            let draw_annotation =
+                |buf: &mut ratatui::buffer::Buffer, x: u16, s: &str, style: Style| -> u16 {
+                    if x >= right_edge {
+                        return 0;
+                    }
+                    let avail = (right_edge - x) as usize;
+                    let clipped: String = s.chars().take(avail).collect();
+                    buf.set_string(x, y, &clipped, style);
+                    clipped.chars().count() as u16
+                };
+            // PDD annotation
             if let Some(ref pdd) = msg.pdd_note {
-                buf.set_string(annotation_x, y, pdd, Style::default().fg(theme.accent));
-                annotation_x += pdd.len() as u16 + 1;
+                let w = draw_annotation(buf, annotation_x, pdd, Style::default().fg(theme.accent));
+                annotation_x += w + 1;
             }
 
             // SDP delta badge (Feature 4)
@@ -533,8 +558,8 @@ pub fn render_call_flow_direct(
                 let badge_style = Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD);
-                buf.set_string(annotation_x, y, &badge_str, badge_style);
-                annotation_x += badge_str.len() as u16;
+                let w = draw_annotation(buf, annotation_x, &badge_str, badge_style);
+                annotation_x += w;
             }
 
             // Fold label (Feature 3)
@@ -543,7 +568,7 @@ pub fn render_call_flow_direct(
                 let fold_style = Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::ITALIC);
-                buf.set_string(annotation_x, y, &fold_str, fold_style);
+                draw_annotation(buf, annotation_x, &fold_str, fold_style);
             }
 
             // Full-row highlight for the current message: patch a background
@@ -738,6 +763,24 @@ pub fn render_message_detail(
 /// is the correct content length for the ladder scrollbar.
 pub fn ladder_total_rows(messages: &[FormattedMessage]) -> usize {
     messages.iter().map(|m| 1 + m.extra_lines.len()).sum()
+}
+
+/// Ladder row (in `ladder_total_rows` units) where the `visible_idx`-th
+/// non-spacer entry starts — the geometry needed to keep the keyboard
+/// selection inside the viewport regardless of spacers and extra lines.
+pub fn ladder_row_of_visible(messages: &[FormattedMessage], visible_idx: usize) -> usize {
+    let mut row = 0;
+    let mut vis = 0;
+    for m in messages {
+        if !m.is_spacer {
+            if vis == visible_idx {
+                return row;
+            }
+            vis += 1;
+        }
+        row += 1 + m.extra_lines.len();
+    }
+    row
 }
 
 /// Number of ladder rows visible at once for a given pane height. The ladder
@@ -1552,6 +1595,7 @@ mod tests {
             sdp_badge: None,
             is_retransmission: false,
             is_rtp_bar: false,
+            raw_index: None,
         }
     }
 
@@ -1615,6 +1659,61 @@ mod tests {
             row.starts_with("12:00:00.000"),
             "ts at col 0, unshifted: {row:?}"
         );
+    }
+
+    // Fold info must be visible INSIDE the ladder area: the retx count rides
+    // on the arrow label itself, and no annotation may bleed past the area's
+    // right edge — the split detail pane renders there and covers anything
+    // written into that region (which made folds look like silent data loss).
+    #[test]
+    fn fold_count_visible_in_ladder_and_no_bleed_past_area() {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: "10.0.0.1:5060".into(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".into(),
+                label: "10.0.0.2:5060".into(),
+            },
+        ];
+        let mut hdr = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
+        hdr.folded_count = 2;
+        hdr.fold_label = Some("(+2 retx) - press e to expand".to_string());
+        let msgs = vec![hdr];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 99,
+        };
+        let mut term = terminal(120, 24);
+        term.draw(|f| {
+            let ladder = Rect::new(0, 0, 60, 24);
+            render_call_flow_direct(f, ladder, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+        let mut ladder_text = String::new();
+        for y in 0..24u16 {
+            for x in 0..60u16 {
+                ladder_text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            ladder_text.push('\n');
+        }
+        assert!(
+            ladder_text.contains("INVITE (+2 retx)"),
+            "retx count must ride on the arrow inside the ladder:\n{ladder_text}"
+        );
+        for y in 0..24u16 {
+            for x in 60..120u16 {
+                assert_eq!(
+                    buf.cell((x, y)).unwrap().symbol(),
+                    " ",
+                    "annotation bled outside the ladder area at ({x},{y}):\n{ladder_text}"
+                );
+            }
+        }
     }
 
     // ── build_call_flow_lines / _with_width ────────────────────────────

@@ -12,7 +12,7 @@ pub mod msg_raw;
 pub mod stream_detail;
 pub mod stream_list;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -649,22 +649,44 @@ impl FilterDialogState {
 
     /// Build a DSL filter expression from the current dialog state.
     /// Returns `None` if all fields are empty and no methods are checked.
+    ///
+    /// Field text is matched as a LITERAL substring: it is regex-escaped
+    /// before being embedded, so `a+b` means the user a+b and an unbalanced
+    /// `(` can never produce a parse error.
     fn build_filter_expression(&self) -> Option<String> {
+        // The DSL string literal has no escape sequences, so a literal quote
+        // is smuggled through as the regex byte escape \x27 / \x22.
+        fn escape_filter_text(s: &str) -> String {
+            regex::escape(s)
+                .replace('\'', "\\x27")
+                .replace('"', "\\x22")
+        }
         let mut parts: Vec<String> = Vec::new();
 
         if !self.sip_from.is_empty() {
-            parts.push(format!("from.user =~ '{}'", self.sip_from));
+            parts.push(format!(
+                "from.user =~ '{}'",
+                escape_filter_text(&self.sip_from)
+            ));
         }
         if !self.sip_to.is_empty() {
-            parts.push(format!("to.user =~ '{}'", self.sip_to));
+            parts.push(format!("to.user =~ '{}'", escape_filter_text(&self.sip_to)));
         }
         if !self.source.is_empty() {
-            parts.push(format!("src.ip =~ '{}'", self.source));
+            parts.push(format!("src.ip =~ '{}'", escape_filter_text(&self.source)));
         }
         if !self.destination.is_empty() {
-            parts.push(format!("dst.ip =~ '{}'", self.destination));
+            parts.push(format!(
+                "dst.ip =~ '{}'",
+                escape_filter_text(&self.destination)
+            ));
         }
-        // Payload is not in the DSL; skip it for now (placeholder for future)
+        if !self.payload.is_empty() {
+            parts.push(format!(
+                "payload =~ '{}'",
+                escape_filter_text(&self.payload)
+            ));
+        }
 
         // Method filter: if some (but not all or none) methods are checked
         let checked: Vec<&str> = self
@@ -811,6 +833,9 @@ pub struct App {
     stream_detail_scroll: usize,
     /// View to return to when pressing Esc from StreamDetail.
     stream_detail_return_view: Option<View>,
+    /// View to return to when pressing Esc from RawMessage (the raw view can
+    /// be opened from the call list OR the call flow).
+    raw_msg_return_view: Option<View>,
     /// Structured filter dialog state (preserved between opens).
     pub filter_dialog: FilterDialogState,
     /// Settings popup state.
@@ -827,6 +852,13 @@ pub struct App {
     raw_msg_scroll: u16,
     /// Scroll offset for the F1 help view (clamped to content height in render).
     help_scroll: u16,
+    /// Scroll offset for the statistics view (clamped to content in render).
+    stats_scroll: u16,
+    /// Displayed dialog-row count at the previous render (autoscroll's
+    /// sticky-bottom reference point).
+    last_rendered_dialog_rows: usize,
+    /// Scroll offset for the message diff view (clamped to content in render).
+    diff_scroll: u16,
     /// Search query for inline search.
     search_query: String,
     /// Whether search input mode is active.
@@ -843,9 +875,11 @@ pub struct App {
     cached_flow_msg_count: usize,
     /// Indices of FormattedMessages that carry an RTP bar (for Enter drill-down).
     cached_rtp_bar_indices: std::collections::HashSet<usize>,
-    /// Call flow line cache: `(call_id, msg_count) -> formatted lines`.
-    /// Invalidated when the dialog's message count changes.
-    call_flow_cache: HashMap<String, (usize, Vec<Line<'static>>)>,
+    /// Per visible ladder row, the raw message index it renders (`None` for
+    /// RTP bars). Updated on every render; maps `selected_msg_index` (a
+    /// visible-row position) back to the underlying message for the detail
+    /// pane, Enter, diff selection and fold expansion.
+    cached_flow_raw_indices: Vec<Option<usize>>,
     /// Save dialog file path input.
     save_path: String,
     /// Cursor position within the save path string.
@@ -966,6 +1000,7 @@ impl App {
             last_known_dialog_count: 0,
             stream_detail_scroll: 0,
             stream_detail_return_view: None,
+            raw_msg_return_view: None,
             filter_dialog: FilterDialogState::default(),
             settings_dialog: SettingsDialogState::default(),
             active_filter: None,
@@ -974,6 +1009,9 @@ impl App {
             call_flow_scroll: 0,
             raw_msg_scroll: 0,
             help_scroll: 0,
+            stats_scroll: 0,
+            last_rendered_dialog_rows: 0,
+            diff_scroll: 0,
             search_query: String::new(),
             search_active: false,
             capture_mode: "Online (any)".to_string(),
@@ -982,7 +1020,7 @@ impl App {
             cached_displayed_count: 0,
             cached_flow_msg_count: 0,
             cached_rtp_bar_indices: std::collections::HashSet::new(),
-            call_flow_cache: HashMap::new(),
+            cached_flow_raw_indices: Vec::new(),
             save_path: String::new(),
             save_cursor: 0,
             save_dialog_count: 0,
@@ -1044,6 +1082,24 @@ impl App {
         self.last_data_update = Instant::now();
     }
 
+    /// Reset all per-call transient state when entering a call flow view.
+    /// Scroll, selection, fold expansion, marks and diff selection are all
+    /// positions within ONE dialog's ladder; carrying them into another
+    /// dialog would highlight/expand arbitrary rows there. Display settings
+    /// (timestamp mode, SDP mode, colors, split) are app-global and persist.
+    pub(crate) fn reset_call_flow_view_state(&mut self) {
+        self.call_flow_scroll = 0;
+        self.selected_msg_index = 0;
+        self.detail_scroll = 0;
+        self.flow_filter = None;
+        self.cached_flow_msg_count = 0;
+        self.cached_rtp_bar_indices.clear();
+        self.cached_flow_raw_indices.clear();
+        self.fold_expanded.clear();
+        self.mark_index = None;
+        self.diff_selected_msg = None;
+    }
+
     /// Return whether packet processing is currently paused.
     pub fn is_paused(&self) -> bool {
         self.paused
@@ -1066,7 +1122,12 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::cursor::Show,
+            LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
     }
 }
@@ -1147,6 +1208,7 @@ pub fn run_tui_with_pause(
     execute!(
         io::stdout(),
         EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
         crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
         crossterm::cursor::Hide,
         crossterm::cursor::MoveTo(0, 0)
@@ -1181,13 +1243,25 @@ pub fn run_tui_with_pause(
         // Render
         terminal.draw(|frame| render_app(frame, &mut app))?;
 
-        // Poll with adaptive timeout
+        // Poll with adaptive timeout, then drain every queued event before
+        // the next redraw — a paste or key burst must not be metered out at
+        // one event per frame.
         let timeout = app.poll_timeout();
-        if event::poll(timeout)?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            handle_key_event(&mut app, key);
+        if event::poll(timeout)? {
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        handle_key_event(&mut app, key);
+                    }
+                    Event::Mouse(m) => {
+                        events::handle_mouse_event(&mut app, m.kind);
+                    }
+                    _ => {}
+                }
+                if app.should_quit || !event::poll(std::time::Duration::ZERO)? {
+                    break;
+                }
+            }
         }
 
         // Only mark data updated when store counts actually change
@@ -1284,6 +1358,11 @@ impl App {
     #[doc(hidden)]
     pub fn open_entry_names_for_test(&self) -> Vec<String> {
         self.open_entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// Handle a mouse event kind (wheel scrolling) against the current view.
+    pub fn handle_mouse_kind(&mut self, kind: crossterm::event::MouseEventKind) {
+        events::handle_mouse_event(self, kind);
     }
 
     /// Simulate a keypress with modifiers.
@@ -1474,9 +1553,7 @@ impl App {
         } else {
             displayed
                 .into_iter()
-                .enumerate()
-                .filter(|(i, _)| selected.contains(i))
-                .map(|(_, d)| d)
+                .filter(|d| selected.contains(d.call_id.as_str()))
                 .collect()
         }
     }
@@ -1499,6 +1576,21 @@ impl App {
     /// Return the detail panel scroll offset.
     pub fn detail_scroll(&self) -> u16 {
         self.detail_scroll
+    }
+
+    /// Return the help view scroll offset.
+    pub fn help_scroll(&self) -> u16 {
+        self.help_scroll
+    }
+
+    /// Return the statistics view scroll offset.
+    pub fn stats_scroll(&self) -> u16 {
+        self.stats_scroll
+    }
+
+    /// Return the message diff view scroll offset.
+    pub fn diff_scroll(&self) -> u16 {
+        self.diff_scroll
     }
 
     /// Return the raw message view scroll offset.

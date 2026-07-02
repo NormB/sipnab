@@ -13,6 +13,10 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
+| Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
+
+`v` and `n` are built-in fallbacks: a key you explicitly rebind in
+`[keybindings]` always wins over them.
 
 ## Call List
 
@@ -35,7 +39,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | / | Activate search **(configurable: `search`)** |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
@@ -65,14 +69,14 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | Space | Select message for diff (press on two messages to compare) |
 | Esc | Back to call list |
 | d | Cycle SDP display mode (none / summary / full) |
-| t | Cycle timestamp mode (absolute / delta-prev / delta-first) |
+| t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | c | Cycle color scheme (method / call-id / cseq) |
 | R | Toggle detail panel visibility |
-| 0 / + / = / Right | Increase ladder panel width |
-| 9 / - / Left | Decrease ladder panel width |
+| 0 / + / = / Right | Increase ladder panel width (with the split off, shows a hint instead) |
+| 9 / - / Left | Decrease ladder panel width (with the split off, shows a hint instead) |
 | [ | Scroll detail panel up |
 | ] | Scroll detail panel down |
-| e | Toggle fold/expand for selected message |
+| e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | m | Set mark at current message |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
@@ -101,18 +105,22 @@ detail pane regardless of focus.
 | PgUp | Page up |
 | PgDn | Page down |
 | Home | Scroll to top |
+| End | Scroll to bottom |
 | / | Search within message |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
-| Esc | Back to call flow |
+| Esc | Back to the view it was opened from (call flow or call list) |
 
 ## Message Diff
 
 | Key | Action |
 |-----|--------|
-| q | Quit |
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
-| F1 | Help |
+| F1 | Help **(configurable: `help`)** |
 
 ## RTP Streams
 
@@ -120,8 +128,10 @@ detail pane regardless of focus.
 |-----|--------|
 | Up / k | Navigate up |
 | Down / j | Navigate down |
+| PgUp / PgDn | Page scroll |
 | Home | Jump to first stream |
 | End | Jump to last stream |
+| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** |
 | Enter | Open stream detail |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
@@ -136,7 +146,7 @@ detail pane regardless of focus.
 | Up / k | Scroll up |
 | Down / j | Scroll down |
 | PgUp / PgDn | Page scroll |
-| Home | Scroll to top |
+| Home / End | Jump to top/bottom |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
 | Esc | Back to RTP Streams |
 
@@ -144,6 +154,9 @@ detail pane regardless of focus.
 
 | Key | Action |
 |-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
 | Esc / q / s | Back to Call List |
 
 ## Help
@@ -225,7 +238,7 @@ browse your own files.
 
 ## Timestamp Modes
 
-Press `t` in the Call List or Call Flow to cycle through three timestamp modes (the mode is shared across both views):
+Press `t` in the Call List or Call Flow to cycle through the timestamp modes (the mode is shared across both views):
 
 1. **Absolute** (default) -- `HH:MM:SS.mmm` wall-clock time
 2. **Delta-prev** -- `+N.NNNs` time since previous entry. Color-coded in call flow:
@@ -234,6 +247,9 @@ Press `t` in the Call List or Call Flow to cycle through three timestamp modes (
    - Red: 1 s - 5 s
    - Bold red: > 5 s
 3. **Delta-first** -- `+N.NNNs` cumulative time from first entry
+4. **Scaled** -- delta-prev timestamps plus time-proportional spacer rows, so
+   quiet gaps are visible in the ladder. The set of visible messages is
+   identical in every mode — only the presentation changes.
 
 ## Name Resolution
 

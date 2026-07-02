@@ -12,6 +12,8 @@ use ratatui::widgets::{Cell, Row, Table, TableState};
 
 use crate::rtp::stream::RtpStream;
 use crate::rtp::stream_store::StreamStore;
+use crate::sip::dialog_store::DialogStore;
+use crate::sip::dsl::FilterExpr;
 
 // ── Quality thresholds ──────────────────────────────────────────────
 
@@ -104,6 +106,22 @@ impl StreamListState {
         self.table_state.select(Some(0));
     }
 
+    /// Move selection up by a page (20 rows).
+    pub fn page_up(&mut self) {
+        let current = self.selected();
+        self.table_state.select(Some(current.saturating_sub(20)));
+    }
+
+    /// Move selection down by a page (20 rows), clamped to the last item.
+    pub fn page_down(&mut self, item_count: usize) {
+        if item_count == 0 {
+            return;
+        }
+        let current = self.selected();
+        self.table_state
+            .select(Some((current + 20).min(item_count - 1)));
+    }
+
     /// Move selection to the last row.
     pub fn move_to_bottom(&mut self, item_count: usize) {
         if item_count > 0 {
@@ -122,6 +140,77 @@ impl Default for StreamListState {
 
 /// Render the RTP stream list table into the given area.
 ///
+/// Case-insensitive substring match over the fields the stream table shows:
+/// SSRC (hex, as displayed), codec, source/destination `ip:port`, and the
+/// associated dialog Call-ID.
+pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
+    if query_lower.is_empty() {
+        return true;
+    }
+    let ssrc = format!("{:08X}", stream.key.ssrc).to_ascii_lowercase();
+    if ssrc.contains(query_lower) {
+        return true;
+    }
+    if let Some(c) = &stream.codec
+        && c.to_ascii_lowercase().contains(query_lower)
+    {
+        return true;
+    }
+    if stream
+        .key
+        .src
+        .to_string()
+        .to_ascii_lowercase()
+        .contains(query_lower)
+        || stream
+            .key
+            .dst
+            .to_string()
+            .to_ascii_lowercase()
+            .contains(query_lower)
+    {
+        return true;
+    }
+    if let Some(cid) = &stream.associated_dialog
+        && cid.to_ascii_lowercase().contains(query_lower)
+    {
+        return true;
+    }
+    false
+}
+
+/// The stream rows the table displays: search-narrowed and — when the SIP
+/// display filter is active — restricted through each stream's associated
+/// dialog. Streams with no (or a vanished) dialog association are kept: a
+/// SIP filter cannot judge them.
+///
+/// Single source of truth for rendering, navigation clamping and selection
+/// resolution, mirroring `call_list::displayed_dialogs`.
+pub fn displayed_streams<'a>(
+    streams: impl IntoIterator<Item = &'a RtpStream>,
+    dialog_store: Option<&DialogStore>,
+    filter: Option<&FilterExpr>,
+    search_query: &str,
+) -> Vec<&'a RtpStream> {
+    let q = search_query.to_ascii_lowercase();
+    streams
+        .into_iter()
+        .filter(|s| stream_matches_search(s, &q))
+        .filter(|s| {
+            let (Some(f), Some(ds)) = (filter, dialog_store) else {
+                return true;
+            };
+            let Some(cid) = &s.associated_dialog else {
+                return true;
+            };
+            match ds.get(cid) {
+                Some(dialog) => f.matches_dialog(dialog, &[s]),
+                None => true,
+            }
+        })
+        .collect()
+}
+
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
 #[allow(clippy::too_many_arguments)]
@@ -130,6 +219,9 @@ pub fn render_stream_list(
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
+    dialog_store: Option<&DialogStore>,
+    filter: Option<&FilterExpr>,
+    search_query: &str,
     theme: &super::Theme,
     resolver: &crate::names::NameResolver,
     name_mode: crate::names::NameMode,
@@ -157,7 +249,8 @@ pub fn render_stream_list(
     .style(header_style)
     .bottom_margin(0);
 
-    let streams: Vec<_> = store.iter().collect();
+    // Same displayed list the navigation and selection resolution use.
+    let streams = displayed_streams(store.iter(), dialog_store, filter, search_query);
     let total_streams = streams.len();
 
     // Viewport windowing: only format visible rows to avoid O(N) formatting
@@ -300,10 +393,135 @@ mod tests {
     }
 
     #[test]
+    fn stream_list_paging_clamps() {
+        let mut state = StreamListState::new();
+        state.page_down(50);
+        assert_eq!(state.selected(), 20);
+        state.page_down(25);
+        assert_eq!(state.selected(), 24, "clamps to last row");
+        state.page_up();
+        assert_eq!(state.selected(), 4);
+        state.page_down(0); // empty list: no-op
+        assert_eq!(state.selected(), 4);
+    }
+
+    #[test]
     fn stream_list_state_empty() {
         let mut state = StreamListState::new();
         state.move_down(0); // no items
         assert_eq!(state.selected(), 0);
+    }
+
+    fn mk_stream(ssrc: u32, sport: u16, codec: Option<&str>, dialog: Option<&str>) -> RtpStream {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::StreamKey;
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+        let key = StreamKey {
+            ssrc,
+            src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), sport),
+            dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc,
+            payload_offset: 12,
+        };
+        let mut st = RtpStream::new(key, &hdr, chrono::Utc::now());
+        st.codec = codec.map(str::to_string);
+        st.associated_dialog = dialog.map(str::to_string);
+        st
+    }
+
+    // Search narrows by the fields the table shows; adversarial input must
+    // not panic and simply matches nothing.
+    #[test]
+    fn displayed_streams_honors_search() {
+        let a = mk_stream(0xAABBCCDD, 20000, Some("PCMU"), None);
+        let b = mk_stream(0x11223344, 20002, Some("G722"), Some("call-x@test"));
+        let all = [&a, &b];
+
+        let by_codec = displayed_streams(all, None, None, "g722");
+        assert_eq!(by_codec.len(), 1);
+        assert_eq!(by_codec[0].key.ssrc, 0x11223344);
+
+        let by_ssrc = displayed_streams(all, None, None, "aabbccdd");
+        assert_eq!(by_ssrc.len(), 1, "SSRC hex must be searchable");
+
+        let by_dialog = displayed_streams(all, None, None, "call-x");
+        assert_eq!(by_dialog.len(), 1);
+
+        let none = displayed_streams(all, None, None, "no-match");
+        assert!(none.is_empty());
+
+        // Adversarial: backslashes / quotes / empty never panic.
+        for q in ["a\\b", "'\"", ""] {
+            let _ = displayed_streams(all, None, None, q);
+        }
+        assert_eq!(displayed_streams(all, None, None, "").len(), 2);
+    }
+
+    // A SIP display filter restricts streams via their associated dialog;
+    // unassociated streams are kept (a SIP filter cannot judge them).
+    #[test]
+    fn displayed_streams_honors_sip_filter() {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::dialog_store::DialogStore;
+        use crate::sip::dsl::FilterExpr;
+        use crate::sip::parser::parse_sip;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:2002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>",
+                "Call-ID: call-x@test",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let msg = parse_sip(
+            &raw,
+            chrono::Utc::now(),
+            lo,
+            lo,
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
+        let mut ds = DialogStore::new(10, false);
+        ds.process_message(msg);
+
+        let matching = mk_stream(1, 20000, Some("PCMU"), Some("call-x@test"));
+        let other = mk_stream(2, 20002, Some("PCMU"), Some("unknown@test"));
+        let orphan = mk_stream(3, 20004, Some("PCMU"), None);
+        let all = [&matching, &other, &orphan];
+
+        let f = FilterExpr::parse("from.user == '1001'").expect("parse filter");
+        let shown = displayed_streams(all, Some(&ds), Some(&f), "");
+        let ssrcs: Vec<u32> = shown.iter().map(|s| s.key.ssrc).collect();
+        assert!(ssrcs.contains(&1), "stream of the matching dialog stays");
+        assert!(ssrcs.contains(&3), "unassociated stream stays");
+        assert!(
+            ssrcs.contains(&2),
+            "a stream pointing at a vanished dialog cannot be judged -> kept"
+        );
+
+        let f2 = FilterExpr::parse("from.user == '9999'").expect("parse filter");
+        let shown = displayed_streams(all, Some(&ds), Some(&f2), "");
+        let ssrcs: Vec<u32> = shown.iter().map(|s| s.key.ssrc).collect();
+        assert!(!ssrcs.contains(&1), "dialog fails the filter -> hidden");
+        assert!(ssrcs.contains(&3), "unassociated stream still shown");
     }
 
     #[test]

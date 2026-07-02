@@ -98,16 +98,6 @@ pub fn prepare_messages(
         Color::Red,
     ];
 
-    // Swimlane-aware selection: match on endpoint pair rather than Call-ID
-    let sel_endpoints: Option<(String, String)> = selected_msg.and_then(|idx| {
-        messages.get(idx).map(|m| {
-            (
-                format!("{}:{}", m.src_addr, m.src_port),
-                format!("{}:{}", m.dst_addr, m.dst_port),
-            )
-        })
-    });
-
     let mut pdd_done = false;
     let mut in_call = false;
     // Negotiated codec from the most recent INVITE 200 OK answer (single,
@@ -120,10 +110,8 @@ pub fn prepare_messages(
     let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
     let mut result = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
-    let mut fmt_idx: usize = 0; // running index in the formatted (non-spacer) output
 
     for (mi, msg) in messages.iter().enumerate() {
-        let _ = mi; // raw message index — not used for selection
         let (timestamp, timestamp_style) = match ts_mode {
             TimestampMode::Absolute => {
                 let ts_str = format!(
@@ -192,23 +180,8 @@ pub fn prepare_messages(
             }
         };
 
-        let sel = selected_msg == Some(fmt_idx);
-        let selection_state = if sel {
-            SelectionState::Selected
-        } else if let Some((ref sel_src, ref sel_dst)) = sel_endpoints {
-            let msg_src = format!("{}:{}", msg.src_addr, msg.src_port);
-            let msg_dst = format!("{}:{}", msg.dst_addr, msg.dst_port);
-            let same_leg = (msg_src == *sel_src && msg_dst == *sel_dst)
-                || (msg_src == *sel_dst && msg_dst == *sel_src);
-            if same_leg {
-                SelectionState::Related
-            } else {
-                SelectionState::Normal
-            }
-        } else {
-            SelectionState::Normal
-        };
-
+        // Selection is assigned after folding, over visible rows — see the
+        // post-pass at the end of this function.
         let style = sty;
 
         let src_addr = format!("{}:{}", msg.src_addr, msg.src_port);
@@ -339,9 +312,9 @@ pub fn prepare_messages(
             dst_col,
             pdd_note,
             extra_lines,
-            selected: sel,
+            selected: false,
             call_id: msg.call_id().unwrap_or("").to_string(),
-            selection_state,
+            selection_state: SelectionState::Normal,
             is_response: !msg.is_request,
             raw_timestamp: msg.timestamp,
             folded_count: 0,
@@ -350,12 +323,11 @@ pub fn prepare_messages(
             sdp_badge: None,
             is_retransmission: msg.is_retransmission,
             is_rtp_bar: false,
+            raw_index: Some(mi),
         });
-        fmt_idx += 1;
 
         // Push the deferred RTP bar as a separate selectable entry
         if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
-            let rtp_sel = selected_msg == Some(fmt_idx);
             // Format timestamp using the same mode as all other messages
             let (rtp_timestamp, rtp_ts_style) = match ts_mode {
                 TimestampMode::Absolute => {
@@ -405,13 +377,9 @@ pub fn prepare_messages(
                 dst_col: 0,
                 pdd_note: None,
                 extra_lines: vec![],
-                selected: rtp_sel,
+                selected: false,
                 call_id: msg.call_id().unwrap_or("").to_string(),
-                selection_state: if rtp_sel {
-                    SelectionState::Selected
-                } else {
-                    SelectionState::Normal
-                },
+                selection_state: SelectionState::Normal,
                 is_response: false,
                 raw_timestamp: rtp_ts,
                 folded_count: 0,
@@ -420,8 +388,8 @@ pub fn prepare_messages(
                 sdp_badge: None,
                 is_retransmission: false,
                 is_rtp_bar: true,
+                raw_index: None,
             });
-            fmt_idx += 1;
         }
     }
 
@@ -472,7 +440,7 @@ pub fn prepare_messages(
                         }
                     }
                     if !badge_parts.is_empty()
-                        && let Some(fm) = result.get_mut(ri)
+                        && let Some(fm) = result.iter_mut().find(|fm| fm.raw_index == Some(ri))
                     {
                         fm.sdp_badge = Some(badge_parts.join(" "));
                     }
@@ -482,6 +450,12 @@ pub fn prepare_messages(
             }
         }
     }
+
+    // ── Retransmit folding + Auth collapse (Feature 3) ────────────
+    // Folding runs BEFORE spacer insertion so that which rows exist is
+    // identical in every timestamp mode; synthetic rows (raw_index == None)
+    // are never folded.
+    let mut result = fold_messages(messages, result, fold_expanded);
 
     // ── Time-proportional spacer insertion (Feature 6) ─────────────
     if ts_mode == TimestampMode::Scaled && result.len() >= 2 {
@@ -533,6 +507,7 @@ pub fn prepare_messages(
                         sdp_badge: None,
                         is_retransmission: false,
                         is_rtp_bar: false,
+                        raw_index: None,
                     });
                 }
                 prev_ts_raw = msg.raw_timestamp;
@@ -542,8 +517,41 @@ pub fn prepare_messages(
         result = scaled;
     }
 
-    // ── Retransmit folding + Auth collapse (Feature 3) ────────────
-    let result = fold_messages(messages, result, fold_expanded);
+    // ── Selection: assign over VISIBLE rows ────────────────────────
+    // `selected_msg` is the index the user navigated to among rendered,
+    // non-spacer rows (post-fold), so highlighting always matches what the
+    // keys move over, in every timestamp mode. Rows sharing the selected
+    // message's endpoint pair are marked Related (same leg).
+    if let Some(sel) = selected_msg {
+        let mut sel_pair: Option<(usize, usize)> = None;
+        let mut vis = 0usize;
+        for fm in result.iter_mut() {
+            if fm.is_spacer {
+                continue;
+            }
+            if vis == sel {
+                fm.selected = true;
+                fm.selection_state = SelectionState::Selected;
+                if !fm.is_rtp_bar {
+                    sel_pair = Some((fm.src_col, fm.dst_col));
+                }
+                break;
+            }
+            vis += 1;
+        }
+        if let Some((s, d)) = sel_pair {
+            for fm in result.iter_mut() {
+                if fm.selected || fm.is_spacer || fm.is_rtp_bar {
+                    continue;
+                }
+                let same_leg =
+                    (fm.src_col == s && fm.dst_col == d) || (fm.src_col == d && fm.dst_col == s);
+                if same_leg {
+                    fm.selection_state = SelectionState::Related;
+                }
+            }
+        }
+    }
 
     (participants, result)
 }
@@ -596,10 +604,28 @@ fn fold_messages(
     let mut i = 0;
 
     while i < source.len() {
-        // --- Auth collapse detection ---
-        if !fold_expanded.contains(&i)
-            && let Some(fold_len) = detect_auth_sequence(raw_msgs, i)
-        {
+        // Synthetic rows (RTP bars) pass through untouched and are never
+        // fold headers or fold members.
+        let Some(ri) = source[i].as_ref().and_then(|fm| fm.raw_index) else {
+            if let Some(fm) = source[i].take() {
+                result.push(fm);
+            }
+            i += 1;
+            continue;
+        };
+
+        // --- Auth collapse detection (keyed on the header's raw index) ---
+        if let Some(fold_len) = detect_auth_sequence(raw_msgs, ri) {
+            if fold_expanded.contains(&ri) {
+                // Expanded: emit the header with a re-collapse hint; the
+                // member rows follow normally on later iterations.
+                if let Some(mut fm) = source[i].take() {
+                    fm.fold_label = Some("(auth retry expanded - press e to collapse)".to_string());
+                    result.push(fm);
+                }
+                i += 1;
+                continue;
+            }
             // Take the first message as the fold header
             if let Some(mut fm) = source[i].take() {
                 fm.folded_count = fold_len;
@@ -610,25 +636,50 @@ fn fold_messages(
                 fm.label = format!("{} (auth retry)", fm.label);
                 result.push(fm);
             }
-            // Skip the folded messages
-            for j in (i + 1)..(i + fold_len).min(source.len()) {
-                source[j].take();
+            // Drop the member rows: every following row whose raw index is
+            // inside the sequence.
+            let end_raw = ri + fold_len;
+            let mut j = i + 1;
+            while j < source.len() {
+                match source[j].as_ref().and_then(|fm| fm.raw_index) {
+                    Some(rj) if rj < end_raw => {
+                        source[j].take();
+                        j += 1;
+                    }
+                    _ => break,
+                }
             }
-            i += fold_len;
+            i = j;
             continue;
         }
 
         // --- Retransmit folding ---
-        if !fold_expanded.contains(&i) && i < raw_msgs.len() && raw_msgs[i].is_retransmission {
-            // Fold retransmission into the previous non-retransmission message
-            if let Some(_fm) = source[i].take() {
-                if let Some(prev) = result.last_mut() {
-                    prev.folded_count += 1;
-                    prev.fold_label =
-                        Some(format!("(+{} retx) - press e to expand", prev.folded_count));
-                } else {
-                    // No previous message to fold into — re-insert and emit
-                    source[i] = Some(_fm);
+        if raw_msgs.get(ri).is_some_and(|m| m.is_retransmission) {
+            // The fold header is the last emitted NON-retransmission row: a
+            // whole retx run belongs to one header, even when earlier retx
+            // rows of the run are visible because the fold is expanded.
+            match result.iter_mut().rev().find(|fm| {
+                fm.raw_index
+                    .is_some_and(|h| raw_msgs.get(h).is_some_and(|m| !m.is_retransmission))
+            }) {
+                Some(prev) => {
+                    let header_raw = prev.raw_index.unwrap_or(usize::MAX);
+                    if fold_expanded.contains(&header_raw) {
+                        // Expanded: keep the retransmission visible; label
+                        // the header so the fold can be re-collapsed.
+                        prev.fold_label = Some("(retx expanded - press e to collapse)".to_string());
+                        if let Some(fm) = source[i].take() {
+                            result.push(fm);
+                        }
+                    } else {
+                        prev.folded_count += 1;
+                        prev.fold_label =
+                            Some(format!("(+{} retx) - press e to expand", prev.folded_count));
+                        source[i].take();
+                    }
+                }
+                None => {
+                    // No previous message to fold into — emit normally.
                     if let Some(fm) = source[i].take() {
                         result.push(fm);
                     }
@@ -1650,11 +1701,220 @@ mod tests {
         assert_eq!(ok.folded_count, 1);
         assert!(ok.fold_label.as_deref().unwrap().contains("retx"));
 
-        // Expanded at index 2 → no folding.
+        // Expanded at the fold header (the 200 OK, raw index 1) → no folding.
         let mut expanded = HashSet::new();
-        expanded.insert(2usize);
+        expanded.insert(1usize);
         let (_p2, unfolded) = prepare_messages(&msgs, t0(), None, &o, &expanded);
         assert_eq!(unfolded.len(), 3, "expanded retx should remain visible");
+    }
+
+    /// A dialog whose retransmission sits 30s+ after its original, so Scaled
+    /// mode inserts spacer rows around it.
+    fn retx_msgs_with_gaps(cid: &str) -> Vec<SipMessage> {
+        let mut retx = response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(60));
+        retx.is_retransmission = true;
+        vec![
+            invite(cid, 1, t0()),
+            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(30)),
+            retx,
+        ]
+    }
+
+    const ALL_TS_MODES: [TimestampMode; 4] = [
+        TimestampMode::Absolute,
+        TimestampMode::DeltaPrev,
+        TimestampMode::DeltaFirst,
+        TimestampMode::Scaled,
+    ];
+
+    // Message visibility must never depend on the time-unit display setting:
+    // the fold result (which rows exist) has to be identical in every
+    // TimestampMode, spacers aside.
+    #[test]
+    fn folding_is_identical_across_all_timestamp_modes() {
+        let theme = Theme::default();
+        let msgs = retx_msgs_with_gaps("cmode");
+        for mode in ALL_TS_MODES {
+            let mut o = opts(&theme);
+            o.ts_mode = mode;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            let visible: Vec<_> = prepared.iter().filter(|m| !m.is_spacer).collect();
+            assert_eq!(
+                visible.len(),
+                2,
+                "{mode:?}: retx must fold to 2 visible rows"
+            );
+            let header = visible
+                .iter()
+                .find(|m| m.folded_count > 0)
+                .unwrap_or_else(|| panic!("{mode:?}: fold header missing"));
+            assert_eq!(header.folded_count, 1, "{mode:?}");
+            assert!(
+                header.fold_label.as_deref().unwrap_or("").contains("retx"),
+                "{mode:?}: fold label missing"
+            );
+        }
+    }
+
+    // The auth-retry collapse must also be timestamp-mode independent.
+    #[test]
+    fn auth_collapse_is_identical_across_all_timestamp_modes() {
+        let theme = Theme::default();
+        let cid = "cauthmode";
+        let msgs = vec![
+            register(cid, 1, None, t0()),
+            response(
+                cid,
+                401,
+                "Unauthorized",
+                1,
+                "REGISTER",
+                t0() + TimeDelta::seconds(30),
+            ),
+            ack_register(cid, 1, t0() + TimeDelta::seconds(60)),
+            register(
+                cid,
+                2,
+                Some("Digest username=\"alice\""),
+                t0() + TimeDelta::seconds(90),
+            ),
+        ];
+        for mode in ALL_TS_MODES {
+            let mut o = opts(&theme);
+            o.ts_mode = mode;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            let visible: Vec<_> = prepared.iter().filter(|m| !m.is_spacer).collect();
+            assert_eq!(
+                visible.len(),
+                1,
+                "{mode:?}: auth sequence must collapse to one row"
+            );
+            assert_eq!(visible[0].folded_count, 4, "{mode:?}");
+        }
+    }
+
+    // `selected_msg` addresses VISIBLE rows (what the user navigates), not raw
+    // or pre-fold positions. With a fold present, visible row 1 is the 200 OK
+    // that FOLLOWS the folded retransmission.
+    #[test]
+    fn selection_indexes_visible_rows_in_every_mode() {
+        let theme = Theme::default();
+        let mut retx = invite("csel", 1, t0() + TimeDelta::seconds(30));
+        retx.is_retransmission = true;
+        let msgs = vec![
+            invite("csel", 1, t0()),
+            retx,
+            response(
+                "csel",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::seconds(60),
+            ),
+        ];
+        for mode in ALL_TS_MODES {
+            let mut o = opts(&theme);
+            o.ts_mode = mode;
+            o.selected_msg = Some(1);
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            let selected: Vec<_> = prepared.iter().filter(|m| m.selected).collect();
+            assert_eq!(selected.len(), 1, "{mode:?}: exactly one selected row");
+            assert_eq!(
+                selected[0].label, "200 OK",
+                "{mode:?}: visible row 1 is the 200 OK (row 0 holds the fold)"
+            );
+        }
+        // Out-of-range selection: no panic, nothing selected.
+        let mut o = opts(&theme);
+        o.selected_msg = Some(99);
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert!(prepared.iter().all(|m| !m.selected));
+    }
+
+    // Every non-spacer row must carry the index of the raw message it renders,
+    // so the detail pane / Enter / diff open the message the user actually
+    // selected (RTP bars and spacers carry None).
+    #[test]
+    fn visible_rows_carry_raw_indices() {
+        let theme = Theme::default();
+        let msgs = retx_msgs_with_gaps("craw");
+        for mode in ALL_TS_MODES {
+            let mut o = opts(&theme);
+            o.ts_mode = mode;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            let raw: Vec<Option<usize>> = prepared
+                .iter()
+                .filter(|m| !m.is_spacer)
+                .map(|m| m.raw_index)
+                .collect();
+            assert_eq!(
+                raw,
+                vec![Some(0), Some(1)],
+                "{mode:?}: visible rows map to raw messages 0 and 1"
+            );
+        }
+    }
+
+    // Expanding a fold must reveal ALL of its retransmissions: a retx run
+    // folds into the first non-retransmission ancestor, never into an
+    // already-revealed retransmission.
+    #[test]
+    fn expansion_reveals_every_retransmission_in_a_run() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let mk_retx = |secs: i64| {
+            let mut m = invite("crun", 1, t0() + TimeDelta::seconds(secs));
+            m.is_retransmission = true;
+            m
+        };
+        let msgs = vec![
+            invite("crun", 1, t0()),
+            mk_retx(1),
+            mk_retx(2),
+            response("crun", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(3)),
+        ];
+        // Collapsed: header shows both retransmissions folded.
+        let (_p, folded) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(folded.len(), 2);
+        assert_eq!(folded[0].folded_count, 2);
+        // Expanded at the header (raw 0): all four rows visible.
+        let mut expanded = HashSet::new();
+        expanded.insert(0usize);
+        let (_p2, shown) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+        assert_eq!(
+            shown.len(),
+            4,
+            "both retransmissions must be revealed, got labels: {:?}",
+            shown.iter().map(|m| &m.label).collect::<Vec<_>>()
+        );
+    }
+
+    // Expansion is keyed by the fold HEADER's raw index and works in every
+    // timestamp mode; the expanded header is labelled so it can be re-collapsed.
+    #[test]
+    fn expansion_keyed_by_header_raw_index_across_modes() {
+        let theme = Theme::default();
+        let msgs = retx_msgs_with_gaps("cexp");
+        let mut expanded = HashSet::new();
+        expanded.insert(1usize); // raw index of the 200 OK fold header
+        for mode in ALL_TS_MODES {
+            let mut o = opts(&theme);
+            o.ts_mode = mode;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &expanded);
+            let visible: Vec<_> = prepared.iter().filter(|m| !m.is_spacer).collect();
+            assert_eq!(visible.len(), 3, "{mode:?}: expanded retx must be visible");
+            let header = &visible[1];
+            assert!(
+                header
+                    .fold_label
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("collapse"),
+                "{mode:?}: expanded header must offer re-collapse, got {:?}",
+                header.fold_label
+            );
+        }
     }
 
     // ── detect_auth_sequence + fold (auth collapse) ───────────────────

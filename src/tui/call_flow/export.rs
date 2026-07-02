@@ -110,6 +110,7 @@ mod tests {
             sdp_badge: None,
             is_retransmission: false,
             is_rtp_bar: false,
+            raw_index: None,
         }
     }
 

@@ -498,8 +498,8 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let scrolled = buffer_to_string(&terminal);
         assert!(
-            scrolled.contains("Export Mermaid sequence diagram"),
-            "scrolling did not reveal the later help section:\n{scrolled}"
+            scrolled.contains("Mouse wheel scrolls every view."),
+            "scrolling did not reveal the end of the help:\n{scrolled}"
         );
     }
 

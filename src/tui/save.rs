@@ -955,7 +955,7 @@ mod tests {
         // dialogs (the [*] checkbox group). Here only call-1 is checked.
         let mut app = app_with_dialogs();
         app.call_list.move_to_top(); // cursor on row 0 (call-1)
-        app.call_list.toggle_selection(); // check it
+        app.call_list.toggle_selection("call-1@test"); // check it
         let p = tmp_path("sel.json");
         let msg = save_to_json_path(&app, p.to_str().unwrap());
         assert!(msg.contains("Saved"), "got: {msg}");

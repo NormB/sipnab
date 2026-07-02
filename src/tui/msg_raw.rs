@@ -20,16 +20,35 @@ pub struct RawMessageView<'a> {
     pub message_index: usize,
     pub scroll_offset: u16,
     pub search_query: &'a str,
+    /// When `false`, render the message as plain unstyled text.
+    pub syntax_highlight: bool,
     pub theme: &'a super::Theme,
 }
 
 /// Render the raw SIP message text with syntax highlighting.
+/// Estimated rendered rows for `lines` wrapped to `width` columns: the ceil
+/// of each line's display width. Word-wrap can add a stray row; close enough
+/// to clamp the scroll near the true bottom.
+fn estimated_rows(lines: &[Line<'_>], width: u16) -> u16 {
+    let w = (width.max(1)) as usize;
+    lines
+        .iter()
+        .map(|l| {
+            let lw = l.width();
+            if lw == 0 { 1 } else { lw.div_ceil(w) }
+        })
+        .sum::<usize>()
+        .min(u16::MAX as usize) as u16
+}
+
+/// Renders the view and returns the estimated content height in rows, so the
+/// caller can clamp its stored scroll offset to the content.
 pub fn render_raw_message(
     frame: &mut Frame,
     area: Rect,
     store: &DialogStore,
     view: &RawMessageView<'_>,
-) {
+) -> u16 {
     let call_id = view.call_id;
     let message_index = view.message_index;
     let scroll_offset = view.scroll_offset;
@@ -50,7 +69,7 @@ pub fn render_raw_message(
                 .block(block)
                 .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -61,7 +80,7 @@ pub fn render_raw_message(
                 .block(block)
                 .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -77,7 +96,12 @@ pub fn render_raw_message(
     );
 
     let raw_text = String::from_utf8_lossy(&msg.raw);
-    let lines = highlight_sip_message(&info, &raw_text, search_query, theme);
+    let lines = if view.syntax_highlight {
+        highlight_sip_message(&info, &raw_text, search_query, theme)
+    } else {
+        plain_sip_message(&info, &raw_text)
+    };
+    let total_rows = estimated_rows(&lines, area.width.saturating_sub(2));
 
     let para = Paragraph::new(lines)
         .block(block)
@@ -85,6 +109,7 @@ pub fn render_raw_message(
         .wrap(Wrap { trim: false });
 
     frame.render_widget(para, area);
+    total_rows
 }
 
 /// Navigation and display state for the combined (transaction/dialog) viewer.
@@ -95,18 +120,22 @@ pub struct CombinedDetailView<'a> {
     /// Scope label for the title (e.g. "Transaction" / "Dialog").
     pub scope: &'a str,
     pub scroll_offset: u16,
+    /// When `false`, render the messages as plain unstyled text.
+    pub syntax_highlight: bool,
     pub theme: &'a super::Theme,
 }
 
 /// Render several messages' raw detail stacked into one scrollable view —
 /// every message of a transaction or dialog read together. `indices` are
 /// original positions into the dialog's message list.
+/// Renders the view and returns the estimated content height in rows, so the
+/// caller can clamp its stored scroll offset to the content.
 pub fn render_combined_detail(
     frame: &mut Frame,
     area: Rect,
     store: &DialogStore,
     view: &CombinedDetailView<'_>,
-) {
+) -> u16 {
     let call_id = view.call_id;
     let indices = view.indices;
     let scope = view.scope;
@@ -125,7 +154,7 @@ pub fn render_combined_detail(
                 .block(block)
                 .style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -156,14 +185,30 @@ pub fn render_combined_detail(
             msg.dst_port,
             msg.transport,
         );
-        lines.extend(highlight_sip_message(&info, &raw_text, "", theme));
+        if view.syntax_highlight {
+            lines.extend(highlight_sip_message(&info, &raw_text, "", theme));
+        } else {
+            lines.extend(plain_sip_message(&info, &raw_text));
+        }
     }
 
+    let total_rows = estimated_rows(&lines, area.width.saturating_sub(2));
     let para = Paragraph::new(lines)
         .block(block)
         .scroll((scroll_offset, 0))
         .wrap(Wrap { trim: false });
     frame.render_widget(para, area);
+    total_rows
+}
+
+/// Plain (unstyled) rendering of a SIP message: the info line followed by
+/// the raw text, one Line per row — used when syntax highlighting is off.
+fn plain_sip_message(info: &str, raw_text: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::raw(info.to_string()), Line::raw("")];
+    for l in raw_text.lines() {
+        lines.push(Line::raw(l.to_string()));
+    }
+    lines
 }
 
 // ── Syntax highlighting ─────────────────────────────────────────────

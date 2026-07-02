@@ -13,6 +13,9 @@ use super::Theme;
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
 #[allow(clippy::too_many_arguments)]
+/// Renders the view and returns the effective (content-clamped) scroll so
+/// the caller can write it back — otherwise Up appears dead after
+/// over-scrolling past the end.
 pub fn render_stream_detail(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -22,14 +25,14 @@ pub fn render_stream_detail(
     theme: &Theme,
     resolver: &crate::names::NameResolver,
     name_mode: crate::names::NameMode,
-) {
+) -> usize {
     let stream = match store.get(key) {
         Some(s) => s,
         None => {
             let msg =
                 Paragraph::new("Stream no longer available.").style(Style::default().fg(theme.bad));
             frame.render_widget(msg, area);
-            return;
+            return 0;
         }
     };
 
@@ -352,6 +355,7 @@ pub fn render_stream_detail(
 
     let para = Paragraph::new(lines).scroll((effective_scroll as u16, 0));
     frame.render_widget(para, area);
+    effective_scroll
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

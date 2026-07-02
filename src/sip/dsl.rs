@@ -80,6 +80,7 @@ enum Field {
     Method,
     Ua,
     CallId,
+    Payload,
     SrcIp,
     DstIp,
     SrcPort,
@@ -397,6 +398,7 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
         "method" => Field::Method,
         "ua" => Field::Ua,
         "call_id" => Field::CallId,
+        "payload" => Field::Payload,
         "src.ip" => Field::SrcIp,
         "dst.ip" => Field::DstIp,
         "src.port" => Field::SrcPort,
@@ -621,6 +623,12 @@ fn eval_compare(
             compare_str(&ua, op, value)
         }
         Field::CallId => compare_str(&dialog.call_id, op, value),
+        // Any message in the dialog whose raw content matches (sngrep-style
+        // payload filter: greps the whole SIP message text).
+        Field::Payload => dialog
+            .messages
+            .iter()
+            .any(|m| compare_str(&String::from_utf8_lossy(&m.raw), op, value)),
         Field::SrcIp => compare_str(&dialog.src_addr.to_string(), op, value),
         Field::DstIp => compare_str(&dialog.dst_addr.to_string(), op, value),
         Field::State => {
@@ -902,6 +910,20 @@ mod tests {
         let dialog = make_dialog("1001", "2002", "INVITE");
         let filter = FilterExpr::parse("from.user == '1001'").expect("should parse");
         assert!(filter.matches_dialog(&dialog, &[]));
+    }
+
+    #[test]
+    fn payload_field_matches_raw_message_content() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        // The raw INVITE contains the To URI.
+        let f = FilterExpr::parse("payload =~ '2002@example'").expect("should parse");
+        assert!(f.matches_dialog(&dialog, &[]));
+        let f = FilterExpr::parse("payload =~ 'not-there'").expect("should parse");
+        assert!(!f.matches_dialog(&dialog, &[]));
+        // Equality against a whole raw message: never matches here, must not
+        // panic (raw bytes are lossily decoded).
+        let f = FilterExpr::parse("payload == 'x'").expect("should parse");
+        assert!(!f.matches_dialog(&dialog, &[]));
     }
 
     #[test]

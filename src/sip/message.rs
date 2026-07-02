@@ -88,6 +88,26 @@ impl SipMessage {
         self.headers_by_name("Via")
     }
 
+    /// Return the `branch` parameter of the topmost `Via` header, if present.
+    ///
+    /// This is the RFC 3261 transaction identifier: two messages with the
+    /// same Call-ID/CSeq but different top-Via branches belong to distinct
+    /// transactions. An empty `branch=` value is treated as absent.
+    pub fn top_via_branch(&self) -> Option<&str> {
+        let via = *self.via_headers().first()?;
+        for param in via.split(';').skip(1) {
+            let param = param.trim();
+            let (name, value) = match param.split_once('=') {
+                Some((n, v)) => (n.trim_end(), v.trim()),
+                None => continue,
+            };
+            if name.eq_ignore_ascii_case("branch") {
+                return if value.is_empty() { None } else { Some(value) };
+            }
+        }
+        None
+    }
+
     /// Parse the `CSeq` header into its sequence number and method.
     ///
     /// Returns `None` if the header is missing or malformed.
@@ -703,5 +723,94 @@ mod tests {
             extract_uri_host_port(r"<sip:a\b@ho\st>"),
             Some(r"ho\st".to_string())
         );
+    }
+
+    // ── top_via_branch (RFC 3261 transaction identity) ─────────────────
+
+    fn msg_with_vias(vias: &[&str]) -> SipMessage {
+        let mut headers: Vec<&str> = vias.to_vec();
+        headers.extend([
+            "From: <sip:a@example.com>;tag=1",
+            "To: <sip:b@example.com>",
+            "Call-ID: via-branch@test",
+            "CSeq: 1 OPTIONS",
+            "Content-Length: 0",
+        ]);
+        parse_msg("OPTIONS sip:b@example.com SIP/2.0", &headers, b"")
+    }
+
+    #[test]
+    fn top_via_branch_basic() {
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.abc"]);
+        assert_eq!(m.top_via_branch(), Some("z9hG4bK.abc"));
+    }
+
+    #[test]
+    fn top_via_branch_takes_first_via_only() {
+        let m = msg_with_vias(&[
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.top",
+            "Via: SIP/2.0/UDP 10.0.0.2:5060;branch=z9hG4bK.below",
+        ]);
+        assert_eq!(m.top_via_branch(), Some("z9hG4bK.top"));
+    }
+
+    #[test]
+    fn top_via_branch_more_params_and_spacing() {
+        let m =
+            msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060 ; rport ; branch=z9hG4bK.x ; alias"]);
+        assert_eq!(m.top_via_branch(), Some("z9hG4bK.x"));
+    }
+
+    #[test]
+    fn top_via_branch_param_name_case_insensitive() {
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;BRANCH=z9hG4bK.up"]);
+        assert_eq!(m.top_via_branch(), Some("z9hG4bK.up"));
+    }
+
+    #[test]
+    fn top_via_branch_compact_form() {
+        // Parser expands compact `v:` to `Via`.
+        let m = parse_msg(
+            "OPTIONS sip:b@example.com SIP/2.0",
+            &[
+                "v: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK.compact",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: via-compact@test",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        assert_eq!(m.top_via_branch(), Some("z9hG4bK.compact"));
+    }
+
+    #[test]
+    fn top_via_branch_absent_or_degenerate() {
+        // No Via at all.
+        let m = parse_msg(
+            "OPTIONS sip:b@example.com SIP/2.0",
+            &[
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: via-none@test",
+                "CSeq: 1 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        assert_eq!(m.top_via_branch(), None);
+        // Via without a branch param (RFC 2543 style).
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060"]);
+        assert_eq!(m.top_via_branch(), None);
+        // Empty branch value → treated as absent.
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branch="]);
+        assert_eq!(m.top_via_branch(), None);
+        // `branch` as a prefix of another param must not match.
+        let m = msg_with_vias(&["Via: SIP/2.0/UDP 10.0.0.1:5060;branchx=nope"]);
+        assert_eq!(m.top_via_branch(), None);
+        // Adversarial: backslashes and quotes must not panic and pass through.
+        let m = msg_with_vias(&[r#"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9\"h4bK"#]);
+        assert_eq!(m.top_via_branch(), Some(r#"z9\"h4bK"#));
     }
 }

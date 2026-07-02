@@ -444,7 +444,7 @@ impl DialogStore {
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results.sort_by_key(|r| std::cmp::Reverse(r.score));
         results
     }
 
@@ -838,6 +838,194 @@ mod tests {
 
         assert_eq!(store.len(), 2);
         assert!(store.get("call-3@test").is_none());
+    }
+
+    fn make_options_with_branch(
+        call_id: &str,
+        cseq: u32,
+        branch: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            "OPTIONS sip:ping@example.com SIP/2.0",
+            &[
+                &format!("Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}"),
+                "From: <sip:mon@example.com>;tag=m1",
+                "To: <sip:ping@example.com>",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq} OPTIONS"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse OPTIONS")
+    }
+
+    fn make_options_200_with_branch(
+        call_id: &str,
+        cseq: u32,
+        branch: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                &format!("Via: SIP/2.0/UDP 10.0.0.1:5060;branch={branch}"),
+                "From: <sip:mon@example.com>;tag=m1",
+                "To: <sip:ping@example.com>;tag=u1",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq} OPTIONS"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse 200 OK")
+    }
+
+    // RFC 3261 §17: transaction identity is the top Via branch. OPTIONS
+    // keepalives that reuse Call-ID + CSeq but carry a fresh branch are new
+    // transactions and must NOT be folded away as retransmissions.
+    #[test]
+    fn same_cseq_new_branch_is_not_a_retransmission() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        for i in 0..3u32 {
+            let ts = t0 + TimeDelta::seconds(30 * i64::from(i));
+            store.process_message(make_options_with_branch(
+                "keepalive@test",
+                1,
+                &format!("z9hG4bK.ka{i}"),
+                ts,
+            ));
+        }
+
+        let dialog = store.get("keepalive@test").expect("dialog should exist");
+        assert_eq!(dialog.messages.len(), 3, "all three keepalives stored");
+        for (i, m) in dialog.messages.iter().enumerate() {
+            assert!(
+                !m.is_retransmission,
+                "keepalive {i} wrongly flagged as retransmission"
+            );
+        }
+        assert_eq!(dialog.timing.total_retransmits(), 0);
+    }
+
+    #[test]
+    fn same_cseq_same_branch_is_a_retransmission() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        store.process_message(make_options_with_branch(
+            "retx-branch@test",
+            1,
+            "z9hG4bK.same",
+            t0,
+        ));
+        store.process_message(make_options_with_branch(
+            "retx-branch@test",
+            1,
+            "z9hG4bK.same",
+            t0 + TimeDelta::milliseconds(500),
+        ));
+
+        let dialog = store.get("retx-branch@test").expect("dialog should exist");
+        assert_eq!(dialog.messages.len(), 2);
+        assert!(!dialog.messages[0].is_retransmission);
+        assert!(dialog.messages[1].is_retransmission);
+        assert_eq!(dialog.timing.total_retransmits(), 1);
+    }
+
+    #[test]
+    fn response_retransmission_keyed_by_branch_too() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        // Two full keepalive transactions: each 200 OK carries its own branch.
+        for i in 0..2u32 {
+            let ts = t0 + TimeDelta::seconds(30 * i64::from(i));
+            let branch = format!("z9hG4bK.tx{i}");
+            store.process_message(make_options_with_branch("resp-branch@test", 1, &branch, ts));
+            store.process_message(make_options_200_with_branch(
+                "resp-branch@test",
+                1,
+                &branch,
+                ts + TimeDelta::milliseconds(20),
+            ));
+        }
+        let dialog = store.get("resp-branch@test").expect("dialog should exist");
+        assert_eq!(dialog.messages.len(), 4);
+        assert!(
+            dialog.messages.iter().all(|m| !m.is_retransmission),
+            "distinct transactions must not be flagged"
+        );
+
+        // A genuinely repeated 200 OK (same branch) IS a retransmission.
+        store.process_message(make_options_200_with_branch(
+            "resp-branch@test",
+            1,
+            "z9hG4bK.tx1",
+            t0 + TimeDelta::seconds(31),
+        ));
+        let dialog = store.get("resp-branch@test").expect("dialog should exist");
+        assert!(dialog.messages[4].is_retransmission);
+    }
+
+    // Adversarial branch values: none of these may panic, and behavior must be
+    // deterministic. An empty `branch=` is treated as absent (CSeq fallback),
+    // so two of them compare equal → retransmission.
+    #[test]
+    fn adversarial_branch_values_are_handled() {
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+
+        for (cid, branch) in [
+            ("adv-backslash@test", r"z9hG4bK.a\b\\c"),
+            ("adv-quote@test", "z9hG4bK.'\"quoted"),
+            ("adv-space@test", "z9hG4bK.with stuff"),
+        ] {
+            store.process_message(make_options_with_branch(cid, 1, branch, t0));
+            store.process_message(make_options_with_branch(
+                cid,
+                1,
+                branch,
+                t0 + TimeDelta::milliseconds(100),
+            ));
+            let dialog = store.get(cid).expect("dialog should exist");
+            assert!(
+                dialog.messages[1].is_retransmission,
+                "{cid}: identical odd branch must still detect retransmission"
+            );
+        }
+
+        // Empty branch value → fallback identity (same as no branch at all).
+        store.process_message(make_options_with_branch("adv-empty@test", 1, "", t0));
+        store.process_message(make_options_with_branch(
+            "adv-empty@test",
+            1,
+            "",
+            t0 + TimeDelta::milliseconds(100),
+        ));
+        let dialog = store.get("adv-empty@test").expect("dialog should exist");
+        assert!(dialog.messages[1].is_retransmission);
     }
 
     #[test]

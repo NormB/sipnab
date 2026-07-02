@@ -322,18 +322,18 @@ mod tui_state {
     }
 
     #[test]
-    fn invalid_regex_filter_shows_error_returns_to_call_list() {
+    fn regex_metachars_in_filter_are_literal_text() {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(7)); // open filter
-        // Type an invalid regex pattern into SIP From field
+        // Filter fields are literal substrings, never regexes: "[invalid"
+        // must not error — it simply matches no From user here.
         for c in "[invalid".chars() {
             app.handle_key(KeyCode::Char(c));
         }
         app.handle_key(KeyCode::Enter);
-        // Should return to call list
         assert_eq!(*app.current_view(), View::CallList);
-        // No filter applied (regex was invalid)
-        assert_eq!(app.visible_dialog_count(), 3);
+        assert_eq!(app.status_error(), None, "literal text must not error");
+        assert_eq!(app.visible_dialog_count(), 0);
     }
 
     #[test]
@@ -885,6 +885,618 @@ mod tui_state {
         app.handle_key(KeyCode::Char(' ')); // open diff
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
         app
+    }
+
+    // ── Call list: selection must resolve against the DISPLAYED list ──
+    // (filter + search + sort), not a filter-only unsorted list.
+
+    // With a search narrowing the list to one row, Enter must open that row.
+    #[test]
+    fn enter_after_search_opens_the_call_the_user_sees() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('/'));
+        for c in "1003".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter); // accept search; query persists
+        app.handle_key(KeyCode::Enter); // open the only visible row
+        match app.current_view() {
+            View::CallFlow(cid) => assert_eq!(
+                cid, "call-2@test",
+                "the single searched row is call-2 (from user 1003)"
+            ),
+            v => panic!("expected CallFlow, got {v:?}"),
+        }
+    }
+
+    // With a search active, Down must not walk the selection past the
+    // visible rows.
+    #[test]
+    fn navigation_clamps_to_searched_rows() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('/'));
+        for c in "1003".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Down);
+        }
+        assert_eq!(
+            app.call_list_state().selected(),
+            0,
+            "one visible row -> selection stays at 0"
+        );
+    }
+
+    // After reversing the sort, the top row is the LAST dialog; Enter must
+    // open that one.
+    #[test]
+    fn enter_after_sort_reversal_opens_the_top_displayed_row() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('Z')); // reverse sort direction
+        app.handle_key(KeyCode::Enter);
+        match app.current_view() {
+            View::CallFlow(cid) => assert_eq!(
+                cid, "call-3@test",
+                "reversed sort puts call-3 on top; Enter must open it"
+            ),
+            v => panic!("expected CallFlow, got {v:?}"),
+        }
+    }
+
+    // Multi-select checkmarks must stick to the CALL, not the row position:
+    // selecting call-1, then reordering the list, then clearing selected must
+    // remove call-1 — not whatever now sits at the old row index.
+    #[test]
+    fn multi_select_survives_reordering() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char(' ')); // check row 0 = call-1
+        app.handle_key(KeyCode::Char('Z')); // reverse sort: call-3 now on top
+        app.handle_key(KeyCode::F(5)); // clear the checked calls
+        assert_eq!(app.visible_dialog_count(), 2);
+        let store = app.dialog_store_ref().read();
+        assert!(
+            store.get("call-1@test").is_none(),
+            "the checked call-1 must be the one cleared"
+        );
+        assert!(
+            store.get("call-3@test").is_some(),
+            "call-3 was never checked; reordering must not transfer the mark"
+        );
+    }
+
+    // Esc from a raw message opened DIRECTLY from the call list (F6) must
+    // return to the call list, not dump the user into a call-flow view they
+    // never opened.
+    #[test]
+    fn esc_from_raw_message_opened_from_call_list_returns_to_call_list() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(6));
+        assert!(matches!(app.current_view(), View::RawMessage { .. }));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(*app.current_view(), View::CallList);
+    }
+
+    // ── Filter dialog: user text is matched literally ──────────────────
+
+    fn make_invite_from_user(call_id: &str, from_user: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("From: <sip:{from_user}@example.com>;tag=t1"),
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "User-Agent: sipsak-test-agent",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
+    }
+
+    /// Open the filter popup, type `text` into the From field, apply.
+    fn apply_from_filter(app: &mut App, text: &str) {
+        app.handle_key(KeyCode::F(7));
+        assert!(matches!(app.active_popup(), Some(Popup::FilterDialog)));
+        for c in text.chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+    }
+
+    // Regex metacharacters typed into a filter field must match literally —
+    // "a+b" is a user name, not a regex.
+    #[test]
+    fn filter_text_with_regex_metachars_matches_literally() {
+        let t0 = base_ts();
+        let mut app = App::with_processed_messages(vec![
+            make_invite_from_user("plus@test", "a+b", t0),
+            make_invite_from_user("plain@test", "aab", t0 + TimeDelta::seconds(1)),
+        ]);
+        apply_from_filter(&mut app, "a+b");
+        assert_eq!(
+            app.status_error(),
+            None,
+            "literal filter text must not produce a filter error"
+        );
+        assert_eq!(
+            app.visible_dialog_count(),
+            1,
+            "'a+b' must match only the literal a+b user (a regex would also match 'aab')"
+        );
+        app.handle_key(KeyCode::Enter);
+        match app.current_view() {
+            View::CallFlow(cid) => assert_eq!(
+                cid, "plus@test",
+                "the literal a+b dialog must be the surviving row"
+            ),
+            v => panic!("expected CallFlow, got {v:?}"),
+        }
+    }
+
+    // Adversarial input: unbalanced parens, quotes, backslashes must never
+    // produce a parse error — they are literal text that simply matches
+    // nothing here.
+    #[test]
+    fn filter_adversarial_text_never_errors() {
+        let t0 = base_ts();
+        for adversarial in ["(", "[[", "a\\", "it's", "\"", "*?"] {
+            let mut app =
+                App::with_processed_messages(vec![make_invite_from_user("adv@test", "1001", t0)]);
+            apply_from_filter(&mut app, adversarial);
+            assert_eq!(
+                app.status_error(),
+                None,
+                "adversarial input {adversarial:?} must not error"
+            );
+            assert_eq!(app.visible_dialog_count(), 0, "input {adversarial:?}");
+        }
+    }
+
+    // The Payload field must actually filter: it matches against the raw
+    // message content of the dialog.
+    #[test]
+    fn payload_filter_matches_message_content() {
+        let t0 = base_ts();
+        let mut app = App::with_processed_messages(vec![
+            make_invite_from_user("ua@test", "1001", t0),
+            make_invite("plain@test", "1002", "1003", t0 + TimeDelta::seconds(1)),
+        ]);
+        // Focus the Payload field (index 4) and type a string only present
+        // in the first dialog's User-Agent header.
+        app.handle_key(KeyCode::F(7));
+        for _ in 0..4 {
+            app.handle_key(KeyCode::Tab);
+        }
+        for c in "sipsak-test-agent".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.status_error(), None);
+        assert_eq!(
+            app.visible_dialog_count(),
+            1,
+            "payload filter must narrow to the dialog containing the text"
+        );
+    }
+
+    // Reopening search must allow refining the existing query, not wipe it.
+    #[test]
+    fn search_query_preserved_on_reopen() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('/'));
+        for c in "1003".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.search_query(), "1003");
+        app.handle_key(KeyCode::Char('/')); // reopen to refine
+        assert_eq!(
+            app.search_query(),
+            "1003",
+            "reopening search must keep the query for editing"
+        );
+    }
+
+    // ── Scroll clamping: no view may strand past its content ──────────
+
+    fn draw(app: &mut App, term: &mut ratatui::Terminal<ratatui::backend::TestBackend>) {
+        term.draw(|f| app.render(f)).unwrap();
+    }
+
+    fn small_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap()
+    }
+
+    // Raw message view: scrolling far past the end must clamp to the content
+    // (so a single Up immediately moves the view back).
+    #[test]
+    fn raw_message_overscroll_clamps_and_recovers() {
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        app.handle_key(KeyCode::F(6)); // raw view from call list
+        draw(&mut app, &mut term);
+        for _ in 0..50 {
+            app.handle_key(KeyCode::Down);
+            draw(&mut app, &mut term);
+        }
+        let stranded = app.raw_msg_scroll();
+        assert!(
+            stranded < 30,
+            "scroll must clamp near the ~8-line message, got {stranded}"
+        );
+        // End must also land clamped, and Up must move immediately.
+        app.handle_key(KeyCode::End);
+        draw(&mut app, &mut term);
+        let at_end = app.raw_msg_scroll();
+        assert!(at_end < 30, "End must clamp, got {at_end}");
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.raw_msg_scroll(), at_end.saturating_sub(1));
+    }
+
+    // Combined (transaction/dialog) detail: End claimed to clamp but never
+    // did — u16::MAX scroll rendered a blank screen.
+    #[test]
+    fn combined_detail_end_is_clamped_not_blank() {
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        app.handle_key(KeyCode::Enter); // call flow
+        draw(&mut app, &mut term);
+        app.handle_key(KeyCode::Char('A')); // whole-dialog combined detail
+        assert!(matches!(app.current_view(), View::CombinedDetail { .. }));
+        draw(&mut app, &mut term);
+        app.handle_key(KeyCode::End);
+        draw(&mut app, &mut term);
+        assert!(
+            app.raw_msg_scroll() < 60,
+            "End must clamp to content height, got {}",
+            app.raw_msg_scroll()
+        );
+    }
+
+    // Call flow ladder: PageDown must not push the scroll past the ladder.
+    #[test]
+    fn call_flow_pagedown_clamps_to_ladder() {
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        app.handle_key(KeyCode::Enter);
+        draw(&mut app, &mut term);
+        for _ in 0..5 {
+            app.handle_key(KeyCode::PageDown);
+            draw(&mut app, &mut term);
+        }
+        assert!(
+            app.call_flow_scroll() < 10,
+            "2-message ladder: scroll must clamp, got {}",
+            app.call_flow_scroll()
+        );
+    }
+
+    // Statistics view must scroll: content taller than the pane was simply
+    // cut off with no way to see the bottom.
+    #[test]
+    fn statistics_view_scrolls_and_clamps() {
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        app.handle_key(KeyCode::Char('s'));
+        assert_eq!(*app.current_view(), View::Statistics);
+        draw(&mut app, &mut term);
+        app.handle_key(KeyCode::Down);
+        draw(&mut app, &mut term);
+        assert_eq!(app.stats_scroll(), 1, "Down must scroll the statistics");
+        app.handle_key(KeyCode::End);
+        draw(&mut app, &mut term);
+        assert!(
+            app.stats_scroll() < 200,
+            "End must clamp to content, got {}",
+            app.stats_scroll()
+        );
+        app.handle_key(KeyCode::Home);
+        assert_eq!(app.stats_scroll(), 0);
+    }
+
+    // Message diff must scroll: long messages were truncated with no
+    // navigation at all.
+    #[test]
+    fn message_diff_scrolls_and_clamps() {
+        let mut app = app_in_message_diff();
+        let mut term = small_terminal();
+        draw(&mut app, &mut term);
+        app.handle_key(KeyCode::Down);
+        draw(&mut app, &mut term);
+        assert_eq!(app.diff_scroll(), 1, "Down must scroll the diff");
+        app.handle_key(KeyCode::End);
+        draw(&mut app, &mut term);
+        assert!(
+            app.diff_scroll() < 100,
+            "End must clamp to content, got {}",
+            app.diff_scroll()
+        );
+        app.handle_key(KeyCode::PageUp);
+        draw(&mut app, &mut term);
+        app.handle_key(KeyCode::Home);
+        assert_eq!(app.diff_scroll(), 0);
+    }
+
+    // ── Keymap rebinds must apply in EVERY view ────────────────────────
+
+    #[test]
+    fn diff_view_respects_quit_rebind() {
+        let mut app = app_in_message_diff();
+        app.keymap.quit = KeyCode::Char('x');
+        app.handle_key(KeyCode::Char('q'));
+        assert!(!app.should_quit(), "unbound 'q' must no longer quit");
+        app.handle_key(KeyCode::Char('x'));
+        assert!(
+            app.should_quit(),
+            "rebound quit key must work in the diff view"
+        );
+    }
+
+    #[test]
+    fn combined_detail_respects_help_rebind() {
+        let mut app = app_with_call_flow_open();
+        app.handle_key(KeyCode::Char('A'));
+        assert!(matches!(app.current_view(), View::CombinedDetail { .. }));
+        app.keymap.help = KeyCode::F(12);
+        app.handle_key(KeyCode::F(12));
+        assert_eq!(*app.current_view(), View::Help);
+    }
+
+    // A key the user rebinds to an action must win over the built-in global
+    // fallbacks ('v' version, 'n' name-mode cycle).
+    #[test]
+    fn keymap_rebind_beats_global_fallback_keys() {
+        let mut app = app_with_three_dialogs();
+        app.keymap.quit = KeyCode::Char('n');
+        app.handle_key(KeyCode::Char('n'));
+        assert!(
+            app.should_quit(),
+            "'n' rebound to quit must quit, not cycle name mode"
+        );
+    }
+
+    // ── Mouse wheel ────────────────────────────────────────────────────
+
+    #[test]
+    fn mouse_wheel_scrolls_call_list() {
+        use crossterm::event::MouseEventKind;
+        let mut app = app_with_three_dialogs();
+        app.handle_mouse_kind(MouseEventKind::ScrollDown);
+        app.handle_mouse_kind(MouseEventKind::ScrollDown);
+        assert_eq!(app.call_list_state().selected(), 2);
+        app.handle_mouse_kind(MouseEventKind::ScrollUp);
+        assert_eq!(app.call_list_state().selected(), 1);
+    }
+
+    #[test]
+    fn mouse_wheel_scrolls_help_view() {
+        use crossterm::event::MouseEventKind;
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(1));
+        assert_eq!(*app.current_view(), View::Help);
+        app.handle_mouse_kind(MouseEventKind::ScrollDown);
+        assert!(app.help_scroll() > 0, "wheel must scroll the help view");
+    }
+
+    // Left/Right in call flow silently did nothing with the split pane off.
+    #[test]
+    fn call_flow_left_right_hint_when_split_off() {
+        let mut app = app_with_call_flow_open();
+        app.handle_key(KeyCode::Char('R')); // split off
+        assert!(!app.raw_preview());
+        app.handle_key(KeyCode::Left);
+        let hint = app.status_error().unwrap_or_default().to_string();
+        assert!(
+            hint.contains('R'),
+            "Left with split off must hint how to enable the split, got {hint:?}"
+        );
+    }
+
+    // ── Settings must actually do something ────────────────────────────
+
+    // Autoscroll: with the toggle ON and the selection sitting on the last
+    // row, newly arriving dialogs pull the selection to the new bottom.
+    // With the selection elsewhere, or the toggle OFF, nothing moves.
+    #[test]
+    fn autoscroll_follows_new_dialogs_when_at_bottom() {
+        let t0 = base_ts();
+        let mut app =
+            App::with_processed_messages(vec![make_invite("as-1@test", "1001", "1002", t0)]);
+        let mut term = small_terminal();
+        draw(&mut app, &mut term);
+        assert_eq!(app.call_list_state().selected(), 0);
+        app.dialog_store_ref().write().process_message(make_invite(
+            "as-2@test",
+            "1003",
+            "1004",
+            t0 + TimeDelta::seconds(1),
+        ));
+        draw(&mut app, &mut term);
+        assert_eq!(
+            app.call_list_state().selected(),
+            1,
+            "autoscroll must follow the newest dialog"
+        );
+    }
+
+    #[test]
+    fn autoscroll_does_not_yank_selection_away() {
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        draw(&mut app, &mut term);
+        // User is inspecting row 0, not the bottom.
+        assert_eq!(app.call_list_state().selected(), 0);
+        app.dialog_store_ref().write().process_message(make_invite(
+            "as-4@test",
+            "1007",
+            "1008",
+            base_ts() + TimeDelta::seconds(20),
+        ));
+        draw(&mut app, &mut term);
+        assert_eq!(
+            app.call_list_state().selected(),
+            0,
+            "selection away from the bottom must not be yanked"
+        );
+    }
+
+    // Syntax highlight toggle: OFF must render the raw message plain.
+    #[test]
+    fn syntax_highlight_toggle_takes_effect() {
+        use ratatui::style::Modifier;
+        let mut app = app_with_three_dialogs();
+        let mut term = small_terminal();
+        app.handle_key(KeyCode::F(6)); // raw view
+        draw(&mut app, &mut term);
+        // Count only inside the message block (skip the app status bar and
+        // the block border, which carry their own styling).
+        let bold_cells = |t: &ratatui::Terminal<ratatui::backend::TestBackend>| {
+            let buf = t.backend().buffer();
+            let mut n = 0;
+            for y in 4..buf.area.height.saturating_sub(1) {
+                for x in 1..buf.area.width.saturating_sub(1) {
+                    if buf
+                        .cell((x, y))
+                        .unwrap()
+                        .style()
+                        .add_modifier
+                        .contains(Modifier::BOLD)
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        assert!(bold_cells(&term) > 0, "highlighting ON renders styled text");
+        app.handle_key(KeyCode::Char('s')); // toggle OFF
+        draw(&mut app, &mut term);
+        assert_eq!(
+            bold_cells(&term),
+            0,
+            "highlighting OFF must render the message plain"
+        );
+    }
+
+    // ── Call flow with folded retransmissions: index mapping ──────────
+
+    fn make_options(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
+        // No Via header → retransmission detection falls back to CSeq
+        // identity, so a repeated CSeq is flagged as a retransmission.
+        let raw = build_sip(
+            "OPTIONS sip:ping@example.com SIP/2.0",
+            &[
+                "From: <sip:mon@example.com>;tag=m1",
+                "To: <sip:ping@example.com>",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: {cseq} OPTIONS"),
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost_a(),
+            localhost_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse OPTIONS")
+    }
+
+    /// Call flow open on a dialog whose ladder folds two retransmissions:
+    /// raw messages [OPT#1, retx#1, OPT#2, retx#2] render as two visible
+    /// rows, each a fold header (+1 retx). Renders once so the App caches
+    /// (visible row count, row→message mapping) are populated like in the
+    /// real event loop.
+    fn app_with_folded_flow() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
+        let t0 = base_ts();
+        let messages = vec![
+            make_options("fold@test", 1, t0),
+            make_options("fold@test", 1, t0 + TimeDelta::milliseconds(500)),
+            make_options("fold@test", 2, t0 + TimeDelta::seconds(30)),
+            make_options("fold@test", 2, t0 + TimeDelta::seconds(31)),
+        ];
+        let mut app = App::with_processed_messages(messages);
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view(), View::CallFlow(_)));
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        (app, terminal)
+    }
+
+    // Enter must open the raw view of the message the user SEES selected.
+    // Visible row 1 is the second OPTIONS (raw message index 2) because the
+    // two retransmissions are folded away.
+    #[test]
+    fn flow_enter_opens_the_message_the_user_sees() {
+        let (mut app, mut terminal) = app_with_folded_flow();
+        app.handle_key(KeyCode::Down); // visible row 1 = OPT#2
+        terminal.draw(|f| app.render(f)).unwrap();
+        app.handle_key(KeyCode::Enter);
+        match app.current_view() {
+            View::RawMessage { message_index, .. } => {
+                assert_eq!(
+                    *message_index, 2,
+                    "visible row 1 is raw message 2 (OPT#2), not the folded retx"
+                );
+            }
+            v => panic!("expected RawMessage, got {v:?}"),
+        }
+    }
+
+    // 'e' on a fold header must expand THAT header's retransmissions, even
+    // when earlier folds make the visible index differ from the raw index.
+    #[test]
+    fn flow_expand_on_second_fold_header_reveals_its_retransmissions() {
+        let (mut app, mut terminal) = app_with_folded_flow();
+        app.handle_key(KeyCode::Down); // visible row 1 = OPT#2 fold header (raw 2)
+        terminal.draw(|f| app.render(f)).unwrap();
+        app.handle_key(KeyCode::Char('e'));
+        terminal.draw(|f| app.render(f)).unwrap();
+        // Expanded: OPT#1(+1 retx), OPT#2, retx#2 → 3 visible rows, so the
+        // row after the header is the revealed retransmission (raw 3).
+        app.handle_key(KeyCode::Down);
+        terminal.draw(|f| app.render(f)).unwrap();
+        app.handle_key(KeyCode::Enter);
+        match app.current_view() {
+            View::RawMessage { message_index, .. } => {
+                assert_eq!(
+                    *message_index, 3,
+                    "row below the expanded header must be its retransmission (raw 3)"
+                );
+            }
+            v => panic!("expected RawMessage, got {v:?}"),
+        }
+    }
+
+    // Down at the end of the folded ladder must stop at the last VISIBLE row
+    // (folded rows are not navigable positions).
+    #[test]
+    fn flow_selection_clamps_to_visible_rows_not_raw_count() {
+        let (mut app, mut terminal) = app_with_folded_flow();
+        for _ in 0..10 {
+            app.handle_key(KeyCode::Down);
+            terminal.draw(|f| app.render(f)).unwrap();
+        }
+        assert_eq!(
+            app.selected_msg_index(),
+            1,
+            "only 2 visible rows exist; selection must clamp to index 1"
+        );
     }
 
     // ── Call list: additional keys ───────────────────────────────────
