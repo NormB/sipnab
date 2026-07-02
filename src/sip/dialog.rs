@@ -126,13 +126,20 @@ pub struct SipDialog {
 pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
 
 /// Build the seen-set key identifying a message for retransmission
-/// purposes: direction, status code (responses), CSeq number and method.
+/// purposes: direction, status code (responses), CSeq number, method, and
+/// the top-Via branch (the RFC 3261 transaction ID). Without the branch,
+/// distinct transactions that reuse Call-ID + CSeq — e.g. OPTIONS or
+/// REGISTER keepalives — would be misclassified as retransmissions.
+/// Messages lacking a branch (RFC 2543 peers) fall back to CSeq identity.
+/// `\n` separates the branch because header values cannot contain one
+/// after parsing, so a crafted CSeq method can't collide with a branch.
 pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     let (seq, method) = msg.cseq()?;
+    let branch = msg.top_via_branch().unwrap_or("");
     Some(if msg.is_request {
-        format!("R {seq} {method}")
+        format!("R {seq} {method}\n{branch}")
     } else {
-        format!("r{} {seq} {method}", msg.status_code.unwrap_or(0))
+        format!("r{} {seq} {method}\n{branch}", msg.status_code.unwrap_or(0))
     })
 }
 

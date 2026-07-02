@@ -25,21 +25,35 @@ pub(super) fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Global: show the version (with git commit) in the status line. Works in
-    // any view; search and popups are handled above, so typing 'v' there is
-    // unaffected.
-    if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
-        app.status_error = Some(format!("sipnab {}", crate::cli::build_version()));
-        return;
-    }
-
-    // Global: cycle name-resolution mode (Off / Static / DNS). Refresh the call
-    // flow cache so resolved participant labels update on the next render.
-    if key.code == KeyCode::Char('n') {
-        app.name_mode = app.name_mode.next();
-        app.call_flow_cache.clear();
-        app.status_error = Some(app.name_mode.label().to_string());
-        return;
+    // Global fallback keys ('v'/'V' version, 'n' name-mode cycle) apply in
+    // every view — but a key the user explicitly rebound in the keymap wins,
+    // so a rebind can never be shadowed by these built-ins.
+    let km = &app.keymap;
+    let keymap_bound = [
+        km.quit,
+        km.help,
+        km.save,
+        km.search,
+        km.filter,
+        km.settings,
+        km.pause,
+        km.autoscroll,
+        km.extended_flow,
+        km.clear_calls,
+        km.column_selector,
+    ]
+    .contains(&key.code);
+    if !keymap_bound {
+        if matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V')) {
+            app.status_error = Some(format!("sipnab {}", crate::cli::build_version()));
+            return;
+        }
+        // Cycle name-resolution mode (Off / Static / DNS).
+        if key.code == KeyCode::Char('n') {
+            app.name_mode = app.name_mode.next();
+            app.status_error = Some(app.name_mode.label().to_string());
+            return;
+        }
     }
 
     match &app.current_view {
@@ -103,10 +117,7 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             // Open call flow for selected dialog
             if let Some(call_id) = get_selected_call_id(app) {
-                app.call_flow_scroll = 0;
-                app.selected_msg_index = 0;
-                app.detail_scroll = 0;
-                app.flow_filter = None;
+                app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
         }
@@ -114,11 +125,13 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             app.current_view = View::StreamList;
         }
         KeyCode::Char(' ') => {
-            app.call_list.toggle_selection();
+            if let Some(cid) = get_selected_call_id(app) {
+                app.call_list.toggle_selection(&cid);
+            }
         }
         k if k == app.keymap.search => {
+            // Keep the existing query so it can be refined.
             app.search_active = true;
-            app.search_query.clear();
         }
         // F5 — Clear calls
         k if k == app.keymap.clear_calls => {
@@ -128,6 +141,7 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(6) | KeyCode::Char('r') => {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.raw_msg_scroll = 0;
+                app.raw_msg_return_view = Some(View::CallList);
                 app.current_view = View::RawMessage {
                     call_id,
                     message_index: 0,
@@ -183,18 +197,13 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
             open_save_popup(app);
         }
         KeyCode::F(3) => {
-            // F3 Search — same as '/' search
+            // F3 Search — same as '/' search; keeps the query for refining.
             app.search_active = true;
-            app.search_query.clear();
         }
         k if k == app.keymap.extended_flow => {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.extended_flow = true;
-                app.call_flow_scroll = 0;
-                app.selected_msg_index = 0;
-                app.detail_scroll = 0;
-                app.flow_filter = None;
-                app.call_flow_cache.clear();
+                app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
         }
@@ -225,7 +234,10 @@ pub(super) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 open_name_dialog_for(app, vec![src, dst], 0);
             }
         }
-        KeyCode::Char('s') => app.current_view = View::Statistics,
+        KeyCode::Char('s') => {
+            app.stats_scroll = 0;
+            app.current_view = View::Statistics;
+        }
         _ => {}
     }
 }
@@ -248,9 +260,9 @@ pub(super) fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
 /// If any rows are multi-selected, only those dialogs are removed.
 /// Otherwise all dialogs are cleared.
 pub(super) fn clear_calls(app: &mut App) {
-    let selected_rows: Vec<usize> = app.call_list.selected_rows().iter().copied().collect();
+    let selected_ids: Vec<String> = app.call_list.selected_rows().iter().cloned().collect();
 
-    if selected_rows.is_empty() {
+    if selected_ids.is_empty() {
         // Clear everything
         let count = {
             let mut ds = app.dialog_store.write();
@@ -259,26 +271,17 @@ pub(super) fn clear_calls(app: &mut App) {
             n
         };
         app.stream_store.write().clear();
-        app.call_flow_cache.clear();
         app.call_list.clear_selections();
         app.call_list.move_to_top();
         app.status_error = Some(format!("Cleared {} dialogs", count));
     } else {
-        // Clear only selected rows: collect the Call-IDs to remove
+        // Checkmarks are Call-ID keyed: remove exactly the checked calls,
+        // keeping only the ones that still exist (for an honest count).
         let call_ids_to_remove: Vec<String> = {
             let store = app.dialog_store.read();
-            // Map selected row indices to dialogs through the same displayed
-            // (filter + search + sort) ordering the user sees on screen.
-            let dialogs = call_list::displayed_dialogs(
-                &store,
-                app.active_filter.as_ref(),
-                &app.search_query,
-                app.call_list.sort_column(),
-                app.call_list.sort_ascending(),
-            );
-            selected_rows
-                .iter()
-                .filter_map(|&idx| dialogs.get(idx).map(|d| d.call_id.clone()))
+            selected_ids
+                .into_iter()
+                .filter(|cid| store.get(cid).is_some())
                 .collect()
         };
 
@@ -286,10 +289,6 @@ pub(super) fn clear_calls(app: &mut App) {
         {
             let mut ds = app.dialog_store.write();
             ds.retain(|d| !call_ids_to_remove.contains(&d.call_id));
-        }
-        // Invalidate call flow cache for removed dialogs
-        for cid in &call_ids_to_remove {
-            app.call_flow_cache.remove(cid);
         }
         app.call_list.clear_selections();
         app.status_error = Some(format!("Cleared {} dialogs", count));
@@ -309,7 +308,6 @@ pub(super) fn clear_non_matching(app: &mut App) {
         ds.retain(|d| filter.matches_dialog(d, &[]));
         before - ds.len()
     };
-    app.call_flow_cache.clear();
     app.call_list.clear_selections();
     app.call_list.move_to_top();
     app.status_error = Some(format!("Cleared {} non-matching dialogs", removed));
@@ -328,7 +326,6 @@ pub(super) fn clear_matching(app: &mut App) {
         ds.retain(|d| !filter.matches_dialog(d, &[]));
         before - ds.len()
     };
-    app.call_flow_cache.clear();
     app.call_list.clear_selections();
     app.call_list.move_to_top();
     app.status_error = Some(format!("Cleared {} matching dialogs", removed));
@@ -336,20 +333,33 @@ pub(super) fn clear_matching(app: &mut App) {
 
 /// Handle keys in the stream list view.
 pub(super) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
-    let stream_count = app.stream_store.read().len();
+    // Navigate over exactly the rows the table displays (search + filter).
+    let stream_count = {
+        let ss = app.stream_store.read();
+        let ds = app.dialog_store.try_read();
+        crate::tui::stream_list::displayed_streams(
+            ss.iter(),
+            ds.as_deref(),
+            app.active_filter.as_ref(),
+            &app.search_query,
+        )
+        .len()
+    };
 
     match key.code {
         k if k == app.keymap.quit => app.should_quit = true,
         KeyCode::Up | KeyCode::Char('k') => app.stream_list.move_up(),
         KeyCode::Down | KeyCode::Char('j') => app.stream_list.move_down(stream_count),
+        KeyCode::PageUp => app.stream_list.page_up(),
+        KeyCode::PageDown => app.stream_list.page_down(stream_count),
         KeyCode::Home => app.stream_list.move_to_top(),
         KeyCode::End => app.stream_list.move_to_bottom(stream_count),
         KeyCode::Tab => {
             app.current_view = View::CallList;
         }
         k if k == app.keymap.search => {
+            // Keep the existing query so it can be refined.
             app.search_active = true;
-            app.search_query.clear();
         }
         k if k == app.keymap.help => app.current_view = View::Help,
         k if k == app.keymap.save => {
@@ -386,15 +396,17 @@ pub(super) fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            app.stream_detail_scroll += 1;
+            app.stream_detail_scroll = app.stream_detail_scroll.saturating_add(1);
         }
         KeyCode::PageUp => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(20);
         }
         KeyCode::PageDown => {
-            app.stream_detail_scroll += 20;
+            app.stream_detail_scroll = app.stream_detail_scroll.saturating_add(20);
         }
         KeyCode::Home => app.stream_detail_scroll = 0,
+        // Clamped to the content height by the render pass.
+        KeyCode::End => app.stream_detail_scroll = usize::MAX,
         k if k == app.keymap.help => app.current_view = View::Help,
         k if k == app.keymap.save => {
             open_save_popup(app);
@@ -455,33 +467,48 @@ pub(super) fn handle_stream_detail_play(app: &mut App) {
 /// Get the StreamKey for the currently selected row in the stream list.
 pub(super) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
     let store = app.stream_store.read();
-    let streams: Vec<_> = store.iter().collect();
+    let ds = app.dialog_store.try_read();
+    let streams = crate::tui::stream_list::displayed_streams(
+        store.iter(),
+        ds.as_deref(),
+        app.active_filter.as_ref(),
+        &app.search_query,
+    );
     let idx = app.stream_list.selected();
     streams.get(idx).map(|s| s.key.clone())
 }
 
 /// Map the call-flow selection (a *displayed* row position) back to the index
-/// into the dialog's full message list. They differ only when the transaction
-/// filter is active, in which case the ladder shows a subset; this re-projects
-/// the selection onto the original messages so raw/diff/name/detail stay correct.
+/// into the dialog's full message list. Two projections apply in order:
+/// folds hide rows (visible row -> raw index, via the render-time cache),
+/// and the transaction filter renders a subset of the dialog (filtered
+/// index -> original index).
 fn flow_selected_original_index(app: &App, call_id: &str) -> usize {
     let sel = app.selected_msg_index;
+    // Visible row -> index into the (possibly filtered) message slice the
+    // ladder rendered. Falls back to the row position before the first render.
+    let raw = app
+        .cached_flow_raw_indices
+        .get(sel)
+        .copied()
+        .flatten()
+        .unwrap_or(sel);
     let Some(key) = app.flow_filter.as_ref() else {
-        return sel;
+        return raw;
     };
     let Some(store) = app.dialog_store.try_read() else {
-        return sel;
+        return raw;
     };
     let Some(d) = store.get(call_id) else {
-        return sel;
+        return raw;
     };
     d.messages
         .iter()
         .enumerate()
         .filter(|(_, m)| crate::tui::call_flow::transaction_key(m).as_ref() == Some(key))
         .map(|(i, _)| i)
-        .nth(sel)
-        .unwrap_or(sel)
+        .nth(raw)
+        .unwrap_or(raw)
 }
 
 /// Handle keys in the call flow view.
@@ -525,10 +552,12 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     } else {
         0
     };
-    // Use cached rendered count if available, but never less than raw count
-    // (folding reduces count, but raw count is the safe upper bound for navigation)
+    // Navigation moves over VISIBLE rows: use the rendered (post-fold) count
+    // once a render has produced it; fall back to the raw message count only
+    // before the first render. Taking max() with the raw count would let the
+    // selection walk past the last visible row whenever folds hide messages.
     let msg_count = if app.cached_flow_msg_count > 0 {
-        app.cached_flow_msg_count.max(raw_count)
+        app.cached_flow_msg_count
     } else {
         raw_count
     };
@@ -557,25 +586,17 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             app.detail_scroll = app.detail_scroll.saturating_add(1);
         }
         KeyCode::Up | KeyCode::Char('k') => {
+            // Selection only; the render pass follows and clamps the scroll
+            // using the real viewport geometry.
             if app.selected_msg_index > 0 {
                 app.selected_msg_index -= 1;
                 app.detail_scroll = 0;
-            }
-            // Auto-scroll ladder to keep selection visible
-            if app.selected_msg_index < app.call_flow_scroll {
-                app.call_flow_scroll = app.selected_msg_index;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
             if msg_count > 0 && app.selected_msg_index < msg_count - 1 {
                 app.selected_msg_index += 1;
                 app.detail_scroll = 0;
-            }
-            // Auto-scroll ladder to keep selection visible
-            // (each message takes ~1 row in the ladder, header takes 2 rows)
-            let visible_rows = app.call_flow_scroll + 20; // approximate
-            if app.selected_msg_index >= visible_rows {
-                app.call_flow_scroll = app.selected_msg_index.saturating_sub(10);
             }
         }
         KeyCode::PageUp if detail_focused => {
@@ -589,13 +610,11 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::PageUp => {
             app.selected_msg_index = app.selected_msg_index.saturating_sub(20);
-            app.call_flow_scroll = app.call_flow_scroll.saturating_sub(20);
             app.detail_scroll = 0;
         }
         KeyCode::PageDown => {
             let max = if msg_count > 0 { msg_count - 1 } else { 0 };
             app.selected_msg_index = (app.selected_msg_index + 20).min(max);
-            app.call_flow_scroll += 20;
             app.detail_scroll = 0;
         }
         KeyCode::Home => {
@@ -606,7 +625,6 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         KeyCode::End => {
             if msg_count > 0 {
                 app.selected_msg_index = msg_count - 1;
-                app.call_flow_scroll = msg_count.saturating_sub(1);
             }
             app.detail_scroll = 0;
         }
@@ -640,6 +658,7 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     let cid = call_id.clone();
                     let message_index = flow_selected_original_index(app, &cid);
                     app.raw_msg_scroll = 0;
+                    app.raw_msg_return_view = Some(app.current_view.clone());
                     app.current_view = View::RawMessage {
                         call_id: cid,
                         message_index,
@@ -658,6 +677,7 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         // Second selection — open diff view
                         let cid = call_id.clone();
                         app.diff_selected_msg = None;
+                        app.diff_scroll = 0;
                         app.current_view = View::MessageDiff {
                             call_id: cid,
                             msg1_idx: first,
@@ -679,7 +699,6 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // sendable by every headless front-end (e.g. the VHS hero recorder),
             // so this keeps the toggle reachable. (Bare `r` keeps its meaning.)
             app.show_rtp_in_flow = !app.show_rtp_in_flow;
-            app.call_flow_cache.clear();
             app.status_error = Some(if app.show_rtp_in_flow {
                 "RTP in flow: ON".to_string()
             } else {
@@ -788,25 +807,21 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         app.call_flow_scroll = 0;
                     }
                 }
-                app.call_flow_cache.clear();
             }
         }
         KeyCode::Char('d') => {
             // Toggle SDP display mode
             app.sdp_display_mode = app.sdp_display_mode.next();
-            app.call_flow_cache.clear();
             app.status_error = Some(app.sdp_display_mode.label().to_string());
         }
         KeyCode::Char('t') => {
             // Toggle timestamp display
             app.timestamp_mode = app.timestamp_mode.next();
-            app.call_flow_cache.clear();
             app.status_error = Some(app.timestamp_mode.label().to_string());
         }
         KeyCode::Char('c') => {
             // Cycle color mode
             app.color_mode = app.color_mode.next();
-            app.call_flow_cache.clear();
             app.status_error = Some(app.color_mode.label().to_string());
         }
         KeyCode::Char('R') => {
@@ -824,16 +839,25 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Left => {
             // Increase detail panel size (Left = push split leftward = detail wider)
-            if app.raw_preview && app.raw_preview_pct < 80 {
-                app.raw_preview_pct = (app.raw_preview_pct + 5).min(80);
-                app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+            if app.raw_preview {
+                if app.raw_preview_pct < 80 {
+                    app.raw_preview_pct = (app.raw_preview_pct + 5).min(80);
+                    app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+                }
+            } else {
+                // Not a silent no-op: say why nothing resized.
+                app.status_error = Some("Split view is off — press R to enable it".to_string());
             }
         }
         KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Right => {
             // Decrease detail panel size (Right = push split rightward = ladder wider)
-            if app.raw_preview && app.raw_preview_pct > 10 {
-                app.raw_preview_pct = app.raw_preview_pct.saturating_sub(5).max(10);
-                app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+            if app.raw_preview {
+                if app.raw_preview_pct > 10 {
+                    app.raw_preview_pct = app.raw_preview_pct.saturating_sub(5).max(10);
+                    app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+                }
+            } else {
+                app.status_error = Some("Split view is off — press R to enable it".to_string());
             }
         }
         KeyCode::Char('[') => {
@@ -847,7 +871,6 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         k if k == app.keymap.extended_flow || k == KeyCode::Char('x') => {
             // Toggle extended (multi-leg) flow
             app.extended_flow = !app.extended_flow;
-            app.call_flow_cache.clear();
             app.status_error = Some(if app.extended_flow {
                 "Extended flow: ON (multi-leg)".to_string()
             } else {
@@ -857,7 +880,6 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         KeyCode::F(6) => {
             // Toggle RTP display in flow
             app.show_rtp_in_flow = !app.show_rtp_in_flow;
-            app.call_flow_cache.clear();
             app.status_error = Some(if app.show_rtp_in_flow {
                 "RTP in flow: ON".to_string()
             } else {
@@ -873,13 +895,20 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             app.status_error = Some("Mark cleared".to_string());
         }
         KeyCode::Char('e') => {
-            let idx = app.selected_msg_index;
+            // Toggle fold expansion. Folds are keyed by the RAW index of the
+            // fold-header message (stable across display modes), so map the
+            // visible selection first.
+            let idx = app
+                .cached_flow_raw_indices
+                .get(app.selected_msg_index)
+                .copied()
+                .flatten()
+                .unwrap_or(app.selected_msg_index);
             if app.fold_expanded.contains(&idx) {
                 app.fold_expanded.remove(&idx);
             } else {
                 app.fold_expanded.insert(idx);
             }
-            app.call_flow_cache.clear();
         }
         KeyCode::Char('E') => {
             // Export Mermaid sequence diagram to clipboard
@@ -997,8 +1026,8 @@ pub(super) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Home => app.raw_msg_scroll = 0,
         k if k == app.keymap.search => {
+            // Keep the existing query so it can be refined.
             app.search_active = true;
-            app.search_query.clear();
         }
         KeyCode::Char('s') => {
             // Toggle syntax highlighting
@@ -1016,8 +1045,9 @@ pub(super) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Esc => {
             if let View::RawMessage { ref call_id, .. } = app.current_view {
-                let cid = call_id.clone();
-                app.current_view = View::CallFlow(cid);
+                // Return to wherever the raw view was opened from.
+                let fallback = View::CallFlow(call_id.clone());
+                app.current_view = app.raw_msg_return_view.take().unwrap_or(fallback);
             }
         }
         k if k == app.keymap.help => app.current_view = View::Help,
@@ -1031,14 +1061,25 @@ pub(super) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
 /// Handle keys in the message diff view.
 pub(super) fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        k if k == app.keymap.quit => app.should_quit = true,
+        k if k == app.keymap.help => app.current_view = View::Help,
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.diff_scroll = app.diff_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.diff_scroll = app.diff_scroll.saturating_add(1);
+        }
+        KeyCode::PageUp => app.diff_scroll = app.diff_scroll.saturating_sub(20),
+        KeyCode::PageDown => app.diff_scroll = app.diff_scroll.saturating_add(20),
+        KeyCode::Home => app.diff_scroll = 0,
+        // Clamped to the content height by the render pass.
+        KeyCode::End => app.diff_scroll = u16::MAX,
         KeyCode::Esc => {
             if let View::MessageDiff { ref call_id, .. } = app.current_view {
                 let cid = call_id.clone();
                 app.current_view = View::CallFlow(cid);
             }
         }
-        KeyCode::F(1) => app.current_view = View::Help,
         _ => {}
     }
 }
@@ -1046,7 +1087,8 @@ pub(super) fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
 /// Handle keys in the combined transaction/dialog detail view.
 pub(super) fn handle_combined_detail_key(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        k if k == app.keymap.quit => app.should_quit = true,
+        k if k == app.keymap.help => app.current_view = View::Help,
         KeyCode::Esc => {
             if let View::CombinedDetail { ref call_id, .. } = app.current_view {
                 let cid = call_id.clone();
@@ -1063,7 +1105,6 @@ pub(super) fn handle_combined_detail_key(app: &mut App, key: KeyEvent) {
         KeyCode::PageUp => app.raw_msg_scroll = app.raw_msg_scroll.saturating_sub(20),
         KeyCode::Home => app.raw_msg_scroll = 0,
         KeyCode::End => app.raw_msg_scroll = u16::MAX, // clamped to content in render
-        KeyCode::F(1) => app.current_view = View::Help,
         _ => {}
     }
 }
@@ -1525,7 +1566,6 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.stream_list = StreamListState::new();
     app.active_filter = None;
     app.active_filter_text.clear();
-    app.call_flow_cache.clear();
     app.selected_msg_index = 0;
     app.call_flow_scroll = 0;
     app.cached_flow_msg_count = 0;
@@ -1867,18 +1907,15 @@ pub(super) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
                 app.settings_dialog.focused_item += 1;
             }
         }
-        KeyCode::Enter | KeyCode::Char(' ') => {
-            match app.settings_dialog.focused_item {
-                0 => app.color_mode = app.color_mode.next(),
-                1 => app.timestamp_mode = app.timestamp_mode.next(),
-                2 => app.call_list.autoscroll = !app.call_list.autoscroll,
-                3 => app.raw_preview = !app.raw_preview,
-                4 => app.sdp_display_mode = app.sdp_display_mode.next(),
-                5 => app.syntax_highlight = !app.syntax_highlight,
-                _ => {}
-            }
-            app.call_flow_cache.clear();
-        }
+        KeyCode::Enter | KeyCode::Char(' ') => match app.settings_dialog.focused_item {
+            0 => app.color_mode = app.color_mode.next(),
+            1 => app.timestamp_mode = app.timestamp_mode.next(),
+            2 => app.call_list.autoscroll = !app.call_list.autoscroll,
+            3 => app.raw_preview = !app.raw_preview,
+            4 => app.sdp_display_mode = app.sdp_display_mode.next(),
+            5 => app.syntax_highlight = !app.syntax_highlight,
+            _ => {}
+        },
         _ => {}
     }
 }
@@ -1889,42 +1926,145 @@ pub(super) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
         k if k == KeyCode::Esc || k == app.keymap.quit || k == KeyCode::Char('s') => {
             app.current_view = View::CallList;
         }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.stats_scroll = app.stats_scroll.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.stats_scroll = app.stats_scroll.saturating_add(1);
+        }
+        KeyCode::PageUp => app.stats_scroll = app.stats_scroll.saturating_sub(20),
+        KeyCode::PageDown => app.stats_scroll = app.stats_scroll.saturating_add(20),
+        KeyCode::Home => app.stats_scroll = 0,
+        // Clamped to the content height by the render pass.
+        KeyCode::End => app.stats_scroll = u16::MAX,
         _ => {}
+    }
+}
+
+/// Handle a mouse event (wheel scrolling) against the current view.
+///
+/// Wheel steps: one row in the list/ladder views (selection follows, like
+/// Up/Down), three rows in the free-scrolling text views.
+pub(super) fn handle_mouse_event(app: &mut App, kind: crossterm::event::MouseEventKind) {
+    use crossterm::event::MouseEventKind as MK;
+    let down = match kind {
+        MK::ScrollDown => true,
+        MK::ScrollUp => false,
+        _ => return,
+    };
+    // Popups own the input; wheel is ignored while one is open.
+    if app.active_popup.is_some() {
+        return;
+    }
+    match &app.current_view {
+        View::CallList => {
+            if down {
+                let count = filtered_dialog_count(app);
+                app.call_list.move_down(count);
+            } else {
+                app.call_list.move_up();
+            }
+        }
+        View::StreamList => {
+            if down {
+                let ss = app.stream_store.read();
+                let ds = app.dialog_store.try_read();
+                let count = crate::tui::stream_list::displayed_streams(
+                    ss.iter(),
+                    ds.as_deref(),
+                    app.active_filter.as_ref(),
+                    &app.search_query,
+                )
+                .len();
+                drop(ss);
+                app.stream_list.move_down(count);
+            } else {
+                app.stream_list.move_up();
+            }
+        }
+        View::CallFlow(_) => {
+            if down {
+                let count = app.cached_flow_msg_count;
+                if count > 0 && app.selected_msg_index < count - 1 {
+                    app.selected_msg_index += 1;
+                    app.detail_scroll = 0;
+                }
+            } else if app.selected_msg_index > 0 {
+                app.selected_msg_index -= 1;
+                app.detail_scroll = 0;
+            }
+        }
+        View::RawMessage { .. } | View::CombinedDetail { .. } => {
+            app.raw_msg_scroll = if down {
+                app.raw_msg_scroll.saturating_add(3)
+            } else {
+                app.raw_msg_scroll.saturating_sub(3)
+            };
+        }
+        View::MessageDiff { .. } => {
+            app.diff_scroll = if down {
+                app.diff_scroll.saturating_add(3)
+            } else {
+                app.diff_scroll.saturating_sub(3)
+            };
+        }
+        View::StreamDetail(_) => {
+            app.stream_detail_scroll = if down {
+                app.stream_detail_scroll.saturating_add(3)
+            } else {
+                app.stream_detail_scroll.saturating_sub(3)
+            };
+        }
+        View::Help => {
+            app.help_scroll = if down {
+                app.help_scroll.saturating_add(3)
+            } else {
+                app.help_scroll.saturating_sub(3)
+            };
+        }
+        View::Statistics => {
+            app.stats_scroll = if down {
+                app.stats_scroll.saturating_add(3)
+            } else {
+                app.stats_scroll.saturating_sub(3)
+            };
+        }
     }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Get the Call-ID of the currently selected dialog in the call list,
-/// respecting the active filter.
+/// Get the Call-ID of the currently selected dialog in the call list.
+///
+/// Resolves against the DISPLAYED list — filter + search + sort, the same
+/// `displayed_dialogs` the renderer draws — so the selection always opens
+/// exactly the row the user sees highlighted.
 pub(super) fn get_selected_call_id(app: &App) -> Option<String> {
     let store = app.dialog_store.read();
-    let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
-        store
-            .iter()
-            .filter(|d| filter.matches_dialog(d, &[]))
-            .collect()
-    } else {
-        store.iter().collect()
-    };
+    let dialogs = crate::tui::call_list::displayed_dialogs(
+        &store,
+        app.active_filter.as_ref(),
+        &app.search_query,
+        app.call_list.sort_column(),
+        app.call_list.sort_ascending(),
+    );
     let idx = app.call_list.selected();
     dialogs.get(idx).map(|d| d.call_id.clone())
 }
 
-/// Source IP of the selected call-list dialog (for the Name Address popup).
-/// Source + destination IPs of the selected dialog (honoring the active filter).
+/// Source + destination IPs of the selected dialog (for the Name Address
+/// popup). Resolved against the same displayed list as the renderer.
 pub(super) fn get_selected_dialog_endpoints(
     app: &App,
 ) -> Option<(std::net::IpAddr, std::net::IpAddr)> {
     let store = app.dialog_store.read();
-    let dialogs: Vec<_> = if let Some(ref filter) = app.active_filter {
-        store
-            .iter()
-            .filter(|d| filter.matches_dialog(d, &[]))
-            .collect()
-    } else {
-        store.iter().collect()
-    };
+    let dialogs = crate::tui::call_list::displayed_dialogs(
+        &store,
+        app.active_filter.as_ref(),
+        &app.search_query,
+        app.call_list.sort_column(),
+        app.call_list.sort_ascending(),
+    );
     dialogs
         .get(app.call_list.selected())
         .map(|d| (d.src_addr, d.dst_addr))
@@ -2064,7 +2204,6 @@ fn apply_name_dialog(app: &mut App) {
         (0, c) => Some(format!("Cleared {c} name(s)")),
         (s, c) => Some(format!("Named {s}, cleared {c}")),
     };
-    app.call_flow_cache.clear();
     if let Some(path) = app.names_save_path.clone()
         && let Err(e) = app.resolver.save_manual_file(&path)
     {
@@ -2091,14 +2230,16 @@ fn apply_name_dialog(app: &mut App) {
 /// Count dialogs visible after applying the active filter.
 pub(super) fn filtered_dialog_count(app: &App) -> usize {
     let store = app.dialog_store.read();
-    if let Some(ref filter) = app.active_filter {
-        store
-            .iter()
-            .filter(|d| filter.matches_dialog(d, &[]))
-            .count()
-    } else {
-        store.len()
-    }
+    // Count exactly the rows the renderer displays (filter + search), so
+    // navigation clamps to what is on screen.
+    crate::tui::call_list::displayed_dialogs(
+        &store,
+        app.active_filter.as_ref(),
+        &app.search_query,
+        app.call_list.sort_column(),
+        app.call_list.sort_ascending(),
+    )
+    .len()
 }
 
 // ── Tests ───────────────────────────────────────────────────────────

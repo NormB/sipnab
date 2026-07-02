@@ -30,7 +30,8 @@ expression: output
 │  r, F6             Show raw SIP message                                      │
 │  F7                Filter dialog                                             │
 │  F8                Settings                                                  │
-│  t                 Cycle timestamps (absolute / delta-prev / delta-first)    │
+│  t                 Cycle timestamps (absolute / delta-prev / delta-first /   │
+│scaled)                                                                       │
 │  u                 Cycle From/To column (user / host:port / both)            │
 │  n                 Cycle name resolution (off / static / DNS)                │
 │  N                 Name selected address (IP -> host / FQDN)                 │
@@ -39,6 +40,5 @@ expression: output
 │  F9                Clear active filter                                       │
 │  F10               Column selector                                           │
 │  Tab               Switch to RTP Streams                                     │
-│  v                 Show version / git commit                                 │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back

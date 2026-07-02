@@ -226,7 +226,7 @@ impl FragmentReassembler {
             .iter()
             .map(|(k, e)| (e.created, k.clone()))
             .collect();
-        by_age.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        by_age.sort_unstable_by_key(|a| a.0);
         for (_, key) in by_age.into_iter().take(batch) {
             self.entries.remove(&key);
         }
@@ -531,7 +531,7 @@ impl TcpReassembler {
             .iter()
             .map(|(k, s)| (s.last_seen, k.clone()))
             .collect();
-        by_age.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        by_age.sort_unstable_by_key(|a| a.0);
         for (_, key) in by_age.into_iter().take(batch) {
             self.streams.remove(&key);
         }
