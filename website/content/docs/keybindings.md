@@ -269,6 +269,7 @@ Toggle display options without leaving the TUI.
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
+| f | Filter the ladder to the selected message's transaction (toggle) |
 | m | Set mark at current message. Places a reference marker on the current message. Navigate to another message to see the **delta** time between the mark and your current position -- useful for measuring delays between specific SIP messages. |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
@@ -416,7 +417,7 @@ Settings items: Color mode, Timestamp mode, Autoscroll, Raw preview, SDP display
 
 ## Timestamp Modes
 
-Press `t` in the Call List or Call Flow to cycle through three timestamp modes (the mode is shared across both views):
+Press `t` in the Call List or Call Flow to cycle through the timestamp modes (the mode is shared across both views):
 
 1. **Absolute** (default) -- `HH:MM:SS.mmm` wall-clock time
 2. **Delta-prev** -- `+N.NNNs` time since previous entry. Color-coded in call flow:
@@ -425,6 +426,9 @@ Press `t` in the Call List or Call Flow to cycle through three timestamp modes (
    - Red: 1 s - 5 s
    - Bold red: > 5 s
 3. **Delta-first** -- `+N.NNNs` cumulative time from first entry
+4. **Scaled** -- delta-prev timestamps plus time-proportional spacer rows, so
+   quiet gaps are visible in the ladder. The set of visible messages is
+   identical in every mode — only the presentation changes.
 
 <div class="terminal">
 <div class="terminal-bar">

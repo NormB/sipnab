@@ -33,12 +33,14 @@ Message record (fields with no value are omitted, not null):
   "call_id": "abc123@10.0.0.1",
   "from": "1001",
   "to": "1002",
+  "cseq": { "number": 1, "method": "INVITE" },
   "ua": "FreePBX-16"
 }
 ```
 
-Responses carry `status_code`, `reason`, and `response_context` (what the
-response answers) instead of `method`.
+Every message carries `cseq` (`number` + `method`) when a parseable CSeq
+header is present. Responses carry `status_code`, `reason`, and
+`response_context` (what the response answers) instead of `method`.
 
 `schema_version` increments on breaking field changes — pin your
 consumers to it.

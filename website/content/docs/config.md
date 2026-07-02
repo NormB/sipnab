@@ -154,6 +154,31 @@ no_priv_drop = false
 chroot = "/var/lib/sipnab"
 ```
 
+### \[names\]
+
+Address name-resolution settings (display `host:port` instead of `ip:port`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | boolean | `false` | Start with name resolution on (offline sources) |
+| `reverse_dns` | boolean | `false` | Also use reverse DNS (PTR) lookups |
+| `hosts_file` | string | -- | `/etc/hosts`-format file of IP → name mappings to preload |
+| `persist_to_config` | boolean | `false` | When set, in-TUI `N` edits are also written into the `[names.manual]` table below, preserving the rest of this file |
+| `manual` | table | -- | Inline `"IP" = "name"` mappings, loaded at startup (highest-priority manual layer) |
+
+```toml
+[names]
+enabled = true
+reverse_dns = false
+hosts_file = "/etc/sipnab/hosts"
+persist_to_config = true
+
+# Inline mappings (also written here when persist_to_config = true):
+[names.manual]
+"10.0.0.1" = "sbc-edge"
+"2001:db8::1" = "core6"
+```
+
 ### \[theme\]
 
 TUI color theme with 11 semantic color slots. See the [Theme Guide](@/docs/theme.md) for a full customization guide.

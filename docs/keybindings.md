@@ -77,6 +77,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | [ | Scroll detail panel up |
 | ] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
+| f | Filter the ladder to the selected message's transaction (toggle) |
 | m | Set mark at current message |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |

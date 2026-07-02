@@ -141,6 +141,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
+| `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Validate STIR/SHAKEN identity headers |
 
 ## Event Execution
@@ -156,7 +157,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `0.0.0.0:9090`). Feature: `api` |
-| `--metrics-auth` | `<TOKEN>` | -- | Bearer token for metrics endpoint authentication |
+| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` |
 | `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint |
@@ -211,6 +212,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
+| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
 
 ## Config
 

@@ -123,6 +123,7 @@ sipnab -N -I capture.pcap --json \
 | `--split` | `<CONDITION>` | -- | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--replay` | -- | off | Replay packets from a pcap file at original timing |
 | `--pcapng` | -- | off | Use pcapng format for output files |
+| `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. The input is never modified; the output is written atomically |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
 
 ## Mode
@@ -184,12 +185,21 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--fail2ban` | -- | off | Output in fail2ban-compatible format for SIP security events. Requires `-N` |
 | `--group-by` | `<FIELD>` | -- | Group output by field (e.g., `call-id`, `from`, `method`) |
 
+## Name Resolution
+
+| Flag | Value | Default | Description |
+|------|-------|---------|-------------|
+| `--resolve` | -- | off | Start with name resolution enabled (manual mappings + hosts file) |
+| `--reverse-dns` | -- | off | Also resolve via reverse DNS (PTR); implies `--resolve` |
+| `--names` | `<FILE>` | -- | Preload an `/etc/hosts`-format mapping file (repeatable) |
+
 ## Dialog
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `-l`, `--limit` | `<N>` | `100000` | Maximum number of dialogs to track simultaneously |
-| `-R`, `--rotate` | -- | off | Rotate dialog storage when limit is reached (discard oldest) |
+| `-R`, `--rotate` | -- | **on** | Evict the oldest dialog at `--limit` capacity (LRU). On by default; the flag is kept for back-compat |
+| `--no-rotate` | -- | off | Disable rotation: drop *new* dialogs at capacity instead of evicting the oldest |
 | `--dialog-track` | `<METHOD>` | -- | Dialog tracking method: `call-id` or `branch` |
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
@@ -214,6 +224,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
 | `--alert` | `<CHANNEL>` | -- | Alert channels (repeatable): `syslog`, `json`, `exec` |
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
+| `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Validate STIR/SHAKEN identity headers |
 
 ## Event Execution
@@ -229,12 +240,16 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `0.0.0.0:9090`). Feature: `api` |
-| `--metrics-auth` | `<TOKEN>` | -- | Bearer token for metrics endpoint authentication |
+| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` |
 | `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint |
 | `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections |
+| `--api-signing-key` | `<HEX>` | -- | HMAC signing key (hex) for revocable API tokens |
+| `--api-signing-key-file` | `<FILE>` | -- | Read the API HMAC signing key from a file |
+| `--api-revoked-file` | `<FILE>` | -- | File listing revoked API token IDs (one per line) |
+| `--api-token-ttl` | `<SECS>` | -- | Lifetime for minted API tokens |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
@@ -255,6 +270,12 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token for HTTP MCP. Required for non-loopback binds. Also reads `$SIPNAB_MCP_TOKEN` |
 | `--mcp-token-file` | `<FILE>` | -- | Read MCP bearer token from a file (preferred over env in systemd units) |
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional Host header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to allowing only `localhost`, `127.0.0.1`, and `::1`; add the public hostname or bind IP clients actually use. `*` disables host checking entirely (not recommended; pair the resulting open binding with a network-level allowlist) |
+| `--mcp-signing-key` | `<HEX>` | -- | HMAC signing key (hex) for revocable MCP tokens |
+| `--mcp-signing-key-file` | `<FILE>` | -- | Read the MCP HMAC signing key from a file |
+| `--mcp-revoked-file` | `<FILE>` | -- | File listing revoked MCP token IDs (one per line) |
+| `--mcp-token-ttl` | `<SECS>` | -- | Lifetime for minted MCP tokens |
+| `--mint-token` | -- | off | Mint a signed bearer token (using the API/MCP signing key) and exit |
+| `--token-id` | `<ID>` | -- | Token ID to embed when minting with `--mint-token` |
 
 ## TLS / Decryption
 
@@ -265,7 +286,7 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--keylog-watch` | -- | off | Watch key log file for new entries (live decryption). Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | DTLS key log file for SRTP key extraction. Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | SRTP master keys file for RTP decryption. Feature: `tls` |
-| `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `wired` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
+| `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 
 ## Privilege
@@ -275,12 +296,14 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--user` | `<USER>` | -- | Drop privileges to this user after opening capture devices |
 | `--no-priv-drop` | -- | off | Do not drop privileges after opening capture devices |
 | `--chroot` | `<DIR>` | -- | Chroot to this directory after initialization |
+| `--setup-caps` | -- | off | Grant the binary `CAP_NET_RAW`/`CAP_NET_ADMIN` via setcap (one-time, needs sudo) and exit |
 
 ## Resource Limits
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
+| `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
 
 ## Config
 
