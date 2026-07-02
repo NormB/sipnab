@@ -34,7 +34,7 @@ CALL LIST:
   r, F6            Show raw SIP message
   F7               Filter dialog
   F8               Settings
-  t                Cycle timestamps (absolute / delta-prev / delta-first)
+  t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
   u                Cycle From/To column (user / host:port / both)
   n                Cycle name resolution (off / static / DNS)
   N                Name selected address (IP -> host / FQDN)
@@ -57,7 +57,7 @@ CALL FLOW:
   Tab              Switch focus: ladder <-> detail pane
   \u{2191}/\u{2193}             Navigate ladder, or scroll detail when focused
   d                Cycle SDP display (none / summary / full)
-  t                Cycle timestamps (absolute / delta-prev / delta-first)
+  t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
   c                Cycle colors (method / call-id / cseq)
   R                Toggle detail panel
   m / M            Mark message / clear marks
@@ -74,13 +74,22 @@ CALL FLOW:
 RAW MESSAGE:
   \u{2191}/\u{2193}             Scroll
   PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
   /                Search in message
   s                Toggle syntax highlighting
   c                Cycle colors
-  Esc              Back to call flow
+  Esc              Back to previous view
+
+MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
+  \u{2191}/\u{2193}, j/k       Scroll
+  PgUp/PgDn       Page scroll
+  Home/End         Jump to top/bottom
+  Esc              Back
 
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams
+  PgUp/PgDn       Page scroll
+  /                Search streams
   Enter            Stream detail
   Tab              Switch to Call List
   F1               Help
@@ -90,8 +99,11 @@ RTP STREAMS (Tab):
 
 STREAM DETAIL:
   \u{2191}/\u{2193}             Scroll
+  PgUp/PgDn, Home/End  Page / jump
   Shift+P          Play / stop audio (G.711, audio build)
   Esc              Back to RTP Streams
+
+Mouse wheel scrolls every view.
 
 Press Esc or F1 to close this help.";
 

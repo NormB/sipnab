@@ -64,9 +64,9 @@ pub use prepare::{
 };
 pub use render::{
     build_call_flow_lines, build_call_flow_lines_with_options, build_call_flow_lines_with_width,
-    build_extended_flow_lines, ladder_total_rows, ladder_visible_rows, render_call_flow,
-    render_call_flow_direct, render_call_flow_direct_or_empty, render_call_flow_lines,
-    render_ladder_scrollbar, render_message_detail,
+    build_extended_flow_lines, ladder_row_of_visible, ladder_total_rows, ladder_visible_rows,
+    render_call_flow, render_call_flow_direct, render_call_flow_direct_or_empty,
+    render_call_flow_lines, render_ladder_scrollbar, render_message_detail,
 };
 
 // ── Transaction grouping ────────────────────────────────────────────
@@ -178,6 +178,10 @@ pub struct FormattedMessage {
     pub is_retransmission: bool,
     /// Whether this message has an RTP bar in its extra_lines (for drill-down to stream detail).
     pub is_rtp_bar: bool,
+    /// Index into the raw message slice this row renders (`None` for
+    /// synthetic rows: spacers and RTP bars). Keeps folding, expansion and
+    /// selection independent of display-mode row insertion.
+    pub raw_index: Option<usize>,
 }
 
 #[cfg(test)]

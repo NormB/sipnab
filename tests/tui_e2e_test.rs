@@ -287,4 +287,38 @@ mod tui_e2e {
             "name should be hidden when Off:\n{off}"
         );
     }
+
+    /// Regression: three OPTIONS keepalives that reuse Call-ID + CSeq (but
+    /// carry distinct Via branches) must render as three request arrows in
+    /// EVERY timestamp mode. They used to be misfolded as retransmissions in
+    /// all modes except Scaled, so the number of visible messages changed
+    /// with the time-unit setting.
+    #[test]
+    #[ignore] // needs tmux; slower than unit tests
+    fn keepalive_messages_visible_in_every_timestamp_mode() {
+        let samples = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pcap-samples");
+        let s = TuiSession::launch(
+            170,
+            40,
+            samples,
+            &["-I", "options-keepalive-reused-cseq.pcap"],
+        );
+        s.wait_for("Dialogs:");
+        s.key("Enter"); // open the call flow ladder
+        s.wait_for("OPTIONS");
+        // Default mode + the three cycled modes: 4 presses of 't' walk the
+        // full TimestampMode cycle back to the start.
+        for step in 0..4 {
+            let screen = s.screen();
+            let arrows = screen
+                .lines()
+                .filter(|l| l.contains("OPTIONS") && l.contains("\u{25b6}"))
+                .count();
+            assert_eq!(
+                arrows, 3,
+                "timestamp-mode step {step}: expected 3 OPTIONS arrows.\nScreen:\n{screen}"
+            );
+            s.literal("t");
+        }
+    }
 }

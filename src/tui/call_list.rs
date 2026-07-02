@@ -88,7 +88,7 @@ pub struct CallListState {
     /// Sort in ascending order.
     sort_ascending: bool,
     /// Set of selected (multi-select) row indices.
-    selected_rows: HashSet<usize>,
+    selected_rows: HashSet<String>,
     /// Per-column visibility (indexed by [`ALL_COLUMNS`] order).
     pub visible_columns: [bool; 10],
     /// Whether the column selector popup is open.
@@ -168,11 +168,12 @@ impl CallListState {
         self.table_state.select(Some(new));
     }
 
-    /// Toggle multi-selection for the currently selected row.
-    pub fn toggle_selection(&mut self) {
-        let idx = self.selected();
-        if !self.selected_rows.remove(&idx) {
-            self.selected_rows.insert(idx);
+    /// Toggle multi-selection for the given dialog. Checkmarks are keyed by
+    /// Call-ID so they stay on the same call when the list is re-sorted,
+    /// re-filtered, or grows while the user works.
+    pub fn toggle_selection(&mut self, call_id: &str) {
+        if !self.selected_rows.remove(call_id) {
+            self.selected_rows.insert(call_id.to_string());
         }
     }
 
@@ -282,7 +283,7 @@ impl CallListState {
     }
 
     /// Return the multi-selected row indices.
-    pub fn selected_rows(&self) -> &HashSet<usize> {
+    pub fn selected_rows(&self) -> &HashSet<String> {
         &self.selected_rows
     }
 }
@@ -499,7 +500,7 @@ pub fn render_call_list(
 
             // sngrep-style selection checkbox: [*] when checked, [ ] otherwise.
             // The checkbox marks which dialogs an action (e.g. save) applies to.
-            let checkbox = if state.selected_rows.contains(&idx) {
+            let checkbox = if state.selected_rows.contains(dialog.call_id.as_str()) {
                 "[*]"
             } else {
                 "[ ]"
@@ -603,7 +604,7 @@ pub fn render_call_list(
             };
 
             // If multi-selected, bold the row instead of underline
-            let row_style = if state.selected_rows.contains(&idx) {
+            let row_style = if state.selected_rows.contains(dialog.call_id.as_str()) {
                 row_style.add_modifier(Modifier::BOLD)
             } else {
                 row_style
@@ -725,9 +726,19 @@ fn sort_dialogs(
     column: SortColumn,
     ascending: bool,
 ) {
+    // Index = insertion order: the input already arrives in insertion order,
+    // so ascending is the identity and descending is a plain reversal. (A
+    // comparator returning Equal would make reversing the sort a visible
+    // no-op on the default column.)
+    if matches!(column, SortColumn::Index) {
+        if !ascending {
+            dialogs.reverse();
+        }
+        return;
+    }
     dialogs.sort_by(|a, b| {
         let ord = match column {
-            SortColumn::Index => Ordering::Equal, // insertion order is the default
+            SortColumn::Index => Ordering::Equal, // handled above
             SortColumn::Method => a.method.cmp(&b.method),
             SortColumn::From => a
                 .from_user
@@ -1040,10 +1051,10 @@ mod tests {
     fn call_list_state_toggle_selection() {
         let mut state = CallListState::new();
         assert!(state.selected_rows.is_empty());
-        state.toggle_selection();
-        assert!(state.selected_rows.contains(&0));
+        state.toggle_selection("call-1@test");
+        assert!(state.selected_rows.contains("call-1@test"));
         assert_eq!(state.selected_rows.len(), 1);
-        state.toggle_selection();
+        state.toggle_selection("call-1@test");
         assert!(state.selected_rows.is_empty());
     }
 

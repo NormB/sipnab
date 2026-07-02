@@ -4,6 +4,73 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-07-02
+
+### Fixed — TUI correctness sweep
+
+**Message visibility (critical):**
+- **OPTIONS/REGISTER keepalives are no longer misclassified as retransmissions.**
+  Retransmission identity now includes the top Via branch (the RFC 3261
+  transaction ID), so distinct transactions that reuse Call-ID + CSeq — the
+  common keepalive pattern — all render in the ladder. Messages without a
+  branch (RFC 2543 peers) keep the CSeq-identity fallback.
+- **Folding is identical in every timestamp mode.** Fold decisions were keyed
+  on list positions that `Scaled` mode's spacer rows shifted, so which
+  messages were visible depended on the time-unit setting. Every ladder row
+  now carries the index of the raw message it renders; folds, expansion and
+  selection are keyed on that.
+- **Fold headers show their count on the arrow** (`OPTIONS (+2 retx)`); the
+  off-arrow annotation was hidden under the split detail pane, making folds
+  read as silent data loss. Annotations are clipped to the ladder pane.
+- **`e` expands the fold you have selected** (header-keyed, all
+  retransmissions of the run revealed) and re-collapses it.
+
+**Selection & filters:**
+- **Enter opens the row the user sees.** Selection, navigation bounds, counts
+  and endpoint lookups all resolve against the same displayed list
+  (filter + search + sort) the renderer draws; sorting or searching no longer
+  opens the wrong call.
+- **Reversing the sort on the default `#` column works** (it was a no-op).
+- **Multi-select checkmarks are keyed by Call-ID**, so re-sorting, filtering
+  or new traffic can no longer silently transfer a checkmark to a different
+  call before save/clear acts on it.
+- **Filter fields match literally.** User text is regex-escaped: `a+b` means
+  the user `a+b`, and `(`/quotes/backslashes can no longer break the filter.
+- **The Payload filter field works** (new `payload` DSL field matching the
+  raw message content of a dialog).
+- **The stream list honors search and the active SIP display filter** (via
+  each stream's associated dialog; unassociated streams stay visible).
+- Search reopen keeps the query for refining; the call-flow detail pane shows
+  the selected message even with folds or a transaction filter active;
+  per-call state (marks, folds, diff selection) resets when opening a
+  different call; Esc from a raw message returns to the view it was opened
+  from.
+
+**Navigation:**
+- **Scroll offsets are clamped to content everywhere** (raw message, combined
+  detail, stream detail, call-flow ladder, statistics, diff): `End` lands on
+  the last page instead of a blank screen, and over-scrolling no longer
+  strands `Up` presses.
+- **The Statistics and Message-diff views scroll** (arrows, PgUp/PgDn,
+  Home/End) — long content was previously truncated with no way to see it.
+- Missing keys added: `End` (raw message, stream detail), `PgUp`/`PgDn`
+  (stream list). The call-flow ladder keeps the selection inside the real
+  viewport (no more hardcoded 20-row guess).
+- **Mouse wheel scrolls every view.**
+- Key bursts/pastes are drained per frame instead of one event per redraw.
+
+**Keymap & settings:**
+- Custom keybindings apply in the diff and combined-detail views (quit/help
+  were hardcoded), and a key rebound in the keymap wins over the built-in
+  global `v`/`n` fallbacks.
+- **Autoscroll works**: with the toggle on and the selection at the bottom,
+  new calls pull the selection down (sticky-bottom); a selection elsewhere is
+  never yanked.
+- **The syntax-highlight toggle works**: `s` in the raw view now actually
+  renders plain text when off.
+- `←`/`→` in the call flow explain themselves when the split pane is off
+  instead of doing nothing; the dead `call_flow_cache` was removed.
+
 ## [0.4.17] - 2026-06-24
 
 ### Call flow

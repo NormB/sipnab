@@ -94,6 +94,25 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     match &app.current_view.clone() {
         View::CallList => {
             if let Some(store) = app.dialog_store.try_read() {
+                // Autoscroll: sticky-bottom. When enabled and the selection
+                // already sits on the last row, newly arrived dialogs pull it
+                // to the new bottom; a selection elsewhere is never yanked.
+                let displayed_len = call_list::displayed_dialogs(
+                    &store,
+                    app.active_filter.as_ref(),
+                    &app.search_query,
+                    app.call_list.sort_column(),
+                    app.call_list.sort_ascending(),
+                )
+                .len();
+                if app.call_list.autoscroll
+                    && app.last_rendered_dialog_rows > 0
+                    && displayed_len > app.last_rendered_dialog_rows
+                    && app.call_list.selected() + 1 >= app.last_rendered_dialog_rows
+                {
+                    app.call_list.move_to_bottom(displayed_len);
+                }
+                app.last_rendered_dialog_rows = displayed_len;
                 call_list::render_call_list(
                     frame,
                     main_area,
@@ -113,11 +132,15 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         }
         View::StreamList => {
             if let Some(store) = app.stream_store.try_read() {
+                let dialog_store = app.dialog_store.try_read();
                 stream_list::render_stream_list(
                     frame,
                     main_area,
                     &mut app.stream_list,
                     &store,
+                    dialog_store.as_deref(),
+                    app.active_filter.as_ref(),
+                    &app.search_query,
                     &app.theme,
                     app.resolver.as_ref(),
                     app.name_mode,
@@ -126,7 +149,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         }
         View::StreamDetail(key) => {
             if let Some(store) = app.stream_store.try_read() {
-                stream_detail::render_stream_detail(
+                let effective = stream_detail::render_stream_detail(
                     frame,
                     main_area,
                     key,
@@ -136,12 +159,14 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     app.resolver.as_ref(),
                     app.name_mode,
                 );
+                // Write the clamped scroll back: over-scrolling past the end
+                // must not strand Up presses on a phantom offset.
+                app.stream_detail_scroll = effective;
             }
         }
         View::CallFlow(call_id) => {
             if let Some(store) = app.dialog_store.try_read() {
                 let cid = call_id.clone();
-                let scroll = app.call_flow_scroll;
                 let sel = app.selected_msg_index;
 
                 // Horizontal split: ladder on left, raw detail on right (sngrep style)
@@ -260,7 +285,32 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         .filter(|(_, m)| m.is_rtp_bar)
                         .map(|(i, _)| i)
                         .collect();
+                    // Visible row -> raw message mapping (None for RTP bars);
+                    // consumed by the detail pane, Enter, diff and 'e'.
+                    app.cached_flow_raw_indices = msgs
+                        .iter()
+                        .filter(|m| !m.is_spacer)
+                        .map(|m| m.raw_index)
+                        .collect();
                 }
+
+                // Selection-follow + clamp, authoritative here where the
+                // real viewport geometry is known: keep the selected row
+                // visible and never scroll past the ladder content.
+                if let Some((_, ref msgs)) = prepared {
+                    let viewport = call_flow::ladder_visible_rows(ladder_area.height);
+                    let total_rows = call_flow::ladder_total_rows(msgs);
+                    let sel_row = call_flow::ladder_row_of_visible(msgs, sel);
+                    if sel_row < app.call_flow_scroll {
+                        app.call_flow_scroll = sel_row;
+                    } else if viewport > 0 && sel_row >= app.call_flow_scroll + viewport {
+                        app.call_flow_scroll = sel_row + 1 - viewport;
+                    }
+                    app.call_flow_scroll = app
+                        .call_flow_scroll
+                        .min(total_rows.saturating_sub(viewport));
+                }
+                let scroll = app.call_flow_scroll;
 
                 // Render ladder using direct buffer painting
                 call_flow::render_call_flow_direct_or_empty(
@@ -289,12 +339,39 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
 
                 // Render message detail panel (right side) if split is active
                 if let Some(detail_area) = detail_area {
+                    // The ladder selection is a VISIBLE-row index; map it to
+                    // the message it renders (folds hide rows; a transaction
+                    // filter renders a subset of the dialog).
+                    let detail_sel = app
+                        .cached_flow_raw_indices
+                        .get(sel)
+                        .copied()
+                        .flatten()
+                        .map(|filtered_idx| {
+                            app.flow_filter
+                                .as_ref()
+                                .and_then(|key| {
+                                    store.get(&cid).map(|d| {
+                                        d.messages
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, m)| {
+                                                call_flow::transaction_key(m).as_ref() == Some(key)
+                                            })
+                                            .map(|(i, _)| i)
+                                            .nth(filtered_idx)
+                                            .unwrap_or(filtered_idx)
+                                    })
+                                })
+                                .unwrap_or(filtered_idx)
+                        })
+                        .unwrap_or(sel);
                     let total_lines = call_flow::render_message_detail(
                         frame,
                         detail_area,
                         &store,
                         &cid,
-                        sel,
+                        detail_sel,
                         app.detail_scroll,
                         app.call_flow_detail_focused,
                         &app.theme,
@@ -314,7 +391,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             message_index,
         } => {
             if let Some(store) = app.dialog_store.try_read() {
-                msg_raw::render_raw_message(
+                let total_rows = msg_raw::render_raw_message(
                     frame,
                     main_area,
                     &store,
@@ -323,9 +400,13 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         message_index: *message_index,
                         scroll_offset: app.raw_msg_scroll,
                         search_query: &app.search_query,
+                        syntax_highlight: app.syntax_highlight,
                         theme: &app.theme,
                     },
                 );
+                // Clamp to content so End / over-eager PgDn self-correct.
+                let viewport = main_area.height.saturating_sub(2);
+                app.raw_msg_scroll = app.raw_msg_scroll.min(total_rows.saturating_sub(viewport));
             }
         }
         View::MessageDiff {
@@ -334,9 +415,18 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             msg2_idx,
         } => {
             if let Some(store) = app.dialog_store.try_read() {
-                render_message_diff(
-                    frame, main_area, &store, call_id, *msg1_idx, *msg2_idx, &app.theme,
+                let total_rows = render_message_diff(
+                    frame,
+                    main_area,
+                    &store,
+                    call_id,
+                    *msg1_idx,
+                    *msg2_idx,
+                    app.diff_scroll,
+                    &app.theme,
                 );
+                let viewport = main_area.height.saturating_sub(2);
+                app.diff_scroll = app.diff_scroll.min(total_rows.saturating_sub(viewport));
             }
         }
         View::CombinedDetail {
@@ -345,7 +435,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             scope,
         } => {
             if let Some(store) = app.dialog_store.try_read() {
-                msg_raw::render_combined_detail(
+                let total_rows = msg_raw::render_combined_detail(
                     frame,
                     main_area,
                     &store,
@@ -354,9 +444,14 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         indices,
                         scope,
                         scroll_offset: app.raw_msg_scroll,
+                        syntax_highlight: app.syntax_highlight,
                         theme: &app.theme,
                     },
                 );
+                // Clamp to content so End (u16::MAX) lands on the last page
+                // instead of a blank screen.
+                let viewport = main_area.height.saturating_sub(2);
+                app.raw_msg_scroll = app.raw_msg_scroll.min(total_rows.saturating_sub(viewport));
             }
         }
         View::Help => {
@@ -1630,7 +1725,7 @@ pub(super) fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app:
 pub(super) fn render_statistics(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
-    app: &App,
+    app: &mut App,
 ) {
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
@@ -1708,16 +1803,24 @@ pub(super) fn render_statistics(
 
     text.push_str("\nPress Esc to return.");
 
+    // Clamp the scroll to the content height (End jumps to the last page).
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    app.stats_scroll = app.stats_scroll.min(total_rows.saturating_sub(viewport));
+
     let block = Block::default().borders(Borders::ALL).title(" Statistics ");
 
     let paragraph = Paragraph::new(text)
         .block(block)
-        .style(Style::default().fg(app.theme.foreground));
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((app.stats_scroll, 0));
 
     frame.render_widget(paragraph, area);
 }
 
-/// Render a side-by-side diff of two SIP messages.
+/// Render a side-by-side diff of two SIP messages. Returns the content
+/// height in rows so the caller can clamp its stored scroll offset.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_message_diff(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -1725,14 +1828,15 @@ pub(super) fn render_message_diff(
     call_id: &str,
     msg1_idx: usize,
     msg2_idx: usize,
+    scroll: u16,
     theme: &Theme,
-) {
+) -> u16 {
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
             let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.bad));
             frame.render_widget(para, area);
-            return;
+            return 0;
         }
     };
 
@@ -1742,7 +1846,7 @@ pub(super) fn render_message_diff(
     let (Some(msg1), Some(msg2)) = (msg1, msg2) else {
         let para = Paragraph::new("Message not found.").style(Style::default().fg(theme.bad));
         frame.render_widget(para, area);
-        return;
+        return 0;
     };
 
     let raw1 = String::from_utf8_lossy(&msg1.raw);
@@ -1797,15 +1901,19 @@ pub(super) fn render_message_diff(
         .borders(Borders::ALL)
         .title(format!(" Message {} ", msg2_idx + 1));
 
+    let total_rows = (max_lines as u16).saturating_add(1); // + header line
     let left_para = Paragraph::new(left_lines)
         .block(left_block)
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
     let right_para = Paragraph::new(right_lines)
         .block(right_block)
+        .scroll((scroll, 0))
         .wrap(Wrap { trim: false });
 
     frame.render_widget(left_para, left_area);
     frame.render_widget(right_para, right_area);
+    total_rows
 }
 
 #[cfg(test)]
@@ -2454,7 +2562,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_message_diff(frame, area, &store, "missing", 0, 1, &theme);
+                render_message_diff(frame, area, &store, "missing", 0, 1, 0, &theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -2477,7 +2585,7 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 // msg index way past the end.
-                render_message_diff(frame, area, &store, "call-1@test", 0, 999, &theme);
+                render_message_diff(frame, area, &store, "call-1@test", 0, 999, 0, &theme);
             })
             .unwrap();
         let buf = terminal.backend().buffer();

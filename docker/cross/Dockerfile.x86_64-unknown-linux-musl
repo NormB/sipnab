@@ -1,7 +1,7 @@
 FROM ghcr.io/cross-rs/x86_64-unknown-linux-musl:main
 
 # Build libpcap from source against musl for static linking
-RUN apt-get update && apt-get install -y flex bison wget && rm -rf /var/lib/apt/lists/* \
+RUN apt-get update && apt-get install -y flex bison wget xz-utils && rm -rf /var/lib/apt/lists/* \
     && wget -q https://www.tcpdump.org/release/libpcap-1.10.5.tar.xz \
     && tar xf libpcap-1.10.5.tar.xz \
     && cd libpcap-1.10.5 \
