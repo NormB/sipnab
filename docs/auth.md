@@ -5,8 +5,8 @@ authenticate clients with `Authorization: Bearer <token>`. sipnab supports two
 token kinds, checked with a constant-time comparison:
 
 1. **Static secrets** — `--api-key` / `--mcp-token` (or `--mcp-token-file`,
-   `$SIPNAB_API_SIGNING_KEY`-style env). A fixed shared secret with **no
-   expiry**. Simple, but cannot be expired or revoked without restarting.
+   `$SIPNAB_API_KEY` / `$SIPNAB_MCP_TOKEN` env). A fixed shared secret with
+   **no expiry**. Simple, but cannot be expired or revoked without restarting.
 2. **Signed self-describing tokens** — HMAC-signed tokens that carry their own
    expiry and id, enabling **expiry, rotation, and revocation** without a
    server-side session store. This page documents those.

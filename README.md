@@ -133,7 +133,7 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
 | `audio`    | RTP audio playback in TUI via the lazily-loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
-| `hep`      | HEP v2/v3 send + receive (Homer Encapsulation Protocol)              | no      |
+| `hep`      | HEP v3 send + HEP v2/v3 receive (Homer Encapsulation Protocol)              | no      |
 | `api`      | REST API + Prometheus metrics endpoint (axum, tokio)                 | no      |
 | `mcp`      | Model Context Protocol server, stdio transport (rmcp)                | no      |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Implies `mcp` + `api`.       | no      |

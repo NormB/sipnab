@@ -4,7 +4,7 @@ weight = 7
 description = "REST API endpoints, Prometheus metrics, and HEP protocol integration."
 +++
 
-sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs in an isolated child process with no access to capture file descriptors or key material.
+sipnab includes an optional REST API and Prometheus metrics endpoint, enabled with the `api` feature flag. The API runs as a thread inside the sipnab process, reading the same in-memory dialog/stream stores as the capture pipeline (read-only — it never mutates capture state).
 
 > **Looking for AI-agent access?** sipnab also exposes the same dialog / RTP / diagnostic data as a Model Context Protocol server. See [MCP Server](@/docs/mcp.md) -- the MCP path uses the same in-memory stores as this REST API, so a running sipnab instance can serve both surfaces simultaneously.
 
@@ -60,17 +60,22 @@ The REST API requires a bearer token passed via the `--api-key` flag or the `$SI
 curl -H "Authorization: Bearer your-secret-key" http://127.0.0.1:8080/v1/dialogs
 ```
 
-The metrics endpoint optionally requires a bearer token via `--metrics-auth`.
+The REST API's `/metrics` endpoint is guarded by the same Bearer token as
+every other endpoint. The *standalone* metrics server (`--metrics <ADDR>`)
+is separate: it uses HTTP Basic auth via `--metrics-auth <user:pass>`.
 
 All endpoints except `/health` require authentication when an API key is configured. Missing or invalid keys return `401 Unauthorized`. Key comparison uses constant-time comparison to prevent timing side-channel attacks.
 
 ## API TLS
 
-Secure the API endpoint with TLS:
+Direct TLS termination on the API endpoint is **not yet implemented** —
+supplying `--api-tls-cert`/`--api-tls-key` makes sipnab refuse to start
+with an explanatory error. Terminate TLS in a reverse proxy (nginx,
+Caddy, HAProxy) in front of a loopback-bound API instead:
 
 ```bash
-sipnab -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
-  --api-tls-cert /etc/sipnab/cert.pem --api-tls-key /etc/sipnab/key.pem
+sipnab -d eth0 --api 127.0.0.1:8080 --api-key "secret"
+# then proxy https://host/ -> http://127.0.0.1:8080 in your reverse proxy
 ```
 
 ## Connection Limits
@@ -306,8 +311,6 @@ console.log(`State: ${dialog.state}`);
       "mode": "sendrecv"
     }
   ],
-  "refer_to": null,
-  "siprec_metadata": null,
   "diagnosis": {
     "one_way_audio": false,
     "nat_mismatch": false,
@@ -338,8 +341,6 @@ console.log(`State: ${dialog.state}`);
 
 **Additional dialog fields:**
 
-- **`refer_to`** -- Present when a REFER transfer is detected. Contains the `Refer-To` URI extracted from the REFER request. The dialog state transitions to `Transferring` while the transfer is in progress.
-- **`siprec_metadata`** -- Present when SIPREC recording metadata is detected. Parsed from `multipart/mixed` message bodies per RFC 7866. Contains the recording session XML metadata (participant info, session identifiers, media streams).
 - **`stir_shaken`** -- When `--stir-shaken` validation is enabled, the `diagnosis.hints` array includes STIR/SHAKEN results. Tokens with an `iat` (issued-at) timestamp older than 60 seconds are rejected as `Expired` per RFC 8224 Section 12.
 
 Returns `404` if the Call-ID is not found.
@@ -634,7 +635,7 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
 
 ### GET /metrics
 
-Prometheus-compatible metrics endpoint. Returns metrics in the OpenMetrics text format.
+Prometheus-compatible metrics endpoint. Returns metrics in the Prometheus text exposition format (`text/plain; version=0.0.4`).
 
 **curl:**
 
@@ -698,14 +699,14 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_messages_total{method}` | counter | SIP messages by method (`INVITE`, `REGISTER`, …). |
 | `sipnab_rtp_streams_active` | gauge | RTP streams currently in the `Established` state. |
 | `sipnab_rtp_streams_total{status}` | counter | RTP streams by status (`established`, `orphaned`). |
-| `sipnab_capture_packets_total` | counter | Total packets captured. |
-| `sipnab_reassembly_timeouts_total` | counter | TCP/IP reassembly sessions that timed out. |
+| `sipnab_capture_queue_depth_packets` | gauge | Packets currently queued between the capture reader and the processing thread (standalone `--metrics` server). |
+| `sipnab_capture_backpressure_blocks_total` | counter | Times the capture reader blocked on a full queue (standalone `--metrics` server). |
 | `sipnab_pdd_seconds` | histogram | Post-dial delay distribution (buckets at 0.5/1/2/3/5/10s). Emits `sipnab_pdd_seconds_bucket{le}`, `_count`, `_sum`. |
 | `sipnab_mos` | histogram | RTP MOS distribution (buckets at 1/2/2.5/3/3.5/4/4.5). |
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Client Examples
 
@@ -737,9 +738,8 @@ curl -fsS "$API/v1/dialogs?from=alice&limit=20" $H | jq
 # Get one dialog with full SIP messages
 curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
 
-# Get a Markdown call report
-curl -fsS "$API/v1/dialogs/abc123@host/report" $H \
-     -H 'Accept: text/markdown'
+# Get a call report (JSON — this endpoint is JSON-only)
+curl -fsS "$API/v1/dialogs/abc123@host/report" $H | jq
 
 # Non-orphaned streams (orphaned=false)
 curl -fsS "$API/v1/streams?orphaned=false" $H | jq
@@ -1418,7 +1418,7 @@ sipnab -d eth0 -H 10.0.0.50:9060
 
 ## Security Model
 
-- The API child process is isolated: no capture fd, no key material
+- The API thread only reads dialog/stream metadata: no capture fd access, no key material exposure
 - All network listeners bind to localhost by default
 - Rate limiting on all listener endpoints (100 RPS per source IP)
 - Bearer token authentication (required for API, optional for metrics)
@@ -1426,7 +1426,7 @@ sipnab -d eth0 -H 10.0.0.50:9060
 - TLS available for API endpoint
 - Connection limits prevent resource exhaustion
 
-> **Warning:** The API child process is isolated from the capture process. It has no access to capture file descriptors, TLS key material, or raw packet data. The API can only read dialog/stream metadata.
+> **Note:** The API runs as a thread in the sipnab process, sharing the in-memory dialog/stream stores read-only. It never touches capture file descriptors or TLS key material, and exposes only dialog/stream metadata — but it is not a separate OS process; treat the API bind address and key accordingly.
 
 ## Event Execution
 

@@ -57,6 +57,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
+| `visible_columns` | array | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`. Adjust at runtime with F10 |
 
 ```toml
 [display]
@@ -114,6 +115,10 @@ Resource limits to prevent unbounded memory growth.
 | `max_streams` | integer | `50000` | Maximum RTP streams |
 | `max_reassembly` | integer | `10000` | Maximum TCP reassembly sessions |
 | `hep_rate_limit` | integer | `50000` | Maximum HEP packets per second |
+| `max_header_line` | integer | `8192` | Maximum bytes in a single SIP header (defense-in-depth) |
+| `max_headers_per_message` | integer | `200` | Maximum SIP headers per message (defense-in-depth) |
+| `max_messages_per_dialog` | integer | `500` | Maximum stored messages per dialog (defense-in-depth) |
+| `max_audio_frames` | integer | `1500` | Maximum RTP payload frames stored per stream for WAV export (~30s at G.711 50pps) |
 
 ```toml
 [limits]

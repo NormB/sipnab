@@ -105,7 +105,7 @@ troubleshooting.
 - **Localhost-default.** HTTP transport binds `127.0.0.1:8731` unless
   explicitly overridden.
 - **Bearer auth on non-loopback.** Tokens compared in constant time
-  via the existing `output::api::constant_time_eq` helper, sharing
+  via the shared `crypto::constant_time_eq` helper (through `auth::TokenVerifier`), sharing
   the same code path as the REST API.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
@@ -128,7 +128,7 @@ SIPNAB_LOG level you reproduced it under.
 ```toml
 mcp       # stdio transport (rmcp dep, ~3 MB binary cost)
 mcp-http  # HTTP transport (mcp + api; rmcp/transport-streamable-http-server)
-full      # default + tui + tls + hep + api + audio + mcp + mcp-http
+full      # native + tui + tls + hep + api + audio + mcp + mcp-http
 ```
 
 The default build does not include `mcp` — operators who'll never
