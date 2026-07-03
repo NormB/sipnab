@@ -557,6 +557,62 @@ mod tests {
     }
 
     #[test]
+    fn multi_mline_audio_and_video_both_link_and_resolve_codecs() {
+        // A single INVITE offering audio (m=audio, PCMU) AND video (m=video,
+        // dynamic PT 96 = H264) must produce two independently-tracked,
+        // codec-resolved streams associated with the same dialog.
+        let sdp_body = b"v=0\r\n\
+o=- 1 1 IN IP4 10.0.0.2\r\n\
+s=call\r\n\
+c=IN IP4 10.0.0.2\r\n\
+t=0 0\r\n\
+m=audio 30000 RTP/AVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n\
+m=video 30002 RTP/AVP 96\r\n\
+a=rtpmap:96 H264/90000\r\n";
+        let sdp = crate::sip::sdp::parse_sdp(sdp_body).expect("SDP parses");
+        assert_eq!(sdp.media.len(), 2, "both m= lines must be parsed");
+
+        let mut store = StreamStore::new(16);
+        // Link every media description (mirrors the pipeline loop).
+        for media in &sdp.media {
+            let addr = crate::sip::sdp::effective_address(media, &sdp)
+                .and_then(|a| a.parse::<IpAddr>().ok())
+                .expect("media address");
+            store.link_to_dialog_with_sdp(addr, media.port, "av-call@test", media);
+        }
+
+        // Audio RTP: PT 0 (PCMU) to :30000.
+        store.process_rtp(
+            &make_parsed(40000, 30000, 160),
+            &make_rtp_header(0xAAAA, 1),
+            ts(0),
+        );
+        // Video RTP: dynamic PT 96 to :30002.
+        let mut video_hdr = make_rtp_header(0xBBBB, 1);
+        video_hdr.payload_type = 96;
+        store.process_rtp(&make_parsed(40002, 30002, 900), &video_hdr, ts(0));
+
+        let linked: Vec<_> = store.streams_for("av-call@test").collect();
+        assert_eq!(linked.len(), 2, "audio and video must both be tracked");
+
+        let audio = linked
+            .iter()
+            .find(|s| s.key.dst.port() == 30000)
+            .expect("audio stream linked");
+        let video = linked
+            .iter()
+            .find(|s| s.key.dst.port() == 30002)
+            .expect("video stream linked");
+        assert_eq!(audio.codec.as_deref(), Some("PCMU"));
+        assert_eq!(
+            video.codec.as_deref(),
+            Some("H264"),
+            "dynamic video PT must resolve from the second m= line's rtpmap"
+        );
+    }
+
+    #[test]
     fn streams_for_returns_only_linked_streams() {
         let mut store = StreamStore::new(16);
         // Two streams on different endpoints.

@@ -16,7 +16,8 @@ pub struct SdpExchange {
     pub timestamp: DateTime<Utc>,
     /// Whether this SDP is an offer or an answer.
     pub direction: OfferAnswer,
-    /// Codec names from the first audio media description's rtpmap entries.
+    /// Codec names aggregated across all media descriptions' rtpmap entries
+    /// (`m=` order, de-duplicated), so audio+video offers list both legs.
     pub codecs: Vec<String>,
     /// Media IP address (effective address from session or media level `c=`).
     pub media_addr: Option<String>,
@@ -119,7 +120,13 @@ fn determine_offer_answer(msg: &SipMessage) -> OfferAnswer {
 }
 
 /// Extract codec list, media address, port, direction mode, and T.38 flag
-/// from the first media description in the SDP session.
+/// for a timeline exchange.
+///
+/// Codecs are aggregated across **all** media descriptions (in `m=` order,
+/// de-duplicated) so an audio+video offer lists both legs' codecs rather
+/// than dropping the video. The anchor fields (address, port, direction
+/// mode, T.38 flag) come from the first media description — the primary
+/// call leg that hold/resume/anchor-change detection tracks.
 fn extract_media_info(
     sdp: &SdpSession,
 ) -> (Vec<String>, Option<String>, Option<u16>, String, bool) {
@@ -128,11 +135,14 @@ fn extract_media_info(
         None => return (Vec::new(), None, None, "sendrecv".to_string(), false),
     };
 
-    let codecs: Vec<String> = first_media
-        .rtpmap
-        .iter()
-        .map(|r| r.encoding.clone())
-        .collect();
+    let mut codecs: Vec<String> = Vec::new();
+    for media in &sdp.media {
+        for r in &media.rtpmap {
+            if !codecs.contains(&r.encoding) {
+                codecs.push(r.encoding.clone());
+            }
+        }
+    }
 
     let media_addr = sdp::effective_address(first_media, sdp);
     let media_port = Some(first_media.port);
@@ -446,6 +456,34 @@ mod tests {
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::MediaAnchorChange));
+    }
+
+    #[test]
+    fn multi_mline_timeline_includes_video_codec() {
+        // An audio+video offer must not drop the video codec from the
+        // timeline (it previously recorded only the first m= line).
+        let sdp = b"v=0\r\n\
+o=- 0 0 IN IP4 10.0.0.1\r\n\
+s=-\r\n\
+c=IN IP4 10.0.0.1\r\n\
+t=0 0\r\n\
+m=audio 20000 RTP/AVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n\
+a=sendrecv\r\n\
+m=video 20002 RTP/AVP 96\r\n\
+a=rtpmap:96 H264/90000\r\n\
+a=sendrecv\r\n";
+        let mut timeline = Vec::new();
+        let invite = make_invite_with_sdp(sdp, base_ts());
+        track_sdp(&mut timeline, &invite);
+
+        assert_eq!(timeline.len(), 1);
+        let codecs = &timeline[0].codecs;
+        assert!(codecs.iter().any(|c| c == "PCMU"), "audio codec present");
+        assert!(
+            codecs.iter().any(|c| c == "H264"),
+            "video codec must appear in the timeline, got {codecs:?}"
+        );
     }
 
     #[test]

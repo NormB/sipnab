@@ -4,6 +4,17 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed — multi-stream (audio + video) SDP timeline
+
+Calls offering more than one media stream (e.g. `m=audio` **and**
+`m=video`) had the video leg dropped from the per-dialog SDP timeline /
+`--json` output: `extract_media_info` recorded only the first `m=` line.
+The timeline now aggregates codecs across **all** media descriptions
+(`m=` order, de-duplicated), so a video call lists both PCMU and H264/VP8.
+(RTP stream *linking* already tracked every media stream correctly — both
+audio and video streams associate to the dialog and resolve their codecs;
+this only fixes the timeline/report view.)
+
 ### Added — all 19 IANA-registered compact header forms
 
 sipnab previously expanded only the ten RFC 3261 core compact header names
