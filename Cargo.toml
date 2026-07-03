@@ -7,15 +7,15 @@ resolver = "2"
 
 # Single source of lint truth for all workspace crates (both crates set
 # `lints.workspace = true`). Narrow, per-site lint control uses `#[expect]`
-# so stale suppressions self-report. `unwrap_used`/`expect_used` are crate
-# attributes in lib.rs/main.rs instead: a workspace-level entry would also
-# fire in every integration-test and bench crate, where unwraps are idiomatic
-# (unit tests are exempted via clippy.toml's allow-unwrap-in-tests).
-[workspace.lints.rust]
-# Every externally visible item must be documented (bins/tests have no
-# externally visible items, so this effectively scopes to the libraries).
-missing_docs = "warn"
-
+# so stale suppressions self-report. Two lints deliberately live as crate
+# attributes in the library roots instead of here:
+# - missing_docs: a workspace entry also lints test/bench crates, and an
+#   integration test whose whole body is `#![cfg(feature = ...)]`-gated
+#   loses its crate doc when the feature is off — under CI's
+#   RUSTFLAGS=-Dwarnings every reduced-feature check then fails on a
+#   false "missing documentation for the crate".
+# - unwrap_used/expect_used: idiomatic in test/bench code (unit tests are
+#   exempted via clippy.toml's allow-unwrap-in-tests).
 [workspace.lints.clippy]
 # Every `unsafe` block needs an adjacent `// SAFETY:` justification.
 undocumented_unsafe_blocks = "warn"

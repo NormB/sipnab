@@ -19,10 +19,11 @@
 //! }
 //! ```
 
-// missing_docs comes from [workspace.lints]. unwrap/expect are banned on
-// library production paths (tests are exempt via clippy.toml); this is a
-// crate attribute rather than a workspace lint so integration-test and
-// bench crates keep idiomatic unwraps.
+// Every public item must be documented, and unwrap/expect are banned on
+// library production paths (tests are exempt via clippy.toml). These are
+// crate attributes rather than workspace lints so test/bench crates are
+// not covered — see the [workspace.lints] comment in Cargo.toml.
+#![warn(missing_docs)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(any(feature = "api", feature = "mcp"))]
 pub mod auth;
