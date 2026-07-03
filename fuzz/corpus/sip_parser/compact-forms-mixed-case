@@ -1,0 +1,8 @@
+INVITE sip:bob@example.com SIP/2.0
+V: SIP/2.0/UDP 10.0.0.1
+I: mixed-case@fuzz
+Y: dummy.jwt.here
+R: <sip:x@y>
+z: unknown
+l: 0
+

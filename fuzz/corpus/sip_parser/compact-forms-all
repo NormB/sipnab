@@ -1,0 +1,17 @@
+REFER sip:bob@example.com SIP/2.0
+v: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1
+f: <sip:alice@example.com>;tag=a
+t: <sip:bob@example.com>
+i: compact-seed@fuzz
+CSeq: 1 REFER
+a: *
+b: <sip:referrer@example.com>
+d: no-fork
+j: *
+o: dialog
+r: <sip:target@example.com>
+u: dialog
+x: 1800
+y: eyJhbGciOiJFUzI1NiJ9.eyJhdHRlc3QiOiJBIn0.sig
+l: 0
+

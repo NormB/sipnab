@@ -14,9 +14,12 @@ use super::message::{SipHeader, SipMessage};
 use super::method::SipMethod;
 use crate::net::TransportProto;
 
-/// Mapping from single-character compact header names to canonical long forms
-/// per RFC 3261 SS7.3.3 and extensions.
+/// Mapping from single-character compact header names to canonical long
+/// forms. RFC 3261 §7.3.3 allows a compact form to substitute for the long
+/// name at any time; the authoritative list is the IANA SIP Header Fields
+/// registry (19 registered forms) — add new registrations here.
 const COMPACT_HEADERS: &[(u8, &str)] = &[
+    // RFC 3261 §20 core forms
     (b'i', "Call-ID"),
     (b'f', "From"),
     (b't', "To"),
@@ -27,6 +30,16 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
     (b'e', "Content-Encoding"),
     (b'k', "Supported"),
     (b's', "Subject"),
+    // IANA-registered extension forms
+    (b'a', "Accept-Contact"),      // RFC 3841
+    (b'b', "Referred-By"),         // RFC 3892
+    (b'd', "Request-Disposition"), // RFC 3841
+    (b'j', "Reject-Contact"),      // RFC 3841
+    (b'o', "Event"),               // RFC 6665
+    (b'r', "Refer-To"),            // RFC 3515
+    (b'u', "Allow-Events"),        // RFC 6665
+    (b'x', "Session-Expires"),     // RFC 4028
+    (b'y', "Identity"),            // RFC 8224
 ];
 
 /// Parse a raw byte slice into a [`SipMessage`].
@@ -399,6 +412,10 @@ fn canonical_header_name(name: &str) -> Option<&'static str> {
         "Event" => "Event",
         "Subscription-State" => "Subscription-State",
         "Accept" => "Accept",
+        "Accept-Contact" => "Accept-Contact",
+        "Reject-Contact" => "Reject-Contact",
+        "Request-Disposition" => "Request-Disposition",
+        "Allow-Events" => "Allow-Events",
         "Server" => "Server",
         "Subject" => "Subject",
         "Date" => "Date",
@@ -603,6 +620,126 @@ mod tests {
         assert!(sip.headers.iter().any(|h| h.name == "To"));
         assert!(sip.headers.iter().any(|h| h.name == "Contact"));
         assert!(sip.headers.iter().any(|h| h.name == "Content-Length"));
+    }
+
+    #[test]
+    fn extension_compact_headers_expand() {
+        // All nine IANA-registered extension compact forms (beyond the RFC
+        // 3261 core ten), in mixed case to pin case-insensitive matching:
+        // a=Accept-Contact, b=Referred-By, d=Request-Disposition,
+        // j=Reject-Contact, o=Event, r=Refer-To, u=Allow-Events,
+        // x=Session-Expires, y=Identity.
+        let msg = build_sip(
+            "REFER sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1",
+                "From: <sip:alice@example.com>;tag=a",
+                "To: <sip:bob@example.com>",
+                "Call-ID: compact-ext@test",
+                "CSeq: 1 REFER",
+                "a: *;require",
+                "B: <sip:referrer@example.com>",
+                "d: no-fork",
+                "j: *;class=\"business\"",
+                "o: dialog",
+                "R: <sip:target@example.com>",
+                "u: dialog, message-summary",
+                "X: 1800;refresher=uac",
+                "y: dummy.jwt.value",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        for name in [
+            "Accept-Contact",
+            "Referred-By",
+            "Request-Disposition",
+            "Reject-Contact",
+            "Event",
+            "Refer-To",
+            "Allow-Events",
+            "Session-Expires",
+            "Identity",
+        ] {
+            assert!(
+                sip.headers.iter().any(|h| h.name == name),
+                "compact form for `{name}` not expanded"
+            );
+        }
+        // No single-letter names may remain.
+        assert!(
+            !sip.headers.iter().any(|h| h.name.len() == 1),
+            "unexpanded single-letter header remains"
+        );
+        assert_eq!(sip.header("Refer-To"), Some("<sip:target@example.com>"));
+    }
+
+    #[test]
+    fn unknown_single_letter_headers_keep_their_name() {
+        // Letters with no registered compact form must pass through as-is.
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Call-ID: unknown-compact@test",
+                "z: mystery",
+                "q: 0.7",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(sip.headers.iter().any(|h| h.name == "z"));
+        assert!(sip.headers.iter().any(|h| h.name == "q"));
+    }
+
+    #[test]
+    fn mixed_long_and_compact_duplicates_are_both_kept() {
+        // RFC 3261 §7.3.3: forms may be mixed freely in one message; both
+        // instances of a repeated header must survive under the long name.
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP proxy1.example.com;branch=z9hG4bK1",
+                "v: SIP/2.0/UDP proxy2.example.com;branch=z9hG4bK2",
+                "Call-ID: mixed-forms@test",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        let vias: Vec<_> = sip.headers.iter().filter(|h| h.name == "Via").collect();
+        assert_eq!(vias.len(), 2, "both Via instances must be kept");
+        assert!(vias[0].value.contains("proxy1"));
+        assert!(vias[1].value.contains("proxy2"));
     }
 
     #[test]

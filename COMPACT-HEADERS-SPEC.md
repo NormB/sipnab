@@ -1,6 +1,9 @@
 # sipnab — Full RFC 3261 / IANA Compact-Form Header Support
 
-**Status:** determination complete, implementation specified, not started.
+**Status:** IMPLEMENTED (2026-07-03) — table extended to all 19 forms,
+three gap tests (parser expansion, `r:` transfer tracking, `y:` STIR/SHAKEN
+evasion regression) written red-first and green, edge pins added, fuzz
+corpus seeded. Kept for the determination record.
 **Date:** 2026-07-03.
 **Effort:** S (hours, single PR).
 

@@ -4,6 +4,25 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added — all 19 IANA-registered compact header forms
+
+sipnab previously expanded only the ten RFC 3261 core compact header names
+(`c e f i k l m s t v`). The nine IANA-registered extension forms now
+expand too: `a` Accept-Contact, `b` Referred-By, `d` Request-Disposition,
+`j` Reject-Contact, `o` Event, `r` Refer-To, `u` Allow-Events, `x`
+Session-Expires, `y` Identity. Two of these fixed real analysis gaps:
+
+- **STIR/SHAKEN evasion fixed:** an INVITE carrying its PASSporT in the
+  compact `y:` form (RFC 8224) was invisible to `--stir-shaken` analysis
+  while remaining fully valid to real verifiers. Compact-form Identity
+  headers are now extracted identically to the long form (regression test:
+  `compact_identity_header_cannot_evade_extraction`).
+- **Transfer tracking:** a REFER using `r:` (RFC 3515) now drives the
+  `Transferring` dialog state and `refer_to` like the long form.
+
+Determination and design in COMPACT-HEADERS-SPEC.md. SigComp (RFC 3320
+"compressed SIP") remains explicitly out of scope.
+
 ### Changed — one canonical dialog/stream summary across all surfaces (WS3)
 
 "Dialog summary" was implemented five times (CLI/NDJSON, REST API, MCP, TUI
