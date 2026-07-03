@@ -131,24 +131,16 @@ fn reconstruct(
     {
         *sip += 1;
         if !cfg.no_dialog {
-            // Extract SDP link info first so the store can take the message
-            // by move — cloning a SipMessage deep-copies every header String
-            // (same ordering as pipeline::process_packet).
-            let sdp_links: Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)> =
-                if let Some(sdp) = msg.sdp()
-                    && let Some(call_id) = msg.call_id()
-                {
-                    sdp.media
-                        .iter()
-                        .filter_map(|media| {
-                            crate::sip::sdp::effective_address(media, &sdp)
-                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                                .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            // Extract SDP link info first so the store can take the message by
+            // move — cloning a SipMessage deep-copies every header String. Uses
+            // the shared pipeline helper (single source of truth).
+            let sdp_links = if let Some(sdp) = msg.sdp()
+                && let Some(call_id) = msg.call_id()
+            {
+                crate::pipeline::extract_sdp_links(&sdp, call_id)
+            } else {
+                Vec::new()
+            };
             ds.process_message(msg);
             for (ip, port, call_id, media) in &sdp_links {
                 ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
