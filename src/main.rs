@@ -2053,12 +2053,8 @@ fn process_parsed_packet(
                 let filter_pass = if let Some(expr) = &filter_expr {
                     if let Some(call_id) = sip_msg.call_id() {
                         if let Some(dialog) = dialog_store.get(call_id) {
-                            let streams: Vec<&sipnab::rtp::stream::RtpStream> =
-                                stream_store.iter().collect();
-                            let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> = streams
-                                .into_iter()
-                                .filter(|s| s.associated_dialog.as_deref() == Some(call_id))
-                                .collect();
+                            let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> =
+                                stream_store.streams_for(call_id).collect();
                             expr.matches_dialog(dialog, &dialog_streams)
                         } else {
                             false
@@ -2426,11 +2422,8 @@ fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &Stream
     // --call-report <call-id>: detailed single-call report
     if let Some(ref call_id) = cli.call_report {
         if let Some(dialog) = dialog_store.get(call_id) {
-            let all_streams: Vec<&sipnab::rtp::stream::RtpStream> = stream_store.iter().collect();
-            let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> = all_streams
-                .into_iter()
-                .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
-                .collect();
+            let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> =
+                stream_store.streams_for(call_id).collect();
             let mut diagnosis = sipnab::rtp::diagnosis::diagnose_media(&dialog_streams, None);
             sipnab::rtp::diagnosis::diagnose_asymmetry(
                 &mut diagnosis,

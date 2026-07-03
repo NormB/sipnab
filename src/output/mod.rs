@@ -4,6 +4,7 @@
 //! - [`cli_print`] — sipgrep-style colored terminal output
 //! - [`mod@hexdump`] — Raw hex+ASCII packet dump
 //! - [`json`] — JSON/NDJSON structured output
+//! - [`model`] — canonical compact dialog/stream projections (all surfaces)
 //! - [`dialog_report`] — Tabular dialog summary report
 //! - [`call_report`] — Comprehensive single-call diagnosis report
 //! - [`fail2ban`] — Fail2ban-compatible log format
@@ -19,6 +20,7 @@ pub mod event_exec;
 pub mod fail2ban;
 pub mod hexdump;
 pub mod json;
+pub mod model;
 pub mod prometheus;
 #[cfg(feature = "api")]
 pub mod prometheus_server;

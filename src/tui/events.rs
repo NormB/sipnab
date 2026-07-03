@@ -641,8 +641,8 @@ pub(super) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     let stream_key = {
                         let store = app.stream_store.read();
                         store
-                            .iter()
-                            .find(|s| s.associated_dialog.as_deref() == Some(&cid))
+                            .streams_for(&cid)
+                            .next()
                             .or_else(|| store.iter().next())
                             .map(|s| s.key.clone())
                     };

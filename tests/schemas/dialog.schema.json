@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sipnab.com/schemas/dialog.schema.json",
   "title": "sipnab dialog summary (GET /v1/dialogs list item)",
-  "description": "Serialized form of dialog_summary() (src/output/api.rs): one element of the `dialogs` array. The list wrapper carries schema_version/total/offset/limit. Live-output validation lands in M3 (T3.2) when the REST API test harness exists; for now this schema is authored and proven well-formed.",
+  "description": "Serialized form of output::model::DialogSummary — the canonical compact dialog projection shared by the REST API, MCP, and TUI-save surfaces (WS3). One element of the `dialogs` array; the list wrapper carries schema_version/total/offset/limit. WS3 wire change: `from`/`to` became `from_user`/`to_user`, and `timing` gained `duration_ms`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -17,8 +17,8 @@
   ],
   "properties": {
     "call_id": { "type": "string" },
-    "from": { "type": ["string", "null"] },
-    "to": { "type": ["string", "null"] },
+    "from_user": { "type": ["string", "null"] },
+    "to_user": { "type": ["string", "null"] },
     "state": { "type": "string" },
     "method": { "type": "string" },
     "duration_sec": { "type": "number" },
@@ -30,7 +30,8 @@
       "properties": {
         "pdd_ms": { "type": ["integer", "null"] },
         "setup_ms": { "type": ["integer", "null"] },
-        "retransmits": { "type": "integer", "minimum": 0 }
+        "retransmits": { "type": "integer", "minimum": 0 },
+        "duration_ms": { "type": ["integer", "null"] }
       }
     },
     "created_at": { "type": "string", "format": "date-time" },

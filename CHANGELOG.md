@@ -4,6 +4,28 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — one canonical dialog/stream summary across all surfaces (WS3)
+
+"Dialog summary" was implemented five times (CLI/NDJSON, REST API, MCP, TUI
+save, reports) and had drifted on the wire. All surfaces now project through
+`output::model::{DialogSummary, StreamSummary}` — a consistency test pins
+the shared shape. **Wire changes:**
+
+- **MCP** `list_dialogs`/`tail_dialogs`/`find_problems`: `message_count` →
+  `msg_count`; `method` is now the canonical SIP form (`INVITE`, previously
+  the Debug form `Invite`); rows gain `duration_sec` and `timing`.
+- **REST API** `/v1/dialogs`: `from`/`to` → `from_user`/`to_user` (the
+  values always were the URI user parts).
+- **TUI JSON save**: `message_count` → `msg_count`; `created_at` gains full
+  RFC 3339 precision and rows gain `updated_at`/`duration_sec`. RTP JSON
+  save: `mos`/`jitter_ms`/`loss_pct` are no longer rounded to 1 decimal,
+  MOS now comes from the single E-model in `rtp::quality` (this path
+  carried its own divergent copy), and an unset codec serializes as `null`
+  instead of `"unknown"`.
+- The browser/WASM `get_dialogs` surface intentionally keeps its current
+  shape (website JS consumes it); unifying it is tracked in
+  MAINTAINABILITY-PERF-SPEC.md.
+
 ## [0.4.18] - 2026-07-02
 
 ### Fixed — TUI correctness sweep
