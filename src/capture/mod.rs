@@ -587,11 +587,12 @@ fn frame_tcp_sip(data: &[u8]) -> (Vec<std::ops::Range<usize>>, usize) {
 /// blank-line separator (i.e. where the body starts). Accepts CRLFCRLF and the
 /// lenient LFLF form. `None` if no complete header terminator is present yet.
 fn find_header_end(data: &[u8]) -> Option<usize> {
-    let crlf = data
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4);
-    let lf = data.windows(2).position(|w| w == b"\n\n").map(|i| i + 2);
+    // SIMD substring search (memchr) rather than scalar `windows()` scans —
+    // this runs once per candidate message on the TCP framing path. Both
+    // forms are searched and the earliest wins; `\r\n\r\n` cannot contain
+    // `\n\n` (the `\r` separates the newlines), so the two never overlap.
+    let crlf = memchr::memmem::find(data, b"\r\n\r\n").map(|i| i + 4);
+    let lf = memchr::memmem::find(data, b"\n\n").map(|i| i + 2);
     match (crlf, lf) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (Some(a), None) => Some(a),
@@ -776,6 +777,20 @@ mod tests {
         let (msgs, consumed) = frame_strs(msg);
         assert_eq!(msgs.len(), 1, "LFLF terminator accepted");
         assert_eq!(consumed, msg.len());
+    }
+
+    #[test]
+    fn find_header_end_takes_earliest_terminator() {
+        // Pins the CRLFCRLF-vs-LFLF precedence: the earliest blank-line
+        // separator of either form wins, and the index is just past it.
+        assert_eq!(find_header_end(b"A: b\r\n\r\nBODY"), Some(8));
+        assert_eq!(find_header_end(b"A: b\n\nBODY"), Some(6));
+        // A lenient LFLF before a later CRLFCRLF wins (earliest).
+        assert_eq!(find_header_end(b"A\n\nx\r\n\r\ny"), Some(3));
+        // A CRLFCRLF before a later LFLF wins.
+        assert_eq!(find_header_end(b"A\r\n\r\nx\n\ny"), Some(5));
+        // Incomplete: no terminator yet.
+        assert_eq!(find_header_end(b"A: b\r\nCall-ID: x\r\n"), None);
     }
 
     #[test]
