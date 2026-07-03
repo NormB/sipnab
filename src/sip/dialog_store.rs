@@ -1697,6 +1697,53 @@ mod tests {
     }
 
     #[test]
+    fn refer_with_compact_r_header_tracks_transfer() {
+        // RFC 3515 registers `r` as the compact form of Refer-To; a REFER
+        // using it must drive transfer tracking exactly like the long form.
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+        let t2 = t0 + TimeDelta::seconds(2);
+
+        store.process_message(make_invite_msg("refer-compact@test", t0));
+        store.process_message(make_200_ok("refer-compact@test", t1));
+
+        let refer = {
+            let raw = build_sip(
+                "REFER sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: refer-compact@test",
+                    "CSeq: 2 REFER",
+                    "r: <sip:1003@example.com>",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            parse_sip(
+                &raw,
+                t2,
+                localhost(),
+                localhost(),
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .expect("should parse REFER")
+        };
+        store.process_message(refer);
+
+        let dialog = store.get("refer-compact@test").expect("dialog exists");
+        assert_eq!(*dialog.state(), DialogState::Transferring);
+        let refer_to = dialog
+            .refer_to
+            .as_deref()
+            .expect("compact r: must populate refer_to");
+        assert!(refer_to.contains("sip:1003@example.com"));
+    }
+
+    #[test]
     fn refer_without_header_leaves_none() {
         let mut store = DialogStore::new(100, false);
         let t0 = base_ts();

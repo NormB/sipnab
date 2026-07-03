@@ -381,6 +381,48 @@ mod tests {
     }
 
     #[test]
+    fn compact_identity_header_cannot_evade_extraction() {
+        // RFC 8224 registers `y` as the compact form of Identity. A caller
+        // emitting `y:` is fully standards-compliant toward verifiers, so if
+        // sipnab only recognized the long form, compact-form PASSporTs would
+        // silently bypass STIR/SHAKEN analysis. Parse a real message (the
+        // expansion is a parser concern) and require identical extraction.
+        use crate::sip::parser::parse_sip;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let payload = r#"{"attest": "A", "orig": {"tn": "5551234"}, "dest": {"tn": ["5559876"]}, "iat": 1700000000}"#;
+        let identity_value = build_identity_header(payload);
+
+        let raw = format!(
+            "INVITE sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bKy1\r\n\
+             From: <sip:alice@example.com>;tag=y1\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: compact-identity@test\r\n\
+             CSeq: 1 INVITE\r\n\
+             y: {identity_value}\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        let msg = parse_sip(
+            raw.as_bytes(),
+            chrono::Utc::now(),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        let info = msg
+            .stir_shaken()
+            .expect("compact y: header must be recognized as Identity")
+            .expect("PASSporT should parse");
+        assert_eq!(info.attestation, Attestation::A);
+        assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
+    }
+
+    #[test]
     fn sip_message_stir_shaken_with_identity() {
         use crate::sip::message::SipHeader;
         use std::net::{IpAddr, Ipv4Addr};
