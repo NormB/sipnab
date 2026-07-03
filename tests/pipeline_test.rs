@@ -175,3 +175,59 @@ fn sip_message_raw_shares_payload_buffer() {
         "SipMessage.body must view the payload buffer too"
     );
 }
+
+/// `extract_sdp_links` is the single source of truth for SDP→stream
+/// association across the live, batch, and `--jobs` paths. It must return
+/// one link tuple per addressable `m=` line — so an audio+video offer
+/// yields both — using the session-level `c=` when a media has no own.
+#[test]
+fn extract_sdp_links_covers_all_media_streams() {
+    let sdp = sipnab::sip::sdp::parse_sdp(
+        b"v=0\r\n\
+o=- 1 1 IN IP4 10.0.0.9\r\n\
+s=call\r\n\
+c=IN IP4 10.0.0.9\r\n\
+t=0 0\r\n\
+m=audio 40000 RTP/AVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n\
+m=video 40002 RTP/AVP 96\r\n\
+a=rtpmap:96 H264/90000\r\n",
+    )
+    .expect("SDP parses");
+
+    let links = pipeline::extract_sdp_links(&sdp, "av@test");
+    assert_eq!(links.len(), 2, "both audio and video must be linked");
+
+    let audio = links
+        .iter()
+        .find(|(_, p, _, _)| *p == 40000)
+        .expect("audio");
+    let video = links
+        .iter()
+        .find(|(_, p, _, _)| *p == 40002)
+        .expect("video");
+    assert_eq!(audio.0, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)));
+    assert_eq!(audio.2, "av@test");
+    assert_eq!(video.3.media_type, "video");
+    assert!(
+        video.3.rtpmap.iter().any(|r| r.encoding == "H264"),
+        "cloned media must carry the video rtpmap"
+    );
+}
+
+/// Media with no resolvable connection address (no media `c=`, no session
+/// `c=`) is skipped rather than linked to a bogus endpoint.
+#[test]
+fn extract_sdp_links_skips_media_without_address() {
+    let sdp = sipnab::sip::sdp::parse_sdp(
+        b"v=0\r\n\
+o=- 1 1 IN IP4 10.0.0.9\r\n\
+s=call\r\n\
+t=0 0\r\n\
+m=audio 40000 RTP/AVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n",
+    )
+    .expect("SDP parses");
+    let links = pipeline::extract_sdp_links(&sdp, "noaddr@test");
+    assert!(links.is_empty(), "no c= line ⇒ no links");
+}

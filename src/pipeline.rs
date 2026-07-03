@@ -22,6 +22,29 @@ pub fn port_in_range(src_port: u16, dst_port: u16, range: (u16, u16)) -> bool {
     (src_port >= lo && src_port <= hi) || (dst_port >= lo && dst_port <= hi)
 }
 
+/// Extract the RTP-stream link tuples `(media_ip, media_port, call_id, media)`
+/// from an SDP offer/answer, one per `m=` line with a resolvable connection
+/// address (media-level `c=`, else the session `c=`). Media without an address
+/// is skipped. The media descriptions are cloned so codec / clock-rate can be
+/// propagated to dynamic-payload-type RTP streams (e.g. Opus, H264).
+///
+/// The single source of truth for SDP→stream association across the live,
+/// batch, and `--jobs` paths. Handles multiple media streams (audio + video)
+/// by returning a tuple per stream.
+pub fn extract_sdp_links(
+    sdp: &sip::sdp::SdpSession,
+    call_id: &str,
+) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
+    sdp.media
+        .iter()
+        .filter_map(|media| {
+            sip::sdp::effective_address(media, sdp)
+                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
+        })
+        .collect()
+}
+
 /// Check if a UDP payload looks like RTCP.
 ///
 /// RTCP convention: odd destination port (RTP port + 1), version=2,
@@ -145,24 +168,13 @@ pub fn process_packet(
         ) && !opts.no_dialog
         {
             // Extract SDP link info before acquiring any lock.
-            // Clone media descriptions so codec/clock_rate can be propagated
-            // to RTP streams with dynamic payload types (e.g., Opus).
-            let sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> =
-                if let Some(sdp) = sip_msg.sdp()
-                    && let Some(call_id) = sip_msg.call_id()
-                {
-                    sdp.media
-                        .iter()
-                        .filter_map(|media| {
-                            let addr_str = sip::sdp::effective_address(media, &sdp);
-                            addr_str
-                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                                .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+            let sdp_links = if let Some(sdp) = sip_msg.sdp()
+                && let Some(call_id) = sip_msg.call_id()
+            {
+                extract_sdp_links(&sdp, call_id)
+            } else {
+                Vec::new()
+            };
 
             // Quick write to dialog store, then release
             {
