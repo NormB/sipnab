@@ -45,3 +45,28 @@ the `--jobs` path paid before WS0.1 and the batch path still pays until WS1
 Per-Via marginal cost ≈ 115 ns/header (1→10), rising to ≈ 181 ns/header
 (10→20). WS4.1 (canonical header-name table, lazy unfold buffer,
 `Vec::with_capacity`) should flatten this slope — re-measure here after.
+
+## 2026-07-03 — same host, after WS4.1 (parser allocation reduction)
+
+Steps 1–3 landed: exact-match canonical-name table (static `Cow::Borrowed`
+names), lazy `Cow` unfold buffer (per-line copy only materializes on a real
+continuation line), `Vec::with_capacity(16)`. Common-case allocations per
+header: 3 → 1 (only the value `String` remains; removing it is the
+`[SEMVER]` step 4, deferred to 0.5.0).
+
+| case | before | after | delta |
+|---|---|---|---|
+| parse_invite | 1.258 µs | 920 ns | −27% |
+| parse_200ok | 937 ns | 613 ns | −35% |
+| via_headers/1 | 964 ns | 610 ns | −37% |
+| via_headers/5 | 1.488 µs | 867 ns | −42% |
+| via_headers/10 | 1.994 µs | 1.236 µs | −38% |
+| via_headers/20 | 3.808 µs | 2.248 µs | −41% |
+
+Per-Via marginal cost: ≈ 70 ns/header (1→10), ≈ 101 ns/header (10→20).
+
+Side effect worth knowing: `SipMessage` *clones* also got cheaper — header
+names are now mostly `Cow::Borrowed` statics, so a clone copies pointers
+instead of re-allocating every name (visible as `insert_clone` ≈ 2.2 µs in
+a follow-up `msg_pipeline` run; that run's other intervals were too noisy
+to record as baselines).

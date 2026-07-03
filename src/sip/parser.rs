@@ -196,12 +196,15 @@ fn parse_headers_and_body(
 ) -> (Vec<SipHeader>, Option<std::ops::Range<usize>>, bool) {
     let max_header_line = MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed);
     let max_headers = MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed);
-    let mut headers = Vec::new();
+    // A typical SIP message carries ~10-15 headers; skip the growth reallocs.
+    let mut headers = Vec::with_capacity(16);
     let mut pos = start;
     let mut parse_error = false;
 
-    // Accumulate unfolded header lines, then parse them
-    let mut current_line = String::new();
+    // The pending (possibly folded) logical header line. Folding is rare in
+    // real traffic, so the common case stays a borrow of `data`; only a
+    // continuation line promotes it to an owned unfold buffer (`to_mut`).
+    let mut current_line: Cow<'_, str> = Cow::Borrowed("");
     let mut found_body_separator = false;
 
     while pos < data.len() {
@@ -219,7 +222,7 @@ fn parse_headers_and_body(
                     {
                         headers.push(hdr);
                     }
-                    current_line.clear();
+                    current_line = Cow::Borrowed("");
                     found_body_separator = true;
                     break;
                 }
@@ -235,10 +238,12 @@ fn parse_headers_and_body(
 
                 // RFC 3261 SS7.3.1: continuation lines start with SP or HTAB
                 if line_str.starts_with(' ') || line_str.starts_with('\t') {
-                    // Header folding: append to current line with a single space (capped)
+                    // Header folding: append to current line with a single space
+                    // (capped). `to_mut` materializes the unfold buffer only here.
                     if current_line.len() + line_str.len() < max_header_line {
-                        current_line.push(' ');
-                        current_line.push_str(line_str.trim_start());
+                        let buf = current_line.to_mut();
+                        buf.push(' ');
+                        buf.push_str(line_str.trim_start());
                     } else {
                         parse_error = true;
                     }
@@ -250,7 +255,7 @@ fn parse_headers_and_body(
                     {
                         headers.push(hdr);
                     }
-                    current_line = line_str.to_string();
+                    current_line = Cow::Borrowed(line_str);
                 }
             }
             None => {
@@ -260,8 +265,9 @@ fn parse_headers_and_body(
                 {
                     if remainder.starts_with(' ') || remainder.starts_with('\t') {
                         if current_line.len() + remainder.len() < max_header_line {
-                            current_line.push(' ');
-                            current_line.push_str(remainder.trim_start());
+                            let buf = current_line.to_mut();
+                            buf.push(' ');
+                            buf.push_str(remainder.trim_start());
                         }
                         // parse_error set below in the None→break path
                     } else {
@@ -271,7 +277,7 @@ fn parse_headers_and_body(
                         {
                             headers.push(hdr);
                         }
-                        current_line = remainder.to_string();
+                        current_line = Cow::Borrowed(remainder);
                     }
                 }
                 parse_error = true;
@@ -339,7 +345,11 @@ fn parse_header_line(line: &str) -> Option<SipHeader> {
 /// Expand a compact header name to its canonical long form.
 ///
 /// Single-character names are looked up in the compact header mapping table.
-/// Multi-character names are returned as-is (preserving original casing).
+/// Multi-character names in exact canonical casing borrow a static string
+/// (real traffic overwhelmingly uses canonical case — this removes one heap
+/// allocation per header on the hot path); any other casing is returned
+/// as-is, preserving the original (see
+/// `non_canonical_case_header_name_is_preserved`).
 fn expand_compact_header(name: &str) -> Cow<'static, str> {
     if name.len() == 1 {
         let ch = name.as_bytes()[0].to_ascii_lowercase();
@@ -349,7 +359,60 @@ fn expand_compact_header(name: &str) -> Cow<'static, str> {
             }
         }
     }
-    Cow::Owned(name.to_string())
+    match canonical_header_name(name) {
+        Some(canonical) => Cow::Borrowed(canonical),
+        None => Cow::Owned(name.to_string()),
+    }
+}
+
+/// Exact-match (case-sensitive) table of common long-form header names,
+/// returning the `'static` canonical string so [`SipHeader::name`] can
+/// borrow instead of allocating. Deliberately NOT case-insensitive: a
+/// non-canonical casing must round-trip unchanged.
+fn canonical_header_name(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "Via" => "Via",
+        "From" => "From",
+        "To" => "To",
+        "Call-ID" => "Call-ID",
+        "CSeq" => "CSeq",
+        "Contact" => "Contact",
+        "Max-Forwards" => "Max-Forwards",
+        "Content-Length" => "Content-Length",
+        "Content-Type" => "Content-Type",
+        "User-Agent" => "User-Agent",
+        "Allow" => "Allow",
+        "Supported" => "Supported",
+        "Require" => "Require",
+        "Expires" => "Expires",
+        "Route" => "Route",
+        "Record-Route" => "Record-Route",
+        "Authorization" => "Authorization",
+        "WWW-Authenticate" => "WWW-Authenticate",
+        "Proxy-Authorization" => "Proxy-Authorization",
+        "Proxy-Authenticate" => "Proxy-Authenticate",
+        "P-Asserted-Identity" => "P-Asserted-Identity",
+        "Session-Expires" => "Session-Expires",
+        "Min-SE" => "Min-SE",
+        "Refer-To" => "Refer-To",
+        "Referred-By" => "Referred-By",
+        "Event" => "Event",
+        "Subscription-State" => "Subscription-State",
+        "Accept" => "Accept",
+        "Server" => "Server",
+        "Subject" => "Subject",
+        "Date" => "Date",
+        "Reason" => "Reason",
+        "Warning" => "Warning",
+        "Privacy" => "Privacy",
+        "Diversion" => "Diversion",
+        "Identity" => "Identity",
+        "Timestamp" => "Timestamp",
+        "Organization" => "Organization",
+        "RSeq" => "RSeq",
+        "RAck" => "RAck",
+        _ => return None,
+    })
 }
 
 /// Find the position of the first `\r\n` in `data`.
@@ -540,6 +603,90 @@ mod tests {
         assert!(sip.headers.iter().any(|h| h.name == "To"));
         assert!(sip.headers.iter().any(|h| h.name == "Contact"));
         assert!(sip.headers.iter().any(|h| h.name == "Content-Length"));
+    }
+
+    #[test]
+    fn non_canonical_case_header_name_is_preserved() {
+        // Pins WS4.1's canonical-name table to exact-match only: "VIA" must
+        // survive as "VIA" (lookups are case-insensitive anyway), never get
+        // rewritten to "Via".
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "VIA: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK123",
+                "CALL-id: weird-case@example.com",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(sip.headers.iter().any(|h| h.name == "VIA"));
+        assert!(!sip.headers.iter().any(|h| h.name == "Via"));
+        assert!(sip.headers.iter().any(|h| h.name == "CALL-id"));
+        // Case-insensitive lookup still resolves it.
+        assert_eq!(sip.call_id(), Some("weird-case@example.com"));
+    }
+
+    #[test]
+    fn leading_continuation_line_produces_no_header() {
+        // A continuation (SP-prefixed) line with no header before it must be
+        // dropped, not parsed into a bogus header.
+        let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n \
+orphan-continuation\r\n\
+Call-ID: orphan-fold@example.com\r\n\
+Content-Length: 0\r\n\
+\r\n";
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert_eq!(sip.call_id(), Some("orphan-fold@example.com"));
+        assert!(
+            !sip.headers
+                .iter()
+                .any(|h| h.value.contains("orphan-continuation"))
+        );
+    }
+
+    #[test]
+    fn trailing_continuation_without_crlf_still_folds() {
+        // Message truncated mid-fold: the SP-prefixed remainder (no trailing
+        // CRLF) must still fold into the pending header, with parse_error set.
+        let msg = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+Call-ID: trunc-fold@example.com\r\n\
+Subject: first-part\r\n continued-tail";
+        let sip = parse_sip(
+            msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(sip.parse_error, "truncated message must set parse_error");
+        let subject = sip
+            .headers
+            .iter()
+            .find(|h| h.name == "Subject")
+            .expect("subject parsed");
+        assert_eq!(subject.value, "first-part continued-tail");
     }
 
     #[test]
