@@ -153,6 +153,32 @@ fn sdp_seed() -> Vec<u8> {
         .to_vec()
 }
 
+/// SIP message using compact header forms, including the IANA extension
+/// forms (`r`=Refer-To, `y`=Identity) — so mutation fuzzing exercises the
+/// compact-expansion table rather than only long-form seeds.
+fn sip_compact_seed() -> Vec<u8> {
+    b"REFER sip:bob@example.com SIP/2.0\r\n\
+      v: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1\r\n\
+      f: <sip:alice@example.com>;tag=1\r\n\
+      t: <sip:bob@example.com>\r\n\
+      i: abc@10.0.0.1\r\n\
+      CSeq: 1 REFER\r\n\
+      r: <sip:target@example.com>\r\n\
+      y: dummy.jwt.value\r\n\
+      l: 0\r\n\r\n"
+        .to_vec()
+}
+
+/// SDP offering audio AND video (multiple `m=` lines) so mutation fuzzing
+/// walks the multi-media path, not just single-stream.
+fn sdp_multi_media_seed() -> Vec<u8> {
+    b"v=0\r\no=alice 1 1 IN IP4 10.0.0.1\r\ns=call\r\n\
+      c=IN IP4 10.0.0.1\r\nt=0 0\r\n\
+      m=audio 4000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n\
+      m=video 4002 RTP/AVP 96\r\na=rtpmap:96 H264/90000\r\n"
+        .to_vec()
+}
+
 fn rtp_seed() -> Vec<u8> {
     // V=2, PT=0, has CSRC + extension bits exercised by mutation
     vec![
@@ -197,7 +223,8 @@ fn fuzz_sip_parser_no_panic() {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
     let seed = sip_seed();
-    let seeds: &[&[u8]] = &[&seed];
+    let compact = sip_compact_seed();
+    let seeds: &[&[u8]] = &[&seed, &compact];
     pound("sip_parser", seeds, ITERS, |d| {
         let _ = sipnab::sip::parser::parse_sip(
             d,
@@ -214,7 +241,8 @@ fn fuzz_sip_parser_no_panic() {
 #[test]
 fn fuzz_sdp_parser_no_panic() {
     let seed = sdp_seed();
-    let seeds: &[&[u8]] = &[&seed];
+    let multi = sdp_multi_media_seed();
+    let seeds: &[&[u8]] = &[&seed, &multi];
     pound("sdp_parser", seeds, ITERS, |d| {
         let _ = sipnab::sip::sdp::parse_sdp(d);
     });
