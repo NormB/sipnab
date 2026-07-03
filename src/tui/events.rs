@@ -1652,7 +1652,7 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
             continue;
         }
 
-        if is_rtcp_offline(&parsed.payload, parsed.dst_port) {
+        if crate::pipeline::is_rtcp_packet(&parsed.payload, parsed.dst_port) {
             let rtcp_packets = crate::rtp::rtcp::parse_rtcp(&parsed.payload);
             if !rtcp_packets.is_empty() {
                 app.stream_store.write().process_rtcp(&rtcp_packets);
@@ -1726,23 +1726,6 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     format!(
         "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix}{names_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename}){secrets_suffix}"
     )
-}
-
-/// Offline RTCP heuristic — matches the online-capture check in `main.rs`:
-/// odd dst port, version=2, and payload type in the 200-204 range.
-pub(super) fn is_rtcp_offline(data: &[u8], dst_port: u16) -> bool {
-    if data.len() < 8 {
-        return false;
-    }
-    if dst_port.is_multiple_of(2) {
-        return false;
-    }
-    let version = (data[0] >> 6) & 0x03;
-    if version != 2 {
-        return false;
-    }
-    let pt = data[1];
-    (200..=204).contains(&pt)
 }
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
@@ -3621,17 +3604,20 @@ mod tests {
     }
 
     #[test]
-    fn is_rtcp_offline_checks() {
+    fn offline_rtcp_detection_uses_the_pipeline_check() {
+        // The offline TUI load path routes RTCP through the same
+        // `pipeline::is_rtcp_packet` as live capture (no private copy).
+        use crate::pipeline::is_rtcp_packet;
         // even port -> false
-        assert!(!is_rtcp_offline(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5000));
+        assert!(!is_rtcp_packet(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5000));
         // odd port, version 2, pt 200 -> true
-        assert!(is_rtcp_offline(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5001));
+        assert!(is_rtcp_packet(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5001));
         // too short -> false
-        assert!(!is_rtcp_offline(&[0x80, 200], 5001));
+        assert!(!is_rtcp_packet(&[0x80, 200], 5001));
         // wrong version -> false
-        assert!(!is_rtcp_offline(&[0x00, 200, 0, 0, 0, 0, 0, 0], 5001));
+        assert!(!is_rtcp_packet(&[0x00, 200, 0, 0, 0, 0, 0, 0], 5001));
         // pt out of range -> false
-        assert!(!is_rtcp_offline(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
+        assert!(!is_rtcp_packet(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
     }
 
     #[test]
