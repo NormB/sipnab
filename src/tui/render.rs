@@ -1820,7 +1820,7 @@ pub(super) fn render_statistics(
 
 /// Render a side-by-side diff of two SIP messages. Returns the content
 /// height in rows so the caller can clamp its stored scroll offset.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub(super) fn render_message_diff(
     frame: &mut ratatui::Frame,
     area: Rect,

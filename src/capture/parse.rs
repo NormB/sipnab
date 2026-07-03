@@ -15,39 +15,10 @@ use super::packet::Packet;
 
 // ── Public types ──────────────────────────────────────────────────────
 
-/// Transport-layer protocol identifier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum TransportProto {
-    /// User Datagram Protocol.
-    Udp,
-    /// Transmission Control Protocol.
-    Tcp,
-    /// Stream Control Transmission Protocol (stub for future use).
-    Sctp,
-    /// TLS-encrypted TCP.
-    Tls,
-    /// WebSocket (SIP over WS).
-    Ws,
-}
-
-impl TransportProto {
-    /// Return the canonical string representation without allocating.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Udp => "UDP",
-            Self::Tcp => "TCP",
-            Self::Sctp => "SCTP",
-            Self::Tls => "TLS",
-            Self::Ws => "WS",
-        }
-    }
-}
-
-impl std::fmt::Display for TransportProto {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+// The transport vocabulary type lives in the dependency-free `crate::net`
+// leaf module (sip/rtp/security need it without depending on capture);
+// re-exported here for backward compatibility.
+pub use crate::net::TransportProto;
 
 /// TCP header flags relevant for reassembly and connection tracking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

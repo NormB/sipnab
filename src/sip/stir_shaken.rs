@@ -193,7 +193,7 @@ impl SipMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
 
     /// Build a minimal SHAKEN JWT with the given claims.
     ///

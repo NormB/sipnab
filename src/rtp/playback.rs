@@ -403,10 +403,9 @@ mod tests {
         // explicit-path candidate to fail. The remaining fallbacks are highly
         // unlikely to find a real plugin in the test environment, so this
         // exercises the graceful-fallback error path (no panic/abort).
-        //
+        let prev = std::env::var_os("SIPNAB_AUDIO_PLUGIN");
         // SAFETY: set_var/remove_var are unsafe in edition 2024; tests are
         // single-threaded here and we restore the previous value.
-        let prev = std::env::var_os("SIPNAB_AUDIO_PLUGIN");
         unsafe {
             std::env::set_var(
                 "SIPNAB_AUDIO_PLUGIN",
@@ -416,6 +415,7 @@ mod tests {
 
         let result = AudioPlayer::new();
 
+        // SAFETY: same as above — single-threaded test restoring the prior value.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("SIPNAB_AUDIO_PLUGIN", v),

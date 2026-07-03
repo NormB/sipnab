@@ -5,6 +5,10 @@
 //! together: capture → SIP parsing → dialog tracking → RTP tracking →
 //! filtering → output.
 
+// Same production-path panic policy as the library (tests exempt via
+// clippy.toml).
+#![warn(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1991,7 +1995,7 @@ fn process_parsed_packet(
                     let prev_state = sip_msg
                         .call_id()
                         .and_then(|id| dialog_store.get(id))
-                        .map(|d| d.state().to_string());
+                        .map(|d| d.state().clone());
 
                     dialog_store.process_message(sip_msg.clone());
 
@@ -2007,11 +2011,9 @@ fn process_parsed_packet(
                     // Check if state changed, fire event
                     if let Some(call_id) = sip_msg.call_id()
                         && let Some(dialog) = dialog_store.get(call_id)
+                        && prev_state.as_ref() != Some(dialog.state())
                     {
-                        let new_state = dialog.state().to_string();
-                        if prev_state.as_deref() != Some(&new_state) {
-                            event_exec.fire_dialog_event(dialog);
-                        }
+                        event_exec.fire_dialog_event(dialog);
                     }
 
                     // Link SDP media endpoints to RTP streams

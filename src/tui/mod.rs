@@ -155,10 +155,10 @@ impl ColorMode {
 /// device URIs), so the default falls back to the host instead of a bare `-`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FromToMode {
-    /// Username if present, else host[:port] (else `-`).
+    /// Username if present, else `host[:port]` (else `-`).
     #[default]
     Default,
-    /// Host[:port] only (else `-`).
+    /// `Host[:port]` only (else `-`).
     HostPort,
     /// Username only (else `-`) — the legacy behavior.
     User,
@@ -1192,7 +1192,7 @@ pub fn run_tui(
 ///
 /// When `paused_flag` is `Some`, the flag is shared with the processing
 /// thread so that toggling pause in the TUI also pauses packet processing.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn run_tui_with_pause(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,

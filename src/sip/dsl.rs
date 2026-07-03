@@ -831,7 +831,7 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
 
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::dialog::DialogState;

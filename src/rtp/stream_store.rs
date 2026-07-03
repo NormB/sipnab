@@ -229,7 +229,7 @@ impl StreamStore {
 
     /// Link streams to a SIP dialog and enrich codec/clock_rate from SDP.
     ///
-    /// Like [`link_to_dialog`], but also propagates codec name and clock rate
+    /// Like [`Self::link_to_dialog`], but also propagates codec name and clock rate
     /// from SDP `a=rtpmap` entries to streams with dynamic payload types.
     /// This enables audio capture and export for codecs like Opus that use
     /// dynamic PT numbers (96-127).
@@ -527,7 +527,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
     use crate::rtp::parser::RtpHeader;
 
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {

@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 
 use super::method::SipMethod;
 use super::sdp::{self, SdpSession};
-use crate::capture::parse::TransportProto;
+use crate::net::TransportProto;
 
 /// A single SIP header: name (normalized to long form) and value.
 #[derive(Debug, Clone, PartialEq, Eq)]

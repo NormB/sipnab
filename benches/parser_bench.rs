@@ -1,19 +1,25 @@
+//! Criterion benchmarks for the SIP/RTP/SDP/DSL parsers and packet decap.
+
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 // ── SIP parser benchmarks ──────────────────────────────────────────
 
 fn bench_sip_parser(c: &mut Criterion) {
-    let invite = build_sip_invite();
-    let ok_200 = build_sip_200ok();
+    // `parse_sip_bytes` is the function the capture pipeline actually calls;
+    // `parse_sip` adds a Bytes::copy_from_slice the hot path never pays.
+    // Timestamp is hoisted so the bench doesn't measure the clock syscall.
+    let invite: bytes::Bytes = build_sip_invite().into();
+    let ok_200: bytes::Bytes = build_sip_200ok().into();
+    let ts = chrono::Utc::now();
 
     let mut group = c.benchmark_group("sip_parser");
     group.throughput(Throughput::Elements(1));
 
     group.bench_function("parse_invite", |b| {
         b.iter(|| {
-            sipnab::sip::parser::parse_sip(
+            sipnab::sip::parser::parse_sip_bytes(
                 &invite,
-                chrono::Utc::now(),
+                ts,
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                 5060,
@@ -26,9 +32,9 @@ fn bench_sip_parser(c: &mut Criterion) {
 
     group.bench_function("parse_200ok", |b| {
         b.iter(|| {
-            sipnab::sip::parser::parse_sip(
+            sipnab::sip::parser::parse_sip_bytes(
                 &ok_200,
-                chrono::Utc::now(),
+                ts,
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                 std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                 5060,
@@ -48,17 +54,18 @@ fn bench_sip_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("sip_scaling");
 
     // Bench with varying numbers of Via headers to show scaling behavior
+    let ts = chrono::Utc::now();
     for via_count in [1, 5, 10, 20] {
-        let msg = build_sip_with_via_count(via_count);
+        let msg: bytes::Bytes = build_sip_with_via_count(via_count).into();
         group.throughput(Throughput::Elements(1));
         group.bench_with_input(
             BenchmarkId::new("via_headers", via_count),
             &msg,
             |b, msg| {
                 b.iter(|| {
-                    sipnab::sip::parser::parse_sip(
+                    sipnab::sip::parser::parse_sip_bytes(
                         msg,
-                        chrono::Utc::now(),
+                        ts,
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
                         std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
                         5060,

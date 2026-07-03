@@ -567,7 +567,7 @@ mod tests {
 
     /// Build a stream with explicit codec / payload type / timestamp progression
     /// so the asymmetry tests can assemble realistic-looking pairs.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn make_stream_with_pt(
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
@@ -621,7 +621,7 @@ mod tests {
             dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
             src_port: 5060,
             dst_port: 5060,
-            transport: crate::capture::parse::TransportProto::Udp,
+            transport: crate::net::TransportProto::Udp,
             is_request: true,
             method: Some(SipMethod::Invite),
             request_uri: Some("sip:b@10.0.0.2".to_string()),

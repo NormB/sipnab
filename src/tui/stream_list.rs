@@ -213,7 +213,7 @@ pub fn displayed_streams<'a>(
 
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,

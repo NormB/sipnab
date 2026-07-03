@@ -244,12 +244,16 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
         .map_err(|_| anyhow::anyhow!("Username '{}' contains a null byte", username))?;
 
     // Initial scratch-buffer size for the string fields; grow on ERANGE.
+    // SAFETY: `sysconf` takes no pointers and only reads a system constant.
     let mut buf_len: usize = match unsafe { libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) } {
         n if n > 0 => n as usize,
         _ => 16_384,
     };
 
     loop {
+        // SAFETY: `libc::passwd` is a plain-old-data C struct for which
+        // all-zero bytes is a valid (if meaningless) value; `getpwnam_r`
+        // below overwrites it before any field is read.
         let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
         let mut buf = vec![0 as libc::c_char; buf_len];
         let mut result: *mut libc::passwd = std::ptr::null_mut();

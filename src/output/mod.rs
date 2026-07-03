@@ -2,7 +2,7 @@
 //!
 //! This module provides multiple output backends:
 //! - [`cli_print`] — sipgrep-style colored terminal output
-//! - [`hexdump`] — Raw hex+ASCII packet dump
+//! - [`mod@hexdump`] — Raw hex+ASCII packet dump
 //! - [`json`] — JSON/NDJSON structured output
 //! - [`dialog_report`] — Tabular dialog summary report
 //! - [`call_report`] — Comprehensive single-call diagnosis report

@@ -660,7 +660,7 @@ pub fn render_call_flow_direct_or_empty(
 /// `focused` highlights the border when the detail pane holds keyboard focus
 /// (Tab toggles it). Returns the number of content lines so the caller can
 /// clamp the scroll offset to the message length.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub fn render_message_detail(
     frame: &mut Frame,
     area: Rect,

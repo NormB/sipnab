@@ -63,6 +63,8 @@ fn wait_readable(
         events: libc::POLLIN,
         revents: 0,
     };
+    // SAFETY: `pfd` is a valid, owned pollfd for the duration of the call
+    // and the count (1) matches; `poll` only writes `revents`.
     let ret = unsafe {
         libc::poll(
             &mut pfd as *mut libc::pollfd,
@@ -344,12 +346,14 @@ mod tests {
         /// (read_fd, write_fd)
         fn make_pipe() -> (RawFd, RawFd) {
             let mut fds = [0 as libc::c_int; 2];
+            // SAFETY: `fds` is a valid 2-element array; `pipe` writes both.
             let r = unsafe { libc::pipe(fds.as_mut_ptr()) };
             assert_eq!(r, 0, "pipe(2) failed: {}", std::io::Error::last_os_error());
             (fds[0], fds[1])
         }
 
         fn close(fd: RawFd) {
+            // SAFETY: `fd` came from `make_pipe` and is closed exactly once.
             unsafe { libc::close(fd) };
         }
 
@@ -377,6 +381,7 @@ mod tests {
         #[test]
         fn returns_readable_when_data_present() {
             let (r, w) = make_pipe();
+            // SAFETY: `w` is a live pipe fd and the buffer is 1 valid byte.
             let n = unsafe { libc::write(w, b"x".as_ptr() as *const libc::c_void, 1) };
             assert_eq!(n, 1, "write failed");
             let start = Instant::now();

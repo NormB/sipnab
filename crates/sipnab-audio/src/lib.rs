@@ -30,7 +30,7 @@ struct AudioHandle {
 /// Open the default audio output device and create a player.
 ///
 /// Returns an opaque boxed handle pointer, or null on failure (no device,
-/// libasound errors, etc.). The device open is wrapped in [`StderrSilencer`]
+/// libasound errors, etc.). The device open is wrapped in `StderrSilencer`
 /// so libasound's C-level error chatter does not corrupt the caller's TUI.
 ///
 /// # Safety

@@ -5,14 +5,14 @@
 //! looking for patterns: consistent SSRC, incrementing sequence numbers,
 //! valid RTP version, and even destination ports.
 //!
-//! A candidate is promoted after [`CONSECUTIVE_THRESHOLD`] consecutive
+//! A candidate is promoted after `CONSECUTIVE_THRESHOLD` consecutive
 //! packets pass validation.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 
 use crate::capture::ParsedPacket;
-use crate::capture::parse::TransportProto;
+use crate::net::TransportProto;
 
 use super::parser::{RtpHeader, parse_rtp_header};
 
@@ -133,7 +133,7 @@ mod tests {
     use chrono::DateTime;
 
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
 
     /// Build a ParsedPacket with a valid RTP payload.
     fn make_rtp_parsed(seq: u16, ssrc: u32, pt: u8, dst_port: u16) -> ParsedPacket {

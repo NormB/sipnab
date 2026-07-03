@@ -1,0 +1,6 @@
+# unwrap/expect/panic are idiomatic in test code; the unwrap_used /
+# expect_used lints (crate attributes in lib.rs and main.rs) only guard
+# production paths.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
