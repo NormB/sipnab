@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-07-03
+
 ### Fixed — multi-stream (audio + video) SDP timeline
 
 Calls offering more than one media stream (e.g. `m=audio` **and**
