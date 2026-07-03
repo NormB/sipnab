@@ -112,6 +112,10 @@ pub fn prepare_messages(
     let mut prev_ts = first_ts;
 
     for (mi, msg) in messages.iter().enumerate() {
+        // Parse this message's SDP once per iteration — the SDP-info line, the
+        // early-media probe, and both codec lookups below all need it, and
+        // `SipMessage::sdp()` re-parses the body on every call.
+        let msg_sdp = msg.sdp();
         let (timestamp, timestamp_style) = match ts_mode {
             TimestampMode::Absolute => {
                 let ts_str = format!(
@@ -209,12 +213,12 @@ pub fn prepare_messages(
 
         // SDP info lines
         if sdp_mode != SdpDisplayMode::None
-            && let Some(ss) = msg.sdp()
+            && let Some(ss) = msg_sdp.as_ref()
         {
             let ind = " ".repeat(ts_width + 1);
             match sdp_mode {
                 SdpDisplayMode::Summary => {
-                    let c = format_sdp_codecs(&ss);
+                    let c = format_sdp_codecs(ss);
                     if !c.is_empty() {
                         extra_lines.push((
                             format!("{ind} Codecs: {c}"),
@@ -256,12 +260,12 @@ pub fn prepare_messages(
             let is_invite_early_media = !msg.is_request
                 && msg.status_code.is_some_and(|s| (100..200).contains(&s))
                 && msg.cseq().is_some_and(|(_, method)| method == "INVITE")
-                && msg.sdp().is_some()
+                && msg_sdp.is_some()
                 && last_bar_cseq != cseq_num;
             if is_invite_early_media {
                 in_call = true;
                 let codec = segment_codec_at(rtp_segments, msg.timestamp)
-                    .or_else(|| msg.sdp().and_then(|ss| first_sdp_codec(&ss)));
+                    .or_else(|| msg_sdp.as_ref().and_then(first_sdp_codec));
                 last_bar_cseq = cseq_num;
                 deferred_rtp_bar = Some((msg.timestamp, rtp_flow_label(codec.as_deref())));
             }
@@ -272,7 +276,7 @@ pub fn prepare_messages(
                 && msg.status_code == Some(200)
                 && msg.cseq().is_some_and(|(_, method)| method == "INVITE");
             if is_invite_200 {
-                pending_answer_codec = msg.sdp().and_then(|ss| first_sdp_codec(&ss));
+                pending_answer_codec = msg_sdp.as_ref().and_then(first_sdp_codec);
             }
 
             // The ACK completes an INVITE transaction and (re)opens the media
