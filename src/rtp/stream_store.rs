@@ -205,6 +205,14 @@ impl StreamStore {
         }
     }
 
+    /// All streams linked (via SDP or heuristics) to the given dialog's
+    /// Call-ID. The one sanctioned way to answer "which streams belong to
+    /// this call" — callers used to hand-roll this filter at ten sites.
+    pub fn streams_for<'a>(&'a self, call_id: &'a str) -> impl Iterator<Item = &'a RtpStream> {
+        self.iter()
+            .filter(move |s| s.associated_dialog.as_deref() == Some(call_id))
+    }
+
     /// Link streams to a SIP dialog by matching the SDP media endpoint.
     ///
     /// When SDP is parsed from a SIP message, call this with the negotiated
@@ -546,6 +554,29 @@ mod tests {
             more_fragments: false,
             ip_protocol: 17,
         }
+    }
+
+    #[test]
+    fn streams_for_returns_only_linked_streams() {
+        let mut store = StreamStore::new(16);
+        // Two streams on different endpoints.
+        store.process_rtp(
+            &make_parsed(20000, 30000, 160),
+            &make_rtp_header(0x1111, 1),
+            DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+        );
+        store.process_rtp(
+            &make_parsed(22000, 32000, 160),
+            &make_rtp_header(0x2222, 1),
+            DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
+        );
+        // Link only the first to a dialog.
+        store.link_to_dialog(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000, "call-a");
+
+        let linked: Vec<_> = store.streams_for("call-a").collect();
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].key.ssrc, 0x1111);
+        assert!(store.streams_for("call-b").next().is_none());
     }
 
     fn make_rtp_header(ssrc: u32, seq: u16) -> RtpHeader {

@@ -1465,8 +1465,7 @@ impl App {
             return Vec::new();
         };
         let mut segs: Vec<call_flow::RtpCodecSegment> = store
-            .iter()
-            .filter(|s| s.associated_dialog.as_deref() == Some(call_id))
+            .streams_for(call_id)
             .filter_map(|s| {
                 s.codec.clone().map(|codec| call_flow::RtpCodecSegment {
                     codec,

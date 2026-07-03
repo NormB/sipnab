@@ -449,10 +449,7 @@ async fn get_dialog(
     let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
 
     let ss = state.stream_store.read();
-    let streams: Vec<&crate::rtp::stream::RtpStream> = ss
-        .iter()
-        .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
-        .collect();
+    let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
     let mut diagnosis = diagnose_media(&streams, None);
     diagnose_asymmetry(
@@ -483,10 +480,7 @@ async fn get_dialog_report(
     let dialog = ds.get(&call_id).ok_or(StatusCode::NOT_FOUND)?;
 
     let ss = state.stream_store.read();
-    let streams: Vec<&crate::rtp::stream::RtpStream> = ss
-        .iter()
-        .filter(|s| s.associated_dialog.as_deref() == Some(call_id.as_str()))
-        .collect();
+    let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
 
     let mut diagnosis = diagnose_media(&streams, None);
     diagnose_asymmetry(
@@ -712,52 +706,21 @@ async fn get_metrics(
 // ── Helper functions ────────────────────────────────────────────────
 
 /// Build a JSON summary of a dialog (lighter than the full dialog_to_json).
+///
+/// Projects through the canonical [`crate::output::model::DialogSummary`]
+/// so this endpoint cannot drift from the CLI/MCP surfaces. WS3 wire
+/// change: the `from`/`to` keys became `from_user`/`to_user` (they always
+/// carried the URI user parts).
 fn dialog_summary(d: &crate::sip::dialog::SipDialog) -> Value {
-    let duration_sec = if d.messages.len() >= 2 {
-        (d.updated_at - d.created_at).num_milliseconds() as f64 / 1000.0
-    } else {
-        0.0
-    };
-
-    json!({
-        "call_id": d.call_id,
-        "from": d.from_user,
-        "to": d.to_user,
-        "state": d.state().to_string(),
-        "method": d.method.as_str(),
-        "duration_sec": duration_sec,
-        "msg_count": d.messages.len(),
-        "timing": {
-            "pdd_ms": d.timing.pdd_ms(),
-            "setup_ms": d.timing.setup_ms(),
-            "retransmits": d.timing.total_retransmits(),
-        },
-        "created_at": d.created_at.to_rfc3339(),
-        "updated_at": d.updated_at.to_rfc3339(),
-    })
+    serde_json::to_value(crate::output::model::DialogSummary::from(d))
+        .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
-/// Build a JSON summary of an RTP stream.
+/// Build a JSON summary of an RTP stream via the canonical
+/// [`crate::output::model::StreamSummary`] projection.
 fn stream_summary(s: &crate::rtp::stream::RtpStream) -> Value {
-    let total = s.packet_count + s.lost_packets;
-    let loss_pct = if total > 0 {
-        (s.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    json!({
-        "ssrc": format!("0x{:08x}", s.key.ssrc),
-        "codec": s.codec,
-        "src": s.key.src.to_string(),
-        "dst": s.key.dst.to_string(),
-        "packets": s.packet_count,
-        "jitter_ms": s.jitter,
-        "loss_pct": loss_pct,
-        "orphaned": s.orphaned,
-        "associated_dialog": s.associated_dialog,
-        "mos": approximate_mos(s),
-    })
+    serde_json::to_value(crate::output::model::StreamSummary::from(s))
+        .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
 /// Approximate MOS score from jitter and loss using the canonical E-model.
@@ -1478,7 +1441,8 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
-        assert_eq!(parsed["dialogs"][0]["from"], "user1");
+        // WS3 canonical key (was "from" before the projection unification).
+        assert_eq!(parsed["dialogs"][0]["from_user"], "user1");
     }
 
     #[tokio::test]

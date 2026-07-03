@@ -358,6 +358,13 @@ line occurs at 10 non-test sites — each duplicating lock-ordering decisions.
   `DialogSummary::from(&SipDialog)`, `StreamSummary::from(&RtpStream)`,
   `CallReportModel` — single constructors, serde-derived, consumed by JSON,
   API, MCP, TUI save, and the text/markdown renderers.
+- **Scope notes from implementation:** a sixth drifted copy exists in
+  `src/wasm.rs` (`get_dialogs` also says `message_count`), but the website
+  JS (`website/static/js/analyze.js`, `analyze.html`) consumes that shape —
+  unifying it needs coordinated website-bundle changes and is deferred
+  (requires moving the model out of the native-gated `output/` to a leaf
+  module first). The `CallReportModel`/text-renderer half is likewise a
+  follow-up; this pass unified the four native summary surfaces.
 - `DialogStore::streams_for(&self, call_id) -> ...` and a
   `build_call_report(call_id) -> CallReportModel` that owns the lock
   choreography (today MCP hand-rolls `drop(ss); drop(ds)` at

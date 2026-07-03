@@ -11,9 +11,9 @@
 //!
 //! Every tool handler acquires its parking_lot guards, snapshots/clones
 //! the data it needs into owned types, **drops the guard explicitly**,
-//! and only then awaits or builds the response. The module-level
-//! `#![deny(clippy::await_holding_lock)]` (in `mod.rs`) catches violations
-//! mechanically.
+//! and only then awaits or builds the response. The workspace-wide
+//! `clippy::await_holding_lock = "deny"` (Cargo.toml [workspace.lints])
+//! catches violations mechanically.
 
 use std::sync::Arc;
 
@@ -29,7 +29,6 @@ use crate::output::{ReportFormat, generate_call_report};
 use crate::rtp::diagnosis::{AsymmetryThresholds, diagnose_asymmetry, diagnose_media};
 use crate::rtp::stream_store::StreamStore;
 use crate::security::alerting::AlertEngine;
-use crate::sip::dialog::SipDialog;
 use crate::sip::dialog_store::DialogStore;
 use crate::sip::dsl::{FilterExpr, expand_alias};
 
@@ -241,42 +240,11 @@ pub struct FindingJson {
 
 // ── Compact summary returned by list_dialogs / find_problems ────────
 
-/// Minimal per-dialog row — keeps response size predictable.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct DialogSummary {
-    /// Call-ID identifying the dialog.
-    pub call_id: String,
-    /// Current dialog state (e.g. "Confirmed", "Terminated").
-    pub state: String,
-    /// SIP method that initiated the dialog.
-    pub method: String,
-    /// User portion of the From URI, if present.
-    pub from_user: Option<String>,
-    /// User portion of the To URI, if present.
-    pub to_user: Option<String>,
-    /// RFC 3339 timestamp of the first message.
-    pub created_at: String,
-    /// RFC 3339 timestamp of the most recent message.
-    pub updated_at: String,
-    /// Number of SIP messages in the dialog.
-    pub message_count: usize,
-}
-
-impl From<&SipDialog> for DialogSummary {
-    fn from(d: &SipDialog) -> Self {
-        Self {
-            call_id: d.call_id.clone(),
-            state: d.state().to_string(),
-            method: format!("{:?}", d.method),
-            from_user: d.from_user.clone(),
-            to_user: d.to_user.clone(),
-            created_at: d.created_at.to_rfc3339(),
-            updated_at: d.updated_at.to_rfc3339(),
-            message_count: d.messages.len(),
-        }
-    }
-}
+/// The canonical compact per-dialog row (see [`crate::output::model`]):
+/// field names and value formats are shared with the CLI/NDJSON and REST
+/// surfaces, so MCP cannot drift on the wire again (`message_count` vs
+/// `msg_count`, Debug-formatted methods).
+pub use crate::output::model::DialogSummary;
 
 // ── Tool implementations ────────────────────────────────────────────
 
@@ -322,10 +290,8 @@ impl SipnabMcp {
             let mut out = Vec::with_capacity(limit.min(HARD_LIMIT));
             for d in ds.iter() {
                 if let Some(ref expr) = compiled_filter {
-                    let streams: Vec<&crate::rtp::stream::RtpStream> = ss
-                        .iter()
-                        .filter(|s| s.associated_dialog.as_deref() == Some(d.call_id.as_str()))
-                        .collect();
+                    let streams: Vec<&crate::rtp::stream::RtpStream> =
+                        ss.streams_for(&d.call_id).collect();
                     if !expr.matches_dialog(d, &streams) {
                         continue;
                     }
@@ -386,10 +352,8 @@ impl SipnabMcp {
                 }
             };
             let ss = self.stream_store.read();
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss
-                .iter()
-                .filter(|s| s.associated_dialog.as_deref() == Some(params.call_id.as_str()))
-                .collect();
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&params.call_id).collect();
 
             let mut diag = diagnose_media(&dialog_streams, None);
             diagnose_asymmetry(
@@ -455,10 +419,8 @@ impl SipnabMcp {
             let ss = self.stream_store.read();
             let mut out = Vec::with_capacity(limit.min(HARD_LIMIT));
             for d in ds.iter() {
-                let streams: Vec<&crate::rtp::stream::RtpStream> = ss
-                    .iter()
-                    .filter(|s| s.associated_dialog.as_deref() == Some(d.call_id.as_str()))
-                    .collect();
+                let streams: Vec<&crate::rtp::stream::RtpStream> =
+                    ss.streams_for(&d.call_id).collect();
                 if compiled.iter().any(|expr| expr.matches_dialog(d, &streams)) {
                     out.push(DialogSummary::from(d));
                     if out.len() >= limit {
@@ -600,10 +562,8 @@ impl SipnabMcp {
                 )
             })?;
             let ss = self.stream_store.read();
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss
-                .iter()
-                .filter(|s| s.associated_dialog.as_deref() == Some(params.call_id.as_str()))
-                .collect();
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&params.call_id).collect();
             let mut diag = diagnose_media(&dialog_streams, None);
             diagnose_asymmetry(
                 &mut diag,
@@ -639,10 +599,8 @@ impl SipnabMcp {
                 )
             })?;
             let ss = self.stream_store.read();
-            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> = ss
-                .iter()
-                .filter(|s| s.associated_dialog.as_deref() == Some(params.call_id.as_str()))
-                .collect();
+            let dialog_streams: Vec<&crate::rtp::stream::RtpStream> =
+                ss.streams_for(&params.call_id).collect();
             let stream_jsons: Vec<serde_json::Value> = dialog_streams
                 .iter()
                 .map(|s| {

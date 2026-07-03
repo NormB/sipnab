@@ -237,28 +237,17 @@ pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
                 })
                 .collect();
 
-            let duration_ms = d.timing.bye_sent.and_then(|bye| {
-                d.timing.answered_at.map(|ans| (bye - ans).num_milliseconds())
-            });
-            let timing = serde_json::json!({
-                "pdd_ms": d.timing.pdd_ms(),
-                "setup_ms": d.timing.setup_ms(),
-                "duration_ms": duration_ms,
-            });
-
-            serde_json::json!({
-                "call_id": d.call_id,
-                "method": d.method.as_str(),
-                "state": format_dialog_state(d.state()),
-                "from_user": d.from_user,
-                "to_user": d.to_user,
-                "src_addr": d.src_addr.to_string(),
-                "dst_addr": d.dst_addr.to_string(),
-                "created_at": d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-                "message_count": d.messages.len(),
-                "timing": timing,
-                "messages": messages,
-            })
+            // Canonical summary (WS3: `msg_count`, not `message_count`) plus
+            // the save-specific extras (addresses and the full message list).
+            let mut obj =
+                match serde_json::to_value(crate::output::model::DialogSummary::from(*d)) {
+                    Ok(serde_json::Value::Object(map)) => map,
+                    _ => serde_json::Map::new(),
+                };
+            obj.insert("src_addr".into(), d.src_addr.to_string().into());
+            obj.insert("dst_addr".into(), d.dst_addr.to_string().into());
+            obj.insert("messages".into(), serde_json::Value::Array(messages));
+            serde_json::Value::Object(obj)
         })
         .collect();
 
@@ -515,10 +504,7 @@ pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
 
     // Collect streams: filter by dialog if we have one, otherwise use all
     let streams: Vec<&crate::rtp::stream::RtpStream> = if let Some(ref cid) = call_id {
-        stream_store
-            .iter()
-            .filter(|s| s.associated_dialog.as_deref() == Some(cid.as_str()))
-            .collect()
+        stream_store.streams_for(cid).collect()
     } else {
         stream_store.iter().collect()
     };
@@ -669,42 +655,27 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
     let json_streams: Vec<serde_json::Value> = streams
         .iter()
         .map(|s| {
-            let total = s.packet_count + s.lost_packets;
-            let loss_pct = if total > 0 {
-                (s.lost_packets as f64 / total as f64) * 100.0
-            } else {
-                0.0
-            };
-
             let duration_secs = s
                 .last_seen
                 .signed_duration_since(s.first_seen)
                 .num_milliseconds() as f64
                 / 1000.0;
 
-            // Simplified E-model R-factor → MOS estimate
-            // R = 93.2 - loss% * 2.5 - jitter_ms * 0.1
-            let r_factor = (93.2 - loss_pct * 2.5 - s.jitter * 0.1).clamp(0.0, 100.0);
-            let mos = if r_factor < 6.5 {
-                1.0
-            } else {
-                1.0 + 0.035 * r_factor + r_factor * (r_factor - 60.0) * (100.0 - r_factor) * 7e-6
+            // Canonical summary (WS3) — MOS comes from the single E-model in
+            // rtp::quality (this path used to carry its own divergent copy) —
+            // plus the save-specific media extras.
+            let mut obj = match serde_json::to_value(crate::output::model::StreamSummary::from(*s))
+            {
+                Ok(serde_json::Value::Object(map)) => map,
+                _ => serde_json::Map::new(),
             };
-            let mos = (mos * 10.0).round() / 10.0; // Round to 1 decimal
-
-            serde_json::json!({
-                "ssrc": format!("0x{:08x}", s.key.ssrc),
-                "src": s.key.src.to_string(),
-                "dst": s.key.dst.to_string(),
-                "codec": s.codec.as_deref().unwrap_or("unknown"),
-                "packets": s.packet_count,
-                "jitter_ms": (s.jitter * 10.0).round() / 10.0,
-                "loss_pct": (loss_pct * 10.0).round() / 10.0,
-                "mos": mos,
-                "duration_secs": (duration_secs * 10.0).round() / 10.0,
-                "cn_frames": s.cn_frames,
-                "silence_periods": s.silence_periods.len(),
-            })
+            obj.insert(
+                "duration_secs".into(),
+                ((duration_secs * 10.0).round() / 10.0).into(),
+            );
+            obj.insert("cn_frames".into(), s.cn_frames.into());
+            obj.insert("silence_periods".into(), s.silence_periods.len().into());
+            serde_json::Value::Object(obj)
         })
         .collect();
 
