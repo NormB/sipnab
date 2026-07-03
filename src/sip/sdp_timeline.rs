@@ -209,7 +209,7 @@ fn detect_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};

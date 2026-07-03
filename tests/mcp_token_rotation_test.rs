@@ -92,6 +92,7 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
                 return Some((child, addr.trim().to_string()));
             }
             if line.contains("refuses to start") {
+                // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
                 unsafe {
                     libc::kill(child.id() as i32, libc::SIGTERM);
                 }
@@ -102,6 +103,7 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
             return None;
         }
     }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
@@ -110,6 +112,7 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
 }
 
 fn shutdown(mut child: std::process::Child) {
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }

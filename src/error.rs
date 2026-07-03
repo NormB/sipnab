@@ -28,7 +28,7 @@ pub enum Error {
     /// A config file is not valid TOML (or has invalid key types).
     #[error("invalid config {path}: {reason}")]
     ConfigParse {
-        /// The file that failed to parse ("<inline>" for string input).
+        /// The file that failed to parse (`"<inline>"` for string input).
         path: String,
         /// The TOML error text.
         reason: String,

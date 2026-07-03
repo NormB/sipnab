@@ -131,17 +131,27 @@ fn reconstruct(
     {
         *sip += 1;
         if !cfg.no_dialog {
-            ds.process_message(msg.clone());
-            if let Some(sdp) = msg.sdp()
-                && let Some(call_id) = msg.call_id()
-            {
-                for media in &sdp.media {
-                    if let Some(addr) = crate::sip::sdp::effective_address(media, &sdp)
-                        && let Ok(ip) = addr.parse::<std::net::IpAddr>()
-                    {
-                        ss.link_to_dialog_with_sdp(ip, media.port, call_id, media);
-                    }
-                }
+            // Extract SDP link info first so the store can take the message
+            // by move — cloning a SipMessage deep-copies every header String
+            // (same ordering as pipeline::process_packet).
+            let sdp_links: Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)> =
+                if let Some(sdp) = msg.sdp()
+                    && let Some(call_id) = msg.call_id()
+                {
+                    sdp.media
+                        .iter()
+                        .filter_map(|media| {
+                            crate::sip::sdp::effective_address(media, &sdp)
+                                .and_then(|a| a.parse::<std::net::IpAddr>().ok())
+                                .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+            ds.process_message(msg);
+            for (ip, port, call_id, media) in &sdp_links {
+                ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
             }
         }
     }
@@ -159,7 +169,7 @@ fn reconstruct(
 /// stream↔dialog association is resolved globally.
 ///
 /// Returns the merged stores for report generation. Reconstruction only — see
-/// [`reconstruct`]; advanced features stay on the single-threaded path.
+/// `reconstruct`; advanced features stay on the single-threaded path.
 pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     use crate::capture::packet::Packet;
     use crossbeam_channel::bounded;

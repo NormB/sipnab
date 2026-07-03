@@ -157,7 +157,6 @@ impl PcapWriter {
     /// `interface` name in the pcapng Interface Description Block so the export
     /// is self-describing (SNB-0001). Pass the capture device for live capture
     /// or the input source for replay; `None` (or empty) records no name.
-    #[allow(clippy::too_many_arguments)]
     pub fn with_interface(
         path: &Path,
         link_type: i32,
@@ -988,7 +987,7 @@ mod tests {
 
         /// Read back the SHB UserApplication/OS and the first IDB's
         /// IfName/IfDescription/IfOs options (owned), for metadata assertions.
-        #[allow(clippy::type_complexity)]
+        #[expect(clippy::type_complexity)]
         fn read_export_metadata(
             path: &Path,
         ) -> (

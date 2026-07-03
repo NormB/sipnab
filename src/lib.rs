@@ -19,8 +19,11 @@
 //! }
 //! ```
 
-// Every public item must be documented; keeps the library surface usable.
-#![warn(missing_docs)]
+// missing_docs comes from [workspace.lints]. unwrap/expect are banned on
+// library production paths (tests are exempt via clippy.toml); this is a
+// crate attribute rather than a workspace lint so integration-test and
+// bench crates keep idiomatic unwraps.
+#![warn(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(any(feature = "api", feature = "mcp"))]
 pub mod auth;
 pub mod capture;
@@ -31,6 +34,7 @@ pub mod config;
 pub mod crypto;
 pub mod error;
 pub mod names;
+pub mod net;
 #[cfg(feature = "native")]
 pub mod pipeline;
 pub use error::Error;

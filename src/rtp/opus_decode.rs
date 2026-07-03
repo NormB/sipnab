@@ -48,7 +48,7 @@ impl OpusStreamDecoder {
     /// for 20ms frames).
     ///
     /// The decoder maintains inter-frame state, so frames should be fed in
-    /// RTP sequence order. For lost frames, call [`decode_lost`] instead.
+    /// RTP sequence order. For lost frames, call [`Self::decode_lost`] instead.
     pub fn decode_frame(&mut self, opus_data: &[u8]) -> Result<Vec<i16>> {
         if opus_data.is_empty() {
             bail!("Empty Opus payload");

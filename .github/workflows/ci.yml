@@ -59,10 +59,20 @@ jobs:
         run: cargo test --all-features
 
       - name: Clippy
-        run: cargo clippy --all-features -- -D warnings
+        # --all-targets so bench and test-target code is lint-gated too
+        # (previously only the report-only SARIF job covered those).
+        run: cargo clippy --all-features --all-targets -- -D warnings
 
       - name: Format
         run: cargo fmt --check
+
+      - name: Docs
+        # rustdoc-only lints (broken intra-doc links, private-item links)
+        # never fire under build/clippy; this is the only gate that sees them.
+        if: runner.os == 'Linux'
+        run: cargo doc --no-deps --all-features --workspace
+        env:
+          RUSTDOCFLAGS: -D warnings
 
       - name: E2E TUI tests (PTY)
         if: runner.os != 'Windows'

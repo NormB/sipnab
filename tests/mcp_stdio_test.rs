@@ -227,6 +227,7 @@ fn stdio_mcp_round_trips_three_tools() {
     if let Some(stdin) = child.stdin.take() {
         drop(stdin);
     }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
@@ -469,6 +470,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     if let Some(stdin) = child.stdin.take() {
         drop(stdin);
     }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
@@ -601,6 +603,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() {
     if let Some(stdin) = child.stdin.take() {
         drop(stdin);
     }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }

@@ -18,10 +18,8 @@
 //! acquire a read/write guard, snapshot/clone, drop the guard explicitly,
 //! and only then `.await`. Holding a `parking_lot::RwLock` guard across
 //! an `await` produces a three-way deadlock under concurrent tool calls.
-//! The module-level `#![deny(clippy::await_holding_lock)]` enforces this
-//! mechanically.
-
-#![deny(clippy::await_holding_lock)]
+//! The workspace-wide `clippy::await_holding_lock = "deny"` (Cargo.toml
+//! `[workspace.lints]`) enforces this mechanically.
 
 pub mod server;
 pub mod shape;

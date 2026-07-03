@@ -91,10 +91,19 @@ the store. A 12-header message currently pays ~14 extra heap allocations —
 per SIP message, on exactly the offline-crunching paths where throughput
 matters.
 
+**Scope correction (found during implementation):** only the `parallel.rs`
+(`--jobs`) clone is removable as a quick win. In `main.rs` the clone is
+structural: the message is used extensively *after* store insertion (security
+detectors, STIR/SHAKEN, `--calls-only` gate, output dispatch), and the filter
+DSL must be evaluated against *post-update* dialog state, so the insertion
+cannot move last. Removing that clone requires the WS1 hook restructuring
+(or a shared-header representation, WS4.1 step 4) — deferred to WS1.
+
 **TDD:** add the parse→`process_message` throughput bench (WS4.0) first;
 record baseline; land; show delta.
-**Accept:** no `.clone()` on the `process_message` argument in either path;
-bench shows reduced ns/msg; full suite green.
+**Accept:** no `.clone()` on the `process_message` argument in `parallel.rs`;
+bench quantifies the clone-vs-move delta; full suite green; the `main.rs`
+clone is tracked under WS1.
 
 ### WS0.2 CI rustdoc gate + fix the 13 live doc warnings  *(docs)*
 

@@ -1290,6 +1290,10 @@ fn api_key_from_env_var() {
     );
 
     // Clean up
+
+    // SAFETY: remove_var in a test that set the var itself; other tests do not
+
+    // read SIPNAB_API_KEY concurrently.
     unsafe {
         std::env::remove_var("SIPNAB_API_KEY");
     }

@@ -5,6 +5,26 @@ members = [".", "crates/sipnab-audio"]
 exclude = ["fuzz"]
 resolver = "2"
 
+# Single source of lint truth for all workspace crates (both crates set
+# `lints.workspace = true`). Narrow, per-site lint control uses `#[expect]`
+# so stale suppressions self-report. `unwrap_used`/`expect_used` are crate
+# attributes in lib.rs/main.rs instead: a workspace-level entry would also
+# fire in every integration-test and bench crate, where unwraps are idiomatic
+# (unit tests are exempted via clippy.toml's allow-unwrap-in-tests).
+[workspace.lints.rust]
+# Every externally visible item must be documented (bins/tests have no
+# externally visible items, so this effectively scopes to the libraries).
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+# Every `unsafe` block needs an adjacent `// SAFETY:` justification.
+undocumented_unsafe_blocks = "warn"
+# A parking_lot guard held across .await deadlocks the runtime.
+await_holding_lock = "deny"
+
+[lints]
+workspace = true
+
 [package]
 name = "sipnab"
 version = "0.4.18"
@@ -141,6 +161,10 @@ harness = false
 name = "store_bench"
 harness = false
 
+[[bench]]
+name = "pipeline_bench"
+harness = false
+
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
@@ -159,6 +183,16 @@ full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http"]
 name = "sipnab"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
+# The lib has no harness benchmarks; all benchmarks are the criterion
+# [[bench]] targets. NOTE: run benches as `cargo bench --profile profiling`.
+# Plain `cargo bench` cannot build: the cdylib crate-type (required for the
+# wasm build) must embed a panic runtime, so the lib dependency unit inherits
+# profile.release's panic="abort" while bench units are forced to unwind —
+# cargo then compiles shared deps (bytes, chrono) twice with different panic
+# strategies and the two type instances fail to unify (E0308 "multiple
+# different versions of crate"). The profiling profile is release codegen
+# with panic="unwind", which keeps the whole graph on one strategy.
+bench = false
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
@@ -183,8 +217,13 @@ panic = "unwind"
 name = "sipnab"
 path = "src/main.rs"
 required-features = ["native"]
+# Keep bins out of `cargo bench`'s unit graph: they have no benchmarks, and
+# under the bench profile they drag profile.release's panic="abort" into the
+# build (see the [lib] note — benches must run with --profile profiling).
+bench = false
 
 [[bin]]
 name = "gen_fixture"
 path = "tools_gen_fixture.rs"
 required-features = ["native"]
+bench = false

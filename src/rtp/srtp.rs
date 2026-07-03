@@ -561,7 +561,7 @@ const SRTP_AUTH_KEY_LEN: usize = 20;
 /// packets); longer sessions need stateful per-SSRC ROC tracking.
 ///
 /// The session authentication key is derived from the master key and salt via
-/// the RFC 3711 §4.3.1 AES-CM KDF ([`derive_session_key`], label 0x01), so it
+/// the RFC 3711 §4.3.1 AES-CM KDF (`derive_session_key`, label 0x01), so it
 /// interoperates with standard SRTP endpoints when built with the `tls`
 /// feature.
 ///

@@ -6,7 +6,7 @@
 //! keylog (NSS `SSLKEYLOGFILE` `CLIENT_RANDOM` entries) plus the `client_random`
 //! / `server_random` observed in the DTLS handshake, this module recomputes the
 //! per-direction SRTP master key + salt and yields
-//! [`SrtpKeyMaterial`](crate::rtp::srtp::SrtpKeyMaterial) ready for
+//! [`SrtpKeyMaterial`] ready for
 //! [`SrtpContext`](crate::rtp::srtp::SrtpContext).
 //!
 //! Only the AES-CM SRTP protection profiles are produced (matching the SRTP

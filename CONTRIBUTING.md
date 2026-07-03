@@ -1,5 +1,11 @@
 # Contributing to sipnab
 
+## Orientation
+
+Start with [ARCHITECTURE.md](ARCHITECTURE.md) — the module map, data flow,
+and the "where to add things" table. The threading topology and lock
+discipline live in [docs/internals/threading.md](docs/internals/threading.md).
+
 ## Prerequisites
 
 - Rust 1.94+ (edition 2024)
@@ -22,6 +28,19 @@ cargo build
 cargo test
 cargo test --all-features
 ```
+
+## Running Benchmarks
+
+```bash
+cargo bench --profile profiling
+```
+
+The `--profile profiling` is required, not optional: plain `cargo bench`
+cannot build because the wasm `cdylib` crate-type forces the lib dependency
+unit onto `profile.release`'s `panic = "abort"` while bench harness units are
+forced to unwind, so cargo compiles shared deps twice with incompatible type
+identities (see the `[lib]` notes in `Cargo.toml`). The profiling profile is
+release codegen with `panic = "unwind"`.
 
 ## Git Hooks
 

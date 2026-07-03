@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use super::message::{SipHeader, SipMessage};
 use super::method::SipMethod;
-use crate::capture::parse::TransportProto;
+use crate::net::TransportProto;
 
 /// Mapping from single-character compact header names to canonical long forms
 /// per RFC 3261 SS7.3.3 and extensions.

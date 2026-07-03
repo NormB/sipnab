@@ -9,6 +9,9 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/NormB/sipnab"
 publish = false
 
+[lints]
+workspace = true
+
 [lib]
 name = "sipnab_audio"
 crate-type = ["cdylib"]

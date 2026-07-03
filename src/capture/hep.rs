@@ -721,7 +721,7 @@ fn is_transient_recv_error(kind: std::io::ErrorKind) -> bool {
 
 /// HEP listener: binds a UDP socket and receives HEP packets.
 ///
-/// Each received HEP packet is parsed and converted via [`hep_to_packet`]
+/// Each received HEP packet is parsed and converted via `hep_to_packet`
 /// into a [`Packet`] carrying `pre_parsed` metadata (src/dst addr+port and
 /// IP protocol). The parser short-circuits on `pre_parsed`, treating the
 /// HEP payload as the transport-layer message bytes directly.
@@ -965,7 +965,7 @@ mod tests {
     }
 
     /// Helper: build a minimal valid HEP v3 packet with the given fields.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn make_hep_v3(
         src: IpAddr,
         dst: IpAddr,

@@ -146,8 +146,7 @@ impl DialogStore {
         stats
     }
 
-    /// Lifetime count of messages evicted by [`compact_idle`]
-    /// (DialogStore::compact_idle).
+    /// Lifetime count of messages evicted by [`DialogStore::compact_idle`].
     pub fn total_idle_messages_evicted(&self) -> u64 {
         self.idle_messages_evicted
     }
@@ -502,7 +501,7 @@ fn cseq_key(msg: &SipMessage) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};

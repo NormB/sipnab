@@ -1,3 +1,5 @@
+//! Build script: embeds git/version metadata for `sipnab --version`.
+
 use std::path::Path;
 use std::process::Command;
 

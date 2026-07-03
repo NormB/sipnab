@@ -305,7 +305,7 @@ fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::parse::TransportProto;
+    use crate::net::TransportProto;
     use crate::sip::dialog::SipDialog;
     use crate::sip::parser::parse_sip;
     use chrono::{DateTime, TimeDelta, Utc};

@@ -349,7 +349,7 @@ pub struct NamesConfig {
     /// `/etc/hosts`-format file of IP -> name mappings to preload.
     pub hosts_file: Option<String>,
     /// Inline IP -> name mappings, loaded at startup (highest-priority manual
-    /// layer). Written by the in-TUI `N` dialog when [`persist_to_config`] is on.
+    /// layer). Written by the in-TUI `N` dialog when [`Self::persist_to_config`] is on.
     ///
     /// ```toml
     /// [names.manual]

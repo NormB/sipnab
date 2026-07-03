@@ -12,7 +12,7 @@ use crate::rtp::stream_store::StreamStore;
 use super::Theme;
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 /// Renders the view and returns the effective (content-clamped) scroll so
 /// the caller can write it back — otherwise Up appears dead after
 /// over-scrolling past the end.
