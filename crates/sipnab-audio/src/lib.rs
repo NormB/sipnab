@@ -11,6 +11,10 @@
 //! it f32 PCM buffers, queries/stops playback, and finally closes the handle.
 //! All entry points are null-safe and never unwind across the FFI boundary.
 
+// See the [workspace.lints] comment in Cargo.toml for why this is a
+// crate attribute.
+#![warn(missing_docs)]
+
 use std::io::Write;
 use std::num::NonZero;
 use std::os::raw::c_void;
