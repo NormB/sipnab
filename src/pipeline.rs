@@ -117,25 +117,51 @@ pub struct MediaDecrypt<'a> {
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
-/// Route one parsed packet into the dialog / stream stores.
-///
-/// The shared-store protocol pipeline: WebSocket unwrap, SIP parse +
-/// dialog tracking + SDP-to-stream linking, RTCP matching, RTP (header
-/// or heuristic). Parsing happens OUTSIDE the store locks; each store
-/// is write-locked once, briefly. This is the TUI-mode per-packet path
-/// and the testable core that batch mode's richer pipeline mirrors.
-///
-/// `decrypt` carries optional SRTP/DTLS-SRTP key state; when present, SRTP
-/// payloads are authenticated and decrypted before media analysis, SDES keys
-/// are learned from SDP, and DTLS handshakes feed the SRTP key store.
-pub fn process_packet(
+/// The store-mutation intent produced by [`classify_packet`] — the outcome of
+/// classifying one packet *without touching any store or lock*. Each router
+/// applies it with its own store access: the live path takes brief per-store
+/// write locks ([`process_packet`]); the offline `--jobs` and batch paths call
+/// plain `&mut` stores directly. Separating the (duplicated) classification
+/// from the (legitimately different) application is the core of the pipeline
+/// unification (WS1).
+pub enum PacketAction {
+    /// Nothing to record: not SIP/RTP/RTCP, a DTLS handshake already consumed
+    /// for key material, or opted out via [`PipelineOptions`].
+    None,
+    /// A parsed SIP message plus the RTP-stream link tuples derived from its
+    /// SDP (see [`extract_sdp_links`]).
+    Sip {
+        /// The parsed message, to move into the dialog store.
+        msg: sip::message::SipMessage,
+        /// `(media_ip, media_port, call_id, media)` links to apply to streams.
+        sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
+    },
+    /// Parsed RTCP compound-packet reports, to feed to `process_rtcp`.
+    Rtcp(Vec<rtp::rtcp::RtcpPacket>),
+    /// An RTP packet to record. `decrypted_payload` is `Some` only when SRTP
+    /// substituted a plaintext payload; `None` means use the original
+    /// [`ParsedPacket`] unchanged — so the common (unencrypted) path never
+    /// clones the packet.
+    Rtp {
+        /// The parsed RTP header.
+        hdr: rtp::parser::RtpHeader,
+        /// SRTP-decrypted payload, if any.
+        decrypted_payload: Option<bytes::Bytes>,
+    },
+}
+
+/// Classify one parsed packet into a [`PacketAction`] — the lock-free core of
+/// the per-packet pipeline. WebSocket unwrap, SIP parse + SDP-link extraction,
+/// DTLS/SRTP key learning, RTCP parse, and RTP (header or heuristic) detection
+/// all happen here, touching no store. `decrypt` is mutated in place to learn
+/// SDES/DTLS keys and to decrypt SRTP payloads; `rtp_heuristic` is advanced for
+/// RTP discovery. The caller applies the returned action to its stores.
+pub fn classify_packet(
     pp: &ParsedPacket,
-    dialog_store: &Arc<RwLock<DialogStore>>,
-    stream_store: &Arc<RwLock<StreamStore>>,
     rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
-) {
+) -> PacketAction {
     // `decrypt` is only consumed by the `tls`-gated media-decryption paths.
     #[cfg(not(feature = "tls"))]
     let _ = &decrypt;
@@ -154,8 +180,7 @@ pub fn process_packet(
     };
     let effective_payload = &effective_payload;
 
-    // Try SIP detection first — parse OUTSIDE the lock, then do a quick
-    // write-lock-and-release to minimize contention with the TUI render thread.
+    // SIP detection first — parse and derive links, touching no store.
     if sip::is_sip_message(effective_payload) {
         if let Ok(sip_msg) = sip::parser::parse_sip_bytes(
             effective_payload,
@@ -167,7 +192,6 @@ pub fn process_packet(
             effective_transport,
         ) && !opts.no_dialog
         {
-            // Extract SDP link info before acquiring any lock.
             let sdp_links = if let Some(sdp) = sip_msg.sdp()
                 && let Some(call_id) = sip_msg.call_id()
             {
@@ -176,20 +200,8 @@ pub fn process_packet(
                 Vec::new()
             };
 
-            // Quick write to dialog store, then release
-            {
-                dialog_store.write().process_message(sip_msg);
-            }
-
-            // Link SDP media endpoints to RTP streams (separate lock)
-            if !sdp_links.is_empty() {
-                let mut ss = stream_store.write();
-                for (ip, port, call_id, media) in &sdp_links {
-                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
-                }
-            }
-
-            // Feed SDES `a=crypto` key material into the SRTP context.
+            // Feed SDES `a=crypto` key material into the SRTP context (mutates
+            // decrypt, not stores — so it belongs in classification).
             #[cfg(feature = "tls")]
             if let Some(ctx) = decrypt.srtp.as_deref_mut() {
                 for (ip, port, _cid, media) in &sdp_links {
@@ -198,17 +210,21 @@ pub fn process_packet(
                     }
                 }
             }
+            return PacketAction::Sip {
+                msg: sip_msg,
+                sdp_links,
+            };
         }
-        return;
+        return PacketAction::None;
     }
 
     // RTP/RTCP detection
     if opts.no_rtp || pp.transport != TransportProto::Udp {
-        return;
+        return PacketAction::None;
     }
 
     // DTLS-SRTP: recover SRTP keys from DTLS handshakes and hand them to the
-    // SRTP context. DTLS packets are not RTP, so handle and return.
+    // SRTP context. DTLS packets are not RTP, so consume and stop.
     #[cfg(feature = "tls")]
     if crate::capture::dtls::is_dtls(&pp.payload) {
         let keys = decrypt
@@ -221,15 +237,15 @@ pub fn process_packet(
         {
             ctx.add_keys(keys);
         }
-        return;
+        return PacketAction::None;
     }
 
     if is_rtcp_packet(&pp.payload, pp.dst_port) {
         let rtcp_packets = rtp::rtcp::parse_rtcp(&pp.payload);
-        if !rtcp_packets.is_empty() {
-            stream_store.write().process_rtcp(&rtcp_packets);
+        if rtcp_packets.is_empty() {
+            return PacketAction::None;
         }
-        return;
+        return PacketAction::Rtcp(rtcp_packets);
     }
 
     if rtp::is_rtp_packet(&pp.payload)
@@ -237,25 +253,74 @@ pub fn process_packet(
     {
         // SRTP: substitute a decrypted payload when a key authenticates it.
         #[cfg(feature = "tls")]
-        let srtp_pp: Option<ParsedPacket> = decrypt.srtp.as_deref_mut().and_then(|ctx| {
-            ctx.decrypt(&pp.payload, rtp_hdr.payload_offset)
-                .map(|plain| {
-                    let mut d = pp.clone();
-                    d.payload = plain.into();
-                    d
-                })
-        });
+        let decrypted_payload = decrypt
+            .srtp
+            .as_deref_mut()
+            .and_then(|ctx| ctx.decrypt(&pp.payload, rtp_hdr.payload_offset))
+            .map(bytes::Bytes::from);
         #[cfg(not(feature = "tls"))]
-        let srtp_pp: Option<ParsedPacket> = None;
-        let rtp_pp: &ParsedPacket = srtp_pp.as_ref().unwrap_or(pp);
-
-        stream_store
-            .write()
-            .process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
-        return;
+        let decrypted_payload = None;
+        return PacketAction::Rtp {
+            hdr: rtp_hdr,
+            decrypted_payload,
+        };
     }
 
     if let Some(rtp_hdr) = rtp_heuristic.check(pp) {
-        stream_store.write().process_rtp(pp, &rtp_hdr, pp.timestamp);
+        return PacketAction::Rtp {
+            hdr: rtp_hdr,
+            decrypted_payload: None,
+        };
+    }
+
+    PacketAction::None
+}
+
+/// Route one parsed packet into the dialog / stream stores (live/TUI path).
+///
+/// Classifies via [`classify_packet`] (lock-free), then applies the result
+/// with brief per-store write locks — each store is locked once and released,
+/// never both at once, to minimize contention with the TUI render thread.
+///
+/// `decrypt` carries optional SRTP/DTLS-SRTP key state; when present, SRTP
+/// payloads are authenticated and decrypted before media analysis, SDES keys
+/// are learned from SDP, and DTLS handshakes feed the SRTP key store.
+pub fn process_packet(
+    pp: &ParsedPacket,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    rtp_heuristic: &mut rtp::heuristic::RtpHeuristic,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) {
+    match classify_packet(pp, rtp_heuristic, opts, decrypt) {
+        PacketAction::None => {}
+        PacketAction::Sip { msg, sdp_links } => {
+            // Quick write to dialog store, then release.
+            dialog_store.write().process_message(msg);
+            // Link SDP media endpoints to RTP streams (separate lock).
+            if !sdp_links.is_empty() {
+                let mut ss = stream_store.write();
+                for (ip, port, call_id, media) in &sdp_links {
+                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                }
+            }
+        }
+        PacketAction::Rtcp(rtcp_packets) => {
+            stream_store.write().process_rtcp(&rtcp_packets);
+        }
+        PacketAction::Rtp {
+            hdr,
+            decrypted_payload,
+        } => match decrypted_payload {
+            Some(payload) => {
+                let mut d = pp.clone();
+                d.payload = payload;
+                stream_store.write().process_rtp(&d, &hdr, d.timestamp);
+            }
+            None => {
+                stream_store.write().process_rtp(pp, &hdr, pp.timestamp);
+            }
+        },
     }
 }
