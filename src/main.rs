@@ -1127,9 +1127,22 @@ fn run_tui_mode(
         }
     };
 
-    // Start API server if --api is specified
-    #[cfg(feature = "api")]
-    let _api_thread = start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store));
+    // Start the REST API server if --api is specified. The TUI owns stdio,
+    // so MCP stdio is never selected here.
+    let _servers_thread = sipnab::app::servers::start_servers(
+        &cli,
+        &dialog_store,
+        &stream_store,
+        None,
+        sipnab::app::servers::Selection {
+            api: true,
+            mcp: false,
+        },
+    )
+    .unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        std::process::exit(2);
+    });
 
     // Build resolved theme and keymap from config
     let theme = sipnab::tui::Theme::from_config(&config.theme);
@@ -1487,30 +1500,24 @@ fn run_batch_mode(
             None
         };
 
-    // Start API server if --api is specified (feature-gated)
-    // The API reads from the SAME stores the packet loop writes to —
-    // no mirror, no second parse.
-    #[cfg(feature = "api")]
-    let _api_thread = if cli.api.is_some() {
-        start_api_server(&cli, Arc::clone(&dialog_store), Arc::clone(&stream_store))
-    } else {
-        None
-    };
-
-    // Start MCP server if --mcp is specified (feature-gated). The server
-    // reads the same Arc<RwLock<...>> stores the packet loop writes to,
-    // plus the shared AlertEngine for the security_findings tool.
-    #[cfg(feature = "mcp")]
-    let _mcp_thread = if cli.mcp {
-        start_mcp_server(
-            &cli,
-            Arc::clone(&dialog_store),
-            Arc::clone(&stream_store),
-            Arc::clone(&engines.alerts),
-        )
-    } else {
-        None
-    };
+    // Start the companion servers (REST API + MCP) on one shared runtime
+    // thread. They read the SAME stores the packet loop writes to — no
+    // mirror, no second parse; MCP additionally reads the AlertEngine for
+    // the security_findings tool.
+    let _servers_thread = sipnab::app::servers::start_servers(
+        &cli,
+        &dialog_store,
+        &stream_store,
+        Some(&engines.alerts),
+        sipnab::app::servers::Selection {
+            api: true,
+            mcp: true,
+        },
+    )
+    .unwrap_or_else(|e| {
+        tracing::error!("{e}");
+        std::process::exit(2);
+    });
 
     // --after / -A trailing context counter
     let after_count = cli.after.unwrap_or(0);
@@ -1864,43 +1871,34 @@ fn run_batch_mode(
         }
     }
 
-    // If the API or MCP server is running, keep the process alive so clients
+    // If any companion server is running, keep the process alive so clients
     // can query the captured data. Poll the shutdown flag so SIGINT/SIGTERM
     // exits cleanly instead of blocking on a thread that never returns.
-    #[cfg(feature = "api")]
-    let api_active = _api_thread.is_some();
-    #[cfg(not(feature = "api"))]
-    let api_active = false;
-
-    #[cfg(feature = "mcp")]
-    let mcp_active = _mcp_thread.is_some();
-    #[cfg(not(feature = "mcp"))]
-    let mcp_active = false;
-
-    if api_active || mcp_active {
-        if api_active {
+    if let Some(servers) = _servers_thread {
+        #[cfg(feature = "api")]
+        if cli.api.is_some() {
             tracing::info!("API server active — press Ctrl-C to stop");
         }
-        if mcp_active {
+        #[cfg(feature = "mcp")]
+        if cli.mcp {
             tracing::info!("MCP server active — press Ctrl-C to stop");
         }
         while !signals::shutdown_requested() {
             // A stdio MCP client owns the lifetime: when it closes stdin the
-            // serve thread finishes, and there is no client left to serve — so
+            // serve task finishes, and there is no client left to serve — so
             // exit instead of spinning forever (otherwise the process leaks
-            // until SIGINT). HTTP's serve thread only finishes on a signal, so
-            // this is a no-op there.
-            #[cfg(feature = "mcp")]
-            if _mcp_thread.as_ref().is_some_and(|h| h.is_finished()) {
+            // until SIGINT). HTTP/API tasks only finish on a signal, so the
+            // flag stays unset there.
+            if servers
+                .mcp_stdio_done
+                .as_ref()
+                .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+            {
                 tracing::info!("MCP client disconnected — shutting down");
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        #[cfg(feature = "api")]
-        drop(_api_thread);
-        #[cfg(feature = "mcp")]
-        drop(_mcp_thread);
     }
 }
 
@@ -2493,88 +2491,6 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
 /// Read one signing key from a file (contents trimmed). Logs and exits on
 /// failure (a misconfigured key file is fatal).
 #[cfg(any(feature = "api", feature = "mcp"))]
-fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => s.trim().as_bytes().to_vec(),
-        Err(e) => {
-            tracing::error!("{flag} '{path}': {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
-/// Resolve the REST API auth config (signing keys + static secret + revocation
-/// file) from the CLI into an `auth::VerifierConfig`.
-#[cfg(feature = "api")]
-fn resolve_api_verifier_config(cli: &Cli) -> sipnab::auth::VerifierConfig {
-    let mut signing_keys: Vec<Vec<u8>> = Vec::new();
-    // File key first so it is the minting key.
-    if let Some(ref path) = cli.api_signing_key_file {
-        signing_keys.push(read_signing_key_file(path, "--api-signing-key-file"));
-    }
-    for k in &cli.api_signing_key {
-        if !k.is_empty() {
-            signing_keys.push(k.as_bytes().to_vec());
-        }
-    }
-    let static_keys: Vec<String> = cli
-        .api_key
-        .iter()
-        .filter(|k| !k.is_empty())
-        .cloned()
-        .collect();
-    sipnab::auth::VerifierConfig {
-        signing_keys,
-        static_keys,
-        revoked_file: cli.api_revoked_file.as_ref().map(std::path::PathBuf::from),
-    }
-}
-
-/// Resolve the HTTP MCP auth config from the CLI. The MCP token resolution
-/// order (`--mcp-token` > `--mcp-token-file` > env) is preserved for the
-/// static-secret fallback.
-#[cfg(feature = "mcp")]
-fn resolve_mcp_verifier_config(cli: &Cli) -> sipnab::auth::VerifierConfig {
-    let mut signing_keys: Vec<Vec<u8>> = Vec::new();
-    if let Some(ref path) = cli.mcp_signing_key_file {
-        signing_keys.push(read_signing_key_file(path, "--mcp-signing-key-file"));
-    }
-    for k in &cli.mcp_signing_key {
-        if !k.is_empty() {
-            signing_keys.push(k.as_bytes().to_vec());
-        }
-    }
-
-    // Static secret: --mcp-token > --mcp-token-file > SIPNAB_MCP_TOKEN (env is
-    // folded into --mcp-token by clap). Trim file contents.
-    let mut static_keys: Vec<String> = Vec::new();
-    if let Some(t) = cli.mcp_token.as_ref() {
-        let t = t.trim();
-        if !t.is_empty() {
-            static_keys.push(t.to_string());
-        }
-    } else if let Some(path) = cli.mcp_token_file.as_ref() {
-        match std::fs::read_to_string(path) {
-            Ok(s) => {
-                let s = s.trim();
-                if !s.is_empty() {
-                    static_keys.push(s.to_string());
-                }
-            }
-            Err(e) => {
-                tracing::error!("--mcp-token-file '{path}': {e}");
-                std::process::exit(2);
-            }
-        }
-    }
-
-    sipnab::auth::VerifierConfig {
-        signing_keys,
-        static_keys,
-        revoked_file: cli.mcp_revoked_file.as_ref().map(std::path::PathBuf::from),
-    }
-}
-
 /// Mint a signed token from the CLI configuration and return it. Picks the
 /// surface (API vs MCP) based on which signing keys are configured. Returns an
 /// error message string on misconfiguration.
@@ -2589,7 +2505,7 @@ fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
     #[cfg(feature = "api")]
     {
         if cli.api_signing_key_file.is_some() || !cli.api_signing_key.is_empty() {
-            let cfg = resolve_api_verifier_config(cli);
+            let cfg = sipnab::app::servers::resolve_api_verifier_config(cli);
             first_key = cfg.signing_keys.into_iter().next();
             ttl = cli.api_token_ttl;
         }
@@ -2598,7 +2514,7 @@ fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
     if first_key.is_none()
         && (cli.mcp_signing_key_file.is_some() || !cli.mcp_signing_key.is_empty())
     {
-        let cfg = resolve_mcp_verifier_config(cli);
+        let cfg = sipnab::app::servers::resolve_mcp_verifier_config(cli);
         first_key = cfg.signing_keys.into_iter().next();
         ttl = cli.mcp_token_ttl;
     }
@@ -2621,184 +2537,6 @@ fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
         .unwrap_or_else(|| format!("tok-{}", chrono::Utc::now().timestamp_micros()));
 
     Ok(sipnab::auth::mint(&key, &id, exp))
-}
-
-// ── API server ─────────────────────────────────────────────────────
-
-/// Start the REST API server in a background thread with its own tokio runtime.
-///
-/// Returns the thread handle, or `None` if `--api` was not specified.
-#[cfg(feature = "api")]
-fn start_api_server(
-    cli: &Cli,
-    dialog_store: Arc<RwLock<DialogStore>>,
-    stream_store: Arc<RwLock<StreamStore>>,
-) -> Option<std::thread::JoinHandle<()>> {
-    use sipnab::output::api::{self, ApiServerConfig, ApiState, RateLimiter};
-
-    let addr_str = cli.api.as_ref()?;
-    let bind_addr = match api::parse_bind_addr(addr_str) {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::error!("Invalid --api address: {e}");
-            std::process::exit(2);
-        }
-    };
-
-    let verifier = Arc::new(sipnab::auth::TokenVerifier::new(
-        resolve_api_verifier_config(cli),
-    ));
-    let state = ApiState {
-        dialog_store,
-        stream_store,
-        verifier,
-        rate_limiter: Arc::new(parking_lot::Mutex::new(RateLimiter::new(100))),
-    };
-
-    let server_config = ApiServerConfig {
-        max_conn: cli.api_max_conn,
-        tls_cert: cli.api_tls_cert.clone(),
-        tls_key: cli.api_tls_key.clone(),
-    };
-
-    let handle = std::thread::Builder::new()
-        .name("api-server".to_string())
-        .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::error!("Failed to create tokio runtime for API server: {e}");
-                    return;
-                }
-            };
-
-            if let Err(e) = rt.block_on(api::run_server(bind_addr, state, server_config)) {
-                tracing::error!("API server error: {e}");
-            }
-        });
-    match handle {
-        Ok(h) => Some(h),
-        Err(e) => {
-            tracing::error!("Failed to spawn API server thread: {e}");
-            None
-        }
-    }
-}
-
-// `mirror_to_shared_stores` was removed in Phase 8.0a — batch mode now writes
-// to a single Arc<RwLock<...>> store that the API server reads from directly,
-// eliminating the second parse pass per packet.
-
-/// Spawn the MCP server on a dedicated thread with its own current-thread
-/// tokio runtime. Mirrors the `start_api_server` pattern. The server holds
-/// references to the same Arc<RwLock<...>> stores the capture loop writes to.
-#[cfg(feature = "mcp")]
-fn start_mcp_server(
-    cli: &Cli,
-    dialog_store: Arc<RwLock<DialogStore>>,
-    stream_store: Arc<RwLock<StreamStore>>,
-    alerts: Arc<RwLock<AlertEngine>>,
-) -> Option<std::thread::JoinHandle<()>> {
-    let transport = cli.mcp_transport.as_str();
-    match transport {
-        "stdio" => {
-            let server =
-                sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
-            let handle = std::thread::Builder::new()
-                .name("mcp-stdio".into())
-                .spawn(move || {
-                    let runtime = match tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                    {
-                        Ok(rt) => rt,
-                        Err(e) => {
-                            tracing::error!("Failed to build tokio runtime for MCP: {e}");
-                            return;
-                        }
-                    };
-                    runtime.block_on(async move {
-                        if let Err(e) = sipnab::mcp::transport::serve_stdio(server).await {
-                            tracing::error!("MCP stdio server error: {e}");
-                        }
-                    });
-                });
-            handle.ok()
-        }
-        #[cfg(feature = "mcp-http")]
-        "http" => start_mcp_http_server(cli, dialog_store, stream_store, alerts),
-        #[cfg(not(feature = "mcp-http"))]
-        "http" => {
-            tracing::error!(
-                "--mcp-transport http requires the mcp-http feature; rebuild with \
-                 --features mcp-http (or full)."
-            );
-            None
-        }
-        other => {
-            tracing::error!("unknown --mcp-transport '{other}', expected stdio or http");
-            None
-        }
-    }
-}
-
-/// Resolve the MCP bind address (default 127.0.0.1:8731) plus the bearer token
-/// from --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN env, then start a
-/// dedicated thread with a current-thread tokio runtime running the HTTP
-/// transport.
-#[cfg(feature = "mcp-http")]
-fn start_mcp_http_server(
-    cli: &Cli,
-    dialog_store: Arc<RwLock<DialogStore>>,
-    stream_store: Arc<RwLock<StreamStore>>,
-    alerts: Arc<RwLock<AlertEngine>>,
-) -> Option<std::thread::JoinHandle<()>> {
-    let bind_str = cli.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
-    let bind = match output::api::parse_bind_addr(bind_str) {
-        Ok(addr) => addr,
-        Err(e) => {
-            tracing::error!("--mcp-bind: {e}");
-            return None;
-        }
-    };
-
-    // Resolve auth: HMAC signing keys + static secret (--mcp-token >
-    // --mcp-token-file > SIPNAB_MCP_TOKEN) + revocation file.
-    let auth_config = resolve_mcp_verifier_config(cli);
-
-    let extra_allowed_hosts = cli.mcp_allowed_host.clone();
-
-    let server = sipnab::mcp::SipnabMcp::new(dialog_store, stream_store).with_alert_engine(alerts);
-    let handle = std::thread::Builder::new()
-        .name("mcp-http".into())
-        .spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    tracing::error!("Failed to build tokio runtime for MCP HTTP: {e}");
-                    return;
-                }
-            };
-            runtime.block_on(async move {
-                if let Err(e) = sipnab::mcp::transport::serve_http(
-                    server,
-                    bind,
-                    auth_config,
-                    extra_allowed_hosts,
-                )
-                .await
-                {
-                    tracing::error!("MCP HTTP server error: {e}");
-                }
-            });
-        });
-    handle.ok()
 }
 
 // ── Unit tests for the binary's pure helpers ────────────────────────────
