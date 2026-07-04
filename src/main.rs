@@ -10,8 +10,10 @@
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 
 use std::path::PathBuf;
+#[cfg(feature = "tui")]
 use std::sync::Arc;
 
+#[cfg(feature = "tui")]
 use parking_lot::RwLock;
 
 // Faster general-purpose allocator: sipnab's offline ingestion does one heap
@@ -20,14 +22,21 @@ use parking_lot::RwLock;
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use sipnab::app::batch::{BatchProcessing, CapturePolicy};
-use sipnab::capture::{self, CaptureConfig, CaptureSource, PcapExportMode, PcapWriter};
+use sipnab::capture::{self, CaptureConfig, CaptureSource};
+#[cfg(feature = "tui")]
+use sipnab::capture::{PcapExportMode, PcapWriter};
 use sipnab::cli::{self, Cli};
 use sipnab::config::Config;
 use sipnab::output::{ColorMode, EventExecEngine, OutputOptions};
 use sipnab::privilege;
-use sipnab::rtp::{self, stream_store::StreamStore};
+#[cfg(feature = "tui")]
+use sipnab::rtp;
+#[cfg(feature = "tui")]
+use sipnab::rtp::stream_store::StreamStore;
 use sipnab::signals;
-use sipnab::sip::{dialog_store::DialogStore, dsl::FilterExpr, matcher::SipMatcher};
+#[cfg(feature = "tui")]
+use sipnab::sip::dialog_store::DialogStore;
+use sipnab::sip::{dsl::FilterExpr, matcher::SipMatcher};
 
 fn main() {
     // 1. Parse CLI arguments
