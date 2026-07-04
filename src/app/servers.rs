@@ -124,6 +124,7 @@ pub fn start_servers(
     // compiled; the bindings go unused then.
     #[allow(unused_mut)]
     let mut prepared: Vec<Prepared> = Vec::new();
+    #[cfg(any(feature = "api", feature = "mcp"))]
     #[allow(unused_mut)]
     let mut mcp_stdio_done: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     let _ = (dialog_store, stream_store, alerts, &selection, cli);
