@@ -4,7 +4,10 @@
 //! dispatch into this module.
 
 pub mod batch;
+pub mod bootstrap;
 pub mod servers;
+#[cfg(feature = "tui")]
+pub mod tui_mode;
 
 use std::sync::Arc;
 
