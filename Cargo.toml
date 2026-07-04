@@ -49,6 +49,12 @@ ahash = "0.8"
 # SIMD byte search for the SIP line scanner (CRLF). Already in the tree via
 # nom/regex/etherparse; promoted to a direct dep. Replaces scalar windows(2).
 memchr = "2"
+# Inline-capacity vector for `PacketProcessor::process`: the dominant cases
+# (UDP, single-frame TCP, one reassembled fragment) yield exactly one
+# ParsedPacket, so a `SmallVec<[_; 1]>` keeps that on the stack and removes a
+# heap allocation from every packet on the capture hot path. Already in the
+# tree transitively (via hyper); promoted to a direct dep.
+smallvec = "1"
 # Phase 1: Capture & core
 pcap = { version = "2", optional = true }
 # Transparent decompression of gzip-compressed capture files (libpcap, unlike

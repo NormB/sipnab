@@ -40,11 +40,18 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 #[cfg(feature = "native")]
 use channel::PacketTx;
+use smallvec::{SmallVec, smallvec};
 #[cfg(feature = "native")]
 use std::thread;
 
 pub use packet::Packet;
 pub use parse::ParsedPacket;
+
+/// Output of [`PacketProcessor::process`]: the parsed packets ready from one
+/// input packet. Inline-sized for one element — the dominant case (UDP, a
+/// single-frame TCP message, one reassembled fragment) allocates nothing;
+/// only a multi-message TCP segment spills to the heap.
+pub type ParsedPackets = SmallVec<[ParsedPacket; 1]>;
 #[cfg(feature = "native")]
 pub use writer::{PcapExportMode, PcapWriter};
 
@@ -408,12 +415,12 @@ impl PacketProcessor {
     /// - **Zero:** packet is non-IP, a buffered fragment, or a buffered TCP segment.
     /// - **One:** typical UDP packet or a completed fragment/TCP flush.
     /// - **Multiple:** TCP reassembly may flush several accumulated segments.
-    pub fn process(&mut self, packet: &Packet) -> Vec<ParsedPacket> {
+    pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
             Err(e) => {
                 tracing::debug!("Skipping unparseable packet: {e}");
-                return Vec::new();
+                return SmallVec::new();
             }
         };
 
@@ -442,9 +449,9 @@ impl PacketProcessor {
                     }
                     completed.fragment_offset = Some(0);
                     completed.more_fragments = false;
-                    vec![completed]
+                    smallvec![completed]
                 }
-                None => Vec::new(),
+                None => SmallVec::new(),
             };
         }
 
@@ -469,9 +476,9 @@ impl PacketProcessor {
                 {
                     let mut p = parsed.clone();
                     p.payload = bytes::Bytes::from(rem);
-                    return vec![p];
+                    return smallvec![p];
                 }
-                return Vec::new();
+                return SmallVec::new();
             }
 
             // Prepend any partial message held from a previous flush.
@@ -487,12 +494,12 @@ impl PacketProcessor {
             if !crate::sip::is_sip_message(&buf) {
                 let mut p = parsed.clone();
                 p.payload = bytes::Bytes::from(buf);
-                return vec![p];
+                return smallvec![p];
             }
 
             let (ranges, consumed) = frame_tcp_sip(&buf);
 
-            let mut out: Vec<ParsedPacket> = ranges
+            let mut out: ParsedPackets = ranges
                 .into_iter()
                 .map(|r| {
                     let mut p = parsed.clone();
@@ -525,7 +532,7 @@ impl PacketProcessor {
         }
 
         // UDP (and other non-TCP, non-fragment): ready immediately
-        vec![parsed]
+        smallvec![parsed]
     }
 
     /// Sweep stale entries from both reassemblers.

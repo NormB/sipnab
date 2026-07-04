@@ -65,6 +65,24 @@ header: 3 → 1 (only the value `String` remains; removing it is the
 
 Per-Via marginal cost: ≈ 70 ns/header (1→10), ≈ 101 ns/header (10→20).
 
+## 2026-07-04 — same host, after WS4.4 (PacketProcessor::process → SmallVec)
+
+`process()` returned a heap `Vec<ParsedPacket>` per input packet; the
+dominant cases (UDP, single-frame TCP, one reassembled fragment) yield
+exactly one packet, so the return is now `SmallVec<[ParsedPacket; 1]>`
+(`ParsedPackets`) — inline, no allocation. Criterion before/after on the
+same tree base (clean baseline via `git stash`, statistically significant
+p < 0.05):
+
+| case | before | after | delta |
+|---|---|---|---|
+| udp_rtp_160b | 104.3 ns | 96.9 ns | −5.9% |
+| udp_sip_invite | 103.1 ns | 93.2 ns | −5.3% |
+| tcp_sip_single_segment | 1.398 µs | 1.333 µs | −3.7% |
+
+The UDP path is every RTP packet, so this is the highest-volume win.
+(smallvec was already a transitive dep via hyper; promoted to direct.)
+
 Side effect worth knowing: `SipMessage` *clones* also got cheaper — header
 names are now mostly `Cow::Borrowed` statics, so a clone copies pointers
 instead of re-allocating every name (visible as `insert_clone` ≈ 2.2 µs in
