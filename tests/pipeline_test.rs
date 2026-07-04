@@ -231,3 +231,72 @@ a=rtpmap:0 PCMU/8000\r\n",
     let links = pipeline::extract_sdp_links(&sdp, "noaddr@test");
     assert!(links.is_empty(), "no c= line ⇒ no links");
 }
+
+/// `classify_packet` is the lock-free core: it must classify a packet into the
+/// right `PacketAction` without touching any store. These pin the mapping the
+/// four routers all depend on (WS1).
+#[test]
+fn classify_maps_packets_to_actions() {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+
+    // SIP INVITE → Sip action carrying the parsed message.
+    let sip_pp = parsed(invite(), 5060, 5060);
+    match classify_packet(&sip_pp, &mut heuristic, &opts, &mut decrypt) {
+        PacketAction::Sip { msg, .. } => {
+            assert_eq!(msg.call_id(), Some("pipeline-1@test"));
+        }
+        _ => panic!("SIP packet must classify as Sip"),
+    }
+
+    // RTP → Rtp action, no decrypted payload (unencrypted path never clones).
+    let rtp_pp = parsed(rtp_packet(0x1234, 1), 40000, 40001);
+    match classify_packet(&rtp_pp, &mut heuristic, &opts, &mut decrypt) {
+        PacketAction::Rtp {
+            hdr,
+            decrypted_payload,
+        } => {
+            assert_eq!(hdr.ssrc, 0x1234);
+            assert!(decrypted_payload.is_none());
+        }
+        _ => panic!("RTP packet must classify as Rtp"),
+    }
+
+    // Non-SIP, non-RTP payload → None.
+    let junk = parsed(b"GET / HTTP/1.1\r\n\r\n".to_vec(), 80, 12345);
+    assert!(matches!(
+        classify_packet(&junk, &mut heuristic, &opts, &mut decrypt),
+        PacketAction::None
+    ));
+}
+
+#[test]
+fn classify_honors_opt_outs() {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+
+    // no_dialog: a SIP packet classifies as None (not tracked).
+    let no_dialog = PipelineOptions {
+        no_dialog: true,
+        no_rtp: false,
+    };
+    let sip_pp = parsed(invite(), 5060, 5060);
+    assert!(matches!(
+        classify_packet(&sip_pp, &mut heuristic, &no_dialog, &mut decrypt),
+        PacketAction::None
+    ));
+
+    // no_rtp: an RTP packet classifies as None.
+    let no_rtp = PipelineOptions {
+        no_dialog: false,
+        no_rtp: true,
+    };
+    let rtp_pp = parsed(rtp_packet(0x2222, 1), 40000, 40001);
+    assert!(matches!(
+        classify_packet(&rtp_pp, &mut heuristic, &no_rtp, &mut decrypt),
+        PacketAction::None
+    ));
+}
