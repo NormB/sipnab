@@ -108,6 +108,56 @@ pub struct CapturePolicy {
     pub portrange: (u16, u16),
 }
 
+/// Multi-core offline file reconstruction (`--cores N` with `-I file`,
+/// single device): read the pcap directly and shard packets across N worker
+/// threads, fusing read+peek+shard into one stage — no capture reader
+/// thread, no semaphore channel. Reports and exits; advanced per-message
+/// features use the single-threaded path.
+pub fn run_cores_file(
+    cli: &Cli,
+    config: &Config,
+    capture_config: &CaptureConfig,
+    portrange: (u16, u16),
+) {
+    let Some(input) = cli.input.as_ref() else {
+        return;
+    };
+    let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
+    let pcfg = crate::parallel::ParallelConfig {
+        cores: cli.cores,
+        max_streams: cli.max_streams as usize,
+        max_dialogs: cli.limit as usize,
+        rotate: cli.rotate_enabled(),
+        max_reassembly: cli.max_reassembly as usize,
+        portrange,
+        no_dialog: cli.no_dialog,
+        no_rtp,
+    };
+    match crate::parallel::run_offline_parallel_file(
+        std::path::Path::new(input),
+        capture_config,
+        pcfg,
+    ) {
+        Ok(r) => {
+            generate_reports(cli, &r.dialog_store, &r.stream_store);
+            if !cli.quiet {
+                tracing::info!(
+                    "sipnab: {} packets, {} SIP messages, {} RTP packets across {} streams ({} cores)",
+                    r.total_count,
+                    r.sip_count,
+                    r.rtp_count,
+                    r.stream_store.len(),
+                    cli.cores,
+                );
+            }
+        }
+        Err(e) => {
+            tracing::error!("multi-core reconstruction failed: {e:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
 /// Run batch mode to completion: the multi-core offline fast path when
 /// `--cores N` applies, otherwise the single-threaded [`BatchRunner`].
 pub fn run(
