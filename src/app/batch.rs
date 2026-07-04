@@ -3,7 +3,7 @@
 //!
 //! [`BatchRunner`] owns what used to be ~25 loose locals in main.rs — the
 //! writer, detector engines, decryption state, counters, and companion-server
-//! handles — built once in [`BatchRunner::new`] and consumed by the receive
+//! handles — built once in `BatchRunner::new` and consumed by the receive
 //! loop. [`run`] is the single entry point the binary dispatches to (WS2).
 
 use std::path::PathBuf;
@@ -208,8 +208,8 @@ pub fn run(
 }
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
-/// stores, and companion-server handles. Built once by [`BatchRunner::new`]
-/// (bootstrap steps 16-17), consumed by [`BatchRunner::run_loop`] (step 18).
+/// stores, and companion-server handles. Built once by `BatchRunner::new`
+/// (bootstrap steps 16-17), consumed by `BatchRunner::run_loop` (step 18).
 pub struct BatchRunner {
     cli: Cli,
     config: Config,
