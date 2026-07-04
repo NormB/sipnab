@@ -43,8 +43,6 @@ use std::thread;
 use crate::capture::PacketProcessor;
 use crate::capture::channel::PacketRx;
 use crate::capture::parse::ParsedPacket;
-use crate::rtp::parser::parse_rtp_header;
-use crate::rtp::rtcp::parse_rtcp;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
 
@@ -83,68 +81,51 @@ pub struct ReconResult {
     pub total_count: u64,
 }
 
-/// Reconstruct ONE already-parsed packet into thread-local stores. This mirrors
-/// the reconstruction dispatch of the single-threaded path (RTCP → RTP → SIP),
-/// minus the flag-gated extras (SRTP decrypt, DTMF, quality events, security
-/// detectors, per-message output) that do not change dialog/stream
-/// reconstruction. Keeping the exact same classify/parse/store calls is what
-/// makes the merged result match `--jobs 1`.
+/// Reconstruct ONE already-parsed packet into thread-local stores, using the
+/// same [`crate::pipeline::classify_packet`] core as every other router — so
+/// `--jobs N` classifies identically to `--jobs 1` (WebSocket-SIP unwrap and
+/// heuristic RTP discovery included). Only the flag-gated batch extras (SRTP
+/// decrypt, DTMF, quality events, security detectors, per-message output) stay
+/// on the single-threaded path; none of them change dialog/stream
+/// reconstruction. Heuristic state lives per worker, which is sound because
+/// sharding pins each flow's packets to one worker.
 fn reconstruct(
     pp: &ParsedPacket,
     ds: &mut DialogStore,
     ss: &mut StreamStore,
+    heuristic: &mut crate::rtp::heuristic::RtpHeuristic,
     cfg: &ParallelConfig,
     sip: &mut u64,
     rtp: &mut u64,
 ) {
-    // RTCP first (odd port, version 2, PT 200-204).
-    if crate::pipeline::is_rtcp_packet(&pp.payload, pp.dst_port) {
-        if !cfg.no_rtp {
-            let pkts = parse_rtcp(&pp.payload);
-            if !pkts.is_empty() {
-                ss.process_rtcp(&pkts);
+    use crate::pipeline::{MediaDecrypt, PacketAction, PipelineOptions, classify_packet};
+    let opts = PipelineOptions {
+        no_dialog: cfg.no_dialog,
+        no_rtp: cfg.no_rtp,
+        sip_portrange: Some(cfg.portrange),
+    };
+    let mut decrypt = MediaDecrypt::default();
+    match classify_packet(pp, heuristic, &opts, &mut decrypt) {
+        PacketAction::None => {}
+        PacketAction::Sip { msg, sdp_links } => {
+            *sip += 1;
+            if !cfg.no_dialog {
+                // The store takes the message by move — cloning a SipMessage
+                // deep-copies every header String.
+                ds.process_message(msg);
+                for (ip, port, call_id, media) in &sdp_links {
+                    ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                }
             }
         }
-        return;
-    }
-    // RTP.
-    if !cfg.no_rtp
-        && crate::rtp::is_rtp_packet(&pp.payload)
-        && let Ok(hdr) = parse_rtp_header(&pp.payload)
-    {
-        ss.process_rtp(pp, &hdr, pp.timestamp);
-        *rtp += 1;
-        return;
-    }
-    // SIP (port-filtered, like the single path).
-    if crate::pipeline::port_in_range(pp.src_port, pp.dst_port, cfg.portrange)
-        && crate::sip::is_sip_message(&pp.payload)
-        && let Ok(msg) = crate::sip::parser::parse_sip_bytes(
-            &pp.payload,
-            pp.timestamp,
-            pp.src_addr,
-            pp.dst_addr,
-            pp.src_port,
-            pp.dst_port,
-            pp.transport,
-        )
-    {
-        *sip += 1;
-        if !cfg.no_dialog {
-            // Extract SDP link info first so the store can take the message by
-            // move — cloning a SipMessage deep-copies every header String. Uses
-            // the shared pipeline helper (single source of truth).
-            let sdp_links = if let Some(sdp) = msg.sdp()
-                && let Some(call_id) = msg.call_id()
-            {
-                crate::pipeline::extract_sdp_links(&sdp, call_id)
-            } else {
-                Vec::new()
-            };
-            ds.process_message(msg);
-            for (ip, port, call_id, media) in &sdp_links {
-                ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
-            }
+        PacketAction::Rtcp(pkts) => {
+            ss.process_rtcp(&pkts);
+        }
+        PacketAction::Rtp { hdr, .. } => {
+            // No SRTP context in the sharded path, so there is never a
+            // decrypted payload to substitute.
+            ss.process_rtp(pp, &hdr, pp.timestamp);
+            *rtp += 1;
         }
     }
 }
@@ -177,11 +158,20 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                 let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
+                let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for packet in wrx.iter() {
                     for pp in processor.process(&packet) {
                         total += 1;
-                        reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                        reconstruct(
+                            &pp,
+                            &mut ds,
+                            &mut ss,
+                            &mut heuristic,
+                            &cfg,
+                            &mut sip,
+                            &mut rtp,
+                        );
                     }
                 }
                 (ds, ss, sip, rtp, total)
@@ -267,12 +257,21 @@ pub fn run_offline_parallel_file(
                 let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false);
+                let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
                 let (mut sip, mut rtp, mut total) = (0u64, 0u64, 0u64);
                 for batch in wrx.iter() {
                     for packet in &batch {
                         for pp in processor.process(packet) {
                             total += 1;
-                            reconstruct(&pp, &mut ds, &mut ss, &cfg, &mut sip, &mut rtp);
+                            reconstruct(
+                                &pp,
+                                &mut ds,
+                                &mut ss,
+                                &mut heuristic,
+                                &cfg,
+                                &mut sip,
+                                &mut rtp,
+                            );
                         }
                     }
                 }
@@ -412,6 +411,67 @@ mod tests {
         for (w, &c) in buckets.iter().enumerate() {
             assert!(c > 0, "worker {w} got nothing — sharding not distributing");
         }
+    }
+
+    /// Minimal Ethernet + IPv4 + UDP frame carrying `payload` (10.0.0.1 →
+    /// 10.0.0.2), for driving the worker pool without a pcap fixture.
+    #[cfg(feature = "native")]
+    fn eth_ipv4_udp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        let udp_len = 8 + payload.len() as u16;
+        let ip_total = 20 + udp_len;
+        let mut p = Vec::new();
+        p.extend_from_slice(&[0xAA; 6]); // dst MAC
+        p.extend_from_slice(&[0xBB; 6]); // src MAC
+        p.extend_from_slice(&[0x08, 0x00]); // IPv4
+        p.push(0x45); // ver/ihl
+        p.push(0x00);
+        p.extend_from_slice(&ip_total.to_be_bytes());
+        p.extend_from_slice(&[0x00, 0x01]); // id
+        p.extend_from_slice(&[0x40, 0x00]); // DF, offset 0
+        p.push(64); // ttl
+        p.push(17); // UDP
+        p.extend_from_slice(&[0x00, 0x00]); // checksum
+        p.extend_from_slice(&[10, 0, 0, 1]); // src ip
+        p.extend_from_slice(&[10, 0, 0, 2]); // dst ip
+        p.extend_from_slice(&src_port.to_be_bytes());
+        p.extend_from_slice(&dst_port.to_be_bytes());
+        p.extend_from_slice(&udp_len.to_be_bytes());
+        p.extend_from_slice(&[0x00, 0x00]); // checksum
+        p.extend_from_slice(payload);
+        p
+    }
+
+    /// The `--jobs` path must discover heuristic-only RTP exactly like the
+    /// single-threaded batch path: a PT-72 flow fails the strict
+    /// `is_rtp_packet` pre-filter but is promoted by the consecutive-packet
+    /// heuristic, so it must land in the merged stream store.
+    #[cfg(feature = "native")]
+    #[test]
+    fn jobs_path_discovers_heuristic_rtp() {
+        use crate::capture::packet::Packet;
+        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        for seq in 1u16..=6 {
+            let mut payload = vec![0x80, 72];
+            payload.extend_from_slice(&seq.to_be_bytes());
+            payload.extend_from_slice(&[0, 0, 0, 1]);
+            payload.extend_from_slice(&0xFEEDu32.to_be_bytes());
+            payload.extend_from_slice(&[0xaa; 60]);
+            let frame = eth_ipv4_udp(41000, 42000, &payload);
+            let n = frame.len();
+            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
+                .expect("worker pool must accept packets");
+        }
+        drop(tx);
+        let r = run_offline_parallel(rx, pcfg(2));
+        assert_eq!(
+            r.stream_store.len(),
+            1,
+            "--jobs must heuristically discover the PT-72 RTP flow"
+        );
+        assert!(
+            r.rtp_count >= 1,
+            "promoted heuristic packets must count as RTP"
+        );
     }
 
     #[cfg(feature = "native")]
