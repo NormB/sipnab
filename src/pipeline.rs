@@ -95,10 +95,18 @@ pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
 /// Options controlling which protocols the pipeline tracks.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PipelineOptions {
-    /// Skip dialog tracking for SIP messages.
+    /// Skip dialog tracking for SIP messages. Classification still returns
+    /// [`PacketAction::Sip`] (batch mode counts/matches/outputs untracked
+    /// messages), but SDP link extraction is skipped and appliers must not
+    /// write the dialog store.
     pub no_dialog: bool,
     /// Skip RTP/RTCP media tracking.
     pub no_rtp: bool,
+    /// When set, SIP detection only considers packets with a source or
+    /// destination port in this inclusive range (`--portrange` — signaling
+    /// only; RTP uses SDP-negotiated dynamic ports and is never gated).
+    /// `None` disables the gate (live capture, where BPF already filtered).
+    pub sip_portrange: Option<(u16, u16)>,
 }
 
 /// Optional media-decryption state threaded through the live pipeline: the SRTP
@@ -129,7 +137,10 @@ pub enum PacketAction {
     /// for key material, or opted out via [`PipelineOptions`].
     None,
     /// A parsed SIP message plus the RTP-stream link tuples derived from its
-    /// SDP (see [`extract_sdp_links`]).
+    /// SDP (see [`extract_sdp_links`]). Returned even under
+    /// [`PipelineOptions::no_dialog`] (with empty `sdp_links`) — batch mode
+    /// still counts, matches, and outputs the message; appliers gate the
+    /// dialog-store write on the option.
     Sip {
         /// The parsed message, to move into the dialog store.
         msg: sip::message::SipMessage,
@@ -147,6 +158,11 @@ pub enum PacketAction {
         hdr: rtp::parser::RtpHeader,
         /// SRTP-decrypted payload, if any.
         decrypted_payload: Option<bytes::Bytes>,
+        /// `true` when the packet failed the strict [`rtp::is_rtp_packet`]
+        /// pre-filter and was promoted by the consecutive-packet heuristic
+        /// instead. Batch mode uses this to skip DTMF extraction and quality
+        /// events for heuristic streams.
+        via_heuristic: bool,
     },
 }
 
@@ -180,9 +196,14 @@ pub fn classify_packet(
     };
     let effective_payload = &effective_payload;
 
-    // SIP detection first — parse and derive links, touching no store.
-    if sip::is_sip_message(effective_payload) {
-        if let Ok(sip_msg) = sip::parser::parse_sip_bytes(
+    // SIP detection first — parse and derive links, touching no store. The
+    // port gate applies to signaling only; RTP uses SDP-negotiated dynamic
+    // ports and falls through to the media checks below.
+    let sip_port_ok = opts
+        .sip_portrange
+        .is_none_or(|range| port_in_range(pp.src_port, pp.dst_port, range));
+    if sip_port_ok && sip::is_sip_message(effective_payload) {
+        match sip::parser::parse_sip_bytes(
             effective_payload,
             pp.timestamp,
             pp.src_addr,
@@ -190,32 +211,48 @@ pub fn classify_packet(
             pp.src_port,
             pp.dst_port,
             effective_transport,
-        ) && !opts.no_dialog
-        {
-            let sdp_links = if let Some(sdp) = sip_msg.sdp()
-                && let Some(call_id) = sip_msg.call_id()
-            {
-                extract_sdp_links(&sdp, call_id)
-            } else {
-                Vec::new()
-            };
+        ) {
+            Ok(sip_msg) => {
+                let mut sdp_links = Vec::new();
+                if !opts.no_dialog
+                    && let Some(sdp) = sip_msg.sdp()
+                    && let Some(call_id) = sip_msg.call_id()
+                {
+                    sdp_links = extract_sdp_links(&sdp, call_id);
 
-            // Feed SDES `a=crypto` key material into the SRTP context (mutates
-            // decrypt, not stores — so it belongs in classification).
-            #[cfg(feature = "tls")]
-            if let Some(ctx) = decrypt.srtp.as_deref_mut() {
-                for (ip, port, _cid, media) in &sdp_links {
-                    if !media.crypto.is_empty() {
-                        ctx.add_sdes(Some(ip.to_string()), Some(*port), &media.crypto);
+                    // Feed SDES `a=crypto` key material into the SRTP context
+                    // (mutates decrypt, not stores — so it belongs in
+                    // classification). Keyed by the media's effective address
+                    // even when it is not a parseable IP (hostname or absent),
+                    // so key learning is never narrower than the SDP.
+                    #[cfg(feature = "tls")]
+                    if let Some(ctx) = decrypt.srtp.as_deref_mut() {
+                        for media in &sdp.media {
+                            if media.crypto.is_empty() {
+                                continue;
+                            }
+                            let addr = sip::sdp::effective_address(media, &sdp);
+                            let added = ctx.add_sdes(addr.clone(), Some(media.port), &media.crypto);
+                            if added > 0 {
+                                tracing::info!(
+                                    "SRTP: +{added} SDES key(s) from SDP for {}:{}",
+                                    addr.as_deref().unwrap_or("?"),
+                                    media.port
+                                );
+                            }
+                        }
                     }
                 }
+                return PacketAction::Sip {
+                    msg: sip_msg,
+                    sdp_links,
+                };
             }
-            return PacketAction::Sip {
-                msg: sip_msg,
-                sdp_links,
-            };
+            Err(e) => {
+                tracing::debug!("SIP parse error: {e}");
+                return PacketAction::None;
+            }
         }
-        return PacketAction::None;
     }
 
     // RTP/RTCP detection
@@ -263,6 +300,7 @@ pub fn classify_packet(
         return PacketAction::Rtp {
             hdr: rtp_hdr,
             decrypted_payload,
+            via_heuristic: false,
         };
     }
 
@@ -270,6 +308,7 @@ pub fn classify_packet(
         return PacketAction::Rtp {
             hdr: rtp_hdr,
             decrypted_payload: None,
+            via_heuristic: true,
         };
     }
 
@@ -296,6 +335,11 @@ pub fn process_packet(
     match classify_packet(pp, rtp_heuristic, opts, decrypt) {
         PacketAction::None => {}
         PacketAction::Sip { msg, sdp_links } => {
+            // Classification returns Sip even with no_dialog (batch needs the
+            // message); the live path simply drops untracked messages.
+            if opts.no_dialog {
+                return;
+            }
             // Quick write to dialog store, then release.
             dialog_store.write().process_message(msg);
             // Link SDP media endpoints to RTP streams (separate lock).
@@ -312,6 +356,7 @@ pub fn process_packet(
         PacketAction::Rtp {
             hdr,
             decrypted_payload,
+            via_heuristic: _,
         } => match decrypted_payload {
             Some(payload) => {
                 let mut d = pp.clone();

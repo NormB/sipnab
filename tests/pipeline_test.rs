@@ -45,6 +45,30 @@ fn invite() -> Vec<u8> {
         .to_vec()
 }
 
+fn invite_with_sdp() -> Vec<u8> {
+    let sdp = b"v=0\r\n\
+o=- 1 1 IN IP4 10.0.0.9\r\n\
+s=call\r\n\
+c=IN IP4 10.0.0.9\r\n\
+t=0 0\r\n\
+m=audio 40000 RTP/AVP 0\r\n\
+a=rtpmap:0 PCMU/8000\r\n";
+    let mut msg = format!(
+        "INVITE sip:bob@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKpipesdp\r\n\
+         From: <sip:alice@example.com>;tag=p2\r\n\
+         To: <sip:bob@example.com>\r\n\
+         Call-ID: pipeline-sdp@test\r\n\
+         CSeq: 1 INVITE\r\n\
+         Content-Type: application/sdp\r\n\
+         Content-Length: {}\r\n\r\n",
+        sdp.len()
+    )
+    .into_bytes();
+    msg.extend_from_slice(sdp);
+    msg
+}
+
 fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
     let mut p = vec![0x80, 0x00];
     p.extend_from_slice(&seq.to_be_bytes());
@@ -251,15 +275,18 @@ fn classify_maps_packets_to_actions() {
         _ => panic!("SIP packet must classify as Sip"),
     }
 
-    // RTP → Rtp action, no decrypted payload (unencrypted path never clones).
+    // RTP → Rtp action, no decrypted payload (unencrypted path never clones),
+    // and detected by the RTP header — not the heuristic.
     let rtp_pp = parsed(rtp_packet(0x1234, 1), 40000, 40001);
     match classify_packet(&rtp_pp, &mut heuristic, &opts, &mut decrypt) {
         PacketAction::Rtp {
             hdr,
             decrypted_payload,
+            via_heuristic,
         } => {
             assert_eq!(hdr.ssrc, 0x1234);
             assert!(decrypted_payload.is_none());
+            assert!(!via_heuristic, "header-detected RTP is not heuristic");
         }
         _ => panic!("RTP packet must classify as Rtp"),
     }
@@ -278,25 +305,131 @@ fn classify_honors_opt_outs() {
     let mut heuristic = RtpHeuristic::new();
     let mut decrypt = pipeline::MediaDecrypt::default();
 
-    // no_dialog: a SIP packet classifies as None (not tracked).
+    // no_dialog: a SIP packet still classifies as Sip — batch mode needs the
+    // parsed message for counting/matching/output even when dialog tracking is
+    // off — but SDP link extraction is skipped (nothing will consume it), and
+    // the appliers gate the dialog-store write.
     let no_dialog = PipelineOptions {
         no_dialog: true,
-        no_rtp: false,
+        ..Default::default()
     };
-    let sip_pp = parsed(invite(), 5060, 5060);
-    assert!(matches!(
-        classify_packet(&sip_pp, &mut heuristic, &no_dialog, &mut decrypt),
-        PacketAction::None
-    ));
+    let sip_pp = parsed(invite_with_sdp(), 5060, 5060);
+    match classify_packet(&sip_pp, &mut heuristic, &no_dialog, &mut decrypt) {
+        PacketAction::Sip { msg, sdp_links } => {
+            assert_eq!(msg.call_id(), Some("pipeline-sdp@test"));
+            assert!(
+                sdp_links.is_empty(),
+                "no_dialog must skip SDP link extraction"
+            );
+        }
+        _ => panic!("no_dialog SIP must still classify as Sip"),
+    }
 
     // no_rtp: an RTP packet classifies as None.
     let no_rtp = PipelineOptions {
-        no_dialog: false,
         no_rtp: true,
+        ..Default::default()
     };
     let rtp_pp = parsed(rtp_packet(0x2222, 1), 40000, 40001);
     assert!(matches!(
         classify_packet(&rtp_pp, &mut heuristic, &no_rtp, &mut decrypt),
         PacketAction::None
     ));
+}
+
+/// SIP detection is gated by `sip_portrange` when set (the batch and `--jobs`
+/// contract: `--portrange` filters signaling only, never media), and ungated
+/// when `None` (the live-TUI contract, where BPF already filtered).
+#[test]
+fn classify_gates_sip_by_portrange() {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+    let gated = PipelineOptions {
+        sip_portrange: Some((5060, 5061)),
+        ..Default::default()
+    };
+
+    // In range: classifies as Sip.
+    let in_range = parsed(invite(), 5060, 9999);
+    assert!(matches!(
+        classify_packet(&in_range, &mut heuristic, &gated, &mut decrypt),
+        PacketAction::Sip { .. }
+    ));
+
+    // Out of range: the SIP branch is skipped entirely (text payload then
+    // fails RTP/RTCP detection → None).
+    let out_of_range = parsed(invite(), 9998, 9999);
+    assert!(matches!(
+        classify_packet(&out_of_range, &mut heuristic, &gated, &mut decrypt),
+        PacketAction::None
+    ));
+
+    // Ungated (None): any port classifies as Sip.
+    let ungated = PipelineOptions::default();
+    let any_port = parsed(invite(), 9998, 9999);
+    assert!(matches!(
+        classify_packet(&any_port, &mut heuristic, &ungated, &mut decrypt),
+        PacketAction::Sip { .. }
+    ));
+}
+
+/// Heuristically-discovered RTP (payload that fails the strict `is_rtp_packet`
+/// pre-filter but is promoted by the consecutive-packet heuristic) must be
+/// flagged `via_heuristic`, so appliers can distinguish it (batch skips DTMF /
+/// quality events for heuristic streams).
+#[test]
+fn classify_flags_heuristic_rtp() {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+
+    // PT 72 is rejected by `is_rtp_packet` (RTCP SR collision window) but
+    // accepted by the header parser — exactly the heuristic's territory.
+    // Three consecutive incrementing packets on an even dst port promote.
+    let mut promoted = 0u32;
+    for seq in 1u16..=4 {
+        let mut p = vec![0x80, 72];
+        p.extend_from_slice(&seq.to_be_bytes());
+        p.extend_from_slice(&[0, 0, 0, 1]);
+        p.extend_from_slice(&0xFEEDu32.to_be_bytes());
+        p.extend_from_slice(&[0xaa; 60]);
+        let pp = parsed(p, 41000, 42000);
+        match classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
+            PacketAction::Rtp {
+                hdr, via_heuristic, ..
+            } => {
+                assert!(via_heuristic, "PT-72 flow is heuristic-detected");
+                assert_eq!(hdr.ssrc, 0xFEED);
+                promoted += 1;
+            }
+            PacketAction::None => {}
+            _ => panic!("unexpected classification for heuristic RTP"),
+        }
+    }
+    assert!(
+        promoted > 0,
+        "the consecutive-packet heuristic must promote this flow"
+    );
+}
+
+/// A TLS-decrypted synthetic packet (transport stamped `Tls` by the batch
+/// decrypt glue) classifies as Sip carrying that transport — and never falls
+/// into the UDP-only media path.
+#[test]
+fn classify_carries_tls_transport() {
+    use pipeline::{PacketAction, classify_packet};
+    let mut heuristic = RtpHeuristic::new();
+    let opts = PipelineOptions::default();
+    let mut decrypt = pipeline::MediaDecrypt::default();
+
+    let mut pp = parsed(invite(), 5061, 5061);
+    pp.transport = TransportProto::Tls;
+    match classify_packet(&pp, &mut heuristic, &opts, &mut decrypt) {
+        PacketAction::Sip { msg, .. } => {
+            assert_eq!(msg.transport, TransportProto::Tls);
+        }
+        _ => panic!("TLS-decrypted SIP must classify as Sip"),
+    }
 }

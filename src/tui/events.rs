@@ -1530,12 +1530,11 @@ pub(super) fn expand_tilde(path: &str) -> String {
 
 /// Load a pcap file into the application, replacing all existing data.
 ///
-/// Parses each packet through etherparse, then routes it through SIP, RTP,
-/// and RTCP detection — mirroring the online-capture pipeline so that
-/// RTP-only pcaps populate the stream store for playback and WAV export.
+/// Parses each packet through etherparse, then routes it through the shared
+/// [`crate::pipeline::classify_packet`] core — the same router as live
+/// capture — so RTP-only pcaps populate the stream store for playback and
+/// WAV export, and WebSocket-wrapped SIP is unwrapped.
 pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
-    use crate::capture::parse::TransportProto;
-
     let path = std::path::Path::new(path_str);
     if !path.exists() {
         return format!("File not found: {path_str}");
@@ -1606,37 +1605,19 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
             continue;
         }
 
-        // SIP: parse the message, ingest it into the dialog store, and link
-        // any SDP media endpoints so matching RTP streams join the dialog.
-        if crate::sip::is_sip_message(&parsed.payload) {
-            if let Ok(sip_msg) = crate::sip::parser::parse_sip(
-                &parsed.payload,
-                parsed.timestamp,
-                parsed.src_addr,
-                parsed.dst_addr,
-                parsed.src_port,
-                parsed.dst_port,
-                parsed.transport,
-            ) {
-                let sdp_links: Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)> =
-                    if let Some(sdp) = sip_msg.sdp()
-                        && let Some(call_id) = sip_msg.call_id()
-                    {
-                        sdp.media
-                            .iter()
-                            .filter_map(|media| {
-                                crate::sip::sdp::effective_address(media, &sdp)
-                                    .and_then(|a| a.parse::<std::net::IpAddr>().ok())
-                                    .map(|ip| (ip, media.port, call_id.to_string(), media.clone()))
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                app.dialog_store.write().process_message(sip_msg);
+        // Classify via the shared pipeline core, then apply to the app
+        // stores (brief per-store write locks, as in live capture).
+        let mut decrypt = crate::pipeline::MediaDecrypt::default();
+        match crate::pipeline::classify_packet(
+            &parsed,
+            &mut rtp_heuristic,
+            &crate::pipeline::PipelineOptions::default(),
+            &mut decrypt,
+        ) {
+            crate::pipeline::PacketAction::None => {}
+            crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
+                app.dialog_store.write().process_message(msg);
                 sip_count += 1;
-
                 if !sdp_links.is_empty() {
                     let mut ss = app.stream_store.write();
                     for (ip, port, call_id, media) in &sdp_links {
@@ -1644,38 +1625,18 @@ pub(super) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
                     }
                 }
             }
-            continue;
-        }
-
-        // RTP/RTCP detection — only UDP, and only after SIP was ruled out.
-        if parsed.transport != TransportProto::Udp {
-            continue;
-        }
-
-        if crate::pipeline::is_rtcp_packet(&parsed.payload, parsed.dst_port) {
-            let rtcp_packets = crate::rtp::rtcp::parse_rtcp(&parsed.payload);
-            if !rtcp_packets.is_empty() {
+            crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
                 app.stream_store.write().process_rtcp(&rtcp_packets);
                 rtcp_count += rtcp_packets.len() as u64;
             }
-            continue;
-        }
-
-        if crate::rtp::is_rtp_packet(&parsed.payload)
-            && let Ok(rtp_hdr) = crate::rtp::parser::parse_rtp_header(&parsed.payload)
-        {
-            app.stream_store
-                .write()
-                .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
-            rtp_count += 1;
-            continue;
-        }
-
-        if let Some(rtp_hdr) = rtp_heuristic.check(&parsed) {
-            app.stream_store
-                .write()
-                .process_rtp(&parsed, &rtp_hdr, parsed.timestamp);
-            rtp_count += 1;
+            crate::pipeline::PacketAction::Rtp { hdr, .. } => {
+                // No decryption keys on the file-open path, so there is never
+                // a substituted plaintext payload.
+                app.stream_store
+                    .write()
+                    .process_rtp(&parsed, &hdr, parsed.timestamp);
+                rtp_count += 1;
+            }
         }
     }
 
@@ -3690,6 +3651,85 @@ mod tests {
         assert!(
             msg.to_lowercase().contains("decryption secret"),
             "status should warn about embedded secrets: {msg}"
+        );
+    }
+
+    /// File-open must route through the same pipeline core as live capture:
+    /// a SIP INVITE wrapped in a WebSocket data frame on a WS port (SIP over
+    /// WS, RFC 7118) must be unwrapped and land in the dialog store.
+    #[test]
+    fn load_pcap_file_unwraps_websocket_sip() {
+        use crate::capture::packet::Packet;
+        use crate::capture::{PcapExportMode, PcapWriter};
+
+        // Unmasked FIN+text WebSocket frame wrapping `payload`.
+        fn ws_frame(payload: &[u8]) -> Vec<u8> {
+            let mut f = vec![0x81];
+            if payload.len() < 126 {
+                f.push(payload.len() as u8);
+            } else {
+                f.push(126);
+                f.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            }
+            f.extend_from_slice(payload);
+            f
+        }
+
+        // Minimal Ethernet + IPv4 + TCP frame (PSH|ACK) carrying `payload`.
+        fn eth_ipv4_tcp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+            let ip_total = 20 + 20 + payload.len() as u16;
+            let mut p = Vec::new();
+            p.extend_from_slice(&[0xAA; 6]); // dst MAC
+            p.extend_from_slice(&[0xBB; 6]); // src MAC
+            p.extend_from_slice(&[0x08, 0x00]); // IPv4
+            p.push(0x45);
+            p.push(0x00);
+            p.extend_from_slice(&ip_total.to_be_bytes());
+            p.extend_from_slice(&[0x00, 0x01]); // id
+            p.extend_from_slice(&[0x40, 0x00]); // DF
+            p.push(64); // ttl
+            p.push(6); // TCP
+            p.extend_from_slice(&[0x00, 0x00]); // checksum
+            p.extend_from_slice(&[10, 0, 0, 1]); // src ip
+            p.extend_from_slice(&[10, 0, 0, 2]); // dst ip
+            p.extend_from_slice(&src_port.to_be_bytes());
+            p.extend_from_slice(&dst_port.to_be_bytes());
+            p.extend_from_slice(&1u32.to_be_bytes()); // seq
+            p.extend_from_slice(&1u32.to_be_bytes()); // ack
+            p.push(0x50); // data offset 5
+            p.push(0x18); // PSH|ACK
+            p.extend_from_slice(&[0xFF, 0xFF]); // window
+            p.extend_from_slice(&[0x00, 0x00]); // checksum
+            p.extend_from_slice(&[0x00, 0x00]); // urgent
+            p.extend_from_slice(payload);
+            p
+        }
+
+        let invite = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+                       Via: SIP/2.0/WS df7j.invalid;branch=z9hG4bKwsopen\r\n\
+                       From: <sip:alice@example.com>;tag=ws1\r\n\
+                       To: <sip:bob@example.com>\r\n\
+                       Call-ID: ws-open@test\r\n\
+                       CSeq: 1 INVITE\r\n\
+                       Content-Length: 0\r\n\r\n";
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ws-sip.pcap");
+        {
+            let mut w =
+                PcapWriter::with_format(&path, 1, None, None, false, PcapExportMode::Raw).unwrap();
+            let frame = eth_ipv4_tcp(51000, 8080, &ws_frame(invite));
+            let n = frame.len();
+            w.write(&Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
+                .unwrap();
+            w.finish().unwrap();
+        }
+
+        let mut app = App::new_test();
+        load_pcap_file(&mut app, path.to_str().unwrap());
+        assert!(
+            app.dialog_store.read().get("ws-open@test").is_some(),
+            "WS-wrapped SIP must be unwrapped into the dialog store on file open"
         );
     }
 }

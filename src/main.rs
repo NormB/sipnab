@@ -19,6 +19,9 @@ use parking_lot::RwLock;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+// Only the HEP unwrap, TLS decrypt glue, and unit tests still name the
+// transport directly — the pipeline core owns protocol routing (WS1).
+#[cfg(any(feature = "hep", feature = "tls", test))]
 use sipnab::capture::parse::TransportProto;
 use sipnab::capture::{
     self, CaptureConfig, CaptureSource, ParsedPacket, PcapExportMode, PcapWriter,
@@ -28,7 +31,7 @@ use sipnab::config::Config;
 use sipnab::output::{self, ColorMode, EventExecEngine, OutputOptions, ReportFormat};
 use sipnab::privilege;
 use sipnab::process_isolation::{self, KillRequest, ScannerKillHandle};
-use sipnab::rtp::{self, parser::parse_rtp_header, rtcp::parse_rtcp, stream_store::StreamStore};
+use sipnab::rtp::{self, stream_store::StreamStore};
 use sipnab::security::{
     self as sec, AlertEngine, AlertRule, DigestLeakDetector, FraudDetector, RegFloodDetector,
     ScannerDetector,
@@ -1087,6 +1090,9 @@ fn run_tui_mode(
                         &sipnab::pipeline::PipelineOptions {
                             no_dialog: cli_clone.no_dialog,
                             no_rtp,
+                            // Live capture: BPF (auto-generated from
+                            // --portrange) already filtered; no SIP port gate.
+                            sip_portrange: None,
                         },
                         &mut media_decrypt,
                     );
@@ -1676,8 +1682,8 @@ fn run_batch_mode(
             #[cfg(not(feature = "tls"))]
             let tls_decrypted: Option<ParsedPacket> = None;
 
-            // If TLS decryption yielded a SIP message, process the decrypted packet
-            let is_tls = tls_decrypted.is_some();
+            // If TLS decryption yielded a SIP message, process the decrypted
+            // packet (its transport is already stamped Tls).
             let effective_pp = tls_decrypted.as_ref().unwrap_or(pp);
 
             // Acquire write locks once per packet. The locks are uncontested
@@ -1702,7 +1708,6 @@ fn run_batch_mode(
                     &mut proc_state,
                     &mut engines,
                     &mut counters,
-                    is_tls,
                 );
             }
 
@@ -1912,7 +1917,6 @@ fn process_parsed_packet(
     state: &mut ProcessingState<'_>,
     engines: &mut DetectionEngines,
     counters: &mut PacketCounters,
-    tls_decrypted: bool,
 ) {
     let matcher = ctx.matcher;
     let filter_expr = ctx.filter_expr;
@@ -1923,10 +1927,7 @@ fn process_parsed_packet(
     let portrange = ctx.portrange;
     let dialog_store = &mut *state.dialog_store;
     let stream_store = &mut *state.stream_store;
-    let rtp_heuristic = &mut *state.rtp_heuristic;
     let event_exec = &mut *state.event_exec;
-    #[cfg(feature = "tls")]
-    let srtp = &mut state.srtp;
     let scanner_detector = &mut engines.scanner;
     let fraud_detector = &mut engines.fraud;
     let digest_detector = &mut engines.digest;
@@ -1953,353 +1954,278 @@ fn process_parsed_packet(
         );
     }
 
-    // Try WebSocket unwrapping for TCP on common WS ports
-    let ws_payload = sipnab::pipeline::try_websocket_unwrap(pp);
-    let was_ws = ws_payload.is_some();
-    let effective_payload: bytes::Bytes = match ws_payload {
-        Some(v) => v.into(),
-        None => pp.payload.clone(),
+    // Classify via the shared pipeline core (WS unwrap, SIP parse + SDP link
+    // extraction, SDES/DTLS key learning, RTCP/RTP/heuristic detection), then
+    // apply the action with the batch extras: counters, matcher/DSL filter,
+    // output dispatch, security detectors, events, DTMF.
+    let opts = sipnab::pipeline::PipelineOptions {
+        no_dialog: cli.no_dialog,
+        no_rtp,
+        sip_portrange: Some(portrange),
     };
-    let effective_payload = &effective_payload;
+    #[cfg(feature = "tls")]
+    let mut decrypt = sipnab::pipeline::MediaDecrypt {
+        srtp: state.srtp.as_deref_mut(),
+        dtls: state.dtls.as_deref_mut(),
+    };
+    #[cfg(not(feature = "tls"))]
+    let mut decrypt = sipnab::pipeline::MediaDecrypt::default();
 
-    // Try SIP detection first — only on packets matching the SIP port range.
-    // RTP uses dynamic ports negotiated via SDP and is detected below without
-    // port filtering.
-    if sipnab::pipeline::port_in_range(pp.src_port, pp.dst_port, portrange)
-        && sip::is_sip_message(effective_payload)
-    {
-        let effective_transport = match pp.transport {
-            TransportProto::Tcp if was_ws => TransportProto::Ws,
-            TransportProto::Tcp if tls_decrypted => TransportProto::Tls,
-            other => other,
-        };
+    match sipnab::pipeline::classify_packet(pp, state.rtp_heuristic, &opts, &mut decrypt) {
+        sipnab::pipeline::PacketAction::None => {}
+        sipnab::pipeline::PacketAction::Sip { msg, sdp_links } => {
+            let sip_msg = msg;
+            *sip_count += 1;
 
-        match sip::parser::parse_sip_bytes(
-            effective_payload,
-            pp.timestamp,
-            pp.src_addr,
-            pp.dst_addr,
-            pp.src_port,
-            pp.dst_port,
-            effective_transport,
-        ) {
-            Ok(sip_msg) => {
-                *sip_count += 1;
+            // Apply matcher (header-level filters)
+            let matcher_pass = matcher.matches(&sip_msg);
 
-                // Apply matcher (header-level filters)
-                let matcher_pass = matcher.matches(&sip_msg);
+            // Track dialog regardless of filter (needed for filter DSL evaluation)
+            if !cli.no_dialog {
+                // Fire event exec before updating state (captures state change)
+                let prev_state = sip_msg
+                    .call_id()
+                    .and_then(|id| dialog_store.get(id))
+                    .map(|d| d.state().clone());
 
-                // Track dialog regardless of filter (needed for filter DSL evaluation)
-                if !cli.no_dialog {
-                    // Fire event exec before updating state (captures state change)
-                    let prev_state = sip_msg
-                        .call_id()
-                        .and_then(|id| dialog_store.get(id))
-                        .map(|d| d.state().clone());
+                dialog_store.process_message(sip_msg.clone());
 
-                    dialog_store.process_message(sip_msg.clone());
-
-                    // Apply --tag to the dialog
-                    if let Some(ref tag_label) = cli.tag
-                        && let Some(call_id) = sip_msg.call_id()
-                        && let Some(dialog) = dialog_store.get_mut(call_id)
-                        && !dialog.tags.contains(tag_label)
-                    {
-                        dialog.tags.push(tag_label.clone());
-                    }
-
-                    // Check if state changed, fire event
-                    if let Some(call_id) = sip_msg.call_id()
-                        && let Some(dialog) = dialog_store.get(call_id)
-                        && prev_state.as_ref() != Some(dialog.state())
-                    {
-                        event_exec.fire_dialog_event(dialog);
-                    }
-
-                    // Link SDP media endpoints to RTP streams
-                    if let Some(sdp) = sip_msg.sdp()
-                        && let Some(call_id) = sip_msg.call_id()
-                    {
-                        for media in &sdp.media {
-                            let addr_str = sip::sdp::effective_address(media, &sdp);
-                            if let Some(addr) = &addr_str
-                                && let Ok(ip) = addr.parse::<std::net::IpAddr>()
-                            {
-                                stream_store
-                                    .link_to_dialog_with_sdp(ip, media.port, call_id, media);
-                            }
-                            // Feed SDES `a=crypto` key material into the SRTP
-                            // context so authenticated media on this endpoint
-                            // can be decrypted.
-                            #[cfg(feature = "tls")]
-                            if !media.crypto.is_empty()
-                                && let Some(ctx) = srtp.as_deref_mut()
-                            {
-                                let added =
-                                    ctx.add_sdes(addr_str.clone(), Some(media.port), &media.crypto);
-                                if added > 0 {
-                                    tracing::info!(
-                                        "SRTP: +{added} SDES key(s) from SDP for {}:{}",
-                                        addr_str.as_deref().unwrap_or("?"),
-                                        media.port
-                                    );
-                                }
-                            }
-                        }
-                    }
+                // Apply --tag to the dialog
+                if let Some(ref tag_label) = cli.tag
+                    && let Some(call_id) = sip_msg.call_id()
+                    && let Some(dialog) = dialog_store.get_mut(call_id)
+                    && !dialog.tags.contains(tag_label)
+                {
+                    dialog.tags.push(tag_label.clone());
                 }
 
-                // Apply DSL filter (evaluated after dialog update)
-                let filter_pass = if let Some(expr) = &filter_expr {
-                    if let Some(call_id) = sip_msg.call_id() {
-                        if let Some(dialog) = dialog_store.get(call_id) {
-                            let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> =
-                                stream_store.streams_for(call_id).collect();
-                            expr.matches_dialog(dialog, &dialog_streams)
-                        } else {
-                            false
-                        }
+                // Check if state changed, fire event
+                if let Some(call_id) = sip_msg.call_id()
+                    && let Some(dialog) = dialog_store.get(call_id)
+                    && prev_state.as_ref() != Some(dialog.state())
+                {
+                    event_exec.fire_dialog_event(dialog);
+                }
+
+                // Link SDP media endpoints to RTP streams
+                for (ip, port, call_id, media) in &sdp_links {
+                    stream_store.link_to_dialog_with_sdp(*ip, *port, call_id, media);
+                }
+            }
+
+            // Apply DSL filter (evaluated after dialog update)
+            let filter_pass = if let Some(expr) = &filter_expr {
+                if let Some(call_id) = sip_msg.call_id() {
+                    if let Some(dialog) = dialog_store.get(call_id) {
+                        let dialog_streams: Vec<&sipnab::rtp::stream::RtpStream> =
+                            stream_store.streams_for(call_id).collect();
+                        expr.matches_dialog(dialog, &dialog_streams)
                     } else {
                         false
                     }
                 } else {
-                    true
-                };
+                    false
+                }
+            } else {
+                true
+            };
 
-                // Security detection: scanner
-                if let Some(det) = scanner_detector
-                    && let Some(alert) = det.check(&sip_msg)
-                {
-                    alert_engine.write().fire(
-                        "scanner",
-                        alert.src_ip,
-                        &format!(
-                            "method={} ua={} detection={}",
-                            alert.method, alert.ua, alert.detection_method
-                        ),
+            // Security detection: scanner
+            if let Some(det) = scanner_detector
+                && let Some(alert) = det.check(&sip_msg)
+            {
+                alert_engine.write().fire(
+                    "scanner",
+                    alert.src_ip,
+                    &format!(
+                        "method={} ua={} detection={}",
+                        alert.method, alert.ua, alert.detection_method
+                    ),
+                );
+                if cli.fail2ban {
+                    let event = output::format_scanner_event(
+                        &alert.src_ip.to_string(),
+                        &alert.ua,
+                        &alert.method,
                     );
-                    if cli.fail2ban {
-                        let event = output::format_scanner_event(
-                            &alert.src_ip.to_string(),
-                            &alert.ua,
-                            &alert.method,
-                        );
-                        println!("{event}");
-                    }
-
-                    // D16: Send kill response via isolated worker thread
-                    if let Some(handle) = &scanner_kill_handle
-                        && let Some(response_bytes) =
-                            sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
-                    {
-                        let _ = handle.send_kill(KillRequest::SendResponse {
-                            dst_addr: sip_msg.src_addr,
-                            dst_port: sip_msg.src_port,
-                            response_bytes,
-                        });
-                    }
+                    println!("{event}");
                 }
 
-                // Security detection: fraud
-                if let Some(det) = fraud_detector
-                    && let Some(call_id) = sip_msg.call_id()
-                    && let Some(dialog) = dialog_store.get(call_id)
-                    && let Some(alert) = det.check(&sip_msg, dialog)
+                // D16: Send kill response via isolated worker thread
+                if let Some(handle) = &scanner_kill_handle
+                    && let Some(response_bytes) =
+                        sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
                 {
-                    alert_engine.write().fire(
-                        "fraud",
-                        alert.src_ip,
-                        &format!("{:?}: {}", alert.alert_type, alert.detail),
-                    );
+                    let _ = handle.send_kill(KillRequest::SendResponse {
+                        dst_addr: sip_msg.src_addr,
+                        dst_port: sip_msg.src_port,
+                        response_bytes,
+                    });
                 }
-
-                // Security detection: digest leak
-                if let Some(det) = digest_detector {
-                    let alerts = det.check(&sip_msg);
-                    for alert in &alerts {
-                        alert_engine.write().fire(
-                            "digest",
-                            sip_msg.src_addr,
-                            &format!("{:?}: {}", alert.vulnerability, alert.detail),
-                        );
-                    }
-                }
-
-                // Security detection: registration flood
-                if let Some(det) = reg_flood_detector
-                    && let Some(alert) = det.check(&sip_msg)
-                {
-                    alert_engine.write().fire(
-                        "reg_flood",
-                        alert.src_ip,
-                        &format!(
-                            "count={} threshold={}",
-                            alert.register_count, alert.threshold
-                        ),
-                    );
-                    if cli.fail2ban {
-                        let event = output::format_reg_flood_event(
-                            &alert.src_ip.to_string(),
-                            alert.register_count,
-                        );
-                        println!("{event}");
-                    }
-                }
-
-                // STIR/SHAKEN extraction (I1)
-                #[cfg(feature = "tls")]
-                if cli.stir_shaken
-                    && let Some(result) = sip_msg.stir_shaken()
-                {
-                    match result {
-                        Ok(info) => {
-                            tracing::info!(
-                                "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
-                                info.attestation,
-                                info.orig_tn.as_deref().unwrap_or("-"),
-                                info.dest_tn.as_deref().unwrap_or("-"),
-                                info.verified,
-                            );
-                        }
-                        Err(e) => {
-                            tracing::debug!("STIR/SHAKEN parse error: {e}");
-                        }
-                    }
-                }
-
-                // I5: --calls-only: skip non-INVITE dialogs from output
-                let calls_only_pass = if cli.calls_only {
-                    if let Some(call_id) = sip_msg.call_id()
-                        && let Some(dialog) = dialog_store.get(call_id)
-                    {
-                        dialog.method == crate::sip::SipMethod::Invite
-                    } else {
-                        // No dialog tracked — only show if it's an INVITE request
-                        sip_msg.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
-                    }
-                } else {
-                    true
-                };
-
-                // Output if matcher/filter pass, or if trailing context is active
-                let direct_match = matcher_pass && filter_pass && calls_only_pass;
-                let trailing_match = *trailing_remaining > 0;
-
-                if (direct_match || trailing_match) && cli.no_tui {
-                    dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
-
-                    if direct_match {
-                        // Reset trailing counter on new match
-                        *trailing_remaining = after_count;
-                    } else if trailing_match {
-                        *trailing_remaining -= 1;
-                    }
-                }
-
-                *prev_timestamp = Some(sip_msg.timestamp);
             }
-            Err(e) => {
-                tracing::debug!("SIP parse error: {e}");
-            }
-        }
-        return;
-    }
 
-    // RTP/RTCP detection (only for UDP, unless disabled)
-    if no_rtp || pp.transport != TransportProto::Udp {
-        return;
-    }
-
-    // DTLS-SRTP: feed DTLS handshake packets to the extractor; any SRTP keys it
-    // recovers (RFC 5764 exporter) are handed to the SRTP context so subsequent
-    // media decrypts. DTLS packets are not RTP, so handle and return.
-    #[cfg(feature = "tls")]
-    if let Some(ext) = state.dtls.as_deref_mut()
-        && sipnab::capture::dtls::is_dtls(&pp.payload)
-    {
-        let keys = ext.process_dtls(&pp.payload);
-        if !keys.is_empty()
-            && let Some(ctx) = srtp.as_deref_mut()
-        {
-            let n = ctx.add_keys(keys);
-            tracing::info!("DTLS-SRTP: +{n} SRTP key(s) handed to the media decryptor");
-        }
-        return;
-    }
-
-    // RTCP detection: odd port, version=2, PT in 200-204 range
-    if sipnab::pipeline::is_rtcp_packet(&pp.payload, pp.dst_port) {
-        let rtcp_packets = parse_rtcp(&pp.payload);
-        if !rtcp_packets.is_empty() {
-            stream_store.process_rtcp(&rtcp_packets);
-        }
-        return;
-    }
-
-    // RTP detection: explicit check first
-    if rtp::is_rtp_packet(&pp.payload)
-        && let Ok(rtp_hdr) = parse_rtp_header(&pp.payload)
-    {
-        // SRTP: if a key authenticates this packet, decrypt the payload and
-        // substitute a synthetic plaintext packet for media analysis. The auth
-        // tag is the gate — a wrong key never produces plaintext.
-        #[cfg(feature = "tls")]
-        let srtp_decrypted: Option<ParsedPacket> = srtp.as_deref_mut().and_then(|ctx| {
-            ctx.decrypt(&pp.payload, rtp_hdr.payload_offset)
-                .map(|plain| {
-                    let mut d = pp.clone();
-                    d.payload = plain.into();
-                    d
-                })
-        });
-        #[cfg(not(feature = "tls"))]
-        let srtp_decrypted: Option<ParsedPacket> = None;
-        let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
-
-        stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
-        *rtp_count += 1;
-
-        // DTMF extraction (I2): if --telephone-event is set and we
-        // have the RTP payload after the header, attempt DTMF decode.
-        // Uses a default telephone-event PT of 101 (common convention).
-        if cli.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
-            let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
-            if let Some(dtmf) = rtp::dtmf::extract_dtmf(
-                rtp_payload,
-                rtp_hdr.payload_type,
-                101, // Default telephone-event PT
-                pp.timestamp,
-            ) {
-                tracing::info!(
-                    "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
-                    dtmf.digit,
-                    dtmf.duration_ms,
-                    rtp_hdr.ssrc
+            // Security detection: fraud
+            if let Some(det) = fraud_detector
+                && let Some(call_id) = sip_msg.call_id()
+                && let Some(dialog) = dialog_store.get(call_id)
+                && let Some(alert) = det.check(&sip_msg, dialog)
+            {
+                alert_engine.write().fire(
+                    "fraud",
+                    alert.src_ip,
+                    &format!("{:?}: {}", alert.alert_type, alert.detail),
                 );
             }
-        }
 
-        // Fire quality events on each RTP packet (rate-limited internally). Guard
-        // on a configured command so the common no-`--on-quality` path skips the
-        // StreamKey rebuild + second store lookup entirely (per-RTP-packet
-        // constant-factor cut; fire_quality_event no-ops otherwise).
-        if event_exec.quality_events_enabled() {
-            let key = sipnab::rtp::stream::StreamKey {
-                ssrc: rtp_hdr.ssrc,
-                src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
-                dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            // Security detection: digest leak
+            if let Some(det) = digest_detector {
+                let alerts = det.check(&sip_msg);
+                for alert in &alerts {
+                    alert_engine.write().fire(
+                        "digest",
+                        sip_msg.src_addr,
+                        &format!("{:?}: {}", alert.vulnerability, alert.detail),
+                    );
+                }
+            }
+
+            // Security detection: registration flood
+            if let Some(det) = reg_flood_detector
+                && let Some(alert) = det.check(&sip_msg)
+            {
+                alert_engine.write().fire(
+                    "reg_flood",
+                    alert.src_ip,
+                    &format!(
+                        "count={} threshold={}",
+                        alert.register_count, alert.threshold
+                    ),
+                );
+                if cli.fail2ban {
+                    let event = output::format_reg_flood_event(
+                        &alert.src_ip.to_string(),
+                        alert.register_count,
+                    );
+                    println!("{event}");
+                }
+            }
+
+            // STIR/SHAKEN extraction (I1)
+            #[cfg(feature = "tls")]
+            if cli.stir_shaken
+                && let Some(result) = sip_msg.stir_shaken()
+            {
+                match result {
+                    Ok(info) => {
+                        tracing::info!(
+                            "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
+                            info.attestation,
+                            info.orig_tn.as_deref().unwrap_or("-"),
+                            info.dest_tn.as_deref().unwrap_or("-"),
+                            info.verified,
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!("STIR/SHAKEN parse error: {e}");
+                    }
+                }
+            }
+
+            // I5: --calls-only: skip non-INVITE dialogs from output
+            let calls_only_pass = if cli.calls_only {
+                if let Some(call_id) = sip_msg.call_id()
+                    && let Some(dialog) = dialog_store.get(call_id)
+                {
+                    dialog.method == crate::sip::SipMethod::Invite
+                } else {
+                    // No dialog tracked — only show if it's an INVITE request
+                    sip_msg.method.as_ref() == Some(&crate::sip::SipMethod::Invite)
+                }
+            } else {
+                true
             };
-            if let Some(stream) = stream_store.get(&key) {
-                event_exec.fire_quality_event(stream);
+
+            // Output if matcher/filter pass, or if trailing context is active
+            let direct_match = matcher_pass && filter_pass && calls_only_pass;
+            let trailing_match = *trailing_remaining > 0;
+
+            if (direct_match || trailing_match) && cli.no_tui {
+                dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
+
+                if direct_match {
+                    // Reset trailing counter on new match
+                    *trailing_remaining = after_count;
+                } else if trailing_match {
+                    *trailing_remaining -= 1;
+                }
+            }
+
+            *prev_timestamp = Some(sip_msg.timestamp);
+        }
+        sipnab::pipeline::PacketAction::Rtcp(rtcp_packets) => {
+            stream_store.process_rtcp(&rtcp_packets);
+        }
+        sipnab::pipeline::PacketAction::Rtp {
+            hdr: rtp_hdr,
+            decrypted_payload,
+            via_heuristic,
+        } => {
+            // Heuristically-discovered streams keep the pre-existing batch
+            // contract: stream tracking only — no DTMF, no quality events.
+            if via_heuristic {
+                stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
+                *rtp_count += 1;
+                return;
+            }
+
+            // SRTP: classification substituted a plaintext payload when a key
+            // authenticated the packet. The auth tag is the gate — a wrong
+            // key never produces plaintext.
+            let srtp_decrypted: Option<ParsedPacket> = decrypted_payload.map(|plain| {
+                let mut d = pp.clone();
+                d.payload = plain;
+                d
+            });
+            let rtp_pp: &ParsedPacket = srtp_decrypted.as_ref().unwrap_or(pp);
+
+            stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
+            *rtp_count += 1;
+
+            // DTMF extraction (I2): if --telephone-event is set and we
+            // have the RTP payload after the header, attempt DTMF decode.
+            // Uses a default telephone-event PT of 101 (common convention).
+            if cli.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
+                let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
+                if let Some(dtmf) = rtp::dtmf::extract_dtmf(
+                    rtp_payload,
+                    rtp_hdr.payload_type,
+                    101, // Default telephone-event PT
+                    pp.timestamp,
+                ) {
+                    tracing::info!(
+                        "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
+                        dtmf.digit,
+                        dtmf.duration_ms,
+                        rtp_hdr.ssrc
+                    );
+                }
+            }
+
+            // Fire quality events on each RTP packet (rate-limited internally). Guard
+            // on a configured command so the common no-`--on-quality` path skips the
+            // StreamKey rebuild + second store lookup entirely (per-RTP-packet
+            // constant-factor cut; fire_quality_event no-ops otherwise).
+            if event_exec.quality_events_enabled() {
+                let key = sipnab::rtp::stream::StreamKey {
+                    ssrc: rtp_hdr.ssrc,
+                    src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+                    dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+                };
+                if let Some(stream) = stream_store.get(&key) {
+                    event_exec.fire_quality_event(stream);
+                }
             }
         }
-        return;
-    }
-
-    // Heuristic RTP detection for non-obvious RTP
-    if let Some(rtp_hdr) = rtp_heuristic.check(pp) {
-        stream_store.process_rtp(pp, &rtp_hdr, pp.timestamp);
-        *rtp_count += 1;
     }
 }
 
@@ -2336,11 +2262,12 @@ fn try_tls_decrypt(
         if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)
             && sip::is_sip_message(&plaintext)
         {
-            // Build a synthetic ParsedPacket with the decrypted SIP payload.
-            // The transport string "TLS" is set during SIP message construction
-            // in process_parsed_packet via the tls_decrypted flag.
+            // Build a synthetic ParsedPacket with the decrypted SIP payload,
+            // stamped Tls so the pipeline parses (and reports) the true
+            // transport origin.
             let mut decrypted_pp = pp.clone();
             decrypted_pp.payload = plaintext.into();
+            decrypted_pp.transport = TransportProto::Tls;
             return Some(decrypted_pp);
         }
     }
@@ -3215,7 +3142,7 @@ mod tests {
             dtls: None,
         };
 
-        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, false);
+        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
         (counters.sip_count, counters.rtp_count)
     }
 
@@ -3267,7 +3194,7 @@ mod tests {
             srtp: Some(srtp),
             dtls: None,
         };
-        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, false);
+        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
         counters.rtp_count
     }
 
