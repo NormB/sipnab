@@ -1,0 +1,888 @@
+//! Plain state types for the TUI: display-mode enums, save formats,
+//! the per-dialog/popup state structs and the View/Popup enums.
+//! [`crate::tui::App`] composes these; the controllers mutate them.
+
+use crate::tui::*;
+
+// ── Display mode enums ──────────────────────────────────────────────
+
+/// SDP display mode for the call flow ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SdpDisplayMode {
+    /// No SDP detail — just "(SDP)" label on the arrow.
+    #[default]
+    None,
+    /// Summary — show codec list below the arrow.
+    Summary,
+    /// Full — show complete SDP body below the arrow.
+    Full,
+}
+
+impl SdpDisplayMode {
+    /// Cycle to the next mode.
+    pub(in crate::tui) fn next(self) -> Self {
+        match self {
+            Self::None => Self::Summary,
+            Self::Summary => Self::Full,
+            Self::Full => Self::None,
+        }
+    }
+
+    /// Human-readable label for the status bar.
+    pub(in crate::tui) fn label(self) -> &'static str {
+        match self {
+            Self::None => "SDP: Hidden",
+            Self::Summary => "SDP: Summary",
+            Self::Full => "SDP: Full",
+        }
+    }
+}
+
+/// Timestamp display mode for the call flow ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TimestampMode {
+    /// Absolute `HH:MM:SS.mmm`.
+    Absolute,
+    /// Delta from the previous message (`+N.NNNs`).
+    #[default]
+    DeltaPrev,
+    /// Delta from the first message (`+N.NNNs`).
+    DeltaFirst,
+    /// Time-proportional: insert spacer rows for large timing gaps.
+    Scaled,
+}
+
+impl TimestampMode {
+    pub(in crate::tui) fn next(self) -> Self {
+        match self {
+            Self::Absolute => Self::DeltaPrev,
+            Self::DeltaPrev => Self::DeltaFirst,
+            Self::DeltaFirst => Self::Scaled,
+            Self::Scaled => Self::Absolute,
+        }
+    }
+
+    pub(in crate::tui) fn label(self) -> &'static str {
+        match self {
+            Self::Absolute => "Time: Absolute",
+            Self::DeltaPrev => "Time: Delta-prev",
+            Self::DeltaFirst => "Time: Delta-first",
+            Self::Scaled => "Time: Scaled",
+        }
+    }
+}
+
+/// Color mode for call flow arrows and raw message highlighting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorMode {
+    /// Color by SIP method (INVITE=green, BYE=red, ...).
+    #[default]
+    Method,
+    /// All messages in the same dialog share a color, different dialogs rotate.
+    CallId,
+    /// Color by CSeq number.
+    CSeq,
+}
+
+impl ColorMode {
+    pub(in crate::tui) fn next(self) -> Self {
+        match self {
+            Self::Method => Self::CallId,
+            Self::CallId => Self::CSeq,
+            Self::CSeq => Self::Method,
+        }
+    }
+
+    pub(in crate::tui) fn label(self) -> &'static str {
+        match self {
+            Self::Method => "Color: Method",
+            Self::CallId => "Color: Call-ID",
+            Self::CSeq => "Color: CSeq",
+        }
+    }
+}
+
+/// How the call-list From/To columns render a SIP address.
+///
+/// Cycled with the `u` key. The username is often absent (e.g. domain-only or
+/// device URIs), so the default falls back to the host instead of a bare `-`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FromToMode {
+    /// Username if present, else `host[:port]` (else `-`).
+    #[default]
+    Default,
+    /// `Host[:port]` only (else `-`).
+    HostPort,
+    /// Username only (else `-`) — the legacy behavior.
+    User,
+    /// `user@host:port` when both exist, else whichever exists (else `-`).
+    UserHostPort,
+}
+
+impl FromToMode {
+    /// Cycle to the next mode.
+    pub(in crate::tui) fn next(self) -> Self {
+        match self {
+            Self::Default => Self::HostPort,
+            Self::HostPort => Self::User,
+            Self::User => Self::UserHostPort,
+            Self::UserHostPort => Self::Default,
+        }
+    }
+
+    /// Human-readable label for the status bar.
+    pub(in crate::tui) fn label(self) -> &'static str {
+        match self {
+            Self::Default => "From/To: Default (user or host)",
+            Self::HostPort => "From/To: Host:port",
+            Self::User => "From/To: User only",
+            Self::UserHostPort => "From/To: User@host:port",
+        }
+    }
+
+    /// Stable string used in config (`[display] from_to = ...`) and the CLI.
+    pub fn as_config_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::HostPort => "host-port",
+            Self::User => "user",
+            Self::UserHostPort => "user-host-port",
+        }
+    }
+
+    /// Parse a config/CLI value into a mode. Returns `None` for unknown values.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "default" => Some(Self::Default),
+            "host-port" => Some(Self::HostPort),
+            "user" => Some(Self::User),
+            "user-host-port" => Some(Self::UserHostPort),
+            _ => None,
+        }
+    }
+
+    /// Format a From/To cell from the (already name-resolved) user and host.
+    pub(in crate::tui) fn format(self, user: Option<&str>, host: Option<&str>) -> String {
+        const DASH: &str = "-";
+        match self {
+            Self::Default => user.or(host).unwrap_or(DASH).to_string(),
+            Self::HostPort => host.unwrap_or(DASH).to_string(),
+            Self::User => user.unwrap_or(DASH).to_string(),
+            Self::UserHostPort => match (user, host) {
+                (Some(u), Some(h)) => format!("{u}@{h}"),
+                (Some(u), None) => u.to_string(),
+                (None, Some(h)) => h.to_string(),
+                (None, None) => DASH.to_string(),
+            },
+        }
+    }
+}
+
+/// A single entry in the file-open browser's directory listing.
+#[derive(Debug, Clone)]
+pub(in crate::tui) struct FileEntry {
+    /// File name (no path) — what the user sees in the list.
+    pub(in crate::tui) name: String,
+    /// Absolute path — what we pass to `load_pcap_file` or `cd` into.
+    pub(in crate::tui) path: PathBuf,
+    /// Whether this entry is a directory.
+    pub(in crate::tui) is_dir: bool,
+}
+
+/// Save file format for the F2 save dialog.
+///
+/// Cycle order (Tab): PCAP → PCAP-NG → TXT → JSON → NDJSON → CSV →
+/// HTML → Markdown → WAV → SIPp → RTP → PCAP
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SaveFormat {
+    /// Standard pcap format.
+    #[default]
+    Pcap,
+    /// PCAP-NG format.
+    PcapNg,
+    /// Plain text SIP messages (sngrep-compatible .txt/.sip).
+    Txt,
+    /// JSON — full call detail with parsed headers, timings, RTP stats.
+    Json,
+    /// NDJSON — newline-delimited JSON, streaming-friendly for large captures.
+    Ndjson,
+    /// CSV — summary rows per call/dialog for spreadsheets and BI tools.
+    Csv,
+    /// HTML ladder diagram (Mermaid + renderer, zero dependencies).
+    Html,
+    /// Markdown call summary — for tickets and incident documentation.
+    Markdown,
+    /// WAV audio extracted from RTP (G.711 mu-law/A-law).
+    Wav,
+    /// SIPp XML scenario for call replay/testing.
+    SippXml,
+    /// RTP/RTCP quality JSON — jitter, loss, MOS per stream.
+    RtpJson,
+}
+
+impl SaveFormat {
+    /// Cycle to the next format (Tab).
+    pub fn next(self) -> Self {
+        match self {
+            Self::Pcap => Self::PcapNg,
+            Self::PcapNg => Self::Txt,
+            Self::Txt => Self::Json,
+            Self::Json => Self::Ndjson,
+            Self::Ndjson => Self::Csv,
+            Self::Csv => Self::Html,
+            Self::Html => Self::Markdown,
+            Self::Markdown => Self::Wav,
+            Self::Wav => Self::SippXml,
+            Self::SippXml => Self::RtpJson,
+            Self::RtpJson => Self::Pcap,
+        }
+    }
+
+    /// Cycle to the previous format (Shift-Tab).
+    pub fn prev(self) -> Self {
+        match self {
+            Self::Pcap => Self::RtpJson,
+            Self::PcapNg => Self::Pcap,
+            Self::Txt => Self::PcapNg,
+            Self::Json => Self::Txt,
+            Self::Ndjson => Self::Json,
+            Self::Csv => Self::Ndjson,
+            Self::Html => Self::Csv,
+            Self::Markdown => Self::Html,
+            Self::Wav => Self::Markdown,
+            Self::SippXml => Self::Wav,
+            Self::RtpJson => Self::SippXml,
+        }
+    }
+
+    /// File extension for this format.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Pcap => "pcap",
+            Self::PcapNg => "pcapng",
+            Self::Txt => "txt",
+            Self::Json => "json",
+            Self::Ndjson => "ndjson",
+            Self::Csv => "csv",
+            Self::Html => "html",
+            Self::Markdown => "md",
+            Self::Wav => "wav",
+            Self::SippXml => "xml",
+            Self::RtpJson => "rtp.json",
+        }
+    }
+
+    /// Display label for this format.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pcap => "PCAP",
+            Self::PcapNg => "PCAP-NG",
+            Self::Txt => "TXT",
+            Self::Json => "JSON",
+            Self::Ndjson => "NDJSON",
+            Self::Csv => "CSV",
+            Self::Html => "HTML",
+            Self::Markdown => "MD",
+            Self::Wav => "WAV",
+            Self::SippXml => "SIPp",
+            Self::RtpJson => "RTP",
+        }
+    }
+
+    /// Category grouping for the save dialog display.
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::Pcap | Self::PcapNg => "Packet Capture",
+            Self::Txt | Self::SippXml => "SIP-Specific",
+            Self::Json | Self::Ndjson | Self::Csv => "Structured/Analytics",
+            Self::Html | Self::Markdown => "Reporting",
+            Self::Wav | Self::RtpJson => "RTP/Media",
+        }
+    }
+
+    /// Short description for the save dialog.
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Pcap => "Universal baseline (Wireshark, tcpdump, Homer)",
+            Self::PcapNg => "Modern format with metadata and annotations",
+            Self::Txt => "Plain text SIP messages (sngrep-compatible)",
+            Self::Json => "Full call detail for ELK, ClickHouse, etc.",
+            Self::Ndjson => "Streaming-friendly for large captures",
+            Self::Csv => "Summary rows for spreadsheets and BI tools",
+            Self::Html => "Self-contained ladder diagram, zero dependencies",
+            Self::Markdown => "Call summary for tickets and incidents",
+            Self::Wav => "Decoded G.711 audio per RTP stream",
+            Self::SippXml => "Replayable SIPp scenario for QA testing",
+            Self::RtpJson => "Jitter, packet loss, MOS per stream",
+        }
+    }
+}
+
+// ── Filter dialog state ────────────────────────────────────────────
+
+/// SIP methods displayed as checkboxes in the filter dialog.
+/// Arranged in two columns matching sngrep's layout.
+pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
+    "REGISTER",
+    "OPTIONS",
+    "INVITE",
+    "PUBLISH",
+    "SUBSCRIBE",
+    "MESSAGE",
+    "NOTIFY",
+    "REFER",
+    "INFO",
+    "UPDATE",
+];
+
+/// Number of text input fields in the filter dialog.
+pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 5;
+
+/// Total focusable items: 5 text fields + 10 checkboxes + 2 buttons.
+pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
+    FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 2;
+
+/// Index of the "Filter" button in focused_field.
+pub(in crate::tui) const FILTER_BUTTON_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
+/// Index of the "Cancel" button in focused_field.
+pub(in crate::tui) const CANCEL_BUTTON_IDX: usize = FILTER_BUTTON_IDX + 1;
+
+/// Number of rows in the settings popup.
+pub(in crate::tui) const SETTINGS_ITEM_COUNT: usize = 6;
+
+/// Structured state for the settings popup dialog.
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct SettingsDialogState {
+    /// Currently highlighted row (0-based).
+    pub(in crate::tui) focused_item: usize,
+}
+
+/// One endpoint offered for naming in the "Name Address" popup.
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct NameTarget {
+    /// The IP being named (display + resolution key).
+    pub(in crate::tui) ip: String,
+    /// Editable name text for this IP.
+    pub(in crate::tui) name: String,
+}
+
+/// State for the "Name Address" popup (map IPs to host/FQDN names).
+///
+/// Holds every endpoint the current view exposes — a call's participants, or a
+/// stream's two ends — so the user can `Tab`/`Shift-Tab` between them and edit
+/// any one's name, not just the first. Each target keeps its own edited text;
+/// `Enter` applies them all.
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct NameDialogState {
+    /// Endpoints available to name, in display order.
+    pub(in crate::tui) targets: Vec<NameTarget>,
+    /// Index of the endpoint currently being edited.
+    pub(in crate::tui) active: usize,
+    /// Cursor position within the active target's name.
+    pub(in crate::tui) cursor: usize,
+}
+
+/// State for the F2 save dialog popup.
+///
+/// Kept on [`App`] (not inside the popup variant) so the edited path and
+/// chosen format survive closing and reopening the dialog.
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct SaveDialogState {
+    /// File path input.
+    pub(in crate::tui) path: String,
+    /// Cursor position within the path string.
+    pub(in crate::tui) cursor: usize,
+    /// Cached total dialog count for the dialog display.
+    pub(in crate::tui) dialog_count: usize,
+    /// Cached selected dialog count for the dialog display.
+    pub(in crate::tui) selected_count: usize,
+    /// Cached total message count for the dialog display.
+    pub(in crate::tui) message_count: usize,
+    /// Selected save format (PCAP, PCAP-NG, TXT, ...).
+    pub(in crate::tui) format: SaveFormat,
+}
+
+/// State for the file-open dialog (browser + manual path entry).
+///
+/// Kept on [`App`] so the last-browsed directory is the starting point the
+/// next time the dialog opens.
+#[derive(Debug, Clone)]
+pub(in crate::tui) struct FileOpenState {
+    /// Path being edited (used only in manual-path mode).
+    pub(in crate::tui) path: String,
+    /// Cursor position in the manual path.
+    pub(in crate::tui) cursor: usize,
+    /// Current directory being browsed.
+    pub(in crate::tui) dir: PathBuf,
+    /// Entries in the current directory (dirs first, then pcaps).
+    pub(in crate::tui) entries: Vec<FileEntry>,
+    /// Selected row in the entries list.
+    pub(in crate::tui) selected: usize,
+    /// Typed filter substring (narrows the entries list).
+    pub(in crate::tui) filter: String,
+    /// Manual-path edit mode (Tab toggles).
+    pub(in crate::tui) manual_mode: bool,
+    /// Error from the last directory read (e.g. permission denied after a
+    /// privilege drop), shown in the browser instead of a blank list.
+    /// `None` when the directory was read successfully.
+    pub(in crate::tui) error: Option<String>,
+}
+
+impl Default for FileOpenState {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            cursor: 0,
+            dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            entries: Vec::new(),
+            selected: 0,
+            filter: String::new(),
+            manual_mode: false,
+            error: None,
+        }
+    }
+}
+
+/// Per-view state for the call flow ladder: selection, scrolling, display
+/// toggles and the render-time caches that map visible rows back to raw
+/// message indices.
+#[derive(Debug, Clone)]
+pub(in crate::tui) struct CallFlowViewState {
+    /// Scroll offset for the ladder.
+    pub(in crate::tui) scroll: usize,
+    /// Index of the currently selected message in the ladder.
+    pub(in crate::tui) selected: usize,
+    /// Scroll offset for the detail (right) panel in split view.
+    pub(in crate::tui) detail_scroll: u16,
+    /// In the split view, whether keyboard focus is on the detail (right)
+    /// pane. `false` = ladder (left). Toggled with Tab. Only meaningful while
+    /// [`Self::raw_preview`] is on; navigation keys act on the focused pane.
+    pub(in crate::tui) detail_focused: bool,
+    /// Whether the raw preview split is active.
+    /// Default is `true` (matching sngrep: split view on by default).
+    pub(in crate::tui) raw_preview: bool,
+    /// Split percentage for the raw preview (right) pane (10..=80, default 40).
+    pub(in crate::tui) raw_preview_pct: u16,
+    /// Whether extended (multi-leg) flow is active.
+    pub(in crate::tui) extended: bool,
+    /// When set, the ladder is filtered to a single transaction — the CSeq
+    /// grouping key (number + method) anchored when the filter was toggled
+    /// on. `None` shows the whole dialog. See [`call_flow::transaction_key`].
+    pub(in crate::tui) transaction_filter: Option<(u32, String)>,
+    /// Whether RTP stream info is displayed in the flow.
+    pub(in crate::tui) show_rtp: bool,
+    /// First selected message index for diff comparison (Space key).
+    pub(in crate::tui) diff_selected: Option<usize>,
+    /// Marked message index for delta measurement (set with 'm').
+    pub(in crate::tui) mark_index: Option<usize>,
+    /// Set of message indices where folds are expanded ('e' toggles).
+    pub(in crate::tui) fold_expanded: HashSet<usize>,
+    /// Cached rendered message count (after folding).
+    pub(in crate::tui) cached_msg_count: usize,
+    /// Indices of FormattedMessages that carry an RTP bar (Enter drill-down).
+    pub(in crate::tui) cached_rtp_bar_indices: std::collections::HashSet<usize>,
+    /// Per visible ladder row, the raw message index it renders (`None` for
+    /// RTP bars). Updated on every render; maps [`Self::selected`] (a
+    /// visible-row position) back to the underlying message for the detail
+    /// pane, Enter, diff selection and fold expansion.
+    pub(in crate::tui) cached_raw_indices: Vec<Option<usize>>,
+}
+
+impl Default for CallFlowViewState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            selected: 0,
+            detail_scroll: 0,
+            detail_focused: false,
+            raw_preview: true,
+            raw_preview_pct: 40,
+            extended: false,
+            transaction_filter: None,
+            show_rtp: false,
+            diff_selected: None,
+            mark_index: None,
+            fold_expanded: HashSet::new(),
+            cached_msg_count: 0,
+            cached_rtp_bar_indices: std::collections::HashSet::new(),
+            cached_raw_indices: Vec::new(),
+        }
+    }
+}
+
+impl NameDialogState {
+    /// IP string of the active target (empty if none).
+    pub(in crate::tui) fn active_ip(&self) -> &str {
+        self.targets.get(self.active).map_or("", |t| t.ip.as_str())
+    }
+
+    /// Editable name of the active target (empty if none).
+    pub(in crate::tui) fn active_name(&self) -> &str {
+        self.targets
+            .get(self.active)
+            .map_or("", |t| t.name.as_str())
+    }
+
+    /// Mutable handle to the active target's name, if any.
+    pub(in crate::tui) fn active_name_mut(&mut self) -> Option<&mut String> {
+        let a = self.active;
+        self.targets.get_mut(a).map(|t| &mut t.name)
+    }
+
+    /// Move the active target to the next endpoint (wraps), placing the cursor
+    /// at the end of its current name.
+    pub(in crate::tui) fn focus_next(&mut self) {
+        if !self.targets.is_empty() {
+            self.active = (self.active + 1) % self.targets.len();
+            self.cursor = self.active_name().len();
+        }
+    }
+
+    /// Move the active target to the previous endpoint (wraps).
+    pub(in crate::tui) fn focus_prev(&mut self) {
+        if !self.targets.is_empty() {
+            self.active = (self.active + self.targets.len() - 1) % self.targets.len();
+            self.cursor = self.active_name().len();
+        }
+    }
+}
+
+/// Structured state for the sngrep-style filter dialog.
+#[derive(Debug, Clone)]
+pub struct FilterDialogState {
+    /// SIP From header filter text.
+    pub(in crate::tui) sip_from: String,
+    /// SIP To header filter text.
+    pub(in crate::tui) sip_to: String,
+    /// Source IP/port filter text.
+    pub(in crate::tui) source: String,
+    /// Destination IP/port filter text.
+    pub(in crate::tui) destination: String,
+    /// Payload content filter text.
+    pub(in crate::tui) payload: String,
+    /// Method checkbox states, indexed by position in FILTER_METHODS.
+    pub(in crate::tui) methods: [bool; 10],
+    /// Currently focused UI element index.
+    /// 0-4 = text fields, 5-14 = checkboxes, 15 = Filter button, 16 = Cancel button.
+    pub(in crate::tui) focused_field: usize,
+    /// Cursor position within the currently focused text field.
+    pub(in crate::tui) cursor_pos: usize,
+}
+
+impl Default for FilterDialogState {
+    fn default() -> Self {
+        Self {
+            sip_from: String::new(),
+            sip_to: String::new(),
+            source: String::new(),
+            destination: String::new(),
+            payload: String::new(),
+            // All SIP methods checked by default == show every message. The
+            // method filter only narrows once the user unchecks something.
+            methods: [true; 10],
+            focused_field: 0,
+            cursor_pos: 0,
+        }
+    }
+}
+
+impl FilterDialogState {
+    /// Whether at least one SIP method checkbox is checked. When none are
+    /// checked the call list shows nothing (see `apply_filter_dialog`).
+    pub(in crate::tui) fn any_method_checked(&self) -> bool {
+        self.methods.iter().any(|&v| v)
+    }
+
+    /// Get a reference to the text field at the given index (0-4).
+    pub(in crate::tui) fn text_field(&self, idx: usize) -> &str {
+        match idx {
+            0 => &self.sip_from,
+            1 => &self.sip_to,
+            2 => &self.source,
+            3 => &self.destination,
+            4 => &self.payload,
+            _ => "",
+        }
+    }
+
+    /// Get a mutable reference to the text field at the given index (0-4).
+    pub(in crate::tui) fn text_field_mut(&mut self, idx: usize) -> Option<&mut String> {
+        match idx {
+            0 => Some(&mut self.sip_from),
+            1 => Some(&mut self.sip_to),
+            2 => Some(&mut self.source),
+            3 => Some(&mut self.destination),
+            4 => Some(&mut self.payload),
+            _ => None,
+        }
+    }
+
+    /// Whether the currently focused element is a text field.
+    pub(in crate::tui) fn is_text_field_focused(&self) -> bool {
+        self.focused_field < FILTER_TEXT_FIELD_COUNT
+    }
+
+    /// Whether the currently focused element is a checkbox.
+    pub(in crate::tui) fn is_checkbox_focused(&self) -> bool {
+        self.focused_field >= FILTER_TEXT_FIELD_COUNT && self.focused_field < FILTER_BUTTON_IDX
+    }
+
+    /// Get the checkbox index (0-9) for the currently focused element.
+    pub(in crate::tui) fn checkbox_index(&self) -> Option<usize> {
+        if self.is_checkbox_focused() {
+            Some(self.focused_field - FILTER_TEXT_FIELD_COUNT)
+        } else {
+            None
+        }
+    }
+
+    /// Move focus to the next element.
+    pub(in crate::tui) fn focus_next(&mut self) {
+        if self.focused_field + 1 < FILTER_ITEM_COUNT {
+            self.focused_field += 1;
+        } else {
+            self.focused_field = 0;
+        }
+        self.sync_cursor();
+    }
+
+    /// Move focus to the previous element.
+    pub(in crate::tui) fn focus_prev(&mut self) {
+        if self.focused_field > 0 {
+            self.focused_field -= 1;
+        } else {
+            self.focused_field = FILTER_ITEM_COUNT - 1;
+        }
+        self.sync_cursor();
+    }
+
+    /// Sync cursor position to end of the newly focused text field.
+    pub(in crate::tui) fn sync_cursor(&mut self) {
+        if self.is_text_field_focused() {
+            let len = self.text_field(self.focused_field).len();
+            self.cursor_pos = len;
+        }
+    }
+
+    /// Move checkbox focus down one row.
+    ///
+    /// The checkboxes are a 2-column grid (left = even indices, right = odd).
+    /// Down walks a column to its bottom, then continues into the top of the
+    /// next column, then to the buttons — so vertical navigation alone reaches
+    /// every checkbox (the right column was previously unreachable this way).
+    pub(in crate::tui) fn checkbox_down(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            let next = idx + 2;
+            if next < FILTER_METHODS.len() {
+                // Same column, one row down.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + next;
+            } else if idx % 2 == 0 {
+                // Bottom of the LEFT column -> top of the RIGHT column.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + 1;
+            } else {
+                // Bottom of the RIGHT column -> buttons row.
+                self.focused_field = FILTER_BUTTON_IDX;
+            }
+        }
+    }
+
+    /// Move checkbox focus up one row (reverse of [`Self::checkbox_down`]).
+    pub(in crate::tui) fn checkbox_up(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            if idx >= 2 {
+                // Same column, one row up.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + (idx - 2);
+            } else if idx == 1 {
+                // Top of the RIGHT column -> bottom of the LEFT column.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT + (FILTER_METHODS.len() - 2);
+            } else {
+                // Top of the LEFT column -> last text field.
+                self.focused_field = FILTER_TEXT_FIELD_COUNT - 1;
+                self.sync_cursor();
+            }
+        }
+    }
+
+    /// Move checkbox focus right one column (same row).
+    pub(in crate::tui) fn checkbox_right(&mut self) {
+        if let Some(idx) = self.checkbox_index()
+            && idx % 2 == 0
+            && idx + 1 < FILTER_METHODS.len()
+        {
+            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx + 1;
+        }
+    }
+
+    /// Move checkbox focus left one column (same row).
+    pub(in crate::tui) fn checkbox_left(&mut self) {
+        if let Some(idx) = self.checkbox_index()
+            && idx % 2 == 1
+        {
+            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx - 1;
+        }
+    }
+
+    /// Toggle the currently focused checkbox.
+    pub(in crate::tui) fn toggle_checkbox(&mut self) {
+        if let Some(idx) = self.checkbox_index() {
+            self.methods[idx] = !self.methods[idx];
+        }
+    }
+
+    /// Build a DSL filter expression from the current dialog state.
+    /// Returns `None` if all fields are empty and no methods are checked.
+    ///
+    /// Field text is matched as a LITERAL substring: it is regex-escaped
+    /// before being embedded, so `a+b` means the user a+b and an unbalanced
+    /// `(` can never produce a parse error.
+    pub(in crate::tui) fn build_filter_expression(&self) -> Option<String> {
+        // The DSL string literal has no escape sequences, so a literal quote
+        // is smuggled through as the regex byte escape \x27 / \x22.
+        fn escape_filter_text(s: &str) -> String {
+            regex::escape(s)
+                .replace('\'', "\\x27")
+                .replace('"', "\\x22")
+        }
+        let mut parts: Vec<String> = Vec::new();
+
+        if !self.sip_from.is_empty() {
+            parts.push(format!(
+                "from.user =~ '{}'",
+                escape_filter_text(&self.sip_from)
+            ));
+        }
+        if !self.sip_to.is_empty() {
+            parts.push(format!("to.user =~ '{}'", escape_filter_text(&self.sip_to)));
+        }
+        if !self.source.is_empty() {
+            parts.push(format!("src.ip =~ '{}'", escape_filter_text(&self.source)));
+        }
+        if !self.destination.is_empty() {
+            parts.push(format!(
+                "dst.ip =~ '{}'",
+                escape_filter_text(&self.destination)
+            ));
+        }
+        if !self.payload.is_empty() {
+            parts.push(format!(
+                "payload =~ '{}'",
+                escape_filter_text(&self.payload)
+            ));
+        }
+
+        // Method filter: if some (but not all or none) methods are checked
+        let checked: Vec<&str> = self
+            .methods
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| **v)
+            .map(|(i, _)| FILTER_METHODS[i])
+            .collect();
+        let total = self.methods.len();
+        if !checked.is_empty() && checked.len() < total {
+            let method_filter = checked
+                .iter()
+                .map(|m| format!("method == '{m}'"))
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            parts.push(format!("({})", method_filter));
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" AND "))
+        }
+    }
+
+    /// Clear all fields and checkboxes back to defaults.
+    pub(in crate::tui) fn clear(&mut self) {
+        self.sip_from.clear();
+        self.sip_to.clear();
+        self.source.clear();
+        self.destination.clear();
+        self.payload.clear();
+        // Re-check every method so "clear filter" means show all, matching the
+        // dialog's default state.
+        self.methods = [true; 10];
+        self.focused_field = 0;
+        self.cursor_pos = 0;
+    }
+
+    /// Return the currently focused field index (for testing).
+    pub fn focused_field(&self) -> usize {
+        self.focused_field
+    }
+
+    /// Whether all fields are empty and no methods are checked.
+    #[allow(dead_code)]
+    pub(in crate::tui) fn is_empty(&self) -> bool {
+        self.sip_from.is_empty()
+            && self.sip_to.is_empty()
+            && self.source.is_empty()
+            && self.destination.is_empty()
+            && self.payload.is_empty()
+            // All methods checked == no method narrowing == an "empty" filter.
+            && self.methods.iter().all(|&v| v)
+    }
+}
+
+// ── View enum ───────────────────────────────────────────────────────
+
+/// Which view is currently displayed in the TUI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum View {
+    /// Main call/dialog list table.
+    CallList,
+    /// RTP stream list table.
+    StreamList,
+    /// Ladder diagram for a specific dialog (by Call-ID).
+    CallFlow(String),
+    /// Raw SIP message viewer (message index within a dialog).
+    RawMessage {
+        /// Call-ID of the dialog containing this message.
+        call_id: String,
+        /// Index into the dialog's message list.
+        message_index: usize,
+    },
+    /// Side-by-side diff of two SIP messages.
+    MessageDiff {
+        /// Call-ID of the dialog.
+        call_id: String,
+        /// Index of the first message.
+        msg1_idx: usize,
+        /// Index of the second message.
+        msg2_idx: usize,
+    },
+    /// Combined raw detail of several messages (one transaction or the whole
+    /// dialog) stacked into a single scrollable view.
+    CombinedDetail {
+        /// Call-ID of the dialog.
+        call_id: String,
+        /// Original message indices to show, in order.
+        indices: Vec<usize>,
+        /// Scope label for the title (e.g. "transaction" or "dialog").
+        scope: &'static str,
+    },
+    /// Keybinding help overlay.
+    Help,
+    /// Statistics summary view.
+    Statistics,
+    /// RTP stream detail (by StreamKey).
+    StreamDetail(crate::rtp::stream::StreamKey),
+}
+
+/// Modal popup dialogs that overlay the current view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Popup {
+    /// Save capture popup with editable file path.
+    SaveDialog,
+    /// Filter expression input popup.
+    FilterDialog,
+    /// Settings/preferences popup.
+    SettingsDialog,
+    /// File-open dialog for loading a pcap file.
+    FileOpenDialog,
+    /// "Name Address" popup: map the selected IP to a host/FQDN.
+    NameAddress,
+}
