@@ -9,16 +9,17 @@ use crate::tui::*;
 /// and the transaction filter renders a subset of the dialog (filtered
 /// index -> original index).
 fn flow_selected_original_index(app: &App, call_id: &str) -> usize {
-    let sel = app.selected_msg_index;
+    let sel = app.flow.selected;
     // Visible row -> index into the (possibly filtered) message slice the
     // ladder rendered. Falls back to the row position before the first render.
     let raw = app
-        .cached_flow_raw_indices
+        .flow
+        .cached_raw_indices
         .get(sel)
         .copied()
         .flatten()
         .unwrap_or(sel);
-    let Some(key) = app.flow_filter.as_ref() else {
+    let Some(key) = app.flow.transaction_filter.as_ref() else {
         return raw;
     };
     let Some(store) = app.dialog_store.try_read() else {
@@ -41,7 +42,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     // Use the rendered (folded) message count. For extended flow, this includes
     // correlated legs. Fall back to raw dialog count if render hasn't run yet.
     let raw_count = if let View::CallFlow(ref call_id) = app.current_view {
-        if app.extended_flow {
+        if app.flow.extended {
             // Extended: sum messages from main dialog + all correlated
             app.dialog_store
                 .try_read()
@@ -59,18 +60,19 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             app.dialog_store
                 .try_read()
                 .and_then(|s| {
-                    s.get(call_id).map(|d| match app.flow_filter.as_ref() {
-                        // Filtered: only the active transaction's messages are
-                        // reachable, so navigation must clamp to that subset.
-                        Some(key) => d
-                            .messages
-                            .iter()
-                            .filter(|m| {
-                                crate::tui::call_flow::transaction_key(m).as_ref() == Some(key)
-                            })
-                            .count(),
-                        None => d.messages.len(),
-                    })
+                    s.get(call_id)
+                        .map(|d| match app.flow.transaction_filter.as_ref() {
+                            // Filtered: only the active transaction's messages are
+                            // reachable, so navigation must clamp to that subset.
+                            Some(key) => d
+                                .messages
+                                .iter()
+                                .filter(|m| {
+                                    crate::tui::call_flow::transaction_key(m).as_ref() == Some(key)
+                                })
+                                .count(),
+                            None => d.messages.len(),
+                        })
                 })
                 .unwrap_or(0)
         }
@@ -81,85 +83,85 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     // once a render has produced it; fall back to the raw message count only
     // before the first render. Taking max() with the raw count would let the
     // selection walk past the last visible row whenever folds hide messages.
-    let msg_count = if app.cached_flow_msg_count > 0 {
-        app.cached_flow_msg_count
+    let msg_count = if app.flow.cached_msg_count > 0 {
+        app.flow.cached_msg_count
     } else {
         raw_count
     };
 
     // Clamp selected_msg_index to valid range
-    if msg_count > 0 && app.selected_msg_index >= msg_count {
-        app.selected_msg_index = msg_count - 1;
+    if msg_count > 0 && app.flow.selected >= msg_count {
+        app.flow.selected = msg_count - 1;
     }
 
     // In the split view, Tab moves focus between the ladder (left) and detail
     // (right) panes; the directional keys below then act on the focused pane.
-    let detail_focused = app.raw_preview && app.call_flow_detail_focused;
+    let detail_focused = app.flow.raw_preview && app.flow.detail_focused;
 
     match key.code {
         k if k == app.keymap.quit => app.should_quit = true,
         KeyCode::Tab | KeyCode::BackTab => {
             // Only meaningful when the detail pane is visible.
-            if app.raw_preview {
-                app.call_flow_detail_focused = !app.call_flow_detail_focused;
+            if app.flow.raw_preview {
+                app.flow.detail_focused = !app.flow.detail_focused;
             }
         }
         KeyCode::Up | KeyCode::Char('k') if detail_focused => {
-            app.detail_scroll = app.detail_scroll.saturating_sub(1);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_sub(1);
         }
         KeyCode::Down | KeyCode::Char('j') if detail_focused => {
-            app.detail_scroll = app.detail_scroll.saturating_add(1);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_add(1);
         }
         KeyCode::Up | KeyCode::Char('k') => {
             // Selection only; the render pass follows and clamps the scroll
             // using the real viewport geometry.
-            if app.selected_msg_index > 0 {
-                app.selected_msg_index -= 1;
-                app.detail_scroll = 0;
+            if app.flow.selected > 0 {
+                app.flow.selected -= 1;
+                app.flow.detail_scroll = 0;
             }
         }
         KeyCode::Down | KeyCode::Char('j') => {
-            if msg_count > 0 && app.selected_msg_index < msg_count - 1 {
-                app.selected_msg_index += 1;
-                app.detail_scroll = 0;
+            if msg_count > 0 && app.flow.selected < msg_count - 1 {
+                app.flow.selected += 1;
+                app.flow.detail_scroll = 0;
             }
         }
         KeyCode::PageUp if detail_focused => {
-            app.detail_scroll = app.detail_scroll.saturating_sub(20);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_sub(20);
         }
         KeyCode::PageDown if detail_focused => {
-            app.detail_scroll = app.detail_scroll.saturating_add(20);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_add(20);
         }
         KeyCode::Home if detail_focused => {
-            app.detail_scroll = 0;
+            app.flow.detail_scroll = 0;
         }
         KeyCode::PageUp => {
-            app.selected_msg_index = app.selected_msg_index.saturating_sub(20);
-            app.detail_scroll = 0;
+            app.flow.selected = app.flow.selected.saturating_sub(20);
+            app.flow.detail_scroll = 0;
         }
         KeyCode::PageDown => {
             let max = if msg_count > 0 { msg_count - 1 } else { 0 };
-            app.selected_msg_index = (app.selected_msg_index + 20).min(max);
-            app.detail_scroll = 0;
+            app.flow.selected = (app.flow.selected + 20).min(max);
+            app.flow.detail_scroll = 0;
         }
         KeyCode::Home => {
-            app.selected_msg_index = 0;
-            app.call_flow_scroll = 0;
-            app.detail_scroll = 0;
+            app.flow.selected = 0;
+            app.flow.scroll = 0;
+            app.flow.detail_scroll = 0;
         }
         KeyCode::End => {
             if msg_count > 0 {
-                app.selected_msg_index = msg_count - 1;
+                app.flow.selected = msg_count - 1;
             }
-            app.detail_scroll = 0;
+            app.flow.detail_scroll = 0;
         }
         KeyCode::Enter => {
             if let View::CallFlow(ref call_id) = app.current_view
-                && app.selected_msg_index < msg_count
+                && app.flow.selected < msg_count
             {
                 // Check if this message is an RTP bar entry — if so, drill
                 // down to stream detail. Otherwise show raw SIP message.
-                let is_rtp = app.cached_rtp_bar_indices.contains(&app.selected_msg_index);
+                let is_rtp = app.flow.cached_rtp_bar_indices.contains(&app.flow.selected);
                 if is_rtp {
                     let cid = call_id.clone();
                     // Find a stream linked to this dialog, or any stream
@@ -194,14 +196,14 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         KeyCode::Char(' ') => {
             // Select message for diff comparison
             if let View::CallFlow(ref call_id) = app.current_view
-                && app.selected_msg_index < msg_count
+                && app.flow.selected < msg_count
             {
                 let cur = flow_selected_original_index(app, call_id);
-                if let Some(first) = app.diff_selected_msg {
+                if let Some(first) = app.flow.diff_selected {
                     if first != cur {
                         // Second selection — open diff view
                         let cid = call_id.clone();
-                        app.diff_selected_msg = None;
+                        app.flow.diff_selected = None;
                         app.diff_scroll = 0;
                         app.current_view = View::MessageDiff {
                             call_id: cid,
@@ -211,7 +213,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     }
                 } else {
                     // First selection
-                    app.diff_selected_msg = Some(cur);
+                    app.flow.diff_selected = Some(cur);
                     app.status_error = Some(format!(
                         "Selected: message {} (press Space on another to diff)",
                         cur + 1
@@ -223,8 +225,8 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // Ctrl+R — alias for F6: toggle RTP display in flow. F-keys aren't
             // sendable by every headless front-end (e.g. the VHS hero recorder),
             // so this keeps the toggle reachable. (Bare `r` keeps its meaning.)
-            app.show_rtp_in_flow = !app.show_rtp_in_flow;
-            app.status_error = Some(if app.show_rtp_in_flow {
+            app.flow.show_rtp = !app.flow.show_rtp;
+            app.status_error = Some(if app.flow.show_rtp {
                 "RTP in flow: ON".to_string()
             } else {
                 "RTP in flow: OFF".to_string()
@@ -299,14 +301,14 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         // whole dialog, keeping the same message selected across the switch.
         KeyCode::Char('f') => {
             if let View::CallFlow(ref call_id) = app.current_view {
-                if app.flow_filter.is_some() {
+                if app.flow.transaction_filter.is_some() {
                     let orig = flow_selected_original_index(app, call_id);
-                    app.flow_filter = None;
-                    app.selected_msg_index = orig;
-                    app.call_flow_scroll = 0;
+                    app.flow.transaction_filter = None;
+                    app.flow.selected = orig;
+                    app.flow.scroll = 0;
                     app.status_error = Some("Filter off: whole dialog".to_string());
                 } else {
-                    let orig = app.selected_msg_index;
+                    let orig = app.flow.selected;
                     let info = app.dialog_store.try_read().and_then(|s| {
                         s.get(call_id).and_then(|d| {
                             let key = d
@@ -327,9 +329,9 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                     });
                     if let Some((key, pos)) = info {
                         app.status_error = Some(format!("Filter: transaction {} {}", key.0, key.1));
-                        app.flow_filter = Some(key);
-                        app.selected_msg_index = pos;
-                        app.call_flow_scroll = 0;
+                        app.flow.transaction_filter = Some(key);
+                        app.flow.selected = pos;
+                        app.flow.scroll = 0;
                     }
                 }
             }
@@ -351,12 +353,12 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('R') => {
             // Toggle raw preview split
-            app.raw_preview = !app.raw_preview;
-            if !app.raw_preview {
+            app.flow.raw_preview = !app.flow.raw_preview;
+            if !app.flow.raw_preview {
                 // No detail pane to focus once the split is hidden.
-                app.call_flow_detail_focused = false;
+                app.flow.detail_focused = false;
             }
-            app.status_error = Some(if app.raw_preview {
+            app.status_error = Some(if app.flow.raw_preview {
                 "Raw preview: ON".to_string()
             } else {
                 "Raw preview: OFF".to_string()
@@ -364,10 +366,10 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Left => {
             // Increase detail panel size (Left = push split leftward = detail wider)
-            if app.raw_preview {
-                if app.raw_preview_pct < 80 {
-                    app.raw_preview_pct = (app.raw_preview_pct + 5).min(80);
-                    app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+            if app.flow.raw_preview {
+                if app.flow.raw_preview_pct < 80 {
+                    app.flow.raw_preview_pct = (app.flow.raw_preview_pct + 5).min(80);
+                    app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
                 }
             } else {
                 // Not a silent no-op: say why nothing resized.
@@ -376,10 +378,10 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Right => {
             // Decrease detail panel size (Right = push split rightward = ladder wider)
-            if app.raw_preview {
-                if app.raw_preview_pct > 10 {
-                    app.raw_preview_pct = app.raw_preview_pct.saturating_sub(5).max(10);
-                    app.status_error = Some(format!("Detail panel: {}%", app.raw_preview_pct));
+            if app.flow.raw_preview {
+                if app.flow.raw_preview_pct > 10 {
+                    app.flow.raw_preview_pct = app.flow.raw_preview_pct.saturating_sub(5).max(10);
+                    app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
                 }
             } else {
                 app.status_error = Some("Split view is off — press R to enable it".to_string());
@@ -387,16 +389,16 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('[') => {
             // Scroll detail panel up
-            app.detail_scroll = app.detail_scroll.saturating_sub(1);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_sub(1);
         }
         KeyCode::Char(']') => {
             // Scroll detail panel down
-            app.detail_scroll = app.detail_scroll.saturating_add(1);
+            app.flow.detail_scroll = app.flow.detail_scroll.saturating_add(1);
         }
         k if k == app.keymap.extended_flow || k == KeyCode::Char('x') => {
             // Toggle extended (multi-leg) flow
-            app.extended_flow = !app.extended_flow;
-            app.status_error = Some(if app.extended_flow {
+            app.flow.extended = !app.flow.extended;
+            app.status_error = Some(if app.flow.extended {
                 "Extended flow: ON (multi-leg)".to_string()
             } else {
                 "Extended flow: OFF".to_string()
@@ -404,19 +406,19 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         KeyCode::F(6) => {
             // Toggle RTP display in flow
-            app.show_rtp_in_flow = !app.show_rtp_in_flow;
-            app.status_error = Some(if app.show_rtp_in_flow {
+            app.flow.show_rtp = !app.flow.show_rtp;
+            app.status_error = Some(if app.flow.show_rtp {
                 "RTP in flow: ON".to_string()
             } else {
                 "RTP in flow: OFF".to_string()
             });
         }
         KeyCode::Char('m') => {
-            app.mark_index = Some(app.selected_msg_index);
+            app.flow.mark_index = Some(app.flow.selected);
             app.status_error = Some("Mark set".to_string());
         }
         KeyCode::Char('M') => {
-            app.mark_index = None;
+            app.flow.mark_index = None;
             app.status_error = Some("Mark cleared".to_string());
         }
         KeyCode::Char('e') => {
@@ -424,15 +426,16 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             // fold-header message (stable across display modes), so map the
             // visible selection first.
             let idx = app
-                .cached_flow_raw_indices
-                .get(app.selected_msg_index)
+                .flow
+                .cached_raw_indices
+                .get(app.flow.selected)
                 .copied()
                 .flatten()
-                .unwrap_or(app.selected_msg_index);
-            if app.fold_expanded.contains(&idx) {
-                app.fold_expanded.remove(&idx);
+                .unwrap_or(app.flow.selected);
+            if app.flow.fold_expanded.contains(&idx) {
+                app.flow.fold_expanded.remove(&idx);
             } else {
-                app.fold_expanded.insert(idx);
+                app.flow.fold_expanded.insert(idx);
             }
         }
         KeyCode::Char('E') => {
@@ -451,7 +454,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         sdp_mode: app.sdp_display_mode,
                         ts_mode: app.timestamp_mode,
                         color_mode: app.color_mode,
-                        show_rtp: app.show_rtp_in_flow,
+                        show_rtp: app.flow.show_rtp,
                         selected_msg: None,
                         theme: &app.theme,
                         resolver: app.resolver.as_ref(),
@@ -463,7 +466,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
                         ft,
                         pdd,
                         &flow_opts,
-                        &app.fold_expanded,
+                        &app.flow.fold_expanded,
                     );
                     Some((participants, msgs))
                 });
@@ -505,7 +508,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Esc => {
-            app.diff_selected_msg = None;
+            app.flow.diff_selected = None;
             app.current_view = View::CallList;
         }
         k if k == app.keymap.help => app.current_view = View::Help,
@@ -514,7 +517,7 @@ pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
         }
         k if k == app.keymap.clear_calls => {
             // F5 also starts compare mode (same as first Space press)
-            app.diff_selected_msg = None;
+            app.flow.diff_selected = None;
             app.status_error =
                 Some("Compare: press Space on first message, then Space on second".to_string());
         }
@@ -647,11 +650,11 @@ mod tests {
     fn call_flow_down_up() {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
-        assert_eq!(app.selected_msg_index, 0);
+        assert_eq!(app.flow.selected, 0);
         handle_call_flow_key(&mut app, key(KeyCode::Down));
-        assert_eq!(app.selected_msg_index, 1);
+        assert_eq!(app.flow.selected, 1);
         handle_call_flow_key(&mut app, key(KeyCode::Up));
-        assert_eq!(app.selected_msg_index, 0);
+        assert_eq!(app.flow.selected, 0);
     }
 
     #[test]
@@ -659,9 +662,9 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::End));
-        assert_eq!(app.selected_msg_index, 1); // 2 msgs
+        assert_eq!(app.flow.selected, 1); // 2 msgs
         handle_call_flow_key(&mut app, key(KeyCode::Home));
-        assert_eq!(app.selected_msg_index, 0);
+        assert_eq!(app.flow.selected, 0);
     }
 
     #[test]
@@ -669,30 +672,30 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::PageDown));
-        assert_eq!(app.selected_msg_index, 1);
+        assert_eq!(app.flow.selected, 1);
         handle_call_flow_key(&mut app, key(KeyCode::PageUp));
-        assert_eq!(app.selected_msg_index, 0);
+        assert_eq!(app.flow.selected, 0);
     }
 
     #[test]
     fn call_flow_tab_toggles_pane_focus() {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
-        assert!(app.raw_preview, "split is on by default");
-        assert!(!app.call_flow_detail_focused, "ladder focused initially");
+        assert!(app.flow.raw_preview, "split is on by default");
+        assert!(!app.flow.detail_focused, "ladder focused initially");
         handle_call_flow_key(&mut app, key(KeyCode::Tab));
-        assert!(app.call_flow_detail_focused, "Tab focuses detail pane");
+        assert!(app.flow.detail_focused, "Tab focuses detail pane");
         handle_call_flow_key(&mut app, key(KeyCode::Tab));
-        assert!(!app.call_flow_detail_focused, "Tab toggles back to ladder");
+        assert!(!app.flow.detail_focused, "Tab toggles back to ladder");
     }
 
     #[test]
     fn call_flow_tab_noop_without_split() {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
-        app.raw_preview = false;
+        app.flow.raw_preview = false;
         handle_call_flow_key(&mut app, key(KeyCode::Tab));
-        assert!(!app.call_flow_detail_focused, "no detail pane to focus");
+        assert!(!app.flow.detail_focused, "no detail pane to focus");
     }
 
     #[test]
@@ -700,16 +703,16 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Tab)); // focus detail
-        let sel = app.selected_msg_index;
-        assert_eq!(app.detail_scroll, 0);
+        let sel = app.flow.selected;
+        assert_eq!(app.flow.detail_scroll, 0);
         handle_call_flow_key(&mut app, key(KeyCode::Down));
-        assert_eq!(app.detail_scroll, 1, "Down scrolls the detail pane");
+        assert_eq!(app.flow.detail_scroll, 1, "Down scrolls the detail pane");
         assert_eq!(
-            app.selected_msg_index, sel,
+            app.flow.selected, sel,
             "selection unchanged while detail focused"
         );
         handle_call_flow_key(&mut app, key(KeyCode::Up));
-        assert_eq!(app.detail_scroll, 0, "Up scrolls the detail pane back");
+        assert_eq!(app.flow.detail_scroll, 0, "Up scrolls the detail pane back");
     }
 
     #[test]
@@ -718,8 +721,8 @@ mod tests {
         open_call_flow(&mut app);
         // Default focus is the ladder: Down advances the selected message.
         handle_call_flow_key(&mut app, key(KeyCode::Down));
-        assert_eq!(app.selected_msg_index, 1);
-        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.flow.selected, 1);
+        assert_eq!(app.flow.detail_scroll, 0);
     }
 
     #[test]
@@ -727,13 +730,10 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Tab)); // focus detail
-        assert!(app.call_flow_detail_focused);
+        assert!(app.flow.detail_focused);
         handle_call_flow_key(&mut app, key(KeyCode::Char('R'))); // hide split
-        assert!(!app.raw_preview);
-        assert!(
-            !app.call_flow_detail_focused,
-            "focus reset when split is hidden"
-        );
+        assert!(!app.flow.raw_preview);
+        assert!(!app.flow.detail_focused, "focus reset when split is hidden");
     }
 
     #[test]
@@ -749,7 +749,7 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert_eq!(app.diff_selected_msg, Some(0));
+        assert_eq!(app.flow.diff_selected, Some(0));
         handle_call_flow_key(&mut app, key(KeyCode::Down));
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
         assert!(matches!(app.current_view, View::MessageDiff { .. }));
@@ -797,15 +797,18 @@ mod tests {
             mk("SIP/2.0 200 OK", "CSeq: 2 BYE", t0 + TimeDelta::seconds(3)),
         ]);
         app.current_view = View::CallFlow("call-f@test".to_string());
-        app.selected_msg_index = 2; // the BYE (original index 2)
+        app.flow.selected = 2; // the BYE (original index 2)
 
         // Toggle on → filter to the BYE transaction, selection re-projected to 0.
         handle_call_flow_key(&mut app, key(KeyCode::Char('f')));
         assert_eq!(
-            app.flow_filter.as_ref().map(|(n, m)| (*n, m.as_str())),
+            app.flow
+                .transaction_filter
+                .as_ref()
+                .map(|(n, m)| (*n, m.as_str())),
             Some((2, "BYE"))
         );
-        assert_eq!(app.selected_msg_index, 0);
+        assert_eq!(app.flow.selected, 0);
 
         // Enter opens the raw view of the ORIGINAL message (BYE = index 2).
         handle_call_flow_key(&mut app, key(KeyCode::Enter));
@@ -818,8 +821,8 @@ mod tests {
         // restored to the original index in the full dialog.
         app.current_view = View::CallFlow("call-f@test".to_string());
         handle_call_flow_key(&mut app, key(KeyCode::Char('f')));
-        assert!(app.flow_filter.is_none());
-        assert_eq!(app.selected_msg_index, 2);
+        assert!(app.flow.transaction_filter.is_none());
+        assert_eq!(app.flow.selected, 2);
     }
 
     // R4: `a` opens the selected message's transaction; `A` the whole dialog.
@@ -888,21 +891,21 @@ mod tests {
         handle_call_flow_key(&mut app, key(KeyCode::Char('c')));
         assert_ne!(app.color_mode, cm);
 
-        let rp = app.raw_preview;
+        let rp = app.flow.raw_preview;
         handle_call_flow_key(&mut app, key(KeyCode::Char('R')));
-        assert_ne!(app.raw_preview, rp);
+        assert_ne!(app.flow.raw_preview, rp);
     }
 
     #[test]
     fn call_flow_panel_resize() {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
-        app.raw_preview = true;
-        let pct = app.raw_preview_pct;
+        app.flow.raw_preview = true;
+        let pct = app.flow.raw_preview_pct;
         handle_call_flow_key(&mut app, key(KeyCode::Char('+')));
-        assert_eq!(app.raw_preview_pct, pct + 5);
+        assert_eq!(app.flow.raw_preview_pct, pct + 5);
         handle_call_flow_key(&mut app, key(KeyCode::Char('-')));
-        assert_eq!(app.raw_preview_pct, pct);
+        assert_eq!(app.flow.raw_preview_pct, pct);
     }
 
     #[test]
@@ -910,9 +913,9 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(']')));
-        assert_eq!(app.detail_scroll, 1);
+        assert_eq!(app.flow.detail_scroll, 1);
         handle_call_flow_key(&mut app, key(KeyCode::Char('[')));
-        assert_eq!(app.detail_scroll, 0);
+        assert_eq!(app.flow.detail_scroll, 0);
     }
 
     #[test]
@@ -920,10 +923,10 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char('x')));
-        assert!(app.extended_flow);
-        let rtp = app.show_rtp_in_flow;
+        assert!(app.flow.extended);
+        let rtp = app.flow.show_rtp;
         handle_call_flow_key(&mut app, key(KeyCode::F(6)));
-        assert_ne!(app.show_rtp_in_flow, rtp);
+        assert_ne!(app.flow.show_rtp, rtp);
     }
 
     #[test]
@@ -934,14 +937,14 @@ mod tests {
         // same flag.
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
-        assert!(!app.show_rtp_in_flow, "RTP-in-flow defaults off");
+        assert!(!app.flow.show_rtp, "RTP-in-flow defaults off");
         handle_call_flow_key(&mut app, key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        assert!(app.show_rtp_in_flow, "Ctrl+R turns RTP-in-flow on");
+        assert!(app.flow.show_rtp, "Ctrl+R turns RTP-in-flow on");
         handle_call_flow_key(&mut app, key_mod(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        assert!(!app.show_rtp_in_flow, "Ctrl+R toggles RTP-in-flow back off");
+        assert!(!app.flow.show_rtp, "Ctrl+R toggles RTP-in-flow back off");
         // And it stays consistent with the F6 path.
         handle_call_flow_key(&mut app, key(KeyCode::F(6)));
-        assert!(app.show_rtp_in_flow, "F6 still toggles the same flag");
+        assert!(app.flow.show_rtp, "F6 still toggles the same flag");
     }
 
     #[test]
@@ -952,7 +955,7 @@ mod tests {
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char('r')));
         assert!(matches!(app.current_view, View::StreamList));
-        assert!(!app.show_rtp_in_flow, "plain r does not toggle RTP-in-flow");
+        assert!(!app.flow.show_rtp, "plain r does not toggle RTP-in-flow");
     }
 
     #[test]
@@ -960,9 +963,9 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char('m')));
-        assert_eq!(app.mark_index, Some(0));
+        assert_eq!(app.flow.mark_index, Some(0));
         handle_call_flow_key(&mut app, key(KeyCode::Char('M')));
-        assert_eq!(app.mark_index, None);
+        assert_eq!(app.flow.mark_index, None);
     }
 
     #[test]
@@ -970,9 +973,9 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char('e')));
-        assert!(app.fold_expanded.contains(&0));
+        assert!(app.flow.fold_expanded.contains(&0));
         handle_call_flow_key(&mut app, key(KeyCode::Char('e')));
-        assert!(!app.fold_expanded.contains(&0));
+        assert!(!app.flow.fold_expanded.contains(&0));
     }
 
     #[test]
@@ -981,7 +984,7 @@ mod tests {
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
         handle_call_flow_key(&mut app, key(KeyCode::Esc));
-        assert_eq!(app.diff_selected_msg, None);
+        assert_eq!(app.flow.diff_selected, None);
         assert_eq!(app.current_view, View::CallList);
     }
 
@@ -1008,9 +1011,9 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert!(app.diff_selected_msg.is_some());
+        assert!(app.flow.diff_selected.is_some());
         handle_call_flow_key(&mut app, key(KeyCode::F(5)));
-        assert_eq!(app.diff_selected_msg, None);
+        assert_eq!(app.flow.diff_selected, None);
 
         app.active_filter_text = "x".to_string();
         handle_call_flow_key(&mut app, key(KeyCode::F(9)));

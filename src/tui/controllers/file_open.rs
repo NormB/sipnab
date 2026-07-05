@@ -6,13 +6,13 @@ use crate::tui::*;
 /// Open the file-open dialog, seeding it with a directory listing rooted at
 /// the last-browsed directory (or the current working directory on first use).
 pub(in crate::tui) fn open_file_dialog(app: &mut App) {
-    if !app.open_dir.is_dir() {
-        app.open_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    if !app.file_open.dir.is_dir() {
+        app.file_open.dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
     }
-    app.open_filter.clear();
-    app.open_manual_mode = false;
-    app.open_path.clear();
-    app.open_cursor = 0;
+    app.file_open.filter.clear();
+    app.file_open.manual_mode = false;
+    app.file_open.path.clear();
+    app.file_open.cursor = 0;
     refresh_file_entries(app);
     app.active_popup = Some(Popup::FileOpenDialog);
 }
@@ -42,7 +42,7 @@ pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
 pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
     let mut entries: Vec<FileEntry> = Vec::new();
 
-    if let Some(parent) = app.open_dir.parent() {
+    if let Some(parent) = app.file_open.dir.parent() {
         entries.push(FileEntry {
             name: "..".to_string(),
             path: parent.to_path_buf(),
@@ -50,7 +50,7 @@ pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
         });
     }
 
-    match std::fs::read_dir(&app.open_dir) {
+    match std::fs::read_dir(&app.file_open.dir) {
         Err(e) => {
             // Surface the failure instead of showing a blank list. The most
             // common cause is running under sudo: the capture process drops
@@ -62,16 +62,16 @@ pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
             } else {
                 ""
             };
-            app.open_error = Some(format!(
+            app.file_open.error = Some(format!(
                 "Cannot read {}: {}{}",
-                app.open_dir.display(),
+                app.file_open.dir.display(),
                 e,
                 hint
             ));
         }
         Ok(read_dir) => {
-            app.open_error = None;
-            let filter_lc = app.open_filter.to_lowercase();
+            app.file_open.error = None;
+            let filter_lc = app.file_open.filter.to_lowercase();
             for entry in read_dir.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with('.') && !filter_lc.starts_with('.') {
@@ -117,15 +117,15 @@ pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
         },
     });
 
-    app.open_entries = entries;
-    if app.open_selected >= app.open_entries.len() {
-        app.open_selected = app.open_entries.len().saturating_sub(1);
+    app.file_open.entries = entries;
+    if app.file_open.selected >= app.file_open.entries.len() {
+        app.file_open.selected = app.file_open.entries.len().saturating_sub(1);
     }
 }
 
 /// Handle keys in the file-open dialog popup.
 pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
-    if app.open_manual_mode {
+    if app.file_open.manual_mode {
         handle_file_open_manual_key(app, key);
         return;
     }
@@ -135,45 +135,45 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
             app.active_popup = None;
         }
         KeyCode::Tab => {
-            app.open_manual_mode = true;
-            if app.open_path.is_empty() {
-                app.open_path = app.open_dir.to_string_lossy().into_owned();
-                if !app.open_path.ends_with(std::path::MAIN_SEPARATOR) {
-                    app.open_path.push(std::path::MAIN_SEPARATOR);
+            app.file_open.manual_mode = true;
+            if app.file_open.path.is_empty() {
+                app.file_open.path = app.file_open.dir.to_string_lossy().into_owned();
+                if !app.file_open.path.ends_with(std::path::MAIN_SEPARATOR) {
+                    app.file_open.path.push(std::path::MAIN_SEPARATOR);
                 }
             }
-            app.open_cursor = app.open_path.len();
+            app.file_open.cursor = app.file_open.path.len();
         }
         KeyCode::Up => {
-            if app.open_selected > 0 {
-                app.open_selected -= 1;
+            if app.file_open.selected > 0 {
+                app.file_open.selected -= 1;
             }
         }
         KeyCode::Down => {
-            if app.open_selected + 1 < app.open_entries.len() {
-                app.open_selected += 1;
+            if app.file_open.selected + 1 < app.file_open.entries.len() {
+                app.file_open.selected += 1;
             }
         }
         KeyCode::PageUp => {
-            app.open_selected = app.open_selected.saturating_sub(10);
+            app.file_open.selected = app.file_open.selected.saturating_sub(10);
         }
         KeyCode::PageDown => {
-            app.open_selected =
-                (app.open_selected + 10).min(app.open_entries.len().saturating_sub(1));
+            app.file_open.selected =
+                (app.file_open.selected + 10).min(app.file_open.entries.len().saturating_sub(1));
         }
-        KeyCode::Home => app.open_selected = 0,
+        KeyCode::Home => app.file_open.selected = 0,
         KeyCode::End => {
-            app.open_selected = app.open_entries.len().saturating_sub(1);
+            app.file_open.selected = app.file_open.entries.len().saturating_sub(1);
         }
         KeyCode::Enter => {
-            let entry = match app.open_entries.get(app.open_selected).cloned() {
+            let entry = match app.file_open.entries.get(app.file_open.selected).cloned() {
                 Some(e) => e,
                 None => return,
             };
             if entry.is_dir {
-                app.open_dir = entry.path;
-                app.open_filter.clear();
-                app.open_selected = 0;
+                app.file_open.dir = entry.path;
+                app.file_open.filter.clear();
+                app.file_open.selected = 0;
                 refresh_file_entries(app);
             } else {
                 let path = entry.path.to_string_lossy().into_owned();
@@ -183,19 +183,19 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Backspace => {
-            if !app.open_filter.is_empty() {
-                app.open_filter.pop();
-                app.open_selected = 0;
+            if !app.file_open.filter.is_empty() {
+                app.file_open.filter.pop();
+                app.file_open.selected = 0;
                 refresh_file_entries(app);
-            } else if let Some(parent) = app.open_dir.parent() {
-                app.open_dir = parent.to_path_buf();
-                app.open_selected = 0;
+            } else if let Some(parent) = app.file_open.dir.parent() {
+                app.file_open.dir = parent.to_path_buf();
+                app.file_open.selected = 0;
                 refresh_file_entries(app);
             }
         }
         KeyCode::Char(c) => {
-            app.open_filter.push(c);
-            app.open_selected = 0;
+            app.file_open.filter.push(c);
+            app.file_open.selected = 0;
             refresh_file_entries(app);
         }
         _ => {}
@@ -210,10 +210,10 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
             app.active_popup = None;
         }
         KeyCode::Tab => {
-            app.open_manual_mode = false;
+            app.file_open.manual_mode = false;
         }
         KeyCode::Enter => {
-            let path = expand_tilde(&app.open_path);
+            let path = expand_tilde(&app.file_open.path);
             if path.is_empty() {
                 app.status_error = Some("No file path specified".to_string());
                 app.active_popup = None;
@@ -224,19 +224,19 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
             app.active_popup = None;
         }
         KeyCode::Backspace => {
-            if app.open_cursor > 0 {
-                let prev = app.open_path[..app.open_cursor]
+            if app.file_open.cursor > 0 {
+                let prev = app.file_open.path[..app.file_open.cursor]
                     .char_indices()
                     .next_back()
                     .map(|(i, _)| i)
                     .unwrap_or(0);
-                app.open_path.remove(prev);
-                app.open_cursor = prev;
+                app.file_open.path.remove(prev);
+                app.file_open.cursor = prev;
             }
         }
         KeyCode::Left => {
-            if app.open_cursor > 0 {
-                app.open_cursor = app.open_path[..app.open_cursor]
+            if app.file_open.cursor > 0 {
+                app.file_open.cursor = app.file_open.path[..app.file_open.cursor]
                     .char_indices()
                     .next_back()
                     .map(|(i, _)| i)
@@ -244,23 +244,23 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
             }
         }
         KeyCode::Right => {
-            if app.open_cursor < app.open_path.len() {
-                app.open_cursor = app.open_path[app.open_cursor..]
+            if app.file_open.cursor < app.file_open.path.len() {
+                app.file_open.cursor = app.file_open.path[app.file_open.cursor..]
                     .char_indices()
                     .nth(1)
-                    .map(|(i, _)| app.open_cursor + i)
-                    .unwrap_or(app.open_path.len());
+                    .map(|(i, _)| app.file_open.cursor + i)
+                    .unwrap_or(app.file_open.path.len());
             }
         }
         KeyCode::Home => {
-            app.open_cursor = 0;
+            app.file_open.cursor = 0;
         }
         KeyCode::End => {
-            app.open_cursor = app.open_path.len();
+            app.file_open.cursor = app.file_open.path.len();
         }
         KeyCode::Char(c) => {
-            app.open_path.insert(app.open_cursor, c);
-            app.open_cursor += c.len_utf8();
+            app.file_open.path.insert(app.file_open.cursor, c);
+            app.file_open.cursor += c.len_utf8();
         }
         _ => {}
     }
@@ -313,12 +313,12 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.stream_list = StreamListState::new();
     app.active_filter = None;
     app.active_filter_text.clear();
-    app.selected_msg_index = 0;
-    app.call_flow_scroll = 0;
-    app.cached_flow_msg_count = 0;
-    app.cached_rtp_bar_indices.clear();
-    app.fold_expanded.clear();
-    app.mark_index = None;
+    app.flow.selected = 0;
+    app.flow.scroll = 0;
+    app.flow.cached_msg_count = 0;
+    app.flow.cached_rtp_bar_indices.clear();
+    app.flow.fold_expanded.clear();
+    app.flow.mark_index = None;
     app.current_view = View::CallList;
 
     let mut packet_count = 0u64;
@@ -481,7 +481,12 @@ mod tests {
         app.set_open_dir_for_test(p.to_path_buf());
         refresh_file_entries(&mut app);
 
-        let names: Vec<&str> = app.open_entries.iter().map(|e| e.name.as_str()).collect();
+        let names: Vec<&str> = app
+            .file_open
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .collect();
         // Diagnostic: surface exactly what the browser would show.
         assert!(names.contains(&"plain.pcap"), "listed: {names:?}");
         assert!(names.contains(&"ng.pcapng"), "listed: {names:?}");
@@ -492,7 +497,7 @@ mod tests {
         // Gzipped captures are loadable but currently filtered out by the browser.
         assert!(names.contains(&"gz.pcap.gz"), "listed: {names:?}");
         // A readable directory produces no error.
-        assert!(app.open_error.is_none());
+        assert!(app.file_open.error.is_none());
     }
 
     #[cfg(unix)]
@@ -514,7 +519,7 @@ mod tests {
         let mut app = App::new_test();
         app.set_open_dir_for_test(locked.clone());
         refresh_file_entries(&mut app);
-        let err = app.open_error.clone();
+        let err = app.file_open.error.clone();
 
         // Restore perms so the tempdir can be cleaned up.
         let _ = std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755));
@@ -532,14 +537,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.pcap"), b"x").unwrap();
         let mut app = App::new_test();
-        app.open_error = Some("stale".to_string());
+        app.file_open.error = Some("stale".to_string());
         app.set_open_dir_for_test(dir.path().to_path_buf());
         refresh_file_entries(&mut app);
         assert!(
-            app.open_error.is_none(),
+            app.file_open.error.is_none(),
             "readable dir must clear the error"
         );
-        assert!(app.open_entries.iter().any(|e| e.name == "a.pcap"));
+        assert!(app.file_open.entries.iter().any(|e| e.name == "a.pcap"));
     }
 
     #[test]

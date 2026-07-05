@@ -115,7 +115,7 @@ pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
         }
         k if k == app.keymap.extended_flow => {
             if let Some(call_id) = get_selected_call_id(app) {
-                app.extended_flow = true;
+                app.flow.extended = true;
                 app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
@@ -463,7 +463,7 @@ mod tests {
     fn call_list_extended_flow_key() {
         let mut app = app_with_dialogs();
         handle_call_list_key(&mut app, key(KeyCode::F(4)));
-        assert!(app.extended_flow);
+        assert!(app.flow.extended);
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
