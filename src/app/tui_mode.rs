@@ -320,11 +320,13 @@ pub fn run_tui_mode(
         Arc::clone(&dialog_store),
         Arc::clone(&stream_store),
         Some(paused_flag),
-        theme,
-        keymap,
-        config.display.visible_columns.clone(),
-        name_setup,
-        from_to_mode,
+        crate::tui::TuiOptions {
+            theme,
+            keymap,
+            visible_columns: config.display.visible_columns.clone(),
+            name_setup,
+            from_to_mode,
+        },
     ) {
         tracing::error!("TUI error: {e}");
     }
