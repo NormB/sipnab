@@ -303,7 +303,6 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
 /// counter mode keyed with the master key, taking the first `output_len` bytes.
 /// This is the spec PRF, so the derived session keys match any interoperable
 /// SRTP endpoint (validated against the RFC 3711 Appendix B.3 test vectors).
-#[cfg(feature = "tls")]
 fn aes_cm_prf(
     master_key: &[u8],
     master_salt: &[u8],
@@ -365,7 +364,6 @@ fn aes_cm_prf(
 /// `session_salt` is the 112-bit (14-byte) session salt; `packet_index` is the
 /// 48-bit SRTP index `ROC * 2^16 + SEQ`. The SSRC lands in octets 4..8 and the
 /// index in octets 8..14, leaving octets 14..16 as the per-block counter.
-#[cfg(feature = "tls")]
 fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16] {
     // The IV is NOT hard-coded: this zero-initialized block is fully populated
     // below with the per-stream session salt, then XOR'd with the per-packet
@@ -392,7 +390,6 @@ fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16]
 /// Generate `len` bytes of AES-CM keystream from `session_key`, starting at
 /// counter block `iv` and incrementing the full 128-bit block big-endian for
 /// each successive block (RFC 3711 §4.1.1). The session key is 16 or 32 bytes.
-#[cfg(feature = "tls")]
 fn srtp_aes_cm_keystream(session_key: &[u8], iv: [u8; 16], len: usize) -> Result<Vec<u8>> {
     use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
@@ -437,7 +434,6 @@ fn srtp_aes_cm_keystream(session_key: &[u8], iv: [u8; 16], len: usize) -> Result
 }
 
 /// Increment a 128-bit big-endian counter block by one (with carry).
-#[cfg(feature = "tls")]
 fn incr_be_128(block: &mut [u8; 16]) {
     for byte in block.iter_mut().rev() {
         let (v, carry) = byte.overflowing_add(1);
@@ -461,7 +457,6 @@ fn incr_be_128(block: &mut [u8; 16]) {
 /// This does NOT verify the auth tag — callers should verify first via
 /// [`verify_srtp_auth_tag`] / [`SrtpRocTracker::verify`] and only decrypt
 /// authenticated packets.
-#[cfg(feature = "tls")]
 pub fn decrypt_srtp_payload(
     packet: &[u8],
     payload_offset: usize,
@@ -510,12 +505,8 @@ pub fn decrypt_srtp_payload(
     Ok(plaintext)
 }
 
-/// Derive an SRTP session key (RFC 3711 §4.3.1).
-///
-/// With the `tls` feature this is the spec AES-CM PRF ([`aes_cm_prf`]), so the
-/// result interoperates with real SRTP endpoints. Without `tls` there is no AES
-/// primitive available, so it falls back to an HMAC-SHA1 key-separation step
-/// (non-interoperable — but the verifier needs a real crypto backend anyway).
+/// Derive an SRTP session key (RFC 3711 §4.3.1) via the spec AES-CM PRF
+/// ([`aes_cm_prf`]), so the result interoperates with real SRTP endpoints.
 ///
 /// * `label` — 0x00 cipher, 0x01 auth, 0x02 salt (SRTP); 0x03/0x04/0x05 SRTCP.
 /// * `output_len` — desired key length in bytes (e.g. 20 for the auth key).
@@ -524,27 +515,8 @@ fn derive_session_key(
     master_salt: &[u8],
     label: u8,
     output_len: usize,
-    crypto: &dyn crate::crypto::CryptoBackend,
 ) -> Result<Vec<u8>> {
-    #[cfg(feature = "tls")]
-    {
-        let _ = crypto;
-        aes_cm_prf(master_key, master_salt, label, output_len)
-    }
-    #[cfg(not(feature = "tls"))]
-    {
-        let mut kdf_input = Vec::with_capacity(1 + master_salt.len());
-        kdf_input.push(label);
-        kdf_input.extend_from_slice(master_salt);
-        let derived = crypto.hmac_sha1(master_key, &kdf_input)?;
-        if output_len > derived.len() {
-            anyhow::bail!(
-                "Requested KDF output length ({output_len}) exceeds HMAC-SHA1 output ({})",
-                derived.len()
-            );
-        }
-        Ok(derived[..output_len].to_vec())
-    }
+    aes_cm_prf(master_key, master_salt, label, output_len)
 }
 
 /// SRTP KDF label for the session authentication key (RFC 3711 Section 4.3.1).
@@ -597,7 +569,6 @@ pub fn verify_srtp_auth_tag(
         &key_material.master_salt,
         SRTP_LABEL_AUTH,
         SRTP_AUTH_KEY_LEN,
-        crypto,
     )?;
 
     // RFC 3711 §4.1: the auth tag is HMAC-SHA1 over (authenticated portion ||
@@ -729,7 +700,6 @@ impl SrtpRocTracker {
             &key_material.master_salt,
             SRTP_LABEL_AUTH,
             SRTP_AUTH_KEY_LEN,
-            crypto,
         )?;
 
         // First packet for this SSRC starts at ROC 0; otherwise estimate.
@@ -921,14 +891,9 @@ pub(crate) mod test_support {
         let mut packet = header;
         packet.extend_from_slice(&ciphertext);
 
-        let auth_key = derive_session_key(
-            master_key,
-            master_salt,
-            SRTP_LABEL_AUTH,
-            SRTP_AUTH_KEY_LEN,
-            &crypto,
-        )
-        .unwrap();
+        let auth_key =
+            derive_session_key(master_key, master_salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN)
+                .unwrap();
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&roc.to_be_bytes());
         let tag = crypto.hmac_sha1(&auth_key, &hmac_input).unwrap();
@@ -940,7 +905,6 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(feature = "tls")]
     use crate::crypto::CryptoBackend;
     use std::io::Write;
 
@@ -1154,7 +1118,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn aes_cm_prf_matches_rfc3711_b3_vectors() {
         // RFC 3711 Appendix B.3 known-answer test for the AES-CM KDF. Matching
@@ -1194,12 +1157,10 @@ mod tests {
     // ── SRTP AES-CM payload cipher (RFC 3711 §4.1) ─────────────────────
 
     /// RFC 3711 Appendix B.2 session salt (112-bit) for the AES-CM KAT.
-    #[cfg(feature = "tls")]
     const B2_SESSION_SALT: [u8; 14] = [
         0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD,
     ];
 
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_cipher_iv_rfc3711_b2_and_xor_placement() {
         // B.2: SSRC=0, index=0 ⇒ IV = salt ‖ 0x0000.
@@ -1234,7 +1195,6 @@ mod tests {
     /// produced IV must vary with the salt, the SSRC, and the packet index.
     /// This test proves that property so the value can never silently collapse
     /// to a constant.
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_cipher_iv_is_derived_not_hardcoded() {
         let salt_a = B2_SESSION_SALT;
@@ -1279,7 +1239,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_aes_cm_keystream_matches_rfc3711_b2() {
         // RFC 3711 Appendix B.2 known-answer test for AES-128 Counter Mode.
@@ -1299,7 +1258,6 @@ mod tests {
         assert_eq!(ks, expected, "AES-CM keystream must match RFC 3711 B.2");
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn decrypt_srtp_payload_roundtrip_recovers_plaintext() {
         use crate::crypto::RingCryptoBackend;
@@ -1350,7 +1308,6 @@ mod tests {
     }
 
     /// Build a fully valid SRTP packet — delegates to the shared test helper.
-    #[cfg(feature = "tls")]
     fn build_valid_srtp_packet(
         master_key: &[u8],
         master_salt: &[u8],
@@ -1362,7 +1319,6 @@ mod tests {
         super::test_support::build_srtp_packet(master_key, master_salt, ssrc, seq, roc, plaintext)
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_context_authenticates_and_decrypts() {
         use crate::crypto::RingCryptoBackend;
@@ -1394,7 +1350,6 @@ mod tests {
         assert_eq!(ctx.decrypted_count, 1);
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_context_rejects_wrong_key() {
         use crate::crypto::RingCryptoBackend;
@@ -1415,7 +1370,6 @@ mod tests {
         assert_eq!(ctx.decrypted_count, 0);
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn srtp_context_add_sdes_then_decrypts() {
         use crate::crypto::RingCryptoBackend;
@@ -1442,7 +1396,6 @@ mod tests {
         assert_eq!(&out[12..], b"hello srtp");
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn verify_roc_returns_authenticating_roc() {
         use crate::crypto::RingCryptoBackend;
@@ -1471,7 +1424,6 @@ mod tests {
         assert_eq!(tr.verify_roc(&bad, &material, &crypto).unwrap(), None);
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn decrypt_srtp_payload_rejects_short_packet() {
         use crate::crypto::RingCryptoBackend;
@@ -1490,7 +1442,6 @@ mod tests {
         assert!(decrypt_srtp_payload(&packet, 12, &material, 0, &RingCryptoBackend).is_err());
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn verify_auth_tag_with_known_key() {
         use crate::crypto::RingCryptoBackend;
@@ -1518,7 +1469,7 @@ mod tests {
 
         // Derive the session auth key the same way verify_srtp_auth_tag does
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN).unwrap();
 
         // Compute the correct auth tag using the derived session auth key
         let auth_portion = packet.clone();
@@ -1543,7 +1494,6 @@ mod tests {
         assert!(!bad, "a tampered auth tag must not verify");
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn verify_auth_tag_wrong_key_fails() {
         use crate::crypto::RingCryptoBackend;
@@ -1570,7 +1520,7 @@ mod tests {
         packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
 
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN).unwrap();
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes());
         let full_tag = crypto.hmac_sha1(&session_auth_key, &hmac_input).unwrap();
@@ -1592,7 +1542,6 @@ mod tests {
         assert_eq!(estimate_roc(5, 40000, 41000), 5);
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn roc_tracker_follows_sequence_rollover() {
         use crate::crypto::RingCryptoBackend;
@@ -1610,7 +1559,7 @@ mod tests {
         };
         let crypto = RingCryptoBackend;
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN).unwrap();
 
         // Build an SRTP packet with a valid 80-bit tag for the given seq/ROC.
         let build = |seq: u16, ssrc: u32, roc: u32| -> Vec<u8> {
@@ -1645,19 +1594,14 @@ mod tests {
         assert!(!tr.verify(&bad, &material, &crypto).unwrap());
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn derive_session_key_produces_different_keys_per_label() {
-        use crate::crypto::RingCryptoBackend;
-
-        let crypto = RingCryptoBackend;
         let master_key = vec![0xAA; 16];
         let master_salt = vec![0xBB; 14];
 
-        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 16, &crypto).unwrap();
-        let auth_key =
-            derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20, &crypto).unwrap();
-        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 14, &crypto).unwrap();
+        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 16).unwrap();
+        let auth_key = derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20).unwrap();
+        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 14).unwrap();
 
         // Each label must produce a different key
         assert_ne!(
@@ -1694,18 +1638,13 @@ mod tests {
         assert!(result.is_err(), "Too-short packet should error");
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn derive_session_key_not_equal_to_master_key() {
-        use crate::crypto::RingCryptoBackend;
-
-        let crypto = RingCryptoBackend;
         let master_key = vec![0xAA; 16];
         let master_salt = vec![0xBB; 14];
 
         // Derive auth key (label 0x01) and verify it differs from the master key
-        let auth_key =
-            derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20, &crypto).unwrap();
+        let auth_key = derive_session_key(&master_key, &master_salt, SRTP_LABEL_AUTH, 20).unwrap();
 
         assert_ne!(
             &auth_key[..16],
@@ -1714,18 +1653,14 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn derive_different_labels_produce_different_keys() {
-        use crate::crypto::RingCryptoBackend;
-
-        let crypto = RingCryptoBackend;
         let master_key = vec![0xCC; 16];
         let master_salt = vec![0xDD; 14];
 
-        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 20, &crypto).unwrap();
-        let auth_key = derive_session_key(&master_key, &master_salt, 0x01, 20, &crypto).unwrap();
-        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 20, &crypto).unwrap();
+        let cipher_key = derive_session_key(&master_key, &master_salt, 0x00, 20).unwrap();
+        let auth_key = derive_session_key(&master_key, &master_salt, 0x01, 20).unwrap();
+        let salt_key = derive_session_key(&master_key, &master_salt, 0x02, 20).unwrap();
 
         assert_ne!(
             cipher_key, auth_key,
@@ -1741,7 +1676,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "tls")]
     #[test]
     fn verify_auth_tag_with_derived_key() {
         use crate::crypto::{CryptoBackend, RingCryptoBackend};
@@ -1768,7 +1702,7 @@ mod tests {
 
         // Derive the session auth key and compute the correct tag
         let session_auth_key =
-            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN, &crypto).unwrap();
+            derive_session_key(&key, &salt, SRTP_LABEL_AUTH, SRTP_AUTH_KEY_LEN).unwrap();
 
         let mut hmac_input = packet.clone();
         hmac_input.extend_from_slice(&0u32.to_be_bytes()); // ROC=0
