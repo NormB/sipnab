@@ -50,7 +50,12 @@ mod theme;
 
 use controllers::*;
 #[doc(hidden)]
-pub use controllers::{CallListAction, call_list_action};
+pub use controllers::{
+    CallFlowAction, CallListAction, CombinedDetailAction, HelpAction, MessageDiffAction,
+    RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction, call_flow_action,
+    call_list_action, combined_detail_action, help_action, message_diff_action, raw_message_action,
+    statistics_action, stream_detail_action, stream_list_action,
+};
 use render::*;
 use save::*;
 pub use state::*;

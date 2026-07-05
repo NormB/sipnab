@@ -17,12 +17,17 @@ pub(in crate::tui) use call_flow::*;
 pub(in crate::tui) use call_list::*;
 // Re-exported at `tui` scope so keybinding_drift_test can probe the
 // key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
+pub use call_flow::{
+    CallFlowAction, CombinedDetailAction, MessageDiffAction, RawMessageAction, call_flow_action,
+    combined_detail_action, message_diff_action, raw_message_action,
+};
 pub use call_list::{CallListAction, call_list_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub(in crate::tui) use name_dialog::*;
 pub(in crate::tui) use save_dialog::*;
 pub(in crate::tui) use stream::*;
+pub use stream::{StreamDetailAction, StreamListAction, stream_detail_action, stream_list_action};
 
 /// Dispatch a key event to the handler for the current view.
 pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
@@ -109,22 +114,51 @@ pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle keys in the help view.
+/// Everything the help view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpAction {
+    Close,
+    ScrollDown,
+    ScrollUp,
+    PageDown,
+    PageUp,
+    ScrollTop,
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the help view (keymap-aware).
+pub fn help_action(km: &Keymap, key: KeyEvent) -> Option<HelpAction> {
+    use HelpAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.help || k == km.quit => Close,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the help view: map, then execute.
 pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        k if k == KeyCode::Esc || k == app.keymap.help || k == app.keymap.quit => {
+    let Some(action) = help_action(&app.keymap, key) else {
+        return;
+    };
+    // The help can exceed the screen; allow scrolling. render() clamps the
+    // offset to the content height, so over-scrolling self-corrects.
+    match action {
+        HelpAction::Close => {
             app.current_view = View::CallList;
             app.help_scroll = 0; // start at the top next time
         }
-        // The help can exceed the screen; allow scrolling. render() clamps the
-        // offset to the content height, so over-scrolling self-corrects.
-        KeyCode::Down | KeyCode::Char('j') => app.help_scroll = app.help_scroll.saturating_add(1),
-        KeyCode::Up | KeyCode::Char('k') => app.help_scroll = app.help_scroll.saturating_sub(1),
-        KeyCode::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
-        KeyCode::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
-        KeyCode::Home => app.help_scroll = 0,
-        KeyCode::End => app.help_scroll = u16::MAX, // clamped to content in render
-        _ => {}
+        HelpAction::ScrollDown => app.help_scroll = app.help_scroll.saturating_add(1),
+        HelpAction::ScrollUp => app.help_scroll = app.help_scroll.saturating_sub(1),
+        HelpAction::PageDown => app.help_scroll = app.help_scroll.saturating_add(10),
+        HelpAction::PageUp => app.help_scroll = app.help_scroll.saturating_sub(10),
+        HelpAction::ScrollTop => app.help_scroll = 0,
+        HelpAction::ScrollBottom => app.help_scroll = u16::MAX, // clamped to content in render
     }
 }
 
@@ -173,24 +207,53 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Handle keys in the statistics view.
+/// Everything the statistics view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatisticsAction {
+    Close,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    ScrollTop,
+    ScrollBottom,
+}
+
+/// Pure key→action mapping for the statistics view (keymap-aware).
+pub fn statistics_action(km: &Keymap, key: KeyEvent) -> Option<StatisticsAction> {
+    use StatisticsAction::*;
+    Some(match key.code {
+        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('s') => Close,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the statistics view: map, then execute.
 pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        k if k == KeyCode::Esc || k == app.keymap.quit || k == KeyCode::Char('s') => {
+    let Some(action) = statistics_action(&app.keymap, key) else {
+        return;
+    };
+    match action {
+        StatisticsAction::Close => {
             app.current_view = View::CallList;
         }
-        KeyCode::Up | KeyCode::Char('k') => {
+        StatisticsAction::ScrollUp => {
             app.stats_scroll = app.stats_scroll.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        StatisticsAction::ScrollDown => {
             app.stats_scroll = app.stats_scroll.saturating_add(1);
         }
-        KeyCode::PageUp => app.stats_scroll = app.stats_scroll.saturating_sub(20),
-        KeyCode::PageDown => app.stats_scroll = app.stats_scroll.saturating_add(20),
-        KeyCode::Home => app.stats_scroll = 0,
+        StatisticsAction::PageUp => app.stats_scroll = app.stats_scroll.saturating_sub(20),
+        StatisticsAction::PageDown => app.stats_scroll = app.stats_scroll.saturating_add(20),
+        StatisticsAction::ScrollTop => app.stats_scroll = 0,
         // Clamped to the content height by the render pass.
-        KeyCode::End => app.stats_scroll = u16::MAX,
-        _ => {}
+        StatisticsAction::ScrollBottom => app.stats_scroll = u16::MAX,
     }
 }
 
@@ -438,6 +501,42 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
+
+    #[test]
+    fn help_action_honors_remapped_quit_and_help() {
+        let km = Keymap {
+            quit: KeyCode::Char('x'),
+            help: KeyCode::Char('?'),
+            ..Default::default()
+        };
+        assert_eq!(
+            help_action(&km, key(KeyCode::Char('x'))),
+            Some(HelpAction::Close)
+        );
+        assert_eq!(
+            help_action(&km, key(KeyCode::Char('?'))),
+            Some(HelpAction::Close)
+        );
+        assert_eq!(help_action(&km, key(KeyCode::Char('q'))), None);
+        assert_eq!(help_action(&km, key(KeyCode::Esc)), Some(HelpAction::Close));
+    }
+
+    #[test]
+    fn statistics_action_honors_remapped_quit() {
+        let km = Keymap {
+            quit: KeyCode::Char('x'),
+            ..Default::default()
+        };
+        assert_eq!(
+            statistics_action(&km, key(KeyCode::Char('x'))),
+            Some(StatisticsAction::Close)
+        );
+        assert_eq!(
+            statistics_action(&km, key(KeyCode::Char('s'))),
+            Some(StatisticsAction::Close)
+        );
+        assert_eq!(statistics_action(&km, key(KeyCode::Char('q'))), None);
+    }
 
     #[test]
     fn key_event_ctrl_c_quits() {
