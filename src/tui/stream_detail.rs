@@ -11,8 +11,15 @@ use crate::rtp::stream_store::StreamStore;
 
 use super::Theme;
 
+/// Display parameters for the stream detail view.
+pub struct StreamDetailDisplay<'a> {
+    pub theme: &'a Theme,
+    pub resolver: &'a crate::names::NameResolver,
+    pub name_mode: crate::names::NameMode,
+}
+
 /// Render a full-screen scrollable detail view for a single RTP stream.
-#[expect(clippy::too_many_arguments)]
+///
 /// Renders the view and returns the effective (content-clamped) scroll so
 /// the caller can write it back — otherwise Up appears dead after
 /// over-scrolling past the end.
@@ -22,10 +29,13 @@ pub fn render_stream_detail(
     key: &StreamKey,
     store: &StreamStore,
     scroll: usize,
-    theme: &Theme,
-    resolver: &crate::names::NameResolver,
-    name_mode: crate::names::NameMode,
+    display: &StreamDetailDisplay,
 ) -> usize {
+    let StreamDetailDisplay {
+        theme,
+        resolver,
+        name_mode,
+    } = *display;
     let stream = match store.get(key) {
         Some(s) => s,
         None => {
@@ -618,9 +628,11 @@ mod tests {
                     key,
                     store,
                     0,
-                    &theme,
-                    &crate::names::NameResolver::new(),
-                    crate::names::NameMode::Off,
+                    &StreamDetailDisplay {
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
                 );
             })
             .unwrap();
@@ -657,9 +669,11 @@ mod tests {
                     &key,
                     &store,
                     0,
-                    &theme,
-                    &crate::names::NameResolver::new(),
-                    crate::names::NameMode::Off,
+                    &StreamDetailDisplay {
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
                 );
             })
             .unwrap();

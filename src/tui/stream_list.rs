@@ -138,6 +138,16 @@ impl Default for StreamListState {
 
 // ── Rendering ───────────────────────────────────────────────────────
 
+/// Display parameters for the stream list view (mirrors
+/// [`crate::tui::call_list::CallListDisplay`]).
+pub struct StreamListDisplay<'a> {
+    pub filter: Option<&'a FilterExpr>,
+    pub search_query: &'a str,
+    pub theme: &'a super::Theme,
+    pub resolver: &'a crate::names::NameResolver,
+    pub name_mode: crate::names::NameMode,
+}
+
 /// Render the RTP stream list table into the given area.
 ///
 /// Case-insensitive substring match over the fields the stream table shows:
@@ -213,19 +223,21 @@ pub fn displayed_streams<'a>(
 
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
-#[expect(clippy::too_many_arguments)]
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
     dialog_store: Option<&DialogStore>,
-    filter: Option<&FilterExpr>,
-    search_query: &str,
-    theme: &super::Theme,
-    resolver: &crate::names::NameResolver,
-    name_mode: crate::names::NameMode,
+    display: &StreamListDisplay,
 ) {
+    let StreamListDisplay {
+        filter,
+        search_query,
+        theme,
+        resolver,
+        name_mode,
+    } = *display;
     // The entire area is used for the table (no title line)
     let table_area = area;
 

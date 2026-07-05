@@ -655,22 +655,35 @@ pub fn render_call_flow_direct_or_empty(
     }
 }
 
+/// Parameters for the message detail panel (right side of the split view).
+pub struct MessageDetailView<'a> {
+    pub call_id: &'a str,
+    /// Index of the message to detail (raw index into the dialog).
+    pub selected_msg: usize,
+    pub scroll_offset: u16,
+    /// Highlights the border when the detail pane holds keyboard focus
+    /// (Tab toggles it).
+    pub focused: bool,
+    pub theme: &'a Theme,
+}
+
 /// Render the message detail panel (right side of the split view).
 ///
-/// `focused` highlights the border when the detail pane holds keyboard focus
-/// (Tab toggles it). Returns the number of content lines so the caller can
-/// clamp the scroll offset to the message length.
-#[expect(clippy::too_many_arguments)]
+/// Returns the number of content lines so the caller can clamp the scroll
+/// offset to the message length.
 pub fn render_message_detail(
     frame: &mut Frame,
     area: Rect,
     store: &DialogStore,
-    call_id: &str,
-    selected_msg: usize,
-    scroll_offset: u16,
-    focused: bool,
-    theme: &Theme,
+    view: &MessageDetailView,
 ) -> usize {
+    let MessageDetailView {
+        call_id,
+        selected_msg,
+        scroll_offset,
+        focused,
+        theme,
+    } = *view;
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
@@ -2014,7 +2027,18 @@ mod tests {
         let area = Rect::new(0, 0, 40, 6);
         let mut lines = 0usize;
         term.draw(|f| {
-            lines = render_message_detail(f, area, &store, "detail@test", 0, 0, true, &theme);
+            lines = render_message_detail(
+                f,
+                area,
+                &store,
+                &MessageDetailView {
+                    call_id: "detail@test",
+                    selected_msg: 0,
+                    scroll_offset: 0,
+                    focused: true,
+                    theme: &theme,
+                },
+            );
         })
         .unwrap();
         assert!(
@@ -2038,7 +2062,18 @@ mod tests {
         let mut term = terminal(60, 40);
         let area = Rect::new(0, 0, 60, 40);
         term.draw(|f| {
-            render_message_detail(f, area, &store, "detail@test", 0, 0, false, &theme);
+            render_message_detail(
+                f,
+                area,
+                &store,
+                &MessageDetailView {
+                    call_id: "detail@test",
+                    selected_msg: 0,
+                    scroll_offset: 0,
+                    focused: false,
+                    theme: &theme,
+                },
+            );
         })
         .unwrap();
         let text = buffer_text(&term);
@@ -2086,11 +2121,33 @@ mod tests {
         let mut b = 0usize;
         let mut term = terminal(50, 20);
         term.draw(|f| {
-            a = render_message_detail(f, area, &store, "detail@test", 0, 0, true, &theme)
+            a = render_message_detail(
+                f,
+                area,
+                &store,
+                &MessageDetailView {
+                    call_id: "detail@test",
+                    selected_msg: 0,
+                    scroll_offset: 0,
+                    focused: true,
+                    theme: &theme,
+                },
+            )
         })
         .unwrap();
         term.draw(|f| {
-            b = render_message_detail(f, area, &store, "detail@test", 0, 0, false, &theme)
+            b = render_message_detail(
+                f,
+                area,
+                &store,
+                &MessageDetailView {
+                    call_id: "detail@test",
+                    selected_msg: 0,
+                    scroll_offset: 0,
+                    focused: false,
+                    theme: &theme,
+                },
+            )
         })
         .unwrap();
         assert_eq!(a, b);

@@ -1495,9 +1495,11 @@ fn stream_detail_render_does_not_panic() {
                 &key,
                 &store,
                 0,
-                &theme,
-                &sipnab::names::NameResolver::new(),
-                sipnab::names::NameMode::Off,
+                &sipnab::tui::stream_detail::StreamDetailDisplay {
+                    theme: &theme,
+                    resolver: &sipnab::names::NameResolver::new(),
+                    name_mode: sipnab::names::NameMode::Off,
+                },
             );
         })
         .expect("render should not panic");

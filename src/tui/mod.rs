@@ -1335,33 +1335,38 @@ pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Result<()> {
-    run_tui_with_pause(
-        dialog_store,
-        stream_store,
-        None,
-        Theme::default(),
-        Keymap::default(),
-        None,
-        NameSetup::default(),
-        FromToMode::default(),
-    )
+    run_tui_with_pause(dialog_store, stream_store, None, TuiOptions::default())
+}
+
+/// Presentation and naming options for a TUI session, resolved from
+/// config/CLI by the caller.
+#[derive(Default)]
+pub struct TuiOptions {
+    pub theme: Theme,
+    pub keymap: Keymap,
+    /// Call-list columns to show (config `[display] visible_columns`).
+    pub visible_columns: Option<Vec<String>>,
+    pub name_setup: NameSetup,
+    pub from_to_mode: FromToMode,
 }
 
 /// Run the TUI with an optional shared pause flag.
 ///
 /// When `paused_flag` is `Some`, the flag is shared with the processing
 /// thread so that toggling pause in the TUI also pauses packet processing.
-#[expect(clippy::too_many_arguments)]
 pub fn run_tui_with_pause(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
     paused_flag: Option<Arc<AtomicBool>>,
-    theme: Theme,
-    keymap: Keymap,
-    visible_columns: Option<Vec<String>>,
-    name_setup: NameSetup,
-    from_to_mode: FromToMode,
+    options: TuiOptions,
 ) -> Result<()> {
+    let TuiOptions {
+        theme,
+        keymap,
+        visible_columns,
+        name_setup,
+        from_to_mode,
+    } = options;
     // Setup terminal
     terminal::enable_raw_mode()?;
     execute!(

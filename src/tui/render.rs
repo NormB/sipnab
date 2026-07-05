@@ -93,11 +93,13 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFee
                     &mut app.stream_list,
                     &store,
                     dialog_store.as_deref(),
-                    app.active_filter.as_ref(),
-                    &app.search_query,
-                    &app.theme,
-                    app.resolver.as_ref(),
-                    app.name_mode,
+                    &stream_list::StreamListDisplay {
+                        filter: app.active_filter.as_ref(),
+                        search_query: &app.search_query,
+                        theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
+                    },
                 );
             }
         }
@@ -109,9 +111,11 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFee
                     key,
                     &store,
                     app.stream_detail_scroll,
-                    &app.theme,
-                    app.resolver.as_ref(),
-                    app.name_mode,
+                    &stream_detail::StreamDetailDisplay {
+                        theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
+                    },
                 );
                 // Report the clamped scroll back: over-scrolling past the
                 // end must not strand Up presses on a phantom offset.
@@ -328,11 +332,13 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFee
                         frame,
                         detail_area,
                         &store,
-                        &cid,
-                        detail_sel,
-                        app.flow.detail_scroll,
-                        app.flow.detail_focused,
-                        &app.theme,
+                        &call_flow::render::MessageDetailView {
+                            call_id: &cid,
+                            selected_msg: detail_sel,
+                            scroll_offset: app.flow.detail_scroll,
+                            focused: app.flow.detail_focused,
+                            theme: &app.theme,
+                        },
                     );
                     // Keep the stored scroll offset within the message length so
                     // End / repeated Down never strand the view past the content.
@@ -376,11 +382,13 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFee
                     frame,
                     main_area,
                     &store,
-                    call_id,
-                    *msg1_idx,
-                    *msg2_idx,
-                    app.diff_scroll,
-                    &app.theme,
+                    &MessageDiffView {
+                        call_id,
+                        msg1_idx: *msg1_idx,
+                        msg2_idx: *msg2_idx,
+                        scroll: app.diff_scroll,
+                        theme: &app.theme,
+                    },
                 );
                 let viewport = main_area.height.saturating_sub(2);
                 fb.diff_scroll = Some(app.diff_scroll.min(total_rows.saturating_sub(viewport)));
@@ -1782,19 +1790,30 @@ pub(super) fn render_statistics(
     stats_scroll
 }
 
+/// Parameters for the side-by-side message diff view.
+pub(super) struct MessageDiffView<'a> {
+    pub(super) call_id: &'a str,
+    pub(super) msg1_idx: usize,
+    pub(super) msg2_idx: usize,
+    pub(super) scroll: u16,
+    pub(super) theme: &'a Theme,
+}
+
 /// Render a side-by-side diff of two SIP messages. Returns the content
 /// height in rows so the caller can clamp its stored scroll offset.
-#[expect(clippy::too_many_arguments)]
 pub(super) fn render_message_diff(
     frame: &mut ratatui::Frame,
     area: Rect,
     store: &DialogStore,
-    call_id: &str,
-    msg1_idx: usize,
-    msg2_idx: usize,
-    scroll: u16,
-    theme: &Theme,
+    view: &MessageDiffView,
 ) -> u16 {
+    let MessageDiffView {
+        call_id,
+        msg1_idx,
+        msg2_idx,
+        scroll,
+        theme,
+    } = *view;
     let dialog = match store.get(call_id) {
         Some(d) => d,
         None => {
@@ -2531,7 +2550,18 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                render_message_diff(frame, area, &store, "missing", 0, 1, 0, &theme);
+                render_message_diff(
+                    frame,
+                    area,
+                    &store,
+                    &MessageDiffView {
+                        call_id: "missing",
+                        msg1_idx: 0,
+                        msg2_idx: 1,
+                        scroll: 0,
+                        theme: &theme,
+                    },
+                );
             })
             .unwrap();
         let buf = terminal.backend().buffer();
@@ -2554,7 +2584,18 @@ mod tests {
             .draw(|frame| {
                 let area = frame.area();
                 // msg index way past the end.
-                render_message_diff(frame, area, &store, "call-1@test", 0, 999, 0, &theme);
+                render_message_diff(
+                    frame,
+                    area,
+                    &store,
+                    &MessageDiffView {
+                        call_id: "call-1@test",
+                        msg1_idx: 0,
+                        msg2_idx: 999,
+                        scroll: 0,
+                        theme: &theme,
+                    },
+                );
             })
             .unwrap();
         let buf = terminal.backend().buffer();
