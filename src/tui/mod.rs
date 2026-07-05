@@ -428,6 +428,134 @@ struct NameDialogState {
     cursor: usize,
 }
 
+/// State for the F2 save dialog popup.
+///
+/// Kept on [`App`] (not inside the popup variant) so the edited path and
+/// chosen format survive closing and reopening the dialog.
+#[derive(Debug, Clone, Default)]
+struct SaveDialogState {
+    /// File path input.
+    path: String,
+    /// Cursor position within the path string.
+    cursor: usize,
+    /// Cached total dialog count for the dialog display.
+    dialog_count: usize,
+    /// Cached selected dialog count for the dialog display.
+    selected_count: usize,
+    /// Cached total message count for the dialog display.
+    message_count: usize,
+    /// Selected save format (PCAP, PCAP-NG, TXT, ...).
+    format: SaveFormat,
+}
+
+/// State for the file-open dialog (browser + manual path entry).
+///
+/// Kept on [`App`] so the last-browsed directory is the starting point the
+/// next time the dialog opens.
+#[derive(Debug, Clone)]
+struct FileOpenState {
+    /// Path being edited (used only in manual-path mode).
+    path: String,
+    /// Cursor position in the manual path.
+    cursor: usize,
+    /// Current directory being browsed.
+    dir: PathBuf,
+    /// Entries in the current directory (dirs first, then pcaps).
+    entries: Vec<FileEntry>,
+    /// Selected row in the entries list.
+    selected: usize,
+    /// Typed filter substring (narrows the entries list).
+    filter: String,
+    /// Manual-path edit mode (Tab toggles).
+    manual_mode: bool,
+    /// Error from the last directory read (e.g. permission denied after a
+    /// privilege drop), shown in the browser instead of a blank list.
+    /// `None` when the directory was read successfully.
+    error: Option<String>,
+}
+
+impl Default for FileOpenState {
+    fn default() -> Self {
+        Self {
+            path: String::new(),
+            cursor: 0,
+            dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            entries: Vec::new(),
+            selected: 0,
+            filter: String::new(),
+            manual_mode: false,
+            error: None,
+        }
+    }
+}
+
+/// Per-view state for the call flow ladder: selection, scrolling, display
+/// toggles and the render-time caches that map visible rows back to raw
+/// message indices.
+#[derive(Debug, Clone)]
+struct CallFlowViewState {
+    /// Scroll offset for the ladder.
+    scroll: usize,
+    /// Index of the currently selected message in the ladder.
+    selected: usize,
+    /// Scroll offset for the detail (right) panel in split view.
+    detail_scroll: u16,
+    /// In the split view, whether keyboard focus is on the detail (right)
+    /// pane. `false` = ladder (left). Toggled with Tab. Only meaningful while
+    /// [`Self::raw_preview`] is on; navigation keys act on the focused pane.
+    detail_focused: bool,
+    /// Whether the raw preview split is active.
+    /// Default is `true` (matching sngrep: split view on by default).
+    raw_preview: bool,
+    /// Split percentage for the raw preview (right) pane (10..=80, default 40).
+    raw_preview_pct: u16,
+    /// Whether extended (multi-leg) flow is active.
+    extended: bool,
+    /// When set, the ladder is filtered to a single transaction — the CSeq
+    /// grouping key (number + method) anchored when the filter was toggled
+    /// on. `None` shows the whole dialog. See [`call_flow::transaction_key`].
+    transaction_filter: Option<(u32, String)>,
+    /// Whether RTP stream info is displayed in the flow.
+    show_rtp: bool,
+    /// First selected message index for diff comparison (Space key).
+    diff_selected: Option<usize>,
+    /// Marked message index for delta measurement (set with 'm').
+    mark_index: Option<usize>,
+    /// Set of message indices where folds are expanded ('e' toggles).
+    fold_expanded: HashSet<usize>,
+    /// Cached rendered message count (after folding).
+    cached_msg_count: usize,
+    /// Indices of FormattedMessages that carry an RTP bar (Enter drill-down).
+    cached_rtp_bar_indices: std::collections::HashSet<usize>,
+    /// Per visible ladder row, the raw message index it renders (`None` for
+    /// RTP bars). Updated on every render; maps [`Self::selected`] (a
+    /// visible-row position) back to the underlying message for the detail
+    /// pane, Enter, diff selection and fold expansion.
+    cached_raw_indices: Vec<Option<usize>>,
+}
+
+impl Default for CallFlowViewState {
+    fn default() -> Self {
+        Self {
+            scroll: 0,
+            selected: 0,
+            detail_scroll: 0,
+            detail_focused: false,
+            raw_preview: true,
+            raw_preview_pct: 40,
+            extended: false,
+            transaction_filter: None,
+            show_rtp: false,
+            diff_selected: None,
+            mark_index: None,
+            fold_expanded: HashSet::new(),
+            cached_msg_count: 0,
+            cached_rtp_bar_indices: std::collections::HashSet::new(),
+            cached_raw_indices: Vec::new(),
+        }
+    }
+}
+
 impl NameDialogState {
     /// IP string of the active target (empty if none).
     fn active_ip(&self) -> &str {
@@ -846,8 +974,8 @@ pub struct App {
     active_filter_text: String,
     /// Transient status bar error message (cleared on next view change).
     status_error: Option<String>,
-    /// Scroll offset for call flow view.
-    call_flow_scroll: usize,
+    /// Call flow ladder state (selection, scroll, toggles, render caches).
+    flow: CallFlowViewState,
     /// Scroll offset for raw message view.
     raw_msg_scroll: u16,
     /// Scroll offset for the F1 help view (clamped to content height in render).
@@ -871,45 +999,10 @@ pub struct App {
     cached_dialog_count: usize,
     /// Cached displayed dialog count (updated when lock is available).
     cached_displayed_count: usize,
-    /// Cached rendered message count for the current call flow (after folding).
-    cached_flow_msg_count: usize,
-    /// Indices of FormattedMessages that carry an RTP bar (for Enter drill-down).
-    cached_rtp_bar_indices: std::collections::HashSet<usize>,
-    /// Per visible ladder row, the raw message index it renders (`None` for
-    /// RTP bars). Updated on every render; maps `selected_msg_index` (a
-    /// visible-row position) back to the underlying message for the detail
-    /// pane, Enter, diff selection and fold expansion.
-    cached_flow_raw_indices: Vec<Option<usize>>,
-    /// Save dialog file path input.
-    save_path: String,
-    /// Cursor position within the save path string.
-    save_cursor: usize,
-    /// Cached message/dialog counts for the save dialog display.
-    save_dialog_count: usize,
-    /// Cached selected dialog count for the save dialog display.
-    save_selected_count: usize,
-    /// Cached total message count for the save dialog display.
-    save_message_count: usize,
-    /// Selected save format (PCAP, PCAP-NG, or TXT).
-    save_format: SaveFormat,
-    /// File-open dialog: path being edited (used only in manual-path mode).
-    open_path: String,
-    /// File-open dialog: cursor position in path.
-    open_cursor: usize,
-    /// File-open dialog: current directory being browsed.
-    open_dir: std::path::PathBuf,
-    /// File-open dialog: entries in the current directory (dirs first, then pcaps).
-    open_entries: Vec<FileEntry>,
-    /// File-open dialog: selected row in the entries list.
-    open_selected: usize,
-    /// File-open dialog: typed filter substring (narrows the entries list).
-    open_filter: String,
-    /// File-open dialog: manual-path edit mode (Tab toggles).
-    open_manual_mode: bool,
-    /// File-open dialog: error from the last directory read (e.g. permission
-    /// denied after a privilege drop), shown in the browser instead of a blank
-    /// list. `None` when the directory was read successfully.
-    open_error: Option<String>,
+    /// Save dialog popup state (path/format survive reopening).
+    save: SaveDialogState,
+    /// File-open dialog state (last-browsed directory survives reopening).
+    file_open: FileOpenState,
 
     // ── Call flow display modes ────────────────────────────────────
     /// SDP display mode (None / Summary / Full).
@@ -931,33 +1024,6 @@ pub struct App {
     color_mode: ColorMode,
     /// How the call-list From/To columns render (user / host:port / both).
     from_to_mode: FromToMode,
-    /// Whether the raw preview split is active in call flow view.
-    /// Default is `true` (matching sngrep: split view on by default).
-    raw_preview: bool,
-    /// Split percentage for the raw preview (right) pane (10..=80, default 40).
-    raw_preview_pct: u16,
-    /// Index of the currently selected message in the call flow ladder.
-    selected_msg_index: usize,
-    /// Scroll offset for the detail (right) panel in split view.
-    detail_scroll: u16,
-    /// In the call flow split view, whether keyboard focus is on the detail
-    /// (right) pane. `false` = ladder (left). Toggled with Tab. Only meaningful
-    /// while [`Self::raw_preview`] is on; navigation keys act on the focused pane.
-    call_flow_detail_focused: bool,
-    /// Whether extended (multi-leg) flow is active.
-    extended_flow: bool,
-    /// When set, the call-flow ladder is filtered to a single transaction —
-    /// the CSeq grouping key (number + method) anchored when the filter was
-    /// toggled on. `None` shows the whole dialog. See [`call_flow::transaction_key`].
-    flow_filter: Option<(u32, String)>,
-    /// Whether RTP stream info is displayed in the call flow.
-    show_rtp_in_flow: bool,
-    /// First selected message index for diff comparison (Space key).
-    diff_selected_msg: Option<usize>,
-    /// Marked message index for delta measurement (set with 'm').
-    mark_index: Option<usize>,
-    /// Set of message indices where folds are expanded (press 'e' to toggle).
-    fold_expanded: HashSet<usize>,
     /// Whether syntax highlighting is enabled in raw message view.
     syntax_highlight: bool,
     /// Whether packet processing is paused (TUI-local flag).
@@ -1006,7 +1072,7 @@ impl App {
             active_filter: None,
             active_filter_text: String::new(),
             status_error: None,
-            call_flow_scroll: 0,
+            flow: CallFlowViewState::default(),
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
@@ -1018,23 +1084,8 @@ impl App {
             bpf_filter: String::new(),
             cached_dialog_count: 0,
             cached_displayed_count: 0,
-            cached_flow_msg_count: 0,
-            cached_rtp_bar_indices: std::collections::HashSet::new(),
-            cached_flow_raw_indices: Vec::new(),
-            save_path: String::new(),
-            save_cursor: 0,
-            save_dialog_count: 0,
-            save_selected_count: 0,
-            save_message_count: 0,
-            save_format: SaveFormat::default(),
-            open_path: String::new(),
-            open_cursor: 0,
-            open_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-            open_entries: Vec::new(),
-            open_selected: 0,
-            open_filter: String::new(),
-            open_manual_mode: false,
-            open_error: None,
+            save: SaveDialogState::default(),
+            file_open: FileOpenState::default(),
             name_mode: NameMode::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
@@ -1044,17 +1095,6 @@ impl App {
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),
             from_to_mode: FromToMode::default(),
-            raw_preview: true,
-            raw_preview_pct: 40,
-            selected_msg_index: 0,
-            detail_scroll: 0,
-            call_flow_detail_focused: false,
-            extended_flow: false,
-            flow_filter: None,
-            show_rtp_in_flow: false,
-            diff_selected_msg: None,
-            mark_index: None,
-            fold_expanded: HashSet::new(),
             syntax_highlight: true,
             paused: false,
             paused_flag: Arc::new(AtomicBool::new(false)),
@@ -1088,16 +1128,16 @@ impl App {
     /// dialog would highlight/expand arbitrary rows there. Display settings
     /// (timestamp mode, SDP mode, colors, split) are app-global and persist.
     pub(crate) fn reset_call_flow_view_state(&mut self) {
-        self.call_flow_scroll = 0;
-        self.selected_msg_index = 0;
-        self.detail_scroll = 0;
-        self.flow_filter = None;
-        self.cached_flow_msg_count = 0;
-        self.cached_rtp_bar_indices.clear();
-        self.cached_flow_raw_indices.clear();
-        self.fold_expanded.clear();
-        self.mark_index = None;
-        self.diff_selected_msg = None;
+        self.flow.scroll = 0;
+        self.flow.selected = 0;
+        self.flow.detail_scroll = 0;
+        self.flow.transaction_filter = None;
+        self.flow.cached_msg_count = 0;
+        self.flow.cached_rtp_bar_indices.clear();
+        self.flow.cached_raw_indices.clear();
+        self.flow.fold_expanded.clear();
+        self.flow.mark_index = None;
+        self.flow.diff_selected = None;
     }
 
     /// Return whether packet processing is currently paused.
@@ -1326,8 +1366,8 @@ impl App {
 
     #[doc(hidden)]
     pub fn open_path_clear_for_test(&mut self) {
-        self.open_path.clear();
-        self.open_cursor = 0;
+        self.file_open.path.clear();
+        self.file_open.cursor = 0;
     }
 
     /// Set the filter-dialog SIP-method checkboxes and apply the filter, exactly
@@ -1347,17 +1387,21 @@ impl App {
 
     #[doc(hidden)]
     pub fn set_open_dir_for_test(&mut self, dir: PathBuf) {
-        self.open_dir = dir;
+        self.file_open.dir = dir;
     }
 
     #[doc(hidden)]
     pub fn open_dir_for_test(&self) -> &std::path::Path {
-        &self.open_dir
+        &self.file_open.dir
     }
 
     #[doc(hidden)]
     pub fn open_entry_names_for_test(&self) -> Vec<String> {
-        self.open_entries.iter().map(|e| e.name.clone()).collect()
+        self.file_open
+            .entries
+            .iter()
+            .map(|e| e.name.clone())
+            .collect()
     }
 
     /// Handle a mouse event kind (wheel scrolling) against the current view.
@@ -1500,22 +1544,22 @@ impl App {
 
     /// Return whether the raw preview split is active.
     pub fn raw_preview(&self) -> bool {
-        self.raw_preview
+        self.flow.raw_preview
     }
 
     /// Return the raw preview pane percentage.
     pub fn raw_preview_pct(&self) -> u16 {
-        self.raw_preview_pct
+        self.flow.raw_preview_pct
     }
 
     /// Return whether extended multi-leg flow is active.
     pub fn extended_flow(&self) -> bool {
-        self.extended_flow
+        self.flow.extended
     }
 
     /// Return whether RTP is shown in the call flow.
     pub fn show_rtp_in_flow(&self) -> bool {
-        self.show_rtp_in_flow
+        self.flow.show_rtp
     }
 
     /// Return whether search mode is active.
@@ -1569,12 +1613,12 @@ impl App {
 
     /// Return the selected message index in the call flow.
     pub fn selected_msg_index(&self) -> usize {
-        self.selected_msg_index
+        self.flow.selected
     }
 
     /// Return the detail panel scroll offset.
     pub fn detail_scroll(&self) -> u16 {
-        self.detail_scroll
+        self.flow.detail_scroll
     }
 
     /// Return the help view scroll offset.
@@ -1599,47 +1643,47 @@ impl App {
 
     /// Return the call flow ladder scroll offset.
     pub fn call_flow_scroll(&self) -> usize {
-        self.call_flow_scroll
+        self.flow.scroll
     }
 
     /// Return the first selected message for diff comparison.
     pub fn diff_selected_msg(&self) -> Option<usize> {
-        self.diff_selected_msg
+        self.flow.diff_selected
     }
 
     /// Return the marked message index (for mark + delta).
     pub fn mark_index(&self) -> Option<usize> {
-        self.mark_index
+        self.flow.mark_index
     }
 
     /// Return the set of expanded fold indices.
     pub fn fold_expanded(&self) -> &HashSet<usize> {
-        &self.fold_expanded
+        &self.flow.fold_expanded
     }
 
     /// Return the selected save format.
     pub fn save_format(&self) -> SaveFormat {
-        self.save_format
+        self.save.format
     }
 
     /// Return the save dialog file path.
     pub fn save_path(&self) -> &str {
-        &self.save_path
+        &self.save.path
     }
 
     /// Return the save dialog cursor position.
     pub fn save_cursor(&self) -> usize {
-        self.save_cursor
+        self.save.cursor
     }
 
     /// Return the file-open dialog path.
     pub fn open_path(&self) -> &str {
-        &self.open_path
+        &self.file_open.path
     }
 
     /// Return the file-open dialog cursor position.
     pub fn open_cursor(&self) -> usize {
-        self.open_cursor
+        self.file_open.cursor
     }
 
     /// Return the stream detail scroll offset.
@@ -1649,8 +1693,8 @@ impl App {
 
     /// Override the save dialog path (for deterministic snapshot tests).
     pub fn set_save_path(&mut self, path: &str) {
-        self.save_path = path.to_string();
-        self.save_cursor = path.len();
+        self.save.path = path.to_string();
+        self.save.cursor = path.len();
     }
 
     /// Return a reference to the shared dialog store (for tests).

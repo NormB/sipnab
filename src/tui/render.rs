@@ -167,11 +167,11 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
         View::CallFlow(call_id) => {
             if let Some(store) = app.dialog_store.try_read() {
                 let cid = call_id.clone();
-                let sel = app.selected_msg_index;
+                let sel = app.flow.selected;
 
                 // Horizontal split: ladder on left, raw detail on right (sngrep style)
-                let (ladder_area, detail_area) = if app.raw_preview {
-                    let pct = app.raw_preview_pct;
+                let (ladder_area, detail_area) = if app.flow.raw_preview {
+                    let pct = app.flow.raw_preview_pct;
                     let [left, right] = Layout::horizontal([
                         Constraint::Percentage(100 - pct),
                         Constraint::Percentage(pct),
@@ -184,7 +184,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
 
                 // Gather messages for the direct-paint renderer.
                 // For extended flow, merge correlated dialog messages.
-                let prepared = if app.extended_flow {
+                let prepared = if app.flow.extended {
                     // Extended: merge all correlated legs
                     let dialog = store.get(&cid);
                     if let Some(d) = dialog {
@@ -216,7 +216,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 ft,
                                 None,
                                 &flow_opts,
-                                &app.fold_expanded,
+                                &app.flow.fold_expanded,
                             );
                             Some((participants, msgs))
                         }
@@ -230,7 +230,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         // anchored transaction's messages. A stale key that
                         // matches nothing falls back to the whole dialog.
                         let filtered: Option<Vec<crate::sip::SipMessage>> =
-                            app.flow_filter.as_ref().and_then(|key| {
+                            app.flow.transaction_filter.as_ref().and_then(|key| {
                                 let v: Vec<crate::sip::SipMessage> = d
                                     .messages
                                     .iter()
@@ -251,7 +251,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 sdp_mode: app.sdp_display_mode,
                                 ts_mode: app.timestamp_mode,
                                 color_mode: app.color_mode,
-                                show_rtp: app.show_rtp_in_flow,
+                                show_rtp: app.flow.show_rtp,
                                 selected_msg: Some(sel),
                                 theme: &app.theme,
                                 resolver: app.resolver.as_ref(),
@@ -263,7 +263,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                                 ft,
                                 pdd,
                                 &flow_opts,
-                                &app.fold_expanded,
+                                &app.flow.fold_expanded,
                             );
                             Some((participants, msgs))
                         }
@@ -275,10 +275,10 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 // Update cached rendered message count (excluding spacers)
                 // and track which indices carry an RTP bar for Enter drill-down
                 if let Some((_, ref msgs)) = prepared {
-                    app.cached_flow_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                    app.flow.cached_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
                     // Build RTP bar indices in terms of non-spacer message index
                     // (matching selected_msg_index which skips spacers)
-                    app.cached_rtp_bar_indices = msgs
+                    app.flow.cached_rtp_bar_indices = msgs
                         .iter()
                         .filter(|m| !m.is_spacer)
                         .enumerate()
@@ -287,7 +287,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         .collect();
                     // Visible row -> raw message mapping (None for RTP bars);
                     // consumed by the detail pane, Enter, diff and 'e'.
-                    app.cached_flow_raw_indices = msgs
+                    app.flow.cached_raw_indices = msgs
                         .iter()
                         .filter(|m| !m.is_spacer)
                         .map(|m| m.raw_index)
@@ -301,16 +301,14 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     let viewport = call_flow::ladder_visible_rows(ladder_area.height);
                     let total_rows = call_flow::ladder_total_rows(msgs);
                     let sel_row = call_flow::ladder_row_of_visible(msgs, sel);
-                    if sel_row < app.call_flow_scroll {
-                        app.call_flow_scroll = sel_row;
-                    } else if viewport > 0 && sel_row >= app.call_flow_scroll + viewport {
-                        app.call_flow_scroll = sel_row + 1 - viewport;
+                    if sel_row < app.flow.scroll {
+                        app.flow.scroll = sel_row;
+                    } else if viewport > 0 && sel_row >= app.flow.scroll + viewport {
+                        app.flow.scroll = sel_row + 1 - viewport;
                     }
-                    app.call_flow_scroll = app
-                        .call_flow_scroll
-                        .min(total_rows.saturating_sub(viewport));
+                    app.flow.scroll = app.flow.scroll.min(total_rows.saturating_sub(viewport));
                 }
-                let scroll = app.call_flow_scroll;
+                let scroll = app.flow.scroll;
 
                 // Render ladder using direct buffer painting
                 call_flow::render_call_flow_direct_or_empty(
@@ -319,7 +317,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     prepared.as_ref(),
                     &call_flow::render::FlowNavigation {
                         scroll_offset: scroll,
-                        mark_index: app.mark_index,
+                        mark_index: app.flow.mark_index,
                         selected_index: sel,
                     },
                     &app.theme,
@@ -343,12 +341,14 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     // the message it renders (folds hide rows; a transaction
                     // filter renders a subset of the dialog).
                     let detail_sel = app
-                        .cached_flow_raw_indices
+                        .flow
+                        .cached_raw_indices
                         .get(sel)
                         .copied()
                         .flatten()
                         .map(|filtered_idx| {
-                            app.flow_filter
+                            app.flow
+                                .transaction_filter
                                 .as_ref()
                                 .and_then(|key| {
                                     store.get(&cid).map(|d| {
@@ -372,16 +372,16 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                         &store,
                         &cid,
                         detail_sel,
-                        app.detail_scroll,
-                        app.call_flow_detail_focused,
+                        app.flow.detail_scroll,
+                        app.flow.detail_focused,
                         &app.theme,
                     );
                     // Keep the stored scroll offset within the message length so
                     // End / repeated Down never strand the view past the content.
                     let viewport = detail_area.height.saturating_sub(2);
                     let max_scroll = (total_lines as u16).saturating_sub(viewport);
-                    if app.detail_scroll > max_scroll {
-                        app.detail_scroll = max_scroll;
+                    if app.flow.detail_scroll > max_scroll {
+                        app.flow.detail_scroll = max_scroll;
                     }
                 }
             }
@@ -621,8 +621,8 @@ pub(super) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &
         // In call flow: show current display modes so user knows what t/d/c do
         let cyan = Style::default().fg(app.theme.header);
         // Show focused pane (Tab to switch) only when the split is visible.
-        let focus = if app.raw_preview {
-            if app.call_flow_detail_focused {
+        let focus = if app.flow.raw_preview {
+            if app.flow.detail_focused {
                 " | Focus: Detail (Tab)"
             } else {
                 " | Focus: Ladder (Tab)"
@@ -635,8 +635,8 @@ pub(super) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &
             app.timestamp_mode.label(),
             app.sdp_display_mode.label(),
             app.color_mode.label(),
-            if app.raw_preview {
-                app.raw_preview_pct
+            if app.flow.raw_preview {
+                app.flow.raw_preview_pct
             } else {
                 0
             },
@@ -934,7 +934,7 @@ pub(super) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
             )));
             last_cat = cat;
         }
-        let is_selected = *fmt == app.save_format;
+        let is_selected = *fmt == app.save.format;
         let marker = if is_selected { "\u{25B8} " } else { "  " }; // ▸ or space
         let label_style = if is_selected {
             Style::default()
@@ -957,12 +957,12 @@ pub(super) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &Ap
 
     let info_line = format!(
         "  Dialogs: {} ({} selected) \u{00B7} Messages: {}",
-        app.save_dialog_count, app.save_selected_count, app.save_message_count
+        app.save.dialog_count, app.save.selected_count, app.save.message_count
     );
 
     // Build the path display with a visible cursor (reverse video at cursor position)
-    let path = &app.save_path;
-    let cursor = app.save_cursor.min(path.len());
+    let path = &app.save.path;
+    let cursor = app.save.cursor.min(path.len());
     let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
         "  Save to: ",
         Style::default().fg(app.theme.header),
@@ -1143,7 +1143,7 @@ pub(super) fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    if app.open_manual_mode {
+    if app.file_open.manual_mode {
         render_file_open_manual(frame, inner, app);
     } else {
         render_file_open_browser(frame, inner, app);
@@ -1180,11 +1180,11 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
 
 /// Render the directory-browser variant of the Open dialog.
 pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
-    let header = format!("  Dir: {}", app.open_dir.display());
-    let filter_label = if app.open_filter.is_empty() {
+    let header = format!("  Dir: {}", app.file_open.dir.display());
+    let filter_label = if app.file_open.filter.is_empty() {
         "  (type to filter — Backspace: up dir  Tab: type path)".to_string()
     } else {
-        format!("  Filter: {}", app.open_filter)
+        format!("  Filter: {}", app.file_open.filter)
     };
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(inner.height as usize);
@@ -1202,7 +1202,7 @@ pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, 
 
     // If the directory couldn't be read, show why (e.g. privileges dropped to
     // 'nobody' under sudo) instead of a blank list.
-    if let Some(err) = &app.open_error {
+    if let Some(err) = &app.file_open.error {
         let wrap_width = (inner.width as usize).saturating_sub(4).max(10);
         for chunk in wrap_to_width(err, wrap_width) {
             lines.push(Line::from(Span::styled(
@@ -1216,23 +1216,25 @@ pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, 
     }
 
     let list_rows = (inner.height as usize).saturating_sub(5);
-    if app.open_entries.is_empty() {
+    if app.file_open.entries.is_empty() {
         lines.push(Line::from(Span::styled(
             "  (no matching pcap files)",
             Style::default().fg(app.theme.muted),
         )));
     } else {
         let scroll_offset = app
-            .open_selected
+            .file_open
+            .selected
             .saturating_sub(list_rows.saturating_sub(1));
         for (idx, entry) in app
-            .open_entries
+            .file_open
+            .entries
             .iter()
             .enumerate()
             .skip(scroll_offset)
             .take(list_rows)
         {
-            let selected = idx == app.open_selected;
+            let selected = idx == app.file_open.selected;
             let prefix = if entry.is_dir { "  [DIR] " } else { "        " };
             let style = if selected {
                 Style::default()
@@ -1305,8 +1307,8 @@ pub(super) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, 
 
 /// Render the manual path-input variant of the Open dialog.
 pub(super) fn render_file_open_manual(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
-    let path = &app.open_path;
-    let cursor = app.open_cursor.min(path.len());
+    let path = &app.file_open.path;
+    let cursor = app.file_open.cursor.min(path.len());
     let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
         "  Path: ",
         Style::default().fg(app.theme.header),
@@ -1689,7 +1691,7 @@ pub(super) fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app:
         } else {
             "OFF"
         },
-        if app.raw_preview { "ON" } else { "OFF" },
+        if app.flow.raw_preview { "ON" } else { "OFF" },
         match app.sdp_display_mode {
             SdpDisplayMode::None => "None",
             SdpDisplayMode::Summary => "Summary",
@@ -2092,7 +2094,7 @@ mod tests {
         assert!(split.contains("Time:") || split.contains("SDP:"));
 
         // No split.
-        app.raw_preview = false;
+        app.flow.raw_preview = false;
         let nosplit = render_to_string(&mut app, 120, 30);
         assert!(nosplit.contains("Back"));
     }
@@ -2101,7 +2103,7 @@ mod tests {
     fn render_app_call_flow_extended_flow() {
         let mut app = app_with_dialog();
         app.current_view = View::CallFlow("call-1@test".to_string());
-        app.extended_flow = true;
+        app.flow.extended = true;
         let out = render_to_string(&mut app, 120, 30);
         assert!(out.contains("Back"));
     }
@@ -2216,7 +2218,7 @@ mod tests {
     fn render_app_file_open_browser_overlay() {
         let mut app = app_with_dialog();
         app.active_popup = Some(Popup::FileOpenDialog);
-        app.open_manual_mode = false;
+        app.file_open.manual_mode = false;
         let out = render_to_string(&mut app, 100, 30);
         assert!(out.contains("Open PCAP File"));
         assert!(out.contains("Dir:"));
@@ -2226,7 +2228,7 @@ mod tests {
     fn render_app_file_open_manual_overlay() {
         let mut app = app_with_dialog();
         app.active_popup = Some(Popup::FileOpenDialog);
-        app.open_manual_mode = true;
+        app.file_open.manual_mode = true;
         let out = render_to_string(&mut app, 100, 30);
         assert!(out.contains("Open PCAP File"));
         assert!(out.contains("Path:"));
@@ -2255,8 +2257,8 @@ mod tests {
     #[test]
     fn render_save_popup_empty_path_shows_cursor() {
         let mut app = App::new_test();
-        app.save_path.clear();
-        app.save_cursor = 0;
+        app.save.path.clear();
+        app.save.cursor = 0;
         let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
         terminal
             .draw(|frame| {
@@ -2282,8 +2284,8 @@ mod tests {
     #[test]
     fn render_save_popup_cursor_mid_string() {
         let mut app = App::new_test();
-        app.save_path = "abcdef".to_string();
-        app.save_cursor = 3; // cursor in the middle
+        app.save.path = "abcdef".to_string();
+        app.save.cursor = 3; // cursor in the middle
         let mut terminal = Terminal::new(TestBackend::new(90, 30)).unwrap();
         terminal
             .draw(|frame| {
@@ -2298,7 +2300,7 @@ mod tests {
     fn render_file_open_browser_empty_and_populated() {
         // Empty entries → "(no matching pcap files)" path.
         let mut app = App::new_test();
-        app.open_entries.clear();
+        app.file_open.entries.clear();
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
@@ -2321,7 +2323,7 @@ mod tests {
     #[test]
     fn render_file_open_browser_with_filter() {
         let mut app = App::new_test();
-        app.open_filter = "abc".to_string();
+        app.file_open.filter = "abc".to_string();
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
@@ -2345,8 +2347,8 @@ mod tests {
     fn render_file_open_manual_empty_and_with_path() {
         // Empty path branch.
         let mut app = App::new_test();
-        app.open_path.clear();
-        app.open_cursor = 0;
+        app.file_open.path.clear();
+        app.file_open.cursor = 0;
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
@@ -2357,8 +2359,8 @@ mod tests {
             .unwrap();
 
         // Cursor mid-path branch.
-        app.open_path = "/tmp/a.pcap".to_string();
-        app.open_cursor = 4;
+        app.file_open.path = "/tmp/a.pcap".to_string();
+        app.file_open.cursor = 4;
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
@@ -2403,7 +2405,7 @@ mod tests {
     fn render_status_line3_call_flow_branch() {
         let mut app = app_with_dialog();
         app.current_view = View::CallFlow("call-1@test".to_string());
-        app.raw_preview = true;
+        app.flow.raw_preview = true;
         let mut terminal = Terminal::new(TestBackend::new(100, 4)).unwrap();
         terminal
             .draw(|frame| {

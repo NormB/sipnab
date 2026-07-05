@@ -161,7 +161,7 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
             0 => app.color_mode = app.color_mode.next(),
             1 => app.timestamp_mode = app.timestamp_mode.next(),
             2 => app.call_list.autoscroll = !app.call_list.autoscroll,
-            3 => app.raw_preview = !app.raw_preview,
+            3 => app.flow.raw_preview = !app.flow.raw_preview,
             4 => app.sdp_display_mode = app.sdp_display_mode.next(),
             5 => app.syntax_highlight = !app.syntax_highlight,
             _ => {}
@@ -234,14 +234,14 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
         }
         View::CallFlow(_) => {
             if down {
-                let count = app.cached_flow_msg_count;
-                if count > 0 && app.selected_msg_index < count - 1 {
-                    app.selected_msg_index += 1;
-                    app.detail_scroll = 0;
+                let count = app.flow.cached_msg_count;
+                if count > 0 && app.flow.selected < count - 1 {
+                    app.flow.selected += 1;
+                    app.flow.detail_scroll = 0;
                 }
-            } else if app.selected_msg_index > 0 {
-                app.selected_msg_index -= 1;
-                app.detail_scroll = 0;
+            } else if app.flow.selected > 0 {
+                app.flow.selected -= 1;
+                app.flow.detail_scroll = 0;
             }
         }
         View::RawMessage { .. } | View::CombinedDetail { .. } => {

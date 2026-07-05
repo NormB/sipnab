@@ -118,7 +118,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     let messages: Vec<crate::sip::SipMessage> =
         if let View::CallFlow(ref call_id) = app.current_view {
             // In call flow: export just this dialog (+ correlated if extended)
-            if app.extended_flow {
+            if app.flow.extended {
                 if let Some(dialog) = store.get(call_id) {
                     let mut all: Vec<&crate::sip::SipMessage> = dialog.messages.iter().collect();
                     let correlated = store.find_correlated(call_id);
