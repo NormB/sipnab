@@ -15,6 +15,9 @@ mod stream;
 
 pub(in crate::tui) use call_flow::*;
 pub(in crate::tui) use call_list::*;
+// Re-exported at `tui` scope so keybinding_drift_test can probe the
+// key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
+pub use call_list::{CallListAction, call_list_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub(in crate::tui) use name_dialog::*;

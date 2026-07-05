@@ -47,6 +47,8 @@ mod save;
 mod theme;
 
 use controllers::*;
+#[doc(hidden)]
+pub use controllers::{CallListAction, call_list_action};
 use render::*;
 use save::*;
 pub use theme::*;
