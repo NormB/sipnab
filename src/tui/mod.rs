@@ -1140,6 +1140,123 @@ impl App {
         self.flow.diff_selected = None;
     }
 
+    /// Refresh the store-derived count caches and apply sticky-bottom
+    /// autoscroll. Called from the event-loop tick before each render (the
+    /// only writer besides [`Self::apply_render_feedback`]), so the render
+    /// pass itself stays free of state writes.
+    ///
+    /// Uses `try_read()`: on lock contention the caches simply keep their
+    /// previous values until the next tick, matching the render pass's
+    /// skip-on-contention behavior.
+    fn sync_caches(&mut self) {
+        let Some(store) = self.dialog_store.try_read() else {
+            return;
+        };
+        self.cached_dialog_count = store.len();
+        self.cached_displayed_count = {
+            let mut count = if let Some(ref filter) = self.active_filter {
+                store
+                    .iter()
+                    .filter(|d| filter.matches_dialog(d, &[]))
+                    .count()
+            } else {
+                store.len()
+            };
+            // Apply text search filter to the count
+            if !self.search_query.is_empty() {
+                let q = self.search_query.to_ascii_lowercase();
+                count = store
+                    .iter()
+                    .filter(|d| {
+                        if let Some(ref filter) = self.active_filter
+                            && !filter.matches_dialog(d, &[])
+                        {
+                            return false;
+                        }
+                        d.call_id.to_ascii_lowercase().contains(&q)
+                            || d.method.as_str().to_ascii_lowercase().contains(&q)
+                            || d.from_user
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&q)
+                            || d.to_user
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_ascii_lowercase()
+                                .contains(&q)
+                            || d.src_addr.to_string().contains(&q)
+                            || d.dst_addr.to_string().contains(&q)
+                            || call_list::state_display_str(d.state())
+                                .to_ascii_lowercase()
+                                .contains(&q)
+                            || d.messages.iter().any(|msg| {
+                                String::from_utf8_lossy(&msg.raw)
+                                    .to_ascii_lowercase()
+                                    .contains(&q)
+                            })
+                    })
+                    .count();
+            }
+            count
+        };
+
+        // Autoscroll: sticky-bottom. When enabled and the selection already
+        // sits on the last row, newly arrived dialogs pull it to the new
+        // bottom; a selection elsewhere is never yanked.
+        if self.current_view == View::CallList {
+            let displayed_len = call_list::displayed_dialogs(
+                &store,
+                self.active_filter.as_ref(),
+                &self.search_query,
+                self.call_list.sort_column(),
+                self.call_list.sort_ascending(),
+            )
+            .len();
+            if self.call_list.autoscroll
+                && self.last_rendered_dialog_rows > 0
+                && displayed_len > self.last_rendered_dialog_rows
+                && self.call_list.selected() + 1 >= self.last_rendered_dialog_rows
+            {
+                self.call_list.move_to_bottom(displayed_len);
+            }
+            self.last_rendered_dialog_rows = displayed_len;
+        }
+    }
+
+    /// Write back the geometry- and content-dependent values a render pass
+    /// computed (clamped scrolls, call-flow row caches). Applied by the
+    /// event loop right after `terminal.draw`, which is the same point in
+    /// the frame timeline the render pass used to write them directly.
+    fn apply_render_feedback(&mut self, fb: RenderFeedback) {
+        if let Some(v) = fb.stream_detail_scroll {
+            self.stream_detail_scroll = v;
+        }
+        if let Some(v) = fb.flow_scroll {
+            self.flow.scroll = v;
+        }
+        if let Some(v) = fb.flow_detail_scroll {
+            self.flow.detail_scroll = v;
+        }
+        if let Some((count, bars, raws)) = fb.flow_caches {
+            self.flow.cached_msg_count = count;
+            self.flow.cached_rtp_bar_indices = bars;
+            self.flow.cached_raw_indices = raws;
+        }
+        if let Some(v) = fb.raw_msg_scroll {
+            self.raw_msg_scroll = v;
+        }
+        if let Some(v) = fb.diff_scroll {
+            self.diff_scroll = v;
+        }
+        if let Some(v) = fb.help_scroll {
+            self.help_scroll = v;
+        }
+        if let Some(v) = fb.stats_scroll {
+            self.stats_scroll = v;
+        }
+    }
+
     /// Return whether packet processing is currently paused.
     pub fn is_paused(&self) -> bool {
         self.paused
@@ -1280,8 +1397,12 @@ pub fn run_tui_with_pause(
             break;
         }
 
-        // Render
-        terminal.draw(|frame| render_app(frame, &mut app))?;
+        // Tick: refresh store-derived caches, render read-only, then
+        // persist what the render pass computed (clamps, flow row caches).
+        app.sync_caches();
+        let mut fb = RenderFeedback::default();
+        terminal.draw(|frame| fb = render_app(frame, &mut app))?;
+        app.apply_render_feedback(fb);
 
         // Poll with adaptive timeout, then drain every queued event before
         // the next redraw — a paste or key burst must not be metered out at
@@ -1702,9 +1823,13 @@ impl App {
         &self.dialog_store
     }
 
-    /// Render the full application frame into the given frame (for snapshot tests).
+    /// Render one full application tick into the given frame (for snapshot
+    /// tests): cache sync, the read-only render pass, and the render
+    /// feedback write-back — exactly the event loop's sequence.
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
-        render_app(frame, self);
+        self.sync_caches();
+        let fb = render_app(frame, self);
+        self.apply_render_feedback(fb);
     }
 }
 
@@ -1733,6 +1858,51 @@ mod tests {
         let app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
+    }
+
+    /// The status-bar dialog counts must refresh from the store on the
+    /// event-loop tick itself — not as a render side effect.
+    #[test]
+    fn sync_caches_refreshes_dialog_counts_without_rendering() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("sync-1@test", "1001", "1002", base_ts()),
+            make_invite("sync-2@test", "1003", "1004", base_ts()),
+        ]);
+        assert_eq!(app.cached_dialog_count, 0, "no tick has run yet");
+        app.sync_caches();
+        assert_eq!(app.cached_dialog_count, 2);
+        assert_eq!(app.cached_displayed_count, 2);
+    }
+
+    /// Sticky-bottom autoscroll is tick logic, not render logic: with the
+    /// selection on the last row and new dialogs arriving, sync_caches()
+    /// must pull the selection to the new bottom.
+    #[test]
+    fn sync_caches_applies_sticky_bottom_autoscroll() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "auto-1@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        app.call_list.autoscroll = true;
+        app.sync_caches(); // selection on row 0 == last row; rows recorded
+        assert_eq!(app.last_rendered_dialog_rows, 1);
+
+        // Two more dialogs arrive.
+        for cid in ["auto-2@test", "auto-3@test"] {
+            let msg = make_invite(cid, "1005", "1006", base_ts());
+            app.dialog_store.write().process_message(msg);
+        }
+        app.sync_caches();
+        assert_eq!(app.last_rendered_dialog_rows, 3);
+        assert_eq!(
+            app.call_list.selected(),
+            2,
+            "selection must follow the new bottom row"
+        );
     }
 
     #[test]
