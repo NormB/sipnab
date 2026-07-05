@@ -56,26 +56,38 @@ fn documented_tokens() -> HashSet<String> {
     set
 }
 
-/// Literal single-character command keys handled in the event dispatcher,
+/// Literal single-character command keys handled in the controller layer,
 /// scraped from the source. `KeyCode::Char('x')` matches; the catch-all
 /// `KeyCode::Char(c)` text-entry handlers (no quote) do not.
 fn scraped_char_keys() -> HashSet<char> {
-    let full = include_str!("../src/tui/events.rs");
-    // Only scan production code, not the `#[cfg(test)]` module (whose tests use
-    // arbitrary keys like 'z'/'Q' to assert unknown keys are ignored).
-    let src = full.split("#[cfg(test)]").next().unwrap_or(full);
-    let pat = "KeyCode::Char('";
+    const SOURCES: &[&str] = &[
+        include_str!("../src/tui/controllers/mod.rs"),
+        include_str!("../src/tui/controllers/call_flow.rs"),
+        include_str!("../src/tui/controllers/call_list.rs"),
+        include_str!("../src/tui/controllers/file_open.rs"),
+        include_str!("../src/tui/controllers/filter_dialog.rs"),
+        include_str!("../src/tui/controllers/name_dialog.rs"),
+        include_str!("../src/tui/controllers/save_dialog.rs"),
+        include_str!("../src/tui/controllers/stream.rs"),
+    ];
     let mut keys = HashSet::new();
-    let mut idx = 0;
-    while let Some(p) = src[idx..].find(pat) {
-        let start = idx + p + pat.len();
-        if let Some(ch) = src[start..].chars().next() {
-            let after = src[start + ch.len_utf8()..].chars().next();
-            if after == Some('\'') {
-                keys.insert(ch);
+    for full in SOURCES {
+        // Only scan production code, not the `#[cfg(test)]` modules (whose
+        // tests use arbitrary keys like 'z'/'Q' to assert unknown keys are
+        // ignored).
+        let src = full.split("#[cfg(test)]").next().unwrap_or(full);
+        let pat = "KeyCode::Char('";
+        let mut idx = 0;
+        while let Some(p) = src[idx..].find(pat) {
+            let start = idx + p + pat.len();
+            if let Some(ch) = src[start..].chars().next() {
+                let after = src[start + ch.len_utf8()..].chars().next();
+                if after == Some('\'') {
+                    keys.insert(ch);
+                }
             }
+            idx = start + 1;
         }
-        idx = start + 1;
     }
     keys
 }
