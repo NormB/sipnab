@@ -2,8 +2,59 @@
 
 use crate::tui::*;
 
-/// Handle keys in the stream list view.
+/// Everything the stream list view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamListAction {
+    Quit,
+    MoveUp,
+    MoveDown,
+    PageUp,
+    PageDown,
+    MoveTop,
+    MoveBottom,
+    SwitchToCallList,
+    Search,
+    Help,
+    OpenSaveDialog,
+    OpenFilterDialog,
+    OpenDetail,
+    NameEndpoints,
+    BackToCallList,
+}
+
+/// Pure key→action mapping for the stream list (keymap-aware); arm order
+/// mirrors the old handler so rebind precedence is unchanged.
+pub fn stream_list_action(km: &Keymap, key: KeyEvent) -> Option<StreamListAction> {
+    use StreamListAction::*;
+    Some(match key.code {
+        k if k == km.quit => Quit,
+        KeyCode::Up | KeyCode::Char('k') => MoveUp,
+        KeyCode::Down | KeyCode::Char('j') => MoveDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => MoveTop,
+        KeyCode::End => MoveBottom,
+        KeyCode::Tab => SwitchToCallList,
+        k if k == km.search => Search,
+        k if k == km.help => Help,
+        k if k == km.save => OpenSaveDialog,
+        k if k == km.filter => OpenFilterDialog,
+        KeyCode::Enter => OpenDetail,
+        KeyCode::Char('N') => NameEndpoints,
+        KeyCode::Esc => BackToCallList,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the stream list view: map, then execute.
 pub(in crate::tui) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
+    if let Some(action) = stream_list_action(&app.keymap, key) {
+        execute_stream_list_action(app, action);
+    }
+}
+
+/// Apply one [`StreamListAction`] to the application state.
+fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
     // Navigate over exactly the rows the table displays (search + filter).
     let stream_count = {
         let ss = app.stream_store.read();
@@ -17,82 +68,118 @@ pub(in crate::tui) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
         .len()
     };
 
-    match key.code {
-        k if k == app.keymap.quit => app.should_quit = true,
-        KeyCode::Up | KeyCode::Char('k') => app.stream_list.move_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.stream_list.move_down(stream_count),
-        KeyCode::PageUp => app.stream_list.page_up(),
-        KeyCode::PageDown => app.stream_list.page_down(stream_count),
-        KeyCode::Home => app.stream_list.move_to_top(),
-        KeyCode::End => app.stream_list.move_to_bottom(stream_count),
-        KeyCode::Tab => {
+    match action {
+        StreamListAction::Quit => app.should_quit = true,
+        StreamListAction::MoveUp => app.stream_list.move_up(),
+        StreamListAction::MoveDown => app.stream_list.move_down(stream_count),
+        StreamListAction::PageUp => app.stream_list.page_up(),
+        StreamListAction::PageDown => app.stream_list.page_down(stream_count),
+        StreamListAction::MoveTop => app.stream_list.move_to_top(),
+        StreamListAction::MoveBottom => app.stream_list.move_to_bottom(stream_count),
+        StreamListAction::SwitchToCallList => {
             app.current_view = View::CallList;
         }
-        k if k == app.keymap.search => {
+        StreamListAction::Search => {
             // Keep the existing query so it can be refined.
             app.search_active = true;
         }
-        k if k == app.keymap.help => app.current_view = View::Help,
-        k if k == app.keymap.save => {
-            open_save_popup(app);
-        }
-        k if k == app.keymap.filter => {
+        StreamListAction::Help => app.current_view = View::Help,
+        StreamListAction::OpenSaveDialog => open_save_popup(app),
+        StreamListAction::OpenFilterDialog => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
         }
-        KeyCode::Enter => {
+        StreamListAction::OpenDetail => {
             if let Some(key) = get_selected_stream_key(app) {
                 app.stream_detail_scroll = 0;
                 app.stream_detail_return_view = Some(View::StreamList);
                 app.current_view = View::StreamDetail(key);
             }
         }
-        // N — Name the selected stream's endpoints (source focused; Tab → dest).
-        KeyCode::Char('N') => {
+        StreamListAction::NameEndpoints => {
+            // Name the selected stream's endpoints (source focused; Tab -> dest).
             if let Some(key) = get_selected_stream_key(app) {
                 open_name_dialog_for(app, vec![key.src.ip(), key.dst.ip()], 0);
             }
         }
-        KeyCode::Esc => app.current_view = View::CallList,
-        _ => {}
+        StreamListAction::BackToCallList => app.current_view = View::CallList,
     }
 }
 
-/// Handle keys in the RTP stream detail view.
+/// Everything the stream detail view can do for a single key press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamDetailAction {
+    Quit,
+    ScrollUp,
+    ScrollDown,
+    PageUp,
+    PageDown,
+    ScrollTop,
+    ScrollBottom,
+    Help,
+    OpenSaveDialog,
+    Back,
+    #[cfg(feature = "audio")]
+    TogglePlayback,
+}
+
+/// Pure key→action mapping for the stream detail view (keymap-aware).
+pub fn stream_detail_action(km: &Keymap, key: KeyEvent) -> Option<StreamDetailAction> {
+    use StreamDetailAction::*;
+    Some(match key.code {
+        k if k == km.quit => Quit,
+        KeyCode::Up | KeyCode::Char('k') => ScrollUp,
+        KeyCode::Down | KeyCode::Char('j') => ScrollDown,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
+        k if k == km.help => Help,
+        k if k == km.save => OpenSaveDialog,
+        KeyCode::Esc => Back,
+        #[cfg(feature = "audio")]
+        KeyCode::Char('P') => TogglePlayback,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the RTP stream detail view: map, then execute.
 pub(in crate::tui) fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
-    match key.code {
-        k if k == app.keymap.quit => app.should_quit = true,
-        KeyCode::Up | KeyCode::Char('k') => {
+    if let Some(action) = stream_detail_action(&app.keymap, key) {
+        execute_stream_detail_action(app, action);
+    }
+}
+
+/// Apply one [`StreamDetailAction`] to the application state.
+fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
+    match action {
+        StreamDetailAction::Quit => app.should_quit = true,
+        StreamDetailAction::ScrollUp => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(1);
         }
-        KeyCode::Down | KeyCode::Char('j') => {
+        StreamDetailAction::ScrollDown => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_add(1);
         }
-        KeyCode::PageUp => {
+        StreamDetailAction::PageUp => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_sub(20);
         }
-        KeyCode::PageDown => {
+        StreamDetailAction::PageDown => {
             app.stream_detail_scroll = app.stream_detail_scroll.saturating_add(20);
         }
-        KeyCode::Home => app.stream_detail_scroll = 0,
+        StreamDetailAction::ScrollTop => app.stream_detail_scroll = 0,
         // Clamped to the content height by the render pass.
-        KeyCode::End => app.stream_detail_scroll = usize::MAX,
-        k if k == app.keymap.help => app.current_view = View::Help,
-        k if k == app.keymap.save => {
-            open_save_popup(app);
-        }
-        KeyCode::Esc => {
+        StreamDetailAction::ScrollBottom => app.stream_detail_scroll = usize::MAX,
+        StreamDetailAction::Help => app.current_view = View::Help,
+        StreamDetailAction::OpenSaveDialog => open_save_popup(app),
+        StreamDetailAction::Back => {
             app.current_view = match app.stream_detail_return_view.take() {
                 Some(v) => v,
                 None => View::StreamList,
             };
         }
         #[cfg(feature = "audio")]
-        KeyCode::Char('P') => {
-            handle_stream_detail_play(app);
-        }
-        _ => {}
+        StreamDetailAction::TogglePlayback => handle_stream_detail_play(app),
     }
 }
 
@@ -153,6 +240,43 @@ pub(in crate::tui) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::s
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
+
+    /// The mapping is pure and keymap-aware: a rebound quit key maps and
+    /// the old key unbinds, without touching any App state.
+    #[test]
+    fn stream_list_action_honors_remapped_quit_key() {
+        let km = Keymap {
+            quit: KeyCode::Char('x'),
+            ..Default::default()
+        };
+        assert_eq!(
+            stream_list_action(&km, key(KeyCode::Char('x'))),
+            Some(StreamListAction::Quit)
+        );
+        assert_eq!(stream_list_action(&km, key(KeyCode::Char('q'))), None);
+        // Esc leaves to the call list regardless of the keymap.
+        assert_eq!(
+            stream_list_action(&km, key(KeyCode::Esc)),
+            Some(StreamListAction::BackToCallList)
+        );
+    }
+
+    #[test]
+    fn stream_detail_action_honors_remapped_help_key() {
+        let km = Keymap {
+            help: KeyCode::Char('?'),
+            ..Default::default()
+        };
+        assert_eq!(
+            stream_detail_action(&km, key(KeyCode::Char('?'))),
+            Some(StreamDetailAction::Help)
+        );
+        assert_eq!(
+            stream_detail_action(&km, key(KeyCode::Up)),
+            Some(StreamDetailAction::ScrollUp)
+        );
+        assert_eq!(stream_detail_action(&km, key(KeyCode::Char('z'))), None);
+    }
 
     #[test]
     fn stream_list_tab_back_to_call_list() {

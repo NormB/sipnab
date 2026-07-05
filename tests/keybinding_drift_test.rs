@@ -13,7 +13,11 @@ use std::collections::HashSet;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
-use sipnab::tui::{Keymap, call_list_action};
+use sipnab::tui::{
+    Keymap, call_flow_action, call_list_action, combined_detail_action, help_action,
+    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    stream_list_action,
+};
 
 /// Display token for a key as it appears in the help's key column.
 fn token_for(kc: KeyCode) -> String {
@@ -158,31 +162,50 @@ fn important_command_keys_are_documented() {
     }
 }
 
-/// The call-list view has a real key→action mapping table now
-/// (`call_list_action`) — probe it directly instead of scraping source:
-/// every printable char the mapper binds must be documented in the F1
-/// help or allow-listed. As more views gain mapping tables, add their
-/// probes here and the scrape above covers only the remainder.
+/// Every converted view has a real key→action mapping table — probe each
+/// directly instead of scraping source: any printable char a mapper binds
+/// must be documented in the F1 help or allow-listed. The scrape test
+/// below still covers what has no mapping table (the global dispatcher
+/// fallbacks and the text-entry popups).
 #[test]
-fn call_list_mapped_char_keys_are_documented_or_allowlisted() {
+fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
+    type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
+    let probes: [Probe; 9] = [
+        ("call_list", |km, k| call_list_action(km, k).is_some()),
+        ("stream_list", |km, k| stream_list_action(km, k).is_some()),
+        ("stream_detail", |km, k| {
+            stream_detail_action(km, k).is_some()
+        }),
+        ("call_flow", |km, k| call_flow_action(km, k).is_some()),
+        ("raw_message", |km, k| raw_message_action(km, k).is_some()),
+        ("message_diff", |km, k| message_diff_action(km, k).is_some()),
+        ("combined_detail", |km, k| {
+            combined_detail_action(km, k).is_some()
+        }),
+        ("help", |km, k| help_action(km, k).is_some()),
+        ("statistics", |km, k| statistics_action(km, k).is_some()),
+    ];
     let mut undocumented = Vec::new();
-    for c in (32u8..127).map(|b| b as char) {
-        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
-        if call_list_action(&km, key).is_none() {
-            continue;
+    for (view, probe) in probes {
+        for c in (32u8..127).map(|b| b as char) {
+            let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+            if !probe(&km, key) {
+                continue;
+            }
+            let tok = c.to_string();
+            if docs.contains(&tok) || allowed_undocumented(c).is_some() {
+                continue;
+            }
+            undocumented.push((view, c));
         }
-        let tok = c.to_string();
-        if docs.contains(&tok) || allowed_undocumented(c).is_some() {
-            continue;
-        }
-        undocumented.push(c);
     }
     undocumented.sort_unstable();
+    undocumented.dedup();
     assert!(
         undocumented.is_empty(),
-        "call_list_action binds these chars but the F1 help doesn't document them: {undocumented:?}\n\
+        "these view mappers bind chars the F1 help doesn't document: {undocumented:?}\n\
          Document them in src/tui/help.rs HELP_TEXT, or add them to allowed_undocumented() with a reason."
     );
 }
