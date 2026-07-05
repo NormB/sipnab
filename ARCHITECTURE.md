@@ -35,10 +35,9 @@ Parsing always happens **outside** the store locks; each store is
 write-locked once per packet, briefly. Payloads are `bytes::Bytes` slices of
 the captured frame end to end (see `docs/internals/zero-copy-payloads.md`).
 
-> Known debt: batch mode (`main.rs`), the TUI file-open path
-> (`tui/events.rs`), and the `--jobs` sharded path (`parallel.rs`) currently
-> re-implement variants of `pipeline::process_packet`; unifying them is
-> WS1 in `MAINTAINABILITY-PERF-SPEC.md`.
+> All four packet paths — live, batch, TUI file-open and the `--jobs`
+> sharded path (`parallel.rs`) — classify through the one
+> `pipeline::classify_packet` router; only the per-path appliers differ.
 
 ## Module map
 
@@ -47,10 +46,15 @@ Only load-bearing files are annotated; siblings follow the same pattern.
 ```
 src/
 ├── lib.rs                # curated public API; #[doc(hidden)] on bin-internal modules
-├── main.rs               # binary: CLI wiring, batch pipeline, server bootstrap
+├── main.rs               # binary: thin dispatcher into app/
+├── app/                  # binary orchestration as library code
+│   ├── bootstrap.rs      # CLI+config → RunPlan (mode/source/policy) + launch
+│   ├── batch.rs          # BatchRunner: batch/offline receive loop, reports
+│   ├── servers.rs        # API + MCP servers on one shared tokio runtime
+│   └── tui_mode.rs       # TUI mode entry
 ├── cli.rs                # clap definitions (sngrep + sipgrep flag superset)
 ├── config.rs             # sipnabrc parsing/merging (toml_edit for surgical writes)
-├── pipeline.rs           # THE shared per-packet protocol router (TUI live path)
+├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
 ├── parallel.rs           # --jobs N: shard-by-host-pair offline reconstruction
 ├── auth.rs / crypto.rs   # HMAC bearer tokens for api/mcp
 ├── error.rs              # typed Error enum (config/CLI surface)
@@ -99,7 +103,7 @@ src/
 ├── mcp/                  # MCP server (mcp feature): server.rs, transport.rs, shape.rs
 ├── tui/
 │   ├── mod.rs            # App state + event loop
-│   ├── events.rs         # key handling (all views)
+│   ├── controllers/      # key/mouse handling, one module per view/popup
 │   ├── render.rs         # frame composition
 │   ├── call_list.rs / stream_list.rs / stream_detail.rs / msg_raw.rs
 │   ├── call_flow/        # ladder diagram: prepare.rs (layout) + render.rs + arrows/export
@@ -144,9 +148,9 @@ EOF.
 | You want to… | Touch |
 |---|---|
 | Support a new SIP header accessor | `sip/message.rs` (+ parser test) |
-| Add a per-packet protocol behavior | `pipeline.rs` (batch/TUI copies until WS1 lands — update all) |
-| Add an output format | `output/` + dispatch in `main.rs` |
-| Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `events.rs` + `render.rs` + keybinding drift test |
-| Add a detection | `security/` + wiring in `main.rs` batch loop |
+| Add a per-packet protocol behavior | `pipeline.rs` (one classifier — all paths route through it) |
+| Add an output format | `output/` + dispatch in `app/batch.rs` |
+| Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `tui/controllers/` + `render.rs` + keybinding drift test |
+| Add a detection | `security/` + wiring in `app/batch.rs` |
 | Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` will force a test |

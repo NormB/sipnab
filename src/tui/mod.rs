@@ -41,12 +41,12 @@ use stream_list::StreamListState;
 
 use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
-mod events;
+mod controllers;
 mod render;
 mod save;
 mod theme;
 
-use events::*;
+use controllers::*;
 use render::*;
 use save::*;
 pub use theme::*;
@@ -1254,7 +1254,7 @@ pub fn run_tui_with_pause(
                         handle_key_event(&mut app, key);
                     }
                     Event::Mouse(m) => {
-                        events::handle_mouse_event(&mut app, m.kind);
+                        controllers::handle_mouse_event(&mut app, m.kind);
                     }
                     _ => {}
                 }
@@ -1362,7 +1362,7 @@ impl App {
 
     /// Handle a mouse event kind (wheel scrolling) against the current view.
     pub fn handle_mouse_kind(&mut self, kind: crossterm::event::MouseEventKind) {
-        events::handle_mouse_event(self, kind);
+        controllers::handle_mouse_event(self, kind);
     }
 
     /// Simulate a keypress with modifiers.
