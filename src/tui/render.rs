@@ -5,6 +5,24 @@ use super::*;
 
 // ── Rendering ───────────────────────────────────────────────────────
 
+/// Geometry- and content-dependent values computed during a render pass:
+/// clamped scroll offsets and the call-flow row caches. The renderer draws
+/// with the corrected values immediately but does not write App state; the
+/// event loop persists them via `App::apply_render_feedback` right after
+/// the frame. `None` fields (views that didn't render) leave state as is.
+#[derive(Debug, Default)]
+pub(super) struct RenderFeedback {
+    pub(super) stream_detail_scroll: Option<usize>,
+    pub(super) flow_scroll: Option<usize>,
+    pub(super) flow_detail_scroll: Option<u16>,
+    /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
+    pub(super) flow_caches: Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
+    pub(super) raw_msg_scroll: Option<u16>,
+    pub(super) diff_scroll: Option<u16>,
+    pub(super) help_scroll: Option<u16>,
+    pub(super) stats_scroll: Option<u16>,
+}
+
 /// Render the entire application frame based on the current view.
 ///
 /// Uses `try_read()` for the shared stores so the TUI never blocks waiting
@@ -12,7 +30,14 @@ use super::*;
 /// contended, the previous frame's cached counts are shown in the status
 /// bar, and the main view simply skips its render (the terminal retains
 /// the last-drawn content).
-pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
+///
+/// Takes `&mut App` only because the call/stream list tables are ratatui
+/// stateful widgets (their inner offset state updates during render);
+/// everything else is read-only. State writes are returned as
+/// [`RenderFeedback`], never applied here — `App::sync_caches` (pre-draw)
+/// and `App::apply_render_feedback` (post-draw) are the writers.
+pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFeedback {
+    let mut fb = RenderFeedback::default();
     let area = frame.area();
 
     // Layout: 3 status lines at top (sngrep-style), main content, F-key bar at bottom
@@ -31,58 +56,6 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     ])
     .areas(area);
 
-    // Update cached counts when the lock is available (non-blocking)
-    if let Some(store) = app.dialog_store.try_read() {
-        app.cached_dialog_count = store.len();
-        app.cached_displayed_count = {
-            let mut count = if let Some(ref filter) = app.active_filter {
-                store
-                    .iter()
-                    .filter(|d| filter.matches_dialog(d, &[]))
-                    .count()
-            } else {
-                store.len()
-            };
-            // Apply text search filter to the count
-            if !app.search_query.is_empty() {
-                let q = app.search_query.to_ascii_lowercase();
-                count = store
-                    .iter()
-                    .filter(|d| {
-                        if let Some(ref filter) = app.active_filter
-                            && !filter.matches_dialog(d, &[])
-                        {
-                            return false;
-                        }
-                        d.call_id.to_ascii_lowercase().contains(&q)
-                            || d.method.as_str().to_ascii_lowercase().contains(&q)
-                            || d.from_user
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.to_user
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.src_addr.to_string().contains(&q)
-                            || d.dst_addr.to_string().contains(&q)
-                            || call_list::state_display_str(d.state())
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.messages.iter().any(|msg| {
-                                String::from_utf8_lossy(&msg.raw)
-                                    .to_ascii_lowercase()
-                                    .contains(&q)
-                            })
-                    })
-                    .count();
-            }
-            count
-        };
-    }
-
     // Status lines at top (sngrep-style) — use cached counts
     render_status_line1(frame, status1_area, app);
     render_status_line2(frame, status2_area, app);
@@ -94,25 +67,6 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     match &app.current_view.clone() {
         View::CallList => {
             if let Some(store) = app.dialog_store.try_read() {
-                // Autoscroll: sticky-bottom. When enabled and the selection
-                // already sits on the last row, newly arrived dialogs pull it
-                // to the new bottom; a selection elsewhere is never yanked.
-                let displayed_len = call_list::displayed_dialogs(
-                    &store,
-                    app.active_filter.as_ref(),
-                    &app.search_query,
-                    app.call_list.sort_column(),
-                    app.call_list.sort_ascending(),
-                )
-                .len();
-                if app.call_list.autoscroll
-                    && app.last_rendered_dialog_rows > 0
-                    && displayed_len > app.last_rendered_dialog_rows
-                    && app.call_list.selected() + 1 >= app.last_rendered_dialog_rows
-                {
-                    app.call_list.move_to_bottom(displayed_len);
-                }
-                app.last_rendered_dialog_rows = displayed_len;
                 call_list::render_call_list(
                     frame,
                     main_area,
@@ -159,9 +113,9 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     app.resolver.as_ref(),
                     app.name_mode,
                 );
-                // Write the clamped scroll back: over-scrolling past the end
-                // must not strand Up presses on a phantom offset.
-                app.stream_detail_scroll = effective;
+                // Report the clamped scroll back: over-scrolling past the
+                // end must not strand Up presses on a phantom offset.
+                fb.stream_detail_scroll = Some(effective);
             }
         }
         View::CallFlow(call_id) => {
@@ -272,43 +226,49 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     }
                 };
 
-                // Update cached rendered message count (excluding spacers)
-                // and track which indices carry an RTP bar for Enter drill-down
+                // Rebuild the rendered message count (excluding spacers), the
+                // RTP-bar indices for Enter drill-down and the visible-row ->
+                // raw-message mapping. Used below for the detail pane and
+                // reported back for the key handlers to consume next tick.
+                let raw_indices: Vec<Option<usize>> = prepared
+                    .as_ref()
+                    .map(|(_, msgs)| {
+                        msgs.iter()
+                            .filter(|m| !m.is_spacer)
+                            .map(|m| m.raw_index)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if let Some((_, ref msgs)) = prepared {
-                    app.flow.cached_msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
-                    // Build RTP bar indices in terms of non-spacer message index
-                    // (matching selected_msg_index which skips spacers)
-                    app.flow.cached_rtp_bar_indices = msgs
+                    let msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                    // RTP bar indices in terms of non-spacer message index
+                    // (matching flow.selected, which skips spacers).
+                    let rtp_bars = msgs
                         .iter()
                         .filter(|m| !m.is_spacer)
                         .enumerate()
                         .filter(|(_, m)| m.is_rtp_bar)
                         .map(|(i, _)| i)
                         .collect();
-                    // Visible row -> raw message mapping (None for RTP bars);
-                    // consumed by the detail pane, Enter, diff and 'e'.
-                    app.flow.cached_raw_indices = msgs
-                        .iter()
-                        .filter(|m| !m.is_spacer)
-                        .map(|m| m.raw_index)
-                        .collect();
+                    fb.flow_caches = Some((msg_count, rtp_bars, raw_indices.clone()));
                 }
 
                 // Selection-follow + clamp, authoritative here where the
                 // real viewport geometry is known: keep the selected row
                 // visible and never scroll past the ladder content.
+                let mut scroll = app.flow.scroll;
                 if let Some((_, ref msgs)) = prepared {
                     let viewport = call_flow::ladder_visible_rows(ladder_area.height);
                     let total_rows = call_flow::ladder_total_rows(msgs);
                     let sel_row = call_flow::ladder_row_of_visible(msgs, sel);
-                    if sel_row < app.flow.scroll {
-                        app.flow.scroll = sel_row;
-                    } else if viewport > 0 && sel_row >= app.flow.scroll + viewport {
-                        app.flow.scroll = sel_row + 1 - viewport;
+                    if sel_row < scroll {
+                        scroll = sel_row;
+                    } else if viewport > 0 && sel_row >= scroll + viewport {
+                        scroll = sel_row + 1 - viewport;
                     }
-                    app.flow.scroll = app.flow.scroll.min(total_rows.saturating_sub(viewport));
+                    scroll = scroll.min(total_rows.saturating_sub(viewport));
+                    fb.flow_scroll = Some(scroll);
                 }
-                let scroll = app.flow.scroll;
 
                 // Render ladder using direct buffer painting
                 call_flow::render_call_flow_direct_or_empty(
@@ -340,9 +300,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     // The ladder selection is a VISIBLE-row index; map it to
                     // the message it renders (folds hide rows; a transaction
                     // filter renders a subset of the dialog).
-                    let detail_sel = app
-                        .flow
-                        .cached_raw_indices
+                    let detail_sel = raw_indices
                         .get(sel)
                         .copied()
                         .flatten()
@@ -380,9 +338,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     // End / repeated Down never strand the view past the content.
                     let viewport = detail_area.height.saturating_sub(2);
                     let max_scroll = (total_lines as u16).saturating_sub(viewport);
-                    if app.flow.detail_scroll > max_scroll {
-                        app.flow.detail_scroll = max_scroll;
-                    }
+                    fb.flow_detail_scroll = Some(app.flow.detail_scroll.min(max_scroll));
                 }
             }
         }
@@ -406,7 +362,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 );
                 // Clamp to content so End / over-eager PgDn self-correct.
                 let viewport = main_area.height.saturating_sub(2);
-                app.raw_msg_scroll = app.raw_msg_scroll.min(total_rows.saturating_sub(viewport));
+                fb.raw_msg_scroll =
+                    Some(app.raw_msg_scroll.min(total_rows.saturating_sub(viewport)));
             }
         }
         View::MessageDiff {
@@ -426,7 +383,7 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                     &app.theme,
                 );
                 let viewport = main_area.height.saturating_sub(2);
-                app.diff_scroll = app.diff_scroll.min(total_rows.saturating_sub(viewport));
+                fb.diff_scroll = Some(app.diff_scroll.min(total_rows.saturating_sub(viewport)));
             }
         }
         View::CombinedDetail {
@@ -451,7 +408,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
                 // Clamp to content so End (u16::MAX) lands on the last page
                 // instead of a blank screen.
                 let viewport = main_area.height.saturating_sub(2);
-                app.raw_msg_scroll = app.raw_msg_scroll.min(total_rows.saturating_sub(viewport));
+                fb.raw_msg_scroll =
+                    Some(app.raw_msg_scroll.min(total_rows.saturating_sub(viewport)));
             }
         }
         View::Help => {
@@ -459,11 +417,12 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
             // the end (self-corrects an over-eager PgDn on the next frame).
             let visible = main_area.height.saturating_sub(2) as usize;
             let max_scroll = help::help_line_count().saturating_sub(visible) as u16;
-            app.help_scroll = app.help_scroll.min(max_scroll);
-            help::render_help(frame, main_area, &app.theme, &app.version, app.help_scroll);
+            let clamped = app.help_scroll.min(max_scroll);
+            fb.help_scroll = Some(clamped);
+            help::render_help(frame, main_area, &app.theme, &app.version, clamped);
         }
         View::Statistics => {
-            render_statistics(frame, main_area, app);
+            fb.stats_scroll = Some(render_statistics(frame, main_area, app));
         }
     }
 
@@ -501,6 +460,8 @@ pub(super) fn render_app(frame: &mut ratatui::Frame, app: &mut App) {
     if app.call_list.column_selector_open {
         call_list::render_column_selector(frame, area, &app.call_list, &app.theme);
     }
+
+    fb
 }
 
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
@@ -1727,19 +1688,19 @@ pub(super) fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app:
 pub(super) fn render_statistics(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
-    app: &mut App,
-) {
+    app: &App,
+) -> u16 {
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
 
     // Use try_read() to avoid blocking the TUI render loop
     let ds = match app.dialog_store.try_read() {
         Some(guard) => guard,
-        None => return,
+        None => return app.stats_scroll,
     };
     let ss = match app.stream_store.try_read() {
         Some(guard) => guard,
-        None => return,
+        None => return app.stats_scroll,
     };
 
     let dialog_count = ds.len();
@@ -1808,16 +1769,17 @@ pub(super) fn render_statistics(
     // Clamp the scroll to the content height (End jumps to the last page).
     let total_rows = text.lines().count() as u16;
     let viewport = area.height.saturating_sub(2);
-    app.stats_scroll = app.stats_scroll.min(total_rows.saturating_sub(viewport));
+    let stats_scroll = app.stats_scroll.min(total_rows.saturating_sub(viewport));
 
     let block = Block::default().borders(Borders::ALL).title(" Statistics ");
 
     let paragraph = Paragraph::new(text)
         .block(block)
         .style(Style::default().fg(app.theme.foreground))
-        .scroll((app.stats_scroll, 0));
+        .scroll((stats_scroll, 0));
 
     frame.render_widget(paragraph, area);
+    stats_scroll
 }
 
 /// Render a side-by-side diff of two SIP messages. Returns the content
@@ -2033,10 +1995,15 @@ mod tests {
         ])
     }
 
-    /// Render `app` at the given size and return the buffer as a string.
+    /// Render one full tick of `app` (cache sync, render, feedback
+    /// write-back — the event loop's sequence) at the given size and
+    /// return the buffer as a string.
     fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal.draw(|frame| render_app(frame, app)).unwrap();
+        app.sync_caches();
+        let mut fb = RenderFeedback::default();
+        terminal.draw(|frame| fb = render_app(frame, app)).unwrap();
+        app.apply_render_feedback(fb);
         let buf = terminal.backend().buffer();
         let area = buf.area;
         let mut out = String::new();
