@@ -1,0 +1,1112 @@
+//! All TUI rendering: the main view dispatch plus the per-view renderers
+//! it owns (statistics, message diff). Status lines / f-key bar and popup
+//! rendering live in the submodules.
+
+use super::*;
+
+mod popups;
+mod status;
+
+pub(in crate::tui) use popups::*;
+pub(in crate::tui) use status::*;
+
+/// Geometry- and content-dependent values computed during a render pass:
+/// clamped scroll offsets and the call-flow row caches. The renderer draws
+/// with the corrected values immediately but does not write App state; the
+/// event loop persists them via `App::apply_render_feedback` right after
+/// the frame. `None` fields (views that didn't render) leave state as is.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct RenderFeedback {
+    pub(in crate::tui) stream_detail_scroll: Option<usize>,
+    pub(in crate::tui) flow_scroll: Option<usize>,
+    pub(in crate::tui) flow_detail_scroll: Option<u16>,
+    /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
+    pub(in crate::tui) flow_caches:
+        Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
+    pub(in crate::tui) raw_msg_scroll: Option<u16>,
+    pub(in crate::tui) diff_scroll: Option<u16>,
+    pub(in crate::tui) help_scroll: Option<u16>,
+    pub(in crate::tui) stats_scroll: Option<u16>,
+}
+
+/// Render the entire application frame based on the current view.
+///
+/// Uses `try_read()` for the shared stores so the TUI never blocks waiting
+/// for the processing thread to release a write lock. When the lock is
+/// contended, the previous frame's cached counts are shown in the status
+/// bar, and the main view simply skips its render (the terminal retains
+/// the last-drawn content).
+///
+/// Takes `&mut App` only because the call/stream list tables are ratatui
+/// stateful widgets (their inner offset state updates during render);
+/// everything else is read-only. State writes are returned as
+/// [`RenderFeedback`], never applied here — `App::sync_caches` (pre-draw)
+/// and `App::apply_render_feedback` (post-draw) are the writers.
+pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFeedback {
+    let mut fb = RenderFeedback::default();
+    let area = frame.area();
+
+    // Layout: 3 status lines at top (sngrep-style), main content, F-key bar at bottom
+    let [
+        status1_area,
+        status2_area,
+        status3_area,
+        main_area,
+        fkey_area,
+    ] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ])
+    .areas(area);
+
+    // Status lines at top (sngrep-style) — use cached counts
+    render_status_line1(frame, status1_area, app);
+    render_status_line2(frame, status2_area, app);
+    render_status_line3(frame, status3_area, app);
+
+    // Render the current view using try_read() to avoid blocking.
+    // If the lock is contended, skip the render — the terminal retains
+    // the previous frame's content, so the user sees no flicker.
+    match &app.current_view.clone() {
+        View::CallList => {
+            if let Some(store) = app.dialog_store.try_read() {
+                call_list::render_call_list(
+                    frame,
+                    main_area,
+                    &mut app.call_list,
+                    &store,
+                    &call_list::CallListDisplay {
+                        filter: app.active_filter.as_ref(),
+                        search_query: &app.search_query,
+                        timestamp_mode: app.timestamp_mode,
+                        from_to_mode: app.from_to_mode,
+                        theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
+                    },
+                );
+            }
+        }
+        View::StreamList => {
+            if let Some(store) = app.stream_store.try_read() {
+                let dialog_store = app.dialog_store.try_read();
+                stream_list::render_stream_list(
+                    frame,
+                    main_area,
+                    &mut app.stream_list,
+                    &store,
+                    dialog_store.as_deref(),
+                    &stream_list::StreamListDisplay {
+                        filter: app.active_filter.as_ref(),
+                        search_query: &app.search_query,
+                        theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
+                    },
+                );
+            }
+        }
+        View::StreamDetail(key) => {
+            if let Some(store) = app.stream_store.try_read() {
+                let effective = stream_detail::render_stream_detail(
+                    frame,
+                    main_area,
+                    key,
+                    &store,
+                    app.stream_detail_scroll,
+                    &stream_detail::StreamDetailDisplay {
+                        theme: &app.theme,
+                        resolver: app.resolver.as_ref(),
+                        name_mode: app.name_mode,
+                    },
+                );
+                // Report the clamped scroll back: over-scrolling past the
+                // end must not strand Up presses on a phantom offset.
+                fb.stream_detail_scroll = Some(effective);
+            }
+        }
+        View::CallFlow(call_id) => {
+            if let Some(store) = app.dialog_store.try_read() {
+                let cid = call_id.clone();
+                let sel = app.flow.selected;
+
+                // Horizontal split: ladder on left, raw detail on right (sngrep style)
+                let (ladder_area, detail_area) = if app.flow.raw_preview {
+                    let pct = app.flow.raw_preview_pct;
+                    let [left, right] = Layout::horizontal([
+                        Constraint::Percentage(100 - pct),
+                        Constraint::Percentage(pct),
+                    ])
+                    .areas(main_area);
+                    (left, Some(right))
+                } else {
+                    (main_area, None)
+                };
+
+                // Gather messages for the direct-paint renderer.
+                // For extended flow, merge correlated dialog messages.
+                let prepared = if app.flow.extended {
+                    // Extended: merge all correlated legs
+                    let dialog = store.get(&cid);
+                    if let Some(d) = dialog {
+                        let mut all: Vec<&crate::sip::SipMessage> = d.messages.iter().collect();
+                        let correlated = store.find_correlated(&cid);
+                        for leg in &correlated {
+                            all.extend(leg.messages.iter());
+                        }
+                        all.sort_by_key(|m| m.timestamp);
+                        let owned: Vec<crate::sip::SipMessage> = all.into_iter().cloned().collect();
+                        if owned.is_empty() {
+                            None
+                        } else {
+                            let ft = owned[0].timestamp;
+                            let flow_opts = call_flow::FlowDisplayOptions {
+                                sdp_mode: app.sdp_display_mode,
+                                ts_mode: app.timestamp_mode,
+                                color_mode: app.color_mode,
+                                show_rtp: false,
+                                selected_msg: Some(sel),
+                                theme: &app.theme,
+                                resolver: app.resolver.as_ref(),
+                                name_mode: app.name_mode,
+                                // Extended/combined view does not draw RTP bars.
+                                rtp_segments: &[],
+                            };
+                            let (participants, msgs) = call_flow::prepare_messages(
+                                &owned,
+                                ft,
+                                None,
+                                &flow_opts,
+                                &app.flow.fold_expanded,
+                            );
+                            Some((participants, msgs))
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    let dialog = store.get(&cid);
+                    if let Some(d) = dialog {
+                        // Transaction filter (R5a): when active, show only the
+                        // anchored transaction's messages. A stale key that
+                        // matches nothing falls back to the whole dialog.
+                        let filtered: Option<Vec<crate::sip::SipMessage>> =
+                            app.flow.transaction_filter.as_ref().and_then(|key| {
+                                let v: Vec<crate::sip::SipMessage> = d
+                                    .messages
+                                    .iter()
+                                    .filter(|m| call_flow::transaction_key(m).as_ref() == Some(key))
+                                    .cloned()
+                                    .collect();
+                                (!v.is_empty()).then_some(v)
+                            });
+                        let msgs_ref: &[crate::sip::SipMessage] =
+                            filtered.as_deref().unwrap_or(&d.messages);
+                        if msgs_ref.is_empty() {
+                            None
+                        } else {
+                            let ft = msgs_ref[0].timestamp;
+                            let pdd = d.timing.pdd_ms();
+                            let rtp_segs = app.rtp_codec_segments(&cid);
+                            let flow_opts = call_flow::FlowDisplayOptions {
+                                sdp_mode: app.sdp_display_mode,
+                                ts_mode: app.timestamp_mode,
+                                color_mode: app.color_mode,
+                                show_rtp: app.flow.show_rtp,
+                                selected_msg: Some(sel),
+                                theme: &app.theme,
+                                resolver: app.resolver.as_ref(),
+                                name_mode: app.name_mode,
+                                rtp_segments: &rtp_segs,
+                            };
+                            let (participants, msgs) = call_flow::prepare_messages(
+                                msgs_ref,
+                                ft,
+                                pdd,
+                                &flow_opts,
+                                &app.flow.fold_expanded,
+                            );
+                            Some((participants, msgs))
+                        }
+                    } else {
+                        None
+                    }
+                };
+
+                // Rebuild the rendered message count (excluding spacers), the
+                // RTP-bar indices for Enter drill-down and the visible-row ->
+                // raw-message mapping. Used below for the detail pane and
+                // reported back for the key handlers to consume next tick.
+                let raw_indices: Vec<Option<usize>> = prepared
+                    .as_ref()
+                    .map(|(_, msgs)| {
+                        msgs.iter()
+                            .filter(|m| !m.is_spacer)
+                            .map(|m| m.raw_index)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some((_, ref msgs)) = prepared {
+                    let msg_count = msgs.iter().filter(|m| !m.is_spacer).count();
+                    // RTP bar indices in terms of non-spacer message index
+                    // (matching flow.selected, which skips spacers).
+                    let rtp_bars = msgs
+                        .iter()
+                        .filter(|m| !m.is_spacer)
+                        .enumerate()
+                        .filter(|(_, m)| m.is_rtp_bar)
+                        .map(|(i, _)| i)
+                        .collect();
+                    fb.flow_caches = Some((msg_count, rtp_bars, raw_indices.clone()));
+                }
+
+                // Selection-follow + clamp, authoritative here where the
+                // real viewport geometry is known: keep the selected row
+                // visible and never scroll past the ladder content.
+                let mut scroll = app.flow.scroll;
+                if let Some((_, ref msgs)) = prepared {
+                    let viewport = call_flow::ladder_visible_rows(ladder_area.height);
+                    let total_rows = call_flow::ladder_total_rows(msgs);
+                    let sel_row = call_flow::ladder_row_of_visible(msgs, sel);
+                    if sel_row < scroll {
+                        scroll = sel_row;
+                    } else if viewport > 0 && sel_row >= scroll + viewport {
+                        scroll = sel_row + 1 - viewport;
+                    }
+                    scroll = scroll.min(total_rows.saturating_sub(viewport));
+                    fb.flow_scroll = Some(scroll);
+                }
+
+                // Render ladder using direct buffer painting
+                call_flow::render_call_flow_direct_or_empty(
+                    frame,
+                    ladder_area,
+                    prepared.as_ref(),
+                    &call_flow::render::FlowNavigation {
+                        scroll_offset: scroll,
+                        mark_index: app.flow.mark_index,
+                        selected_index: sel,
+                    },
+                    &app.theme,
+                );
+
+                // Ladder scrollbar when the flow is taller than the pane.
+                if let Some((_, ref msgs)) = prepared {
+                    let total_rows = call_flow::ladder_total_rows(msgs);
+                    call_flow::render_ladder_scrollbar(
+                        frame,
+                        ladder_area,
+                        total_rows,
+                        scroll,
+                        &app.theme,
+                    );
+                }
+
+                // Render message detail panel (right side) if split is active
+                if let Some(detail_area) = detail_area {
+                    // The ladder selection is a VISIBLE-row index; map it to
+                    // the message it renders (folds hide rows; a transaction
+                    // filter renders a subset of the dialog).
+                    let detail_sel = raw_indices
+                        .get(sel)
+                        .copied()
+                        .flatten()
+                        .map(|filtered_idx| {
+                            app.flow
+                                .transaction_filter
+                                .as_ref()
+                                .and_then(|key| {
+                                    store.get(&cid).map(|d| {
+                                        d.messages
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, m)| {
+                                                call_flow::transaction_key(m).as_ref() == Some(key)
+                                            })
+                                            .map(|(i, _)| i)
+                                            .nth(filtered_idx)
+                                            .unwrap_or(filtered_idx)
+                                    })
+                                })
+                                .unwrap_or(filtered_idx)
+                        })
+                        .unwrap_or(sel);
+                    let total_lines = call_flow::render_message_detail(
+                        frame,
+                        detail_area,
+                        &store,
+                        &call_flow::render::MessageDetailView {
+                            call_id: &cid,
+                            selected_msg: detail_sel,
+                            scroll_offset: app.flow.detail_scroll,
+                            focused: app.flow.detail_focused,
+                            theme: &app.theme,
+                        },
+                    );
+                    // Keep the stored scroll offset within the message length so
+                    // End / repeated Down never strand the view past the content.
+                    let viewport = detail_area.height.saturating_sub(2);
+                    let max_scroll = (total_lines as u16).saturating_sub(viewport);
+                    fb.flow_detail_scroll = Some(app.flow.detail_scroll.min(max_scroll));
+                }
+            }
+        }
+        View::RawMessage {
+            call_id,
+            message_index,
+        } => {
+            if let Some(store) = app.dialog_store.try_read() {
+                let total_rows = msg_raw::render_raw_message(
+                    frame,
+                    main_area,
+                    &store,
+                    &msg_raw::RawMessageView {
+                        call_id,
+                        message_index: *message_index,
+                        scroll_offset: app.raw_msg_scroll,
+                        search_query: &app.search_query,
+                        syntax_highlight: app.syntax_highlight,
+                        theme: &app.theme,
+                    },
+                );
+                // Clamp to content so End / over-eager PgDn self-correct.
+                let viewport = main_area.height.saturating_sub(2);
+                fb.raw_msg_scroll =
+                    Some(app.raw_msg_scroll.min(total_rows.saturating_sub(viewport)));
+            }
+        }
+        View::MessageDiff {
+            call_id,
+            msg1_idx,
+            msg2_idx,
+        } => {
+            if let Some(store) = app.dialog_store.try_read() {
+                let total_rows = render_message_diff(
+                    frame,
+                    main_area,
+                    &store,
+                    &MessageDiffView {
+                        call_id,
+                        msg1_idx: *msg1_idx,
+                        msg2_idx: *msg2_idx,
+                        scroll: app.diff_scroll,
+                        theme: &app.theme,
+                    },
+                );
+                let viewport = main_area.height.saturating_sub(2);
+                fb.diff_scroll = Some(app.diff_scroll.min(total_rows.saturating_sub(viewport)));
+            }
+        }
+        View::CombinedDetail {
+            call_id,
+            indices,
+            scope,
+        } => {
+            if let Some(store) = app.dialog_store.try_read() {
+                let total_rows = msg_raw::render_combined_detail(
+                    frame,
+                    main_area,
+                    &store,
+                    &msg_raw::CombinedDetailView {
+                        call_id,
+                        indices,
+                        scope,
+                        scroll_offset: app.raw_msg_scroll,
+                        syntax_highlight: app.syntax_highlight,
+                        theme: &app.theme,
+                    },
+                );
+                // Clamp to content so End (u16::MAX) lands on the last page
+                // instead of a blank screen.
+                let viewport = main_area.height.saturating_sub(2);
+                fb.raw_msg_scroll =
+                    Some(app.raw_msg_scroll.min(total_rows.saturating_sub(viewport)));
+            }
+        }
+        View::Help => {
+            // Clamp the scroll to the content height so you can't scroll past
+            // the end (self-corrects an over-eager PgDn on the next frame).
+            let visible = main_area.height.saturating_sub(2) as usize;
+            let max_scroll = help::help_line_count().saturating_sub(visible) as u16;
+            let clamped = app.help_scroll.min(max_scroll);
+            fb.help_scroll = Some(clamped);
+            help::render_help(frame, main_area, &app.theme, &app.version, clamped);
+        }
+        View::Statistics => {
+            fb.stats_scroll = Some(render_statistics(frame, main_area, app));
+        }
+    }
+
+    // F-key bar (sngrep-style, context-sensitive) at bottom
+    render_fkey_bar(
+        frame,
+        fkey_area,
+        &app.current_view,
+        &app.active_popup,
+        &app.theme,
+    );
+
+    // Render popup overlay on top of everything (if active)
+    if let Some(popup) = &app.active_popup.clone() {
+        match popup {
+            Popup::SaveDialog => {
+                render_save_popup(frame, area, app);
+            }
+            Popup::FilterDialog => {
+                render_filter_popup(frame, area, &app.filter_dialog, &app.theme);
+            }
+            Popup::SettingsDialog => {
+                render_settings_popup(frame, area, app);
+            }
+            Popup::FileOpenDialog => {
+                render_file_open_popup(frame, area, app);
+            }
+            Popup::NameAddress => {
+                render_name_popup(frame, area, app);
+            }
+        }
+    }
+
+    // Render column selector popup (not a Popup variant — it's call_list internal state)
+    if app.call_list.column_selector_open {
+        call_list::render_column_selector(frame, area, &app.call_list, &app.theme);
+    }
+
+    fb
+}
+
+/// Render the statistics summary view with real data from stores.
+pub(in crate::tui) fn render_statistics(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+) -> u16 {
+    use crate::sip::dialog::DialogState;
+    use std::collections::HashMap;
+
+    // Use try_read() to avoid blocking the TUI render loop
+    let ds = match app.dialog_store.try_read() {
+        Some(guard) => guard,
+        None => return app.stats_scroll,
+    };
+    let ss = match app.stream_store.try_read() {
+        Some(guard) => guard,
+        None => return app.stats_scroll,
+    };
+
+    let dialog_count = ds.len();
+    let active_count = ds.active_count();
+    let stream_count = ss.len();
+    let orphaned = ss.orphaned_count();
+
+    // Per-state counts
+    let mut state_counts: HashMap<&str, usize> = HashMap::new();
+    let mut method_counts: HashMap<&str, usize> = HashMap::new();
+    let mut total_messages: usize = 0;
+
+    for dialog in ds.iter() {
+        let state_name = match dialog.state() {
+            DialogState::Trying => "Trying",
+            DialogState::Ringing => "Ringing",
+            DialogState::InCall => "InCall",
+            DialogState::Completed => "Completed",
+            DialogState::Cancelled => "Cancelled",
+            DialogState::Failed => "Failed",
+            DialogState::Registered => "Registered",
+            DialogState::Expired => "Expired",
+            DialogState::Pending => "Pending",
+            DialogState::Active => "Active",
+            DialogState::Terminated => "Terminated",
+            DialogState::Transferring => "Transferring",
+        };
+        *state_counts.entry(state_name).or_insert(0) += 1;
+        *method_counts.entry(dialog.method.as_str()).or_insert(0) += 1;
+        total_messages += dialog.messages.len();
+    }
+
+    // Sort methods by count descending, then alphabetically
+    let mut methods: Vec<(&&str, &usize)> = method_counts.iter().collect();
+    methods.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+
+    let mut text = format!(
+        "sipnab Statistics\n\n\
+         Dialogs:           {dialog_count}\n\
+         Active Calls:      {active_count}\n\
+         Total Messages:    {total_messages}\n\
+         RTP Streams:       {stream_count}\n\
+         Orphaned Streams:  {orphaned}\n"
+    );
+
+    // State breakdown
+    if !state_counts.is_empty() {
+        text.push_str("\nDialog States:\n");
+        let mut states: Vec<(&&str, &usize)> = state_counts.iter().collect();
+        states.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
+        for (state, count) in states {
+            text.push_str(&format!("  {:<16} {count}\n", state));
+        }
+    }
+
+    // Method distribution
+    if !methods.is_empty() {
+        text.push_str("\nMethod Distribution:\n");
+        for (method, count) in methods {
+            text.push_str(&format!("  {:<16} {count}\n", method));
+        }
+    }
+
+    text.push_str("\nPress Esc to return.");
+
+    // Clamp the scroll to the content height (End jumps to the last page).
+    let total_rows = text.lines().count() as u16;
+    let viewport = area.height.saturating_sub(2);
+    let stats_scroll = app.stats_scroll.min(total_rows.saturating_sub(viewport));
+
+    let block = Block::default().borders(Borders::ALL).title(" Statistics ");
+
+    let paragraph = Paragraph::new(text)
+        .block(block)
+        .style(Style::default().fg(app.theme.foreground))
+        .scroll((stats_scroll, 0));
+
+    frame.render_widget(paragraph, area);
+    stats_scroll
+}
+
+/// Parameters for the side-by-side message diff view.
+pub(in crate::tui) struct MessageDiffView<'a> {
+    pub(in crate::tui) call_id: &'a str,
+    pub(in crate::tui) msg1_idx: usize,
+    pub(in crate::tui) msg2_idx: usize,
+    pub(in crate::tui) scroll: u16,
+    pub(in crate::tui) theme: &'a Theme,
+}
+
+/// Render a side-by-side diff of two SIP messages. Returns the content
+/// height in rows so the caller can clamp its stored scroll offset.
+pub(in crate::tui) fn render_message_diff(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    store: &DialogStore,
+    view: &MessageDiffView,
+) -> u16 {
+    let MessageDiffView {
+        call_id,
+        msg1_idx,
+        msg2_idx,
+        scroll,
+        theme,
+    } = *view;
+    let dialog = match store.get(call_id) {
+        Some(d) => d,
+        None => {
+            let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.bad));
+            frame.render_widget(para, area);
+            return 0;
+        }
+    };
+
+    let msg1 = dialog.messages.get(msg1_idx);
+    let msg2 = dialog.messages.get(msg2_idx);
+
+    let (Some(msg1), Some(msg2)) = (msg1, msg2) else {
+        let para = Paragraph::new("Message not found.").style(Style::default().fg(theme.bad));
+        frame.render_widget(para, area);
+        return 0;
+    };
+
+    let raw1 = String::from_utf8_lossy(&msg1.raw);
+    let raw2 = String::from_utf8_lossy(&msg2.raw);
+
+    let lines1: Vec<&str> = raw1.lines().collect();
+    let lines2: Vec<&str> = raw2.lines().collect();
+    let max_lines = lines1.len().max(lines2.len());
+
+    // Split area into two halves
+    let half_width = area.width / 2;
+    let [left_area, right_area] =
+        Layout::horizontal([Constraint::Length(half_width), Constraint::Fill(1)]).areas(area);
+
+    let mut left_lines: Vec<Line<'static>> = Vec::new();
+    let mut right_lines: Vec<Line<'static>> = Vec::new();
+
+    // Header lines
+    left_lines.push(Line::from(Span::styled(
+        format!(" Message {} ", msg1_idx + 1),
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD),
+    )));
+    right_lines.push(Line::from(Span::styled(
+        format!(" Message {} ", msg2_idx + 1),
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD),
+    )));
+
+    let diff_style = Style::default()
+        .fg(theme.warning)
+        .add_modifier(Modifier::BOLD);
+    let normal_style = Style::default();
+
+    for i in 0..max_lines {
+        let l1 = lines1.get(i).copied().unwrap_or("");
+        let l2 = lines2.get(i).copied().unwrap_or("");
+
+        let is_diff = l1 != l2;
+        let style = if is_diff { diff_style } else { normal_style };
+
+        left_lines.push(Line::from(Span::styled(l1.to_string(), style)));
+        right_lines.push(Line::from(Span::styled(l2.to_string(), style)));
+    }
+
+    let left_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Message {} ", msg1_idx + 1));
+    let right_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Message {} ", msg2_idx + 1));
+
+    let total_rows = (max_lines as u16).saturating_add(1); // + header line
+    let left_para = Paragraph::new(left_lines)
+        .block(left_block)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+    let right_para = Paragraph::new(right_lines)
+        .block(right_block)
+        .scroll((scroll, 0))
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(left_para, left_area);
+    frame.render_widget(right_para, right_area);
+    total_rows
+}
+
+/// Construction and render helpers shared by the render unit tests.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::capture::parse::TransportProto;
+    use crate::sip::SipMessage;
+    use crate::sip::parser::parse_sip;
+    use chrono::{DateTime, TimeDelta, TimeZone, Utc};
+    pub(crate) use ratatui::Terminal;
+    pub(crate) use ratatui::backend::TestBackend;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    pub(crate) fn addr_a() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+
+    pub(crate) fn addr_b() -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
+    }
+
+    pub(crate) fn base_ts() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
+    }
+
+    pub(crate) fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
+        let mut msg = Vec::new();
+        msg.extend_from_slice(first_line.as_bytes());
+        msg.extend_from_slice(b"\r\n");
+        for h in headers {
+            msg.extend_from_slice(h.as_bytes());
+            msg.extend_from_slice(b"\r\n");
+        }
+        msg.extend_from_slice(b"\r\n");
+        msg
+    }
+
+    pub(crate) fn make_invite(
+        call_id: &str,
+        from: &str,
+        to: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("INVITE sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE")
+    }
+
+    pub(crate) fn make_response(
+        call_id: &str,
+        status: u16,
+        reason: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            &format!("SIP/2.0 {status} {reason}"),
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse response")
+    }
+
+    pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "BYE sip:1002@example.com SIP/2.0",
+            &[
+                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 2 BYE",
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse BYE")
+    }
+
+    /// App with one populated, completed dialog (INVITE/180/200/BYE).
+    pub(crate) fn app_with_dialog() -> App {
+        let t0 = base_ts();
+        App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0),
+            make_response("call-1@test", 180, "Ringing", t0 + TimeDelta::seconds(1)),
+            make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2)),
+            make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
+        ])
+    }
+
+    /// Render one full tick of `app` (cache sync, render, feedback
+    /// write-back — the event loop's sequence) at the given size and
+    /// return the buffer as a string.
+    pub(crate) fn render_to_string(app: &mut App, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        app.sync_caches();
+        let mut fb = RenderFeedback::default();
+        terminal.draw(|frame| fb = render_app(frame, app)).unwrap();
+        app.apply_render_feedback(fb);
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    // ── render_app dispatch across views & widths ──────────────────
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::render::test_support::*;
+
+    #[test]
+    fn render_app_call_list_empty_and_populated() {
+        let mut empty = App::new_test();
+        let out = render_to_string(&mut empty, 80, 24);
+        assert!(out.contains("Current Mode"));
+        assert!(out.contains("Dialogs:"));
+
+        let mut app = app_with_dialog();
+        let out = render_to_string(&mut app, 80, 24);
+        // The dialog count should reflect one dialog.
+        assert!(out.contains("Dialogs: 1"));
+    }
+
+    #[test]
+    fn render_app_call_list_narrow_and_wide() {
+        let mut app = app_with_dialog();
+        let narrow = render_to_string(&mut app, 60, 12);
+        assert!(narrow.contains("Esc"));
+        let wide = render_to_string(&mut app, 130, 40);
+        // Wide call list f-key bar advertises the Open hotkey.
+        assert!(wide.contains("Open"));
+    }
+
+    #[test]
+    fn render_app_stream_list_view() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        let out = render_to_string(&mut app, 100, 24);
+        // Stream-list f-key bar advertises Calls (Tab to switch back).
+        assert!(out.contains("Calls"));
+    }
+
+    #[test]
+    fn render_app_call_flow_view_split_and_nosplit() {
+        let mut app = app_with_dialog();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        // Default raw_preview = true → split layout; renders detail panel.
+        let split = render_to_string(&mut app, 120, 30);
+        assert!(split.contains("Back"));
+        // status line 3 shows the call-flow mode hints
+        assert!(split.contains("Time:") || split.contains("SDP:"));
+
+        // No split.
+        app.flow.raw_preview = false;
+        let nosplit = render_to_string(&mut app, 120, 30);
+        assert!(nosplit.contains("Back"));
+    }
+
+    #[test]
+    fn render_app_call_flow_extended_flow() {
+        let mut app = app_with_dialog();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        app.flow.extended = true;
+        let out = render_to_string(&mut app, 120, 30);
+        assert!(out.contains("Back"));
+    }
+
+    #[test]
+    fn render_app_raw_message_view() {
+        let mut app = app_with_dialog();
+        app.current_view = View::RawMessage {
+            call_id: "call-1@test".to_string(),
+            message_index: 0,
+        };
+        let out = render_to_string(&mut app, 90, 30);
+        // Raw message f-key bar advertises Highlight.
+        assert!(out.contains("Highlight"));
+    }
+
+    #[test]
+    fn render_app_message_diff_view() {
+        let mut app = app_with_dialog();
+        app.current_view = View::MessageDiff {
+            call_id: "call-1@test".to_string(),
+            msg1_idx: 0,
+            msg2_idx: 1,
+        };
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Message 1"));
+        assert!(out.contains("Message 2"));
+    }
+
+    #[test]
+    fn render_app_help_and_statistics_views() {
+        let mut app = app_with_dialog();
+        app.current_view = View::Help;
+        let help = render_to_string(&mut app, 80, 30);
+        assert!(!help.is_empty());
+
+        app.current_view = View::Statistics;
+        let stats = render_to_string(&mut app, 80, 30);
+        assert!(stats.contains("Statistics"));
+        assert!(stats.contains("Dialogs:"));
+    }
+
+    // ── Status line variants ───────────────────────────────────────
+
+    #[test]
+    fn render_app_status_line1_paused_and_autoscroll() {
+        let mut app = app_with_dialog();
+        app.paused = true;
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("PAUSED"));
+        // autoscroll indicator [A] (default autoscroll on for call list)
+        assert!(out.contains("[A]"));
+    }
+
+    #[test]
+    fn render_app_status_line1_offline_mode() {
+        let mut app = app_with_dialog();
+        app.capture_mode = "Offline (capture.pcap)".to_string();
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("Offline"));
+    }
+
+    #[test]
+    fn render_app_status_line3_search_active() {
+        let mut app = app_with_dialog();
+        app.search_active = true;
+        app.search_query = "invite".to_string();
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("/invite"));
+    }
+
+    #[test]
+    fn render_app_status_line3_error_message() {
+        let mut app = app_with_dialog();
+        app.status_error = Some("save failed: disk full".to_string());
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("save failed"));
+    }
+
+    #[test]
+    fn render_app_status_line3_info_message() {
+        let mut app = app_with_dialog();
+        // No "error"/"fail" → uses foreground color path.
+        app.status_error = Some("saved 3 dialogs".to_string());
+        let out = render_to_string(&mut app, 100, 24);
+        assert!(out.contains("saved 3 dialogs"));
+    }
+
+    #[test]
+    fn render_app_status_line2_filter_and_bpf() {
+        let mut app = app_with_dialog();
+        app.active_filter_text = "method == 'INVITE'".to_string();
+        app.bpf_filter = "udp port 5060".to_string();
+        let out = render_to_string(&mut app, 120, 24);
+        assert!(out.contains("Match Expression"));
+        assert!(out.contains("udp port 5060"));
+    }
+
+    // ── Popups via render_app overlay ──────────────────────────────
+
+    #[test]
+    fn render_app_save_popup_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.set_save_path("/tmp/out.pcap");
+        let out = render_to_string(&mut app, 90, 30);
+        assert!(out.contains("Save Capture"));
+        assert!(out.contains("/tmp/out.pcap"));
+    }
+
+    #[test]
+    fn render_app_file_open_browser_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        app.file_open.manual_mode = false;
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Dir:"));
+    }
+
+    #[test]
+    fn render_app_file_open_manual_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::FileOpenDialog);
+        app.file_open.manual_mode = true;
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Open PCAP File"));
+        assert!(out.contains("Path:"));
+    }
+
+    #[test]
+    fn render_app_settings_popup_overlay() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SettingsDialog);
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Settings"));
+        assert!(out.contains("Color Mode"));
+    }
+
+    #[test]
+    fn render_app_filter_popup_overlay() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::FilterDialog);
+        let out = render_to_string(&mut app, 100, 30);
+        assert!(out.contains("Filter"));
+        assert!(out.contains("SIP From"));
+    }
+
+    // ── Direct popup function tests ────────────────────────────────
+
+    #[test]
+    fn render_message_diff_dialog_not_found() {
+        let app = App::new_test();
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_message_diff(
+                    frame,
+                    area,
+                    &store,
+                    &MessageDiffView {
+                        call_id: "missing",
+                        msg1_idx: 0,
+                        msg2_idx: 1,
+                        scroll: 0,
+                        theme: &theme,
+                    },
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(text.contains("Dialog not found"));
+    }
+
+    #[test]
+    fn render_message_diff_message_index_out_of_range() {
+        let app = app_with_dialog();
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                // msg index way past the end.
+                render_message_diff(
+                    frame,
+                    area,
+                    &store,
+                    &MessageDiffView {
+                        call_id: "call-1@test",
+                        msg1_idx: 0,
+                        msg2_idx: 999,
+                        scroll: 0,
+                        theme: &theme,
+                    },
+                );
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(text.contains("Message not found"));
+    }
+}
