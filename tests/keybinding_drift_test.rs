@@ -11,9 +11,9 @@
 
 use std::collections::HashSet;
 
-use crossterm::event::KeyCode;
-use sipnab::tui::Keymap;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
+use sipnab::tui::{Keymap, call_list_action};
 
 /// Display token for a key as it appears in the help's key column.
 fn token_for(kc: KeyCode) -> String {
@@ -156,6 +156,35 @@ fn important_command_keys_are_documented() {
             "expected key '{tok}' to be documented in the F1 help; have: {docs:?}"
         );
     }
+}
+
+/// The call-list view has a real key→action mapping table now
+/// (`call_list_action`) — probe it directly instead of scraping source:
+/// every printable char the mapper binds must be documented in the F1
+/// help or allow-listed. As more views gain mapping tables, add their
+/// probes here and the scrape above covers only the remainder.
+#[test]
+fn call_list_mapped_char_keys_are_documented_or_allowlisted() {
+    let docs = documented_tokens();
+    let km = Keymap::default();
+    let mut undocumented = Vec::new();
+    for c in (32u8..127).map(|b| b as char) {
+        let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        if call_list_action(&km, key).is_none() {
+            continue;
+        }
+        let tok = c.to_string();
+        if docs.contains(&tok) || allowed_undocumented(c).is_some() {
+            continue;
+        }
+        undocumented.push(c);
+    }
+    undocumented.sort_unstable();
+    assert!(
+        undocumented.is_empty(),
+        "call_list_action binds these chars but the F1 help doesn't document them: {undocumented:?}\n\
+         Document them in src/tui/help.rs HELP_TEXT, or add them to allowed_undocumented() with a reason."
+    );
 }
 
 #[test]

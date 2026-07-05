@@ -3,55 +3,143 @@
 
 use crate::tui::*;
 
-/// Handle keys in the call list view.
+/// Everything the call-list view can do in response to a single key press.
+///
+/// Produced by [`call_list_action`] (the pure key→action mapping) and
+/// consumed by the `handle_call_list_key` executor, so the binding table
+/// is testable without touching any `App` state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallListAction {
+    Quit,
+    MoveUp,
+    MoveDown,
+    MoveTop,
+    MoveBottom,
+    PageUp,
+    PageDown,
+    OpenFlow,
+    SwitchToStreamList,
+    ToggleSelection,
+    Search,
+    ClearCalls,
+    OpenRaw,
+    CycleTimestampMode,
+    CycleFromToMode,
+    OpenColumnSelector,
+    SortPrevColumn,
+    SortNextColumn,
+    ReverseSort,
+    ToggleAutoscroll,
+    TogglePause,
+    ClearNonMatching,
+    ClearMatching,
+    Help,
+    OpenSaveDialog,
+    OpenExtendedFlow,
+    OpenFilterDialog,
+    OpenSettings,
+    ClearFilter,
+    OpenFileDialog,
+    NameEndpoints,
+    OpenStatistics,
+}
+
+/// Pure key→action mapping for the call list view (keymap-aware).
+///
+/// Returns `None` for keys the view ignores. The arm order is the old
+/// handler's match order verbatim — it defines the precedence between a
+/// user rebind (keymap guard) and the built-in literals, so a rebind
+/// behaves exactly as it always did.
+pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
+    use CallListAction::*;
+    // Ctrl-L (clear calls, same as F5)
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
+        return Some(ClearCalls);
+    }
+    Some(match key.code {
+        k if k == km.quit || k == KeyCode::Esc => Quit,
+        KeyCode::Up | KeyCode::Char('k') => MoveUp,
+        KeyCode::Down | KeyCode::Char('j') => MoveDown,
+        KeyCode::Home => MoveTop,
+        KeyCode::End => MoveBottom,
+        KeyCode::PageUp => PageUp,
+        KeyCode::PageDown => PageDown,
+        KeyCode::Enter => OpenFlow,
+        KeyCode::Tab => SwitchToStreamList,
+        KeyCode::Char(' ') => ToggleSelection,
+        k if k == km.search => Search,
+        k if k == km.clear_calls => ClearCalls,
+        KeyCode::F(6) | KeyCode::Char('r') => OpenRaw,
+        KeyCode::Char('t') => CycleTimestampMode,
+        KeyCode::Char('u') => CycleFromToMode,
+        k if k == km.column_selector => OpenColumnSelector,
+        KeyCode::Char('<') => SortPrevColumn,
+        KeyCode::Char('>') => SortNextColumn,
+        KeyCode::Char('Z') => ReverseSort,
+        k if k == km.autoscroll => ToggleAutoscroll,
+        k if k == km.pause => TogglePause,
+        KeyCode::Char('i') => ClearNonMatching,
+        KeyCode::Char('I') => ClearMatching,
+        k if k == km.help => Help,
+        k if k == km.save => OpenSaveDialog,
+        KeyCode::F(3) => Search, // F3 — same as '/', keeps the query for refining
+        k if k == km.extended_flow => OpenExtendedFlow,
+        k if k == km.filter => OpenFilterDialog,
+        k if k == km.settings => OpenSettings,
+        KeyCode::F(9) => ClearFilter,
+        KeyCode::Char('O') => OpenFileDialog,
+        KeyCode::Char('N') => NameEndpoints,
+        KeyCode::Char('s') => OpenStatistics,
+        _ => return None,
+    })
+}
+
+/// Handle keys in the call list view: route to the column selector while
+/// it is open, otherwise map the key to a [`CallListAction`] and execute.
 pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
     // Column selector popup captures keys when open
     if app.call_list.column_selector_open {
         handle_column_selector_key(app, key);
         return;
     }
-
-    let dialog_count = filtered_dialog_count(app);
-
-    // Check for Ctrl-L (clear calls, same as F5)
-    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('l') {
-        clear_calls(app);
-        return;
+    if let Some(action) = call_list_action(&app.keymap, key) {
+        execute_call_list_action(app, action);
     }
+}
 
-    match key.code {
-        k if k == app.keymap.quit || k == KeyCode::Esc => app.should_quit = true,
-        KeyCode::Up | KeyCode::Char('k') => app.call_list.move_up(),
-        KeyCode::Down | KeyCode::Char('j') => app.call_list.move_down(dialog_count),
-        KeyCode::Home => app.call_list.move_to_top(),
-        KeyCode::End => app.call_list.move_to_bottom(dialog_count),
-        KeyCode::PageUp => app.call_list.page_up(),
-        KeyCode::PageDown => app.call_list.page_down(dialog_count),
-        KeyCode::Enter => {
+/// Apply one [`CallListAction`] to the application state.
+fn execute_call_list_action(app: &mut App, action: CallListAction) {
+    let dialog_count = filtered_dialog_count(app);
+    match action {
+        CallListAction::Quit => app.should_quit = true,
+        CallListAction::MoveUp => app.call_list.move_up(),
+        CallListAction::MoveDown => app.call_list.move_down(dialog_count),
+        CallListAction::MoveTop => app.call_list.move_to_top(),
+        CallListAction::MoveBottom => app.call_list.move_to_bottom(dialog_count),
+        CallListAction::PageUp => app.call_list.page_up(),
+        CallListAction::PageDown => app.call_list.page_down(dialog_count),
+        CallListAction::OpenFlow => {
             // Open call flow for selected dialog
             if let Some(call_id) = get_selected_call_id(app) {
                 app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
         }
-        KeyCode::Tab => {
+        CallListAction::SwitchToStreamList => {
             app.current_view = View::StreamList;
         }
-        KeyCode::Char(' ') => {
+        CallListAction::ToggleSelection => {
             if let Some(cid) = get_selected_call_id(app) {
                 app.call_list.toggle_selection(&cid);
             }
         }
-        k if k == app.keymap.search => {
+        CallListAction::Search => {
             // Keep the existing query so it can be refined.
             app.search_active = true;
         }
-        // F5 — Clear calls
-        k if k == app.keymap.clear_calls => {
-            clear_calls(app);
-        }
-        // F6 / r — Raw view for selected dialog's first message
-        KeyCode::F(6) | KeyCode::Char('r') => {
+        CallListAction::ClearCalls => clear_calls(app),
+        CallListAction::OpenRaw => {
+            // Raw view for the selected dialog's first message
             if let Some(call_id) = get_selected_call_id(app) {
                 app.raw_msg_scroll = 0;
                 app.raw_msg_return_view = Some(View::CallList);
@@ -61,97 +149,67 @@ pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
                 };
             }
         }
-        // t — Cycle timestamp display mode
-        KeyCode::Char('t') => {
+        CallListAction::CycleTimestampMode => {
             app.timestamp_mode = app.timestamp_mode.next();
             app.status_error = Some(app.timestamp_mode.label().to_string());
         }
-        // u — Cycle From/To column display (user / host:port / both)
-        KeyCode::Char('u') => {
+        CallListAction::CycleFromToMode => {
+            // Cycle From/To column display (user / host:port / both)
             app.from_to_mode = app.from_to_mode.next();
             app.status_error = Some(app.from_to_mode.label().to_string());
         }
-        // F10 — Column selector popup
-        k if k == app.keymap.column_selector => {
+        CallListAction::OpenColumnSelector => {
             app.call_list.column_selector_open = true;
             app.call_list.column_selector_cursor = 0;
         }
-        // < — Sort by previous column
-        KeyCode::Char('<') => {
-            app.call_list.sort_prev_column();
-        }
-        // > — Sort by next column
-        KeyCode::Char('>') => {
-            app.call_list.sort_next_column();
-        }
-        // Z — Reverse sort direction
-        KeyCode::Char('Z') => {
-            app.call_list.reverse_sort();
-        }
-        // A — Toggle autoscroll
-        k if k == app.keymap.autoscroll => {
+        CallListAction::SortPrevColumn => app.call_list.sort_prev_column(),
+        CallListAction::SortNextColumn => app.call_list.sort_next_column(),
+        CallListAction::ReverseSort => app.call_list.reverse_sort(),
+        CallListAction::ToggleAutoscroll => {
             app.call_list.autoscroll = !app.call_list.autoscroll;
         }
-        // p — Pause/resume capture processing
-        k if k == app.keymap.pause => {
+        CallListAction::TogglePause => {
             app.paused = !app.paused;
             app.paused_flag.store(app.paused, AtomicOrdering::Relaxed);
         }
-        // i — Clear calls that DON'T match the current filter
-        KeyCode::Char('i') => {
-            clear_non_matching(app);
-        }
-        // I — Clear calls that DO match the current filter
-        KeyCode::Char('I') => {
-            clear_matching(app);
-        }
-        k if k == app.keymap.help => app.current_view = View::Help,
-        k if k == app.keymap.save => {
-            open_save_popup(app);
-        }
-        KeyCode::F(3) => {
-            // F3 Search — same as '/' search; keeps the query for refining.
-            app.search_active = true;
-        }
-        k if k == app.keymap.extended_flow => {
+        CallListAction::ClearNonMatching => clear_non_matching(app),
+        CallListAction::ClearMatching => clear_matching(app),
+        CallListAction::Help => app.current_view = View::Help,
+        CallListAction::OpenSaveDialog => open_save_popup(app),
+        CallListAction::OpenExtendedFlow => {
             if let Some(call_id) = get_selected_call_id(app) {
                 app.flow.extended = true;
                 app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
         }
-        k if k == app.keymap.filter => {
+        CallListAction::OpenFilterDialog => {
             // Always open the filter dialog (state is preserved)
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
             app.active_popup = Some(Popup::FilterDialog);
         }
-        k if k == app.keymap.settings => {
+        CallListAction::OpenSettings => {
             app.settings_dialog.focused_item = 0;
             app.active_popup = Some(Popup::SettingsDialog);
         }
-        KeyCode::F(9) => {
-            // F9 Clear Filter
+        CallListAction::ClearFilter => {
             app.active_filter = None;
             app.active_filter_text.clear();
             app.filter_dialog.clear();
             app.status_error = None;
         }
-        // O — Open pcap file
-        KeyCode::Char('O') => {
-            open_file_dialog(app);
-        }
-        // N — Name the selected dialog's endpoints (source focused; Tab → dest).
-        KeyCode::Char('N') => {
+        CallListAction::OpenFileDialog => open_file_dialog(app),
+        CallListAction::NameEndpoints => {
+            // Name the selected dialog's endpoints (source focused; Tab -> dest).
             if let Some((src, dst)) = get_selected_dialog_endpoints(app) {
                 open_name_dialog_for(app, vec![src, dst], 0);
             }
         }
-        KeyCode::Char('s') => {
+        CallListAction::OpenStatistics => {
             app.stats_scroll = 0;
             app.current_view = View::Statistics;
         }
-        _ => {}
     }
 }
 
@@ -267,6 +325,46 @@ mod tests {
         handle_call_list_key(&mut app, key(KeyCode::Char('u')));
         handle_call_list_key(&mut app, key(KeyCode::Char('u')));
         assert_eq!(app.from_to_mode(), crate::tui::FromToMode::Default);
+    }
+
+    /// The key→action mapping is pure and keymap-aware: rebinding quit to
+    /// 'x' must map 'x' (and no longer 'q') without touching any App state.
+    #[test]
+    fn call_list_action_honors_remapped_quit_key() {
+        let km = Keymap {
+            quit: KeyCode::Char('x'),
+            ..Default::default()
+        };
+        assert_eq!(
+            call_list_action(&km, key(KeyCode::Char('x'))),
+            Some(CallListAction::Quit)
+        );
+        assert_eq!(
+            call_list_action(&km, key(KeyCode::Char('q'))),
+            None,
+            "the old quit key must be unbound after a rebind"
+        );
+        // Esc quits regardless of the keymap.
+        assert_eq!(
+            call_list_action(&km, key(KeyCode::Esc)),
+            Some(CallListAction::Quit)
+        );
+    }
+
+    /// A rebind can never be shadowed by a built-in literal: the keymap
+    /// arms keep their original precedence order relative to the literals.
+    #[test]
+    fn call_list_action_literal_precedes_later_keymap_arm() {
+        // 't' is the (earlier) timestamp-cycle literal; rebinding save to
+        // 't' must lose to it, exactly as the old match-arm order did.
+        let km = Keymap {
+            save: KeyCode::Char('t'),
+            ..Default::default()
+        };
+        assert_eq!(
+            call_list_action(&km, key(KeyCode::Char('t'))),
+            Some(CallListAction::CycleTimestampMode)
+        );
     }
 
     #[test]
