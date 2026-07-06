@@ -17,7 +17,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 30 addressable fields, organized by type.
+All 31 addressable fields, organized by type.
 
 ### String Fields
 
