@@ -65,6 +65,10 @@ struct Inner {
     dns_cache: HashMap<IpAddr, Option<String>>,
     /// IPs already handed to the DNS worker, so we enqueue each at most once.
     dns_requested: HashSet<IpAddr>,
+    /// Mutation counter, bumped by every change that can alter a resolved
+    /// label (manual/hosts/file edits, DNS results landing). Cache
+    /// invalidation signal — see [`NameResolver::generation`].
+    generation: u64,
 }
 
 /// Maximum length (in bytes) of a name we will store/emit. DNS names are
@@ -111,7 +115,9 @@ impl NameResolver {
             .spawn(move || {
                 while let Ok(ip) = rx.recv() {
                     let name = reverse_dns(ip);
-                    worker_inner.write().dns_cache.insert(ip, name);
+                    let mut inner = worker_inner.write();
+                    inner.dns_cache.insert(ip, name);
+                    inner.generation += 1;
                 }
             });
         Self {
@@ -192,12 +198,26 @@ impl NameResolver {
 
     /// Add or replace a manual mapping.
     pub fn set_manual(&self, ip: IpAddr, name: String) {
-        self.inner.write().manual.insert(ip, name);
+        let mut inner = self.inner.write();
+        inner.manual.insert(ip, name);
+        inner.generation += 1;
     }
 
     /// Remove a manual mapping. Returns the previous name, if any.
     pub fn remove_manual(&self, ip: &IpAddr) -> Option<String> {
-        self.inner.write().manual.remove(ip)
+        let mut inner = self.inner.write();
+        inner.generation += 1;
+        inner.manual.remove(ip)
+    }
+
+    /// Monotonic mutation counter: bumped by every change that can alter a
+    /// resolved label — manual add/remove, hosts/file loads, and reverse-DNS
+    /// results landing from the worker. Lookups never bump it. The TUI keys
+    /// its cached ladder layout (whose participant labels come from this
+    /// resolver) on the pair (generation, [`NameMode`]), so a late DNS
+    /// answer re-derives the layout instead of leaving a stale label.
+    pub fn generation(&self) -> u64 {
+        self.inner.read().generation
     }
 
     /// Snapshot of all manual mappings, sorted by IP, for the manager UI.
@@ -285,6 +305,7 @@ impl NameResolver {
                 });
             }
         }
+        inner.generation += 1;
         n
     }
 
@@ -297,7 +318,9 @@ impl NameResolver {
 
     /// Replace the hosts table from `/etc/hosts`-format text.
     pub fn load_hosts_str(&self, text: &str) {
-        self.inner.write().hosts = parse_hosts(text);
+        let mut inner = self.inner.write();
+        inner.hosts = parse_hosts(text);
+        inner.generation += 1;
     }
 
     /// Load a hosts file from disk into the hosts table.
@@ -311,7 +334,9 @@ impl NameResolver {
     pub fn load_manual_file(&self, path: &Path) -> std::io::Result<()> {
         let text = std::fs::read_to_string(path)?;
         let parsed = parse_hosts(&text);
-        self.inner.write().manual.extend(parsed);
+        let mut inner = self.inner.write();
+        inner.manual.extend(parsed);
+        inner.generation += 1;
         Ok(())
     }
 
@@ -484,6 +509,36 @@ mod tests {
             r.name(ip("10.0.0.2"), NameMode::Names).as_deref(),
             Some("manual-name")
         );
+    }
+
+    /// WS4.3c: the TUI keys its cached ladder layout on the resolver
+    /// generation, so EVERY mutation that can change a label must bump it —
+    /// and lookups must NOT, or the cache would never hit.
+    #[test]
+    fn generation_bumps_on_name_mutations_but_not_lookups() {
+        let r = NameResolver::new();
+        let g0 = r.generation();
+
+        r.set_manual(ip("10.0.0.2"), "sbc".into());
+        let g1 = r.generation();
+        assert!(g1 > g0, "set_manual must bump the generation");
+
+        r.load_hosts_str("10.0.0.3 pbx\n");
+        let g2 = r.generation();
+        assert!(g2 > g1, "load_hosts_str must bump the generation");
+
+        r.load_file_names([(ip("10.0.0.4"), "nrb-host".to_string())]);
+        let g3 = r.generation();
+        assert!(g3 > g2, "load_file_names must bump the generation");
+
+        r.remove_manual(&ip("10.0.0.2"));
+        let g4 = r.generation();
+        assert!(g4 > g3, "remove_manual must bump the generation");
+
+        let _ = r.name(ip("10.0.0.3"), NameMode::Names);
+        let _ = r.label(ip("10.0.0.4"), 5060, NameMode::Names);
+        let _ = r.label(ip("10.0.0.99"), 5060, NameMode::Names);
+        assert_eq!(r.generation(), g4, "lookups must not bump the generation");
     }
 
     #[test]

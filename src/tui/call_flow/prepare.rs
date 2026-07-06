@@ -203,6 +203,15 @@ const CID_COLORS: [Color; 6] = [
     Color::Red,
 ];
 
+// Per-thread call counter for `layout`, test-only: pins the WS4.3c
+// "laid out at most once per tick, cached across ticks" property
+// (thread-local so the parallel test runner cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static LAYOUT_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
 /// Lay out a dialog's ladder: participants, row order (folding, RTP bars,
 /// Scaled-mode spacers), timestamp/label/SDP texts — everything except
 /// colors and selection, which [`style`] applies. Pure and theme-free, so
@@ -214,6 +223,8 @@ pub fn layout(
     opts: &LayoutOptions<'_>,
     fold_expanded: &HashSet<usize>,
 ) -> (Vec<Participant>, Vec<LayoutRow>) {
+    #[cfg(test)]
+    LAYOUT_CALLS.with(|c| c.set(c.get() + 1));
     let sdp_mode = opts.sdp_mode;
     let ts_mode = opts.ts_mode;
     let show_rtp = opts.show_rtp;

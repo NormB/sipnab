@@ -77,6 +77,9 @@ pub struct StreamStore {
     /// O(streams) per packet → O(calls²). Batched eviction amortizes it to O(1)
     /// per insertion. A value near evictions×max_streams means the regression is back.
     evict_shift_work: u64,
+    /// Structural-change counter for cache invalidation — see
+    /// [`Self::generation`].
+    generation: u64,
 }
 
 impl StreamStore {
@@ -95,7 +98,19 @@ impl StreamStore {
             endpoint_index: std::collections::HashMap::default(),
             link_scan_iters: 0,
             evict_shift_work: 0,
+            generation: 0,
         }
+    }
+
+    /// Monotonic structural-change counter: bumped when the stream SET, a
+    /// stream's dialog association or its resolved codec changes (new
+    /// stream, link, merge, clear) — NOT by per-packet counter/last-seen
+    /// updates. The TUI keys its cached per-dialog codec segments (and the
+    /// ladder layout derived from them) on this, so live RTP on an
+    /// established call keeps hitting the cache while anything that could
+    /// change what `streams_for` yields invalidates it.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Cumulative per-stream visits during SDP-endpoint linking (SNB-0015 probe).
@@ -174,6 +189,7 @@ impl StreamStore {
                 .push(key.clone());
             self.index_endpoints(&key);
             self.streams.insert(key, stream);
+            self.generation += 1;
         }
     }
 
@@ -231,6 +247,7 @@ impl StreamStore {
             {
                 stream.associated_dialog = Some(call_id.to_string());
                 stream.orphaned = false;
+                self.generation += 1;
             }
         }
     }
@@ -293,6 +310,7 @@ impl StreamStore {
             if stream.associated_dialog.is_none() {
                 stream.associated_dialog = Some(call_id.to_string());
                 stream.orphaned = false;
+                self.generation += 1;
             }
             // Enrich codec info from SDP rtpmap for dynamic payload types. Only
             // update if the stream's codec is unknown (dynamic PT, no static map).
@@ -302,6 +320,7 @@ impl StreamStore {
             {
                 stream.codec = Some(encoding.clone());
                 stream.clock_rate = *clock_rate;
+                self.generation += 1;
             }
         }
     }
@@ -411,6 +430,7 @@ impl StreamStore {
         self.streams.clear();
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.generation += 1;
     }
 
     /// Register a stream key under both its src and dst endpoints (SNB-0015).
@@ -469,6 +489,7 @@ impl StreamStore {
                     .push(key.clone());
                 self.index_endpoints(&key);
                 self.streams.insert(key, stream);
+                self.generation += 1;
             }
         }
         for (ep, sdp) in other.sdp_endpoints {
@@ -554,6 +575,64 @@ mod tests {
             more_fragments: false,
             ip_protocol: 17,
         }
+    }
+
+    /// WS4.3c: the TUI keys its cached RTP codec segments (and hence the
+    /// cached ladder layout) on this generation — structural changes (new
+    /// stream, dialog link, codec resolution, clear) must bump it, while a
+    /// per-packet update to an existing stream must NOT, or the cache
+    /// would miss on every RTP packet of a live call.
+    #[test]
+    fn generation_bumps_on_structural_changes_not_per_packet_updates() {
+        let mut store = StreamStore::new(16);
+        let g0 = store.generation();
+
+        // New stream → bump.
+        store.process_rtp(
+            &make_parsed(40000, 30000, 160),
+            &make_rtp_header(0xCCCC, 1),
+            ts(0),
+        );
+        let g1 = store.generation();
+        assert!(g1 > g0, "new stream must bump the generation");
+
+        // Same stream, next packet → counters/last_seen only, NO bump.
+        store.process_rtp(
+            &make_parsed(40000, 30000, 160),
+            &make_rtp_header(0xCCCC, 2),
+            ts(1),
+        );
+        assert_eq!(
+            store.generation(),
+            g1,
+            "a per-packet update must not bump the generation"
+        );
+
+        // Linking the stream's media endpoint to a dialog → bump (the
+        // stream now appears in streams_for("gen-call@test")).
+        store.link_to_dialog(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "gen-call@test",
+        );
+        let g2 = store.generation();
+        assert!(g2 > g1, "a dialog link must bump the generation");
+
+        // Re-linking the same (already linked) endpoint is a no-op → no bump.
+        store.link_to_dialog(
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            30000,
+            "other-call@test",
+        );
+        assert_eq!(
+            store.generation(),
+            g2,
+            "an idempotent re-link must not bump the generation"
+        );
+
+        // clear() → bump.
+        store.clear();
+        assert!(store.generation() > g2, "clear must bump the generation");
     }
 
     #[test]

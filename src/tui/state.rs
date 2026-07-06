@@ -486,6 +486,9 @@ pub(in crate::tui) struct CallFlowViewState {
     /// visible-row position) back to the underlying message for the detail
     /// pane, Enter, diff selection and fold expansion.
     pub(in crate::tui) cached_raw_indices: Vec<Option<usize>>,
+    /// Cross-tick ladder layout cache (WS4.3c), refreshed by
+    /// `App::sync_caches`; the render pass only re-styles it.
+    pub(in crate::tui) ladder: LadderCache,
 }
 
 impl Default for CallFlowViewState {
@@ -506,8 +509,60 @@ impl Default for CallFlowViewState {
             cached_msg_count: 0,
             cached_rtp_bar_indices: std::collections::HashSet::new(),
             cached_raw_indices: Vec::new(),
+            ladder: LadderCache::default(),
         }
     }
+}
+
+/// Which dialog-store state a cached ladder layout was derived from.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::tui) enum LadderSource {
+    /// Single-dialog view: the dialog's `(messages.len, updated_at)`
+    /// fingerprint — traffic on unrelated dialogs keeps the cache warm.
+    Dialog(usize, chrono::DateTime<chrono::Utc>),
+    /// Extended (multi-leg) view: the whole-store generation, since
+    /// correlated legs can appear anywhere. `find_correlated` and the
+    /// merge+sort of leg messages therefore run only on a layout miss.
+    ExtendedStore(u64),
+}
+
+/// Key identifying one exact ladder-layout derivation: if every field
+/// matches, the cached participants/rows are still valid and only the
+/// style stage needs to run. Style-only inputs (theme, color mode,
+/// selection) are deliberately absent.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::tui) struct LadderKey {
+    pub(in crate::tui) call_id: String,
+    pub(in crate::tui) source: LadderSource,
+    pub(in crate::tui) transaction_filter: Option<(u32, String)>,
+    pub(in crate::tui) sdp_mode: SdpDisplayMode,
+    pub(in crate::tui) ts_mode: TimestampMode,
+    pub(in crate::tui) show_rtp: bool,
+    pub(in crate::tui) name_mode: crate::names::NameMode,
+    /// [`crate::names::NameResolver::generation`] — participant labels.
+    pub(in crate::tui) resolver_generation: u64,
+    /// [`crate::rtp::stream_store::StreamStore::generation`] when RTP
+    /// segments feed the layout (plain view with RTP bars on) — `None`
+    /// when they don't (extended view, or bars off).
+    pub(in crate::tui) stream_generation: Option<u64>,
+    pub(in crate::tui) fold_expanded: HashSet<usize>,
+}
+
+/// Cross-tick cache of the laid-out ladder (the theme-free, expensive half
+/// of a prepared call flow): derived at most once per tick by
+/// `App::sync_caches` and reused across ticks while [`LadderKey`] matches;
+/// the render pass re-runs only the cheap style stage over it.
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct LadderCache {
+    pub(in crate::tui) key: Option<LadderKey>,
+    pub(in crate::tui) participants: Vec<call_flow::Participant>,
+    pub(in crate::tui) rows: Vec<call_flow::LayoutRow>,
+    /// Cached RTP codec segments for `segs_key`'s dialog — the layout
+    /// input recomputed only when the stream store structurally changes.
+    /// (A segment's `end` may lag behind live packets; nothing reads it.)
+    pub(in crate::tui) rtp_segs: Vec<call_flow::RtpCodecSegment>,
+    /// `(call_id, stream-store generation)` the segments were derived at.
+    pub(in crate::tui) segs_key: Option<(String, u64)>,
 }
 
 impl NameDialogState {

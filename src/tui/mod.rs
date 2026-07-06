@@ -333,6 +333,150 @@ impl App {
             }
             self.last_rendered_dialog_rows = displayed_len;
         }
+
+        // CallFlow ladder cache (WS4.3c): the theme-free layout half is
+        // derived at most once here, keyed on everything that shapes it
+        // ([`LadderKey`]); the render pass only re-styles the cached rows.
+        if let View::CallFlow(ref view_cid) = self.current_view {
+            let cid = view_cid.clone();
+
+            // RTP codec segments feed the layout only in the plain view
+            // with RTP bars on; recompute them only when the stream store
+            // structurally changed (on contention keep the previous ones).
+            let mut stream_generation = None;
+            if self.flow.show_rtp && !self.flow.extended {
+                if let Some(ss) = self.stream_store.try_read() {
+                    let g = ss.generation();
+                    let seg_key = (cid.clone(), g);
+                    if self.flow.ladder.segs_key.as_ref() != Some(&seg_key) {
+                        let mut segs: Vec<call_flow::RtpCodecSegment> = ss
+                            .streams_for(&cid)
+                            .filter_map(|s| {
+                                s.codec.clone().map(|codec| call_flow::RtpCodecSegment {
+                                    codec,
+                                    start: s.first_seen,
+                                    end: s.last_seen,
+                                })
+                            })
+                            .collect();
+                        segs.sort_by_key(|s| s.start);
+                        self.flow.ladder.rtp_segs = segs;
+                        self.flow.ladder.segs_key = Some(seg_key);
+                    }
+                    stream_generation = Some(g);
+                } else {
+                    // Contended: reuse the segments (and their generation)
+                    // the cache already holds so the ladder key still hits.
+                    stream_generation = self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
+                }
+            }
+
+            let source = if self.flow.extended {
+                LadderSource::ExtendedStore(store.generation())
+            } else {
+                match store.get(&cid) {
+                    Some(d) => LadderSource::Dialog(d.messages.len(), d.updated_at),
+                    // Dialog gone (evicted/cleared): an empty layout still
+                    // gets cached so this doesn't rescan every tick.
+                    None => LadderSource::Dialog(0, chrono::DateTime::<chrono::Utc>::MIN_UTC),
+                }
+            };
+            let key = LadderKey {
+                call_id: cid.clone(),
+                source,
+                transaction_filter: self.flow.transaction_filter.clone(),
+                sdp_mode: self.sdp_display_mode,
+                ts_mode: self.timestamp_mode,
+                show_rtp: self.flow.show_rtp,
+                name_mode: self.name_mode,
+                resolver_generation: self.resolver.generation(),
+                stream_generation,
+                fold_expanded: self.flow.fold_expanded.clone(),
+            };
+            if self.flow.ladder.key.as_ref() != Some(&key) {
+                let (participants, rows) = if self.flow.extended {
+                    // Extended: merge all correlated legs (only on a miss).
+                    match store.get(&cid) {
+                        Some(d) => {
+                            let mut all: Vec<&crate::sip::SipMessage> = d.messages.iter().collect();
+                            let correlated = store.find_correlated(&cid);
+                            for leg in &correlated {
+                                all.extend(leg.messages.iter());
+                            }
+                            all.sort_by_key(|m| m.timestamp);
+                            let owned: Vec<crate::sip::SipMessage> =
+                                all.into_iter().cloned().collect();
+                            if owned.is_empty() {
+                                (Vec::new(), Vec::new())
+                            } else {
+                                let lopts = call_flow::LayoutOptions {
+                                    sdp_mode: self.sdp_display_mode,
+                                    ts_mode: self.timestamp_mode,
+                                    // Extended/combined view draws no RTP bars.
+                                    show_rtp: false,
+                                    resolver: self.resolver.as_ref(),
+                                    name_mode: self.name_mode,
+                                    rtp_segments: &[],
+                                };
+                                call_flow::layout(
+                                    &owned,
+                                    owned[0].timestamp,
+                                    None,
+                                    &lopts,
+                                    &self.flow.fold_expanded,
+                                )
+                            }
+                        }
+                        None => (Vec::new(), Vec::new()),
+                    }
+                } else {
+                    match store.get(&cid) {
+                        Some(d) => {
+                            // Transaction filter (R5a): when active, show only
+                            // the anchored transaction's messages. A stale key
+                            // that matches nothing falls back to the dialog.
+                            let filtered: Option<Vec<crate::sip::SipMessage>> =
+                                self.flow.transaction_filter.as_ref().and_then(|key| {
+                                    let v: Vec<crate::sip::SipMessage> = d
+                                        .messages
+                                        .iter()
+                                        .filter(|m| {
+                                            call_flow::transaction_key(m).as_ref() == Some(key)
+                                        })
+                                        .cloned()
+                                        .collect();
+                                    (!v.is_empty()).then_some(v)
+                                });
+                            let msgs_ref: &[crate::sip::SipMessage] =
+                                filtered.as_deref().unwrap_or(&d.messages);
+                            if msgs_ref.is_empty() {
+                                (Vec::new(), Vec::new())
+                            } else {
+                                let lopts = call_flow::LayoutOptions {
+                                    sdp_mode: self.sdp_display_mode,
+                                    ts_mode: self.timestamp_mode,
+                                    show_rtp: self.flow.show_rtp,
+                                    resolver: self.resolver.as_ref(),
+                                    name_mode: self.name_mode,
+                                    rtp_segments: &self.flow.ladder.rtp_segs,
+                                };
+                                call_flow::layout(
+                                    msgs_ref,
+                                    msgs_ref[0].timestamp,
+                                    d.timing.pdd_ms(),
+                                    &lopts,
+                                    &self.flow.fold_expanded,
+                                )
+                            }
+                        }
+                        None => (Vec::new(), Vec::new()),
+                    }
+                };
+                self.flow.ladder.participants = participants;
+                self.flow.ladder.rows = rows;
+                self.flow.ladder.key = Some(key);
+            }
+        }
     }
 
     /// Write back the geometry- and content-dependent values a render pass
@@ -634,6 +778,62 @@ mod tests {
             calls() - mid,
             0,
             "unchanged data: the next frame must reuse the cached list"
+        );
+    }
+
+    /// WS4.3c: one CallFlow frame lays out the ladder AT MOST once; an
+    /// unchanged dialog + unchanged layout inputs mean the next frame lays
+    /// out ZERO times (style-only inputs like the color mode re-style the
+    /// cached layout); a store mutation re-derives exactly once.
+    #[test]
+    fn call_flow_frame_lays_out_ladder_at_most_once() {
+        use controllers::test_support::{base_ts, make_invite, make_ok};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "flow-1@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        app.current_view = View::CallFlow("flow-1@test".to_string());
+        let calls = || call_flow::prepare::LAYOUT_CALLS.with(|c| c.get());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        let before = calls();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let first = calls() - before;
+        assert!(
+            first <= 1,
+            "one frame must lay out the ladder at most once, did {first}x"
+        );
+
+        let mid = calls();
+        terminal.draw(|f| app.render(f)).unwrap();
+        assert_eq!(
+            calls() - mid,
+            0,
+            "unchanged data: the next frame must reuse the cached layout"
+        );
+
+        // Style-only input change: re-style the cached layout, no re-layout.
+        app.color_mode = ColorMode::CallId;
+        terminal.draw(|f| app.render(f)).unwrap();
+        assert_eq!(
+            calls() - mid,
+            0,
+            "a color-mode change is style-only and must not re-layout"
+        );
+
+        // A store mutation must re-derive the layout exactly once.
+        app.dialog_store.write().process_message(make_ok(
+            "flow-1@test",
+            base_ts() + chrono::TimeDelta::seconds(1),
+        ));
+        terminal.draw(|f| app.render(f)).unwrap();
+        assert_eq!(
+            calls() - mid,
+            1,
+            "a dialog mutation must re-derive the layout exactly once"
         );
     }
 

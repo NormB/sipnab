@@ -145,94 +145,22 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                     (main_area, None)
                 };
 
-                // Gather messages for the direct-paint renderer.
-                // For extended flow, merge correlated dialog messages.
-                let prepared = if app.flow.extended {
-                    // Extended: merge all correlated legs
-                    let dialog = store.get(&cid);
-                    if let Some(d) = dialog {
-                        let mut all: Vec<&crate::sip::SipMessage> = d.messages.iter().collect();
-                        let correlated = store.find_correlated(&cid);
-                        for leg in &correlated {
-                            all.extend(leg.messages.iter());
-                        }
-                        all.sort_by_key(|m| m.timestamp);
-                        let owned: Vec<crate::sip::SipMessage> = all.into_iter().cloned().collect();
-                        if owned.is_empty() {
-                            None
-                        } else {
-                            let ft = owned[0].timestamp;
-                            let flow_opts = call_flow::FlowDisplayOptions {
-                                sdp_mode: app.sdp_display_mode,
-                                ts_mode: app.timestamp_mode,
-                                color_mode: app.color_mode,
-                                show_rtp: false,
-                                selected_msg: Some(sel),
-                                theme: &app.theme,
-                                resolver: app.resolver.as_ref(),
-                                name_mode: app.name_mode,
-                                // Extended/combined view does not draw RTP bars.
-                                rtp_segments: &[],
-                            };
-                            let (participants, msgs) = call_flow::prepare_messages(
-                                &owned,
-                                ft,
-                                None,
-                                &flow_opts,
-                                &app.flow.fold_expanded,
-                            );
-                            Some((participants, msgs))
-                        }
-                    } else {
-                        None
-                    }
+                // The theme-free ladder layout was derived (at most) once by
+                // App::sync_caches (WS4.3c) and arrives as cached rows; the
+                // render pass only runs the cheap style stage — theme, color
+                // mode and the current selection.
+                let prepared = if app.flow.ladder.rows.is_empty() {
+                    None
                 } else {
-                    let dialog = store.get(&cid);
-                    if let Some(d) = dialog {
-                        // Transaction filter (R5a): when active, show only the
-                        // anchored transaction's messages. A stale key that
-                        // matches nothing falls back to the whole dialog.
-                        let filtered: Option<Vec<crate::sip::SipMessage>> =
-                            app.flow.transaction_filter.as_ref().and_then(|key| {
-                                let v: Vec<crate::sip::SipMessage> = d
-                                    .messages
-                                    .iter()
-                                    .filter(|m| call_flow::transaction_key(m).as_ref() == Some(key))
-                                    .cloned()
-                                    .collect();
-                                (!v.is_empty()).then_some(v)
-                            });
-                        let msgs_ref: &[crate::sip::SipMessage] =
-                            filtered.as_deref().unwrap_or(&d.messages);
-                        if msgs_ref.is_empty() {
-                            None
-                        } else {
-                            let ft = msgs_ref[0].timestamp;
-                            let pdd = d.timing.pdd_ms();
-                            let rtp_segs = app.rtp_codec_segments(&cid);
-                            let flow_opts = call_flow::FlowDisplayOptions {
-                                sdp_mode: app.sdp_display_mode,
-                                ts_mode: app.timestamp_mode,
-                                color_mode: app.color_mode,
-                                show_rtp: app.flow.show_rtp,
-                                selected_msg: Some(sel),
-                                theme: &app.theme,
-                                resolver: app.resolver.as_ref(),
-                                name_mode: app.name_mode,
-                                rtp_segments: &rtp_segs,
-                            };
-                            let (participants, msgs) = call_flow::prepare_messages(
-                                msgs_ref,
-                                ft,
-                                pdd,
-                                &flow_opts,
-                                &app.flow.fold_expanded,
-                            );
-                            Some((participants, msgs))
-                        }
-                    } else {
-                        None
-                    }
+                    let msgs = call_flow::style(
+                        &app.flow.ladder.rows,
+                        &call_flow::StyleOptions {
+                            color_mode: app.color_mode,
+                            selected_msg: Some(sel),
+                            theme: &app.theme,
+                        },
+                    );
+                    Some((app.flow.ladder.participants.clone(), msgs))
                 };
 
                 // Rebuild the rendered message count (excluding spacers), the
