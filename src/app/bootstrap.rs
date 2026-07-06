@@ -90,6 +90,10 @@ pub struct RunPlan {
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
+    // manual_map: without the `hep` feature the --hep-listen arm cfg-shrinks
+    // to a bare Some(..) that clippy wants as .map(), but the full arm uses
+    // `?` (CIDR parsing), which a map closure cannot.
+    #[allow(clippy::manual_map)]
     let source = if let Some(ref input) = cli.input {
         Some(CaptureSource::File {
             path: PathBuf::from(input),
