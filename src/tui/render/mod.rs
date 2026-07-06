@@ -79,8 +79,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                     &mut app.call_list,
                     &store,
                     &call_list::CallListDisplay {
-                        filter: app.active_filter.as_ref(),
-                        search_query: &app.search_query,
+                        rows: &app.displayed.ids,
                         timestamp_mode: app.timestamp_mode,
                         from_to_mode: app.from_to_mode,
                         theme: &app.theme,

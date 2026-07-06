@@ -6,6 +6,21 @@ work (see `MAINTAINABILITY-PERF-SPEC.md`). Criterion's own history lives in
 this file. Run with `cargo bench --profile profiling` (mandatory — see
 CONTRIBUTING.md "Running Benchmarks").
 
+## 2026-07-06 — opensips-1, rustc 1.94, WS4.3b result
+
+After the derived-data work (displayed list computed at most once per tick,
+cached across ticks keyed on the store generation + view inputs;
+allocation-free ASCII-case-insensitive search):
+
+| case | before | after | delta |
+|---|---|---|---|
+| search_frame_10k | 33.2 ms | 130 µs | **−99.6% (256×)** — repeated frames are pure cache hits |
+| displayed_10k_search_miss | 11.5 ms | 6.27 ms | −45.5% — one cold search pass, no more per-message lowercasing |
+| displayed_10k_plain | 2.90 µs | 2.93 µs | unchanged |
+| prepare_ladder_200 | 183 µs | 180 µs | unchanged (WS4.3c next) |
+
+Acceptance (≥ 5× on the search frame) exceeded by ~50×.
+
 ## 2026-07-06 — opensips-1, rustc 1.94, WS4.3 baseline (pre-optimization)
 
 New `tui_derived` bench, recorded BEFORE the WS4.3 derived-data work so the

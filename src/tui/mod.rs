@@ -125,6 +125,8 @@ pub struct App {
     bpf_filter: String,
     /// Cached total dialog count (updated when lock is available).
     cached_dialog_count: usize,
+    /// Displayed dialog list cache (filter+search+sort, derived per tick).
+    displayed: DisplayedCache,
     /// Cached displayed dialog count (updated when lock is available).
     cached_displayed_count: usize,
     /// Save dialog popup state (path/format survive reopening).
@@ -211,6 +213,7 @@ impl App {
             capture_mode: "Online (any)".to_string(),
             bpf_filter: String::new(),
             cached_dialog_count: 0,
+            displayed: DisplayedCache::default(),
             cached_displayed_count: 0,
             save: SaveDialogState::default(),
             file_open: FileOpenState::default(),
@@ -268,10 +271,16 @@ impl App {
         self.flow.diff_selected = None;
     }
 
-    /// Refresh the store-derived count caches and apply sticky-bottom
-    /// autoscroll. Called from the event-loop tick before each render (the
-    /// only writer besides [`Self::apply_render_feedback`]), so the render
-    /// pass itself stays free of state writes.
+    /// Refresh the store-derived caches and apply sticky-bottom autoscroll.
+    /// Called from the event-loop tick before each render (the only writer
+    /// besides [`Self::apply_render_feedback`]), so the render pass itself
+    /// stays free of state writes.
+    ///
+    /// The displayed dialog list (filter + search + sort) is derived AT
+    /// MOST once here and cached in [`DisplayedCache`], keyed on the store
+    /// generation plus every view input that affects it — the status-bar
+    /// count, autoscroll and the render pass all reuse it, and while
+    /// nothing changed it survives across ticks untouched.
     ///
     /// Uses `try_read()`: on lock contention the caches simply keep their
     /// previous values until the next tick, matching the render pass's
@@ -281,66 +290,40 @@ impl App {
             return;
         };
         self.cached_dialog_count = store.len();
-        self.cached_displayed_count = {
-            let mut count = if let Some(ref filter) = self.active_filter {
-                store
-                    .iter()
-                    .filter(|d| filter.matches_dialog(d, &[]))
-                    .count()
-            } else {
-                store.len()
-            };
-            // Apply text search filter to the count
-            if !self.search_query.is_empty() {
-                let q = self.search_query.to_ascii_lowercase();
-                count = store
-                    .iter()
-                    .filter(|d| {
-                        if let Some(ref filter) = self.active_filter
-                            && !filter.matches_dialog(d, &[])
-                        {
-                            return false;
-                        }
-                        d.call_id.to_ascii_lowercase().contains(&q)
-                            || d.method.as_str().to_ascii_lowercase().contains(&q)
-                            || d.from_user
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.to_user
-                                .as_deref()
-                                .unwrap_or("")
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.src_addr.to_string().contains(&q)
-                            || d.dst_addr.to_string().contains(&q)
-                            || call_list::state_display_str(d.state())
-                                .to_ascii_lowercase()
-                                .contains(&q)
-                            || d.messages.iter().any(|msg| {
-                                String::from_utf8_lossy(&msg.raw)
-                                    .to_ascii_lowercase()
-                                    .contains(&q)
-                            })
-                    })
-                    .count();
-            }
-            count
-        };
 
-        // Autoscroll: sticky-bottom. When enabled and the selection already
-        // sits on the last row, newly arrived dialogs pull it to the new
-        // bottom; a selection elsewhere is never yanked.
-        if self.current_view == View::CallList {
-            let displayed_len = call_list::displayed_dialogs(
+        let fresh = self.displayed.key.as_ref().is_some_and(|k| {
+            k.generation == store.generation()
+                && k.filter_text == self.active_filter_text
+                && k.query == self.search_query
+                && k.sort_column == self.call_list.sort_column()
+                && k.sort_ascending == self.call_list.sort_ascending()
+        });
+        if !fresh {
+            self.displayed.ids = call_list::displayed_dialogs(
                 &store,
                 self.active_filter.as_ref(),
                 &self.search_query,
                 self.call_list.sort_column(),
                 self.call_list.sort_ascending(),
             )
-            .len();
+            .iter()
+            .map(|d| d.call_id.clone())
+            .collect();
+            self.displayed.key = Some(DisplayedKey {
+                generation: store.generation(),
+                filter_text: self.active_filter_text.clone(),
+                query: self.search_query.clone(),
+                sort_column: self.call_list.sort_column(),
+                sort_ascending: self.call_list.sort_ascending(),
+            });
+        }
+        self.cached_displayed_count = self.displayed.ids.len();
+
+        // Autoscroll: sticky-bottom. When enabled and the selection already
+        // sits on the last row, newly arrived dialogs pull it to the new
+        // bottom; a selection elsewhere is never yanked.
+        if self.current_view == View::CallList {
+            let displayed_len = self.displayed.ids.len();
             if self.call_list.autoscroll
                 && self.last_rendered_dialog_rows > 0
                 && displayed_len > self.last_rendered_dialog_rows
@@ -621,6 +604,37 @@ mod tests {
         let app = App::new(ds, ss, Theme::default(), Keymap::default());
         assert_eq!(app.current_view, View::CallList);
         assert!(!app.should_quit);
+    }
+
+    /// WS4.3: one frame derives the displayed dialog list AT MOST once,
+    /// and an unchanged store + unchanged view inputs mean the next frame
+    /// derives it ZERO times (cache hit keyed on the store generation).
+    #[test]
+    fn call_list_frame_derives_displayed_rows_at_most_once() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("once-1@test", "1001", "1002", base_ts()),
+            make_invite("once-2@test", "1003", "1004", base_ts()),
+        ]);
+        let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+
+        let before = calls();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let first = calls() - before;
+        assert!(
+            first <= 1,
+            "one frame must derive the displayed list at most once, did {first}x"
+        );
+
+        let mid = calls();
+        terminal.draw(|f| app.render(f)).unwrap();
+        assert_eq!(
+            calls() - mid,
+            0,
+            "unchanged data: the next frame must reuse the cached list"
+        );
     }
 
     /// The status-bar dialog counts must refresh from the store on the

@@ -298,8 +298,9 @@ impl Default for CallListState {
 
 /// Display parameters for the call list view.
 pub struct CallListDisplay<'a> {
-    pub filter: Option<&'a FilterExpr>,
-    pub search_query: &'a str,
+    /// Call-IDs in display order — the tick's cached filter+search+sort
+    /// result (`App::sync_caches`), so the render pass derives nothing.
+    pub rows: &'a [String],
     pub timestamp_mode: TimestampMode,
     pub from_to_mode: super::FromToMode,
     pub theme: &'a super::Theme,
@@ -317,34 +318,55 @@ pub struct CallListDisplay<'a> {
 /// (the sngrep/Wireshark-style full-text fallback). `query_lower` must
 /// already be lowercased by the caller.
 pub fn dialog_matches_search(dialog: &crate::sip::dialog::SipDialog, query_lower: &str) -> bool {
-    dialog.call_id.to_ascii_lowercase().contains(query_lower)
+    let q = query_lower;
+    contains_ignore_ascii_case(dialog.call_id.as_bytes(), q)
+        || contains_ignore_ascii_case(dialog.method.as_str().as_bytes(), q)
+        || contains_ignore_ascii_case(dialog.from_user.as_deref().unwrap_or("").as_bytes(), q)
+        || contains_ignore_ascii_case(dialog.to_user.as_deref().unwrap_or("").as_bytes(), q)
+        || dialog.src_addr.to_string().contains(q)
+        || dialog.dst_addr.to_string().contains(q)
+        || contains_ignore_ascii_case(state_display_str(dialog.state()).as_bytes(), q)
         || dialog
-            .method
-            .as_str()
-            .to_ascii_lowercase()
-            .contains(query_lower)
-        || dialog
-            .from_user
-            .as_deref()
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .contains(query_lower)
-        || dialog
-            .to_user
-            .as_deref()
-            .unwrap_or("")
-            .to_ascii_lowercase()
-            .contains(query_lower)
-        || dialog.src_addr.to_string().contains(query_lower)
-        || dialog.dst_addr.to_string().contains(query_lower)
-        || state_display_str(dialog.state())
-            .to_ascii_lowercase()
-            .contains(query_lower)
-        || dialog.messages.iter().any(|msg| {
-            String::from_utf8_lossy(&msg.raw)
-                .to_ascii_lowercase()
-                .contains(query_lower)
-        })
+            .messages
+            .iter()
+            .any(|msg| contains_ignore_ascii_case(&msg.raw, q))
+}
+
+/// Allocation-free ASCII-case-insensitive substring test — the search hot
+/// path. Replaces per-field/per-message `to_ascii_lowercase().contains()`
+/// (which copied every stored message body per pass): memchr finds
+/// candidate positions of the needle's first byte in either case, then the
+/// window is compared with `eq_ignore_ascii_case`. Semantics match the old
+/// code: ASCII folding only, non-ASCII bytes verbatim. (Raw bodies are now
+/// scanned as bytes rather than through `from_utf8_lossy`; invalid UTF-8
+/// sequences no longer turn into U+FFFD before matching.)
+fn contains_ignore_ascii_case(haystack: &[u8], needle: &str) -> bool {
+    let n = needle.as_bytes();
+    if n.is_empty() {
+        return true;
+    }
+    if haystack.len() < n.len() {
+        return false;
+    }
+    // Candidate first-byte positions must leave room for the whole needle.
+    let search_end = haystack.len() - n.len() + 1;
+    let lo = n[0].to_ascii_lowercase();
+    let up = n[0].to_ascii_uppercase();
+    let hit = |pos: usize| haystack[pos..pos + n.len()].eq_ignore_ascii_case(n);
+    if lo == up {
+        memchr::memchr_iter(lo, &haystack[..search_end]).any(hit)
+    } else {
+        memchr::memchr2_iter(lo, up, &haystack[..search_end]).any(hit)
+    }
+}
+
+// Per-thread call counter for `displayed_dialogs`, test-only: pins the
+// WS4.3 "derived once per frame" property (thread-local so the parallel
+// test runner cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DISPLAYED_DIALOGS_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Build the dialog list in the exact order the call list displays it:
@@ -361,6 +383,8 @@ pub fn displayed_dialogs<'a>(
     sort_column: SortColumn,
     sort_ascending: bool,
 ) -> Vec<&'a crate::sip::dialog::SipDialog> {
+    #[cfg(test)]
+    DISPLAYED_DIALOGS_CALLS.with(|c| c.set(c.get() + 1));
     let mut dialogs: Vec<_> = match filter {
         Some(f) => store.iter().filter(|d| f.matches_dialog(d, &[])).collect(),
         None => store.iter().collect(),
@@ -380,8 +404,6 @@ pub fn render_call_list(
     store: &DialogStore,
     display: &CallListDisplay<'_>,
 ) {
-    let filter = display.filter;
-    let search_query = display.search_query;
     let timestamp_mode = display.timestamp_mode;
     let theme = display.theme;
     // The entire area is used for the table (no title line)
@@ -432,19 +454,14 @@ pub fn render_call_list(
     let all_widths = compute_column_widths(table_area.width);
     let widths: Vec<Constraint> = vis_indices.iter().map(|&i| all_widths[i]).collect();
 
-    // Build the displayed list (filter + search + sort) via the shared
-    // helper so multi-select indices map to exactly these rows.
-    let dialogs = displayed_dialogs(
-        store,
-        filter,
-        search_query,
-        state.sort_column(),
-        state.sort_ascending(),
-    );
+    // The displayed list (filter + search + sort) was derived once this
+    // tick by App::sync_caches and arrives as display-ordered call-ids;
+    // only the rows actually drawn are resolved against the store.
+    let row_ids = display.rows;
 
     // Always render the header, even when empty (sngrep style).
     // Show a help message below the header if there are no dialogs.
-    if dialogs.is_empty() {
+    if row_ids.is_empty() {
         let empty_table = Table::new(Vec::<Row>::new(), widths)
             .header(header)
             .column_spacing(1);
@@ -474,7 +491,7 @@ pub fn render_call_list(
     // offset from the selected row and only format rows within the window.
     let visible_rows = table_area.height.saturating_sub(1) as usize; // subtract header
     let selected = state.selected();
-    let total = dialogs.len();
+    let total = row_ids.len();
 
     // Compute scroll offset: keep selected row within the visible window
     let current_offset = state.table_state.offset();
@@ -487,10 +504,18 @@ pub fn render_call_list(
     };
 
     let visible_end = (scroll_offset + visible_rows).min(total);
-    let visible_dialogs = &dialogs[scroll_offset..visible_end];
+    // Resolve only the visible window (a cached id can miss if the dialog
+    // was evicted since the tick's sync — the row simply skips one frame).
+    let visible_dialogs: Vec<&crate::sip::dialog::SipDialog> = row_ids[scroll_offset..visible_end]
+        .iter()
+        .filter_map(|id| store.get(id))
+        .collect();
 
     // Reference timestamps for delta modes (from full sorted list, not just visible slice)
-    let first_ts = dialogs.first().map(|d| d.created_at);
+    let first_ts = row_ids
+        .first()
+        .and_then(|id| store.get(id))
+        .map(|d| d.created_at);
 
     let rows: Vec<Row> = visible_dialogs
         .iter()
@@ -513,7 +538,10 @@ pub fn render_call_list(
                     // Delta from previous dialog in the sorted list
                     let full_idx = scroll_offset + vis_idx;
                     let prev_ts = if full_idx > 0 {
-                        Some(dialogs[full_idx - 1].created_at)
+                        row_ids
+                            .get(full_idx - 1)
+                            .and_then(|id| store.get(id))
+                            .map(|d| d.created_at)
                     } else {
                         None
                     };
@@ -530,7 +558,10 @@ pub fn render_call_list(
                     // Scaled mode uses delta-prev in the call list
                     let full_idx = scroll_offset + vis_idx;
                     let prev_ts = if full_idx > 0 {
-                        Some(dialogs[full_idx - 1].created_at)
+                        row_ids
+                            .get(full_idx - 1)
+                            .and_then(|id| store.get(id))
+                            .map(|d| d.created_at)
                     } else {
                         None
                     };
@@ -897,6 +928,27 @@ fn format_from_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The allocation-free search must match exactly what
+    /// `to_ascii_lowercase().contains()` matched: ASCII case folding only,
+    /// empty needle always matches, non-ASCII bytes compared verbatim.
+    #[test]
+    fn contains_ignore_ascii_case_matches_like_lowercased_contains() {
+        assert!(contains_ignore_ascii_case(b"INVITE sip:Bob@x", "invite"));
+        assert!(contains_ignore_ascii_case(b"abcDEF", "cde"));
+        assert!(contains_ignore_ascii_case(b"abcDEF", "CDE"));
+        assert!(!contains_ignore_ascii_case(b"abc", "abcd"));
+        assert!(!contains_ignore_ascii_case(b"", "x"));
+        assert!(contains_ignore_ascii_case(b"", ""));
+        assert!(contains_ignore_ascii_case(b"x", ""));
+        // needle at the very end
+        assert!(contains_ignore_ascii_case(b"Call-ID: ABC", "abc"));
+        // digits/punctuation fold to themselves
+        assert!(contains_ignore_ascii_case(b"CSeq: 42 INVITE", "42 inv"));
+        // non-ASCII bytes are compared verbatim (ASCII folding only)
+        assert!(contains_ignore_ascii_case("Ünicode".as_bytes(), "nicode"));
+        assert!(!contains_ignore_ascii_case("Ünicode".as_bytes(), "ünicode"));
+    }
     use crate::names::{NameMode, NameResolver};
     use std::net::IpAddr;
 
