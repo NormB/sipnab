@@ -6,6 +6,18 @@ work (see `MAINTAINABILITY-PERF-SPEC.md`). Criterion's own history lives in
 this file. Run with `cargo bench --profile profiling` (mandatory — see
 CONTRIBUTING.md "Running Benchmarks").
 
+## 2026-07-06 — opensips-1, rustc 1.94, WS4.3 baseline (pre-optimization)
+
+New `tui_derived` bench, recorded BEFORE the WS4.3 derived-data work so the
+acceptance delta (≥ 5× on the search frame) is measurable. 10k-dialog store.
+
+| case | time | note |
+|---|---|---|
+| displayed_10k_plain | 2.90 µs | filter+sort pass, no search |
+| displayed_10k_search_miss | 11.5 ms | one full-text search pass (lowercases every message body) |
+| search_frame_10k | 33.2 ms | one REAL App::render frame with active search — ≈ 3 × the search pass, confirming the triple recompute; eats the whole 30 fps budget |
+| prepare_ladder_200 | 183 µs | CallFlow prepare_messages, 200-message dialog |
+
 ## 2026-07-03 — opensips-1 (Debian 13, x86_64), rustc 1.94, WS0 baseline
 
 Recorded immediately after the WS0 quick wins (post `parallel.rs` clone
