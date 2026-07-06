@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-06
+
 ### Added — activated the dormant fuzzing & property-test safety nets (WS7)
 
 The 11 compile-only libFuzzer targets now actually run on a schedule,
