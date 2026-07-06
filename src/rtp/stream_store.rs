@@ -37,6 +37,21 @@ struct SdpEndpoint {
 /// Streams are indexed by [`StreamKey`] for O(1) lookup. When the store
 /// reaches its capacity limit, the oldest stream (by insertion order) is
 /// evicted to make room.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::StreamStore;
+/// use sipnab::rtp::parser::parse_rtp_header;
+///
+/// let mut store = StreamStore::new(4096);
+/// assert!(store.is_empty());
+///
+/// // Streams are created by feeding parsed RTP packets to
+/// // `process_rtp` and linked to SIP dialogs via the SDP linkers;
+/// // `streams_for` then yields exactly one call's media:
+/// assert_eq!(store.streams_for("no-such-call@example.com").count(), 0);
+/// ```
 #[derive(Debug)]
 pub struct StreamStore {
     /// All tracked streams, keyed by [`StreamKey`] in insertion order.

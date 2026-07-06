@@ -59,6 +59,33 @@ pub struct CorrelationResult<'a> {
 /// Dialogs are indexed by Call-ID for O(1) lookup. When the store reaches
 /// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
 /// to make room for new ones.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::{DialogStore, DialogState};
+/// use sipnab::net::TransportProto;
+/// use sipnab::sip::parser::parse_sip;
+/// use std::net::{IpAddr, Ipv4Addr};
+///
+/// let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+///     Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1\r\n\
+///     From: <sip:alice@example.com>;tag=a1\r\n\
+///     To: <sip:bob@example.com>\r\n\
+///     Call-ID: demo@example.com\r\n\
+///     CSeq: 1 INVITE\r\n\
+///     Content-Length: 0\r\n\r\n";
+/// let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+/// let msg = parse_sip(raw, chrono::Utc::now(), ip, ip, 5060, 5060, TransportProto::Udp)?;
+///
+/// let mut store = DialogStore::new(10_000, false);
+/// store.process_message(msg);
+/// assert_eq!(store.len(), 1);
+///
+/// let dialog = store.get("demo@example.com").expect("dialog tracked by Call-ID");
+/// assert_eq!(*dialog.state(), DialogState::Trying);
+/// # Ok::<(), sipnab::ParseError>(())
+/// ```
 #[derive(Debug)]
 pub struct DialogStore {
     /// All tracked dialogs, keyed by Call-ID in insertion order.

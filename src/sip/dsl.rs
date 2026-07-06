@@ -46,9 +46,16 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 ///
 /// # Examples
 ///
-/// ```ignore
+/// ```
+/// use sipnab::FilterExpr;
+///
 /// let filter = FilterExpr::parse("from.user == '1001' AND rtp.loss > 2.0")?;
-/// let matches = filter.matches_dialog(&dialog, &streams);
+/// // Evaluate against tracked calls with
+/// // `filter.matches_dialog(&dialog, &streams)`.
+///
+/// // Malformed expressions fail to parse:
+/// assert!(FilterExpr::parse("from.user ==").is_err());
+/// # Ok::<(), anyhow::Error>(())
 /// ```
 #[derive(Clone)]
 pub struct FilterExpr {

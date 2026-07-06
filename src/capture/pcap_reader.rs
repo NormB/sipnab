@@ -243,6 +243,33 @@ impl<'a> PcapReader<'a> {
     /// [`CaptureError::TooShort`] when the data cannot hold the file
     /// header; [`CaptureError::NetMonFormat`] /
     /// [`CaptureError::UnknownFormat`] for unsupported formats.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sipnab::PcapReader;
+    ///
+    /// // A minimal empty classic pcap: LE magic, version 2.4, zeroed
+    /// // reserved/snaplen fields, link type 1 (Ethernet), no packets.
+    /// let mut file = vec![0xd4, 0xc3, 0xb2, 0xa1, 2, 0, 4, 0];
+    /// file.extend_from_slice(&[0; 12]);
+    /// file.extend_from_slice(&1u32.to_le_bytes());
+    ///
+    /// let reader = PcapReader::new(&file)?;
+    /// assert_eq!(reader.link_type, 1);
+    /// assert_eq!(reader.count(), 0);
+    /// # Ok::<(), sipnab::CaptureError>(())
+    /// ```
+    ///
+    /// Reading a real capture from disk:
+    ///
+    /// ```no_run
+    /// let data = std::fs::read("capture.pcap")?;
+    /// for pkt in sipnab::PcapReader::new(&data)? {
+    ///     println!("{} bytes at {}s", pkt.data.len(), pkt.timestamp_secs);
+    /// }
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
     #[must_use = "parsing result must be handled"]
     pub fn new(data: &'a [u8]) -> Result<Self, CaptureError> {
         if data.len() < 12 {

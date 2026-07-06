@@ -49,6 +49,16 @@ they are — they are a JavaScript-facing API consumed by the website's
 analyzer page, where `get`-prefixed accessors are idiomatic, and the
 exported names are the stable JS contract.
 
+### Added — compiled doctests for the top library entry points (WS6.3)
+
+Every major entry point now carries a compiled, asserted example —
+`parse_sip`, `parse_rtp_header`, `parse_sdp`, `parse_packet`,
+`PcapReader` (in-memory and `no_run` file variants), `FilterExpr`
+(previously an `ignore`d fence), `DialogStore`, `StreamStore`,
+`estimate_mos`, `SipMethod::as_str`, and matchable-error examples on
+`ParseError` / `CaptureError`. 17 doctests run in CI (up from 4 compiled
++ 1 ignored); compiled examples are the only ones CI keeps honest.
+
 ## [0.4.19] - 2026-07-03
 
 ### Fixed — multi-stream (audio + video) SDP timeline

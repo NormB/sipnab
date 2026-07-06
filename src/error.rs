@@ -89,6 +89,17 @@ pub enum Error {
 /// Variants are matchable (the point of the type); `Display` carries the
 /// human-readable message. The `what` fields say which structure the
 /// generic variants refer to (e.g. `"RTP header"`, `"SDP body"`).
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::ParseError;
+///
+/// match sipnab::rtp::parser::parse_rtp_header(&[0x80]) {
+///     Err(ParseError::TooShort { need, got, .. }) => assert!(got < need),
+///     other => panic!("expected TooShort, got {other:?}"),
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ParseError {
@@ -166,6 +177,18 @@ pub enum ParseError {
 /// Errors from the capture-file and packet-decoding surface re-exported
 /// at the crate root: [`PcapReader`](crate::PcapReader) and
 /// [`parse_packet`](crate::capture::parse::parse_packet).
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::{CaptureError, PcapReader};
+///
+/// let not_a_capture = [0xde, 0xad, 0xbe, 0xef, 0, 0, 0, 0, 0, 0, 0, 0];
+/// match PcapReader::new(&not_a_capture) {
+///     Err(CaptureError::UnknownFormat { magic }) => assert_eq!(magic, 0xefbeadde),
+///     other => panic!("expected UnknownFormat, got {other:?}"),
+/// }
+/// ```
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CaptureError {

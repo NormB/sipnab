@@ -231,8 +231,35 @@ pub(crate) fn reparse_transport(
 ///
 /// # Errors
 ///
-/// Returns an error if the packet cannot be parsed (e.g., too short,
-/// unsupported link type, non-IP traffic like ARP).
+/// Returns a matchable [`CaptureError`] when the packet cannot be parsed
+/// (e.g., too short, unsupported link type, non-IP traffic like ARP).
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::capture::packet::Packet;
+/// use sipnab::capture::parse::parse_packet;
+/// use sipnab::CaptureError;
+///
+/// // A minimal raw-IP (DLT_RAW = 12) UDP packet: IPv4 header + UDP header.
+/// let ip_udp: Vec<u8> = vec![
+///     0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, // IPv4, proto 17 (UDP)
+///     10, 0, 0, 1, 10, 0, 0, 2, // 10.0.0.1 -> 10.0.0.2
+///     0x13, 0xc4, 0x13, 0xc4, 0, 8, 0, 0, // 5060 -> 5060, len 8
+/// ];
+/// let pkt = Packet::new(chrono::Utc::now(), ip_udp, 28, 28, None, 12);
+/// let parsed = parse_packet(&pkt)?;
+/// assert_eq!(parsed.src_port, 5060);
+/// assert_eq!(parsed.dst_addr.to_string(), "10.0.0.2");
+///
+/// // Unsupported link types are a matchable error:
+/// let odd = Packet::new(chrono::Utc::now(), vec![0; 64], 64, 64, None, 147);
+/// assert!(matches!(
+///     parse_packet(&odd),
+///     Err(CaptureError::UnsupportedLinkType(147))
+/// ));
+/// # Ok::<(), sipnab::CaptureError>(())
+/// ```
 pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // Short-circuit: when the packet's source already knows the
     // addressing (e.g. HEP listener that reads it from HEP chunks),
