@@ -1,7 +1,7 @@
 //! Pure-Rust pcap/pcapng file reader for WASM compatibility.
 //! Reads both pcap and pcapng files from raw byte slices without libpcap.
 
-use anyhow::{Result, bail, ensure};
+use crate::error::CaptureError;
 
 /// A single packet read from a pcap/pcapng file.
 pub struct PcapPacket {
@@ -237,15 +237,33 @@ impl<'a> NgReader<'a> {
 impl<'a> PcapReader<'a> {
     /// Open a reader over an in-memory pcap or pcapng file (detected by
     /// magic number).
+    ///
+    /// # Errors
+    ///
+    /// [`CaptureError::TooShort`] when the data cannot hold the file
+    /// header; [`CaptureError::NetMonFormat`] /
+    /// [`CaptureError::UnknownFormat`] for unsupported formats.
     #[must_use = "parsing result must be handled"]
-    pub fn new(data: &'a [u8]) -> Result<Self> {
-        ensure!(data.len() >= 12, "capture file too short");
+    pub fn new(data: &'a [u8]) -> Result<Self, CaptureError> {
+        if data.len() < 12 {
+            return Err(CaptureError::TooShort {
+                what: "capture file",
+                need: 12,
+                got: data.len(),
+            });
+        }
         let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
         match magic {
             // Classic pcap (LE/BE, micro/nanoseconds)
             0xa1b2c3d4 | 0xd4c3b2a1 | 0xa1b23c4d | 0x4d3cb2a1 => {
-                ensure!(data.len() >= 24, "pcap file too short for global header");
+                if data.len() < 24 {
+                    return Err(CaptureError::TooShort {
+                        what: "pcap global header",
+                        need: 24,
+                        got: data.len(),
+                    });
+                }
                 let big_endian = magic == 0xd4c3b2a1 || magic == 0x4d3cb2a1;
                 let nanoseconds = magic == 0xa1b23c4d || magic == 0x4d3cb2a1;
                 let link_type = if big_endian {
@@ -266,7 +284,13 @@ impl<'a> PcapReader<'a> {
 
             // Pcapng Section Header Block
             0x0a0d0d0a => {
-                ensure!(data.len() >= 28, "pcapng file too short for SHB");
+                if data.len() < 28 {
+                    return Err(CaptureError::TooShort {
+                        what: "pcapng section header",
+                        need: 28,
+                        got: data.len(),
+                    });
+                }
                 let bom = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
                 let big_endian = bom == 0x4d3c2b1a;
                 let shb_len = if big_endian {
@@ -293,13 +317,8 @@ impl<'a> PcapReader<'a> {
             }
 
             // Microsoft Network Monitor format
-            0x55424d47 => bail!(
-                "Microsoft Network Monitor (.cap) format is not supported. Convert to pcap with: editcap -F pcap input.cap output.pcap"
-            ),
-            _ => bail!(
-                "Not a pcap/pcapng file (magic: 0x{:08x}). Supported formats: .pcap, .pcapng, .cap (pcap format)",
-                magic
-            ),
+            0x55424d47 => Err(CaptureError::NetMonFormat),
+            _ => Err(CaptureError::UnknownFormat { magic }),
         }
     }
 }
@@ -373,9 +392,13 @@ mod tests {
 
     #[test]
     fn invalid_magic() {
-        let result = PcapReader::new(&[0xFF; 24]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Not a pcap"));
+        let err = PcapReader::new(&[0xFF; 24]).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::UnknownFormat { magic: 0xFFFFFFFF }),
+            "expected UnknownFormat, got: {err:?}"
+        );
+        // Display still tells a human what the supported formats are.
+        assert!(err.to_string().contains("pcapng"), "got: {err}");
     }
 
     #[test]

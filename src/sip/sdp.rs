@@ -4,7 +4,7 @@
 //! bodies. Handles session-level and media-level attributes including
 //! rtpmap, fmtp, crypto (SDES), ICE candidates, and directionality.
 
-use anyhow::{Context, Result};
+use crate::error::ParseError;
 
 /// A parsed SDP session description (RFC 4566).
 #[derive(Debug, Clone)]
@@ -97,14 +97,16 @@ pub struct SdpCrypto {
 ///
 /// # Errors
 ///
-/// Returns an error if the body is empty, not valid UTF-8, or missing the
-/// required `v=0` version line.
-pub fn parse_sdp(body: &[u8]) -> Result<SdpSession> {
+/// [`ParseError::Empty`] for an empty body, [`ParseError::InvalidUtf8`]
+/// for non-UTF-8 bytes, [`ParseError::SdpMissingVersion`] /
+/// [`ParseError::BadSdpVersion`] for a missing or non-zero `v=` line.
+pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
     if body.is_empty() {
-        anyhow::bail!("Empty SDP body");
+        return Err(ParseError::Empty { what: "SDP body" });
     }
 
-    let text = std::str::from_utf8(body).context("SDP body contains invalid UTF-8")?;
+    let text =
+        std::str::from_utf8(body).map_err(|_| ParseError::InvalidUtf8 { what: "SDP body" })?;
 
     let lines: Vec<&str> = text.lines().collect();
 
@@ -112,13 +114,15 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession> {
     let first_nonempty = lines
         .iter()
         .find(|l| !l.trim().is_empty())
-        .context("SDP body contains no non-empty lines")?;
+        .ok_or(ParseError::SdpMissingVersion)?;
 
     let version_value = first_nonempty
         .strip_prefix("v=")
-        .context("SDP must start with v= line")?;
+        .ok_or(ParseError::SdpMissingVersion)?;
     if version_value.trim() != "0" {
-        anyhow::bail!("Unsupported SDP version: '{}'", version_value.trim());
+        return Err(ParseError::BadSdpVersion {
+            version: version_value.trim().to_string(),
+        });
     }
 
     let mut session = SdpSession {

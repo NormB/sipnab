@@ -4,7 +4,7 @@
 //! and optional header extension. Computes the payload offset so callers
 //! can locate the media data without re-walking the header.
 
-use anyhow::{Result, ensure};
+use crate::error::ParseError;
 
 /// A parsed RTP packet header.
 ///
@@ -45,19 +45,22 @@ const RTP_FIXED_HEADER_LEN: usize = 12;
 ///
 /// # Errors
 ///
-/// Returns an error if the data is too short for the declared header
-/// fields or if the RTP version is not 2.
-pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader> {
-    ensure!(
-        data.len() >= RTP_FIXED_HEADER_LEN,
-        "RTP packet too short: {} bytes (minimum {})",
-        data.len(),
-        RTP_FIXED_HEADER_LEN
-    );
+/// [`ParseError::TooShort`] when the data is too short for the declared
+/// header fields; [`ParseError::BadRtpVersion`] when the version is not 2.
+pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
+    if data.len() < RTP_FIXED_HEADER_LEN {
+        return Err(ParseError::TooShort {
+            what: "RTP header",
+            need: RTP_FIXED_HEADER_LEN,
+            got: data.len(),
+        });
+    }
 
     let byte0 = data[0];
     let version = (byte0 >> 6) & 0x03;
-    ensure!(version == 2, "RTP version {version}, expected 2");
+    if version != 2 {
+        return Err(ParseError::BadRtpVersion { version });
+    }
 
     let padding = (byte0 >> 5) & 0x01 != 0;
     let extension = (byte0 >> 4) & 0x01 != 0;
@@ -73,28 +76,33 @@ pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader> {
 
     // Advance past CSRC list (4 bytes per entry)
     let mut offset = RTP_FIXED_HEADER_LEN + (csrc_count as usize) * 4;
-    ensure!(
-        data.len() >= offset,
-        "RTP packet too short for {} CSRC entries: {} bytes, need {}",
-        csrc_count,
-        data.len(),
-        offset
-    );
+    if data.len() < offset {
+        return Err(ParseError::TooShort {
+            what: "RTP CSRC list",
+            need: offset,
+            got: data.len(),
+        });
+    }
 
     // Handle header extension (RFC 3550 Section 5.3.1)
     if extension {
-        ensure!(
-            data.len() >= offset + 4,
-            "RTP packet too short for extension header at offset {offset}"
-        );
+        if data.len() < offset + 4 {
+            return Err(ParseError::TooShort {
+                what: "RTP extension header",
+                need: offset + 4,
+                got: data.len(),
+            });
+        }
         // Extension header: 2-byte profile-defined field + 2-byte length (in 32-bit words)
         let ext_length = u16::from_be_bytes([data[offset + 2], data[offset + 3]]) as usize;
         offset += 4 + ext_length * 4;
-        ensure!(
-            data.len() >= offset,
-            "RTP packet too short for extension payload: need {offset}, have {}",
-            data.len()
-        );
+        if data.len() < offset {
+            return Err(ParseError::TooShort {
+                what: "RTP extension payload",
+                need: offset,
+                got: data.len(),
+            });
+        }
     }
 
     Ok(RtpHeader {

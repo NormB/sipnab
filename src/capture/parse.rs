@@ -7,7 +7,7 @@
 
 use std::net::IpAddr;
 
-use anyhow::{Context, Result};
+use crate::error::CaptureError;
 use chrono::{DateTime, Utc};
 use etherparse::{IpNumber, Ipv6ExtensionSlice, NetSlice, SlicedPacket, TransportSlice};
 
@@ -233,7 +233,7 @@ pub(crate) fn reparse_transport(
 ///
 /// Returns an error if the packet cannot be parsed (e.g., too short,
 /// unsupported link type, non-IP traffic like ARP).
-pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
+pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // Short-circuit: when the packet's source already knows the
     // addressing (e.g. HEP listener that reads it from HEP chunks),
     // skip link/IP/transport parsing and produce a ParsedPacket
@@ -261,7 +261,10 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
     // First-pass parse based on link type
     let sliced = match packet.link_type {
         DLT_EN10MB => {
-            SlicedPacket::from_ethernet(data).context("Failed to parse Ethernet packet")?
+            SlicedPacket::from_ethernet(data).map_err(|e| CaptureError::PacketDecode {
+                what: "Ethernet packet",
+                source: Box::new(e),
+            })?
         }
         DLT_LINUX_SLL => {
             // Linux SLL (cooked capture v1) has a 16-byte header:
@@ -276,33 +279,53 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket> {
                 Ok(sliced) => sliced,
                 Err(_) => {
                     if data.len() < 16 {
-                        anyhow::bail!("Linux SLL packet too short ({} bytes)", data.len());
+                        return Err(CaptureError::TooShort {
+                            what: "Linux SLL packet",
+                            need: 16,
+                            got: data.len(),
+                        });
                     }
                     // Manual fallback: skip 16-byte SLL header, parse as IP
-                    SlicedPacket::from_ip(&data[16..])
-                        .context("Failed to parse IP from Linux SLL packet (manual fallback)")?
+                    SlicedPacket::from_ip(&data[16..]).map_err(|e| CaptureError::PacketDecode {
+                        what: "IP from Linux SLL packet (manual fallback)",
+                        source: Box::new(e),
+                    })?
                 }
             }
         }
-        DLT_RAW => SlicedPacket::from_ip(data).context("Failed to parse raw IP packet")?,
+        DLT_RAW => SlicedPacket::from_ip(data).map_err(|e| CaptureError::PacketDecode {
+            what: "raw IP packet",
+            source: Box::new(e),
+        })?,
         DLT_LINUX_SLL2 => {
             // SLL2 has a 20-byte header; etherparse doesn't have a dedicated
             // parser, but the IP packet starts at offset 20. Detect IP version
             // from the first nibble of the IP header.
             if data.len() < 20 {
-                anyhow::bail!("Linux SLL2 packet too short ({} bytes)", data.len());
+                return Err(CaptureError::TooShort {
+                    what: "Linux SLL2 packet",
+                    need: 20,
+                    got: data.len(),
+                });
             }
-            SlicedPacket::from_ip(&data[20..])
-                .context("Failed to parse IP from Linux SLL2 packet")?
+            SlicedPacket::from_ip(&data[20..]).map_err(|e| CaptureError::PacketDecode {
+                what: "IP from Linux SLL2 packet",
+                source: Box::new(e),
+            })?
         }
-        other => anyhow::bail!("Unsupported link type: {other}"),
+        other => return Err(CaptureError::UnsupportedLinkType(other)),
     };
 
     // Extract IP-layer information
-    let net = sliced.net.as_ref().context("Non-IP packet (e.g., ARP)")?;
+    let net = sliced
+        .net
+        .as_ref()
+        .ok_or(CaptureError::NotIp { what: "packet" })?;
 
     // Check for encapsulation and handle recursively
-    let ip_payload = net.ip_payload_ref().context("No IP payload available")?;
+    let ip_payload = net
+        .ip_payload_ref()
+        .ok_or(CaptureError::NoIpPayload { what: "packet" })?;
 
     let ip_number = ip_payload.ip_number;
 
@@ -333,22 +356,27 @@ fn parse_inner_ip(
     data: &bytes::Bytes,
     ip_data: &[u8],
     depth: u8,
-) -> Result<ParsedPacket> {
+) -> Result<ParsedPacket, CaptureError> {
     if depth > MAX_ENCAP_DEPTH {
-        anyhow::bail!("IP-in-IP encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
+        return Err(CaptureError::EncapTooDeep {
+            kind: "IP-in-IP",
+            limit: MAX_ENCAP_DEPTH,
+        });
     }
 
-    let sliced = SlicedPacket::from_ip(ip_data).context("Failed to parse inner IP packet")?;
+    let sliced = SlicedPacket::from_ip(ip_data).map_err(|e| CaptureError::PacketDecode {
+        what: "inner IP packet",
+        source: Box::new(e),
+    })?;
 
-    let net = sliced
-        .net
-        .as_ref()
-        .context("Inner packet has no IP layer")?;
+    let net = sliced.net.as_ref().ok_or(CaptureError::NotIp {
+        what: "inner packet",
+    })?;
 
     // Check for nested encapsulation (unlikely but possible)
-    let ip_payload = net
-        .ip_payload_ref()
-        .context("No IP payload in inner packet")?;
+    let ip_payload = net.ip_payload_ref().ok_or(CaptureError::NoIpPayload {
+        what: "inner packet",
+    })?;
 
     if ip_payload.ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
         return parse_inner_ip(timestamp, data, ip_payload.payload, depth + 1);
@@ -369,15 +397,19 @@ fn parse_gre(
     data: &bytes::Bytes,
     gre_data: &[u8],
     depth: u8,
-) -> Result<ParsedPacket> {
+) -> Result<ParsedPacket, CaptureError> {
     if depth > MAX_ENCAP_DEPTH {
-        anyhow::bail!("GRE encapsulation depth exceeds limit ({MAX_ENCAP_DEPTH})");
+        return Err(CaptureError::EncapTooDeep {
+            kind: "GRE",
+            limit: MAX_ENCAP_DEPTH,
+        });
     }
     if gre_data.len() < GRE_HEADER_MIN {
-        anyhow::bail!(
-            "GRE header too short ({} bytes, need at least {GRE_HEADER_MIN})",
-            gre_data.len()
-        );
+        return Err(CaptureError::TooShort {
+            what: "GRE header",
+            need: GRE_HEADER_MIN,
+            got: gre_data.len(),
+        });
     }
 
     let flags = u16::from_be_bytes([gre_data[0], gre_data[1]]);
@@ -396,17 +428,18 @@ fn parse_gre(
     }
 
     if gre_data.len() < offset {
-        anyhow::bail!(
-            "GRE packet too short for optional fields ({} bytes, need {offset})",
-            gre_data.len()
-        );
+        return Err(CaptureError::TooShort {
+            what: "GRE optional fields",
+            need: offset,
+            got: gre_data.len(),
+        });
     }
 
     let inner = &gre_data[offset..];
 
     match protocol {
         ETHERTYPE_IPV4 | ETHERTYPE_IPV6 => parse_inner_ip(timestamp, data, inner, depth),
-        _ => anyhow::bail!("Unsupported GRE inner protocol: 0x{protocol:04X}"),
+        _ => Err(CaptureError::UnsupportedGreProtocol(protocol)),
     }
 }
 
@@ -418,7 +451,7 @@ fn extract_parsed_packet(
     data: &bytes::Bytes,
     net: &NetSlice<'_>,
     transport: &Option<TransportSlice<'_>>,
-) -> Result<ParsedPacket> {
+) -> Result<ParsedPacket, CaptureError> {
     // IP addresses
     let (src_addr, dst_addr, ip_id, fragment_offset, more_fragments, ip_protocol) = match net {
         NetSlice::Ipv4(v4) => {
@@ -464,7 +497,7 @@ fn extract_parsed_packet(
         }
         // ARP (added as a NetSlice variant in etherparse 0.20) carries no IP
         // layer; sipnab only parses SIP/RTP over IP, so reject it here.
-        NetSlice::Arp(_) => anyhow::bail!("ARP packet has no IP layer to parse"),
+        NetSlice::Arp(_) => return Err(CaptureError::NotIp { what: "ARP packet" }),
     };
 
     // Check if this is a fragment (non-first fragment has no transport header)
@@ -528,9 +561,7 @@ fn extract_parsed_packet(
     }
 
     // Transport header extraction
-    let transport_slice = transport
-        .as_ref()
-        .context("No transport header (not UDP/TCP)")?;
+    let transport_slice = transport.as_ref().ok_or(CaptureError::NoTransport)?;
 
     match transport_slice {
         TransportSlice::Udp(udp) => Ok(ParsedPacket {
@@ -569,9 +600,7 @@ fn extract_parsed_packet(
             more_fragments,
             ip_protocol,
         }),
-        TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => {
-            anyhow::bail!("ICMP packets are not processed by sipnab")
-        }
+        TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => Err(CaptureError::Icmp),
     }
 }
 

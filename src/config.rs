@@ -578,7 +578,7 @@ impl Config {
     fn load_file(path: &Path) -> Result<Config, crate::Error> {
         let content = std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
             path: path.display().to_string(),
-            reason: e.to_string(),
+            source: e,
         })?;
 
         Self::parse_toml(&content, Some(path))
@@ -598,7 +598,7 @@ impl Config {
         let value: toml::Value =
             toml::from_str(content).map_err(|e| crate::Error::ConfigParse {
                 path: display.clone(),
-                reason: format!("{e}"),
+                source: e,
             })?;
 
         warn_unknown_keys(&value);
@@ -606,7 +606,7 @@ impl Config {
         // Deserialize leniently into Config
         toml::from_str::<Config>(content).map_err(|e| crate::Error::ConfigParse {
             path: display.clone(),
-            reason: format!("{e}"),
+            source: e,
         })
     }
 

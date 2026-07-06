@@ -4,6 +4,30 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Changed — **BREAKING (library API, 0.5.0)**: typed errors for the crate-root parse/capture surface (WS6.1)
+
+The functions and types re-exported at the crate root no longer return
+`anyhow::Result`; they return structured, matchable error enums
+(`sipnab::ParseError` / `sipnab::CaptureError`, both `#[non_exhaustive]`):
+
+- `parse_sip` / `parse_sip_bytes` / `parse_rtp_header` / `parse_sdp`
+  → `Result<_, ParseError>` with variants like
+  `TooShort { what, need, got }`, `BadRtpVersion { version }`,
+  `NotSip { line }`, `BadSdpVersion { version }`.
+- `parse_packet` / `PcapReader::new` → `Result<_, CaptureError>` with
+  variants like `UnsupportedLinkType(i32)`, `EncapTooDeep { kind, limit }`,
+  `NetMonFormat`, `UnknownFormat { magic }`.
+
+Callers that propagated these errors into `anyhow::Result` (or only
+`Display`ed them) keep working unchanged — both enums implement
+`std::error::Error`. Callers that matched on message text must switch to
+matching variants, which is the point of the change.
+
+Additionally **BREAKING**: `Error::ConfigRead` / `Error::ConfigParse` now
+carry the underlying `std::io::Error` / `toml::de::Error` as a real
+`#[source]` (field renamed `reason: String` → `source`), so the error
+chain is inspectable via `source()`.
+
 ## [0.4.19] - 2026-07-03
 
 ### Fixed — multi-stream (audio + video) SDP timeline

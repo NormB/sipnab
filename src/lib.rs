@@ -40,7 +40,7 @@ pub mod names;
 pub mod net;
 #[cfg(feature = "native")]
 pub mod pipeline;
-pub use error::Error;
+pub use error::{CaptureError, Error, ParseError};
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "native")]
