@@ -8,6 +8,7 @@
 
 /// Transport-layer protocol identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TransportProto {
     /// User Datagram Protocol.
     Udp,

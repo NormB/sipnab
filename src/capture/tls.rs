@@ -30,6 +30,7 @@ pub struct TlsRecord {
 
 /// TLS record content types (RFC 8446 Section 5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TlsContentType {
     /// Change Cipher Spec (20).
     ChangeCipherSpec,
@@ -63,6 +64,7 @@ impl TlsContentType {
 
 /// TLS protocol versions as declared in the record layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TlsVersion {
     /// TLS 1.0 (0x0301).
     Tls10,

@@ -47,6 +47,11 @@ pub enum SipMethod {
 
 impl SipMethod {
     /// Return the canonical uppercase string representation.
+    ///
+    /// Takes `&self` (unlike [`TransportProto::as_str`](crate::net::TransportProto::as_str),
+    /// which takes `self`) because `SipMethod` is not `Copy` — the
+    /// `Custom(Box<str>)` variant owns its name and the returned `&str`
+    /// borrows from it.
     pub fn as_str(&self) -> &str {
         match self {
             Self::Invite => "INVITE",

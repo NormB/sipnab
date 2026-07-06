@@ -31,6 +31,7 @@ pub struct SdpExchange {
 
 /// Mid-call SDP event detected by comparing successive exchanges.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum SdpEvent {
     /// Call placed on hold (direction changed to `sendonly` or `inactive`).
     Hold,
@@ -51,6 +52,7 @@ pub enum SdpEvent {
 
 /// Whether an SDP body is an offer or an answer in the offer/answer model.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum OfferAnswer {
     /// SDP offer (typically in INVITE or re-INVITE requests).
     Offer,

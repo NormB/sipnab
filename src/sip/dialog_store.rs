@@ -27,6 +27,7 @@ pub fn set_max_messages_per_dialog(limit: usize) {
 
 /// Reason a dialog was correlated to another.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CorrelationReason {
     /// Matched via X-Call-ID header.
     XCallId,
@@ -58,6 +59,7 @@ pub struct CorrelationResult<'a> {
 /// Dialogs are indexed by Call-ID for O(1) lookup. When the store reaches
 /// its capacity limit and `rotate` is enabled, the oldest dialog is evicted
 /// to make room for new ones.
+#[derive(Debug)]
 pub struct DialogStore {
     /// All tracked dialogs, keyed by Call-ID in insertion order.
     dialogs: IndexMap<String, SipDialog, ahash::RandomState>,

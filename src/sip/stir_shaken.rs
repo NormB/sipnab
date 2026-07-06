@@ -28,6 +28,7 @@ use super::message::SipMessage;
 ///   international) and the carrier cannot authenticate the source.
 /// - **Unknown** — the attestation field was missing or unrecognized.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Attestation {
     /// Full attestation.
     A,
@@ -45,6 +46,7 @@ pub enum Attestation {
 /// [`NotChecked`](VerificationStatus::NotChecked) for locally parsed headers
 /// unless the `iat` freshness check fails (→ [`Expired`](VerificationStatus::Expired)).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VerificationStatus {
     /// Signature was not checked (no cert available).
     NotChecked,

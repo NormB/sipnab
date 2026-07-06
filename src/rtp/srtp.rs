@@ -75,6 +75,7 @@ impl Drop for SrtpKeyMaterial {
 
 /// SRTP crypto suite identifiers (RFC 4568 Section 6.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SrtpSuite {
     /// AES-128 Counter Mode with 80-bit HMAC-SHA1 authentication tag.
     AesCm128HmacSha1_80,

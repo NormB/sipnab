@@ -43,6 +43,7 @@ struct RsaHandshakeState {
 
 /// Supported cipher suites for record-layer decryption.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CipherSuite {
     /// TLS_AES_128_GCM_SHA256 (0x1301) — TLS 1.3 / 1.2.
     Aes128Gcm,

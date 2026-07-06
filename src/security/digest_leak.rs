@@ -13,6 +13,7 @@ use crate::sip::SipMessage;
 
 /// Classification of digest authentication vulnerabilities.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DigestVulnerability {
     /// Server uses MD5 algorithm (should use SHA-256 or stronger).
     WeakAlgorithm,
