@@ -18,6 +18,15 @@
 //!     // Process packets...
 //! }
 //! ```
+//!
+//! # Semver scope
+//!
+//! The documented public API is the semver contract. Modules marked
+//! `#[doc(hidden)]` (`cli`, `tui`, `privilege`, `process_isolation`,
+//! `signals`) exist so the `sipnab` binary can be built from this crate;
+//! they are internal, carry **no** semver guarantee, and may change or
+//! disappear in any release. Depend only on what appears in the rendered
+//! rustdoc.
 
 // Every public item must be documented, and unwrap/expect are banned on
 // library production paths (tests are exempt via clippy.toml). These are

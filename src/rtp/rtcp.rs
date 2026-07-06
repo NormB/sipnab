@@ -22,6 +22,7 @@ const RTCP_PT_XR: u8 = 207;
 
 /// A single RTCP packet within a compound RTCP payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RtcpPacket {
     /// Sender Report (PT=200).
     SenderReport(SenderReport),
@@ -101,6 +102,7 @@ pub struct ExtendedReport {
 
 /// RTCP XR report block types.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum XrBlock {
     /// VoIP Metrics Report Block (BT=7, RFC 3611 Section 4.7).
     VoipMetrics(VoipMetrics),

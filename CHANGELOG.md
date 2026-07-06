@@ -28,6 +28,27 @@ carry the underlying `std::io::Error` / `toml::de::Error` as a real
 `#[source]` (field renamed `reason: String` → `source`), so the error
 chain is inspectable via `source()`.
 
+### Changed — **BREAKING (library API, 0.5.0)**: API-guidelines sweep (WS6.2)
+
+Sixteen growth-prone public enums are now `#[non_exhaustive]`, so adding
+a variant (new fraud pattern, RTCP packet type, cipher suite, transport,
+…) stops being a semver-major event: `FraudType`,
+`DigestVulnerability`, `RtcpPacket`, `XrBlock`, `TransportProto`,
+`SdpEvent`, `OfferAnswer`, `CorrelationReason`, `Attestation`,
+`VerificationStatus`, `HepProtocol`, `CipherSuite`, `SrtpProfile`,
+`TlsContentType`, `TlsVersion`, `SrtpSuite`. Downstream `match`es on
+these enums now need a wildcard arm. Closed RFC sets (e.g.
+`SdpDirection`, `G711Codec`) deliberately stay exhaustively matchable.
+
+Non-breaking in the same sweep: `DialogStore` and `StreamStore` now
+implement `Debug`; the semver status of `#[doc(hidden)]` modules is
+documented in the crate root (no guarantee); the `SipMessage::to_*`
+accessors and the `as_str` receiver difference are documented in place
+as deliberate naming decisions. The wasm `get_*` exports also stay as
+they are — they are a JavaScript-facing API consumed by the website's
+analyzer page, where `get`-prefixed accessors are idiomatic, and the
+exported names are the stable JS contract.
+
 ## [0.4.19] - 2026-07-03
 
 ### Fixed — multi-stream (audio + video) SDP timeline

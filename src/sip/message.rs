@@ -229,6 +229,11 @@ impl SipMessage {
     /// Extract the user part from the `To` URI.
     ///
     /// For `To: <sip:1002@example.com>` returns `Some("1002")`.
+    ///
+    /// **Naming note:** the `to_*` accessors (`to_user`, `to_host`,
+    /// `to_tag`, `to_display`) read the SIP **`To:` header** — they are
+    /// cheap field accessors named for symmetry with `from_user` etc.,
+    /// not `to_`-prefixed conversions in the Rust API-guidelines sense.
     pub fn to_user(&self) -> Option<String> {
         extract_uri_user(self.to_header()?)
     }

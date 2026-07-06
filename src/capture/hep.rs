@@ -107,6 +107,7 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
 
 /// Protocol type carried inside a HEP packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HepProtocol {
     /// SIP signaling (protocol type 1).
     Sip,

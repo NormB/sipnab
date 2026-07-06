@@ -37,6 +37,7 @@ struct SdpEndpoint {
 /// Streams are indexed by [`StreamKey`] for O(1) lookup. When the store
 /// reaches its capacity limit, the oldest stream (by insertion order) is
 /// evicted to make room.
+#[derive(Debug)]
 pub struct StreamStore {
     /// All tracked streams, keyed by [`StreamKey`] in insertion order.
     streams: IndexMap<StreamKey, RtpStream, ahash::RandomState>,

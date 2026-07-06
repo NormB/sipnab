@@ -27,6 +27,7 @@ const EXPORTER_LABEL: &[u8] = b"EXTRACTOR-dtls_srtp";
 /// (RFC 5764 §4.1.2). Only AES-CM profiles (decryptable by this tool) are
 /// represented; other codes map to `None` when parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SrtpProfile {
     /// `SRTP_AES128_CM_HMAC_SHA1_80` (0x0001).
     Aes128CmHmacSha1_80,
