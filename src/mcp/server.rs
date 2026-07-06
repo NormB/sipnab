@@ -20,7 +20,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, Content, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
 use rmcp::schemars::JsonSchema;
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
@@ -306,7 +306,9 @@ impl SipnabMcp {
             out
         };
 
-        Ok(CallToolResult::success(vec![Content::json(summaries)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            summaries,
+        )?]))
     }
 
     /// Returns a structured per-call report (timing, parties, RTP quality,
@@ -371,11 +373,11 @@ impl SipnabMcp {
         let content = if format == ReportFormat::Json {
             // Re-parse so the response is structured JSON, not a stringified blob.
             match serde_json::from_str::<serde_json::Value>(&report) {
-                Ok(v) => Content::json(v)?,
-                Err(_) => Content::text(report),
+                Ok(v) => ContentBlock::json(v)?,
+                Err(_) => ContentBlock::text(report),
             }
         } else {
-            Content::text(report)
+            ContentBlock::text(report)
         };
         Ok(CallToolResult::success(vec![content]))
     }
@@ -433,7 +435,9 @@ impl SipnabMcp {
             out
         };
 
-        Ok(CallToolResult::success(vec![Content::json(summaries)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(
+            summaries,
+        )?]))
     }
 
     // ── Phase 8.3 tools ─────────────────────────────────────────────
@@ -493,7 +497,7 @@ impl SipnabMcp {
             })
         };
 
-        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Returns a single SIP message at the given index.
@@ -529,7 +533,7 @@ impl SipnabMcp {
         };
         let parsed: serde_json::Value =
             serde_json::from_str(line.trim_end()).unwrap_or(serde_json::Value::String(line));
-        Ok(CallToolResult::success(vec![Content::json(parsed)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(parsed)?]))
     }
 
     /// Renders a SIP call-flow ladder as markdown or text.
@@ -576,7 +580,7 @@ impl SipnabMcp {
             drop(ds);
             r
         };
-        Ok(CallToolResult::success(vec![Content::text(report)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(report)]))
     }
 
     /// Returns RTP quality stats for all streams associated with the dialog.
@@ -624,7 +628,7 @@ impl SipnabMcp {
                 "diagnosis": diag_json,
             })
         };
-        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
     /// Substring-search SIP messages across all dialogs.
@@ -682,7 +686,7 @@ impl SipnabMcp {
             drop(ds);
             out
         };
-        Ok(CallToolResult::success(vec![Content::json(hits)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(hits)?]))
     }
 
     /// Incremental dialog fetch — returns dialogs updated strictly after the
@@ -740,7 +744,7 @@ impl SipnabMcp {
             }
         };
 
-        Ok(CallToolResult::success(vec![Content::json(response)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(response)?]))
     }
 
     /// Returns recent security findings (scanner/fraud/digest/reg-flood/etc.)
@@ -792,7 +796,7 @@ impl SipnabMcp {
             }
             None => Vec::new(),
         };
-        Ok(CallToolResult::success(vec![Content::json(findings)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(findings)?]))
     }
 
     /// Aggregate counters across the active stores.
@@ -816,7 +820,7 @@ impl SipnabMcp {
             drop(ds);
             resp
         };
-        Ok(CallToolResult::success(vec![Content::json(payload)?]))
+        Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 }
 
