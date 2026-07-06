@@ -66,3 +66,180 @@ fn invalid_bind_addr_is_matchable() {
         "expected InvalidBindAddr, got: {err:?}"
     );
 }
+
+// ── WS6.1: typed errors for the crate-root parse/capture surface ────
+// parse_sip / parse_sip_bytes / parse_rtp_header / parse_sdp return
+// ParseError; parse_packet / PcapReader::new return CaptureError. Each
+// test matches on a VARIANT — the whole point of the conversion.
+
+use sipnab::error::{CaptureError, ParseError};
+
+fn test_addr() -> std::net::IpAddr {
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1))
+}
+
+#[test]
+fn truncated_rtp_is_matchable() {
+    let err = sipnab::rtp::parser::parse_rtp_header(&[0x80, 0x00])
+        .expect_err("2 bytes cannot be an RTP header");
+    assert!(
+        matches!(
+            err,
+            ParseError::TooShort {
+                need: 12,
+                got: 2,
+                ..
+            }
+        ),
+        "expected TooShort {{ need: 12, got: 2 }}, got: {err:?}"
+    );
+}
+
+#[test]
+fn rtp_bad_version_is_matchable() {
+    let mut pkt = [0u8; 12];
+    pkt[0] = 0x40; // version 1
+    let err =
+        sipnab::rtp::parser::parse_rtp_header(&pkt).expect_err("RTP version 1 must be rejected");
+    assert!(
+        matches!(err, ParseError::BadRtpVersion { version: 1 }),
+        "expected BadRtpVersion {{ version: 1 }}, got: {err:?}"
+    );
+}
+
+#[test]
+fn empty_sip_data_is_matchable() {
+    let err = sipnab::sip::parser::parse_sip(
+        &[],
+        chrono::Utc::now(),
+        test_addr(),
+        test_addr(),
+        5060,
+        5060,
+        sipnab::capture::parse::TransportProto::Udp,
+    )
+    .expect_err("empty data must error");
+    assert!(
+        matches!(err, ParseError::Empty { .. }),
+        "expected Empty, got: {err:?}"
+    );
+}
+
+#[test]
+fn non_sip_first_line_is_matchable() {
+    let err = sipnab::sip::parser::parse_sip(
+        b"GET / HTTP/1.1\r\nHost: x\r\n\r\n",
+        chrono::Utc::now(),
+        test_addr(),
+        test_addr(),
+        5060,
+        5060,
+        sipnab::capture::parse::TransportProto::Udp,
+    )
+    .expect_err("HTTP must not parse as SIP");
+    assert!(
+        matches!(err, ParseError::NotSip { .. }),
+        "expected NotSip, got: {err:?}"
+    );
+    // The message still names the offending line for humans.
+    assert!(err.to_string().contains("GET / HTTP/1.1"), "got: {err}");
+}
+
+#[test]
+fn sip_without_crlf_is_matchable() {
+    let err = sipnab::sip::parser::parse_sip(
+        b"binary-garbage-no-line-ending",
+        chrono::Utc::now(),
+        test_addr(),
+        test_addr(),
+        5060,
+        5060,
+        sipnab::capture::parse::TransportProto::Udp,
+    )
+    .expect_err("no CRLF must error");
+    assert!(
+        matches!(err, ParseError::MissingCrlf),
+        "expected MissingCrlf, got: {err:?}"
+    );
+}
+
+#[test]
+fn empty_sdp_is_matchable() {
+    let err = sipnab::sip::sdp::parse_sdp(b"").expect_err("empty SDP must error");
+    assert!(
+        matches!(err, ParseError::Empty { .. }),
+        "expected Empty, got: {err:?}"
+    );
+}
+
+#[test]
+fn bad_sdp_version_is_matchable() {
+    let err = sipnab::sip::sdp::parse_sdp(b"v=1\r\no=- 1 1 IN IP4 10.0.0.1\r\n")
+        .expect_err("SDP version 1 must be rejected");
+    assert!(
+        matches!(err, ParseError::BadSdpVersion { .. }),
+        "expected BadSdpVersion, got: {err:?}"
+    );
+}
+
+#[test]
+fn unsupported_link_type_is_matchable() {
+    let pkt = sipnab::capture::packet::Packet {
+        timestamp: chrono::Utc::now(),
+        data: bytes::Bytes::from_static(&[0u8; 64]),
+        caplen: 64,
+        origlen: 64,
+        interface: None,
+        link_type: 147, // DLT_USER0 — not supported
+        pre_parsed: None,
+    };
+    let err =
+        sipnab::capture::parse::parse_packet(&pkt).expect_err("unsupported link type must error");
+    assert!(
+        matches!(err, CaptureError::UnsupportedLinkType(147)),
+        "expected UnsupportedLinkType(147), got: {err:?}"
+    );
+}
+
+#[test]
+fn pcap_file_too_short_is_matchable() {
+    let err = sipnab::PcapReader::new(&[0u8; 4]).expect_err("4 bytes is not a capture file");
+    assert!(
+        matches!(err, CaptureError::TooShort { got: 4, .. }),
+        "expected TooShort {{ got: 4 }}, got: {err:?}"
+    );
+}
+
+#[test]
+fn unknown_capture_magic_is_matchable() {
+    let mut data = [0u8; 32];
+    data[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+    let err = sipnab::PcapReader::new(&data).expect_err("unknown magic must error");
+    assert!(
+        matches!(err, CaptureError::UnknownFormat { .. }),
+        "expected UnknownFormat, got: {err:?}"
+    );
+}
+
+#[test]
+fn config_errors_chain_their_sources() {
+    // C-GOOD-ERR: ConfigRead/ConfigParse carry the underlying io/toml
+    // error as a real #[source], not flattened text.
+    use std::error::Error as _;
+    let tmp = tempfile::NamedTempFile::new().expect("tempfile");
+    std::fs::write(tmp.path(), "this is [not valid toml").expect("write");
+    let err = sipnab::config::Config::load(tmp.path().to_str(), false)
+        .expect_err("invalid TOML must error");
+    assert!(
+        err.source().is_some(),
+        "ConfigParse must chain the toml error as source(), got: {err:?}"
+    );
+
+    let err = sipnab::config::Config::load(Some("/nonexistent-dir/x.toml"), false)
+        .expect_err("missing config must error");
+    // ConfigNotFound (no file) has no source; force a read error instead:
+    // a directory path read fails with an io::Error.
+    if let sipnab::Error::ConfigRead { .. } = err {
+        assert!(err.source().is_some(), "ConfigRead must chain io::Error");
+    }
+}

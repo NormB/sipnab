@@ -7,7 +7,7 @@
 use std::borrow::Cow;
 use std::net::IpAddr;
 
-use anyhow::{Context, Result};
+use crate::error::ParseError;
 use chrono::{DateTime, Utc};
 
 use super::message::{SipHeader, SipMessage};
@@ -65,7 +65,7 @@ pub fn parse_sip(
     src_port: u16,
     dst_port: u16,
     transport: TransportProto,
-) -> Result<SipMessage> {
+) -> Result<SipMessage, ParseError> {
     parse_sip_bytes(
         &bytes::Bytes::copy_from_slice(data),
         timestamp,
@@ -90,21 +90,24 @@ pub fn parse_sip_bytes(
     src_port: u16,
     dst_port: u16,
     transport: TransportProto,
-) -> Result<SipMessage> {
+) -> Result<SipMessage, ParseError> {
     if data.is_empty() {
-        anyhow::bail!("Empty data is not a SIP message");
+        return Err(ParseError::Empty {
+            what: "SIP message",
+        });
     }
 
     // Find the end of the first line
-    let first_crlf = find_crlf(data).context("No CRLF found — not a SIP message")?;
+    let first_crlf = find_crlf(data).ok_or(ParseError::MissingCrlf)?;
     let first_line = &data[..first_crlf];
 
     // Attempt to decode the first line as UTF-8 for parsing
-    let first_line_str =
-        std::str::from_utf8(first_line).context("First line contains invalid UTF-8")?;
+    let first_line_str = std::str::from_utf8(first_line).map_err(|_| ParseError::InvalidUtf8 {
+        what: "SIP first line",
+    })?;
 
     // Determine request vs response
-    let first = parse_first_line(first_line_str).context("Invalid SIP first line")?;
+    let first = parse_first_line(first_line_str)?;
 
     // Parse headers and body
     let header_start = first_crlf + 2; // skip past \r\n
@@ -140,18 +143,23 @@ struct FirstLine {
 }
 
 /// Parse the SIP first line (request-line or status-line).
-fn parse_first_line(line: &str) -> Result<FirstLine> {
+fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
     let line = line.trim();
 
     if let Some(after_version) = line.strip_prefix("SIP/2.0 ") {
         // Response: "SIP/2.0 200 OK"
         let space_pos = after_version
             .find(' ')
-            .context("No space after status code")?;
+            .ok_or_else(|| ParseError::InvalidFirstLine {
+                line: line.to_string(),
+                reason: "no space after status code",
+            })?;
         let code_str = &after_version[..space_pos];
         let code: u16 = code_str
             .parse()
-            .with_context(|| format!("Invalid status code: '{code_str}'"))?;
+            .map_err(|_| ParseError::InvalidStatusCode {
+                code: code_str.to_string(),
+            })?;
         let reason = after_version[space_pos + 1..].trim().to_string();
 
         Ok(FirstLine {
@@ -163,11 +171,19 @@ fn parse_first_line(line: &str) -> Result<FirstLine> {
         })
     } else if line.ends_with("SIP/2.0") {
         // Request: "INVITE sip:bob@example.com SIP/2.0"
-        let first_space = line.find(' ').context("No space in request line")?;
+        let first_space = line.find(' ').ok_or_else(|| ParseError::InvalidFirstLine {
+            line: line.to_string(),
+            reason: "no space in request line",
+        })?;
         let method_str = &line[..first_space];
 
         let rest = &line[first_space + 1..];
-        let last_space = rest.rfind(' ').context("No space before SIP version")?;
+        let last_space = rest
+            .rfind(' ')
+            .ok_or_else(|| ParseError::InvalidFirstLine {
+                line: line.to_string(),
+                reason: "no space before SIP version",
+            })?;
         let uri = rest[..last_space].to_string();
 
         Ok(FirstLine {
@@ -178,7 +194,9 @@ fn parse_first_line(line: &str) -> Result<FirstLine> {
             request_uri: Some(uri),
         })
     } else {
-        anyhow::bail!("Not a SIP message: first line is '{line}'")
+        Err(ParseError::NotSip {
+            line: line.to_string(),
+        })
     }
 }
 
