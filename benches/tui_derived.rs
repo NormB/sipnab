@@ -182,10 +182,39 @@ fn bench_prepare_ladder(c: &mut Criterion) {
     g.finish();
 }
 
+/// One full CallFlow frame tick (sync_caches + read-only render + feedback
+/// write-back) on a 200-message dialog — the WS4.3c acceptance surface.
+/// Before the ladder cache every frame re-laid-out the whole ladder;
+/// with it, repeated frames only run the style stage over cached rows.
+fn bench_ladder_frame(c: &mut Criterion) {
+    let cid = "ladder-frame@10.0.0.1";
+    let mut store = DialogStore::new(100, false);
+    store.process_message(invite(cid, 1, 1, 2, 0));
+    for i in 0..199i64 {
+        store.process_message(response(cid, 180, 1, i + 1));
+    }
+    let ds = Arc::new(RwLock::new(store));
+    let ss = Arc::new(RwLock::new(StreamStore::new(16)));
+    let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
+    // Enter opens the CallFlow view for the selected (only) dialog.
+    app.handle_key(KeyCode::Enter);
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    let mut g = c.benchmark_group("tui_derived");
+    g.sample_size(20);
+    g.bench_function("ladder_frame_200", |b| {
+        b.iter(|| {
+            terminal.draw(|f| app.render(f)).unwrap();
+        })
+    });
+    g.finish();
+}
+
 criterion_group!(
     benches,
     bench_displayed_dialogs,
     bench_search_frame,
-    bench_prepare_ladder
+    bench_prepare_ladder,
+    bench_ladder_frame
 );
 criterion_main!(benches);

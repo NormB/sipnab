@@ -6,6 +6,20 @@ work (see `MAINTAINABILITY-PERF-SPEC.md`). Criterion's own history lives in
 this file. Run with `cargo bench --profile profiling` (mandatory — see
 CONTRIBUTING.md "Running Benchmarks").
 
+## 2026-07-06 — opensips-1, rustc 1.96, WS5f + WS4.3c result
+
+The layout/style split (WS5f) plus the cross-tick ladder cache (WS4.3c):
+`App::sync_caches` lays out the ladder at most once, keyed on the dialog
+fingerprint + every layout input (and the whole-store generation in
+extended mode, so `find_correlated` and the leg merge also run only on a
+miss); the render pass re-styles the cached rows. RTP codec segments are
+recomputed only when the stream store structurally changes.
+
+| case | before | after | delta |
+|---|---|---|---|
+| ladder_frame_200 (new: full frame via App::render) | 313 µs | 134 µs | **−57% (2.3×)** — repeated frames run style+paint only |
+| prepare_ladder_200 (one-shot layout+style) | 183 µs | 211 µs | +14% — the split's extra row-materialization pass, paid once per change instead of every frame |
+
 ## 2026-07-06 — opensips-1, rustc 1.94, WS4.3b result
 
 After the derived-data work (displayed list computed at most once per tick,
