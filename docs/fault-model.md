@@ -30,8 +30,10 @@ Every parser reachable from packet/file bytes is exercised by two
 layers:
 
 - **Coverage-guided fuzzing**: `fuzz/fuzz_targets/` (cargo-fuzz /
-  libFuzzer) — 11 targets: sip, sdp, rtp, rtcp, hep, websocket,
-  filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line.
+  libFuzzer) — 15 targets: sip, sdp, rtp, rtcp, hep, websocket,
+  filter-dsl, stir-shaken, tls-records, srtp-keys, keylog-line,
+  pcap-reader, dtls, tcp-reassembly, siprec. Run weekly (and on demand)
+  via `.github/workflows/fuzz.yml`; crash reproducers upload as artifacts.
 - **Always-on smoke fuzz**: `tests/smoke_fuzz_test.rs` runs in
   `cargo test` (no nightly needed) — ~40k random + structurally-mutated
   inputs per entry point under `catch_unwind`, covering the same parser
@@ -41,6 +43,12 @@ layers:
 
 The smoke layer is the regression floor; it found the keylog panic in §5
 that the committed fuzz target had never been run against.
+
+- **Property tests**: `tests/property_test.rs` (proptest) asserts the
+  *semantic* invariants the fuzzers cannot — a SIP message built from
+  generated fields parses back to those fields, SDP survives a
+  build→parse→rebuild round trip, and the filter DSL is a total function
+  on arbitrary text (parse then evaluate never panic).
 
 **Verified bounded already in code** (confirmed by audit, exercised by
 fuzz): SIP header count (≤200) and fold size (≤8 KB); websocket payload

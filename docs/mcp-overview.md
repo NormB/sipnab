@@ -77,7 +77,7 @@ sipnab --mcp --mcp-transport http \
 The agent then connects to `https://your-host/mcp` with a `Bearer
 <token>` header.
 
-## Available tools (v0.4)
+## Available tools (v0.5)
 
 | Tool | Returns |
 |---|---|

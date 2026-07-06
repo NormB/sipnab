@@ -1,5 +1,12 @@
 # sipnab improvement roadmap
 
+> **Status: complete.** Every item below (P0–P4) shipped. The active
+> engineering roadmap has since moved to
+> [`MAINTAINABILITY-PERF-SPEC.md`](MAINTAINABILITY-PERF-SPEC.md)
+> (workstreams WS0–WS7, all shipped and released in v0.5.0 — typed
+> library errors, TUI decomposition, performance caches, and fuzzing/
+> property-test activation). This file is kept for historical reference.
+
 Source: four-dimension project analysis (maintainability, survivability,
 performance, usability), 2026-06-12. Method: every item lands via its own
 branch + PR, TDD (failing test first, red → green), auto-merged when CI-green.

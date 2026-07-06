@@ -35,7 +35,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency):
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.4.1
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.0
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -49,7 +49,7 @@ On Ubuntu 24.04+ the dependency is satisfied by `libpcap0.8t64`.
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-0.3.1-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.0-1.x86_64.rpm
 ```
 
 ### Homebrew (macOS)
@@ -231,7 +231,7 @@ sipnab --help
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```
-sipnab 0.3.1 (a7cf953d) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.0 (2595058) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 ```
 
 This is the fastest way to confirm a build was produced with the feature set

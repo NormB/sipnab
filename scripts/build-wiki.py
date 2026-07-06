@@ -30,6 +30,7 @@ BLOB = f"https://github.com/{REPO}/blob/main"
 PAGES: dict[str, str] = {
     "install.md": "Installation",
     "cli-reference.md": "CLI-Reference",
+    "library.md": "Library-API",
     "config-reference.md": "Configuration",
     "filter-dsl.md": "Filter-DSL",
     "keybindings.md": "Keybindings",
@@ -46,7 +47,7 @@ PAGES: dict[str, str] = {
 
 # Sidebar grouping: (section title, [source paths]).
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "cli-reference.md", "examples.md"]),
+    ("Getting started", ["install.md", "cli-reference.md", "examples.md", "library.md"]),
     ("Configuration", ["config-reference.md", "keybindings.md", "theme-guide.md"]),
     ("Filtering & output", ["filter-dsl.md", "output-formats.md"]),
     ("MCP server", ["mcp-overview.md", "mcp-setup.md", "mcp-tools.md"]),

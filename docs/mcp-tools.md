@@ -1,6 +1,6 @@
 # MCP tool reference
 
-This is the v0.4 sipnab MCP tool surface. All tools are read-only; all
+This is the v0.5 sipnab MCP tool surface. All tools are read-only; all
 responses are bounded by default (HARD_LIMIT = 1000). For the deployment
 and security model, see [`mcp-overview.md`](./mcp-overview.md).
 
@@ -22,12 +22,19 @@ Returns dialog summaries from the live capture store.
   {
     "call_id": "abc@host",
     "state": "Completed",
-    "method": "Invite",
+    "method": "INVITE",
     "from_user": "1001",
     "to_user": "1002",
+    "msg_count": 7,
+    "duration_sec": 91.3,
     "created_at": "2026-05-02T14:02:11Z",
     "updated_at": "2026-05-02T14:03:42Z",
-    "message_count": 7
+    "timing": {
+      "pdd_ms": 820,
+      "setup_ms": 1400,
+      "retransmits": 0,
+      "duration_ms": 89100
+    }
   }
 ]
 ```
@@ -130,7 +137,7 @@ Incremental fetch by RFC 3339 cursor (updated_at strictly after).
 
 Returns `{ dialogs, next_cursor, source_exhausted }`. The
 `source_exhausted` flag is reserved for future capture-state
-integration; in v0.4 it is always `false`.
+integration; in v0.5 it is always `false`.
 
 ## `security_findings`
 
