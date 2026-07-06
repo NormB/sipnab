@@ -2079,6 +2079,198 @@ mod tests {
         assert!(prepared2[1].timestamp.contains('+'));
     }
 
+    // ── Style pinning ────────────────────────────────────────────────
+    // Characterization net for the layout/style split (WS5f) and the
+    // ladder memoization (WS4.3): pins the STYLE outputs, which the
+    // text-only snapshot tests cannot see.
+
+    /// The `cid_colors` rotation used for CallId/CSeq arrow coloring.
+    /// Mirrored here so a silent change to the table or its indexing
+    /// breaks a test rather than shipping unnoticed.
+    const CID_COLORS: [Color; 6] = [
+        Color::Green,
+        Color::Blue,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Cyan,
+        Color::Red,
+    ];
+
+    #[test]
+    fn styles_absolute_timestamps_muted_and_method_arrows() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite("sty1", 1, t0()),
+            response("sty1", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+        ];
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &opts(&theme), &HashSet::new());
+        assert_eq!(prepared.len(), 2);
+        for (fm, msg) in prepared.iter().zip(&msgs) {
+            assert_eq!(
+                fm.timestamp_style.fg,
+                Some(theme.muted),
+                "absolute timestamps render muted"
+            );
+            assert_eq!(
+                fm.style,
+                message_style(msg, &theme),
+                "Method color mode arrows use message_style"
+            );
+        }
+    }
+
+    #[test]
+    fn styles_delta_prev_timestamps_use_delta_buckets() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite("sty2", 1, t0()),
+            // +50ms → good bucket; +500ms → warning; +2s → bad.
+            response(
+                "sty2",
+                180,
+                "Ringing",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(50),
+            ),
+            response(
+                "sty2",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(550),
+            ),
+            ack("sty2", 1, t0() + TimeDelta::milliseconds(2550)),
+        ];
+        let mut o = opts(&theme);
+        o.ts_mode = TimestampMode::DeltaPrev;
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(prepared[1].timestamp_style, delta_style(50, &theme));
+        assert_eq!(prepared[2].timestamp_style, delta_style(500, &theme));
+        assert_eq!(prepared[3].timestamp_style, delta_style(2000, &theme));
+    }
+
+    #[test]
+    fn styles_callid_mode_color_is_callid_byte_sum() {
+        let theme = Theme::default();
+        let cid = "sty3@test";
+        let msgs = vec![
+            invite(cid, 1, t0()),
+            response(cid, 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(1)),
+        ];
+        let mut o = opts(&theme);
+        o.color_mode = ColorMode::CallId;
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let i = cid.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % CID_COLORS.len();
+        for fm in &prepared {
+            assert_eq!(
+                fm.style.fg,
+                Some(CID_COLORS[i]),
+                "CallId mode colors every row of a dialog identically by call-id byte sum"
+            );
+        }
+    }
+
+    #[test]
+    fn styles_cseq_mode_color_indexes_by_cseq_number() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite("sty4", 1, t0()),
+            invite("sty4", 2, t0() + TimeDelta::seconds(1)),
+        ];
+        let mut o = opts(&theme);
+        o.color_mode = ColorMode::CSeq;
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(prepared[0].style.fg, Some(CID_COLORS[1]));
+        assert_eq!(prepared[1].style.fg, Some(CID_COLORS[2]));
+    }
+
+    #[test]
+    fn styles_sdp_lines_muted_italic_in_summary_and_full() {
+        let theme = Theme::default();
+        let msgs = vec![invite_with_sdp(
+            "sty5",
+            1,
+            "m=audio 5004 RTP/AVP 0",
+            &["a=rtpmap:0 PCMU/8000"],
+            t0(),
+        )];
+        for mode in [SdpDisplayMode::Summary, SdpDisplayMode::Full] {
+            let mut o = opts(&theme);
+            o.sdp_mode = mode;
+            let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+            assert!(
+                !prepared[0].extra_lines.is_empty(),
+                "{mode:?} must add SDP info lines"
+            );
+            for (text, style) in &prepared[0].extra_lines {
+                assert_eq!(style.fg, Some(theme.muted), "SDP line muted: {text:?}");
+                assert!(
+                    style.add_modifier.contains(Modifier::ITALIC),
+                    "SDP line italic: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn styles_rtp_bar_row_accent() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite_with_sdp(
+                "sty6",
+                1,
+                "m=audio 5004 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0(),
+            ),
+            response_with_sdp(
+                "sty6",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                "m=audio 5006 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::seconds(1),
+            ),
+            ack("sty6", 1, t0() + TimeDelta::seconds(2)),
+        ];
+        let mut o = opts(&theme);
+        o.show_rtp = true;
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let bar = prepared
+            .iter()
+            .find(|fm| fm.is_rtp_bar)
+            .expect("INVITE/200/ACK with media must draw an RTP bar");
+        assert_eq!(bar.style.fg, Some(theme.accent));
+        assert_eq!(
+            bar.timestamp_style.fg,
+            Some(theme.accent),
+            "absolute-mode RTP bar timestamp uses accent, not muted"
+        );
+    }
+
+    #[test]
+    fn styles_scaled_spacers_muted_dim() {
+        let theme = Theme::default();
+        let msgs = vec![
+            invite("sty7", 1, t0()),
+            response("sty7", 200, "OK", 1, "INVITE", t0() + TimeDelta::seconds(2)),
+        ];
+        let mut o = opts(&theme);
+        o.ts_mode = TimestampMode::Scaled;
+        let (_p, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        let spacers: Vec<_> = prepared.iter().filter(|fm| fm.is_spacer).collect();
+        assert!(!spacers.is_empty(), "a 2s gap must insert spacer rows");
+        for sp in spacers {
+            assert_eq!(sp.style.fg, Some(theme.muted));
+            assert!(sp.style.add_modifier.contains(Modifier::DIM));
+            assert_eq!(sp.timestamp_style, sp.style);
+        }
+    }
+
     // ── format_sdp_codecs ────────────────────────────────────────────
 
     #[test]

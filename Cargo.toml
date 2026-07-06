@@ -171,6 +171,10 @@ harness = false
 name = "pipeline_bench"
 harness = false
 
+[[bench]]
+name = "tui_derived"
+harness = false
+
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
