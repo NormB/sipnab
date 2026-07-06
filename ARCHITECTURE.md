@@ -57,7 +57,7 @@ src/
 ├── pipeline.rs           # THE shared per-packet protocol router (all four paths)
 ├── parallel.rs           # --jobs N: shard-by-host-pair offline reconstruction
 ├── auth.rs / crypto.rs   # HMAC bearer tokens for api/mcp
-├── error.rs              # typed Error enum (config/CLI surface)
+├── error.rs              # typed error enums: Error (config/CLI), ParseError (parse_sip/_bytes/_rtp_header/_sdp), CaptureError (parse_packet/PcapReader) — all re-exported at the crate root
 ├── names.rs              # name resolution + [names.manual] persistence
 ├── privilege.rs          # setuid drop, chroot (drop early, drop hard)
 ├── process_isolation.rs  # isolated child for active responses (scanner kill)
@@ -95,6 +95,7 @@ src/
 │   ├── scanner_kill.rs   # active response (via process_isolation)
 │   └── alerting.rs       # rule engine + event-exec hooks
 ├── output/
+│   ├── model.rs            # canonical DialogSummary/StreamSummary (one JSON+MCP wire shape)
 │   ├── cli_print.rs / json.rs / hexdump.rs / fail2ban.rs / wireshark.rs
 │   ├── dialog_report.rs / call_report.rs / synthetic.rs
 │   ├── api.rs            # axum REST (api feature)
@@ -103,15 +104,17 @@ src/
 ├── mcp/                  # MCP server (mcp feature): server.rs, transport.rs, shape.rs
 ├── tui/
 │   ├── mod.rs            # App state + event loop
-│   ├── controllers/      # key/mouse handling, one module per view/popup
-│   ├── render.rs         # frame composition
+│   ├── state.rs          # per-view state structs + derived-data caches (LadderCache/DisplayedCache), refreshed by App::sync_caches()
+│   ├── controllers/      # key/mouse handling, one module per view/popup (KeyAction mapping layer)
+│   ├── render/           # frame composition: mod.rs + popups.rs + status.rs (render pass is read-only)
 │   ├── call_list.rs / stream_list.rs / stream_detail.rs / msg_raw.rs
 │   ├── call_flow/        # ladder diagram: prepare.rs (layout) + render.rs + arrows/export
 │   ├── save.rs / help.rs / theme.rs
 ├── wasm.rs               # wasm-bindgen browser surface (wasm feature)
 └── test_utils.rs         # shared SIP message builder for tests
 crates/sipnab-audio/      # rodio/ALSA playback plugin, dlopen'd (no libasound NEEDED)
-fuzz/                     # cargo-fuzz targets (11), out-of-workspace
+fuzz/                     # cargo-fuzz targets (15), out-of-workspace; weekly run via .github/workflows/fuzz.yml
+tests/property_test.rs    # proptest properties (SIP/SDP round-trip, filter-DSL total-function)
 harness/                  # docker-compose e2e (opensips + rtpengine + sipp)
 ```
 
@@ -130,7 +133,8 @@ EOF.
   API/MCP/Prometheus servers.
 - **D3 — Zero-copy payload spine.** `Packet.data`, `ParsedPacket.payload`,
   `SipMessage.raw`/`body` are refcounted `Bytes` slices of one buffer.
-  Header *values* are still owned Strings (planned WS4.1 work).
+  Header parsing allocates lazily (canonical-name table + `Cow` unfold,
+  WS4.1) — 3→1 allocations per header on the hot path.
 - **D10 — Feature gates keep the binary small.** `native`, `tui`, `tls`,
   `hep`, `api`, `mcp`, `mcp-http`, `audio`, `wasm`. Check `Cargo.toml`
   before assuming a module is compiled in.
@@ -150,7 +154,7 @@ EOF.
 | Support a new SIP header accessor | `sip/message.rs` (+ parser test) |
 | Add a per-packet protocol behavior | `pipeline.rs` (one classifier — all paths route through it) |
 | Add an output format | `output/` + dispatch in `app/batch.rs` |
-| Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `tui/controllers/` + `render.rs` + keybinding drift test |
+| Add a TUI view/keybinding | `tui/mod.rs` (App/Popup) + `tui/state.rs` + `tui/controllers/` + `render/` + keybinding drift test |
 | Add a detection | `security/` + wiring in `app/batch.rs` |
 | Add an MCP tool | `mcp/server.rs` (`#[tool]`) + `mcp/shape.rs` |
 | Add a CLI flag | `cli.rs` + `flag_coverage_test.rs` will force a test |

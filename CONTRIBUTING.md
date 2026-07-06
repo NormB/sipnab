@@ -13,6 +13,8 @@ discipline live in [docs/internals/threading.md](docs/internals/threading.md).
   - macOS: `xcode-select --install`
   - Debian/Ubuntu: `apt install libpcap-dev`
   - Fedora/RHEL: `dnf install libpcap-devel`
+- For fuzzing only: a nightly toolchain and `cargo-fuzz`
+  (`rustup toolchain install nightly && cargo install cargo-fuzz`).
 
 ## Build from Source
 
@@ -28,6 +30,33 @@ cargo build
 cargo test
 cargo test --all-features
 ```
+
+This runs the unit tests, the integration tests, the **property tests**
+(`tests/property_test.rs`, proptest — SIP/SDP build→parse round-trips and
+the filter-DSL total-function invariant), and the always-on smoke-fuzz
+gate (`tests/smoke_fuzz_test.rs`, no nightly needed). The TUI has three
+test tiers (insta snapshots, headless state-machine tests, and a PTY
+end-to-end suite) — see
+[docs/internals/tui-testing.md](docs/internals/tui-testing.md), including
+the `cargo insta test --accept` flow for updating snapshots.
+
+## Fuzzing
+
+The `fuzz/` crate holds 15 libFuzzer targets (nightly + `cargo-fuzz`).
+Run one against its seed corpus:
+
+```bash
+cd fuzz
+cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
+```
+
+CI compile-checks every target on each push (`fuzz-check`), and the
+`.github/workflows/fuzz.yml` workflow runs the full 15-target matrix
+weekly (Mondays 05:17 UTC) and on demand
+(`gh workflow run Fuzz -f max_total_time=300`). Crash/timeout
+reproducers land in `fuzz/artifacts/` (git-ignored) and are uploaded as
+CI artifacts; minimize one into `fuzz/corpus/<parser>/` to turn it into a
+regression seed.
 
 ## Running Benchmarks
 
@@ -62,7 +91,12 @@ This project enforces consistent style through tooling and convention:
 
 - **Format:** `cargo fmt` before every commit. The project uses a `rustfmt.toml` config.
 - **Lint:** `cargo clippy -- -D warnings` must pass with zero warnings.
-- **No `.unwrap()` on external input.** Use `?`, `anyhow`, or `thiserror` for error handling. `.unwrap()` is acceptable only on values known at compile time (e.g., regex literals, test assertions).
+- **No `.unwrap()` on external input.** The library surface returns typed
+  `thiserror` errors (`Error`, `ParseError`, `CaptureError` in
+  `src/error.rs`); `anyhow` is for binary/`app/` orchestration only.
+  `.unwrap()`/`.expect()` are banned on library production paths (enforced
+  by `clippy::unwrap_used`) and acceptable only on compile-time-known
+  values (regex literals) or in tests.
 - **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
 - **No `unsafe` without justification.** If `unsafe` is required, add a `// SAFETY:` comment explaining the invariant.
 
@@ -82,7 +116,15 @@ test: add pcap round-trip tests for IPv6
 
 1. Fork the repository and create a feature branch from `main`.
 2. Keep changes focused -- one logical change per PR.
-3. Ensure `cargo fmt`, `cargo clippy -- -D warnings`, and `cargo test --all-features` pass.
+3. Ensure the CI gate passes locally. Beyond `cargo fmt` and
+   `cargo test --all-features`, CI enforces: `cargo clippy --all-features
+   --all-targets -- -D warnings`; a reduced-feature matrix that must
+   compile (`native`, `tls`, `api`, `mcp`, `hep`, `tls,api`,
+   `native,tui,audio`, `native,tui,tls,hep,api`,
+   `native,hep,api,mcp,mcp-http`, `wasm`); a docs gate
+   (`RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features`);
+   `cargo audit` + `cargo deny`; and `fuzz-check` (the fuzz targets must
+   compile on nightly).
 4. Add or update tests for new functionality.
 5. Update documentation if you add or change CLI flags or config keys.
 6. Describe the "why" in the PR body, not just the "what".

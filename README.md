@@ -155,6 +155,7 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 ## Documentation
 
 - [CLI Reference](docs/cli-reference.md) -- all flags, organized by group
+- [Library API](docs/library.md) -- using sipnab as a Rust crate; typed `ParseError`/`CaptureError`
 - [Cookbook](docs/examples.md) -- copy-paste recipes for common workflows
 - [Output Formats](docs/output-formats.md) -- NDJSON schema, jq recipes, pcap export
 - [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
