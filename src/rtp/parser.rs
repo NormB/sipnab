@@ -47,6 +47,27 @@ const RTP_FIXED_HEADER_LEN: usize = 12;
 ///
 /// [`ParseError::TooShort`] when the data is too short for the declared
 /// header fields; [`ParseError::BadRtpVersion`] when the version is not 2.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::rtp::parser::parse_rtp_header;
+///
+/// // 12-byte fixed header: V=2, PT=0 (PCMU), seq=1, ts=160, SSRC=0x1234.
+/// let data = [0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0, 0, 0x12, 0x34, 0xFF];
+/// let h = parse_rtp_header(&data)?;
+/// assert_eq!(h.payload_type, 0);
+/// assert_eq!(h.sequence, 1);
+/// assert_eq!(h.payload_offset, 12); // media starts after the fixed header
+///
+/// // Truncated input is a matchable error:
+/// use sipnab::ParseError;
+/// assert!(matches!(
+///     parse_rtp_header(&[0x80, 0x00]),
+///     Err(ParseError::TooShort { need: 12, got: 2, .. })
+/// ));
+/// # Ok::<(), sipnab::ParseError>(())
+/// ```
 pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
     if data.len() < RTP_FIXED_HEADER_LEN {
         return Err(ParseError::TooShort {

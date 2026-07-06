@@ -53,6 +53,21 @@ pub struct BurstGapAnalysis {
 /// # Returns
 ///
 /// MOS value clamped to the range \[1.0, 4.5\].
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::estimate_mos;
+///
+/// // A clean G.711 call scores near the codec ceiling...
+/// let clean = estimate_mos(5.0, 0.0, Some("PCMU"));
+/// assert!(clean > 4.0, "got {clean}");
+///
+/// // ...while heavy jitter and loss on G.729 drags the score down.
+/// let degraded = estimate_mos(80.0, 15.0, Some("G729"));
+/// assert!(degraded < 3.0, "got {degraded}");
+/// assert!((1.0..=4.5).contains(&degraded));
+/// ```
 pub fn estimate_mos(jitter_ms: f64, loss_pct: f64, codec: Option<&str>) -> f64 {
     // Codec-specific equipment impairment factor (Ie)
     let ie = match codec {

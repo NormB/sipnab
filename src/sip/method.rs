@@ -52,6 +52,16 @@ impl SipMethod {
     /// which takes `self`) because `SipMethod` is not `Copy` — the
     /// `Custom(Box<str>)` variant owns its name and the returned `&str`
     /// borrows from it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use sipnab::SipMethod;
+    ///
+    /// assert_eq!(SipMethod::parse("INVITE").as_str(), "INVITE");
+    /// // Unknown methods round-trip through Custom:
+    /// assert_eq!(SipMethod::parse("PUBLISH").as_str(), "PUBLISH");
+    /// ```
     pub fn as_str(&self) -> &str {
         match self {
             Self::Invite => "INVITE",

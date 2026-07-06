@@ -56,6 +56,34 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
 /// Returns `Err` only when the data is clearly not a SIP message (e.g.,
 /// binary garbage, no valid first line). Partial SIP messages produce `Ok`
 /// with `parse_error` set.
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::net::TransportProto;
+/// use sipnab::sip::parser::parse_sip;
+/// use std::net::{IpAddr, Ipv4Addr};
+///
+/// let raw = b"INVITE sip:bob@example.com SIP/2.0\r\n\
+///     Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1\r\n\
+///     From: \"Alice\" <sip:alice@example.com>;tag=a1\r\n\
+///     To: <sip:bob@example.com>\r\n\
+///     Call-ID: demo@example.com\r\n\
+///     CSeq: 1 INVITE\r\n\
+///     Content-Length: 0\r\n\r\n";
+/// let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+/// let msg = parse_sip(raw, chrono::Utc::now(), ip, ip, 5060, 5060, TransportProto::Udp)?;
+/// assert!(msg.is_request);
+/// assert_eq!(msg.call_id(), Some("demo@example.com"));
+/// assert_eq!(msg.from_user().as_deref(), Some("alice"));
+///
+/// // Non-SIP input is a matchable ParseError, not message text:
+/// use sipnab::ParseError;
+/// let err = parse_sip(b"GET / HTTP/1.1\r\n\r\n", chrono::Utc::now(), ip, ip, 80, 80,
+///     TransportProto::Tcp).unwrap_err();
+/// assert!(matches!(err, ParseError::NotSip { .. }));
+/// # Ok::<(), sipnab::ParseError>(())
+/// ```
 #[must_use = "parsing result must be handled"]
 pub fn parse_sip(
     data: &[u8],

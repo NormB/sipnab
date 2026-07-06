@@ -100,6 +100,22 @@ pub struct SdpCrypto {
 /// [`ParseError::Empty`] for an empty body, [`ParseError::InvalidUtf8`]
 /// for non-UTF-8 bytes, [`ParseError::SdpMissingVersion`] /
 /// [`ParseError::BadSdpVersion`] for a missing or non-zero `v=` line.
+///
+/// # Examples
+///
+/// ```
+/// let sdp = sipnab::sip::sdp::parse_sdp(
+///     b"v=0\r\n\
+///       c=IN IP4 10.0.0.2\r\n\
+///       m=audio 49170 RTP/AVP 0\r\n\
+///       a=rtpmap:0 PCMU/8000\r\n",
+/// )?;
+/// assert_eq!(sdp.media.len(), 1);
+/// assert_eq!(sdp.media[0].media_type, "audio");
+/// assert_eq!(sdp.media[0].port, 49170);
+/// assert_eq!(sdp.media[0].rtpmap[0].encoding, "PCMU");
+/// # Ok::<(), sipnab::ParseError>(())
+/// ```
 pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
     if body.is_empty() {
         return Err(ParseError::Empty { what: "SDP body" });
