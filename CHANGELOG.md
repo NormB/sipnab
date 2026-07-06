@@ -4,6 +4,26 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added — activated the dormant fuzzing & property-test safety nets (WS7)
+
+The 11 compile-only libFuzzer targets now actually run on a schedule,
+four new targets cover untrusted-input surfaces that had none, and
+three proptest properties assert semantic invariants the fuzzers can't:
+
+- **Weekly `Fuzz` workflow** (`.github/workflows/fuzz.yml`): a 15-target
+  matrix runs each libFuzzer target (default 300s, configurable via
+  `workflow_dispatch`) on nightly, primed from the tracked seed corpora,
+  uploading any crash/timeout reproducer as an artifact. CI's existing
+  `fuzz-check` still compile-checks the targets on every push.
+- **New fuzz targets** for the untrusted-input surfaces that lacked one:
+  the pure-Rust pcap/pcapng reader (`sipnab -I hostile.pcapng`), the
+  DTLS-SRTP handshake observer, TCP stream reassembly (structured
+  segment interleavings), and the hand-rolled SIPREC XML scanner.
+- **Property tests** (`tests/property_test.rs`, proptest): SIP
+  build→parse field round-trip, SDP build→parse→rebuild stability, and
+  the filter DSL as a total function on arbitrary text (parse + evaluate
+  never panic).
+
 ### Changed — **BREAKING (library API, 0.5.0)**: typed errors for the crate-root parse/capture surface (WS6.1)
 
 The functions and types re-exported at the crate root no longer return

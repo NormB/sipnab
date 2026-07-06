@@ -1,0 +1,7 @@
+# cargo-fuzz build output
+/target
+# Crash/timeout reproducers (uploaded as CI artifacts, not committed)
+/artifacts
+# cargo-fuzz's auto-grown working corpora (bin-name prefixed). Only the
+# small hand-authored seed dirs (fuzz/corpus/<parser>/) are tracked.
+/corpus/fuzz_*

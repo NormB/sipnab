@@ -16,6 +16,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 sipnab = { path = "..", default-features = false, features = ["native", "hep", "tls"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+bytes = "1"
 
 [[bin]]
 name = "fuzz_sip_parser"
@@ -60,3 +61,19 @@ path = "fuzz_targets/srtp_keys.rs"
 [[bin]]
 name = "fuzz_keylog_line"
 path = "fuzz_targets/keylog_line.rs"
+
+[[bin]]
+name = "fuzz_pcap_reader"
+path = "fuzz_targets/pcap_reader.rs"
+
+[[bin]]
+name = "fuzz_dtls"
+path = "fuzz_targets/dtls.rs"
+
+[[bin]]
+name = "fuzz_tcp_reassembly"
+path = "fuzz_targets/tcp_reassembly.rs"
+
+[[bin]]
+name = "fuzz_siprec"
+path = "fuzz_targets/siprec.rs"

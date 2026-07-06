@@ -1,0 +1,73 @@
+name: Fuzz
+
+# Weekly libFuzzer run of every target. CI already compile-checks the
+# targets on each push (ci.yml `fuzz-check`); this workflow actually
+# *runs* them — the highest-value dormant asset for a privileged parser
+# of hostile traffic. Any crash/timeout reproducer is uploaded as an
+# artifact (never committed) so it can be minimized and turned into a
+# regression seed.
+on:
+  schedule:
+    # Mondays 05:17 UTC (off the top of the hour to dodge scheduler spikes).
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      max_total_time:
+        description: "Seconds to run each target"
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - fuzz_sip_parser
+          - fuzz_sdp_parser
+          - fuzz_rtp_parser
+          - fuzz_rtcp_parser
+          - fuzz_hep_parser
+          - fuzz_filter_dsl
+          - fuzz_websocket_frame
+          - fuzz_tls_records
+          - fuzz_stir_shaken
+          - fuzz_srtp_keys
+          - fuzz_keylog_line
+          - fuzz_pcap_reader
+          - fuzz_dtls
+          - fuzz_tcp_reassembly
+          - fuzz_siprec
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install libpcap
+        run: sudo apt-get update || true; sudo apt-get install -y libpcap-dev
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: Run ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          MAX_TOTAL_TIME: ${{ github.event.inputs.max_total_time || '300' }}
+        shell: bash
+        run: |
+          # The target's parser name (bin without the fuzz_ prefix) is the
+          # tracked seed-corpus dir; pass it so hand-authored seeds prime
+          # the run. Missing dir is fine — cargo-fuzz just skips it.
+          seed="fuzz/corpus/${TARGET#fuzz_}"
+          seed_args=""
+          [ -d "$seed" ] && seed_args="$seed"
+          cargo fuzz run "$TARGET" $seed_args -- \
+            -max_total_time="$MAX_TOTAL_TIME" -print_final_stats=1
+      - name: Upload crash reproducers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
