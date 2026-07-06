@@ -1,0 +1,1 @@
+<?xml version="1.0"?><recording xmlns="urn:ietf:params:xml:ns:recording:1"><participant participant_id="p1"><nameID aor="sip:alice@x"/></participant><stream stream_id="s1" session_id="c1"><label>audio</label></stream></recording>
