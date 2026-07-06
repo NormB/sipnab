@@ -69,6 +69,8 @@ pub struct DialogStore {
     /// (DialogStore::compact_idle) — observability for long-run memory
     /// behaviour.
     idle_messages_evicted: u64,
+    /// Mutation counter for cache invalidation — see [`Self::generation`].
+    generation: u64,
 }
 
 /// A dialog idle longer than this has its stored messages compacted.
@@ -112,7 +114,17 @@ impl DialogStore {
             max_dialogs,
             rotate,
             idle_messages_evicted: 0,
+            generation: 0,
         }
+    }
+
+    /// Monotonic mutation counter: bumped by every operation that can
+    /// change what an observer would derive from the store (new dialog,
+    /// in-place message, merge, clear, retain, idle compaction, and any
+    /// `get_mut` hand-out). The TUI keys its per-frame displayed-dialogs
+    /// cache on this, so staleness is impossible by construction.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Compact dialogs that have been idle longer than
@@ -125,6 +137,7 @@ impl DialogStore {
     /// a compacted dialog is skipped until it grows past the keep limit
     /// again.
     pub fn compact_idle(&mut self, now: chrono::DateTime<chrono::Utc>) -> CompactStats {
+        self.generation += 1;
         let mut stats = CompactStats::default();
         for dialog in self.dialogs.values_mut() {
             if now - dialog.updated_at <= IDLE_COMPACT_AFTER {
@@ -164,6 +177,7 @@ impl DialogStore {
     ///
     /// Messages without a Call-ID header are silently dropped.
     pub fn process_message(&mut self, mut msg: SipMessage) {
+        self.generation += 1;
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
         // IndexMap); the owned key is allocated only when a new dialog is
         // actually inserted — not once per message on the hot path.
@@ -277,6 +291,7 @@ impl DialogStore {
 
     /// Look up a dialog by Call-ID, returning a mutable reference.
     pub fn get_mut(&mut self, call_id: &str) -> Option<&mut SipDialog> {
+        self.generation += 1;
         self.dialogs.get_mut(call_id)
     }
 
@@ -291,6 +306,7 @@ impl DialogStore {
     /// appears on two workers (signaling split across host pairs), keep the more
     /// complete reconstruction (more messages seen).
     pub fn merge(&mut self, other: DialogStore) {
+        self.generation += 1;
         for (cid, dialog) in other.dialogs {
             match self.dialogs.get(&cid) {
                 Some(existing) if existing.messages.len() >= dialog.messages.len() => {}
@@ -314,6 +330,7 @@ impl DialogStore {
 
     /// Remove all dialogs from the store.
     pub fn clear(&mut self) {
+        self.generation += 1;
         self.dialogs.clear();
     }
 
@@ -322,6 +339,7 @@ impl DialogStore {
     where
         F: Fn(&SipDialog) -> bool,
     {
+        self.generation += 1;
         self.dialogs.retain(|_, d| predicate(d));
     }
 
@@ -1857,5 +1875,32 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert_eq!(metadata.participants[0].name.as_deref(), Some("Alice"));
         assert_eq!(metadata.streams.len(), 1);
         assert_eq!(metadata.streams[0].label.as_deref(), Some("audio"));
+    }
+    /// The generation counter is the cache-invalidation signal for the
+    /// per-frame displayed-dialogs cache: EVERY mutation — new dialog,
+    /// in-place message on an existing dialog, clear, retain — must bump
+    /// it, or the TUI would render stale rows.
+    #[test]
+    fn generation_bumps_on_every_mutation() {
+        let t0 = base_ts();
+        let mut store = DialogStore::new(10, false);
+        let g0 = store.generation();
+
+        store.process_message(make_invite_msg("gen-1@test", t0));
+        let g1 = store.generation();
+        assert!(g1 > g0, "new dialog must bump the generation");
+
+        // An in-place update (no len() change) must bump too — this is the
+        // case a len()-keyed cache would miss.
+        store.process_message(make_200_ok("gen-1@test", t0));
+        let g2 = store.generation();
+        assert!(g2 > g1, "in-place message must bump the generation");
+
+        store.retain(|d| d.call_id != "no-such");
+        let g3 = store.generation();
+        assert!(g3 > g2, "retain must bump the generation");
+
+        store.clear();
+        assert!(store.generation() > g3, "clear must bump the generation");
     }
 }

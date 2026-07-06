@@ -886,3 +886,27 @@ pub enum Popup {
     /// "Name Address" popup: map the selected IP to a host/FQDN.
     NameAddress,
 }
+
+/// Key identifying one exact displayed-dialog derivation: if every field
+/// matches, the cached row order is still valid.
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::tui) struct DisplayedKey {
+    /// [`crate::sip::dialog_store::DialogStore::generation`] at derivation.
+    pub(in crate::tui) generation: u64,
+    /// Human-readable active-filter text (uniquely describes the filter).
+    pub(in crate::tui) filter_text: String,
+    pub(in crate::tui) query: String,
+    pub(in crate::tui) sort_column: crate::tui::call_list::SortColumn,
+    pub(in crate::tui) sort_ascending: bool,
+}
+
+/// Cross-tick cache of the displayed dialog list (filter + search + sort):
+/// derived at most once per tick by `App::sync_caches`, reused by the
+/// status-bar counts, autoscroll and the render pass — and reused across
+/// ticks entirely while the store generation and view inputs are unchanged.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct DisplayedCache {
+    pub(in crate::tui) key: Option<DisplayedKey>,
+    /// Call-IDs in display order.
+    pub(in crate::tui) ids: Vec<String>,
+}
