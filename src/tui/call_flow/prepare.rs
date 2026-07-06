@@ -40,7 +40,9 @@ pub fn delta_style(delta_ms: i64, theme: &Theme) -> Style {
 /// Prepare formatted messages from a dialog's SIP messages.
 ///
 /// Applies all display modes (SDP, timestamp, color, RTP) and returns
-/// a list of `Participant`s and `FormattedMessage`s.
+/// a list of `Participant`s and `FormattedMessage`s. Composed of the two
+/// split stages: theme-free [`layout`] (the expensive, cacheable part)
+/// followed by [`style`] (cheap per-frame theming + selection).
 pub fn prepare_messages(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
@@ -48,13 +50,174 @@ pub fn prepare_messages(
     opts: &FlowDisplayOptions<'_>,
     fold_expanded: &HashSet<usize>,
 ) -> (Vec<Participant>, Vec<FormattedMessage>) {
+    let (participants, rows) = layout(
+        messages,
+        first_ts,
+        pdd_ms,
+        &LayoutOptions::from(opts),
+        fold_expanded,
+    );
+    let styled = style(&rows, &StyleOptions::from(opts));
+    (participants, styled)
+}
+
+/// Theme-free inputs to [`layout`] — everything that shapes which rows
+/// exist and their text. Anything here changing invalidates a cached
+/// layout; anything in [`StyleOptions`] does not.
+#[derive(Debug, Clone)]
+pub struct LayoutOptions<'a> {
+    pub sdp_mode: SdpDisplayMode,
+    pub ts_mode: TimestampMode,
+    pub show_rtp: bool,
+    pub resolver: &'a crate::names::NameResolver,
+    pub name_mode: crate::names::NameMode,
+    pub rtp_segments: &'a [RtpCodecSegment],
+}
+
+impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
+    fn from(o: &FlowDisplayOptions<'a>) -> Self {
+        Self {
+            sdp_mode: o.sdp_mode,
+            ts_mode: o.ts_mode,
+            show_rtp: o.show_rtp,
+            resolver: o.resolver,
+            name_mode: o.name_mode,
+            rtp_segments: o.rtp_segments,
+        }
+    }
+}
+
+/// Presentation-only inputs to [`style`]: theming, arrow color mode and
+/// the current selection. Varying these re-styles a cached layout without
+/// recomputing it.
+#[derive(Debug, Clone)]
+pub struct StyleOptions<'a> {
+    pub color_mode: ColorMode,
+    pub selected_msg: Option<usize>,
+    pub theme: &'a Theme,
+}
+
+impl<'a> From<&FlowDisplayOptions<'a>> for StyleOptions<'a> {
+    fn from(o: &FlowDisplayOptions<'a>) -> Self {
+        Self {
+            color_mode: o.color_mode,
+            selected_msg: o.selected_msg,
+            theme: o.theme,
+        }
+    }
+}
+
+/// Theme-free semantic class of a SIP message, derived once in [`layout`];
+/// [`class_style`] maps it to concrete colors in [`style`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageClass {
+    /// INVITE / SUBSCRIBE (session-creating).
+    SessionRequest,
+    /// BYE / CANCEL (teardown).
+    TeardownRequest,
+    /// ACK / PRACK.
+    AckRequest,
+    /// REGISTER / OPTIONS.
+    RegisterRequest,
+    /// Any other request.
+    OtherRequest,
+    /// 1xx response.
+    Provisional,
+    /// 2xx response.
+    Success,
+    /// 3xx response.
+    Redirect,
+    /// 4xx response.
+    ClientError,
+    /// 5xx/6xx response.
+    ServerError,
+    /// Anything else (e.g. an unparseable status).
+    Other,
+}
+
+/// What a ladder row is, carrying the theme-free style inputs [`style`]
+/// needs to color its arrow under every [`ColorMode`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowKind {
+    /// A real SIP message row.
+    Message {
+        /// Semantic class for `ColorMode::Method` coloring.
+        class: MessageClass,
+        /// Precomputed Call-ID byte-sum index into the rotation palette
+        /// (`ColorMode::CallId`).
+        cid_idx: usize,
+        /// Precomputed CSeq-number index into the rotation palette
+        /// (`ColorMode::CSeq`).
+        cseq_idx: usize,
+    },
+    /// A synthetic RTP-in-flow channel bar.
+    RtpBar,
+    /// A synthetic time-proportional spacer row (Scaled mode).
+    Spacer,
+}
+
+/// Theme-free style class of a row's timestamp column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TsClass {
+    /// Absolute-mode message timestamp (muted).
+    Muted,
+    /// Absolute-mode RTP-bar timestamp (accent).
+    Accent,
+    /// Delta-mode timestamp; the magnitude drives [`delta_style`].
+    Delta(i64),
+    /// Spacer row (muted + dim, same as its arrow style).
+    SpacerDim,
+}
+
+/// One ladder row as produced by [`layout`]: every string and structural
+/// decision made, no colors chosen. The cacheable half of a prepared
+/// ladder — see [`FormattedMessage`] for the field semantics it maps onto.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayoutRow {
+    pub timestamp: String,
+    pub ts_class: TsClass,
+    pub label: String,
+    pub kind: RowKind,
+    pub src_col: usize,
+    pub dst_col: usize,
+    pub pdd_note: Option<String>,
+    /// SDP info line texts; styled muted+italic by [`style`].
+    pub extra_lines: Vec<String>,
+    pub call_id: String,
+    pub is_response: bool,
+    pub raw_timestamp: chrono::DateTime<chrono::Utc>,
+    pub folded_count: usize,
+    pub fold_label: Option<String>,
+    pub sdp_badge: Option<String>,
+    pub is_retransmission: bool,
+    pub raw_index: Option<usize>,
+}
+
+/// The arrow color rotation used by `ColorMode::CallId` / `ColorMode::CSeq`.
+const CID_COLORS: [Color; 6] = [
+    Color::Green,
+    Color::Blue,
+    Color::Yellow,
+    Color::Magenta,
+    Color::Cyan,
+    Color::Red,
+];
+
+/// Lay out a dialog's ladder: participants, row order (folding, RTP bars,
+/// Scaled-mode spacers), timestamp/label/SDP texts — everything except
+/// colors and selection, which [`style`] applies. Pure and theme-free, so
+/// the result is cacheable across frames.
+pub fn layout(
+    messages: &[SipMessage],
+    first_ts: chrono::DateTime<chrono::Utc>,
+    pdd_ms: Option<i64>,
+    opts: &LayoutOptions<'_>,
+    fold_expanded: &HashSet<usize>,
+) -> (Vec<Participant>, Vec<LayoutRow>) {
     let sdp_mode = opts.sdp_mode;
     let ts_mode = opts.ts_mode;
-    let color_mode = opts.color_mode;
     let show_rtp = opts.show_rtp;
     let rtp_segments = opts.rtp_segments;
-    let selected_msg = opts.selected_msg;
-    let theme = opts.theme;
     if messages.is_empty() {
         return (Vec::new(), Vec::new());
     }
@@ -89,15 +252,6 @@ pub fn prepare_messages(
 
     let ts_width = TS_COL_WIDTH;
 
-    let cid_colors = [
-        Color::Green,
-        Color::Blue,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Cyan,
-        Color::Red,
-    ];
-
     let mut pdd_done = false;
     let mut in_call = false;
     // Negotiated codec from the most recent INVITE 200 OK answer (single,
@@ -116,14 +270,14 @@ pub fn prepare_messages(
         // early-media probe, and both codec lookups below all need it, and
         // `SipMessage::sdp()` re-parses the body on every call.
         let msg_sdp = msg.sdp();
-        let (timestamp, timestamp_style) = match ts_mode {
+        let (timestamp, ts_class) = match ts_mode {
             TimestampMode::Absolute => {
                 let ts_str = format!(
                     "{:<width$}",
                     msg.timestamp.format("%H:%M:%S%.3f"),
                     width = ts_width
                 );
-                (ts_str, Style::default().fg(theme.muted))
+                (ts_str, TsClass::Muted)
             }
             TimestampMode::DeltaPrev => {
                 let d = msg
@@ -135,9 +289,8 @@ pub fn prepare_messages(
                     format!("+{:.3}s", d as f64 / 1000.0),
                     width = ts_width - 1
                 ) + " ";
-                let sty = delta_style(d, theme);
                 prev_ts = msg.timestamp;
-                (ts_str, sty)
+                (ts_str, TsClass::Delta(d))
             }
             TimestampMode::DeltaFirst => {
                 let d = msg
@@ -149,8 +302,7 @@ pub fn prepare_messages(
                     format!("+{:.3}s", d as f64 / 1000.0),
                     width = ts_width - 1
                 ) + " ";
-                let sty = delta_style(d, theme);
-                (ts_str, sty)
+                (ts_str, TsClass::Delta(d))
             }
             TimestampMode::Scaled => {
                 let d = msg
@@ -162,31 +314,26 @@ pub fn prepare_messages(
                     format!("+{:.3}s", d as f64 / 1000.0),
                     width = ts_width - 1
                 ) + " ";
-                let sty = delta_style(d, theme);
                 prev_ts = msg.timestamp;
-                (ts_str, sty)
+                (ts_str, TsClass::Delta(d))
             }
         };
 
         let label = format_message_label(msg);
 
-        let sty = match color_mode {
-            ColorMode::Method => message_style(msg, theme),
-            ColorMode::CallId => {
-                let ci = msg.call_id().unwrap_or("");
-                let i =
-                    ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % cid_colors.len();
-                Style::default().fg(cid_colors[i])
-            }
-            ColorMode::CSeq => {
-                let cn = msg.cseq().map(|(n, _)| n).unwrap_or(0);
-                Style::default().fg(cid_colors[(cn as usize) % cid_colors.len()])
-            }
+        // Arrow coloring is applied in style(); here only its theme-free
+        // inputs are derived (class + palette indices). Selection is
+        // assigned there too, after folding, over visible rows.
+        let kind = RowKind::Message {
+            class: classify_message(msg),
+            cid_idx: msg
+                .call_id()
+                .unwrap_or("")
+                .bytes()
+                .fold(0usize, |a, b| a.wrapping_add(b as usize))
+                % CID_COLORS.len(),
+            cseq_idx: msg.cseq().map(|(n, _)| n).unwrap_or(0) as usize % CID_COLORS.len(),
         };
-
-        // Selection is assigned after folding, over visible rows — see the
-        // post-pass at the end of this function.
-        let style = sty;
 
         let src_addr = format!("{}:{}", msg.src_addr, msg.src_port);
         let dst_addr = format!("{}:{}", msg.dst_addr, msg.dst_port);
@@ -211,7 +358,7 @@ pub fn prepare_messages(
 
         let mut extra_lines = Vec::new();
 
-        // SDP info lines
+        // SDP info lines (text only; style() renders them muted+italic)
         if sdp_mode != SdpDisplayMode::None
             && let Some(ss) = msg_sdp.as_ref()
         {
@@ -220,23 +367,13 @@ pub fn prepare_messages(
                 SdpDisplayMode::Summary => {
                     let c = format_sdp_codecs(ss);
                     if !c.is_empty() {
-                        extra_lines.push((
-                            format!("{ind} Codecs: {c}"),
-                            Style::default()
-                                .fg(theme.muted)
-                                .add_modifier(Modifier::ITALIC),
-                        ));
+                        extra_lines.push(format!("{ind} Codecs: {c}"));
                     }
                 }
                 SdpDisplayMode::Full => {
                     let bt = String::from_utf8_lossy(&msg.body);
                     for sl in bt.lines() {
-                        extra_lines.push((
-                            format!("{ind}  {sl}"),
-                            Style::default()
-                                .fg(theme.muted)
-                                .add_modifier(Modifier::ITALIC),
-                        ));
+                        extra_lines.push(format!("{ind}  {sl}"));
                     }
                 }
                 SdpDisplayMode::None => {}
@@ -307,40 +444,36 @@ pub fn prepare_messages(
             }
         }
 
-        result.push(FormattedMessage {
+        result.push(LayoutRow {
             timestamp,
-            timestamp_style,
+            ts_class,
             label,
-            style,
+            kind,
             src_col,
             dst_col,
             pdd_note,
             extra_lines,
-            selected: false,
             call_id: msg.call_id().unwrap_or("").to_string(),
-            selection_state: SelectionState::Normal,
             is_response: !msg.is_request,
             raw_timestamp: msg.timestamp,
             folded_count: 0,
             fold_label: None,
-            is_spacer: false,
             sdp_badge: None,
             is_retransmission: msg.is_retransmission,
-            is_rtp_bar: false,
             raw_index: Some(mi),
         });
 
         // Push the deferred RTP bar as a separate selectable entry
         if let Some((rtp_ts, rtp_label)) = deferred_rtp_bar.take() {
             // Format timestamp using the same mode as all other messages
-            let (rtp_timestamp, rtp_ts_style) = match ts_mode {
+            let (rtp_timestamp, rtp_ts_class) = match ts_mode {
                 TimestampMode::Absolute => {
                     let s = format!(
                         "{:<width$}",
                         rtp_ts.format("%H:%M:%S%.3f"),
                         width = ts_width
                     );
-                    (s, Style::default().fg(theme.accent))
+                    (s, TsClass::Accent)
                 }
                 TimestampMode::DeltaPrev => {
                     let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
@@ -350,7 +483,7 @@ pub fn prepare_messages(
                         width = ts_width - 1
                     ) + " ";
                     prev_ts = rtp_ts;
-                    (s, delta_style(d, theme))
+                    (s, TsClass::Delta(d))
                 }
                 TimestampMode::DeltaFirst => {
                     let d = rtp_ts.signed_duration_since(first_ts).num_milliseconds();
@@ -359,7 +492,7 @@ pub fn prepare_messages(
                         format!("+{:.3}s", d as f64 / 1000.0),
                         width = ts_width - 1
                     ) + " ";
-                    (s, delta_style(d, theme))
+                    (s, TsClass::Delta(d))
                 }
                 TimestampMode::Scaled => {
                     let d = rtp_ts.signed_duration_since(prev_ts).num_milliseconds();
@@ -369,29 +502,25 @@ pub fn prepare_messages(
                         width = ts_width - 1
                     ) + " ";
                     prev_ts = rtp_ts;
-                    (s, delta_style(d, theme))
+                    (s, TsClass::Delta(d))
                 }
             };
-            result.push(FormattedMessage {
+            result.push(LayoutRow {
                 timestamp: rtp_timestamp,
-                timestamp_style: rtp_ts_style,
+                ts_class: rtp_ts_class,
                 label: rtp_label,
-                style: Style::default().fg(theme.accent),
+                kind: RowKind::RtpBar,
                 src_col: 0,
                 dst_col: 0,
                 pdd_note: None,
                 extra_lines: vec![],
-                selected: false,
                 call_id: msg.call_id().unwrap_or("").to_string(),
-                selection_state: SelectionState::Normal,
                 is_response: false,
                 raw_timestamp: rtp_ts,
                 folded_count: 0,
                 fold_label: None,
-                is_spacer: false,
                 sdp_badge: None,
                 is_retransmission: false,
-                is_rtp_bar: true,
                 raw_index: None,
             });
         }
@@ -463,7 +592,6 @@ pub fn prepare_messages(
 
     // ── Time-proportional spacer insertion (Feature 6) ─────────────
     if ts_mode == TimestampMode::Scaled && result.len() >= 2 {
-        let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
         let mut scaled = Vec::with_capacity(result.len() * 2);
         let mut drain = result.into_iter();
         if let Some(first) = drain.next() {
@@ -491,26 +619,22 @@ pub fn prepare_messages(
                     } else {
                         " ".repeat(ts_width)
                     };
-                    scaled.push(FormattedMessage {
+                    scaled.push(LayoutRow {
                         timestamp: spacer_ts,
-                        timestamp_style: spacer_style,
+                        ts_class: TsClass::SpacerDim,
                         label: String::new(),
-                        style: spacer_style,
+                        kind: RowKind::Spacer,
                         src_col: 0,
                         dst_col: 0,
                         pdd_note: None,
                         extra_lines: Vec::new(),
-                        selected: false,
                         call_id: String::new(),
-                        selection_state: SelectionState::Normal,
                         is_response: false,
                         raw_timestamp: prev_ts_raw,
                         folded_count: 0,
                         fold_label: None,
-                        is_spacer: true,
                         sdp_badge: None,
                         is_retransmission: false,
-                        is_rtp_bar: false,
                         raw_index: None,
                     });
                 }
@@ -521,12 +645,77 @@ pub fn prepare_messages(
         result = scaled;
     }
 
+    (participants, result)
+}
+
+/// Style a laid-out ladder: map each [`LayoutRow`] to a [`FormattedMessage`]
+/// by choosing concrete colors (theme + [`ColorMode`]) and assigning the
+/// selection highlight. Cheap and pure — safe to re-run every frame over a
+/// cached layout.
+pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessage> {
+    let theme = opts.theme;
+    let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
+    let sdp_line_style = Style::default()
+        .fg(theme.muted)
+        .add_modifier(Modifier::ITALIC);
+
+    let mut result: Vec<FormattedMessage> = rows
+        .iter()
+        .map(|row| {
+            let timestamp_style = match row.ts_class {
+                TsClass::Muted => Style::default().fg(theme.muted),
+                TsClass::Accent => Style::default().fg(theme.accent),
+                TsClass::Delta(d) => delta_style(d, theme),
+                TsClass::SpacerDim => spacer_style,
+            };
+            let style = match &row.kind {
+                RowKind::Spacer => spacer_style,
+                RowKind::RtpBar => Style::default().fg(theme.accent),
+                RowKind::Message {
+                    class,
+                    cid_idx,
+                    cseq_idx,
+                } => match opts.color_mode {
+                    ColorMode::Method => class_style(*class, theme),
+                    ColorMode::CallId => Style::default().fg(CID_COLORS[*cid_idx]),
+                    ColorMode::CSeq => Style::default().fg(CID_COLORS[*cseq_idx]),
+                },
+            };
+            FormattedMessage {
+                timestamp: row.timestamp.clone(),
+                timestamp_style,
+                label: row.label.clone(),
+                style,
+                src_col: row.src_col,
+                dst_col: row.dst_col,
+                pdd_note: row.pdd_note.clone(),
+                extra_lines: row
+                    .extra_lines
+                    .iter()
+                    .map(|l| (l.clone(), sdp_line_style))
+                    .collect(),
+                selected: false,
+                call_id: row.call_id.clone(),
+                selection_state: SelectionState::Normal,
+                is_response: row.is_response,
+                raw_timestamp: row.raw_timestamp,
+                folded_count: row.folded_count,
+                fold_label: row.fold_label.clone(),
+                is_spacer: row.kind == RowKind::Spacer,
+                sdp_badge: row.sdp_badge.clone(),
+                is_retransmission: row.is_retransmission,
+                is_rtp_bar: row.kind == RowKind::RtpBar,
+                raw_index: row.raw_index,
+            }
+        })
+        .collect();
+
     // ── Selection: assign over VISIBLE rows ────────────────────────
     // `selected_msg` is the index the user navigated to among rendered,
     // non-spacer rows (post-fold), so highlighting always matches what the
     // keys move over, in every timestamp mode. Rows sharing the selected
     // message's endpoint pair are marked Related (same leg).
-    if let Some(sel) = selected_msg {
+    if let Some(sel) = opts.selected_msg {
         let mut sel_pair: Option<(usize, usize)> = None;
         let mut vis = 0usize;
         for fm in result.iter_mut() {
@@ -557,7 +746,7 @@ pub fn prepare_messages(
         }
     }
 
-    (participants, result)
+    result
 }
 
 /// Extract a list of codec names from an SDP session.
@@ -586,7 +775,7 @@ fn extract_codec_list(session: &sdp::SdpSession) -> Vec<String> {
     codecs
 }
 
-/// Fold retransmissions and auth retry sequences in the formatted message list.
+/// Fold retransmissions and auth retry sequences in the laid-out row list.
 ///
 /// - **Retransmit folding**: consecutive messages with `is_retransmission == true`
 ///   are collapsed into the original message with a count badge, unless the fold
@@ -595,16 +784,16 @@ fn extract_codec_list(session: &sdp::SdpSession) -> Vec<String> {
 ///   are collapsed into a single row, unless expanded.
 fn fold_messages(
     raw_msgs: &[SipMessage],
-    formatted: Vec<FormattedMessage>,
+    formatted: Vec<LayoutRow>,
     fold_expanded: &HashSet<usize>,
-) -> Vec<FormattedMessage> {
+) -> Vec<LayoutRow> {
     if formatted.is_empty() {
         return formatted;
     }
 
-    let mut result: Vec<FormattedMessage> = Vec::with_capacity(formatted.len());
+    let mut result: Vec<LayoutRow> = Vec::with_capacity(formatted.len());
     // Own the elements so we can move them selectively
-    let mut source: Vec<Option<FormattedMessage>> = formatted.into_iter().map(Some).collect();
+    let mut source: Vec<Option<LayoutRow>> = formatted.into_iter().map(Some).collect();
     let mut i = 0;
 
     while i < source.len() {
@@ -790,33 +979,57 @@ pub fn format_message_label(msg: &SipMessage) -> String {
     }
 }
 
-/// Choose a style based on message type with semantic colors.
+/// Derive the theme-free [`MessageClass`] of a message — the layout-stage
+/// half of [`message_style`].
+pub fn classify_message(msg: &SipMessage) -> MessageClass {
+    if msg.is_request {
+        let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("");
+        match method {
+            "INVITE" | "SUBSCRIBE" => MessageClass::SessionRequest,
+            "BYE" | "CANCEL" => MessageClass::TeardownRequest,
+            "ACK" | "PRACK" => MessageClass::AckRequest,
+            "REGISTER" | "OPTIONS" => MessageClass::RegisterRequest,
+            _ => MessageClass::OtherRequest,
+        }
+    } else {
+        let code = msg.status_code.unwrap_or(0);
+        match code {
+            100..=199 => MessageClass::Provisional,
+            200..=299 => MessageClass::Success,
+            300..=399 => MessageClass::Redirect,
+            400..=499 => MessageClass::ClientError,
+            500..=699 => MessageClass::ServerError,
+            _ => MessageClass::Other,
+        }
+    }
+}
+
+/// Map a [`MessageClass`] to its semantic color — the style-stage half of
+/// [`message_style`].
 ///
 /// Requests: teal for session-creating (INVITE/SUBSCRIBE), coral for teardown
 /// (BYE/CANCEL), gray for acks, blue for registration/options.
 /// Responses: amber for provisional, green for success, yellow for redirect,
 /// orange for client error, bold red for server error.
-pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
-    if msg.is_request {
-        let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("");
-        match method {
-            "INVITE" | "SUBSCRIBE" => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
-            "BYE" | "CANCEL" => Style::default().fg(Color::Rgb(215, 95, 95)),        // Coral
-            "ACK" | "PRACK" => Style::default().fg(theme.muted),                     // Gray
-            "REGISTER" | "OPTIONS" => Style::default().fg(Color::Rgb(95, 135, 215)), // Blue
-            _ => Style::default().fg(theme.foreground),
-        }
-    } else {
-        let code = msg.status_code.unwrap_or(0);
-        match code {
-            100..=199 => Style::default().fg(Color::Rgb(215, 175, 95)), // Amber (provisional)
-            200..=299 => Style::default().fg(theme.good),               // Green (success)
-            300..=399 => Style::default().fg(theme.warning),            // Yellow (redirect)
-            400..=499 => Style::default().fg(Color::Rgb(215, 135, 0)),  // Orange (client error)
-            500..=699 => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD), // Red (server error)
-            _ => Style::default().fg(theme.foreground),
-        }
+pub fn class_style(class: MessageClass, theme: &Theme) -> Style {
+    match class {
+        MessageClass::SessionRequest => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
+        MessageClass::TeardownRequest => Style::default().fg(Color::Rgb(215, 95, 95)), // Coral
+        MessageClass::AckRequest => Style::default().fg(theme.muted),                  // Gray
+        MessageClass::RegisterRequest => Style::default().fg(Color::Rgb(95, 135, 215)), // Blue
+        MessageClass::Provisional => Style::default().fg(Color::Rgb(215, 175, 95)),    // Amber
+        MessageClass::Success => Style::default().fg(theme.good),                      // Green
+        MessageClass::Redirect => Style::default().fg(theme.warning),                  // Yellow
+        MessageClass::ClientError => Style::default().fg(Color::Rgb(215, 135, 0)),     // Orange
+        MessageClass::ServerError => Style::default().fg(theme.bad).add_modifier(Modifier::BOLD),
+        MessageClass::OtherRequest | MessageClass::Other => Style::default().fg(theme.foreground),
     }
+}
+
+/// Choose a style based on message type with semantic colors — see
+/// [`class_style`] for the palette.
+pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
+    class_style(classify_message(msg), theme)
 }
 
 /// The bare text for an RTP-in-flow channel bar, e.g. ` RTP · PCMU ` (or ` RTP `
@@ -2268,6 +2481,104 @@ mod tests {
             assert_eq!(sp.style.fg, Some(theme.muted));
             assert!(sp.style.add_modifier.contains(Modifier::DIM));
             assert_eq!(sp.timestamp_style, sp.style);
+        }
+    }
+
+    // ── WS5f layout/style split ──────────────────────────────────────
+
+    /// `layout()` is theme-free and `style()` is pure over (layout rows,
+    /// style inputs): styling ONE cached layout must reproduce the one-shot
+    /// `prepare_messages` output exactly — for every timestamp mode, color
+    /// mode, theme and selection. This is the contract the WS4.3c ladder
+    /// cache stands on: layout computed once, style re-run per frame.
+    #[test]
+    fn style_over_one_layout_reproduces_prepare_messages() {
+        // A scenario touching every styled surface: SDP info lines, an RTP
+        // bar (INVITE/200/ACK with media), a PDD note on the 180, delta
+        // buckets, and a 3s gap for Scaled-mode spacers.
+        let msgs = vec![
+            invite_with_sdp(
+                "split@t",
+                1,
+                "m=audio 5004 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0(),
+            ),
+            response(
+                "split@t",
+                180,
+                "Ringing",
+                1,
+                "INVITE",
+                t0() + TimeDelta::milliseconds(80),
+            ),
+            response_with_sdp(
+                "split@t",
+                200,
+                "OK",
+                1,
+                "INVITE",
+                "m=audio 5006 RTP/AVP 0",
+                &["a=rtpmap:0 PCMU/8000"],
+                t0() + TimeDelta::milliseconds(650),
+            ),
+            ack("split@t", 1, t0() + TimeDelta::milliseconds(700)),
+            bye("split@t", 2, t0() + TimeDelta::seconds(3)),
+        ];
+        let alt = Theme {
+            accent: Color::Rgb(1, 2, 3),
+            muted: Color::Rgb(4, 5, 6),
+            good: Color::Rgb(7, 8, 9),
+            warning: Color::Rgb(10, 11, 12),
+            bad: Color::Rgb(13, 14, 15),
+            foreground: Color::Rgb(16, 17, 18),
+            ..Theme::default()
+        };
+        let themes = [Theme::default(), alt];
+
+        for ts_mode in [
+            TimestampMode::Absolute,
+            TimestampMode::DeltaPrev,
+            TimestampMode::DeltaFirst,
+            TimestampMode::Scaled,
+        ] {
+            // ONE layout per timestamp mode; nothing varied below may
+            // require re-layout.
+            let base = {
+                let mut o = opts(&themes[0]);
+                o.ts_mode = ts_mode;
+                o.sdp_mode = SdpDisplayMode::Summary;
+                o.show_rtp = true;
+                o
+            };
+            let (lp, rows) = layout(
+                &msgs,
+                t0(),
+                Some(80),
+                &LayoutOptions::from(&base),
+                &HashSet::new(),
+            );
+            for theme in &themes {
+                for color_mode in [ColorMode::Method, ColorMode::CallId, ColorMode::CSeq] {
+                    for selected_msg in [None, Some(2)] {
+                        let mut o = opts(theme);
+                        o.ts_mode = ts_mode;
+                        o.sdp_mode = SdpDisplayMode::Summary;
+                        o.show_rtp = true;
+                        o.color_mode = color_mode;
+                        o.selected_msg = selected_msg;
+                        let (pp, full) =
+                            prepare_messages(&msgs, t0(), Some(80), &o, &HashSet::new());
+                        let styled = style(&rows, &StyleOptions::from(&o));
+                        assert_eq!(lp, pp, "participants must match (ts={ts_mode:?})");
+                        assert_eq!(
+                            styled, full,
+                            "style(layout) must equal prepare_messages \
+                             (ts={ts_mode:?} color={color_mode:?} sel={selected_msg:?})"
+                        );
+                    }
+                }
+            }
         }
     }
 

@@ -60,7 +60,8 @@ pub struct FlowDisplayOptions<'a> {
 // Re-export everything that external code uses.
 pub use arrows::truncate;
 pub use prepare::{
-    delta_style, format_message_label, format_sdp_codecs, message_style, prepare_messages,
+    LayoutOptions, LayoutRow, StyleOptions, delta_style, format_message_label, format_sdp_codecs,
+    layout, message_style, prepare_messages, style,
 };
 pub use render::{
     build_call_flow_lines, build_call_flow_lines_with_options, build_call_flow_lines_with_width,
@@ -127,7 +128,7 @@ pub enum SelectionState {
 }
 
 /// A participant (endpoint) in the call flow diagram.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Participant {
     /// Network address "IP:port".
     pub addr: String,
@@ -139,6 +140,7 @@ pub struct Participant {
 ///
 /// Separates data preparation (display modes, color, timestamps) from
 /// the actual buffer painting, keeping the render function simple.
+#[derive(Debug, Clone, PartialEq)]
 pub struct FormattedMessage {
     /// Formatted timestamp string (or empty if hidden).
     pub timestamp: String,
