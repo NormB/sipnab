@@ -62,7 +62,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install it with `apt`, which resolves the `libpcap0.8` runtime dependency automatically:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.4.1
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.0
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -73,10 +73,24 @@ sudo apt install ./sipnab_<version>_arm64.deb
 
 The package installs `/usr/bin/sipnab`, the man page, and a systemd unit, and creates a `sipnab` system user for privilege dropping. On Ubuntu 24.04+ the dependency is satisfied by `libpcap0.8t64`.
 
+The standard package ships the audio playback plugin and therefore *Recommends* `libasound2`, which apt installs by default — pulling the ALSA stack (~500 kB) onto the system. For headless servers, each release also publishes a **`-noaudio`** package with no plugin and no ALSA dependency (everything else — WAV export included — works the same; only live playback in the TUI is unavailable):
+
+```bash
+# amd64 (x86_64), headless / no ALSA
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64-noaudio.deb
+sudo apt install ./sipnab_<version>_amd64-noaudio.deb
+
+# arm64 (aarch64), headless / no ALSA
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64-noaudio.deb
+sudo apt install ./sipnab_<version>_arm64-noaudio.deb
+```
+
+Alternatively, install the standard package with `sudo apt install --no-install-recommends ./sipnab_<version>_amd64.deb` to skip the ALSA packages while keeping the plugin on disk (playback then works as soon as `libasound2` is installed).
+
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-0.4.1-1.x86_64.rpm  # replace 0.4.1 with latest version from releases page
+sudo rpm -i sipnab-0.5.0-1.x86_64.rpm  # replace 0.5.0 with latest version from releases page
 ```
 
 ### Homebrew (macOS)
@@ -116,7 +130,7 @@ sipnab uses Cargo feature flags to control optional functionality. The default b
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required by every other feature except `wasm`.** Included by default. | `pcap`, `clap`, `crossbeam-channel`, `libc`, `pcap-file`, `tracing-subscriber` |
 | `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width` |
-| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Adds a runtime dependency on `libasound.so.2`. | `rodio`, `libc` |
+| `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `aes`, `cbc`, `zeroize` |
 | `hep` | HEP v2/v3 send + receive (Homer Encapsulation Protocol) | `native` |
 | `api` | REST API + Prometheus metrics endpoint (runs in isolated child process) | `native`, `axum`, `tokio` |
@@ -149,13 +163,14 @@ cargo build --release --features full
 
 ### Runtime dependencies
 
-When you build with `--features full` (or `--features audio`), the resulting binary dynamically links `libasound.so.2` and refuses to start if it's missing -- even on a headless server where audio playback is never invoked. On Debian/Ubuntu hosts that means installing the runtime library alongside `libpcap0.8`:
+`libasound.so.2` is an **optional** runtime dependency. The `audio` feature builds a separate plugin, `libsipnab_audio.so`, installed to `/usr/lib/sipnab/` by the `.deb` (or placed next to the binary in dev builds). The `sipnab` binary `dlopen`s this plugin only when you actually play a stream, so an audio-enabled binary starts fine on a host without libasound. If libasound (or the plugin) is missing, playback returns a clear error and you can still export the stream to a WAV file (F2). Only `libpcap0.8` is a hard dependency:
 
 ```bash
-apt-get install -y libpcap0.8 libasound2
+apt-get install -y libpcap0.8            # required
+apt-get install -y libasound2           # optional, for live playback
 ```
 
-If you don't need TUI audio playback on the host (typical for a `--hep-listen` / `--api` / `--mcp` server), build without the `audio` feature to drop the libasound dependency entirely:
+If you don't need TUI audio playback on the host (typical for a `--hep-listen` / `--api` / `--mcp` server), install the `-noaudio` `.deb`, or build without the `audio` feature so the plugin is not built at all:
 
 ```bash
 cargo build --release --no-default-features \

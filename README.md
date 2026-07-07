@@ -59,7 +59,9 @@ which sipnab `dlopen`s only the moment you press play. So an audio-enabled
 binary starts fine on a host without libasound; if libasound (or the plugin)
 is missing, playback returns a clear error and WAV export (F2) still works.
 Install `libasound2` for live playback — it is a Debian `Recommends`, not a
-hard dependency.
+hard dependency. For headless servers, each release also ships a `-noaudio`
+`.deb` with no plugin and no ALSA Recommends at all (see
+[docs/install.md](docs/install.md)).
 
 ## Build
 
