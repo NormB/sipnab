@@ -79,6 +79,17 @@ jobs:
         run: cargo test --features tui --test tui_e2e_test -- --ignored
         continue-on-error: true  # PTY tests can be flaky in CI
 
+  # Deb packaging: build-deb.sh must produce correct control metadata and
+  # payload for the full and noaudio variants (release.yml builds both).
+  # Pure dpkg-deb over dummy binaries — no Rust toolchain needed.
+  deb-package:
+    name: Deb packaging (build-deb.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Test build-deb.sh (full + noaudio variants)
+        run: bash contrib/deb/test-build-deb.sh
+
   # Reduced feature combinations must keep compiling (lib AND test code).
   # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
   # reduced combos failed to build. `cargo check --tests` is enough to

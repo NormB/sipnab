@@ -46,6 +46,28 @@ sudo apt install ./sipnab_<version>_arm64.deb
 
 On Ubuntu 24.04+ the dependency is satisfied by `libpcap0.8t64`.
 
+The standard package ships the audio playback plugin and therefore
+*Recommends* `libasound2`, which apt installs by default — pulling the ALSA
+stack (~500 kB) onto the system. For headless servers, each release also
+publishes a **`-noaudio`** package with no plugin and no ALSA dependency
+(everything else — WAV export included — works the same; only live playback
+in the TUI is unavailable):
+
+```bash
+# amd64 (x86_64), headless / no ALSA
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64-noaudio.deb
+sudo apt install ./sipnab_<version>_amd64-noaudio.deb
+
+# arm64 (aarch64), headless / no ALSA
+curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_arm64-noaudio.deb
+sudo apt install ./sipnab_<version>_arm64-noaudio.deb
+```
+
+Alternatively, install the standard package with
+`sudo apt install --no-install-recommends ./sipnab_<version>_amd64.deb` to
+skip the ALSA packages while keeping the plugin on disk (playback then works
+as soon as `libasound2` is installed).
+
 ### RHEL/Fedora (.rpm)
 
 ```bash

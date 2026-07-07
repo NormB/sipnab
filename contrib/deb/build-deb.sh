@@ -3,9 +3,24 @@ set -euo pipefail
 
 VERSION="${1:-$(cargo metadata --no-deps --format-version 1 | jq -r ".packages[0].version")}"
 ARCH="${2:-amd64}"
-PKG_DIR="sipnab_${VERSION}_${ARCH}"
+VARIANT="${3:-}"
 
-echo "Building sipnab ${VERSION} for ${ARCH}..."
+# Variant selects the packaging flavor. "noaudio" ships no audio plugin and
+# no libasound Recommends (for headless servers, where apt would otherwise
+# pull in the ALSA stack) and suffixes the artifact name; empty means the
+# default full package.
+case "$VARIANT" in
+    "")      SUFFIX="" ;;
+    noaudio) SUFFIX="-noaudio" ;;
+    *)
+        echo "Unknown variant '${VARIANT}' (expected empty or 'noaudio')" >&2
+        exit 1
+        ;;
+esac
+
+PKG_DIR="sipnab_${VERSION}_${ARCH}${SUFFIX}"
+
+echo "Building sipnab ${VERSION} for ${ARCH}${VARIANT:+ (${VARIANT})}..."
 
 # Resolve the binary to package.
 #
@@ -27,6 +42,11 @@ else
     cargo build --release --features full
     BIN_SRC="target/release/sipnab"
     PLUGIN_SRC="${SIPNAB_AUDIO_PLUGIN:-target/release/libsipnab_audio.so}"
+fi
+
+# The noaudio variant never ships the plugin, even when one was built.
+if [ "$VARIANT" = "noaudio" ]; then
+    PLUGIN_SRC=""
 fi
 
 # Normalize: only ship the plugin if the file actually exists.

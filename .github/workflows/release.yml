@@ -10,14 +10,6 @@ on:
         required: false
         default: 'true'
         type: boolean
-      audio:
-        description: 'Include the audio feature (ALSA/rodio) in gnu & macOS builds'
-        required: false
-        default: 'include'
-        type: choice
-        options:
-          - include
-          - exclude
 
 permissions:
   contents: write
@@ -27,7 +19,7 @@ env:
 
 jobs:
   build:
-    name: Build (${{ matrix.target }})
+    name: Build (${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -36,12 +28,24 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             cross: false
+          # noaudio variants: binary built without the `audio` feature, .deb
+          # ships no plugin and no libasound Recommends — for headless servers
+          # where apt would otherwise pull in the ALSA stack. Deb-only (no
+          # tarball); static musl tarballs already cover the no-audio case.
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: false
+            variant: noaudio
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
             cross: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+            variant: noaudio
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
@@ -73,12 +77,10 @@ jobs:
         shell: bash
         run: |
           # No-audio set = "full minus audio". musl is ALWAYS no-audio (static
-          # musl + ALSA is impractical). For gnu/macOS, audio is toggled by the
-          # workflow_dispatch `audio` input; tag pushes have no inputs, so an
-          # empty/missing value is treated as "include".
+          # musl + ALSA is impractical) but keeps its plain artifact name. The
+          # gnu `variant: noaudio` matrix entries build the no-audio set with a
+          # "-noaudio" artifact suffix.
           noaudio_set="native,tui,tls,hep,api,mcp,mcp-http"
-          audio_input="${{ inputs.audio }}"
-          [ -z "$audio_input" ] && audio_input="include"
 
           case "${{ matrix.target }}" in
             *-linux-musl)
@@ -86,7 +88,7 @@ jobs:
               suffix=""
               ;;
             *)
-              if [ "$audio_input" = "exclude" ]; then
+              if [ "${{ matrix.variant }}" = "noaudio" ]; then
                 features="$noaudio_set"
                 suffix="-noaudio"
               else
@@ -129,7 +131,10 @@ jobs:
       - name: Strip binary
         run: strip "target/${{ matrix.target }}/release/sipnab" || true
 
+      # noaudio variants are deb-only: static musl tarballs already cover the
+      # no-audio tarball case, so skip the redundant gnu-noaudio tar.gz.
       - name: Package (tar.gz + checksum)
+        if: matrix.variant != 'noaudio'
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -176,7 +181,9 @@ jobs:
             *) echo "unexpected target ${{ matrix.target }}" >&2; exit 1 ;;
           esac
           # Pass the prebuilt audio plugin to the deb builder when present so it
-          # ships at /usr/lib/sipnab/ and adds the libasound Recommends.
+          # ships at /usr/lib/sipnab/ and adds the libasound Recommends. The
+          # noaudio variant builds a plugin-free, Recommends-free package and
+          # the builder itself appends the "-noaudio" filename suffix.
           plugin_arg=""
           if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ] \
              && [ -f "target/${{ matrix.target }}/release/libsipnab_audio.so" ]; then
@@ -184,10 +191,10 @@ jobs:
           fi
           SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
           SIPNAB_AUDIO_PLUGIN="$plugin_arg" \
-            bash contrib/deb/build-deb.sh "$deb_version" "$deb_arch"
+            bash contrib/deb/build-deb.sh "$deb_version" "$deb_arch" "${{ matrix.variant }}"
           mkdir -p dist
           suffix="${{ steps.features.outputs.suffix }}"
-          mv "sipnab_${deb_version}_${deb_arch}.deb" "dist/sipnab_${deb_version}_${deb_arch}${suffix}.deb"
+          mv "sipnab_${deb_version}_${deb_arch}${suffix}.deb" dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

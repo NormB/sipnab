@@ -21,6 +21,8 @@ const FOREIGN_FLAGS: &[&str] = &[
     // docker (docs/install.md)
     "net",
     "rm",
+    // apt (docs/install.md, website/install.md — noaudio .deb guidance)
+    "no-install-recommends",
     // editcap (docs/cli-reference.md — `--strip-secrets` is the analog)
     "discard-all-secrets",
     // systemctl (docs/mcp-setup.md)
