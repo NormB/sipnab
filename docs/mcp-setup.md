@@ -13,9 +13,11 @@ cargo build --release --no-default-features --features native,hep,api,mcp,mcp-ht
 ## 1. Local agent (stdio) — zero setup
 
 ```bash
-sipnab --mcp -I capture.pcap        # analyze a pcap
-sudo sipnab --mcp -d eth0           # live capture (root / CAP_NET_RAW)
+sipnab --mcp -N -I capture.pcap     # analyze a pcap
+sudo sipnab --mcp -N -d eth0        # live capture (root / CAP_NET_RAW)
 ```
+
+`--mcp` requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire).
 
 Claude Desktop / Claude Code client entry:
 
@@ -24,7 +26,7 @@ Claude Desktop / Claude Code client entry:
   "mcpServers": {
     "sipnab": {
       "command": "sipnab",
-      "args": ["--mcp", "-I", "/path/to/capture.pcap"]
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap"]
     }
   }
 }
@@ -45,7 +47,7 @@ sudo chmod 600 /etc/sipnab/mcp.token
 Start the server (here: HEP listener feeding it, common on a capture host):
 
 ```bash
-sipnab --mcp --mcp-transport http \
+sipnab --mcp -N --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        --mcp-allowed-host capture01.example.net \
@@ -70,7 +72,7 @@ and configure it as a bearer token for `http://capture01.example.net:8731`.
 ## 3. systemd unit
 
 `/etc/systemd/system/sipnab-mcp.service` (a packaged variant ships in
-[`contrib/sipnab.service`](../contrib/sipnab.service)):
+[`contrib/sipnab.service`](https://github.com/NormB/sipnab/blob/main/contrib/sipnab.service)):
 
 ```ini
 [Unit]
@@ -80,7 +82,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/sipnab --mcp --mcp-transport http \
+ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
     --mcp-bind 127.0.0.1:8731 \
     --mcp-token-file /etc/sipnab/mcp.token \
     -L 0.0.0.0:9060 --hep-parse

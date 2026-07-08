@@ -25,34 +25,40 @@ SITE = "https://www.sipnab.com"
 BLOB = f"https://github.com/{REPO}/blob/main"
 
 # Source doc (path relative to docs/) -> wiki page name. Hyphens render as
-# spaces in the wiki title; the URL keeps the hyphens. Order here defines the
-# sidebar order within each group.
+# spaces in the wiki title; the URL keeps the hyphens.
 PAGES: dict[str, str] = {
     "install.md": "Installation",
-    "cli-reference.md": "CLI-Reference",
-    "library.md": "Library-API",
-    "config-reference.md": "Configuration",
-    "filter-dsl.md": "Filter-DSL",
+    "examples.md": "Cookbook",
     "keybindings.md": "Keybindings",
     "theme-guide.md": "Theme-Guide",
+    "cli-reference.md": "CLI-Reference",
+    "filter-dsl.md": "Filter-DSL",
     "output-formats.md": "Output-Formats",
-    "examples.md": "Examples",
+    "config-reference.md": "Configuration",
     "mcp-overview.md": "MCP-Overview",
     "mcp-setup.md": "MCP-Setup",
     "mcp-tools.md": "MCP-Tools",
+    "auth.md": "Authentication",
+    "library.md": "Library-API",
+    "benchmarks.md": "Benchmarks",
     "fault-model.md": "Fault-Model",
+    "internals/threading.md": "Internals-Threading",
     "internals/tui-testing.md": "Internals-TUI-Testing",
     "internals/zero-copy-payloads.md": "Internals-Zero-Copy-Payloads",
 }
 
-# Sidebar grouping: (section title, [source paths]).
+# Sidebar grouping: (section title, [source paths]), ordered by user journey —
+# install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "cli-reference.md", "examples.md", "library.md"]),
-    ("Configuration", ["config-reference.md", "keybindings.md", "theme-guide.md"]),
-    ("Filtering & output", ["filter-dsl.md", "output-formats.md"]),
-    ("MCP server", ["mcp-overview.md", "mcp-setup.md", "mcp-tools.md"]),
-    ("Internals", ["fault-model.md", "internals/tui-testing.md",
-                   "internals/zero-copy-payloads.md"]),
+    ("Getting started", ["install.md", "examples.md"]),
+    ("Using the TUI", ["keybindings.md", "theme-guide.md"]),
+    ("CLI & automation", ["cli-reference.md", "filter-dsl.md", "output-formats.md"]),
+    ("Configuration", ["config-reference.md"]),
+    ("Integrations (API & MCP)", ["mcp-overview.md", "mcp-setup.md",
+                                  "mcp-tools.md", "auth.md"]),
+    ("Development & internals", ["library.md", "benchmarks.md", "fault-model.md",
+                                 "internals/threading.md", "internals/tui-testing.md",
+                                 "internals/zero-copy-payloads.md"]),
 ]
 
 # basename (without .md) -> wiki page, for link rewriting. Source links use the
@@ -62,14 +68,28 @@ SLUG_TO_PAGE = {Path(src).stem: page for src, page in PAGES.items()}
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?\.md)(#[^)\s]*)?\s*\)")
 
 
+def wiki_bullet(page: str) -> str:
+    """A `- [[…]]` sidebar/index bullet with a spaced display label."""
+    label = page.replace("-", " ")
+    return f"- [[{page}]]" if label == page else f"- [[{label}|{page}]]"
+
+
 def rewrite_link(m: re.Match) -> str:
     target, anchor = m.group(1), (m.group(2) or "")
-    cleaned = target.lstrip("./")
-    stem = Path(cleaned).stem
+    if target.startswith(("http://", "https://")):
+        return m.group(0)
+    stem = Path(target).stem
     if stem in SLUG_TO_PAGE:
         return f"]({SLUG_TO_PAGE[stem]}{anchor})"
-    # Unknown doc (e.g. a root-level plan): point at the repo blob.
-    return f"]({BLOB}/{cleaned}{anchor})"
+    # Unknown doc: point at the repo blob. Source links are relative to
+    # docs/; each leading "../" climbs one level toward the repo root.
+    parts = [p for p in target.split("/") if p not in ("", ".")]
+    prefix = ["docs"]
+    while parts and parts[0] == "..":
+        parts.pop(0)
+        if prefix:
+            prefix.pop()
+    return f"]({BLOB}/{'/'.join(prefix + parts)}{anchor})"
 
 
 def strip_leading_h1(text: str) -> str:
@@ -103,25 +123,55 @@ def build_home() -> str:
         "regenerated automatically on every change to `main`. For the polished "
         f"documentation site see **[{SITE}]({SITE})**.",
         "",
+        "## Quick start",
+        "",
+        "```bash",
+        "# Install: grab a .deb / static binary from the latest release",
+        "# (see Installation for all options)",
+        "curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab-x86_64-unknown-linux-musl",
+        "chmod +x sipnab-x86_64-unknown-linux-musl",
+        "sudo mv sipnab-x86_64-unknown-linux-musl /usr/local/bin/sipnab",
+        "",
+        "sudo sipnab --setup-caps      # one-time: live capture without sudo (Linux)",
+        "",
+        "sipnab                        # live TUI on the default interface",
+        "sipnab -I capture.pcap        # open a pcap in the TUI",
+        "sipnab -N -I capture.pcap --problems   # headless: only problem calls",
+        "```",
+        "",
+        "## Start here",
+        "",
+        "New to sipnab? Read in this order:",
+        "",
+        "1. [[Installation]] — packages, capture permissions, feature flags",
+        "2. [[Cookbook]] — copy-paste recipes for triage, filtering, "
+        "recording, security",
+        "3. [[Keybindings]] — driving the TUI: call list, call flow, "
+        "RTP streams, search",
+        "4. [[Filter DSL|Filter-DSL]] — narrowing to the calls you care about",
+        "5. [[CLI Reference|CLI-Reference]] and "
+        "[[Output Formats|Output-Formats]] — headless use and NDJSON pipelines",
+        "6. [[MCP Overview|MCP-Overview]] — letting an AI agent drive sipnab",
+        "",
+        "## All pages",
+        "",
     ]
     for title, srcs in GROUPS:
-        out.append(f"## {title}")
+        out.append(f"### {title}")
         out.append("")
         for src in srcs:
-            page = PAGES[src]
-            out.append(f"- [[{page.replace('-', ' ')}|{page}]]")
+            out.append(wiki_bullet(PAGES[src]))
         out.append("")
     return "\n".join(out)
 
 
 def build_sidebar() -> str:
-    out = [f"### [sipnab]({SITE})", ""]
+    out = [f"### [sipnab]({SITE})", "", "[[Home]]", ""]
     for title, srcs in GROUPS:
         out.append(f"**{title}**")
         out.append("")
         for src in srcs:
-            page = PAGES[src]
-            out.append(f"- [[{page.replace('-', ' ')}|{page}]]")
+            out.append(wiki_bullet(PAGES[src]))
         out.append("")
     return "\n".join(out)
 
