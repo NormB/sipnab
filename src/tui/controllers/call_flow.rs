@@ -681,6 +681,7 @@ pub enum RawMessageAction {
     PageUp,
     PageDown,
     ScrollTop,
+    ScrollBottom,
     Search,
     ToggleSyntaxHighlight,
     CycleColorMode,
@@ -699,6 +700,7 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
         KeyCode::PageUp => PageUp,
         KeyCode::PageDown => PageDown,
         KeyCode::Home => ScrollTop,
+        KeyCode::End => ScrollBottom,
         k if k == km.search => Search,
         KeyCode::Char('s') => ToggleSyntaxHighlight,
         KeyCode::Char('c') => CycleColorMode,
@@ -733,6 +735,8 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
             app.raw_msg_scroll = app.raw_msg_scroll.saturating_add(20);
         }
         RawMessageAction::ScrollTop => app.raw_msg_scroll = 0,
+        // Clamped to the content height by the render pass.
+        RawMessageAction::ScrollBottom => app.raw_msg_scroll = u16::MAX,
         RawMessageAction::Search => {
             // Keep the existing query so it can be refined.
             app.search_active = true;
@@ -1361,6 +1365,12 @@ mod tests {
         assert_eq!(app.raw_msg_scroll, 21);
         handle_raw_message_key(&mut app, key(KeyCode::PageUp));
         assert_eq!(app.raw_msg_scroll, 1);
+        handle_raw_message_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.raw_msg_scroll, 0);
+        // End jumps to the bottom (the render pass clamps the offset to
+        // the content height, like the help view).
+        handle_raw_message_key(&mut app, key(KeyCode::End));
+        assert_eq!(app.raw_msg_scroll, u16::MAX);
         handle_raw_message_key(&mut app, key(KeyCode::Home));
         assert_eq!(app.raw_msg_scroll, 0);
     }
