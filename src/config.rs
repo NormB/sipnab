@@ -26,8 +26,13 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "theme",
             "keybindings",
             "names",
+            "crash",
         ]
         .as_slice(),
+    );
+    m.insert(
+        "crash",
+        ["reports", "backtrace", "report_dir", "core"].as_slice(),
     );
     m.insert(
         "capture",
@@ -127,21 +132,23 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     m
 }
 
-/// Walk a parsed TOML value and warn about any keys not in the known set.
-fn warn_unknown_keys(value: &toml::Value) {
+/// Walk a parsed TOML value and collect every key not in the known set
+/// (`key` for root-level, `section.key` within a section).
+fn collect_unknown_keys(value: &toml::Value) -> Vec<String> {
     let known = known_keys();
+    let mut unknown = Vec::new();
 
     let table = match value.as_table() {
         Some(t) => t,
-        None => return,
+        None => return unknown,
     };
 
     let Some(root_keys) = known.get("") else {
-        return;
+        return unknown;
     };
     for key in table.keys() {
         if !root_keys.contains(&key.as_str()) {
-            tracing::warn!("Unknown config key: {key}");
+            unknown.push(key.clone());
         }
     }
 
@@ -151,10 +158,18 @@ fn warn_unknown_keys(value: &toml::Value) {
         {
             for key in section_table.keys() {
                 if !valid_keys.contains(&key.as_str()) {
-                    tracing::warn!("Unknown config key: {section}.{key}");
+                    unknown.push(format!("{section}.{key}"));
                 }
             }
         }
+    }
+    unknown
+}
+
+/// Walk a parsed TOML value and warn about any keys not in the known set.
+fn warn_unknown_keys(value: &toml::Value) {
+    for key in collect_unknown_keys(value) {
+        tracing::warn!("Unknown config key: {key}");
     }
 }
 
@@ -975,6 +990,36 @@ filter = "/"
         let loaded = Config::load(Some(path.to_str().unwrap()), false).unwrap();
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
         assert_eq!(loaded.source.unwrap(), path);
+    }
+
+    /// Every documented `[crash]` key must be known — a valid section
+    /// producing a spurious "Unknown config key: crash" warning trains
+    /// users to ignore the warning entirely.
+    #[test]
+    fn crash_section_keys_are_known() {
+        let toml_str =
+            "[crash]\nreports = true\nbacktrace = true\nreport_dir = \"/tmp/x\"\ncore = false\n";
+        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            collect_unknown_keys(&value),
+            Vec::<String>::new(),
+            "valid [crash] section must not be flagged"
+        );
+        // And it actually parses into the config.
+        let config = Config::parse_toml(toml_str, None).unwrap();
+        assert_eq!(config.crash.reports, Some(true));
+        assert_eq!(config.crash.core, Some(false));
+    }
+
+    /// A typo inside [crash] must still be flagged — with the section
+    /// known, detection now reaches the individual keys.
+    #[test]
+    fn crash_section_typo_is_flagged() {
+        let value: toml::Value = toml::from_str("[crash]\nbogus = 1\n").unwrap();
+        assert_eq!(
+            collect_unknown_keys(&value),
+            vec!["crash.bogus".to_string()]
+        );
     }
 
     #[test]
