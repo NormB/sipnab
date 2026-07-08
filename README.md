@@ -167,6 +167,12 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 - [Architecture](ARCHITECTURE.md) -- module map, data flow, threading model
 - [Implementation Plan](implementation-plan-v6.md) -- historical design decisions and roadmap
 
+## Contributing
+
+Contributions are welcome -- see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+build/test workflow and pull request checklist. This project follows the
+[Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 Licensed under either of
