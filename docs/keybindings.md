@@ -36,7 +36,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | Z | Reverse sort direction |
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
-| / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list and Space stars rows |
+| / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
@@ -112,7 +112,7 @@ detail pane regardless of focus.
 | Down / j | Scroll down |
 | PgUp | Page up |
 | PgDn | Page down |
-| Home | Scroll to top |
+| Home / End | Jump to top/bottom |
 | / | Search within message |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
@@ -152,7 +152,7 @@ message of the selection rendered as one scrollable document.
 | PgUp / PgDn | Page scroll |
 | Home | Jump to first stream |
 | End | Jump to last stream |
-| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list |
+| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list and Enter commits the query and opens the highlighted stream |
 | Enter | Open stream detail |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |

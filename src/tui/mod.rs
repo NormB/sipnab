@@ -1171,8 +1171,13 @@ mod tests {
         for c in "559".chars() {
             app.handle_key(KeyCode::Char(c));
         }
-        app.handle_key(KeyCode::Enter); // leave search mode, query persists
+        // Enter commits the query AND opens the highlighted row's flow;
+        // Esc returns to the call list with the query still persisted.
+        app.handle_key(KeyCode::Enter);
         assert!(!app.search_active);
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.current_view, View::CallList);
         assert_eq!(app.search_query, "559");
         app.sync_caches();
         assert_eq!(
@@ -1235,7 +1240,9 @@ mod tests {
         for c in "559".chars() {
             app.handle_key(KeyCode::Char(c));
         }
+        // Enter commits the query and opens the row's flow; Esc back.
         app.handle_key(KeyCode::Enter);
+        app.handle_key(KeyCode::Esc);
         app.sync_caches();
         assert_eq!(app.cached_displayed_count, 1);
 
