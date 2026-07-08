@@ -107,7 +107,8 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
 /// hook knows to restore the terminal before printing anything.
 static TERMINAL_RAW: AtomicBool = AtomicBool::new(false);
 
-/// Record whether the TUI owns the terminal (see [`TERMINAL_RAW`]).
+/// Record whether the TUI owns the terminal, so the panic hook knows
+/// to restore it before printing the crash report.
 pub fn set_terminal_raw(raw: bool) {
     TERMINAL_RAW.store(raw, Ordering::SeqCst);
 }
