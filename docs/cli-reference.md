@@ -2,7 +2,7 @@
 
 Complete flag reference for sipnab. Flags are organized by functional group.
 
-CLI flags always override config file values. Boolean flags default to `off` (false) unless otherwise noted.
+CLI flags always override config file values (see [config-reference.md](config-reference.md)). Boolean flags default to `off` (false) unless otherwise noted. For task-oriented recipes rather than a flag catalog, start with [examples.md](examples.md).
 
 ## Capture
 
@@ -11,9 +11,9 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 | `-d`, `--device` | `<IFACE>` | auto-detect | Network interface to capture on. Auto-detects the default interface if no `-I` file or `-L` HEP listener is specified |
 | `-I`, `--input` | `<FILE>` | -- | Read packets from a pcap file instead of live capture |
 | `-O`, `--output` | `<FILE>` | -- | Write captured packets to a pcap file |
-| `-B`, `--buffer` | `<MIB>` | OS default | Kernel capture buffer size in MiB |
+| `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
-| `--snaplen` | `<BYTES>` | OS default | Snapshot length for packet capture (bytes) |
+| `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
@@ -167,7 +167,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed). Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
-| `--mcp` | -- | off | Run sipnab as an MCP server. Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
+| `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) and rejects stdout-writing flags (`--json`, `--report`, …). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. |
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. |
@@ -195,7 +195,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--keylog-watch` | -- | off | Watch key log file for new entries (live decryption). Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes (RFC 5764 exporter, AES-CM profiles). Feature: `tls` |
 | `--srtp-keys` | `<FILE>` | -- | SRTP master-keys file for media decryption (AES-CM, RFC 3711); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
-| `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic |
+| `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted`, `encrypted+dsb`, or `raw` |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 
 ## Privilege

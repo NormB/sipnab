@@ -19,8 +19,11 @@ without you having to memorize CLI flags.
 The simplest way to drive sipnab from a local agent:
 
 ```bash
-sipnab --mcp -I capture.pcap            # stdio is the default transport
+sipnab --mcp -N -I capture.pcap         # stdio is the default transport
 ```
+
+(`--mcp` requires `-N`/`--no-tui`: stdout is the JSON-RPC wire, so the
+TUI and stdout-writing flags like `--json`/`--report` are rejected.)
 
 Add this server to your MCP client. For Claude Desktop, the config block
 looks like:
@@ -30,7 +33,7 @@ looks like:
   "mcpServers": {
     "sipnab": {
       "command": "sipnab",
-      "args": ["--mcp", "-I", "/path/to/capture.pcap"]
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap"]
     }
   }
 }
@@ -39,7 +42,7 @@ looks like:
 For a live capture against an interface (root or `CAP_NET_RAW`):
 
 ```bash
-sudo sipnab --mcp -d eth0
+sudo sipnab --mcp -N -d eth0
 ```
 
 ## Quick start (HTTP — remote agent)
@@ -47,7 +50,7 @@ sudo sipnab --mcp -d eth0
 When the agent runs on a different host, switch to the HTTP transport:
 
 ```bash
-sipnab --mcp --mcp-transport http \
+sipnab --mcp -N --mcp-transport http \
        --mcp-bind 127.0.0.1:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        -I capture.pcap
@@ -67,7 +70,7 @@ sipnab --mcp --mcp-transport http \
 
 ```bash
 # Network-bound, with the actual public hostname accepted
-sipnab --mcp --mcp-transport http \
+sipnab --mcp -N --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        --mcp-allowed-host capture.example.com \
@@ -106,7 +109,8 @@ troubleshooting.
   explicitly overridden.
 - **Bearer auth on non-loopback.** Tokens compared in constant time
   via the shared `crypto::constant_time_eq` helper (through `auth::TokenVerifier`), sharing
-  the same code path as the REST API.
+  the same code path as the REST API. Signed tokens with expiry /
+  rotation / revocation are also supported — see [auth.md](./auth.md).
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content; they
   describe what the tool returns and stop there.

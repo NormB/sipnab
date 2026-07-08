@@ -28,8 +28,8 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | PgDn | Page down |
 | Home | Jump to first dialog |
 | End | Jump to last dialog |
-| Enter | Open call flow for selected dialog |
-| Space | Select/deselect dialog (for multi-select save) |
+| Enter | Open call flow for the selected dialog — with two or more starred rows, opens one chronologically merged flow of all of them |
+| Space | Star/unstar dialog (`[*]`) for multi-select: F2 saves all starred dialogs, Enter opens them as one merged flow |
 | Esc / q | Quit **(configurable: `quit`)** |
 | < | Sort by previous column |
 | > | Sort by next column |
@@ -49,10 +49,15 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`) |
+| F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter |
+| F9 | Clear active filter **and** persisted search |
 | F10 | Column selector **(configurable: `column_selector`)** |
+
+A search committed with Enter keeps narrowing the list and is shown on the
+status line as `Search: /query (F9 clears)`; F9 clears it together with any
+active filter.
 
 ## Call Flow
 
@@ -72,12 +77,14 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | c | Cycle color scheme (method / call-id / cseq) |
 | R | Toggle detail panel visibility |
-| 0 / + / = / Right | Increase ladder panel width (with the split off, shows a hint instead) |
-| 9 / - / Left | Decrease ladder panel width (with the split off, shows a hint instead) |
+| + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
+| - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
 | [ | Scroll detail panel up |
 | ] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
 | f | Filter the ladder to the selected message's transaction (toggle) |
+| a | Open combined detail for the selected message's transaction |
+| A | Open combined detail for the whole dialog |
 | m | Set mark at current message |
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
@@ -86,8 +93,8 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | N | Name the selected message's source address (map IP → host/FQDN) |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
-| F5 | Start compare mode **(configurable: `clear_calls`)** |
-| F6 | Toggle RTP display in flow |
+| F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
+| F6 / Ctrl+R | Toggle RTP display in flow |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 | F9 | Clear active filter |
 
@@ -106,10 +113,11 @@ detail pane regardless of focus.
 | PgUp | Page up |
 | PgDn | Page down |
 | Home | Scroll to top |
-| End | Scroll to bottom |
 | / | Search within message |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
+| F1 | Help **(configurable: `help`)** |
+| F2 | Save **(configurable: `save`)** |
 | Esc | Back to the view it was opened from (call flow or call list) |
 
 ## Message Diff
@@ -123,6 +131,18 @@ detail pane regardless of focus.
 | Esc | Back to call flow |
 | F1 | Help **(configurable: `help`)** |
 
+## Combined Detail
+
+Opened from the call flow with `a` (transaction) or `A` (whole dialog): every
+message of the selection rendered as one scrollable document.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Scroll |
+| PgUp / PgDn | Page scroll |
+| Home / End | Jump to top/bottom |
+| Esc | Back to call flow |
+
 ## RTP Streams
 
 | Key | Action |
@@ -132,12 +152,13 @@ detail pane regardless of focus.
 | PgUp / PgDn | Page scroll |
 | Home | Jump to first stream |
 | End | Jump to last stream |
-| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight and Space stars rows |
+| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list |
 | Enter | Open stream detail |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
 | F1 | Help **(configurable: `help`)** |
+| F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 
 ## Stream Detail
@@ -149,6 +170,8 @@ detail pane regardless of focus.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| F1 | Help **(configurable: `help`)** |
+| F2 | Save the stream's audio as WAV **(configurable: `save`)** |
 | Esc | Back to RTP Streams |
 
 ## Statistics
@@ -197,6 +220,9 @@ Save formats: **PCAP**, **PCAP-NG**, **TXT**, **Mermaid**
 | Backspace / Delete | Text editing in focused text field |
 | Home / End | Jump to start/end of text field |
 | (any char) | Insert character in focused text field |
+
+The SIP-method grid starts with an **All** master checkbox: Space on it checks
+or unchecks every method at once.
 
 ## Settings Popup
 
@@ -293,3 +319,11 @@ Related flags: `--resolve` (start with resolution on), `--reverse-dns` (enable
 PTR lookups; implies `--resolve`), `--names <FILE>` (preload an
 `/etc/hosts`-format mapping file, repeatable). See
 [cli-reference.md](cli-reference.md) and the `[names]` config section.
+
+## See also
+
+- [theme-guide.md](theme-guide.md) — recolor every TUI element via `[theme]`
+- [config-reference.md](config-reference.md) — rebind the 11 configurable keys
+  via `[keybindings]`
+- [filter-dsl.md](filter-dsl.md) — the expression language the F7 filter
+  dialog compiles down to (and the `--filter` flag exposes directly)

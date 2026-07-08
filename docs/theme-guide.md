@@ -156,3 +156,6 @@ border = "white"
 - Hex colors require true-color terminal support (most modern terminals: iTerm2, Alacritty, kitty, WezTerm, Windows Terminal).
 - Use `sipnab --dump-config` to verify your theme is being loaded.
 - The `highlight` key is a legacy alias for `selected`. If both are set, `selected` takes precedence.
+
+See [config-reference.md](config-reference.md) for the full `[theme]` key
+table and every other config section.

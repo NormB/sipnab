@@ -112,3 +112,15 @@ payload of:
 decryption, `--pcap-export-mode` controls whether decryption secrets
 (DSBs) are embedded for Wireshark. Rotation: `--split filesize:N` /
 `--split duration:N`, or SIGUSR1 on demand.
+
+pcapng timestamps are nanosecond-resolution, declared via `if_tsresol=9`
+in the Interface Description Block. Files written by sipnab <= 0.5.0
+stored nanosecond ticks but omitted that declaration, so other readers
+inflated every time value ×1000 (`capinfos` reporting year 58484);
+[`scripts/repair_pcapng_tsresol.py`](https://github.com/NormB/sipnab/blob/main/scripts/repair_pcapng_tsresol.py)
+repairs such old captures in place without touching packet data.
+
+## See also
+
+- [cli-reference.md](cli-reference.md#output) — every output flag
+- [examples.md](examples.md#data-pipelines) — NDJSON-to-jq pipeline recipes

@@ -107,7 +107,8 @@ Parentheses `( )` group sub-expressions to override default precedence.
 
 These preset expressions are available as CLI flags (`--problems`, etc.), as
 shorthand to `--filter` (e.g. `--filter codec-asym`), and as `kinds` entries
-for the MCP `find_problems` tool. They expand to DSL expressions internally.
+for the MCP [`find_problems`](mcp-tools.md#find_problems) tool. They expand
+to DSL expressions internally.
 
 | Alias | Dedicated CLI Flag | Expansion |
 |-------|--------------------|-----------|
@@ -206,3 +207,11 @@ ua =~ 'sipvicious|friendly-scanner|sipcli'
 - Trailing unparsed input produces a parse error with position
 - Unknown field names produce a parse error
 - Invalid regex patterns produce a parse error
+
+## See also
+
+- [cli-reference.md](cli-reference.md) — the `--filter` flag and the
+  dedicated diagnostic-alias flags
+- [keybindings.md](keybindings.md) — the TUI filter dialog (F7), which
+  compiles its fields down to this DSL
+- [examples.md](examples.md) — recipes that put these filters to work

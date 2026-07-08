@@ -1,7 +1,11 @@
 # Cookbook — common workflows
 
 Copy-paste recipes for the tasks sipnab is usually reached for. Live
-capture needs root or `CAP_NET_RAW`; reading pcap files does not.
+capture needs root or `CAP_NET_RAW` — run `sudo sipnab --setup-caps` once
+and drop the `sudo` from every recipe below (see
+[install.md](install.md#live-capture-permissions)); reading pcap files
+needs no privileges. Every flag used here is detailed in
+[cli-reference.md](cli-reference.md).
 
 ## Triage
 
@@ -95,3 +99,9 @@ sipnab -N -L 0.0.0.0:9060 --hep-parse
 # 19. Mirror captured traffic to Homer
 sudo sipnab -N -d eth0 -H homer.example.net:9060
 ```
+
+## Next steps
+
+- [keybindings.md](keybindings.md) — the interactive TUI these captures feed
+- [filter-dsl.md](filter-dsl.md) — the full filter language behind `--filter`
+- [mcp-overview.md](mcp-overview.md) — drive the same analysis from an AI agent

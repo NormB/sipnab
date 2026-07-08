@@ -1,7 +1,9 @@
 # Bearer-token authentication
 
-The REST API (`--api`) and HTTP MCP server (`--mcp --mcp-transport http`)
-authenticate clients with `Authorization: Bearer <token>`. sipnab supports two
+The REST API (`--api`) and HTTP MCP server (`--mcp --mcp-transport http`, see
+[mcp-setup.md](mcp-setup.md)) authenticate clients with
+`Authorization: Bearer <token>`. All related flags are listed in
+[cli-reference.md](cli-reference.md#network-listeners). sipnab supports two
 token kinds, checked with a constant-time comparison:
 
 1. **Static secrets** — `--api-key` / `--mcp-token` (or `--mcp-token-file`,

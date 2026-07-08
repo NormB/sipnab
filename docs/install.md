@@ -174,7 +174,7 @@ package; install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 
-See the website install guide ([www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
+See [mcp-setup.md](mcp-setup.md) (or the website install guide, [www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
 
 ## Release Profile
 
@@ -258,3 +258,9 @@ sipnab 0.5.1 (2595058) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 This is the fastest way to confirm a build was produced with the feature set
 you expected (e.g. that `mcp-http` is present on a server build).
+
+## Next steps
+
+- [examples.md](examples.md) — copy-paste recipes for the most common tasks
+- [keybindings.md](keybindings.md) — driving the interactive TUI
+- [cli-reference.md](cli-reference.md) — every flag, for headless use

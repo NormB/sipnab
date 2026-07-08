@@ -1,6 +1,6 @@
 # Config Reference
 
-sipnab reads configuration from a TOML file. CLI flags always override config file values.
+sipnab reads configuration from a TOML file. CLI flags ([cli-reference.md](cli-reference.md)) always override config file values.
 
 ## File Locations
 
@@ -32,8 +32,8 @@ Packet capture defaults.
 |-----|------|---------|-------------|
 | `device` | string | -- | Default network interface |
 | `portrange` | string | `"5060-5061"` | SIP port range |
-| `snaplen` | integer | OS default | Snapshot length in bytes |
-| `buffer` | integer | OS default | Kernel capture buffer size in MiB |
+| `snaplen` | integer | `65535` | Snapshot length in bytes |
+| `buffer` | integer | `2` | Kernel capture buffer size in MiB |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
 
@@ -134,7 +134,7 @@ Privilege separation settings (Linux only).
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `user` | string | -- | User to drop privileges to after opening capture devices |
+| `user` | string | `"nobody"` | User to drop privileges to after opening capture devices |
 | `no_priv_drop` | boolean | `false` | Disable privilege dropping |
 | `chroot` | string | -- | Chroot directory after initialization |
 
@@ -303,6 +303,18 @@ hep_rate_limit = 25000
 user = "sipnab"
 no_priv_drop = false
 chroot = "/var/lib/sipnab"
+
+[names]
+enabled = true
+hosts_file = "/etc/sipnab/hosts"
+
+[names.manual]
+"10.0.0.1" = "sbc-edge"
+
+[crash]
+reports = true
+backtrace = true
+core = false
 
 [theme]
 background = "#1a1a2e"
