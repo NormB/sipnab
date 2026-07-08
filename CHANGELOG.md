@@ -4,7 +4,38 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-08
+
+### Fixed
+
+- **TUI**: while the search prompt is open (`/` or F3), Up/Down/PgUp/PgDn/
+  Home/End now move the highlight in the live-narrowed call and stream
+  lists, and Space stars ([*]) the highlighted row — previously every key
+  went to the query editor, so the narrowed rows could not be navigated or
+  selected until Enter committed the search. Space remains a literal query
+  character in the call-flow and raw-message searches, where message
+  content legitimately contains spaces.
+
 ## [0.5.0] - 2026-07-06
+
+> The v0.5.0 release assets were rebuilt on 2026-07-08 from the re-pointed
+> tag and additionally contain the fixes below (plus the new
+> `-noaudio.deb` variants); checksums differ from the 2026-07-06 build.
+>
+> - TUI: call/stream-list selection clamped on display-list shrink
+>   (slice-out-of-range panic when a narrowed list got shorter).
+> - TUI: Enter with two or more starred rows opens one chronologically
+>   merged flow of all of them (sngrep-style), with per-row dialog
+>   attribution in detail/raw/naming.
+> - TUI: a persisted search query that narrows the list is shown on the
+>   status line (`Search: /q`) and cleared by F9 with the filter.
+> - New `[crash]` config section: panic hook restores the terminal and
+>   writes a crash report with a full backtrace; optional core-dump mode.
+> - Filter popup gained an "All" master checkbox for the method grid.
+> - pcapng writer now declares `if_tsresol=9` — files previously read with
+>   all times inflated ×1000 ("year 58484"); a repair script for old
+>   captures ships as `scripts/repair_pcapng_tsresol.py`.
+> - Call list gained a sortable Duration column alongside PDD.
 
 ### Added — activated the dormant fuzzing & property-test safety nets (WS7)
 
