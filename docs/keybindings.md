@@ -76,6 +76,7 @@ active filter.
 | d | Cycle SDP display mode (none / summary / full) |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
 | c | Cycle color scheme (method / call-id / cseq) |
+| h | Cycle header-name display (as captured / expanded / compact) — visual only, rewrites `From:` ↔ `f:` etc. in the message text views |
 | R | Toggle detail panel visibility |
 | + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
 | - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
@@ -116,6 +117,7 @@ detail pane regardless of focus.
 | / | Search within message |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
+| h | Cycle header-name display (as captured / expanded / compact) |
 | F1 | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | Esc | Back to the view it was opened from (call flow or call list) |
@@ -127,6 +129,7 @@ detail pane regardless of focus.
 | Up / k, Down / j | Scroll |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
+| h | Cycle header-name display (as captured / expanded / compact) |
 | q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
 | F1 | Help **(configurable: `help`)** |
@@ -141,6 +144,7 @@ message of the selection rendered as one scrollable document.
 | Up / k, Down / j | Scroll |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
+| h | Cycle header-name display (as captured / expanded / compact) |
 | Esc | Back to call flow |
 
 ## RTP Streams

@@ -369,6 +369,40 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// The `h` key cycles header-name display (as captured → expanded →
+    /// compact) as a purely visual transform: the same message renders
+    /// with `f:`/`i:` in compact mode and `From:`/`Call-ID:` again after
+    /// cycling back, regardless of the wire form in the capture.
+    #[test]
+    fn raw_message_header_form_toggle_is_display_only() {
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('r')); // open raw view
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let as_captured = buffer_to_string(&terminal);
+        assert!(as_captured.contains("From:"), "got:\n{as_captured}");
+
+        // h, h → compact display.
+        app.handle_key(crossterm::event::KeyCode::Char('h'));
+        app.handle_key(crossterm::event::KeyCode::Char('h'));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let compact = buffer_to_string(&terminal);
+        assert!(
+            compact.contains("f: \"1001\"") && compact.contains("i: call-1@test"),
+            "compact forms shown, got:\n{compact}"
+        );
+        assert!(!compact.contains("From:"), "got:\n{compact}");
+
+        // h → back to as-captured: the full names return (display only,
+        // nothing was mutated).
+        app.handle_key(crossterm::event::KeyCode::Char('h'));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let restored = buffer_to_string(&terminal);
+        assert!(restored.contains("From:"), "got:\n{restored}");
+    }
+
     /// Field report: OpenSIPS' default provisional reason ("100 trying --
     /// your call is important to us", 42 chars) rendered as a blank arrow
     /// in the ladder because labels wider than the pipe gap were dropped.

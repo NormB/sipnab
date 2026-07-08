@@ -4,6 +4,14 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **TUI**: `h` cycles the header-name display form — as captured /
+  expanded / compact — in every view that shows full message text (raw
+  message, call-flow detail pane, combined detail, message diff). A
+  purely visual transform of the IANA-registered compact forms
+  (`From:` ↔ `f:`, `Call-ID:` ↔ `i:`, …); the capture is never modified.
+
 ### Fixed
 
 - **TUI**: one Enter now commits the search prompt *and* opens the

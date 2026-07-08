@@ -86,6 +86,7 @@ pub enum CallFlowAction {
     CycleSdpMode,
     CycleTimestampMode,
     CycleColorMode,
+    CycleHeaderForm,
     ToggleSplit,
     GrowDetail,
     ShrinkDetail,
@@ -131,6 +132,7 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         KeyCode::Char('d') => CycleSdpMode,
         KeyCode::Char('t') => CycleTimestampMode,
         KeyCode::Char('c') => CycleColorMode,
+        KeyCode::Char('h') => CycleHeaderForm,
         KeyCode::Char('R') => ToggleSplit,
         KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Left => GrowDetail,
         KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Right => ShrinkDetail,
@@ -259,6 +261,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.color_mode = app.color_mode.next();
             app.status_error = Some(app.color_mode.label().to_string());
         }
+        CallFlowAction::CycleHeaderForm => cycle_header_form(app),
         CallFlowAction::ToggleSplit => {
             app.flow.raw_preview = !app.flow.raw_preview;
             if !app.flow.raw_preview {
@@ -685,6 +688,7 @@ pub enum RawMessageAction {
     Search,
     ToggleSyntaxHighlight,
     CycleColorMode,
+    CycleHeaderForm,
     Back,
     Help,
     OpenSaveDialog,
@@ -704,6 +708,7 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
         k if k == km.search => Search,
         KeyCode::Char('s') => ToggleSyntaxHighlight,
         KeyCode::Char('c') => CycleColorMode,
+        KeyCode::Char('h') => CycleHeaderForm,
         KeyCode::Esc => Back,
         k if k == km.help => Help,
         k if k == km.save => OpenSaveDialog,
@@ -753,6 +758,7 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
             app.color_mode = app.color_mode.next();
             app.status_error = Some(app.color_mode.label().to_string());
         }
+        RawMessageAction::CycleHeaderForm => cycle_header_form(app),
         RawMessageAction::Back => {
             if let View::RawMessage { ref call_id, .. } = app.current_view {
                 // Return to wherever the raw view was opened from.
@@ -763,6 +769,13 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
         RawMessageAction::Help => app.current_view = View::Help,
         RawMessageAction::OpenSaveDialog => open_save_popup(app),
     }
+}
+
+/// Cycle the header-name display form (as captured → expanded → compact),
+/// shared by every view that shows full message text.
+fn cycle_header_form(app: &mut App) {
+    app.header_form = app.header_form.next();
+    app.status_error = Some(app.header_form.label().to_string());
 }
 
 /// Everything the message diff view can do for a single key press.
@@ -776,6 +789,7 @@ pub enum MessageDiffAction {
     PageDown,
     ScrollTop,
     ScrollBottom,
+    CycleHeaderForm,
     Back,
 }
 
@@ -791,6 +805,7 @@ pub fn message_diff_action(km: &Keymap, key: KeyEvent) -> Option<MessageDiffActi
         KeyCode::PageDown => PageDown,
         KeyCode::Home => ScrollTop,
         KeyCode::End => ScrollBottom,
+        KeyCode::Char('h') => CycleHeaderForm,
         KeyCode::Esc => Back,
         _ => return None,
     })
@@ -819,6 +834,7 @@ fn execute_message_diff_action(app: &mut App, action: MessageDiffAction) {
         MessageDiffAction::ScrollTop => app.diff_scroll = 0,
         // Clamped to the content height by the render pass.
         MessageDiffAction::ScrollBottom => app.diff_scroll = u16::MAX,
+        MessageDiffAction::CycleHeaderForm => cycle_header_form(app),
         MessageDiffAction::Back => {
             if let View::MessageDiff { ref call_id, .. } = app.current_view {
                 let cid = call_id.clone();
@@ -840,6 +856,7 @@ pub enum CombinedDetailAction {
     PageDown,
     ScrollTop,
     ScrollBottom,
+    CycleHeaderForm,
 }
 
 /// Pure key→action mapping for the combined detail view (keymap-aware).
@@ -855,6 +872,7 @@ pub fn combined_detail_action(km: &Keymap, key: KeyEvent) -> Option<CombinedDeta
         KeyCode::PageUp => PageUp,
         KeyCode::Home => ScrollTop,
         KeyCode::End => ScrollBottom,
+        KeyCode::Char('h') => CycleHeaderForm,
         _ => return None,
     })
 }
@@ -890,6 +908,7 @@ fn execute_combined_detail_action(app: &mut App, action: CombinedDetailAction) {
         CombinedDetailAction::ScrollTop => app.raw_msg_scroll = 0,
         // Clamped to the content height by the render pass.
         CombinedDetailAction::ScrollBottom => app.raw_msg_scroll = u16::MAX,
+        CombinedDetailAction::CycleHeaderForm => cycle_header_form(app),
     }
 }
 
@@ -1350,6 +1369,47 @@ mod tests {
         handle_call_flow_key(&mut app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::RawMessage { .. }));
         app
+    }
+
+    /// The `h` key cycles the header-name display form (as captured →
+    /// expanded → compact) in every view that shows full message text.
+    #[test]
+    fn header_form_key_cycles_in_message_text_views() {
+        use crate::tui::header_form::HeaderFormMode;
+        let km = Keymap::default();
+        let h = key(KeyCode::Char('h'));
+        assert_eq!(
+            raw_message_action(&km, h),
+            Some(RawMessageAction::CycleHeaderForm)
+        );
+        assert_eq!(
+            call_flow_action(&km, h),
+            Some(CallFlowAction::CycleHeaderForm)
+        );
+        assert_eq!(
+            combined_detail_action(&km, h),
+            Some(CombinedDetailAction::CycleHeaderForm)
+        );
+        assert_eq!(
+            message_diff_action(&km, h),
+            Some(MessageDiffAction::CycleHeaderForm)
+        );
+
+        let mut app = app_in_raw_message();
+        assert_eq!(app.header_form, HeaderFormMode::AsCaptured);
+        handle_raw_message_key(&mut app, h);
+        assert_eq!(app.header_form, HeaderFormMode::Expanded);
+        assert_eq!(app.status_error.as_deref(), Some("Headers: expanded"));
+        handle_raw_message_key(&mut app, h);
+        assert_eq!(app.header_form, HeaderFormMode::Compact);
+        handle_raw_message_key(&mut app, h);
+        assert_eq!(app.header_form, HeaderFormMode::AsCaptured);
+
+        // And from the call flow view (detail pane shows message text).
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, h);
+        assert_eq!(app.header_form, HeaderFormMode::Expanded);
     }
 
     #[test]
