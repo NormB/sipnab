@@ -685,6 +685,11 @@ pub struct Cli {
     #[arg(short = 'D', long = "dump-config")]
     pub dump_config: bool,
 
+    /// Panic immediately after startup (crash-handling self-test: verifies
+    /// the `[crash]` report/backtrace/core policy end to end).
+    #[arg(long = "panic-selftest", hide = true)]
+    pub panic_selftest: bool,
+
     // ── Positional ───────────────────────────────────────────────────
     /// BPF display filter expression (trailing positional arguments).
     #[arg(trailing_var_arg = true, value_name = "BPF_FILTER")]

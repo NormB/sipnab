@@ -188,6 +188,9 @@ pub struct Config {
     /// Address name-resolution settings.
     #[serde(default)]
     pub names: NamesConfig,
+    /// Crash handling (panic reports, backtraces, core dumps).
+    #[serde(default)]
+    pub crash: CrashConfig,
 }
 
 /// Packet capture configuration.
@@ -223,7 +226,7 @@ pub struct DisplayConfig {
     /// Visible columns in the call list (list of column names).
     ///
     /// Valid names: `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`,
-    /// `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`.
+    /// `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`.
     /// When set, only the listed columns are shown; unlisted columns are hidden.
     /// When unset, all columns are visible (the default).
     pub visible_columns: Option<Vec<String>>,
@@ -242,6 +245,53 @@ pub struct FilterConfig {
     pub to: Option<String>,
     /// Default filter DSL expression.
     pub expression: Option<String>,
+}
+
+/// Crash-handling configuration: what happens when sipnab panics.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct CrashConfig {
+    /// Write a crash-report file on panic (default: true).
+    pub reports: Option<bool>,
+    /// Include a full backtrace in the crash report (default: true).
+    pub backtrace: Option<bool>,
+    /// Directory crash reports are written to
+    /// (default: `~/.local/state/sipnab`).
+    pub report_dir: Option<PathBuf>,
+    /// After the report is written: `true` aborts the process so the OS
+    /// can produce a core dump (subject to `ulimit -c` / `core_pattern`);
+    /// `false` exits cleanly with status 101, suppressing the core
+    /// (default: false).
+    pub core: Option<bool>,
+}
+
+impl CrashConfig {
+    /// Effective value of [`Self::reports`].
+    pub fn reports_enabled(&self) -> bool {
+        self.reports.unwrap_or(true)
+    }
+
+    /// Effective value of [`Self::backtrace`].
+    pub fn backtrace_enabled(&self) -> bool {
+        self.backtrace.unwrap_or(true)
+    }
+
+    /// Effective value of [`Self::core`].
+    pub fn core_enabled(&self) -> bool {
+        self.core.unwrap_or(false)
+    }
+
+    /// Effective report directory: the configured one, else
+    /// `~/.local/state/sipnab`, else a `sipnab` dir under the system tmp.
+    pub fn effective_report_dir(&self) -> PathBuf {
+        if let Some(ref dir) = self.report_dir {
+            return dir.clone();
+        }
+        match home_dir() {
+            Some(home) => home.join(".local").join("state").join("sipnab"),
+            None => std::env::temp_dir().join("sipnab"),
+        }
+    }
 }
 
 /// Security detection configuration.

@@ -310,7 +310,7 @@ impl App {
 
     /// Return the first selected message for diff comparison.
     pub fn diff_selected_msg(&self) -> Option<usize> {
-        self.flow.diff_selected
+        self.flow.diff_selected.as_ref().map(|&(_, idx)| idx)
     }
 
     /// Return the marked message index (for mark + delta).

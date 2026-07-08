@@ -269,11 +269,15 @@ pub fn render_stream_list(
     // at 50K streams. Compute scroll offset from table state.
     let visible_height = table_area.height.saturating_sub(2) as usize; // header + margin
     let selected = state.table_state.selected().unwrap_or(0);
-    let scroll_offset = if selected >= visible_height {
+    // Clamp: `selected` may be stale from before the displayed list shrank
+    // (narrowed search, evicted streams), and a zero-height viewport would
+    // otherwise push the window start past the end of `streams`.
+    let scroll_offset = if visible_height > 0 && selected >= visible_height {
         selected - visible_height + 1
     } else {
         0
-    };
+    }
+    .min(total_streams.saturating_sub(1));
     let visible_end = (scroll_offset + visible_height).min(total_streams);
     let visible_streams = &streams[scroll_offset..visible_end];
 

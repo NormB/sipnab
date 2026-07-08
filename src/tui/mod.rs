@@ -269,6 +269,7 @@ impl App {
         self.flow.fold_expanded.clear();
         self.flow.mark_index = None;
         self.flow.diff_selected = None;
+        self.flow.merged_calls.clear();
     }
 
     /// Refresh the store-derived caches and apply sticky-bottom autoscroll.
@@ -324,6 +325,9 @@ impl App {
         // bottom; a selection elsewhere is never yanked.
         if self.current_view == View::CallList {
             let displayed_len = self.displayed.ids.len();
+            // A narrowed filter/search (or eviction) can strand the
+            // selection past the new end; pull it back onto a real row.
+            self.call_list.clamp_to(displayed_len);
             if self.call_list.autoscroll
                 && self.last_rendered_dialog_rows > 0
                 && displayed_len > self.last_rendered_dialog_rows
@@ -371,7 +375,9 @@ impl App {
                 }
             }
 
-            let source = if self.flow.extended {
+            let source = if self.flow.extended || !self.flow.merged_calls.is_empty() {
+                // Extended legs / merged multi-selection can span the whole
+                // store, so any store change must re-derive.
                 LadderSource::ExtendedStore(store.generation())
             } else {
                 match store.get(&cid) {
@@ -392,20 +398,78 @@ impl App {
                 resolver_generation: self.resolver.generation(),
                 stream_generation,
                 fold_expanded: self.flow.fold_expanded.clone(),
+                merged_calls: self.flow.merged_calls.clone(),
             };
             if self.flow.ladder.key.as_ref() != Some(&key) {
-                let (participants, rows) = if self.flow.extended {
+                // Provenance travels with the layout: cleared here, filled
+                // by the merged/extended branches that interleave dialogs.
+                self.flow.ladder.index_map.clear();
+                let (participants, rows) = if !self.flow.merged_calls.is_empty() {
+                    // Merged multi-selection flow: every checked dialog's
+                    // messages, chronological, with per-row provenance so
+                    // drill-down opens the row's OWN dialog.
+                    let mut tagged: Vec<(crate::sip::SipMessage, (String, usize))> = Vec::new();
+                    for mcid in &self.flow.merged_calls {
+                        if let Some(d) = store.get(mcid) {
+                            tagged.extend(
+                                d.messages
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, m)| (m.clone(), (mcid.clone(), i))),
+                            );
+                        }
+                    }
+                    tagged.sort_by_key(|(m, _)| m.timestamp);
+                    let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
+                        tagged.into_iter().unzip();
+                    self.flow.ladder.index_map = index_map;
+                    if owned.is_empty() {
+                        (Vec::new(), Vec::new())
+                    } else {
+                        let lopts = call_flow::LayoutOptions {
+                            sdp_mode: self.sdp_display_mode,
+                            ts_mode: self.timestamp_mode,
+                            // Merged view spans dialogs: no RTP bars (the
+                            // cached segments belong to one dialog) and no
+                            // single-dialog PDD note.
+                            show_rtp: false,
+                            resolver: self.resolver.as_ref(),
+                            name_mode: self.name_mode,
+                            rtp_segments: &[],
+                        };
+                        call_flow::layout(
+                            &owned,
+                            owned[0].timestamp,
+                            None,
+                            &lopts,
+                            &self.flow.fold_expanded,
+                        )
+                    }
+                } else if self.flow.extended {
                     // Extended: merge all correlated legs (only on a miss).
                     match store.get(&cid) {
                         Some(d) => {
-                            let mut all: Vec<&crate::sip::SipMessage> = d.messages.iter().collect();
+                            let mut all: Vec<(&crate::sip::SipMessage, (String, usize))> = d
+                                .messages
+                                .iter()
+                                .enumerate()
+                                .map(|(i, m)| (m, (cid.clone(), i)))
+                                .collect();
                             let correlated = store.find_correlated(&cid);
                             for leg in &correlated {
-                                all.extend(leg.messages.iter());
+                                all.extend(
+                                    leg.messages
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, m)| (m, (leg.call_id.clone(), i))),
+                                );
                             }
-                            all.sort_by_key(|m| m.timestamp);
-                            let owned: Vec<crate::sip::SipMessage> =
-                                all.into_iter().cloned().collect();
+                            all.sort_by_key(|(m, _)| m.timestamp);
+                            let (owned, index_map): (
+                                Vec<crate::sip::SipMessage>,
+                                Vec<(String, usize)>,
+                            ) = all.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
+                            self.flow.ladder.index_map = index_map;
                             if owned.is_empty() {
                                 (Vec::new(), Vec::new())
                             } else {
@@ -565,6 +629,8 @@ impl Drop for TerminalGuard {
             LeaveAlternateScreen
         );
         let _ = terminal::disable_raw_mode();
+        // The terminal is sane again; the crash hook must not restore twice.
+        crate::crash::set_terminal_raw(false);
     }
 }
 
@@ -654,6 +720,10 @@ pub fn run_tui_with_pause(
         crossterm::cursor::Hide,
         crossterm::cursor::MoveTo(0, 0)
     )?;
+    // Let the crash hook know it must undo raw mode / mouse capture
+    // before printing a panic: release builds abort without unwinding,
+    // so the Drop guard below never runs there.
+    crate::crash::set_terminal_raw(true);
 
     // Guard ensures terminal is restored even on panic
     let _guard = TerminalGuard;
@@ -879,6 +949,372 @@ mod tests {
             app.call_list.selected(),
             2,
             "selection must follow the new bottom row"
+        );
+    }
+
+    /// Field crash regression: with the selection on the bottom row of a
+    /// short window (saved scroll offset 3), narrowing the search so only
+    /// two rows remain displayed panicked the next render pass with
+    /// "range start index 3 out of range for slice of length 2"
+    /// (call_list.rs visible-window slice). The render must survive and
+    /// the tick must clamp the selection back onto a real row.
+    #[test]
+    fn call_list_render_survives_display_shrink_with_stale_offset() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("keep-1@test", "1001", "1002", base_ts()),
+            make_invite("keep-2@test", "1003", "1004", base_ts()),
+            make_invite("drop-3@test", "1005", "1006", base_ts()),
+            make_invite("drop-4@test", "1007", "1008", base_ts()),
+        ]);
+        // 6-row terminal: 3 status lines + f-key bar + table header leave
+        // exactly ONE visible data row, so selecting the bottom row stores
+        // scroll offset 3 in the table state.
+        let mut terminal = Terminal::new(TestBackend::new(120, 6)).unwrap();
+        app.sync_caches();
+        assert_eq!(app.displayed.ids.len(), 4);
+        app.call_list.move_to_bottom(app.displayed.ids.len());
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // Narrow the search: only the two "keep" dialogs stay displayed.
+        app.search_query = "keep".into();
+        app.sync_caches();
+        terminal.draw(|f| app.render(f)).unwrap(); // panicked before the fix
+
+        assert!(
+            app.call_list.selected() < 2,
+            "selection must be clamped to the shrunken list, got {}",
+            app.call_list.selected()
+        );
+    }
+
+    /// Same defect class in the stream list: a stale bottom-row selection
+    /// plus a search that narrows the displayed streams must not push the
+    /// visible-window slice start past the list length.
+    #[test]
+    fn stream_list_render_survives_display_shrink_with_stale_selection() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        {
+            let mut store = ss.write();
+            let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            for i in 0..4u16 {
+                let parsed = crate::capture::ParsedPacket {
+                    timestamp: ts,
+                    src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20000 + i * 2,
+                    dst_port: 30000 + i * 2,
+                    transport: crate::capture::parse::TransportProto::Udp,
+                    payload: vec![0u8; 172].into(),
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                };
+                let rtp = crate::rtp::parser::RtpHeader {
+                    version: 2,
+                    padding: false,
+                    extension: false,
+                    csrc_count: 0,
+                    marker: false,
+                    payload_type: 0,
+                    sequence: 1,
+                    timestamp: 0,
+                    ssrc: 0xAAAA_0000 + u32::from(i),
+                    payload_offset: 12,
+                };
+                store.process_rtp(&parsed, &rtp, ts);
+            }
+            // Link only one stream to a dialog: a Call-ID search will keep
+            // just this one displayed.
+            store.link_to_dialog(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "keep-1@test",
+            );
+        }
+        let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
+        app.current_view = View::StreamList;
+        let mut terminal = Terminal::new(TestBackend::new(120, 7)).unwrap();
+        app.stream_list.move_to_bottom(4);
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // Narrow the search so a single stream remains displayed.
+        app.search_query = "keep-1".into();
+        terminal.draw(|f| app.render(f)).unwrap(); // panicked before the fix
+    }
+
+    /// Enter with multiple rows checked ([*]) must open a flow showing ALL
+    /// checked dialogs' messages merged chronologically — not just the
+    /// cursor (>) row's dialog — and drilling into a row must open the raw
+    /// view of THAT row's dialog.
+    #[test]
+    fn enter_with_multi_selection_shows_all_checked_dialogs() {
+        use controllers::test_support::{base_ts, make_invite};
+        use crossterm::event::KeyCode;
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("a@test", "1001", "1002", base_ts()),
+            make_invite(
+                "b@test",
+                "1003",
+                "1004",
+                base_ts() + chrono::TimeDelta::seconds(5),
+            ),
+            make_invite(
+                "c@test",
+                "1005",
+                "1006",
+                base_ts() + chrono::TimeDelta::seconds(10),
+            ),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // Check rows 0 (a@test) and 2 (c@test), cursor ends on row 2.
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Enter);
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+        terminal.draw(|f| app.render(f)).unwrap();
+
+        // The ladder must contain message rows from BOTH checked dialogs.
+        let row_cids: std::collections::HashSet<&str> = app
+            .flow
+            .ladder
+            .rows
+            .iter()
+            .filter(|r| matches!(r.kind, call_flow::prepare::RowKind::Message { .. }))
+            .map(|r| r.call_id.as_str())
+            .collect();
+        assert_eq!(
+            row_cids,
+            ["a@test", "c@test"].into_iter().collect(),
+            "flow must merge all checked dialogs, got rows from {row_cids:?}"
+        );
+
+        // Row 0 is a@test's INVITE (earliest); Enter must open ITS raw view.
+        app.handle_key(KeyCode::Enter);
+        match &app.current_view {
+            View::RawMessage {
+                call_id,
+                message_index,
+            } => {
+                assert_eq!(call_id, "a@test", "raw view must show the row's own dialog");
+                assert_eq!(*message_index, 0);
+            }
+            v => panic!("expected RawMessage view, got {v:?}"),
+        }
+    }
+
+    /// A single checked row (or none) keeps the classic behavior: Enter
+    /// opens the cursor row's dialog flow.
+    #[test]
+    fn enter_with_single_or_no_selection_opens_cursor_dialog() {
+        use controllers::test_support::{base_ts, make_invite};
+        use crossterm::event::KeyCode;
+        let mut app = App::with_processed_messages(vec![
+            make_invite("a@test", "1001", "1002", base_ts()),
+            make_invite(
+                "b@test",
+                "1003",
+                "1004",
+                base_ts() + chrono::TimeDelta::seconds(5),
+            ),
+        ]);
+        app.sync_caches();
+        // No checkboxes: cursor row wins.
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.current_view, View::CallFlow("b@test".to_string()));
+        app.handle_key(KeyCode::Esc);
+        // One checkbox on the cursor row: same as classic single-dialog open.
+        app.handle_key(KeyCode::Char(' '));
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.current_view, View::CallFlow("b@test".to_string()));
+    }
+
+    /// Render one frame and return the given buffer row as a string.
+    #[cfg(test)]
+    fn rendered_row(app: &mut App, width: u16, height: u16, y: u16) -> String {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect()
+    }
+
+    /// Field incident regression (the "filter does not work" report): a
+    /// search query persisted with Enter keeps narrowing the call list, so
+    /// it must stay VISIBLE on the status line after leaving search mode —
+    /// otherwise a later filter change appears broken (148 dialogs, match
+    /// expression `(method == 'OPTIONS' OR method == 'INVITE')`, yet "4
+    /// displayed" because an invisible query "559" was still ANDed in).
+    #[test]
+    fn persisted_search_query_stays_visible_on_status_line() {
+        use controllers::test_support::{base_ts, make_invite};
+        use crossterm::event::KeyCode;
+        let mut app = App::with_processed_messages(vec![
+            make_invite("x559@test", "1001", "1002", base_ts()),
+            make_invite("other@test", "1003", "1004", base_ts()),
+        ]);
+        app.handle_key(KeyCode::F(3));
+        for c in "559".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter); // leave search mode, query persists
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, "559");
+        app.sync_caches();
+        assert_eq!(
+            app.cached_displayed_count, 1,
+            "persisted query must narrow the list (that is its point)"
+        );
+        let line3 = rendered_row(&mut app, 120, 24, 2);
+        assert!(
+            line3.contains("559"),
+            "a query that still narrows the list must be visible on the \
+             status line, got: {line3:?}"
+        );
+    }
+
+    /// F9 (clear filter) must clear EVERYTHING that narrows the call list —
+    /// the match expression AND the persisted search query — restoring the
+    /// full dialog count. Mirrors the field incident's dialog population
+    /// (OPTIONS + INVITE) and its exact match expression.
+    #[test]
+    fn clear_filter_key_clears_match_expression_and_search() {
+        use controllers::test_support::{base_ts, make_invite, make_request};
+        use crossterm::event::KeyCode;
+        let mut messages: Vec<crate::sip::SipMessage> = (0..6)
+            .map(|i| {
+                make_request(
+                    "OPTIONS",
+                    &format!("opt-{i}@test"),
+                    "sipsak",
+                    "proxy",
+                    base_ts() + chrono::TimeDelta::seconds(i),
+                )
+            })
+            .collect();
+        messages.push(make_invite(
+            "inv-559@test",
+            "1001",
+            "1002",
+            base_ts() + chrono::TimeDelta::seconds(10),
+        ));
+        messages.push(make_invite(
+            "inv-2@test",
+            "1003",
+            "1004",
+            base_ts() + chrono::TimeDelta::seconds(11),
+        ));
+        let mut app = App::with_processed_messages(messages);
+
+        // The incident's exact match expression: matches ALL 8 dialogs.
+        let expr = "(method == 'OPTIONS' OR method == 'INVITE')";
+        app.active_filter = Some(crate::sip::dsl::FilterExpr::parse(expr).unwrap());
+        app.active_filter_text = expr.to_string();
+        app.sync_caches();
+        assert_eq!(
+            app.cached_displayed_count, 8,
+            "the filter alone hides nothing"
+        );
+
+        // A persisted search query silently narrows to 1.
+        app.handle_key(KeyCode::F(3));
+        for c in "559".chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+        app.sync_caches();
+        assert_eq!(app.cached_displayed_count, 1);
+
+        // F9 must restore the full list: no invisible narrowing survives.
+        app.handle_key(KeyCode::F(9));
+        app.sync_caches();
+        assert!(app.active_filter.is_none());
+        assert_eq!(app.search_query, "", "F9 must also drop the search query");
+        assert_eq!(
+            app.cached_displayed_count, 8,
+            "after clear-filter every dialog must be displayed again"
+        );
+    }
+
+    /// Field report: "the PDD shown looks like the length of the call".
+    /// Pin the semantics with a call whose PDD (INVITE→180 = 1.5 s) and
+    /// length (INVITE→final 200 = 61.5 s) are wildly different: the PDD
+    /// column must show the 1.5 s, and the call length must be visible in
+    /// its own Duration column — both values available, never conflated.
+    #[test]
+    fn pdd_column_is_pdd_and_duration_column_is_call_length() {
+        use controllers::test_support::{base_ts, make_invite, make_request, make_response};
+        let t0 = base_ts();
+        let mut app = App::with_processed_messages(vec![
+            make_invite("call-pdd@test", "1001", "1002", t0),
+            make_response(
+                "180 Ringing",
+                "call-pdd@test",
+                "INVITE",
+                t0 + chrono::TimeDelta::milliseconds(1500),
+            ),
+            make_response(
+                "200 OK",
+                "call-pdd@test",
+                "INVITE",
+                t0 + chrono::TimeDelta::seconds(3),
+            ),
+            make_request(
+                "BYE",
+                "call-pdd@test",
+                "1001",
+                "1002",
+                t0 + chrono::TimeDelta::seconds(61),
+            ),
+            make_response(
+                "200 OK",
+                "call-pdd@test",
+                "BYE",
+                t0 + chrono::TimeDelta::milliseconds(61_500),
+            ),
+        ]);
+        app.sync_caches();
+
+        // Ground truth from the store before looking at the rendering.
+        {
+            let store = app.dialog_store.read();
+            let d = store.get("call-pdd@test").expect("dialog exists");
+            assert_eq!(d.timing.pdd_ms(), Some(1500), "PDD is INVITE→180");
+            assert_eq!(
+                (d.updated_at - d.created_at).num_milliseconds(),
+                61_500,
+                "call length is first→last message"
+            );
+        }
+
+        // Header advertises both columns; the row shows both values.
+        let header = rendered_row(&mut app, 160, 10, 3);
+        assert!(
+            header.contains("PDD") && header.contains("Duration"),
+            "both PDD and Duration columns must exist, header: {header:?}"
+        );
+        let row = rendered_row(&mut app, 160, 10, 4);
+        assert!(
+            row.contains("1500ms"),
+            "PDD column must show INVITE→180, row: {row:?}"
+        );
+        assert!(
+            row.contains("1m1s"),
+            "Duration column must show the call length, row: {row:?}"
         );
     }
 
@@ -1141,7 +1577,12 @@ mod tests {
         st.checkbox_down(); // 5 -> 7
         st.checkbox_down(); // 7 -> 9 (UPDATE, right col bottom)
         assert_eq!(st.checkbox_index(), Some(9));
-        st.checkbox_down(); // bottom of RIGHT column -> buttons
+        st.checkbox_down(); // bottom of RIGHT column -> "All" master checkbox
+        assert_eq!(st.focused_field(), ALL_METHODS_IDX);
+        st.checkbox_up(); // and back up to the right-column bottom
+        assert_eq!(st.checkbox_index(), Some(9));
+        st.checkbox_down();
+        st.checkbox_down(); // "All" -> buttons
         assert_eq!(st.focused_field(), FILTER_BUTTON_IDX);
 
         // Up reverses: from OPTIONS (idx 1) back to INFO (idx 8).

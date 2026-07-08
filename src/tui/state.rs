@@ -338,12 +338,16 @@ pub(in crate::tui) const FILTER_METHODS: [&str; 10] = [
 /// Number of text input fields in the filter dialog.
 pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 5;
 
-/// Total focusable items: 5 text fields + 10 checkboxes + 2 buttons.
+/// Total focusable items: 5 text fields + 10 method checkboxes + the
+/// "All" master checkbox + 2 buttons.
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
-    FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 2;
+    FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
 
+/// Focus index of the "All" master checkbox (enable/disable every
+/// method at once), right after the per-method checkboxes.
+pub(in crate::tui) const ALL_METHODS_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
 /// Index of the "Filter" button in focused_field.
-pub(in crate::tui) const FILTER_BUTTON_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
+pub(in crate::tui) const FILTER_BUTTON_IDX: usize = ALL_METHODS_IDX + 1;
 /// Index of the "Cancel" button in focused_field.
 pub(in crate::tui) const CANCEL_BUTTON_IDX: usize = FILTER_BUTTON_IDX + 1;
 
@@ -465,14 +469,19 @@ pub(in crate::tui) struct CallFlowViewState {
     pub(in crate::tui) raw_preview_pct: u16,
     /// Whether extended (multi-leg) flow is active.
     pub(in crate::tui) extended: bool,
+    /// Call-IDs of the checkbox-selected dialogs this flow merges, in
+    /// display order (Enter on a multi-selection). Empty = classic
+    /// single-dialog flow of the view's anchor Call-ID.
+    pub(in crate::tui) merged_calls: Vec<String>,
     /// When set, the ladder is filtered to a single transaction — the CSeq
     /// grouping key (number + method) anchored when the filter was toggled
     /// on. `None` shows the whole dialog. See [`call_flow::transaction_key`].
     pub(in crate::tui) transaction_filter: Option<(u32, String)>,
     /// Whether RTP stream info is displayed in the flow.
     pub(in crate::tui) show_rtp: bool,
-    /// First selected message index for diff comparison (Space key).
-    pub(in crate::tui) diff_selected: Option<usize>,
+    /// First selected message for diff comparison (Space key): the dialog
+    /// it lives in and its index there (merged flows interleave dialogs).
+    pub(in crate::tui) diff_selected: Option<(String, usize)>,
     /// Marked message index for delta measurement (set with 'm').
     pub(in crate::tui) mark_index: Option<usize>,
     /// Set of message indices where folds are expanded ('e' toggles).
@@ -501,6 +510,7 @@ impl Default for CallFlowViewState {
             raw_preview: true,
             raw_preview_pct: 40,
             extended: false,
+            merged_calls: Vec::new(),
             transaction_filter: None,
             show_rtp: false,
             diff_selected: None,
@@ -546,6 +556,9 @@ pub(in crate::tui) struct LadderKey {
     /// when they don't (extended view, or bars off).
     pub(in crate::tui) stream_generation: Option<u64>,
     pub(in crate::tui) fold_expanded: HashSet<usize>,
+    /// Checked dialogs a multi-selection flow merges (display order);
+    /// empty for the classic single-dialog ladder.
+    pub(in crate::tui) merged_calls: Vec<String>,
 }
 
 /// Cross-tick cache of the laid-out ladder (the theme-free, expensive half
@@ -563,6 +576,12 @@ pub(in crate::tui) struct LadderCache {
     pub(in crate::tui) rtp_segs: Vec<call_flow::RtpCodecSegment>,
     /// `(call_id, stream-store generation)` the segments were derived at.
     pub(in crate::tui) segs_key: Option<(String, u64)>,
+    /// Per position in the laid-out message slice: which dialog the
+    /// message belongs to and its index within THAT dialog's messages.
+    /// Filled for merged/extended ladders (their slice interleaves several
+    /// dialogs); empty for single-dialog ladders, where the position IS
+    /// the index into the anchor dialog.
+    pub(in crate::tui) index_map: Vec<(String, usize)>,
 }
 
 impl NameDialogState {
@@ -648,6 +667,19 @@ impl FilterDialogState {
         self.methods.iter().any(|&v| v)
     }
 
+    /// Whether every SIP method checkbox is checked — the "All" master
+    /// checkbox renders checked exactly then.
+    pub(in crate::tui) fn all_methods_checked(&self) -> bool {
+        self.methods.iter().all(|&v| v)
+    }
+
+    /// The "All" master checkbox: from a fully-checked state it disables
+    /// every method; from any other state it enables every method first.
+    pub(in crate::tui) fn toggle_all_methods(&mut self) {
+        let target = !self.all_methods_checked();
+        self.methods = [target; 10];
+    }
+
     /// Get a reference to the text field at the given index (0-4).
     pub(in crate::tui) fn text_field(&self, idx: usize) -> &str {
         match idx {
@@ -682,9 +714,10 @@ impl FilterDialogState {
         self.focused_field >= FILTER_TEXT_FIELD_COUNT && self.focused_field < FILTER_BUTTON_IDX
     }
 
-    /// Get the checkbox index (0-9) for the currently focused element.
+    /// Get the METHOD checkbox index (0-9) for the currently focused
+    /// element; the "All" master checkbox is not a method slot.
     pub(in crate::tui) fn checkbox_index(&self) -> Option<usize> {
-        if self.is_checkbox_focused() {
+        if self.is_checkbox_focused() && self.focused_field != ALL_METHODS_IDX {
             Some(self.focused_field - FILTER_TEXT_FIELD_COUNT)
         } else {
             None
@@ -726,6 +759,11 @@ impl FilterDialogState {
     /// next column, then to the buttons — so vertical navigation alone reaches
     /// every checkbox (the right column was previously unreachable this way).
     pub(in crate::tui) fn checkbox_down(&mut self) {
+        if self.focused_field == ALL_METHODS_IDX {
+            // "All" row -> buttons row.
+            self.focused_field = FILTER_BUTTON_IDX;
+            return;
+        }
         if let Some(idx) = self.checkbox_index() {
             let next = idx + 2;
             if next < FILTER_METHODS.len() {
@@ -735,14 +773,19 @@ impl FilterDialogState {
                 // Bottom of the LEFT column -> top of the RIGHT column.
                 self.focused_field = FILTER_TEXT_FIELD_COUNT + 1;
             } else {
-                // Bottom of the RIGHT column -> buttons row.
-                self.focused_field = FILTER_BUTTON_IDX;
+                // Bottom of the RIGHT column -> the "All" row.
+                self.focused_field = ALL_METHODS_IDX;
             }
         }
     }
 
     /// Move checkbox focus up one row (reverse of [`Self::checkbox_down`]).
     pub(in crate::tui) fn checkbox_up(&mut self) {
+        if self.focused_field == ALL_METHODS_IDX {
+            // "All" row -> bottom of the RIGHT column.
+            self.focused_field = FILTER_TEXT_FIELD_COUNT + (FILTER_METHODS.len() - 1);
+            return;
+        }
         if let Some(idx) = self.checkbox_index() {
             if idx >= 2 {
                 // Same column, one row up.
@@ -777,9 +820,11 @@ impl FilterDialogState {
         }
     }
 
-    /// Toggle the currently focused checkbox.
+    /// Toggle the currently focused checkbox ("All" toggles every method).
     pub(in crate::tui) fn toggle_checkbox(&mut self) {
-        if let Some(idx) = self.checkbox_index() {
+        if self.focused_field == ALL_METHODS_IDX {
+            self.toggle_all_methods();
+        } else if let Some(idx) = self.checkbox_index() {
             self.methods[idx] = !self.methods[idx];
         }
     }

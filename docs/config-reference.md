@@ -57,7 +57,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides this |
-| `visible_columns` | array | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`. Adjust at runtime with F10 |
+| `visible_columns` | array | all columns | Call-list columns to show, by name (case-insensitive): `"#"`, `"Method"`, `"From"`, `"To"`, `"Source"`, `"Destination"`, `"State"`, `"Msgs"`, `"Date"`, `"PDD"`, `"Duration"`. Adjust at runtime with F10 |
 
 ```toml
 [display]
@@ -168,6 +168,28 @@ persist_to_config = true
 [names.manual]
 "10.0.0.1" = "sbc-edge"
 "2001:db8::1" = "core6"
+```
+
+### [crash]
+
+What happens when sipnab panics: the panic hook restores the terminal
+(release builds abort without unwinding, so raw mode / mouse capture would
+otherwise be left on), writes a crash report, and then either exits cleanly
+or aborts so the OS can produce a core dump.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
+| `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
+| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) are written to |
+| `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
+
+```toml
+[crash]
+reports = true
+backtrace = true
+report_dir = "/var/log/sipnab"
+core = false
 ```
 
 ### [theme]
