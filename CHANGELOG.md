@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-08
+
 ### Added
 
 - **TUI**: `h` cycles the header-name display form — as captured /
