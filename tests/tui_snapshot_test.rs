@@ -369,6 +369,37 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Field report: OpenSIPS' default provisional reason ("100 trying --
+    /// your call is important to us", 42 chars) rendered as a blank arrow
+    /// in the ladder because labels wider than the pipe gap were dropped.
+    /// The truncated label must be visible on the arrow row.
+    #[test]
+    fn call_flow_long_reason_phrase_stays_visible() {
+        let t0 = base_ts();
+        let messages = vec![
+            make_invite("long-reason@test", "1001", "1002", t0),
+            make_response(
+                "long-reason@test",
+                100,
+                "trying -- your call is important to us",
+                "INVITE",
+                t0 + chrono::TimeDelta::milliseconds(20),
+            ),
+        ];
+        let mut app = App::with_processed_messages(messages);
+        app.handle_key(crossterm::event::KeyCode::Enter);
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains("100 trying"),
+            "the 100's reason must be visible (truncated) on the arrow, got:\n{output}"
+        );
+    }
+
     #[test]
     fn call_flow_split_focus_detail() {
         // Open the call flow split, then Tab to focus the detail pane. The

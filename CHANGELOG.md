@@ -16,6 +16,10 @@ All notable changes to sipnab will be documented in this file.
   dead key there. Call-list behavior (Space stars) is unchanged.
 - **TUI**: the raw message view now binds End (jump to bottom), matching
   every other scrollable view and what F1 help already claimed.
+- **TUI**: a flow-ladder label wider than the gap between its two
+  participant pipes is truncated with an ellipsis instead of dropped —
+  OpenSIPS' default "100 trying -- your call is important to us"
+  previously rendered as a blank arrow.
 - Crash reports get a per-process sequence number in the filename — two
   panics in the same second from the same process previously overwrote
   each other's report.
