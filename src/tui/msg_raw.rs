@@ -22,6 +22,8 @@ pub struct RawMessageView<'a> {
     pub search_query: &'a str,
     /// When `false`, render the message as plain unstyled text.
     pub syntax_highlight: bool,
+    /// Header-name display form (as captured / expanded / compact).
+    pub header_form: super::header_form::HeaderFormMode,
     pub theme: &'a super::Theme,
 }
 
@@ -95,7 +97,8 @@ pub fn render_raw_message(
         msg.transport,
     );
 
-    let raw_text = String::from_utf8_lossy(&msg.raw);
+    let raw_bytes = String::from_utf8_lossy(&msg.raw);
+    let raw_text = super::header_form::reformat_headers(&raw_bytes, view.header_form);
     let lines = if view.syntax_highlight {
         highlight_sip_message(&info, &raw_text, search_query, theme)
     } else {
@@ -122,6 +125,8 @@ pub struct CombinedDetailView<'a> {
     pub scroll_offset: u16,
     /// When `false`, render the messages as plain unstyled text.
     pub syntax_highlight: bool,
+    /// Header-name display form (as captured / expanded / compact).
+    pub header_form: super::header_form::HeaderFormMode,
     pub theme: &'a super::Theme,
 }
 
@@ -158,17 +163,35 @@ pub fn render_combined_detail(
         }
     };
 
-    let mut lines: Vec<Line<'_>> = Vec::new();
     let total = indices.len();
-    for (n, &idx) in indices.iter().enumerate() {
-        let Some(msg) = dialog.messages.get(idx) else {
-            continue;
-        };
+    // Pre-render each message's (possibly header-reformatted) text into
+    // owned storage that outlives the styled lines borrowing from it.
+    let entries: Vec<(String, String)> = indices
+        .iter()
+        .filter_map(|&idx| {
+            let msg = dialog.messages.get(idx)?;
+            let raw_bytes = String::from_utf8_lossy(&msg.raw);
+            let text =
+                super::header_form::reformat_headers(&raw_bytes, view.header_form).into_owned();
+            let info = format!(
+                "{} {}:{} -> {}:{} [{}]",
+                msg.timestamp.format("%H:%M:%S%.3f"),
+                msg.src_addr,
+                msg.src_port,
+                msg.dst_addr,
+                msg.dst_port,
+                msg.transport,
+            );
+            Some((info, text))
+        })
+        .collect();
+
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    for (n, (info, raw_text)) in entries.iter().enumerate() {
         if n > 0 {
             lines.push(Line::from(""));
         }
         // Separator header: position + the message's request/status line.
-        let raw_text = String::from_utf8_lossy(&msg.raw);
         let start_line = raw_text.lines().next().unwrap_or("").trim();
         lines.push(Line::from(Span::styled(
             format!("──── [{}/{total}] {start_line} ", n + 1),
@@ -176,19 +199,10 @@ pub fn render_combined_detail(
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
-        let info = format!(
-            "{} {}:{} -> {}:{} [{}]",
-            msg.timestamp.format("%H:%M:%S%.3f"),
-            msg.src_addr,
-            msg.src_port,
-            msg.dst_addr,
-            msg.dst_port,
-            msg.transport,
-        );
         if view.syntax_highlight {
-            lines.extend(highlight_sip_message(&info, &raw_text, "", theme));
+            lines.extend(highlight_sip_message(info, raw_text, "", theme));
         } else {
-            lines.extend(plain_sip_message(&info, &raw_text));
+            lines.extend(plain_sip_message(info, raw_text));
         }
     }
 

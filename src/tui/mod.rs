@@ -7,6 +7,7 @@
 
 pub mod call_flow;
 pub mod call_list;
+pub mod header_form;
 pub mod help;
 pub mod msg_raw;
 pub mod stream_detail;
@@ -135,6 +136,9 @@ pub struct App {
     file_open: FileOpenState,
 
     // ── Call flow display modes ────────────────────────────────────
+    /// Header-name display form (as captured / expanded / compact) for
+    /// every view that shows full message text.
+    header_form: header_form::HeaderFormMode,
     /// SDP display mode (None / Summary / Full).
     /// Name-resolution display mode (Off / Names / Dns).
     name_mode: NameMode,
@@ -222,6 +226,7 @@ impl App {
             names_save_path: None,
             names_config_path: None,
             name_dialog: NameDialogState::default(),
+            header_form: header_form::HeaderFormMode::default(),
             sdp_display_mode: SdpDisplayMode::default(),
             timestamp_mode: TimestampMode::default(),
             color_mode: ColorMode::default(),

@@ -59,6 +59,7 @@ CALL FLOW:
   d                Cycle SDP display (none / summary / full)
   t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
   c                Cycle colors (method / call-id / cseq)
+  h                Header names (as captured / expanded / compact)
   R                Toggle detail panel
   m / M            Mark message / clear marks
   e                Fold / expand retransmits
@@ -78,12 +79,14 @@ RAW MESSAGE:
   /                Search in message
   s                Toggle syntax highlighting
   c                Cycle colors
+  h                Header names (as captured / expanded / compact)
   Esc              Back to previous view
 
 MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
   \u{2191}/\u{2193}, j/k       Scroll
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
+  h                Header names (diff and combined detail)
   Esc              Back
 
 RTP STREAMS (Tab):

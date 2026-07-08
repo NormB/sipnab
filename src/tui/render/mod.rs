@@ -280,6 +280,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                             selected_msg: detail_sel,
                             scroll_offset: app.flow.detail_scroll,
                             focused: app.flow.detail_focused,
+                            header_form: app.header_form,
                             theme: &app.theme,
                         },
                     );
@@ -306,6 +307,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                         scroll_offset: app.raw_msg_scroll,
                         search_query: &app.search_query,
                         syntax_highlight: app.syntax_highlight,
+                        header_form: app.header_form,
                         theme: &app.theme,
                     },
                 );
@@ -330,6 +332,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                         msg1_idx: *msg1_idx,
                         msg2_idx: *msg2_idx,
                         scroll: app.diff_scroll,
+                        header_form: app.header_form,
                         theme: &app.theme,
                     },
                 );
@@ -353,6 +356,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                         scope,
                         scroll_offset: app.raw_msg_scroll,
                         syntax_highlight: app.syntax_highlight,
+                        header_form: app.header_form,
                         theme: &app.theme,
                     },
                 );
@@ -519,6 +523,8 @@ pub(in crate::tui) struct MessageDiffView<'a> {
     pub(in crate::tui) msg1_idx: usize,
     pub(in crate::tui) msg2_idx: usize,
     pub(in crate::tui) scroll: u16,
+    /// Header-name display form (as captured / expanded / compact).
+    pub(in crate::tui) header_form: header_form::HeaderFormMode,
     pub(in crate::tui) theme: &'a Theme,
 }
 
@@ -535,6 +541,7 @@ pub(in crate::tui) fn render_message_diff(
         msg1_idx,
         msg2_idx,
         scroll,
+        header_form: form,
         theme,
     } = *view;
     let dialog = match store.get(call_id) {
@@ -555,8 +562,10 @@ pub(in crate::tui) fn render_message_diff(
         return 0;
     };
 
-    let raw1 = String::from_utf8_lossy(&msg1.raw);
-    let raw2 = String::from_utf8_lossy(&msg2.raw);
+    let raw1_bytes = String::from_utf8_lossy(&msg1.raw);
+    let raw2_bytes = String::from_utf8_lossy(&msg2.raw);
+    let raw1 = header_form::reformat_headers(&raw1_bytes, form);
+    let raw2 = header_form::reformat_headers(&raw2_bytes, form);
 
     let lines1: Vec<&str> = raw1.lines().collect();
     let lines2: Vec<&str> = raw2.lines().collect();
@@ -998,6 +1007,7 @@ mod tests {
                         msg1_idx: 0,
                         msg2_idx: 1,
                         scroll: 0,
+                        header_form: header_form::HeaderFormMode::AsCaptured,
                         theme: &theme,
                     },
                 );
@@ -1032,6 +1042,7 @@ mod tests {
                         msg1_idx: 0,
                         msg2_idx: 999,
                         scroll: 0,
+                        header_form: header_form::HeaderFormMode::AsCaptured,
                         theme: &theme,
                     },
                 );

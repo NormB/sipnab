@@ -664,6 +664,8 @@ pub struct MessageDetailView<'a> {
     /// Highlights the border when the detail pane holds keyboard focus
     /// (Tab toggles it).
     pub focused: bool,
+    /// Header-name display form (as captured / expanded / compact).
+    pub header_form: crate::tui::header_form::HeaderFormMode,
     pub theme: &'a Theme,
 }
 
@@ -682,6 +684,7 @@ pub fn render_message_detail(
         selected_msg,
         scroll_offset,
         focused,
+        header_form,
         theme,
     } = *view;
     let dialog = match store.get(call_id) {
@@ -739,7 +742,8 @@ pub fn render_message_detail(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let raw_text = String::from_utf8_lossy(&msg.raw);
+    let raw_bytes = String::from_utf8_lossy(&msg.raw);
+    let raw_text = crate::tui::header_form::reformat_headers(&raw_bytes, header_form);
     let lines = highlight_sip_detail(&raw_text, theme);
     let total_lines = lines.len();
 
@@ -2036,6 +2040,7 @@ mod tests {
                     selected_msg: 0,
                     scroll_offset: 0,
                     focused: true,
+                    header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
                     theme: &theme,
                 },
             );
@@ -2071,6 +2076,7 @@ mod tests {
                     selected_msg: 0,
                     scroll_offset: 0,
                     focused: false,
+                    header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
                     theme: &theme,
                 },
             );
@@ -2130,6 +2136,7 @@ mod tests {
                     selected_msg: 0,
                     scroll_offset: 0,
                     focused: true,
+                    header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
                     theme: &theme,
                 },
             )
@@ -2145,6 +2152,7 @@ mod tests {
                     selected_msg: 0,
                     scroll_offset: 0,
                     focused: false,
+                    header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
                     theme: &theme,
                 },
             )
