@@ -412,11 +412,30 @@ mod tests {
             // Adversarial: a closed fd yields POLLNVAL. wait_readable must
             // surface an error (fatal) rather than report Readable, which —
             // paired with a no-op next_packet — would hot-spin forever.
-            let (r, w) = make_pipe();
-            close(r);
-            let res = wait_readable(r, Duration::from_millis(50));
-            assert!(res.is_err(), "closed fd must error, got {res:?}");
-            close(w);
+            //
+            // The fd table is process-global, so a bare close(r) + poll(r)
+            // races other parallel tests that can recycle the freed number
+            // into a live pipe (making the poll succeed). Retry with fresh
+            // pipes until one poll lands on a genuinely-closed fd: a correct
+            // wait_readable errors on the first non-recycled attempt, while
+            // a broken one that always reports Readable exhausts every try
+            // and fails. A false pass would need hundreds of consecutive
+            // recycle wins — astronomically unlikely.
+            let mut saw_error = false;
+            for _ in 0..512 {
+                let (r, w) = make_pipe();
+                close(r);
+                let res = wait_readable(r, Duration::from_millis(5));
+                close(w);
+                if res.is_err() {
+                    saw_error = true;
+                    break;
+                }
+            }
+            assert!(
+                saw_error,
+                "a closed fd must error (POLLNVAL); wait_readable never did"
+            );
         }
     }
 
