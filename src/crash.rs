@@ -10,7 +10,7 @@
 //! and then either exits cleanly or lets the OS produce a core dump.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::config::CrashConfig;
 
@@ -86,14 +86,20 @@ pub fn build_crash_report(
     report
 }
 
+/// Distinguishes reports written by this process within the same second:
+/// the timestamp+pid name alone collides when two threads crash at once,
+/// and the second report would silently overwrite the first.
+static REPORT_SEQ: AtomicU64 = AtomicU64::new(0);
+
 /// Write `contents` to a new timestamped `sipnab-crash-*.log` file in
 /// `dir` (created if missing) and return its path.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let name = format!(
-        "sipnab-crash-{}-{}.log",
+        "sipnab-crash-{}-{}-{}.log",
         chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-        std::process::id()
+        std::process::id(),
+        REPORT_SEQ.fetch_add(1, Ordering::Relaxed)
     );
     let path = dir.join(name);
     std::fs::write(&path, contents)?;
@@ -295,6 +301,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "the-contents");
     }
 
+    /// Two reports written by the same process within the same second
+    /// must land in two files — a timestamp+pid name alone collides, and
+    /// the second crash silently overwrites the first (seen in CI: an
+    /// unrelated test's panic routed through the installed hook clobbered
+    /// the probe's report).
+    #[test]
+    fn write_report_same_second_does_not_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_crash_report(dir.path(), "first-crash").unwrap();
+        let b = write_crash_report(dir.path(), "second-crash").unwrap();
+        assert_ne!(a, b, "distinct paths for back-to-back reports");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "first-crash");
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "second-crash");
+    }
+
     /// End-to-end hook behavior in-process: a panicking thread triggers
     /// the hook, which writes the report and decides Exit(101) under the
     /// default no-core policy. The previous hook is restored afterwards.
@@ -323,12 +344,21 @@ mod tests {
         std::panic::set_hook(prev);
 
         assert_eq!(*decided.lock().unwrap(), Some(PostAction::Exit(101)));
-        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
-        assert_eq!(entries.len(), 1, "exactly one crash report");
-        let contents = std::fs::read_to_string(entries[0].as_ref().unwrap().path()).unwrap();
-        assert!(contents.contains("intentional hook-test panic"));
-        assert!(contents.contains("crash-probe"), "thread name recorded");
-        assert!(contents.contains("Backtrace:"), "backtrace captured");
+        // The hook is process-global: while installed it also fires for
+        // panics of unrelated concurrently running tests (seen in CI), so
+        // identify the probe's report by content instead of assuming it
+        // is alone in the directory.
+        let reports: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        let ours: Vec<&String> = reports
+            .iter()
+            .filter(|c| c.contains("intentional hook-test panic"))
+            .collect();
+        assert_eq!(ours.len(), 1, "exactly one report for the probe panic");
+        assert!(ours[0].contains("crash-probe"), "thread name recorded");
+        assert!(ours[0].contains("Backtrace:"), "backtrace captured");
     }
 
     /// reports=false must not write any file but still decide the action.
