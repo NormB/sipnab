@@ -25,25 +25,39 @@ pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (
         return (arrow, start);
     }
 
-    let label_with_pad = label.len() + 2;
-    let arrow = if label_with_pad + 2 > width {
-        // Label doesn't fit, just draw the line
-        let line: String = std::iter::repeat_n(line_char, width.saturating_sub(1)).collect();
-        if goes_right {
-            format!("{line}\u{25B6}")
-        } else {
-            format!("\u{25C0}{line}")
-        }
+    // A label wider than the gap is truncated to fit — dropping the text
+    // entirely leaves a blank arrow that reads as an empty row (seen with
+    // OpenSIPS' 42-char "100 trying -- your call is important to us").
+    // Only a gap too narrow for any meaningful text falls back to a bare
+    // line. `width - 4` = pads + line char + arrow head.
+    let fit_label = if label.len() + 4 > width {
+        let avail = width.saturating_sub(4);
+        (avail >= 8).then(|| truncate(label, avail))
     } else {
-        let total_lines = width.saturating_sub(label_with_pad + 1);
-        let left = total_lines / 2;
-        let right = total_lines - left;
-        let left_str: String = std::iter::repeat_n(line_char, left).collect();
-        let right_str: String = std::iter::repeat_n(line_char, right).collect();
-        if goes_right {
-            format!("{left_str} {label} {right_str}\u{25B6}")
-        } else {
-            format!("\u{25C0}{left_str} {label} {right_str}")
+        Some(label.to_string())
+    };
+    let arrow = match fit_label {
+        None => {
+            // No room for text, just draw the line
+            let line: String = std::iter::repeat_n(line_char, width.saturating_sub(1)).collect();
+            if goes_right {
+                format!("{line}\u{25B6}")
+            } else {
+                format!("\u{25C0}{line}")
+            }
+        }
+        Some(label) => {
+            let label_with_pad = label.len() + 2;
+            let total_lines = width.saturating_sub(label_with_pad + 1);
+            let left = total_lines / 2;
+            let right = total_lines - left;
+            let left_str: String = std::iter::repeat_n(line_char, left).collect();
+            let right_str: String = std::iter::repeat_n(line_char, right).collect();
+            if goes_right {
+                format!("{left_str} {label} {right_str}\u{25B6}")
+            } else {
+                format!("\u{25C0}{left_str} {label} {right_str}")
+            }
         }
     };
 
@@ -120,6 +134,46 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Field report: OpenSIPS' long default reason phrase
+    /// ("100 trying -- your call is important to us", 42 chars) rendered
+    /// as a bare dashed arrow with no text because the label was dropped
+    /// whenever it was wider than the pipe gap. It must be truncated
+    /// onto the arrow instead — a labelless arrow reads as an empty row.
+    #[test]
+    fn format_arrow_truncates_oversized_label() {
+        let label = "100 trying -- your call is important to us";
+        // Pipes at columns 10 and 40 → a 29-column gap, far narrower
+        // than the 42-char label.
+        let (arrow, _) = format_arrow(label, 10, 40, true);
+        assert!(
+            arrow.contains("100 trying"),
+            "label must survive (truncated), got: {arrow}"
+        );
+        assert!(arrow.contains("..."), "truncation must be visible: {arrow}");
+        assert!(arrow.chars().count() <= 29, "must fit the gap: {arrow}");
+        assert!(arrow.ends_with('\u{25B6}'), "arrow head kept: {arrow}");
+
+        // Same, pointing left.
+        let (arrow, _) = format_arrow(label, 40, 10, true);
+        assert!(arrow.contains("100 trying"), "got: {arrow}");
+        assert!(arrow.starts_with('\u{25C0}'), "got: {arrow}");
+        assert!(arrow.chars().count() <= 29, "got: {arrow}");
+    }
+
+    /// A gap too narrow for any meaningful text keeps the bare line
+    /// (no panic, no negative widths).
+    #[test]
+    fn format_arrow_tiny_gap_keeps_bare_line() {
+        let label = "100 trying -- your call is important to us";
+        for dst in 11..22 {
+            let (arrow, _) = format_arrow(label, 10, dst, true);
+            assert!(!arrow.is_empty());
+            // Never wider than the gap plus the minimal 2-char arrow.
+            let gap = (dst - 11) as usize;
+            assert!(arrow.chars().count() <= gap.max(2));
+        }
+    }
 
     #[test]
     fn format_arrow_right_contains_label() {
