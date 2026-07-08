@@ -228,3 +228,125 @@ fn every_handled_char_key_is_documented_or_allowlisted() {
          Document them in src/tui/help.rs HELP_TEXT, or add them to allowed_undocumented() with a reason."
     );
 }
+
+/// (section heading, token) pairs the reverse check must skip, with reasons.
+fn reverse_allowed(section: &str, tok: &str) -> Option<&'static str> {
+    match (section, tok) {
+        // "[ / ]  Scroll detail panel" — the middle "/" is a visual
+        // separator between the bracket keys, not the search key.
+        ("CALL FLOW:", "/") => Some("separator in the '[ / ]' key column"),
+        _ => None,
+    }
+}
+
+/// Reverse guard: every key the F1 help DOCUMENTS for a view must actually
+/// be handled by that view's key→action mapping. Regression context: the
+/// raw message view's help claimed Home/End while only Home was bound —
+/// the one-way check above (handled ⇒ documented) can never catch a
+/// documented-but-missing key.
+#[test]
+fn every_documented_view_key_is_handled() {
+    let km = Keymap::default();
+    type Checker = fn(&Keymap, KeyEvent) -> bool;
+    let sections: &[(&str, Checker)] = &[
+        ("CALL LIST:", |km, k| call_list_action(km, k).is_some()),
+        ("CALL FLOW:", |km, k| call_flow_action(km, k).is_some()),
+        ("RAW MESSAGE:", |km, k| raw_message_action(km, k).is_some()),
+        ("MESSAGE DIFF / COMBINED DETAIL / STATISTICS:", |km, k| {
+            message_diff_action(km, k).is_some()
+                || combined_detail_action(km, k).is_some()
+                || statistics_action(km, k).is_some()
+        }),
+        ("RTP STREAMS (Tab):", |km, k| {
+            stream_list_action(km, k).is_some()
+        }),
+        ("STREAM DETAIL:", |km, k| {
+            stream_detail_action(km, k).is_some()
+        }),
+    ];
+    // Handled globally in handle_key_event, valid in every view.
+    fn is_global(kc: KeyCode) -> bool {
+        matches!(kc, KeyCode::Char('v' | 'V' | 'n'))
+    }
+
+    /// Map a help token to the KeyCode it advertises. `None` = not a plain
+    /// key (modifier combos like Ctrl-R / Shift+P, or prose).
+    fn token_to_key(tok: &str) -> Option<KeyCode> {
+        Some(match tok {
+            "\u{2191}" => KeyCode::Up,
+            "\u{2193}" => KeyCode::Down,
+            "\u{2190}" => KeyCode::Left,
+            "\u{2192}" => KeyCode::Right,
+            "PgUp" => KeyCode::PageUp,
+            "PgDn" => KeyCode::PageDown,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            "Enter" => KeyCode::Enter,
+            "Esc" => KeyCode::Esc,
+            "Tab" => KeyCode::Tab,
+            "Space" => KeyCode::Char(' '),
+            t if t.len() >= 2
+                && t.starts_with('F')
+                && t[1..].chars().all(|c| c.is_ascii_digit()) =>
+            {
+                KeyCode::F(t[1..].parse().ok()?)
+            }
+            t => {
+                let mut chars = t.chars();
+                let (Some(c), None) = (chars.next(), chars.next()) else {
+                    return None;
+                };
+                KeyCode::Char(c)
+            }
+        })
+    }
+
+    let mut current: Option<(&str, Checker)> = None;
+    let mut failures: Vec<String> = Vec::new();
+    for line in HELP_TEXT.lines() {
+        let trimmed = line.trim();
+        if let Some((h, chk)) = sections.iter().find(|(h, _)| trimmed == *h) {
+            current = Some((h, *chk));
+            continue;
+        }
+        if !line.starts_with(' ') && trimmed.ends_with(':') {
+            current = None; // section this test does not know
+            continue;
+        }
+        let Some((heading, chk)) = current else {
+            continue;
+        };
+        let t = line.trim_start();
+        let Some(gap) = t.find("  ") else { continue };
+        for chunk in t[..gap].split([',', ' ', '\t']) {
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                continue;
+            }
+            let toks: Vec<&str> = if chunk == "/" {
+                vec!["/"]
+            } else {
+                chunk.split('/').filter(|s| !s.is_empty()).collect()
+            };
+            for tok in toks {
+                if reverse_allowed(heading, tok).is_some() {
+                    continue;
+                }
+                let Some(kc) = token_to_key(tok) else {
+                    continue;
+                };
+                let ev = KeyEvent::new(kc, KeyModifiers::NONE);
+                if !(chk(&km, ev) || is_global(kc)) {
+                    failures.push(format!(
+                        "help section '{heading}' documents key '{tok}' but the view does not handle it"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "documented-but-unhandled keys:\n{}",
+        failures.join("\n")
+    );
+}

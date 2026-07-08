@@ -197,3 +197,99 @@ fn extraction_ignores_table_rules_and_em_dashes() {
          and `triple` won't be a known flag)"
     );
 }
+
+/// Split a markdown document into its fenced code blocks (``` ... ```).
+fn fenced_blocks(md: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut current: Option<String> = None;
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            match current.take() {
+                Some(done) => blocks.push(done),
+                None => current = Some(String::new()),
+            }
+            continue;
+        }
+        if let Some(buf) = current.as_mut() {
+            buf.push_str(line);
+            buf.push('\n');
+        }
+    }
+    blocks
+}
+
+/// Regression guard: every documented `--mcp` invocation once omitted the
+/// mandatory `-N`/`--no-tui`, so copy-pasting ANY example hit a hard CLI
+/// error ("--mcp implies non-interactive mode"). Any fenced example that
+/// starts sipnab with `--mcp` must also pass `-N` or `--no-tui`.
+#[test]
+fn mcp_examples_always_pass_no_tui() {
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir("docs").expect("docs dir") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let md = std::fs::read_to_string(&path).expect("read doc");
+        for block in fenced_blocks(&md) {
+            // Join backslash continuations so a multi-line command is
+            // checked as one logical invocation.
+            let mut logical: Vec<String> = Vec::new();
+            let mut cont = String::new();
+            for line in block.lines() {
+                if let Some(head) = line.trim_end().strip_suffix('\\') {
+                    cont.push_str(head);
+                    cont.push(' ');
+                    continue;
+                }
+                cont.push_str(line);
+                logical.push(std::mem::take(&mut cont));
+            }
+            for line in logical {
+                // A bare `--mcp` (not an `--mcp-*` option like
+                // --mcp-transport).
+                let has_bare_mcp = line
+                    .match_indices("--mcp")
+                    .any(|(i, _)| !matches!(line.as_bytes().get(i + 5), Some(b'-')));
+                // No "sipnab" requirement: client-config lines like
+                // `"args": ["--mcp", ...]` name the binary elsewhere.
+                if has_bare_mcp && !(line.contains("-N") || line.contains("--no-tui")) {
+                    offenders.push(format!("{}: {}", path.display(), line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "--mcp examples missing -N/--no-tui (copy-paste would fail):\n{}",
+        offenders.join("\n---\n")
+    );
+}
+
+/// Regression guard: the Code of Conduct once shipped with the enforcement
+/// contact deleted (the INSERT-CONTACT-METHOD placeholder removed rather
+/// than filled), leaving no way to report an incident.
+#[test]
+fn code_of_conduct_has_enforcement_contact() {
+    let coc = std::fs::read_to_string("CODE_OF_CONDUCT.md").expect("CODE_OF_CONDUCT.md");
+    assert!(
+        !coc.to_ascii_uppercase().contains("[INSERT"),
+        "unfilled Contributor Covenant placeholder"
+    );
+    // Anchor on the exact heading — "## Enforcement Responsibilities"
+    // comes first in the covenant and would otherwise win the split.
+    let enforcement = coc
+        .split("## Enforcement\n")
+        .nth(1)
+        .expect("Enforcement section present");
+    assert!(
+        enforcement.contains('@') && enforcement.contains("mailto:"),
+        "Enforcement section must name a working contact (mailto link)"
+    );
+    // And the repo actually points people at it.
+    let readme = std::fs::read_to_string("README.md").expect("README.md");
+    assert!(
+        readme.contains("CODE_OF_CONDUCT.md"),
+        "README must link the Code of Conduct"
+    );
+}
