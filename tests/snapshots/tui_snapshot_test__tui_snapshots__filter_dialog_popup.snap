@@ -1,11 +1,12 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 574
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Fil┌ Filter ──────────────────────────────────────────────┐
-# ▲   Method│                                                      │e     PDD
+# ▲   Metho │                                                      │DD    Durati
             │  SIP From:    [                                   ]  │
   No SIP dia│  SIP To:      [                                   ]  │
             │  Source:      [                                   ]  │
@@ -17,12 +18,12 @@ expression: output
             │  SUBSCRIBE [*]             MESSAGE   [*]             │
             │  NOTIFY    [*]             REFER     [*]             │
             │  INFO      [*]             UPDATE    [*]             │
+            │  All       [*]                                       │
             │                                                      │
             │     [ Filter ]                 [ Cancel ]            │
             │                                                      │
             │                                                      │
             │                                                      │
             └──────────────────────────────────────────────────────┘
-
 
 Tab Next  Space Toggle  Enter Apply  Esc Cancel  F9 Clear

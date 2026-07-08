@@ -43,6 +43,8 @@ pub mod capture;
 #[cfg(feature = "native")]
 pub mod cli;
 pub mod config;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod crash;
 pub mod crypto;
 pub mod error;
 pub mod names;

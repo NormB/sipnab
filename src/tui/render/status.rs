@@ -148,14 +148,24 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         let yellow = Style::default().fg(app.theme.selected);
         let prefix = " Display Filter: ";
         let filter_text = &app.active_filter_text;
-        let trailing = if prefix.len() + filter_text.len() < w {
-            " ".repeat(w - prefix.len() - filter_text.len())
+        // A search query persisted with Enter keeps narrowing the list, so
+        // it must stay visible here — an invisible query makes the match
+        // expression look broken ("148 dialogs, 4 displayed").
+        let search_text = if app.search_query.is_empty() {
+            String::new()
+        } else {
+            format!("    Search: /{} (F9 clears)", app.search_query)
+        };
+        let used = prefix.len() + filter_text.len() + search_text.len();
+        let trailing = if used < w {
+            " ".repeat(w - used)
         } else {
             String::new()
         };
         vec![
             Span::raw(prefix),
             Span::styled(filter_text.clone(), yellow),
+            Span::styled(search_text, yellow),
             Span::raw(trailing),
         ]
     };

@@ -37,6 +37,30 @@ fn flow_selected_original_index(app: &App, call_id: &str) -> usize {
         .unwrap_or(raw)
 }
 
+/// Resolve the selected visible row to `(dialog Call-ID, message index
+/// within that dialog)`. Merged/extended ladders interleave several
+/// dialogs and carry per-row provenance in the ladder's index map; a
+/// single-dialog ladder (empty map) keeps the classic anchor-dialog path.
+fn flow_selected_message(app: &App, anchor_call_id: &str) -> (String, usize) {
+    if !app.flow.ladder.index_map.is_empty() {
+        let sel = app.flow.selected;
+        let raw = app
+            .flow
+            .cached_raw_indices
+            .get(sel)
+            .copied()
+            .flatten()
+            .unwrap_or(sel);
+        if let Some((cid, idx)) = app.flow.ladder.index_map.get(raw) {
+            return (cid.clone(), *idx);
+        }
+    }
+    (
+        anchor_call_id.to_string(),
+        flow_selected_original_index(app, anchor_call_id),
+    )
+}
+
 /// Everything the call flow view can do in response to a single key
 /// press. Navigation variants are focus-independent — the executor routes
 /// them to the detail pane or the ladder selection based on
@@ -341,7 +365,20 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
 /// transaction filter restricts to the anchored transaction's messages.
 fn flow_visible_msg_count(app: &App) -> usize {
     let raw_count = if let View::CallFlow(ref call_id) = app.current_view {
-        if app.flow.extended {
+        if !app.flow.merged_calls.is_empty() {
+            // Merged multi-selection: sum every checked dialog's messages.
+            app.dialog_store
+                .try_read()
+                .map(|s| {
+                    app.flow
+                        .merged_calls
+                        .iter()
+                        .filter_map(|c| s.get(c))
+                        .map(|d| d.messages.len())
+                        .sum()
+                })
+                .unwrap_or(0)
+        } else if app.flow.extended {
             // Extended: sum messages from main dialog + all correlated
             app.dialog_store
                 .try_read()
@@ -415,9 +452,9 @@ fn activate_selected(app: &mut App, msg_count: usize) {
                 app.status_error = Some("No RTP streams found".to_string());
             }
         } else {
-            // Open full-screen raw message view for the selected message
-            let cid = call_id.clone();
-            let message_index = flow_selected_original_index(app, &cid);
+            // Open full-screen raw message view for the selected message —
+            // in a merged/extended flow, of the row's OWN dialog.
+            let (cid, message_index) = flow_selected_message(app, call_id);
             app.raw_msg_scroll = 0;
             app.raw_msg_return_view = Some(app.current_view.clone());
             app.current_view = View::RawMessage {
@@ -434,22 +471,28 @@ fn diff_select(app: &mut App, msg_count: usize) {
     if let View::CallFlow(ref call_id) = app.current_view
         && app.flow.selected < msg_count
     {
-        let cur = flow_selected_original_index(app, call_id);
-        if let Some(first) = app.flow.diff_selected {
-            if first != cur {
-                // Second selection — open diff view
-                let cid = call_id.clone();
+        let (cur_cid, cur) = flow_selected_message(app, call_id);
+        if let Some((first_cid, first)) = app.flow.diff_selected.clone() {
+            if (first_cid.as_str(), first) != (cur_cid.as_str(), cur) {
+                // Second selection — open diff view. The diff view renders
+                // two messages of ONE dialog; in a merged flow both rows
+                // must therefore come from the same dialog.
+                if first_cid != cur_cid {
+                    app.flow.diff_selected = None;
+                    app.status_error = Some("Diff across dialogs is not supported".to_string());
+                    return;
+                }
                 app.flow.diff_selected = None;
                 app.diff_scroll = 0;
                 app.current_view = View::MessageDiff {
-                    call_id: cid,
+                    call_id: cur_cid,
                     msg1_idx: first,
                     msg2_idx: cur,
                 };
             }
         } else {
             // First selection
-            app.flow.diff_selected = Some(cur);
+            app.flow.diff_selected = Some((cur_cid, cur));
             app.status_error = Some(format!(
                 "Selected: message {} (press Space on another to diff)",
                 cur + 1
@@ -462,9 +505,9 @@ fn diff_select(app: &mut App, msg_count: usize) {
 /// selected message's source is focused first. Tab switches columns.
 fn name_participants(app: &mut App) {
     if let View::CallFlow(ref call_id) = app.current_view {
-        let sel = flow_selected_original_index(app, call_id);
+        let (row_cid, sel) = flow_selected_message(app, call_id);
         let gathered = app.dialog_store.try_read().and_then(|s| {
-            s.get(call_id).map(|d| {
+            s.get(&row_cid).map(|d| {
                 let sel_ip = d
                     .messages
                     .get(sel)
@@ -496,9 +539,10 @@ fn name_participants(app: &mut App) {
 /// full text into one scrollable view.
 fn open_combined_detail(app: &mut App, whole: bool) {
     if let View::CallFlow(ref call_id) = app.current_view {
-        let sel = flow_selected_original_index(app, call_id);
+        // Scope to the selected row's OWN dialog (merged flows interleave).
+        let (cid, sel) = flow_selected_message(app, call_id);
         let indices = app.dialog_store.try_read().and_then(|s| {
-            s.get(call_id).map(|d| {
+            s.get(&cid).map(|d| {
                 if whole {
                     (0..d.messages.len()).collect::<Vec<_>>()
                 } else {
@@ -509,7 +553,6 @@ fn open_combined_detail(app: &mut App, whole: bool) {
         if let Some(indices) = indices
             && !indices.is_empty()
         {
-            let cid = call_id.clone();
             app.raw_msg_scroll = 0;
             app.current_view = View::CombinedDetail {
                 call_id: cid,
@@ -1013,7 +1056,10 @@ mod tests {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
-        assert_eq!(app.flow.diff_selected, Some(0));
+        assert_eq!(
+            app.flow.diff_selected.as_ref().map(|&(_, idx)| idx),
+            Some(0)
+        );
         handle_call_flow_key(&mut app, key(KeyCode::Down));
         handle_call_flow_key(&mut app, key(KeyCode::Char(' ')));
         assert!(matches!(app.current_view, View::MessageDiff { .. }));

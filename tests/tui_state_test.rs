@@ -421,6 +421,77 @@ mod tui_state {
         );
     }
 
+    // ── "All" master checkbox (enable/disable every method at once) ─────
+
+    #[test]
+    fn filter_all_checkbox_disables_then_enables_every_method() {
+        // Focus order: 5 text fields (0-4), 10 method checkboxes (5-14),
+        // then the "All" master checkbox (15).
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::F(7));
+        for _ in 0..15 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.handle_key(KeyCode::Char(' ')); // all checked -> disable all
+        let (_, methods) = app.filter_focus_and_methods_for_test();
+        assert_eq!(methods, [false; 10], "All toggles every method off");
+
+        app.handle_key(KeyCode::Char(' ')); // none checked -> enable all
+        let (_, methods) = app.filter_focus_and_methods_for_test();
+        assert_eq!(methods, [true; 10], "All toggles every method back on");
+
+        // Applying with everything re-checked shows every dialog.
+        app.handle_key(KeyCode::Enter);
+        assert_eq!(app.visible_dialog_count(), 3);
+    }
+
+    #[test]
+    fn filter_all_checkbox_from_mixed_state_enables_all_first() {
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        // Uncheck INVITE (focus 7) for a mixed state.
+        for _ in 0..7 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.handle_key(KeyCode::Char(' '));
+        let (_, methods) = app.filter_focus_and_methods_for_test();
+        assert!(
+            !methods[INVITE_IDX] && methods[0],
+            "mixed state established"
+        );
+        // On to the All checkbox (7 + 8 = 15) and toggle.
+        for _ in 0..8 {
+            app.handle_key(KeyCode::Tab);
+        }
+        app.handle_key(KeyCode::Char(' '));
+        let (_, methods) = app.filter_focus_and_methods_for_test();
+        assert_eq!(
+            methods, [true; 10],
+            "from a mixed state, All enables everything first"
+        );
+    }
+
+    #[test]
+    fn filter_all_checkbox_is_rendered_in_popup() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::F(7));
+        terminal.draw(|f| app.render(f)).unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf[(x, y)].symbol());
+            }
+            text.push('\n');
+        }
+        assert!(
+            text.contains("All"),
+            "the popup must render the All master checkbox; popup text:\n{text}"
+        );
+    }
+
     #[test]
     fn filter_space_toggles_method_via_keys() {
         // Drive the real key path: F7, move focus to the INVITE checkbox, Space

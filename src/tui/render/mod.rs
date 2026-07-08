@@ -236,7 +236,13 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                 if let Some(detail_area) = detail_area {
                     // The ladder selection is a VISIBLE-row index; map it to
                     // the message it renders (folds hide rows; a transaction
-                    // filter renders a subset of the dialog).
+                    // filter renders a subset of the dialog; merged/extended
+                    // ladders interleave dialogs, resolved by the index map).
+                    let provenance = raw_indices
+                        .get(sel)
+                        .copied()
+                        .flatten()
+                        .and_then(|raw| app.flow.ladder.index_map.get(raw).cloned());
                     let detail_sel = raw_indices
                         .get(sel)
                         .copied()
@@ -261,12 +267,16 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                                 .unwrap_or(filtered_idx)
                         })
                         .unwrap_or(sel);
+                    let (detail_cid, detail_sel) = match &provenance {
+                        Some((row_cid, idx)) => (row_cid.as_str(), *idx),
+                        None => (cid.as_str(), detail_sel),
+                    };
                     let total_lines = call_flow::render_message_detail(
                         frame,
                         detail_area,
                         &store,
                         &call_flow::render::MessageDetailView {
-                            call_id: &cid,
+                            call_id: detail_cid,
                             selected_msg: detail_sel,
                             scroll_offset: app.flow.detail_scroll,
                             focused: app.flow.detail_focused,

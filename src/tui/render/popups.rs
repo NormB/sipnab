@@ -647,7 +647,7 @@ pub(in crate::tui) fn render_filter_popup(
     theme: &Theme,
 ) {
     let popup_width: u16 = 56;
-    let popup_height: u16 = 19;
+    let popup_height: u16 = 20;
     let popup_area = centered_popup(area, popup_width, popup_height);
 
     // Clear the area behind the popup
@@ -745,8 +745,26 @@ pub(in crate::tui) fn render_filter_popup(
         }
     }
 
+    // ── "All" master checkbox (enable/disable every method) ───────
+    let all_y = cb_y + 5;
+    let all_focused = state.focused_field == ALL_METHODS_IDX;
+    let all_marker = if state.all_methods_checked() {
+        "[*]"
+    } else {
+        "[ ]"
+    };
+    let all_style = if all_focused {
+        Style::default()
+            .fg(theme.selected)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+    buf.set_string(col1_x, all_y, format!("{:<10}", "All"), all_style);
+    buf.set_string(col1_x + 10, all_y, all_marker, all_style);
+
     // ── Buttons ────────────────────────────────────────────────────
-    let btn_y = cb_y + 6;
+    let btn_y = cb_y + 7;
     let filter_focused = state.focused_field == FILTER_BUTTON_IDX;
     let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
 

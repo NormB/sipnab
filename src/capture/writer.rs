@@ -547,6 +547,11 @@ fn create_pcapng_backend(
     let mut options = vec![
         InterfaceDescriptionOption::IfDescription(Cow::Owned(format!("{} capture", app_version()))),
         InterfaceDescriptionOption::IfOs(Cow::Borrowed(std::env::consts::OS)),
+        // pcap-file always encodes EPB timestamps as NANOSECOND ticks
+        // (Duration::as_nanos), so the interface must declare 10^-9 —
+        // without this, readers assume the pcapng default of microseconds
+        // and every timestamp is inflated ×1000 (the "year 58484" files).
+        InterfaceDescriptionOption::IfTsResol(9),
     ];
     if let Some(name) = interface.filter(|n| !n.is_empty()) {
         options.push(InterfaceDescriptionOption::IfName(Cow::Owned(
@@ -724,6 +729,54 @@ mod tests {
             assert!(
                 result.is_err(),
                 "finish() must report the deferred ENOSPC, got Ok"
+            );
+        }
+    }
+
+    /// Field-capture regression: pcapng files written by sipnab carried
+    /// NANOSECOND timestamp ticks while the IDB declared (by omission)
+    /// MICROSECOND resolution — every reader (sipnab, capinfos, wireshark)
+    /// saw all times ×1000: a real 42 ms PDD displayed as 41972 ms and a
+    /// ~3-minute capture spanned "46 hours" (year 58484). A write→read
+    /// round trip through sipnab's own reader must preserve timestamps.
+    #[test]
+    fn pcapng_roundtrip_preserves_timestamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("roundtrip.pcapng");
+        // The real capture's first packet time: 2026-07-07 12:42:46.117182 UTC
+        let ts0 = chrono::DateTime::from_timestamp(1_783_428_166, 117_182_000).unwrap();
+        let ts1 = ts0 + chrono::TimeDelta::milliseconds(1_500); // +1.5 s
+        {
+            let mut w = PcapWriter::with_format(
+                &path,
+                1,
+                None,
+                None,
+                true, // pcapng
+                PcapExportMode::Raw,
+            )
+            .unwrap();
+            for ts in [ts0, ts1] {
+                w.write(&Packet::new(ts, vec![0u8; 64], 64, 64, None, 1))
+                    .unwrap();
+            }
+            w.finish().unwrap();
+        }
+
+        let data = std::fs::read(&path).unwrap();
+        let reader = crate::capture::pcap_reader::PcapReader::new(&data).unwrap();
+        let pkts: Vec<_> = reader.collect();
+        assert_eq!(pkts.len(), 2);
+        for (pkt, want) in pkts.iter().zip([ts0, ts1]) {
+            let got = chrono::DateTime::from_timestamp(
+                pkt.timestamp_secs as i64,
+                pkt.timestamp_usecs * 1000,
+            )
+            .unwrap();
+            assert_eq!(
+                got, want,
+                "round-tripped timestamp must equal the written one \
+                 (ns ticks require if_tsresol=9 in the IDB)"
             );
         }
     }

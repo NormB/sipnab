@@ -119,8 +119,15 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::PageUp => app.call_list.page_up(),
         CallListAction::PageDown => app.call_list.page_down(dialog_count),
         CallListAction::OpenFlow => {
-            // Open call flow for selected dialog
-            if let Some(call_id) = get_selected_call_id(app) {
+            // Two or more checked ([*]) rows: one flow merging ALL of them.
+            // Otherwise the classic single-dialog flow of the cursor row.
+            let checked = checked_displayed_call_ids(app);
+            if checked.len() >= 2 {
+                let anchor = checked[0].clone();
+                app.reset_call_flow_view_state();
+                app.flow.merged_calls = checked;
+                app.current_view = View::CallFlow(anchor);
+            } else if let Some(call_id) = get_selected_call_id(app) {
                 app.reset_call_flow_view_state();
                 app.current_view = View::CallFlow(call_id);
             }
@@ -197,6 +204,10 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.active_filter = None;
             app.active_filter_text.clear();
             app.filter_dialog.clear();
+            // The persisted search query narrows the list exactly like the
+            // filter does; "clear filter" must drop every narrowing input
+            // or the list stays mysteriously incomplete.
+            app.search_query.clear();
             app.status_error = None;
         }
         CallListAction::OpenFileDialog => open_file_dialog(app),

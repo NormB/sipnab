@@ -47,10 +47,12 @@ pub enum SortColumn {
     Date,
     /// Sort by Post-Dial Delay.
     Pdd,
+    /// Sort by dialog duration (first to last message).
+    Duration,
 }
 
 /// All columns in display order, used for cycling with `<` and `>`.
-pub const ALL_COLUMNS: [SortColumn; 10] = [
+pub const ALL_COLUMNS: [SortColumn; 11] = [
     SortColumn::Index,
     SortColumn::Method,
     SortColumn::From,
@@ -61,10 +63,11 @@ pub const ALL_COLUMNS: [SortColumn; 10] = [
     SortColumn::Messages,
     SortColumn::Date,
     SortColumn::Pdd,
+    SortColumn::Duration,
 ];
 
 /// Column display labels matching [`ALL_COLUMNS`] order.
-pub const COLUMN_LABELS: [&str; 10] = [
+pub const COLUMN_LABELS: [&str; 11] = [
     "#",
     "Method",
     "From",
@@ -75,6 +78,7 @@ pub const COLUMN_LABELS: [&str; 10] = [
     "Msgs",
     "Date",
     "PDD",
+    "Duration",
 ];
 
 // ── Call list state ─────────────────────────────────────────────────
@@ -90,7 +94,7 @@ pub struct CallListState {
     /// Set of selected (multi-select) row indices.
     selected_rows: HashSet<String>,
     /// Per-column visibility (indexed by [`ALL_COLUMNS`] order).
-    pub visible_columns: [bool; 10],
+    pub visible_columns: [bool; 11],
     /// Whether the column selector popup is open.
     pub column_selector_open: bool,
     /// Currently highlighted row in the column selector popup.
@@ -109,7 +113,7 @@ impl CallListState {
             sort_column: SortColumn::Index,
             sort_ascending: true,
             selected_rows: HashSet::new(),
-            visible_columns: [true; 10],
+            visible_columns: [true; 11],
             column_selector_open: false,
             column_selector_cursor: 0,
             autoscroll: true,
@@ -137,6 +141,19 @@ impl CallListState {
         let current = self.selected();
         if current + 1 < item_count {
             self.table_state.select(Some(current + 1));
+        }
+    }
+
+    /// Clamp the selection and the saved scroll offset onto the displayed
+    /// list after it shrank (narrowed filter/search, evicted dialogs), so
+    /// navigation and the render window always anchor to a real row.
+    pub fn clamp_to(&mut self, item_count: usize) {
+        let last = item_count.saturating_sub(1);
+        if self.selected() > last {
+            self.table_state.select(Some(last));
+        }
+        if self.table_state.offset() > last {
+            *self.table_state.offset_mut() = last;
         }
     }
 
@@ -415,7 +432,9 @@ pub fn render_call_list(
         .add_modifier(Modifier::BOLD);
 
     // Determine which column indices are visible
-    let vis_indices: Vec<usize> = (0..10).filter(|&i| state.visible_columns[i]).collect();
+    let vis_indices: Vec<usize> = (0..COLUMN_LABELS.len())
+        .filter(|&i| state.visible_columns[i])
+        .collect();
 
     // Build header cells with sort indicator on the active sort column
     let sort_col_idx = state.sort_column_index();
@@ -435,6 +454,7 @@ pub fn render_call_list(
         "Msgs",
         "Date",
         "PDD",
+        "Duration",
     ];
     let header_cells: Vec<Cell> = vis_indices
         .iter()
@@ -490,8 +510,12 @@ pub fn render_call_list(
     // so the visible data rows = area height - 1. We compute the scroll
     // offset from the selected row and only format rows within the window.
     let visible_rows = table_area.height.saturating_sub(1) as usize; // subtract header
-    let selected = state.selected();
     let total = row_ids.len();
+    // The selection and the saved scroll offset may be stale from a frame
+    // rendered before the displayed list shrank (filter/search narrowed,
+    // dialogs evicted); clamp both so the window slice below stays in
+    // bounds. `total > 0` here — the empty list returned above.
+    let selected = state.selected().min(total - 1);
 
     // Compute scroll offset: keep selected row within the visible window
     let current_offset = state.table_state.offset();
@@ -501,7 +525,8 @@ pub fn render_call_list(
         selected.saturating_sub(visible_rows.saturating_sub(1))
     } else {
         current_offset
-    };
+    }
+    .min(total - 1);
 
     let visible_end = (scroll_offset + visible_rows).min(total);
     // Resolve only the visible window (a cached id can miss if the dialog
@@ -578,6 +603,11 @@ pub fn render_call_list(
                 .map(|ms| format!("{}ms", ms))
                 .unwrap_or_default();
 
+            // Dialog duration (first to last message) — distinct from PDD,
+            // which is only INVITE→first 18x provisional.
+            let duration =
+                format_duration_ms((dialog.updated_at - dialog.created_at).num_milliseconds());
+
             // Method cell colors (sngrep style)
             let method_style = match dialog.method.as_str() {
                 "INVITE" => Style::default().fg(theme.good),
@@ -621,6 +651,7 @@ pub fn render_call_list(
                 Cell::from(Span::raw(dialog.messages.len().to_string())),
                 Cell::from(Span::raw(date_str)),
                 Cell::from(Span::raw(pdd)),
+                Cell::from(Span::raw(duration)),
             ];
             let visible_cells: Vec<Cell> =
                 vis_indices.iter().map(|&i| all_cells[i].clone()).collect();
@@ -681,14 +712,14 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
     // At 80-119 cols: From/To get smaller but still visible.
     // At < 80 cols:   From/To get minimum, everything compressed.
 
-    // Column spacing consumed by ratatui: 1px between each of 10 cols = 9,
+    // Column spacing consumed by ratatui: 1px between each of 11 cols = 10,
     // plus 2 for the highlight symbol ">" prefix.
-    let overhead: u16 = 11;
+    let overhead: u16 = 12;
 
     if total_width >= 120 {
-        // Fixed: #(6) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8) = 49
-        // #(6) holds the "[ ]" checkbox plus up to a 3-digit index.
-        let fixed: u16 = 49 + overhead;
+        // Fixed: #(6) + Method(10) + State(12) + Msgs(5) + Date(8) + PDD(8)
+        // + Duration(8) = 57. #(6) holds "[ ]" plus up to a 3-digit index.
+        let fixed: u16 = 57 + overhead;
         let flex = total_width.saturating_sub(fixed);
         // Src/Dst each get 21+, From/To split remainder
         let addr_each = 21.min(flex / 4);
@@ -706,11 +737,12 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
             Constraint::Length(5),
             Constraint::Length(8),
             Constraint::Length(8),
+            Constraint::Length(8),
         ]
     } else {
-        // Tighter layout: #(5) + Method(8) + State(10) + Msgs(4) + Date(8) + PDD(6) = 41
-        // #(5) holds the "[ ]" checkbox plus up to a 2-digit index.
-        let fixed: u16 = 41 + overhead;
+        // Tighter layout: #(5) + Method(8) + State(10) + Msgs(4) + Date(8)
+        // + PDD(6) + Duration(7) = 48. #(5) holds "[ ]" plus a 2-digit index.
+        let fixed: u16 = 48 + overhead;
         let flex = total_width.saturating_sub(fixed);
         let addr_each = (flex * 2 / 5).max(11);
         let from_to_pool = flex.saturating_sub(addr_each * 2);
@@ -727,7 +759,21 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
             Constraint::Length(4),
             Constraint::Length(8),
             Constraint::Length(6),
+            Constraint::Length(7),
         ]
+    }
+}
+
+/// Format a dialog duration for the call list: sub-second in ms, under a
+/// minute in seconds with one decimal, else `MmSs`.
+fn format_duration_ms(ms: i64) -> String {
+    if ms < 1_000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let secs = ms / 1000;
+        format!("{}m{}s", secs / 60, secs % 60)
     }
 }
 
@@ -791,6 +837,9 @@ fn sort_dialogs(
                 .pdd_ms()
                 .unwrap_or(i64::MAX)
                 .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
+            SortColumn::Duration => {
+                (a.updated_at - a.created_at).cmp(&(b.updated_at - b.created_at))
+            }
         };
         if ascending { ord } else { ord.reverse() }
     });
@@ -951,6 +1000,211 @@ mod tests {
     }
     use crate::names::{NameMode, NameResolver};
     use std::net::IpAddr;
+
+    // ── dialog_matches_search: exhaustive field + adversarial coverage ──
+
+    /// Build a dialog whose searchable fields are all distinct, so each
+    /// test proves WHICH field matched.
+    fn searchable_dialog(
+        method: &str,
+        call_id: &str,
+        from: &str,
+        to: &str,
+    ) -> crate::sip::dialog::SipDialog {
+        let raw = crate::test_utils::build_sip_message(
+            &format!("{method} sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: <sip:{from}@example.com>;tag=t1"),
+                &format!("To: <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: 7 {method}"),
+                "User-Agent: NeedleInBody/9.9",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = crate::sip::parser::parse_sip(
+            &raw,
+            chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0).unwrap(),
+            "192.0.2.10".parse().unwrap(),
+            "198.51.100.20".parse().unwrap(),
+            5060,
+            5062,
+            crate::net::TransportProto::Udp,
+        )
+        .expect("parse");
+        crate::sip::dialog::SipDialog::new(&msg).expect("dialog")
+    }
+
+    #[test]
+    fn search_matches_every_displayed_field() {
+        let d = searchable_dialog("OPTIONS", "cid-xyz@host", "alice", "bob");
+        // One assertion per field the call list displays.
+        assert!(dialog_matches_search(&d, "cid-xyz")); // Call-ID
+        assert!(dialog_matches_search(&d, "options")); // method, folded
+        assert!(dialog_matches_search(&d, "alice")); // From user
+        assert!(dialog_matches_search(&d, "bob")); // To user
+        assert!(dialog_matches_search(&d, "192.0.2.10")); // source addr
+        assert!(dialog_matches_search(&d, "198.51.100.20")); // dest addr
+        assert!(dialog_matches_search(&d, "needleinbody")); // raw body, folded
+        // State string ("Completed"/"Trying"/... per state_display_str).
+        let state = state_display_str(d.state()).to_ascii_lowercase();
+        assert!(dialog_matches_search(&d, &state));
+    }
+
+    #[test]
+    fn search_no_match_and_empty_query() {
+        let d = searchable_dialog("OPTIONS", "cid-1@host", "alice", "bob");
+        assert!(!dialog_matches_search(&d, "zzz-not-present"));
+        // Empty query matches everything (no narrowing).
+        assert!(dialog_matches_search(&d, ""));
+        // Longer than any field: must not panic, must not match.
+        let long = "x".repeat(10_000);
+        assert!(!dialog_matches_search(&d, &long));
+    }
+
+    #[test]
+    fn search_is_ascii_case_insensitive_both_directions() {
+        let d = searchable_dialog("INVITE", "MiXeD-CaSe@Host", "Alice", "BOB");
+        assert!(dialog_matches_search(&d, "mixed-case"));
+        assert!(dialog_matches_search(&d, "MIXED-CASE"));
+        assert!(dialog_matches_search(&d, "alice"));
+        assert!(dialog_matches_search(&d, "ALICE"));
+        assert!(dialog_matches_search(&d, "bob"));
+    }
+
+    #[test]
+    fn search_adversarial_inputs_never_panic() {
+        let d = searchable_dialog("INVITE", "adv@host", "a", "b");
+        // Backslashes, regex metacharacters, quotes: plain substring
+        // semantics, no interpretation, no panic.
+        for q in [
+            "\\", "\\\\", ".*", "[", "(", ")", "'", "\"", "%s", "\r\n", "\t", "\u{0}", "a\u{0}b",
+            "é", "☎", "\u{202e}",
+        ] {
+            let _ = dialog_matches_search(&d, q);
+        }
+        // A metacharacter that IS in the message matches literally.
+        assert!(dialog_matches_search(&d, "sip:b@example.com"));
+        // Backslash present in the raw body is found literally.
+        let d2 = searchable_dialog("INVITE", "back\\slash@host", "a", "b");
+        assert!(dialog_matches_search(&d2, "back\\slash"));
+    }
+
+    #[test]
+    fn search_scans_raw_bytes_with_embedded_nul_and_invalid_utf8() {
+        let mut d = searchable_dialog("INVITE", "nul@host", "a", "b");
+        // Simulate a body carrying NUL and invalid UTF-8 around a needle.
+        let mut raw = d.messages[0].raw.to_vec();
+        raw.extend_from_slice(b"\x00\xff\xfeHIDDEN-NEEDLE\x00\xff");
+        d.messages[0].raw = raw.into();
+        assert!(dialog_matches_search(&d, "hidden-needle"));
+        assert!(!dialog_matches_search(&d, "absent-needle"));
+    }
+
+    // ── displayed_dialogs: filter ∩ search interplay ────────────────────
+
+    /// Store with 3 OPTIONS + 2 INVITE dialogs with distinct users.
+    fn mixed_store() -> DialogStore {
+        let mut store = DialogStore::new(100, false);
+        let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 7, 7, 8, 45, 0).unwrap();
+        for (i, (method, from)) in [
+            ("OPTIONS", "sipsak"),
+            ("OPTIONS", "sipsak"),
+            ("OPTIONS", "probe"),
+            ("INVITE", "alice559"),
+            ("INVITE", "carol"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let raw = crate::test_utils::build_sip_message(
+                &format!("{method} sip:dest@example.com SIP/2.0"),
+                &[
+                    &format!("From: <sip:{from}@example.com>;tag=t{i}"),
+                    "To: <sip:dest@example.com>",
+                    &format!("Call-ID: mix-{i}@test"),
+                    &format!("CSeq: 1 {method}"),
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                ts + chrono::TimeDelta::seconds(i as i64),
+                "192.0.2.10".parse().unwrap(),
+                "198.51.100.20".parse().unwrap(),
+                5060,
+                5060,
+                crate::net::TransportProto::Udp,
+            )
+            .expect("parse");
+            store.process_message(msg);
+        }
+        store
+    }
+
+    #[test]
+    fn displayed_dialogs_filter_and_search_intersect() {
+        let store = mixed_store();
+        let all = displayed_dialogs(&store, None, "", SortColumn::Index, true);
+        assert_eq!(all.len(), 5);
+
+        // The field incident's expression matches everything here.
+        let f = crate::sip::dsl::FilterExpr::parse("(method == 'OPTIONS' OR method == 'INVITE')")
+            .unwrap();
+        assert_eq!(
+            displayed_dialogs(&store, Some(&f), "", SortColumn::Index, true).len(),
+            5
+        );
+        // Search alone.
+        assert_eq!(
+            displayed_dialogs(&store, None, "sipsak", SortColumn::Index, true).len(),
+            2
+        );
+        assert_eq!(
+            displayed_dialogs(&store, None, "559", SortColumn::Index, true).len(),
+            1
+        );
+        // Filter ∩ search: the invisible-narrowing composition from the
+        // field incident.
+        assert_eq!(
+            displayed_dialogs(&store, Some(&f), "559", SortColumn::Index, true).len(),
+            1
+        );
+        // A method-restricted filter composes with search on another field.
+        let inv = crate::sip::dsl::FilterExpr::parse("method == 'INVITE'").unwrap();
+        assert_eq!(
+            displayed_dialogs(&store, Some(&inv), "carol", SortColumn::Index, true).len(),
+            1
+        );
+        // Disjoint filter and search: empty, not an error.
+        assert_eq!(
+            displayed_dialogs(&store, Some(&inv), "sipsak", SortColumn::Index, true).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn displayed_dialogs_search_never_errors_on_adversarial_queries() {
+        let store = mixed_store();
+        for q in ["\\", "'", "\u{0}", ".*", "((((", "559 ", " ", "\u{202e}"] {
+            // Must not panic; result count is whatever literally matches.
+            let _ = displayed_dialogs(&store, None, q, SortColumn::Index, true);
+        }
+    }
+
+    #[test]
+    fn format_duration_ms_scales_units() {
+        assert_eq!(format_duration_ms(0), "0ms");
+        assert_eq!(format_duration_ms(850), "850ms");
+        assert_eq!(format_duration_ms(1_000), "1.0s");
+        assert_eq!(format_duration_ms(12_340), "12.3s");
+        assert_eq!(format_duration_ms(59_999), "60.0s");
+        assert_eq!(format_duration_ms(60_000), "1m0s");
+        assert_eq!(format_duration_ms(61_500), "1m1s");
+        assert_eq!(format_duration_ms(3_298_856), "54m58s");
+    }
 
     #[test]
     fn format_from_to_shows_host_when_user_missing() {

@@ -1,11 +1,12 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 284
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Filter:
-# ▲   Method   From To   Source      Destination State      Msgs Date     PDD
+# ▲   Metho From To   Source     Destinatio State      Msgs Date   PDD    Durati
 
   No SIP dialogs found.
 

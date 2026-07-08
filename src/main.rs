@@ -48,6 +48,15 @@ fn main() {
         Err(e) => e.exit(),
     };
 
+    // 5b. Crash policy: from here on, a panic restores the terminal,
+    //     writes a crash report per [crash], and exits or dumps core.
+    sipnab::crash::install_panic_hook(sipnab::crash::CrashPolicy::from_config(
+        &loaded.config.crash,
+    ));
+    if cli.panic_selftest {
+        panic!("panic-selftest: intentional panic to verify crash handling");
+    }
+
     // 6. --dump-config: print the effective config and exit.
     if cli.dump_config {
         std::process::exit(bootstrap::dump_config(&loaded));

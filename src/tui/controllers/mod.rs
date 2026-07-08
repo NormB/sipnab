@@ -368,6 +368,28 @@ pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
     dialogs.get(idx).map(|d| d.call_id.clone())
 }
 
+/// Checkbox-selected ([*]) dialogs that are currently displayed, in
+/// display order. Checkmarks are keyed by Call-ID and survive re-filtering,
+/// so this intersects them with what is actually on screen — an action on
+/// "the selected rows" must match the asterisks the user sees.
+pub(in crate::tui) fn checked_displayed_call_ids(app: &App) -> Vec<String> {
+    if app.call_list.selected_rows_count() == 0 {
+        return Vec::new();
+    }
+    let store = app.dialog_store.read();
+    crate::tui::call_list::displayed_dialogs(
+        &store,
+        app.active_filter.as_ref(),
+        &app.search_query,
+        app.call_list.sort_column(),
+        app.call_list.sort_ascending(),
+    )
+    .iter()
+    .filter(|d| app.call_list.selected_rows().contains(d.call_id.as_str()))
+    .map(|d| d.call_id.clone())
+    .collect()
+}
+
 /// Count dialogs visible after applying the active filter.
 pub(in crate::tui) fn filtered_dialog_count(app: &App) -> usize {
     let store = app.dialog_store.read();
@@ -446,6 +468,67 @@ pub(crate) mod test_support {
             TransportProto::Udp,
         )
         .expect("parse INVITE")
+    }
+
+    /// Method-generic request builder (OPTIONS, REGISTER, ...) for tests
+    /// that need mixed-method dialog populations.
+    pub(crate) fn make_request(
+        method: &str,
+        call_id: &str,
+        from: &str,
+        to: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = raw_sip(
+            &format!("{method} sip:{to}@example.com SIP/2.0"),
+            &[
+                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
+                &format!("To: \"{to}\" <sip:{to}@example.com>"),
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: 1 {method}"),
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse request")
+    }
+
+    /// Response builder with an arbitrary status line (e.g. "180 Ringing")
+    /// for the initial INVITE transaction of `call_id`.
+    pub(crate) fn make_response(
+        status: &str,
+        call_id: &str,
+        cseq_method: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = raw_sip(
+            &format!("SIP/2.0 {status}"),
+            &[
+                "From: \"a\" <sip:a@example.com>;tag=t1",
+                "To: \"b\" <sip:b@example.com>;tag=t2",
+                &format!("Call-ID: {call_id}"),
+                &format!("CSeq: 1 {cseq_method}"),
+                "Content-Length: 0",
+            ],
+        );
+        parse_sip(
+            &raw,
+            ts,
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse response")
     }
 
     pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
