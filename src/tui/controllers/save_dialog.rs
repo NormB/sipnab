@@ -59,14 +59,20 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
                 app.save.format.next()
             };
             let new_ext = app.save.format.extension();
-            // Update the file extension in the path
-            if let Some(dot_pos) = app.save.path.rfind('.') {
-                let after_dot = &app.save.path[dot_pos + 1..];
-                if after_dot == old_ext {
-                    app.save.path.truncate(dot_pos + 1);
-                    app.save.path.push_str(new_ext);
-                    app.save.cursor = app.save.path.len();
-                }
+            // Replace the FULL old extension — it can span several dots
+            // (e.g. "rtp.json"); replacing only the text after the last
+            // dot left a stale ".rtp" behind on every lap through the
+            // list. A user-edited path that no longer ends in the old
+            // extension is left alone.
+            let base = app
+                .save
+                .path
+                .strip_suffix(old_ext)
+                .and_then(|p| p.strip_suffix('.'))
+                .map(str::to_string);
+            if let Some(base) = base {
+                app.save.path = format!("{base}.{new_ext}");
+                app.save.cursor = app.save.path.len();
             }
         }
         KeyCode::Backspace => {

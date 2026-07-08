@@ -1,17 +1,14 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 1010
 expression: output
 ---
- Current Mode: Online (any)    Dialogs: 3 (3 displayed)  [A]
- Match Expression:     BPF Filter:
- Dis┌ Save Capture ────────────────────────────────────────────────────────┐
+ Cur┌ Save Capture ────────────────────────────────────────────────────────┐
+ Mat│                                                                      │
+ Dis│  Save to: /tmp/sipnab_20240615_120000.html                           │
   # │                                                                      │rati
-> [ │  Save to: /tmp/sipnab_20240615_120000.html                           │2s
-  [ │                                                                      │0s
-  [ │  Packet Capture                                                      │0s
-    │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │
-    │      PCAP-NG Modern format with metadata and annotations             │
+> [ │  Packet Capture                                                      │2s
+  [ │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │0s
+  [ │      PCAP-NG Modern format with metadata and annotations             │0s
     │                                                                      │
     │  SIP-Specific                                                        │
     │      TXT     Plain text SIP messages (sngrep-compatible)             │
@@ -24,6 +21,8 @@ expression: output
     │                                                                      │
     │  Reporting                                                           │
     │    ▸ HTML    Self-contained ladder diagram, zero dependencies        │
-    └──────────────────────────────────────────────────────────────────────┘
-
-Enter Save  Tab Format  Esc Cancel
+    │      MD      Call summary for tickets and incidents                  │
+    │                                                                      │
+    │  RTP/Media                                                           │
+    │      WAV     Decoded G.711 audio per RTP stream                      │
+Ente└──────────────────────────────────────────────────────────────────────┘
