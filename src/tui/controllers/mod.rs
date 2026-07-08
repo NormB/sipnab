@@ -659,6 +659,47 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    /// Field report: cycling formats mutated the path into
+    /// `/tmp/x.rtp.rtp.rtp...` — the two-segment `rtp.json` extension
+    /// defeated the replace-after-last-dot logic, leaving a stale `.rtp`
+    /// behind on every lap. The path must track the format exactly, in
+    /// both directions, for any number of laps.
+    #[test]
+    fn save_popup_extension_tracks_format_without_accumulating() {
+        let mut app = app_with_dialogs();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.save.format = SaveFormat::Pcap;
+        app.set_save_path("/tmp/x.pcap");
+        for _ in 0..2 {
+            for _ in 0..11 {
+                handle_save_popup_key(&mut app, key(KeyCode::Tab));
+                let ext = app.save.format.extension();
+                assert_eq!(
+                    app.save.path,
+                    format!("/tmp/x.{ext}"),
+                    "after Tab to {:?}",
+                    app.save.format
+                );
+            }
+        }
+        for _ in 0..11 {
+            handle_save_popup_key(&mut app, key(KeyCode::Up));
+            let ext = app.save.format.extension();
+            assert_eq!(
+                app.save.path,
+                format!("/tmp/x.{ext}"),
+                "after Up to {:?}",
+                app.save.format
+            );
+        }
+        // A user-edited path (extension no longer matches the format)
+        // must be left alone.
+        app.save.format = SaveFormat::Pcap;
+        app.set_save_path("/tmp/custom.bin");
+        handle_save_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.save.path, "/tmp/custom.bin");
+    }
+
     #[test]
     fn key_event_routes_to_popup_first() {
         let mut app = app_with_dialogs();

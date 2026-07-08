@@ -15,18 +15,6 @@ pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rec
 /// Render the save dialog as a centered popup overlay.
 pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width = 72.min(area.width.saturating_sub(4));
-    let popup_area = centered_popup(area, popup_width, 20);
-
-    // Clear the area behind the popup
-    frame.render_widget(Clear, popup_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Save Capture ")
-        .style(Style::default().bg(app.theme.background));
-
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
 
     // Build vertical format list grouped by category.
     let all_formats = [
@@ -43,6 +31,7 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
         SaveFormat::RtpJson, // RTP/Media
     ];
     let mut fmt_lines: Vec<Line<'_>> = Vec::new();
+    let mut selected_fmt_line = 0usize;
     let mut last_cat = "";
     for fmt in &all_formats {
         let cat = fmt.category();
@@ -60,6 +49,9 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
             last_cat = cat;
         }
         let is_selected = *fmt == app.save.format;
+        if is_selected {
+            selected_fmt_line = fmt_lines.len();
+        }
         let marker = if is_selected { "\u{25B8} " } else { "  " }; // ▸ or space
         let label_style = if is_selected {
             Style::default()
@@ -163,9 +155,27 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
         Span::raw(" Cancel"),
     ]));
 
-    // Ensure we don't exceed the inner area height
-    let visible_lines: Vec<Line<'_>> = lines.into_iter().take(inner.height as usize).collect();
-    let para = Paragraph::new(visible_lines).style(Style::default().bg(app.theme.background));
+    // Size the popup to its content (the old fixed 20 rows clipped the
+    // last format category — WAV/RTP JSON — off the bottom), clamped to
+    // the terminal by centered_popup.
+    let needed_height = lines.len() as u16 + 2;
+    let popup_area = centered_popup(area, popup_width, needed_height);
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Save Capture ")
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    // On a terminal too short for everything, scroll so the SELECTED
+    // format row stays visible (stream views default to WAV, which lived
+    // in the clipped tail).
+    let selected_line = 3 + selected_fmt_line as u16; // blank + path + blank
+    let scroll = (selected_line + 1).saturating_sub(inner.height);
+    let para = Paragraph::new(lines)
+        .scroll((scroll, 0))
+        .style(Style::default().bg(app.theme.background));
     frame.render_widget(para, inner);
 }
 

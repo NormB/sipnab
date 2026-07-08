@@ -28,6 +28,15 @@ All notable changes to sipnab will be documented in this file.
   participant pipes is truncated with an ellipsis instead of dropped —
   OpenSIPS' default "100 trying -- your call is important to us"
   previously rendered as a blank arrow.
+- **TUI**: the F2 save popup was fixed at 20 rows, clipping the
+  RTP/Media formats (WAV, RTP JSON) off the bottom — the "save the
+  stream as a WAV file" hint pointed at an option the popup never
+  showed. The popup now sizes to its content and scrolls the selected
+  format into view on short terminals.
+- **TUI**: cycling save formats mutated the path into
+  `x.rtp.rtp.rtp...` — the two-segment `rtp.json` extension defeated
+  the replace-after-last-dot logic. The full extension is now replaced,
+  and a user-edited path is left alone.
 - Crash reports get a per-process sequence number in the filename — two
   panics in the same second from the same process previously overwrote
   each other's report.

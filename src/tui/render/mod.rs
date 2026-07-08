@@ -949,6 +949,41 @@ mod tests {
         assert!(out.contains("/tmp/out.pcap"));
     }
 
+    /// Field report: the save popup was fixed at 20 rows, so the last
+    /// format category (RTP/Media: WAV + RTP JSON) was clipped — the
+    /// "save the stream as a WAV file" hint pointed at an option the
+    /// popup never showed. On a tall terminal every format must render.
+    #[test]
+    fn render_app_save_popup_shows_every_format() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.set_save_path("/tmp/out.pcap");
+        let out = render_to_string(&mut app, 90, 40);
+        for label in [
+            "PCAP", "TXT", "SIPp", "JSON", "CSV", "HTML", "MD", "WAV", "RTP",
+        ] {
+            assert!(out.contains(label), "format {label} missing:\n{out}");
+        }
+        // The Enter/Tab/Esc controls line must also survive.
+        assert!(out.contains("Cancel"), "controls line missing:\n{out}");
+    }
+
+    /// On a terminal too short for the whole list, the SELECTED format
+    /// must be scrolled into view — stream views default to WAV, which
+    /// lived in the clipped tail.
+    #[test]
+    fn render_app_save_popup_selected_format_visible_when_short() {
+        let mut app = app_with_dialog();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.save.format = SaveFormat::Wav;
+        app.set_save_path("/tmp/out.wav");
+        let out = render_to_string(&mut app, 90, 18);
+        assert!(
+            out.contains("WAV"),
+            "selected WAV must be scrolled into view:\n{out}"
+        );
+    }
+
     #[test]
     fn render_app_file_open_browser_overlay() {
         let mut app = app_with_dialog();
