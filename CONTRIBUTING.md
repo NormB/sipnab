@@ -6,6 +6,9 @@ Start with [ARCHITECTURE.md](ARCHITECTURE.md) — the module map, data flow,
 and the "where to add things" table. The threading topology and lock
 discipline live in [docs/internals/threading.md](docs/internals/threading.md).
 
+By participating in this project you agree to abide by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Prerequisites
 
 - Rust 1.94+ (edition 2024)
