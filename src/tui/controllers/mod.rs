@@ -80,6 +80,11 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
     }
 
+    dispatch_view_key(app, key);
+}
+
+/// Route a key to the handler of the current view.
+fn dispatch_view_key(app: &mut App, key: KeyEvent) {
     match &app.current_view {
         View::CallList => handle_call_list_key(app, key),
         View::StreamList => handle_stream_list_key(app, key),
@@ -94,7 +99,28 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle search input mode.
+///
+/// The query narrows the list live, so the keys that move the highlight
+/// (and, in the list views, star rows) pass through to the current view —
+/// the user can walk the narrowed rows and select them without leaving
+/// the search prompt. Space stays a query character in the non-list views
+/// (message-content search legitimately contains spaces); the list views
+/// keep it as ToggleSelection, matching normal mode.
 pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
+    let pass_through = matches!(
+        key.code,
+        KeyCode::Up
+            | KeyCode::Down
+            | KeyCode::PageUp
+            | KeyCode::PageDown
+            | KeyCode::Home
+            | KeyCode::End
+    ) || (key.code == KeyCode::Char(' ')
+        && matches!(app.current_view, View::CallList | View::StreamList));
+    if pass_through {
+        dispatch_view_key(app, key);
+        return;
+    }
     match key.code {
         KeyCode::Esc => {
             app.search_active = false;
@@ -735,6 +761,156 @@ mod tests {
         app.search_active = true;
         handle_search_input(&mut app, key(KeyCode::F(4)));
         assert_eq!(app.search_query, "");
+        assert!(app.search_active);
+    }
+
+    /// Three dialogs of which exactly two match the query "5595" — the
+    /// user's report: typing /5595 narrowed the list to two INVITE rows
+    /// but the rows could neither be arrowed between nor starred.
+    fn app_with_5595_dialogs() -> App {
+        use chrono::TimeDelta;
+        let t0 = base_ts();
+        App::with_processed_messages(vec![
+            make_invite("inv-5595-a@test", "alice", "bob", t0),
+            make_invite(
+                "inv-5595-b@test",
+                "carol",
+                "dave",
+                t0 + TimeDelta::seconds(1),
+            ),
+            make_invite(
+                "unrelated@test",
+                "erin",
+                "frank",
+                t0 + TimeDelta::seconds(2),
+            ),
+        ])
+    }
+
+    #[test]
+    fn search_input_arrows_navigate_narrowed_list() {
+        let mut app = app_with_5595_dialogs();
+        app.search_active = true;
+        app.search_query = "5595".to_string();
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-a@test")
+        );
+
+        handle_key_event(&mut app, key(KeyCode::Down));
+        assert!(
+            app.search_active,
+            "navigation must not leave the search prompt"
+        );
+        assert_eq!(
+            app.search_query, "5595",
+            "navigation must not edit the query"
+        );
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-b@test")
+        );
+
+        // Clamped at the bottom of the two-row narrowed list.
+        handle_key_event(&mut app, key(KeyCode::Down));
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-b@test")
+        );
+
+        handle_key_event(&mut app, key(KeyCode::Up));
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-a@test")
+        );
+
+        // Clamped at the top.
+        handle_key_event(&mut app, key(KeyCode::Up));
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-a@test")
+        );
+    }
+
+    #[test]
+    fn search_input_home_end_jump_in_narrowed_list() {
+        let mut app = app_with_5595_dialogs();
+        app.search_active = true;
+        app.search_query = "5595".to_string();
+
+        handle_key_event(&mut app, key(KeyCode::End));
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-b@test")
+        );
+        handle_key_event(&mut app, key(KeyCode::Home));
+        assert_eq!(
+            get_selected_call_id(&app).as_deref(),
+            Some("inv-5595-a@test")
+        );
+        assert_eq!(app.search_query, "5595");
+        assert!(app.search_active);
+    }
+
+    #[test]
+    fn search_input_space_stars_highlighted_row() {
+        let mut app = app_with_5595_dialogs();
+        app.search_active = true;
+        app.search_query = "5595".to_string();
+
+        handle_key_event(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.search_query, "5595", "space selects; it is not typed");
+        assert!(app.call_list.selected_rows().contains("inv-5595-a@test"));
+
+        handle_key_event(&mut app, key(KeyCode::Down));
+        handle_key_event(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.call_list.selected_rows().contains("inv-5595-b@test"));
+
+        // Enter commits the search, a second Enter opens the merged flow of
+        // both starred rows — the full journey the user attempted.
+        handle_key_event(&mut app, key(KeyCode::Enter));
+        assert!(!app.search_active);
+        handle_key_event(&mut app, key(KeyCode::Enter));
+        assert!(matches!(app.current_view, View::CallFlow(_)));
+        assert_eq!(app.flow.merged_calls.len(), 2);
+    }
+
+    #[test]
+    fn search_input_space_on_empty_narrowed_list_is_noop() {
+        let mut app = app_with_5595_dialogs();
+        app.search_active = true;
+        app.search_query = "zzz-matches-nothing".to_string();
+        handle_key_event(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(app.search_query, "zzz-matches-nothing");
+        assert_eq!(app.call_list.selected_rows_count(), 0);
+        handle_key_event(&mut app, key(KeyCode::Down));
+        handle_key_event(&mut app, key(KeyCode::End));
+        assert!(app.search_active, "no panic, still searching");
+    }
+
+    #[test]
+    fn search_input_space_still_types_in_call_flow_search() {
+        let mut app = app_with_5595_dialogs();
+        app.current_view = View::CallFlow("inv-5595-a@test".to_string());
+        app.search_active = true;
+        app.search_query = "180".to_string();
+        handle_key_event(&mut app, key(KeyCode::Char(' ')));
+        // Message-content search legitimately contains spaces — only the
+        // list views repurpose Space for row selection.
+        assert_eq!(app.search_query, "180 ");
+    }
+
+    #[test]
+    fn search_input_space_in_stream_list_not_typed() {
+        let mut app = app_with_5595_dialogs();
+        app.current_view = View::StreamList;
+        app.search_active = true;
+        app.search_query = "pcmu".to_string();
+        handle_key_event(&mut app, key(KeyCode::Char(' ')));
+        assert_eq!(
+            app.search_query, "pcmu",
+            "stream list: space selects, not typed"
+        );
         assert!(app.search_active);
     }
 

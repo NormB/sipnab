@@ -24,7 +24,7 @@ CALL LIST:
   Z                Reverse sort direction
   A                Toggle autoscroll
   p                Pause/resume capture
-  /                Search
+  /                Search (arrows/Space keep working while typing)
   i                Clear non-matching dialogs
   I                Clear matching dialogs
   F1               This help
@@ -89,7 +89,7 @@ MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams
   PgUp/PgDn       Page scroll
-  /                Search streams
+  /                Search streams (arrows/Space keep working while typing)
   Enter            Stream detail
   Tab              Switch to Call List
   F1               Help

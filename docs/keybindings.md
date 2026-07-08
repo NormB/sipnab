@@ -36,7 +36,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | Z | Reverse sort direction |
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
-| / | Activate search **(configurable: `search`)** |
+| / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list and Space stars rows |
 | i | Clear non-matching dialogs |
 | I | Clear matching dialogs |
 | t | Cycle timestamp mode (absolute / delta-prev / delta-first / scaled) |
@@ -132,7 +132,7 @@ detail pane regardless of focus.
 | PgUp / PgDn | Page scroll |
 | Home | Jump to first stream |
 | End | Jump to last stream |
-| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** |
+| / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight and Space stars rows |
 | Enter | Open stream detail |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
