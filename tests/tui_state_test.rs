@@ -969,8 +969,9 @@ mod tui_state {
         for c in "1003".chars() {
             app.handle_key(KeyCode::Char(c));
         }
-        app.handle_key(KeyCode::Enter); // accept search; query persists
-        app.handle_key(KeyCode::Enter); // open the only visible row
+        // ONE Enter accepts the search (query persists) and opens the
+        // only visible row in the same press.
+        app.handle_key(KeyCode::Enter);
         match app.current_view() {
             View::CallFlow(cid) => assert_eq!(
                 cid, "call-2@test",

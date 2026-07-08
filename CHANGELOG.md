@@ -4,17 +4,36 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **TUI**: one Enter now commits the search prompt *and* opens the
+  selection — the flow of the starred ([*]) rows, or of the highlighted
+  row, in the call list; the highlighted stream in the stream list.
+  Previously the first Enter only silently closed the prompt and a second
+  press was needed.
+- **TUI**: Space during stream-list search types into the query again —
+  the stream list has no row starring, so 0.5.1's pass-through made it a
+  dead key there. Call-list behavior (Space stars) is unchanged.
+- **TUI**: the raw message view now binds End (jump to bottom), matching
+  every other scrollable view and what F1 help already claimed.
+- Crash reports get a per-process sequence number in the filename — two
+  panics in the same second from the same process previously overwrote
+  each other's report.
+- A `[crash]` config section no longer logs a spurious
+  "Unknown config key: crash" warning.
+
 ## [0.5.1] - 2026-07-08
 
 ### Fixed
 
 - **TUI**: while the search prompt is open (`/` or F3), Up/Down/PgUp/PgDn/
   Home/End now move the highlight in the live-narrowed call and stream
-  lists, and Space stars ([*]) the highlighted row — previously every key
-  went to the query editor, so the narrowed rows could not be navigated or
-  selected until Enter committed the search. Space remains a literal query
-  character in the call-flow and raw-message searches, where message
-  content legitimately contains spaces.
+  lists, and Space stars ([*]) the highlighted row in the call list —
+  previously every key went to the query editor, so the narrowed rows
+  could not be navigated or selected until Enter committed the search.
+  Space remains a literal query character in the call-flow and
+  raw-message searches, where message content legitimately contains
+  spaces.
 
 ## [0.5.0] - 2026-07-06
 

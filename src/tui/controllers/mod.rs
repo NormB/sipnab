@@ -101,11 +101,11 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
 /// Handle search input mode.
 ///
 /// The query narrows the list live, so the keys that move the highlight
-/// (and, in the list views, star rows) pass through to the current view —
-/// the user can walk the narrowed rows and select them without leaving
-/// the search prompt. Space stays a query character in the non-list views
-/// (message-content search legitimately contains spaces); the list views
-/// keep it as ToggleSelection, matching normal mode.
+/// (and, in the call list, star rows) pass through to the current view —
+/// the user can walk the narrowed rows, select them, and Enter acts on
+/// the selection in one press. Space stays a query character everywhere
+/// except the call list (message-content search legitimately contains
+/// spaces, and the stream list has no row starring for it to trigger).
 pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
     let pass_through = matches!(
         key.code,
@@ -115,8 +115,7 @@ pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
             | KeyCode::PageDown
             | KeyCode::Home
             | KeyCode::End
-    ) || (key.code == KeyCode::Char(' ')
-        && matches!(app.current_view, View::CallList | View::StreamList));
+    ) || (key.code == KeyCode::Char(' ') && app.current_view == View::CallList);
     if pass_through {
         dispatch_view_key(app, key);
         return;
@@ -129,6 +128,12 @@ pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
         KeyCode::Enter => {
             app.search_active = false;
             // search_query remains for highlighting
+            // In the list views one Enter both commits the query and opens
+            // the flow/detail of the selection — a press that only closed
+            // the prompt read as a dead key.
+            if matches!(app.current_view, View::CallList | View::StreamList) {
+                dispatch_view_key(app, key);
+            }
         }
         KeyCode::Backspace => {
             app.search_query.pop();
@@ -866,13 +871,45 @@ mod tests {
         handle_key_event(&mut app, key(KeyCode::Char(' ')));
         assert!(app.call_list.selected_rows().contains("inv-5595-b@test"));
 
-        // Enter commits the search, a second Enter opens the merged flow of
-        // both starred rows — the full journey the user attempted.
+        // ONE Enter commits the search and immediately opens the merged
+        // flow of both starred rows — a first press that only silently
+        // closed the prompt read as a failure to the user.
         handle_key_event(&mut app, key(KeyCode::Enter));
         assert!(!app.search_active);
-        handle_key_event(&mut app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
         assert_eq!(app.flow.merged_calls.len(), 2);
+    }
+
+    /// Enter during search with nothing starred opens the highlighted
+    /// row's flow directly (same single-press semantics as normal mode),
+    /// and the committed query survives for highlighting.
+    #[test]
+    fn search_input_enter_opens_highlighted_row_flow() {
+        let mut app = app_with_5595_dialogs();
+        app.search_active = true;
+        app.search_query = "5595".to_string();
+        handle_key_event(&mut app, key(KeyCode::Down));
+        handle_key_event(&mut app, key(KeyCode::Enter));
+        assert!(!app.search_active);
+        assert_eq!(
+            app.current_view,
+            View::CallFlow("inv-5595-b@test".to_string())
+        );
+        assert_eq!(app.search_query, "5595", "query kept for highlighting");
+    }
+
+    /// Enter during stream-list search commits the query and hands Enter
+    /// to the stream list; with nothing to open it must not panic or get
+    /// stuck in search mode.
+    #[test]
+    fn search_input_enter_in_stream_list_commits_and_delegates() {
+        let mut app = app_with_5595_dialogs();
+        app.current_view = View::StreamList;
+        app.search_active = true;
+        app.search_query = "pcmu".to_string();
+        handle_key_event(&mut app, key(KeyCode::Enter));
+        assert!(!app.search_active);
+        assert_eq!(app.search_query, "pcmu");
     }
 
     #[test]
@@ -901,16 +938,15 @@ mod tests {
     }
 
     #[test]
-    fn search_input_space_in_stream_list_not_typed() {
+    fn search_input_space_types_in_stream_list() {
+        // The stream list has no row starring, so Space must stay a query
+        // character there — stealing it would make it a dead key.
         let mut app = app_with_5595_dialogs();
         app.current_view = View::StreamList;
         app.search_active = true;
         app.search_query = "pcmu".to_string();
         handle_key_event(&mut app, key(KeyCode::Char(' ')));
-        assert_eq!(
-            app.search_query, "pcmu",
-            "stream list: space selects, not typed"
-        );
+        assert_eq!(app.search_query, "pcmu ");
         assert!(app.search_active);
     }
 

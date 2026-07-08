@@ -20,7 +20,7 @@ expression: output
 │  Z                 Reverse sort direction                                    │
 │  A                 Toggle autoscroll                                         │
 │  p                 Pause/resume capture                                      │
-│  /                 Search (arrows/Space keep working while typing)           │
+│  /                 Search (arrows/Space work while typing; Enter opens)      │
 │  i                 Clear non-matching dialogs                                │
 │  I                 Clear matching dialogs                                    │
 │  F1                This help                                                 │
