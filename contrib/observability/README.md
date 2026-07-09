@@ -120,4 +120,9 @@ If you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and
 deploy to an older one (Debian 12 / glibc 2.36), the binary will fail
 with `version 'GLIBC_2.39' not found`. Build inside a container
 matching the target's glibc — for example, `rust:1-bookworm` for
-Debian 12 deploys.
+Debian 12 deploys. (Release CI builds the gnu Linux binaries inside
+`rust:1-bookworm` for exactly this reason, with a workflow gate that
+fails if the glibc floor drifts above 2.36.) When in doubt, the static
+musl tarball — or `curl -fsSL https://www.sipnab.com/install.sh | sh`,
+which picks the right build for the host's glibc — sidesteps the issue
+entirely.

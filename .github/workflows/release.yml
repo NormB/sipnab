@@ -21,12 +21,19 @@ jobs:
   build:
     name: Build (${{ matrix.target }}${{ matrix.variant && format('-{0}', matrix.variant) || '' }})
     runs-on: ${{ matrix.os }}
+    # gnu Linux targets build inside rust:1-bookworm so the binaries (and the
+    # .debs made from them) need only glibc >= 2.36 — Debian 12+, Ubuntu 23.04+.
+    # ubuntu-latest is 24.04 (glibc 2.39), and the cross-rs :main images are
+    # also 24.04-based, so neither can produce a 2.36-floor binary. The
+    # "Enforce glibc floor" step below fails the build if the floor regresses.
+    container: ${{ matrix.container }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            container: rust:1-bookworm
             cross: false
           # noaudio variants: binary built without the `audio` feature, .deb
           # ships no plugin and no libasound Recommends — for headless servers
@@ -34,17 +41,23 @@ jobs:
           # tarball); static musl tarballs already cover the no-audio case.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            container: rust:1-bookworm
             cross: false
             variant: noaudio
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             cross: true
+          # aarch64 gnu cross-compiles inside bookworm via Debian multiarch
+          # (gcc-aarch64-linux-gnu + :arm64 dev packages) instead of cross-rs,
+          # for the same glibc-2.36 floor as x86_64.
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
+            container: rust:1-bookworm
+            cross: false
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            cross: true
+            container: rust:1-bookworm
+            cross: false
             variant: noaudio
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
@@ -68,9 +81,28 @@ jobs:
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Install libpcap + ALSA (native Linux)
-        if: runner.os == 'Linux' && !matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y libpcap-dev libasound2-dev
+      - name: Install build deps (bookworm container)
+        if: matrix.container
+        shell: bash
+        run: |
+          apt-get update
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            dpkg --add-architecture arm64
+            apt-get update
+            apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64 libasound2-dev:arm64
+          else
+            apt-get install -y libpcap-dev libasound2-dev
+          fi
+
+      - name: Configure aarch64 multiarch cross-compile
+        if: matrix.target == 'aarch64-unknown-linux-gnu' && matrix.container
+        run: |
+          {
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc"
+            echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc"
+            echo "PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig"
+            echo "PKG_CONFIG_ALLOW_CROSS=1"
+          } >> "$GITHUB_ENV"
 
       - name: Compute feature set
         id: features
@@ -129,7 +161,34 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} -p sipnab-audio
 
       - name: Strip binary
-        run: strip "target/${{ matrix.target }}/release/sipnab" || true
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-gnu) strip_bin=aarch64-linux-gnu-strip ;;
+            *) strip_bin=strip ;;
+          esac
+          "$strip_bin" "target/${{ matrix.target }}/release/sipnab" || true
+
+      # Regression gate for the glibc floor: a binary that links symbols newer
+      # than 2.36 would fail on Debian 12 with "GLIBC_x.yz not found".
+      - name: Enforce glibc floor (gnu Linux targets)
+        if: contains(matrix.target, '-linux-gnu')
+        shell: bash
+        run: |
+          floor="2.36"
+          check() {
+            local max
+            max=$(readelf -V "$1" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 | cut -d_ -f2)
+            echo "$1 needs glibc >= $max (floor $floor)"
+            if [ "$(printf '%s\n%s\n' "$max" "$floor" | sort -V | tail -1)" != "$floor" ]; then
+              echo "::error::$1 requires GLIBC_$max > $floor — breaks Debian 12; the build environment has drifted"
+              return 1
+            fi
+          }
+          check "target/${{ matrix.target }}/release/sipnab"
+          if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ]; then
+            check "target/${{ matrix.target }}/release/libsipnab_audio.so"
+          fi
 
       # noaudio variants are deb-only: static musl tarballs already cover the
       # no-audio tarball case, so skip the redundant gnu-noaudio tar.gz.
