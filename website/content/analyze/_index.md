@@ -13,7 +13,9 @@ Analyze pcap files directly in your browser — no upload, no install, no server
 - **Call list** with sorting and filtering by method, status, caller, callee
 - **Call flow ladder diagrams** showing the full SIP transaction sequence
 - **Raw SIP message view** for every packet in the dialog
-- **Export** to JSON, CSV, or Mermaid diagram format
+- **RTP Streams tab** with per-stream MOS, jitter, loss, and burst/gap analysis
+- **Filter DSL** — the same expression language as the CLI's `--filter`
+- **Export** to JSON, CSV, or Mermaid diagram format (the browser subset of the CLI's export formats)
 
 ### When to use this
 
@@ -21,4 +23,4 @@ Quick triage during on-call. Share a link with colleagues who don't have sipnab 
 
 ### Keyboard shortcuts
 
-`h` help | `j`/`k` navigate | `Enter` expand | `f` search/filter | `e` export
+`h` or `?` help | `j`/`k` navigate | `Enter` expand | `f` search/filter | `e` export

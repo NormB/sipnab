@@ -8,14 +8,23 @@ description = "Real-world VoIP diagnostic workflows with exact commands."
 
 ## Failed Calls
 
-Find every call that never established, then triage by response code.
+Calls rejected with `403 Forbidden`, `404 Not Found`, `486 Busy Here`, `488 Not Acceptable Here`, or timing out with `408 Request Timeout`? Find every call that never established, then triage by response code.
 
 ```bash
-# All failed calls with Call-ID and response code
-sipnab -N -I capture.pcap --filter "state == 'Failed'" --json | jq '.call_id, .status_code'
+# All failed calls: Call-ID + response code + reason per response message
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+  | jq -c 'select(.is_request == false) | {call_id, status_code, reason}'
 
 # Detailed report for one call (Markdown, ready for a ticket)
 sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
+```
+
+You should see one line per response message of each failed call (minimal example):
+
+```json
+{"call_id":"abc123@host","status_code":100,"reason":"Trying"}
+{"call_id":"abc123@host","status_code":486,"reason":"Busy Here"}
+{"call_id":"def456@host","status_code":408,"reason":"Request Timeout"}
 ```
 
 **What to look for:** sipnab includes response code intelligence -- the status field tells you why:
@@ -27,10 +36,62 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown > report.md
 | 404 | Not found | Bad dial plan, missing route, number not provisioned |
 | 408 | Request timeout | Endpoint unreachable, DNS failure, firewall |
 | 486 | Busy here | Endpoint occupied, no call waiting |
-| 488 | Not acceptable here | Codec mismatch, SDP incompatibility |
+| 488 | Not acceptable here | Codec mismatch, SDP incompatibility -- full recipe [below](#488-not-acceptable-here-codec-mismatch) |
 | 503 | Service unavailable | Upstream overload, trunk down, proxy crash |
 
 **Next steps:** If the response code is 408 or you see high `retransmits`, the problem is network-level -- check connectivity and firewall rules before touching SIP config.
+
+---
+
+## Dropped Calls (call answers, then disconnects mid-conversation)
+
+The call sets up fine, both sides talk, then it dies partway through -- often after a suspiciously round number of minutes.
+
+```bash
+# 1. Enumerate completed-but-short calls (established, then ended early)
+sipnab -N -I capture.pcap --filter "duration < 120.0 AND state == 'Completed'" --json \
+  | jq -r '.call_id' | sort -u
+
+# 2. Timeline for one dropped call: who sent the BYE, and exactly when
+sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
+```
+
+The call report shows the full SIP message timeline plus per-stream RTP stats (including first/last packet timestamps). Match the signature:
+
+- **BYE at a round interval after answer** (exactly 15 min, 30 min, 1 h -- e.g. 200 OK at `14:00:02`, BYE at `14:30:02`): RFC 4028 **session-timer expiry**. One side never sent (or never received) the session refresh re-INVITE/UPDATE and tore the call down when `Session-Expires` ran out.
+- **RTP last packet well before the BYE** (stream `last_seen` minutes earlier than the BYE): a NAT/firewall **idle timeout silently dropped the media path**; the endpoint's RTP-timeout watchdog eventually hung up.
+- **BYE from the carrier side, accompanied by SIP retransmits**: trunk-side reset or an upstream element recycling the session.
+
+**Next steps:**
+
+1. Session timer: align `Min-SE` / `Session-Expires` between PBX and trunk, and confirm the negotiated refresher actually sends the refresh before expiry.
+2. NAT/firewall: enable RTP keepalives (or comfort noise) on the endpoints, and raise the firewall's UDP session timeout above the keepalive interval.
+3. Disable SIP ALG on intermediate NAT devices -- it corrupts dialogs in ways that surface as mid-call drops.
+
+---
+
+## 488 Not Acceptable Here (codec mismatch)
+
+An INVITE is rejected with `488 Not Acceptable Here`: the callee (or an SBC in the path) found no common codec between the SDP offer and what it supports.
+
+```bash
+# 1. Find every 488 rejection
+sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
+  | jq -c 'select(.status_code == 488) | {call_id, status_code, reason}'
+
+# 2. Compare the SDP offer against the answer for one call
+sipnab -N -I capture.pcap --call-report 'abc123@host' --no-cli-print
+```
+
+You should see:
+
+```json
+{"call_id":"abc123@host","status_code":488,"reason":"Not Acceptable Here"}
+```
+
+The call report's **SDP timeline** lists each offer/answer with its codec set. A 488 means there is no overlap: e.g. the offer carries only `G729` while the callee's profile allows only `PCMU, PCMA`. (If the reject comes from an SBC, the offer may never have reached the far end at all.)
+
+**Next steps:** Enable transcoding on the SBC/media server, or add the missing codec to the endpoint/trunk profile so the offer and answer share at least one codec.
 
 ---
 
@@ -45,6 +106,14 @@ sipnab -N -I capture.pcap --filter "one_way == true" --json
 # Full diagnostic output
 sipnab -N -I capture.pcap --filter "one_way == true" --report
 ```
+
+You should see one NDJSON record per SIP message of each flagged call (abridged -- real records carry the full field set):
+
+```json
+{"is_request":true,"method":"INVITE","call_id":"7f3a9c@10.0.0.5","from":"...","to":"...", "...":"..."}
+```
+
+Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with `--call-report <call-id>`.
 
 **What to look for:**
 
@@ -71,6 +140,14 @@ sipnab -N -I capture.pcap --filter "rtp.mos < 3.0" --json
 # Live monitoring -- alert on quality or jitter spikes
 sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 ```
+
+You should see the SIP messages of every matching call as NDJSON (abridged):
+
+```json
+{"is_request":true,"method":"INVITE","call_id":"bad-audio@pbx1", "...":"..."}
+```
+
+The per-message records identify *which* calls are bad; pull the per-stream numbers (`jitter_ms`, `loss_pct`, quality intervals) with `--call-report <call-id>`.
 
 **What to look for:**
 
@@ -163,7 +240,7 @@ sipnab -N -I capture.pcap --filter "ua =~ 'friendly-scanner|sipcli|sipvicious'"
 
 ## Registration Failures
 
-Phones not registering means no inbound calls and potentially no outbound.
+REGISTER rejected with `401 Unauthorized`, `403 Forbidden`, or `423 Interval Too Brief`? Phones not registering means no inbound calls and potentially no outbound.
 
 ```bash
 sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND state == 'Failed'" --json

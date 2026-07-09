@@ -104,6 +104,30 @@ All tools are read-only. Responses are bounded by a hard limit of 1000
 records per call; tools that can return more support cursor- or offset-
 based pagination.
 
+`get_dialog_report` with `format: "json"` returns the same aggregated
+dialog document as the REST `GET /v1/dialogs/{call_id}` endpoint — the
+worked example in the [REST API reference](@/docs/api.md#get-v1-dialogs-1)
+shows every field.
+
+### Tool argument enums
+
+**`find_problems.kinds`** — diagnostic alias names, OR-ed together.
+Defaults to `["problems"]`. The full vocabulary:
+
+`problems` · `slow-setup` · `short-calls` · `one-way` · `nat-issues` ·
+`codec-asym` · `ptime-asym` · `payload-asym` · `duration-asym` ·
+`late-media`
+
+An unknown alias returns a JSON-RPC *invalid params* error naming the
+bad alias. The same names work as the `list_dialogs` `filter` aliases
+(and as `sipnab --filter` aliases on the CLI).
+
+**`security_findings.kinds`** — matches the rule names findings are
+recorded under: `scanner`, `fraud`, `digest`, `reg_flood` (note the
+underscore — the `--alert` rule grammar spells it `reg-flood`,
+but findings are recorded and filtered as `reg_flood`). Omitted or empty
+`kinds` returns findings of every kind.
+
 ## Security model
 
 - **Read-only by design.** No tool mutates the dialog/stream/alert
@@ -112,7 +136,9 @@ based pagination.
 - **Localhost-default.** HTTP transport binds `127.0.0.1:8731` unless
   explicitly overridden.
 - **Bearer auth on non-loopback.** Tokens compared in constant time
-  via the same code path as the REST API.
+  via the same code path as the REST API — see
+  [REST API authentication](@/docs/api.md#authentication) for the
+  token-handling details.
 - **Host header allowlist.** rmcp's DNS-rebind protection is enabled
   by default; extend with `--mcp-allowed-host` for non-loopback
   clients.
@@ -244,7 +270,38 @@ curl -sS "$URL" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/call",
        "params":{"name":"find_problems",
                  "arguments":{"kinds":["one-way","late-media","codec-asym"]}}}'
+```
 
+The `find_problems` response (formatted for readability). Every sipnab
+tool wraps its payload in the standard MCP envelope: the JSON result is
+**serialized as a string** inside `result.content[0].text` (a `"text"`
+content block), so clients parse `content[0].text` a second time to get
+the actual array:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "[{\"call_id\":\"abc123@host\",\"state\":\"InCall\",\"method\":\"INVITE\",\"from_user\":\"1001\",\"to_user\":\"1002\",\"msg_count\":5,\"duration_sec\":12.4,\"created_at\":\"2026-06-12T14:03:21+00:00\",\"updated_at\":\"2026-06-12T14:03:33+00:00\",\"timing\":{\"pdd_ms\":180,\"setup_ms\":2134,\"retransmits\":0,\"duration_ms\":null}}]"
+      }
+    ],
+    "isError": false
+  }
+}
+```
+
+Each array element is a dialog summary (`call_id`, `state`, `method`,
+`from_user`, `to_user`, `msg_count`, `duration_sec`, `created_at`,
+`updated_at`, `timing`) — the compact projection; the full aggregated
+dialog document is what `get_dialog_report` returns (see the
+[REST API dialog example](@/docs/api.md#get-v1-dialogs-1), which
+shares the shape).
+
+```bash
 # tools/call — get_dialog with pagination
 curl -sS "$URL" \
   -H "Content-Type: application/json" \
@@ -260,7 +317,8 @@ curl -sS "$URL" \
   -H "Accept: application/json, text/event-stream" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"jsonrpc":"2.0","id":4,"method":"tools/call",
-       "params":{"name":"security_findings","arguments":{"limit":20}}}'
+       "params":{"name":"security_findings",
+                 "arguments":{"kinds":["scanner","reg_flood"],"limit":20}}}'
 ```
 
 Common failure modes:

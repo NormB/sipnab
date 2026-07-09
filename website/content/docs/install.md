@@ -4,26 +4,47 @@ weight = 1
 description = "Install sipnab from pre-built binaries, cargo, package managers, or source."
 +++
 
-## Prerequisites
+## Installer (recommended)
 
-- **Rust 1.94+** (for building from source)
-- **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
-- **pkg-config** (for libpcap detection during build)
+One command on Linux (x86_64/aarch64) or macOS:
+
+```bash
+curl -fsSL https://www.sipnab.com/install.sh | sh
+```
+
+The [installer script](/install.sh) detects your OS, CPU architecture, and glibc version, downloads the matching versioned release tarball (`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file, **verifies the checksum**, and installs the binary to `/usr/local/bin` (using `sudo` only if that directory isn't writable).
+
+Two environment variables tune it:
+
+```bash
+# Pin a specific version instead of the latest release
+curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION=<version> sh
+
+# Install somewhere else (e.g. no root)
+curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+On Linux the installer chooses between two build variants: the dynamically linked **`-gnu`** build (requires glibc >= 2.39 and libpcap installed via your package manager) and the static **musl** build (no glibc/libpcap requirement; TUI audio playback unavailable, everything else identical). Hosts with glibc below the 2.39 floor — or with no glibc at all — **automatically fall back to the static musl build**.
 
 ## Pre-built Binaries
 
-Download from [GitHub Releases](https://github.com/NormB/sipnab/releases):
+Every [GitHub release](https://github.com/NormB/sipnab/releases) ships versioned tarballs per target triple, each with a matching `.sha256` checksum file:
+
+- `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` — dynamic, needs glibc >= 2.39 + libpcap
+- `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` — same, for arm64
+- `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` — static, runs on any glibc (no TUI audio)
+- `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
+- `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
+
+Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.2):
 
 ```bash
-# Linux x86_64 (static musl)
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab-x86_64-unknown-linux-musl
-chmod +x sipnab-x86_64-unknown-linux-musl
-sudo mv sipnab-x86_64-unknown-linux-musl /usr/local/bin/sipnab
-
-# Linux aarch64 (static musl)
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab-aarch64-unknown-linux-musl
-chmod +x sipnab-aarch64-unknown-linux-musl
-sudo mv sipnab-aarch64-unknown-linux-musl /usr/local/bin/sipnab
+V=<version> T=x86_64-unknown-linux-gnu
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz"
+curl -LO "https://github.com/NormB/sipnab/releases/download/v$V/sipnab-$V-$T.tar.gz.sha256"
+sha256sum -c "sipnab-$V-$T.tar.gz.sha256"
+tar -xzf "sipnab-$V-$T.tar.gz"
+sudo install -m 755 sipnab /usr/local/bin/sipnab
 ```
 
 ## Docker
@@ -62,7 +83,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install it with `apt`, which resolves the `libpcap0.8` runtime dependency automatically:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.0
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.2
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -90,7 +111,7 @@ Alternatively, install the standard package with `sudo apt install --no-install-
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-0.5.0-1.x86_64.rpm  # replace 0.5.0 with latest version from releases page
+sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.2
 ```
 
 ### Homebrew (macOS)
@@ -100,6 +121,12 @@ brew install sipnab
 ```
 
 ## Building from Source
+
+### Build prerequisites
+
+- **Rust 1.94+**
+- **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
+- **pkg-config** (for libpcap detection during build)
 
 ### Basic build (TUI only, default features)
 
@@ -179,7 +206,9 @@ cargo build --release --no-default-features \
 
 ### Cross-glibc compatibility
 
-If you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), the binary will refuse to start with `version 'GLIBC_2.39' not found`. Build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
+The release `-gnu` builds require **glibc >= 2.39** (the installer's floor); on older hosts they refuse to start with `version 'GLIBC_2.39' not found`. The [installer script](#installer-recommended) handles this automatically — below the 2.39 floor it falls back to the static musl build.
+
+The same applies to your own builds: if you build on a newer Debian/Ubuntu (e.g. Debian 13 / glibc 2.41) and deploy to an older one (Debian 12 / glibc 2.36), build inside a container matching the target's glibc -- for example, `rust:1-bookworm` for Debian 12 deploys, or use musl (the static `--target x86_64-unknown-linux-musl` builds the release CI publishes).
 
 ## Enabling MCP
 
@@ -307,7 +336,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.4.1 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.2 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms

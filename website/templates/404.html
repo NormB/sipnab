@@ -2,11 +2,21 @@
 
 {% block title %}404 -- {{ config.title }}{% endblock title %}
 
+{% block head_extra %}
+<meta name="robots" content="noindex">
+{% endblock head_extra %}
+
 {% block content %}
 <div class="error-page">
-  <div class="error-code">404</div>
+  <h1 class="error-code">404</h1>
   <div class="error-prompt"><span class="error-sigil">$</span>sipnab /this/page<span class="error-cursor"></span></div>
   <p>No match for this route. Maybe it was a phantom INVITE &mdash; the page never sent a 200&nbsp;OK.</p>
-  <a href="{{ config.base_url }}" class="btn btn-primary">Back to Home</a>
+  <div class="error-actions">
+    <a href="{{ config.base_url }}" class="btn btn-primary">Back to Home</a>
+    <a href="{{ get_url(path='@/docs/_index.md') }}" class="btn btn-secondary">Docs</a>
+    <a href="{{ get_url(path='@/download.md') }}" class="btn btn-secondary">Download</a>
+    <a href="{{ get_url(path='@/analyze/_index.md') }}" class="btn btn-secondary">Analyze a pcap</a>
+  </div>
+  <p class="error-hint">or press <kbd>/</kbd> to search the docs</p>
 </div>
 {% endblock content %}

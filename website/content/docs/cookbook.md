@@ -28,6 +28,14 @@ sipnab -N -I capture.pcap --problems
 sipnab -N -I capture.pcap --problems --json
 ```
 
+The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
+
+```
+INVITE +15551234 -> +15559876  10.0.0.6:5060 -> 10.0.0.7:5060  Failed  408 Request Timeout
+...
+852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
+```
+
 **What to look for:**
 
 - `--problems` matches `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR rtp.orphaned == true OR codec_asymmetry == true OR ptime_asymmetry == true OR payload_asymmetry == true OR duration_asymmetry == true OR late_media == true`. If it's empty, the capture is probably clean.
@@ -88,6 +96,15 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 sipnab -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.md
 ```
 
+The histogram output looks like (`uniq -c` count, then status code):
+
+```
+     23 100
+     14 486
+      6 503
+      3 488
+```
+
 **What to look for:**
 
 - A 401/407 spike usually means a credential-rotation push hit the wrong realm.
@@ -108,18 +125,38 @@ sipnab -I capture.pcap --call-report 'abc123@host' --markdown > failure-report.m
 **Commands:**
 
 ```bash
-# 1. Confirm the diagnosis engine flagged it
-sipnab -N -I capture.pcap --filter "call_id == 'abc123@host'" --json \
-  | jq '{call_id, state, diagnosis: .diagnosis}'
+# 1. Confirm the diagnosis engine flagged it (the diagnosis block lives on the
+#    dialog-level JSON that --call-report emits, not on per-message records)
+sipnab -N -I capture.pcap --call-report 'abc123@host' --json --no-cli-print \
+  | jq '{call_id, state, diagnosis}'
 
-# 2. Get the call report — surfaces NAT mismatch, SDP offer/answer, media path
-sipnab -I capture.pcap --call-report 'abc123@host' --markdown
+# 2. Get the human-readable call report — NAT mismatch, SDP offer/answer, media path
+sipnab -N -I capture.pcap --call-report 'abc123@host' --markdown --no-cli-print
 
 # 3. Inspect the actual RTP streams for that call (TUI)
 sipnab -I capture.pcap
 #   → press '/' to filter, type 'abc123', Enter
 #   → Tab to switch to RTP streams view
 #   → Enter on each stream to see packet count, jitter, loss
+```
+
+Step 1 should print a diagnosis object like:
+
+```json
+{
+  "call_id": "abc123@host",
+  "state": "Completed",
+  "diagnosis": {
+    "one_way_audio": true,
+    "nat_mismatch": true,
+    "no_media": false,
+    "hints": [
+      "RTP from 203.0.113.7 -> 10.0.0.5 only. No reverse media flow detected.",
+      "SDP c= address (192.168.1.20) differs from actual RTP source (203.0.113.7) — likely NAT issue.",
+      "One-way audio combined with NAT mismatch — media likely being sent to the wrong address."
+    ]
+  }
+}
 ```
 
 **What to look for:**
@@ -394,6 +431,18 @@ curl -sS http://capture.example.com:8731/mcp \
                     "arguments":{"kinds":["one-way","nat-issues"]}}}'
 ```
 
+The `tools/list` response is a standard JSON-RPC envelope with a `result.tools` array (descriptions and input schemas truncated here):
+
+```json
+{"jsonrpc":"2.0","id":2,"result":{"tools":[
+  {"name":"list_dialogs","description":"...","inputSchema":{"type":"object","properties":{"...":{}}}},
+  {"name":"get_dialog_report","description":"...","inputSchema":{"...":"..."}},
+  {"name":"find_problems","description":"...","inputSchema":{"...":"..."}}
+]}}
+```
+
+The 11 read-only tools you should see listed: `list_dialogs`, `get_dialog_report`, `find_problems`, `get_dialog`, `get_message`, `render_ladder`, `rtp_stats`, `search_messages`, `tail_dialogs`, `security_findings`, `stats`.
+
 **Pitfalls:**
 
 - Stdout is the JSON-RPC wire in stdio mode. Use `--quiet` and don't combine with `--json`/`--report`/etc. — sipnab refuses to start.
@@ -518,7 +567,28 @@ bantime = 86400
 action = iptables-allports
 ```
 
-### 10c. Custom alert handler
+### 10c. Toll-fraud detection
+
+**Symptom:** an unexpected spike of international or premium-rate calls, bursts of short calls to one number prefix (wangiri call-back bait), or sequential dialing through a number range.
+
+```bash
+# Live fraud heuristics on the edge box (batch mode required)
+sudo sipnab -N -d eth0 --fraud-detect --alert syslog
+```
+
+`--fraud-detect` runs three heuristics over INVITE traffic per source IP: **VolumeSpike** (call rate far above the rolling baseline), **Wangiri** (repeated short calls to the same number prefix), and **SequentialScanning** (consecutive destination numbers). Alerts fire through the same alert engine as the scanner detectors, so `--alert syslog` and `--alert-exec` both work.
+
+You should see alert lines like:
+
+```
+[ALERT] fraud src=203.0.113.42 Wangiri: 4 short calls to prefix '+44900' in 60s
+[ALERT] fraud src=203.0.113.42 SequentialScanning: sequential dialing detected: 3 consecutive numbers ending at 15550104
+[ALERT] fraud src=203.0.113.42 VolumeSpike: 40 calls in 60s (baseline: 1.5/min)
+```
+
+**What to look for:** a `Wangiri` alert on a premium-rate prefix (`+44 9xx`, `+2xx` IRSF ranges) is the classic revenue-fraud signature — block the destination prefix at the trunk, not just the source IP. `SequentialScanning` from an external source usually precedes a toll-fraud attempt: feed the source IP to fail2ban (10b) and review outbound dial permissions.
+
+### 10d. Custom alert handler
 
 For exec hooks instead of syslog/fail2ban:
 

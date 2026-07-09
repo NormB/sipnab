@@ -1,12 +1,12 @@
 +++
 title = "Theme Guide"
 weight = 6
-description = "Customize sipnab's TUI colors with 11 semantic color slots and preset themes."
+description = "Customize sipnab's TUI colors with 10 semantic color slots and preset themes."
 +++
 
 > **Quick start:** Create `~/.config/sipnab/sipnab.toml` with a `[theme]` section to customize colors. Or copy one of the preset themes below.
 
-sipnab's TUI uses 11 semantic color slots that control every visual element. Customize them via the `[theme]` section in your config file.
+sipnab's TUI uses 10 semantic color slots (plus `highlight`, a legacy alias for `selected`) that control every visual element. Customize them via the `[theme]` section in your config file.
 
 ## Color Slots
 
@@ -38,15 +38,7 @@ The internal `status_bg` color (dark blue-gray `#303040`) is not configurable an
 
 ## How to Apply
 
-Create or edit your config file at one of these locations (searched in order):
-
-1. Path specified via `--config <FILE>`
-2. `$SIPNAB_CONFIG` environment variable
-3. `~/.config/sipnab/sipnab.toml`
-4. `~/.sipnabrc`
-5. `/etc/sipnab/sipnab.toml`
-
-Add a `[theme]` section with the color values you want to override. Omitted fields use the built-in defaults.
+Add a `[theme]` section with the color values you want to override to your sipnab config file — see [File Locations](@/docs/config.md#file-locations) in the Config Reference for where sipnab looks. Omitted fields use the built-in defaults.
 
 ## Example Themes
 
@@ -75,7 +67,7 @@ border = "white"
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">Default Theme</span>
 </div>
-<pre class="terminal-body" style="background:#0a0e14;color:#cbccc6"><span style="color:#707a8c">  #  Method     From           To             State</span>
+<pre class="terminal-body" style="background:#0a0e14;color:#cbccc6"><span style="color:#8a93a3">  #  Method     From           To             State</span>
 <span style="color:#ffcc66">▸</span> <span style="color:#d4bfff">1  INVITE     alice          bob            </span><span style="color:#bae67e">InCall</span>
   <span style="color:#d4bfff">2  REGISTER   admin          --             </span><span style="color:#bae67e">Registered</span>
   <span style="color:#d4bfff">3  INVITE     charlie        dave           </span><span style="color:#ffcc66">Ringing</span>

@@ -77,15 +77,7 @@ sipnab -I capture.pcap --tshark-filter "from.user == '1001'"
 
 ### Export call audio as WAV
 
-```bash
-# In TUI: select a dialog → F2 → Tab to WAV → Enter → filename.wav
-# The WAV contains decoded G.711 (mu-law/A-law) audio from the RTP streams.
-# 1 stream = mono, 2 streams (caller + callee) = stereo.
-
-# Supported codecs: PCMU (G.711 mu-law), PCMA (G.711 A-law)
-# Audio is captured in a ring buffer (~30 seconds by default).
-# Configure with: [limits] max_audio_frames = 1500
-```
+Audio export is a TUI workflow — see [Keybindings](@/docs/keybindings.md).
 
 ### Pipe through jq for custom analysis
 
@@ -97,6 +89,19 @@ sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 # Find all unique User-Agents
 sipnab -N -I capture.pcap --json \
   | jq -r '.user_agent // empty' | sort -u
+```
+
+### Bound, split, and multi-interface captures
+
+```bash
+# Capture first 1000 packets, then generate a report
+sipnab -N -d eth0 -n 1000 --report
+
+# Split capture files at 50 MiB and write as pcapng
+sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
+
+# Monitor all interfaces with delta timestamps
+sipnab -d any --multi-device --delta-time
 ```
 
 > **Tip:** The `-N` flag is required for any output flag (`--json`, `--report`, `--fail2ban`, etc.). Think of it as "non-interactive mode" -- it disables the TUI and writes to stdout instead.
@@ -155,7 +160,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 
 | Flag | Description |
 |------|-------------|
-| `--problems` | Show calls with retransmits, timeouts, errors, quality issues, or NAT mismatch |
+| `--problems` | Show calls matching any diagnostic signal: failed state, one-way audio, RTP loss > 2%, jitter > 50 ms, NAT mismatch, more than 3 retransmits, PDD > 32 s, orphaned RTP, codec/ptime/payload/duration asymmetry, or late media. See [Named Aliases](@/docs/filter-dsl.md#named-aliases) for the exact expansion |
 | `--slow-setup` | Show calls with post-dial delay > 3 seconds |
 | `--short-calls` | Show completed calls shorter than 5 seconds |
 | `--one-way` | Show calls with potential one-way audio issues |
@@ -320,51 +325,3 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 - Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`, `audio`, `tui`) produce startup errors when the required feature is not compiled in.
 - `--mcp` is incompatible with stdout-writing flags (`--json`, `--json-pretty`, `--report`, `--call-report`, `--hexdump`, `--wireshark`, `--tshark-filter`) when using stdio transport — sipnab refuses to start. Combine `--mcp` with `--quiet` to suppress text-mode capture output.
 - HTTP MCP transport (`--mcp --mcp-transport http`) on a non-loopback `--mcp-bind` requires `--mcp-token` / `--mcp-token-file` / `SIPNAB_MCP_TOKEN`; loopback binds need no token.
-
-## Quick Reference Examples
-
-```bash
-# Capture on eth0
-sipnab -d eth0
-
-# Read from pcap file
-sipnab -I capture.pcap
-
-# Non-interactive JSON output
-sipnab -N --json -I capture.pcap
-
-# Show problematic calls
-sipnab --problems
-
-# Detect SIP scanners
-sipnab --kill-scanner -d eth0
-
-# Filter by From/To headers
-sipnab --from alice --to bob
-
-# BPF display filter
-sipnab 'host 10.0.0.1 and port 5060'
-
-# Advanced filter DSL
-sipnab --filter "method == 'INVITE' AND rtp.mos < 3.0"
-
-# Generate detailed report for a call
-sipnab -I capture.pcap --call-report "abc123@host" --markdown
-
-# Capture with HEP mirror
-sipnab -d eth0 -H 10.0.0.50:9060
-
-# Live TLS decryption
-sipnab -d eth0 --keylog /tmp/sslkeys.log --keylog-watch
-
-# Capture first 1000 packets, then generate a report
-sipnab -N -d eth0 -n 1000 --report
-
-# Split capture files at 50 MiB and write as pcapng
-sipnab -d eth0 -O /var/captures/sip.pcapng --pcapng --split filesize:50
-
-# Monitor all interfaces with delta timestamps
-sipnab -d any --multi-device --delta-time
-```
-
-> **Note:** Output flags (`--json`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui`. Feature-gated flags (`--tls-key`, `--hep-listen`, `--api`) require the corresponding feature to be compiled in.
