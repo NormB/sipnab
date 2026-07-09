@@ -544,8 +544,18 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     // Unknown-field hint: an identifier-looking token followed by a
     // comparison operator sits in field position — name it, suggest the
     // closest real field, and list the valid set.
-    let offending_raw = expr[pos..].split_whitespace().next().unwrap_or("");
-    let rest_after = expr[pos + offending_raw.len()..].trim_start();
+    let after_pos = &expr[pos..];
+    let offending_raw = after_pos.split_whitespace().next().unwrap_or("");
+    // split_whitespace may skip leading characters the parser does not
+    // treat as whitespace (e.g. vertical tab), so the token need not start
+    // at `pos`: derive its true end from the subslice address — a naive
+    // `pos + len` slice landed mid-character on multibyte input.
+    let token_end = if offending_raw.is_empty() {
+        pos
+    } else {
+        pos + (offending_raw.as_ptr() as usize - after_pos.as_ptr() as usize) + offending_raw.len()
+    };
+    let rest_after = expr[token_end..].trim_start();
     let looks_like_field = !offending_raw.is_empty()
         && offending_raw
             .chars()
@@ -1831,5 +1841,39 @@ mod unknown_field_hint_tests {
         let msg = err.to_string();
         assert!(msg.contains("must be quoted"), "{msg}");
         assert!(!msg.contains("unknown field"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod parse_error_render_robustness_tests {
+    use super::*;
+
+    /// proptest (filter_dsl_parse_is_total) found: with whitespace before a
+    /// multibyte token at the error position, `pos + token.len()` sliced the
+    /// expression mid-character and panicked. Parsing must be total —
+    /// adversarial input yields Err, never a panic.
+    #[test]
+    fn parse_error_rendering_survives_multibyte_and_whitespace() {
+        for expr in [
+            " \u{6b31b}\u{6b31b}\u{6b31b}",
+            "method ==\t\u{6b31b}",
+            "a \u{6b31b} == 'x'",
+            "\u{6b31b} == \u{6b31b}",
+            "duration <  \u{6b31b}\u{6b31b} AND method == 'INVITE'",
+            // Trailing-input path: unparsed tail is " ab\u{6b31b}" — the
+            // token starts after the space, so pos + token.len() lands
+            // inside the 4-byte char.
+            "method == 'x' ab\u{6b31b}",
+            "method == 'x' \u{6b31b}",
+            "method == 'x'  a\u{6b31b}\u{6b31b}",
+            "true qq\u{6b31b}",
+            // proptest's minimal failing input: \u{b} (vertical tab) is
+            // whitespace to split_whitespace but NOT to the parser, so the
+            // error position sits ON it and the naive `pos + token.len()`
+            // slice lands inside the 2-byte '¡'.
+            "(\u{b}\t\u{a1}!\u{b}",
+        ] {
+            let _ = FilterExpr::parse(expr); // must not panic
+        }
     }
 }
