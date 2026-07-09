@@ -6,7 +6,7 @@ description = "Declarative filter language for matching SIP dialogs and RTP stre
 
 > **Quick start:** `sipnab --filter "state == 'Failed'"` to find all failed calls, or `sipnab --problems` for a one-flag diagnostic sweep.
 
-sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the `--filter` CLI flag or the `expression` key in the `[filter]` config section.
+sipnab includes a declarative, non-Turing-complete filter language for matching SIP dialogs and their associated RTP streams. Expressions are passed via the [`--filter` CLI flag](@/docs/cli.md#matching) or the `expression` key in the [`[filter]` config section](@/docs/config.md#filter). The [Diagnostic Aliases](@/docs/cli.md#diagnostic-aliases) CLI flags (`--problems`, `--slow-setup`, ...) expand to the named aliases documented below.
 
 ## Grammar
 
@@ -23,7 +23,7 @@ Operator precedence (highest to lowest): `NOT`, `AND`, `OR`. Use parentheses to 
 
 ## Fields
 
-All 30 addressable fields, organized by type.
+All addressable fields, organized by type.
 
 ### String Fields
 
@@ -90,7 +90,7 @@ Notes:
 - Regex (`=~`) is not applicable to numeric or boolean fields.
 - Numeric equality uses epsilon comparison for floating-point precision.
 
-> **Note:** String comparisons are case-sensitive. State values must match exactly: `'Completed'`, `'Failed'`, `'Trying'`, `'Ringing'`, `'InCall'`, `'Cancelled'`, `'Terminated'`. Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
+> **Note:** String comparisons are case-sensitive. `state` values must exactly match one of the 12 values listed under [String Fields](#string-fields) above (`'Failed'`, not `'failed'`). Use `=~` with a case-insensitive regex pattern if you need case-insensitive matching: `state =~ '(?i)failed'`.
 
 ## Values
 
@@ -142,7 +142,7 @@ sipnab -N -I capture.pcap --filter codec-asym
 sipnab -N -I capture.pcap --filter "codec_asymmetry == true"
 ```
 
-## Examples
+## Common Patterns
 
 ### Basic field matching
 
@@ -164,194 +164,133 @@ call_id =~ 'abc.*@'
 
 ```
 pdd > 3.0
-rtp.mos < 3.0
 rtp.loss > 2.0
-duration < 5.0
 retransmits > 3
-rtp.jitter > 50.0
+rtp.packets > 10000
 ```
 
 ### Boolean fields
 
 ```
-one_way == true
-nat_mismatch == true
-rtp.orphaned == true
-no_media == true
+codec_asymmetry == true
+late_media == true
 ```
 
 ### Compound expressions
 
 ```
-method == 'INVITE' AND rtp.mos < 3.0
 from.user =~ '^1001' AND state == 'Failed'
 pdd > 3.0 OR retransmits > 5
 NOT ua =~ 'friendly-scanner'
 (state == 'Failed' OR state == 'Cancelled') AND duration < 1.0
 ```
 
-### Real-world diagnostic queries
+> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
 
-```
-# Find calls with poor quality from a specific extension
-from.user =~ '^1001' AND rtp.mos < 3.0
+## Operational Recipes
 
-# Find failed registrations from a subnet
-method == 'REGISTER' AND state == 'Failed' AND src.ip =~ '^10\.0\.1\.'
+One deduplicated recipe per real-world task, each as a complete command line. Swap `-I capture.pcap` for `-d eth0` (as root) to run any of them against live traffic.
 
-# Find short calls that completed (possible robocalls)
-duration < 5.0 AND state == 'Completed' AND method == 'INVITE'
-
-# Find calls with audio issues
-one_way == true OR no_media == true OR rtp.jitter > 100.0
-
-# Find scanner activity by User-Agent
-ua =~ 'sipvicious|friendly-scanner|sipcli'
-```
-
-## Real-World Scenarios
-
-Scenario-based examples showing how to combine filter expressions with CLI flags for common operational tasks.
-
-### Find calls with poor audio quality
-
-```
-rtp.mos < 3.0 AND state == 'Completed'
-```
-
-Only completed calls -- in-progress calls may not have enough RTP data for an accurate MOS calculation.
+### Poor audio quality (low MOS)
 
 ```bash
 sipnab -N -I capture.pcap --filter "rtp.mos < 3.0 AND state == 'Completed'" --json
 ```
 
-### Find all failed international calls
+Only completed calls -- in-progress calls may not have enough RTP data for an accurate MOS calculation. MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.
 
+### One-way audio
+
+```bash
+sipnab -N -I capture.pcap --filter "one_way == true AND duration > 10.0" --report
 ```
-from.user =~ '^\+' AND (state == 'Failed' OR state == 'Cancelled')
+
+The duration check avoids false positives during early call setup when RTP hasn't started flowing yet. For calls where no RTP ever flowed at all, use `no_media == true` instead.
+
+### NAT issues
+
+```bash
+sipnab -N -I capture.pcap --filter "nat_mismatch == true AND method == 'INVITE'" --json
+```
+
+NAT mismatch means the Contact header IP/port doesn't match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT -- combine with the `one_way` field to catch the classic case.
+
+### High jitter or packet loss
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0 OR rtp.loss > 1.0" --json
+```
+
+Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm); high values indicate network congestion. Loss is a percentage (0.0-100.0); acceptable thresholds are codec-dependent.
+
+### Failed international calls
+
+```bash
+sipnab -N -I capture.pcap --filter "from.user =~ '^\+' AND (state == 'Failed' OR state == 'Cancelled')" --json
 ```
 
 The `^\+` regex matches E.164 formatted numbers (international prefix).
 
-### Find registration storms
+### Registration storms
 
-```
-method == 'REGISTER' AND retransmits > 5
-```
-
-High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Combine with source IP filtering to isolate a specific endpoint:
-
-```
-method == 'REGISTER' AND retransmits > 5 AND src.ip == '10.0.0.50'
+```bash
+sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND retransmits > 5" --report
 ```
 
-### Find calls with NAT issues
+High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Append `AND src.ip == '10.0.0.50'` to isolate a specific endpoint.
 
-```
-nat_mismatch == true AND method == 'INVITE'
-```
+### Scanner activity
 
-NAT mismatch means the Contact header IP/port doesn't match the actual packet source. This is a common cause of one-way audio and call setup failures behind NAT.
-
-### Find one-way audio after call establishment
-
-```
-one_way == true AND duration > 10.0
+```bash
+sipnab -N -I capture.pcap --filter "ua =~ 'sipvicious|friendly-scanner|sipcli'" --json
 ```
 
-The duration check avoids false positives during early call setup when RTP hasn't started flowing yet.
+### Short completed calls (possible robocalls)
 
-### Complex B2BUA debugging
-
-```
-(from.user == '1001' OR to.user == '1001') AND rtp.loss > 1.0
+```bash
+sipnab -N -I capture.pcap --filter "duration < 5.0 AND state == 'Completed' AND method == 'INVITE'" --json
 ```
 
-Track a specific user's calls that have packet loss, regardless of call direction.
+### SIP trunk failures
 
-### Find chatty dialogs (debugging retransmissions)
-
-```
-msg_count > 20 AND method == 'INVITE'
-```
-
-Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).
-
-### Monitor for SIP trunk failures
-
-```
-dst.ip == '192.168.1.100' AND state == 'Failed' AND method == 'INVITE'
+```bash
+sipnab -N -I capture.pcap --filter "dst.ip == '192.168.1.100' AND state == 'Failed' AND method == 'INVITE'" --report
 ```
 
 Filter for failures targeting a specific SIP trunk IP.
 
-> **Note:** The filter DSL evaluates against dialogs, not individual messages. A filter like `method == 'INVITE'` matches dialogs that were initiated with an INVITE, including all subsequent messages in that dialog (180, 200, ACK, BYE, etc.).
-
-## RTP Quality & Media Queries
-
-The filter DSL provides direct access to RTP stream metrics. These fields query the aggregate quality of all RTP streams associated with a dialog.
-
-### MOS-Based Quality Monitoring
+### Orphaned RTP streams
 
 ```bash
-# Find calls with MOS below carrier threshold
-sipnab -N -I capture.pcap --filter "rtp.mos < 3.5" --json
-
-# Find calls with excellent quality (verify your codecs are performing)
-sipnab -N -I capture.pcap --filter "rtp.mos > 4.0 AND state == 'Completed'"
-
-# Live alert: MOS drops below 3.0 on any active call
-sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0" --json | tee /var/log/sipnab/quality.ndjson
-```
-
-MOS values follow the ITU-T G.107 E-model: 4.0+ is toll quality, 3.5-4.0 is acceptable, below 3.0 is noticeable degradation.
-
-### Jitter & Packet Loss
-
-```bash
-# High jitter (network congestion indicator)
-sipnab -N -I capture.pcap --filter "rtp.jitter > 50.0" --json
-
-# Packet loss above 1% (codec-dependent threshold)
-sipnab -N -I capture.pcap --filter "rtp.loss > 1.0" --json
-
-# Combined: calls where quality is degraded by both jitter AND loss
-sipnab -N -I capture.pcap --filter "rtp.jitter > 30.0 AND rtp.loss > 0.5" --report
-```
-
-Jitter is reported in milliseconds (RFC 3550 interarrival jitter algorithm). Loss is a percentage (0.0–100.0).
-
-### RTP Stream Investigation
-
-```bash
-# Find calls with orphaned RTP streams (no matching SDP)
 sipnab -N -I capture.pcap --filter "rtp.orphaned == true" --json
-
-# Filter by codec (useful for codec-specific quality analysis)
-sipnab -N -I capture.pcap --filter "rtp.codec == 'PCMU'" --json
-
-# Find calls with specific SSRC (trace a specific media stream)
-sipnab -N -I capture.pcap --filter "rtp.ssrc == '12345678'" --json
-
-# High packet count calls (long duration or high-rate codecs)
-sipnab -N -I capture.pcap --filter "rtp.packets > 10000" --json
 ```
 
-### One-Way Audio & Media Path Issues
+Orphaned streams have no matching SIP dialog/SDP. This often indicates RTP arriving on unexpected ports (check your NAT/ALG config) or calls that started before capture began.
+
+### Track one user's packet loss (B2BUA debugging)
 
 ```bash
-# Detect one-way audio (one direction has zero RTP packets)
-sipnab -N -I capture.pcap --filter "one_way == true" --json
-
-# Calls with no media at all (SDP negotiated but no RTP ever flowed)
-sipnab -N -I capture.pcap --filter "no_media == true" --json
-
-# NAT mismatch + one-way audio (the classic NAT problem)
-sipnab -N -I capture.pcap --filter "nat_mismatch == true AND one_way == true" --report
-
-# One-way audio after call establishment (filter out early-media false positives)
-sipnab -N -I capture.pcap --filter "one_way == true AND duration > 10.0" --json
+sipnab -N -I capture.pcap --filter "(from.user == '1001' OR to.user == '1001') AND rtp.loss > 0.5" --report
 ```
+
+Tracks a specific user's calls that have packet loss, regardless of call direction.
+
+### Chatty dialogs (debugging retransmissions)
+
+```bash
+sipnab -N -I capture.pcap --filter "msg_count > 20 AND method == 'INVITE'" --json
+```
+
+Dialogs with many messages often indicate retransmission issues or complex call flows (transfers, re-INVITEs).
+
+### Stream investigation by codec or SSRC
+
+```bash
+sipnab -N -I capture.pcap --filter "rtp.codec == 'PCMU'" --json
+sipnab -N -I capture.pcap --filter "rtp.ssrc == '12345678'" --json
+```
+
+Useful for codec-specific quality analysis or tracing a single media stream.
 
 ### RTCP Extended Reports
 
@@ -363,22 +302,6 @@ When RTCP XR (PT=207) is present in the capture, sipnab extracts VoIP Metrics (R
 - Burst/gap loss metrics
 
 These metrics appear in the call flow detail panel and in JSON/report output, augmenting the RTP-derived MOS calculation with endpoint-reported quality data.
-
-### Combining RTP with SIP Filters
-
-```bash
-# Failed calls that also had quality issues (correlate signaling + media)
-sipnab -N -I capture.pcap --filter "state == 'Failed' AND rtp.mos < 3.0" --json
-
-# Calls from a specific user with packet loss
-sipnab -N -I capture.pcap --filter "from.user == '1001' AND rtp.loss > 0.5" --report
-
-# Trunk monitoring: all calls to a specific destination with quality metrics
-sipnab -N -I capture.pcap --filter "dst.ip == '10.0.0.100' AND rtp.mos < 4.0" --json
-
-# Registration + quality correlation (find endpoints with both reg and quality issues)
-sipnab -N -I capture.pcap --filter "method == 'INVITE' AND retransmits > 3 AND rtp.jitter > 30"
-```
 
 ## Parser Constraints
 

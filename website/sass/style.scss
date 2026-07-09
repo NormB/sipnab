@@ -9,7 +9,7 @@ $surface-2:   #242936;
 $text:        #cbccc6;
 $text-dim:    #8a93a3; // WCAG AA: 6.25:1 on bg, 5.01:1 on surface (was #707a8c)
 $accent:      #ffcc66;
-$accent-glow: rgba(255, 204, 102, 0.12);
+$accent-glow: rgba($accent, 0.12);
 $link:        #73d0ff;
 $code-green:  #bae67e;
 $border:      #2d3640;
@@ -457,7 +457,7 @@ input:focus-visible,
   padding: 7rem 1.5rem 3rem;
   text-align: center;
   overflow: hidden;
-  background: radial-gradient(ellipse at 50% -10%, rgba(255,204,102,0.10) 0%, transparent 55%);
+  background: radial-gradient(ellipse at 50% -10%, rgba($accent,0.10) 0%, transparent 55%);
 }
 
 // Subtle grid + glow wash behind the hero copy. Decorative only.
@@ -614,7 +614,7 @@ input:focus-visible,
   border-radius: 10px;
   overflow: hidden;
   max-width: 100%;
-  box-shadow: 0 20px 80px rgba(255, 204, 102, 0.08), 0 0 0 1px rgba(255, 204, 102, 0.1);
+  box-shadow: 0 20px 80px rgba($accent, 0.08), 0 0 0 1px rgba($accent, 0.1);
   text-align: left;
 }
 
@@ -759,7 +759,7 @@ input:focus-visible,
   width: 100%;
   border-radius: 12px;
   border: 1px solid $border;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 204, 102, 0.06);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba($accent, 0.06);
 }
 
 // =============================================================================
@@ -883,7 +883,9 @@ input:focus-visible,
   border-bottom: 1px solid $border;
 }
 
-.code-block-dots {
+// Shared macOS window-chrome dots (also used by the download-page terminals).
+.code-block-dots,
+.dl-dots {
   display: inline-flex;
   gap: 0.4rem;
   i {
@@ -1080,9 +1082,10 @@ input:focus-visible,
   margin: 0 auto;
 }
 
+// Four stat tiles — the column count must match or the last tile orphans.
 .arch-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 1.5rem;
 }
 
@@ -1844,6 +1847,26 @@ input:focus-visible,
   text-align: center;
   padding: 8rem 1.5rem;
 
+  .error-actions {
+    display: flex;
+    justify-content: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+  }
+
+  .error-hint {
+    margin-top: 1.4rem;
+    font-size: 0.85rem;
+    color: $text-dim;
+    kbd {
+      font-family: $font-mono;
+      background: $surface;
+      border: 1px solid $border;
+      border-radius: 4px;
+      padding: 0.05rem 0.4rem;
+    }
+  }
+
   .error-code {
     font-family: $font-mono;
     font-size: clamp(4rem, 14vw, 7rem);
@@ -1931,7 +1954,7 @@ input:focus-visible,
     max-width: $doc-width;
   }
   .doc-content { max-width: none; }
-  .arch-grid { grid-template-columns: repeat(3, 1fr); }
+  .arch-grid { grid-template-columns: repeat(2, 1fr); }
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
@@ -1995,7 +2018,7 @@ input:focus-visible,
   .section-head { margin-bottom: 2rem; }
 
   .features-grid { grid-template-columns: 1fr; gap: 1rem; }
-  .arch-grid { grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .arch-grid { grid-template-columns: repeat(2, 1fr); gap: 1rem; }
   .metrics-grid { grid-template-columns: repeat(2, 1fr); }
 
   .terminal-wrap { margin-top: 2.5rem; padding: 0 1rem; }
@@ -2060,7 +2083,7 @@ input:focus-visible,
 .dl-kicker { font-family: $font-mono; font-size: 0.74rem; letter-spacing: 0.22em; text-transform: uppercase; color: $accent; margin: 0; }
 .dl-hero h1 { font-size: clamp(2.1rem, 5vw, 3rem); margin: 0.6rem 0 0; letter-spacing: -0.02em; }
 .dl-sub { color: $text-dim; margin: 0.95rem auto 0; max-width: 32rem; line-height: 1.6; }
-.dl-sub a { color: $accent; text-decoration: none; border-bottom: 1px solid rgba(255, 204, 102, 0.3); }
+.dl-sub a { color: $accent; text-decoration: none; border-bottom: 1px solid rgba($accent, 0.3); }
 
 .dl-tabs {
   display: flex; gap: 0.3rem; justify-content: center; flex-wrap: wrap;
@@ -2090,9 +2113,9 @@ input:focus-visible,
 .dl-method-head h2 { font-size: 1.15rem; margin: 0; }
 .dl-rec {
   font-family: $font-mono; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em;
-  color: $code-green; border: 1px solid rgba(186, 230, 126, 0.4); border-radius: 5px; padding: 0.14rem 0.42rem;
+  color: $code-green; border: 1px solid rgba($good, 0.4); border-radius: 5px; padding: 0.14rem 0.42rem;
 }
-.dl-rec--blue { color: $link; border-color: rgba(115, 208, 255, 0.4); }
+.dl-rec--blue { color: $link; border-color: rgba($link, 0.4); }
 .dl-rec--dim { color: $text-dim; border-color: $border-light; }
 .dl-lead { color: $text-dim; line-height: 1.6; margin: 0 0 1.5rem; max-width: 38rem; }
 
@@ -2104,11 +2127,7 @@ input:focus-visible,
   display: flex; align-items: center; gap: 0.65rem; padding: 0.6rem 0.95rem;
   border-bottom: 1px solid $border; background: rgba(255, 255, 255, 0.02);
 }
-.dl-dots { display: inline-flex; gap: 0.4rem; }
-.dl-dots i { width: 11px; height: 11px; border-radius: 50%; display: block; }
-.dl-dots i:nth-child(1) { background: #ff5f57; }
-.dl-dots i:nth-child(2) { background: #febc2e; }
-.dl-dots i:nth-child(3) { background: #28c840; }
+// .dl-dots styling is shared with .code-block-dots (see the Quickstart block).
 .dl-term-title { font-family: $font-mono; font-size: 0.74rem; color: $text-dim; }
 .dl-term-body {
   display: flex; align-items: center; justify-content: space-between; gap: 1rem;
@@ -2127,7 +2146,7 @@ input:focus-visible,
 }
 .dl-copy:hover { color: $text; border-color: $border-light; }
 .dl-copy svg { width: 15px; height: 15px; }
-.dl-copy.copied { color: $code-green; border-color: rgba(186, 230, 126, 0.45); }
+.dl-copy.copied { color: $code-green; border-color: rgba($good, 0.45); }
 .dl-copy.copied::after { content: "Copied"; font-size: 0.72rem; font-family: $font-sans; }
 
 .dl-note { color: $text-dim; font-size: 0.85rem; margin: 1rem 0 0; }
@@ -2167,18 +2186,18 @@ input:focus-visible,
   border-top: 1px solid $border; color: $text-dim; font-size: 0.86rem;
 }
 .dl-meta a { color: $text-dim; text-decoration: none; border-bottom: 1px solid transparent; transition: color 0.15s, border-color 0.15s; }
-.dl-meta a:hover { color: $accent; border-color: rgba(255, 204, 102, 0.4); }
+.dl-meta a:hover { color: $accent; border-color: rgba($accent, 0.4); }
 .dl-meta svg { width: 14px; height: 14px; vertical-align: -2px; margin-right: 0.35rem; }
 .dl-dot { opacity: 0.5; }
 
 .dl-verify {
   margin-top: 3.5rem; padding: 1.75rem 1.75rem 1.6rem; border: 1px solid $border;
-  border-radius: 12px; background: linear-gradient(180deg, rgba(255, 204, 102, 0.045), rgba(255, 204, 102, 0));
+  border-radius: 12px; background: linear-gradient(180deg, rgba($accent, 0.045), rgba($accent, 0));
 }
 .dl-verify-head { display: flex; align-items: flex-start; gap: 0.9rem; margin-bottom: 1.25rem; }
 .dl-verify-ico {
   flex-shrink: 0; width: 38px; height: 38px; display: grid; place-items: center;
-  border-radius: 10px; background: rgba(255, 204, 102, 0.1); color: $accent;
+  border-radius: 10px; background: rgba($accent, 0.1); color: $accent;
 }
 .dl-verify-ico svg { width: 20px; height: 20px; }
 .dl-verify-head h2 { font-size: 1.1rem; margin: 0; }
@@ -2188,7 +2207,7 @@ input:focus-visible,
 // Detection banner: tells rookies which of the files below is theirs.
 .dl-detect {
   display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
-  background: rgba(186, 230, 126, 0.07); border: 1px solid rgba(186, 230, 126, 0.25);
+  background: rgba($good, 0.07); border: 1px solid rgba($good, 0.25);
   border-radius: 10px; padding: 0.8rem 1.1rem; margin-bottom: 1.8rem; font-size: 0.92rem;
   b { color: $good; font-weight: 600; }
   a { margin-left: auto; font-size: 0.82rem; }

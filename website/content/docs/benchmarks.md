@@ -7,6 +7,9 @@ description = "Reproducible throughput and memory benchmarks: sipnab multi-core 
 How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
+Measured on sipnab 0.4.16 (2026-06-24); current release 0.5.2 — numbers not
+yet re-validated.
+
 > **Read this first.** These tools do *different amounts of work*, so a raw
 > throughput number only means something next to *what was reconstructed*.
 > `sipgrep` is a grep-style line matcher; `sngrep` builds an interactive SIP
@@ -27,7 +30,7 @@ host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 ## Multi-core offline reconstruction (sipnab)
 
-`--cores N` shards by host-pair across worker threads. On a 535k-packet corpus
+[`--cores N`](@/docs/cli.md#resource-limits) shards by host-pair across worker threads. On a 535k-packet corpus
 throughput holds a flat plateau from 2 cores up:
 
 | cores | pkts/s |
@@ -113,5 +116,11 @@ voipmonitor  voipmonitor -r corpus.pcap -c -k --config-file=vm.conf   # sdp_mult
 sipnab       sipnab -N -I corpus.pcap --cores 4 --report --no-cli-print
 ```
 
-The carrier corpus generator and the comparison harness live in the companion
-`siptest` repo (`bench/carrier.py`, `bench/fourtool.sh`).
+sipnab flag reference: [`--cores`](@/docs/cli.md#resource-limits),
+[`--report`](@/docs/cli.md#output),
+[`--no-cli-print`](@/docs/cli.md#output).
+
+The carrier corpus generator and the comparison harness
+(`bench/carrier.py`, `bench/fourtool.sh`) live in the internal `siptest`
+harness, which is not publicly published — the corpus parameters and the
+exact commands above are the full recipe.

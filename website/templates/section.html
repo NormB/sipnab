@@ -2,6 +2,8 @@
 
 {% block title %}{{ section.title }} -- {{ config.title }}{% endblock title %}
 {% block description %}{{ section.description | default(value=config.description) }}{% endblock description %}
+{% block og_title %}{{ section.title }} -- {{ config.title }}{% endblock og_title %}
+{% block og_description %}{{ section.description | default(value=config.description) }}{% endblock og_description %}
 
 {% block content %}
 <div class="doc-layout doc-layout--section">

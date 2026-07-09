@@ -21,7 +21,7 @@
 
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
-    <img src="{{ get_url(path='demos/hero-static.png') }}?v=5" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
+    <img src="{{ get_url(path='demos/hero-static.png') }}?v=5" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
   </div>
 </section>
 
@@ -32,31 +32,31 @@
       <p class="section-kicker">Demos</p>
       <h2>See It In Action</h2>
     </header>
-    <div class="demo-tabs">
-      <button class="demo-tab active" onclick="showDemo(0, this)">Interactive TUI</button>
-      <button class="demo-tab" onclick="showDemo(1, this)">RTP Quality</button>
-      <button class="demo-tab" onclick="showDemo(2, this)">Mark + Delta</button>
-      <button class="demo-tab" onclick="showDemo(3, this)">Search</button>
-      <button class="demo-tab" onclick="showDemo(4, this)">CLI &amp; JSON</button>
+    <div class="demo-tabs" role="tablist" aria-label="Demo videos">
+      <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0" onclick="showDemo(0, this)">Interactive TUI</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1" onclick="showDemo(1, this)">RTP Quality</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2" onclick="showDemo(2, this)">Mark + Delta</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3" onclick="showDemo(3, this)">Search</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4" onclick="showDemo(4, this)">CLI &amp; JSON</button>
     </div>
     <div class="demo-panels">
-      <div class="demo-panel active" data-demo="0">
+      <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
         <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call flow ladder diagram with parsed message detail. Open a different pcap any time with <kbd>o</kbd> — no restart.</p>
         <img src="{{ get_url(path='demos/01-intro.gif') }}?v=4" alt="sipnab TUI demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="1">
+      <div class="demo-panel" data-demo="1" role="tabpanel" id="demo-panel-1" aria-labelledby="demo-tab-1">
         <p class="demo-desc">Press <kbd>Tab</kbd> for <strong>RTP Streams</strong> — SSRC, codec, jitter, loss, and duration per stream — then walk the ladder into the media bars for per-interval quality.</p>
         <img src="{{ get_url(path='demos/08-rtp-tui.gif') }}?v=2" alt="sipnab RTP streams TUI demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="2">
+      <div class="demo-panel" data-demo="2" role="tabpanel" id="demo-panel-2" aria-labelledby="demo-tab-2">
         <p class="demo-desc">Press <kbd>m</kbd> to mark any message, then navigate — the <strong>Δ badge</strong> shows exact millisecond delta.</p>
         <img src="{{ get_url(path='demos/02-mark-delta.gif') }}?v=4" alt="sipnab mark and delta demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="3">
+      <div class="demo-panel" data-demo="3" role="tabpanel" id="demo-panel-3" aria-labelledby="demo-tab-3">
         <p class="demo-desc">Press <kbd>/</kbd> to search dialogs by Call-ID, From, or To header in real time.</p>
         <img src="{{ get_url(path='demos/04-filter.gif') }}?v=4" alt="sipnab search demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="4">
+      <div class="demo-panel" data-demo="4" role="tabpanel" id="demo-panel-4" aria-labelledby="demo-tab-4">
         <p class="demo-desc">Run sipnab headless: emit dialogs as <kbd>--json</kbd>, surface trouble calls with <kbd>--problems</kbd>, and print a full call report with <kbd>--report</kbd>.</p>
         <img src="{{ get_url(path='demos/07-rtp-cli.gif') }}?v=1" alt="sipnab CLI JSON and report demo" loading="lazy">
       </div>
@@ -218,8 +218,8 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label"><a href="{{ config.extra.github_url }}/releases/latest">Stripped binary (musl, static)</a></span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="100" data-suffix="/500ms">100/500ms</span>
-        <span class="arch-label">Poll rate — 100ms active, 500ms idle</span>
+        <span class="arch-stat" data-count="11.4" data-suffix="&times; sngrep">11.4&times; sngrep</span>
+        <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Same reconstruction, four-tool comparison</a></span>
       </div>
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="2.5" data-suffix="M pkts/s">2.5M pkts/s</span>
@@ -236,11 +236,26 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
 <script>
 // Demo tab switching
 function showDemo(idx, btn) {
-  document.querySelectorAll('.demo-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.demo-tab').forEach(t => {
+    t.classList.remove('active');
+    t.setAttribute('aria-selected', 'false');
+  });
   document.querySelectorAll('.demo-panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
+  btn.setAttribute('aria-selected', 'true');
   document.querySelector('.demo-panel[data-demo="' + idx + '"]').classList.add('active');
 }
+
+// Arrow-key navigation on the demo tablist
+document.querySelector('.demo-tabs').addEventListener('keydown', function(e) {
+  if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+  var tabs = Array.from(document.querySelectorAll('.demo-tab'));
+  var i = tabs.indexOf(document.activeElement);
+  if (i === -1) return;
+  var next = e.key === 'ArrowRight' ? (i + 1) % tabs.length : (i - 1 + tabs.length) % tabs.length;
+  tabs[next].focus();
+  tabs[next].click();
+});
 
 // Click-to-pause/resume GIF demos
 document.addEventListener('DOMContentLoaded', function() {
@@ -302,6 +317,9 @@ function copyCode(btn) {
 
         // Count-up animation for arch-stat elements
         var stat = entry.target.querySelector('.arch-stat[data-count]');
+        if (stat && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          stat = null; // the markup already holds the final value — no spin-up
+        }
         if (stat) {
           var target = parseFloat(stat.getAttribute('data-count'));
           var prefix = stat.getAttribute('data-prefix') || '';

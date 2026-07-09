@@ -12,9 +12,9 @@ tasks = [
   { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cli/" },
   { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/" },
   { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/" },
-  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 9060", href = "/docs/cookbook/" },
+  { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/" },
   { title = "Decrypt TLS / SRTP", cmd = "sipnab -I tls.pcap --keylog keys.log", href = "/docs/cookbook/" },
-  { title = "Detect scanners & fraud", cmd = "sipnab -d eth0 --fraud-detect", href = "/docs/cookbook/" },
+  { title = "Detect scanners & fraud", cmd = "sudo sipnab -N -d eth0 --fraud-detect", href = "/docs/cookbook/" },
   { title = "Drive sipnab from an AI agent", cmd = "sipnab --mcp", href = "/docs/mcp/" },
 ]
 +++

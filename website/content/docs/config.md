@@ -6,6 +6,23 @@ description = "TOML configuration file format and all configurable sections."
 
 > **Quick start:** Config is optional. sipnab works with zero configuration out of the box. Use a config file to set persistent defaults for your environment.
 
+## Minimal Config
+
+If you only need to override a few defaults, keep it short:
+
+```toml
+# ~/.config/sipnab/sipnab.toml
+[capture]
+device = "eth0"
+
+[display]
+delta_time = true
+
+[theme]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+```
+
 sipnab reads configuration from a TOML file. CLI flags always override config file values.
 
 ## File Locations
@@ -62,7 +79,7 @@ Output and TUI display settings.
 | `payload_limit` | integer | -- | Maximum payload bytes to display |
 | `delta_time` | boolean | `false` | Show delta time between messages by default |
 | `from_to` | string | `"default"` | From/To column display: `"default"` (user else host:port), `"host-port"`, `"user"`, `"user-host-port"`. Cycle at runtime with `u`; `--from-to-mode` overrides |
-| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive, must match `COLUMN_LABELS` in `src/tui/call_list.rs`): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"` |
+| `visible_columns` | array of strings | all columns | Columns to display in the Call List (persisted across sessions). Values (case-insensitive): `"#"`, `"method"`, `"from"`, `"to"`, `"source"`, `"destination"`, `"state"`, `"msgs"`, `"date"`, `"pdd"` |
 
 ```toml
 [display]
@@ -181,25 +198,16 @@ persist_to_config = true
 
 ### \[theme\]
 
-TUI color theme with 11 semantic color slots. See the [Theme Guide](@/docs/theme.md) for a full customization guide.
+TUI color theme with 10 semantic color slots (plus `highlight`, a legacy alias for `selected`). A few representative keys:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `background` | string | `"reset"` (terminal default) | Terminal background |
 | `foreground` | string | `"white"` | Default text color |
-| `highlight` | string | -- | Legacy alias for `selected` (backward compat) |
-| `header` | string | `"cyan"` | Status bar, column headers, endpoint labels |
-| `selected` | string | `"yellow"` | Selected/highlighted row, cursor, focused item |
-| `accent` | string | `"magenta"` | Correlation info, PDD, extended flow labels |
 | `good` | string | `"green"` | Positive quality, success states (InCall, Registered) |
-| `warning` | string | `"yellow"` | Medium quality, caution states (Ringing, CANCEL) |
 | `bad` | string | `"red"` | Poor quality, failures, errors |
-| `muted` | string | `"dark_gray"` | Separators, pipes, disabled text, timestamps |
-| `border` | string | `"white"` | Widget borders, panel frames |
 
-Supported color values:
-- Named: `black`, `white`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `gray`, `dark_gray`, `reset`
-- Hex RGB: `"#RRGGBB"` (e.g., `"#ff8800"`)
+See the [Theme Guide](@/docs/theme.md) for the full slot table, supported color syntax, and preset themes.
 
 ```toml
 [theme]
@@ -217,7 +225,7 @@ border = "#444466"
 
 ### \[keybindings\]
 
-TUI key binding overrides. All 11 configurable actions are listed below. See [Keybindings](@/docs/keybindings.md) for the full shortcut reference.
+TUI key binding overrides for the 11 configurable actions. A few representative keys:
 
 Accepted key formats:
 - Single characters: `"q"`, `"/"`, `"A"`
@@ -230,13 +238,8 @@ Accepted key formats:
 | `help` | string | `"F1"` | Show help overlay |
 | `filter` | string | `"F7"` | Open filter dialog |
 | `save` | string | `"F2"` | Open save capture dialog |
-| `search` | string | `"/"` | Activate search |
-| `settings` | string | `"F8"` | Open settings popup |
-| `pause` | string | `"p"` | Pause/resume capture |
-| `autoscroll` | string | `"A"` | Toggle autoscroll |
-| `extended_flow` | string | `"F4"` | Toggle extended multi-leg flow |
-| `clear_calls` | string | `"F5"` | Clear all calls |
-| `column_selector` | string | `"F10"` | Open column selector |
+
+See [Keybindings](@/docs/keybindings.md) for the full shortcut reference and the complete list of configurable actions (the TOML example below shows all 11 with their defaults).
 
 ```toml
 [keybindings]
@@ -327,22 +330,3 @@ column_selector = "F10"
 ```
 
 > **Tip:** Use `sipnab --dump-config` to see the effective configuration after merging CLI flags, environment variables, and config file values. This is useful for debugging precedence issues.
-
-### Minimal Config
-
-If you only need to override a few defaults, keep it short:
-
-```toml
-# ~/.config/sipnab/sipnab.toml
-[capture]
-device = "eth0"
-
-[display]
-delta_time = true
-
-[theme]
-background = "#1e1e2e"
-foreground = "#cdd6f4"
-```
-
-> **Note:** Unknown keys produce a warning and are ignored. This means configs can be shared across sipnab versions without breaking older installs.

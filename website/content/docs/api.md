@@ -315,7 +315,9 @@ console.log(`State: ${dialog.state}`);
     "one_way_audio": false,
     "nat_mismatch": false,
     "no_media": false,
-    "hints": []
+    "hints": [
+      "Asymmetric media may be due to comfort noise (42% CN frames)."
+    ]
   },
   "streams": [
     {
@@ -341,7 +343,8 @@ console.log(`State: ${dialog.state}`);
 
 **Additional dialog fields:**
 
-- **`stir_shaken`** -- When `--stir-shaken` validation is enabled, the `diagnosis.hints` array includes STIR/SHAKEN results. Tokens with an `iat` (issued-at) timestamp older than 60 seconds are rejected as `Expired` per RFC 8224 Section 12.
+- **`diagnosis.hints`** -- Free-text diagnostic strings from the media analyzer: one-way audio, NAT mismatch (SDP `c=` address vs. actual RTP source), comfort-noise asymmetry (shown in the example above), codec / payload-type / ptime / duration asymmetry, and late media. Empty array when nothing was detected.
+- **STIR/SHAKEN** -- When `--stir-shaken` validation is enabled (requires the `tls` build feature), the attestation level, orig/dest TNs, and verification status are written to the capture log. They are **not** part of the REST dialog JSON: there is no `stir_shaken` field, and the results do not appear in `diagnosis.hints`. Tokens whose `iat` (issued-at) claim is more than 60 seconds from the current time are marked `Expired` per RFC 8224 Section 4.4.
 
 Returns `404` if the Call-ID is not found.
 
@@ -399,7 +402,49 @@ const report = await resp.json();
 console.log(JSON.stringify(report, null, 2));
 ```
 
-**Response:** Structured call report with diagnosis details. Returns `404` if the Call-ID is not found.
+**Response:**
+
+In JSON format this endpoint returns **exactly the same document shape as
+`GET /v1/dialogs/{call_id}`** — both serialize through the same internal
+dialog projection (`generate_call_report(..., Json)` delegates to the one
+dialog-to-JSON serializer). The text and Markdown report layouts are only
+available via the MCP `get_dialog_report` tool and the CLI `--call-report`.
+
+```json
+{
+  "schema_version": 1,
+  "call_id": "12013223@200.57.7.195",
+  "from": "alice",
+  "to": "bob",
+  "state": "Completed",
+  "method": "INVITE",
+  "msg_count": 8,
+  "duration_sec": 45.2,
+  "timing": {
+    "pdd_ms": 847,
+    "setup_ms": 2134,
+    "ring_ms": 1287,
+    "trying_delay_ms": 12,
+    "teardown_ms": 45,
+    "retransmits": 0
+  },
+  "sdp_timeline": [],
+  "diagnosis": {
+    "one_way_audio": false,
+    "nat_mismatch": false,
+    "no_media": false,
+    "hints": []
+  },
+  "streams": []
+}
+```
+
+For a call with negotiated media, `sdp_timeline[]` and `streams[]` carry the
+same objects shown in the `GET /v1/dialogs/{call_id}` example above. Optional
+fields (`from`, `to`, `from_display`, `to_display`, `tags`, per-timing values)
+are omitted — not `null` — when absent.
+
+Returns `404` if the Call-ID is not found.
 
 ---
 
@@ -706,7 +751,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane in v0.3.x — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.2 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Client Examples
 
@@ -716,7 +761,7 @@ End-to-end examples in five languages. Each one covers: bearer-token auth, listi
 
 > **Status codes:** the REST API returns **503 Service Unavailable** when a request is rejected by the rate limiter or the connection cap (not 429). 401 on bad/missing token, 404 on unknown call_id.
 
-> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from`, `to`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (see [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
+> **Per-call response code / per-message data is not on REST.** The REST API aggregates each dialog into a summary (`call_id`, `state`, `from`, `to`, `duration_sec`, `msg_count`, `timing`, `diagnosis`, `sdp_timeline`, `streams`) — individual SIP messages and per-response status codes are **not** exposed by `/v1/dialogs` or `/v1/dialogs/{id}`. To work with per-message data programmatically, use either: (a) the CLI `sipnab -N --json ...` mode, which emits one JSON object per SIP message with `is_request`, `status_code`, `reason`, etc. (field reference: [Output Formats](@/docs/output-formats.md); see also [cookbook Recipe 3](@/docs/cookbook.md#3-find-every-failed-call-grouped-by-response-code)), or (b) the MCP `get_dialog` tool, which returns paginated `messages[]` (see [MCP](@/docs/mcp.md)).
 
 ### curl + jq one-liners
 
@@ -735,7 +780,7 @@ curl -fsS "$API/v1/dialogs?state=Failed&limit=20" $H | jq
 # List dialogs from a specific user (from= regex)
 curl -fsS "$API/v1/dialogs?from=alice&limit=20" $H | jq
 
-# Get one dialog with full SIP messages
+# Get one full (aggregated) dialog — no per-message data over REST
 curl -fsS "$API/v1/dialogs/abc123@host" $H | jq
 
 # Get a call report (JSON — this endpoint is JSON-only)
@@ -750,12 +795,12 @@ curl -fsS "$API/v1/streams?mos_below=3.5" $H | jq
 # Aggregate counters
 curl -fsS "$API/v1/stats" $H | jq
 
-# Count failed calls by state (REST has no per-message field)
+# Count failed calls (aggregated — REST exposes no per-message data)
 curl -fsS "$API/v1/dialogs?state=Failed&limit=1000" $H \
   | jq '.total'
 
-# For per-call response-code histograms, run the CLI variant —
-# `sipnab -N --json` emits per-message records with status_code:
+# For per-call response-code histograms, use the CLI NDJSON mode —
+# sipnab -N --json emits one record per message (see Output Formats docs):
 #   sipnab -N -I capture.pcap --filter "state == 'Failed'" --json \
 #     | jq -r 'select(.is_request == false) | .status_code' \
 #     | sort | uniq -c | sort -rn
@@ -774,6 +819,8 @@ case "$http_code" in
   *)   echo "unexpected $http_code" ;;
 esac
 ```
+
+> The per-message NDJSON records referenced above (`is_request`, `status_code`, `reason`, `cseq`, ...) are documented in [Output Formats](@/docs/output-formats.md).
 
 ---
 
@@ -1140,6 +1187,8 @@ fn main() -> Result<()> {
 }
 ```
 
+> The per-message `sipnab -N --json` records mentioned in `get_dialog`'s doc comment are documented in [Output Formats](@/docs/output-formats.md).
+
 ---
 
 ### Go (`net/http` + `encoding/json`)
@@ -1423,14 +1472,14 @@ sipnab -d eth0 -H 10.0.0.50:9060
 - Rate limiting on all listener endpoints (100 RPS per source IP)
 - Bearer token authentication (required for API, optional for metrics)
 - Constant-time key comparison prevents timing attacks
-- TLS available for API endpoint
+- TLS not terminated in-process; run behind a reverse proxy (see [API TLS](#api-tls))
 - Connection limits prevent resource exhaustion
 
 > **Note:** The API runs as a thread in the sipnab process, sharing the in-memory dialog/stream stores read-only. It never touches capture file descriptors or TLS key material, and exposes only dialog/stream metadata — but it is not a separate OS process; treat the API bind address and key accordingly.
 
 ## Event Execution
 
-sipnab can execute external commands on dialog state changes or quality drops. The command receives event data as JSON on stdin. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
+sipnab can execute external commands on dialog state changes or quality drops. The command receives event data via `SIPNAB_*` environment variables (`SIPNAB_JSON` carries the full dialog JSON) — never on stdin and never interpolated into the command line. Event execution works in **all modes** (TUI, CLI, and API) -- it is not specific to the API feature.
 
 ```bash
 # Run a script when any dialog changes state
