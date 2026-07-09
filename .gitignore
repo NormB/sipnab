@@ -11,3 +11,4 @@ sipnab-x86_64-linux
 
 # VHS intermediate output for the hero tape (PNG is the committed asset)
 demos/.hero-tmp.gif
+__pycache__/
