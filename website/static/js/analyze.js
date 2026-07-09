@@ -327,10 +327,22 @@ var streamSortAsc = true;
 // Helpers
 // ---------------------------------------------------------------------------
 
-function escapeHtml(str) {
-  var div = document.createElement("div");
-  div.textContent = str;
-  return div.innerHTML;
+// Inline, styled error reporting: the dropzone card when it's visible,
+// a transient toast once the workspace is up (never a native alert()).
+function showError(msg) {
+  var card = $("#dropzone-error");
+  var dropzoneVisible = $("#dropzone").style.display !== "none";
+  if (card && dropzoneVisible) {
+    card.textContent = msg;
+    card.hidden = false;
+    return;
+  }
+  var toast = document.createElement("div");
+  toast.className = "analyze-toast";
+  toast.setAttribute("role", "alert");
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(function() { toast.remove(); }, 6000);
 }
 
 function getMethodColor(method) {
@@ -381,6 +393,23 @@ function setupDropzone() {
   fileInput.addEventListener("change", function(e) {
     if (e.target.files.length > 0) handleFile(e.target.files[0]);
   });
+
+  // One-click sample so a first-time visitor sees a real call flow without
+  // needing a capture of their own.
+  var sampleBtn = $("#load-sample");
+  if (sampleBtn) {
+    sampleBtn.addEventListener("click", async function(e) {
+      e.stopPropagation(); // the surrounding dropzone click opens the file picker
+      try {
+        var resp = await fetch("/demos/sample-call.pcap");
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        var buf = await resp.arrayBuffer();
+        handleFile(new File([buf], "sample-call.pcap"));
+      } catch (err) {
+        showError("Could not fetch the sample capture (" + (err.message || err) + "). Try dropping your own pcap instead.");
+      }
+    });
+  }
 
   dropzone.addEventListener("dragover", function(e) {
     e.preventDefault();
@@ -438,9 +467,16 @@ async function handleFile(file) {
   var dot = file.name.lastIndexOf(".");
   var ext = dot >= 0 ? file.name.substring(dot).toLowerCase() : "";
   if (validExts.indexOf(ext) === -1) {
-    alert("Unsupported file type. Please use .pcap, .pcapng, or .cap files.");
+    showError("“" + file.name + "” is not a capture file. sipnab reads .pcap, .pcapng, and .cap.");
     return;
   }
+  // The whole file is decoded in browser memory; past ~250 MB the tab freezes.
+  if (file.size > 250 * 1024 * 1024) {
+    showError("This capture is " + Math.round(file.size / 1048576) + " MB — too large to analyze in the browser. Use the desktop sipnab: sipnab -I " + file.name);
+    return;
+  }
+  var errCard = $("#dropzone-error");
+  if (errCard) errCard.hidden = true;
 
   showLoading(file.name);
 
@@ -455,9 +491,10 @@ async function handleFile(file) {
     var result = JSON.parse(resultStr);
 
     var isMock = session instanceof MockSipnabSession;
-    $("#topbar-filename").textContent = isMock
-      ? file.name + " (demo mode — WASM loading failed, showing sample data)"
-      : file.name;
+    $("#topbar-filename").textContent = file.name;
+    // Fabricated data must be unmistakable: a persistent banner, not a
+    // parenthetical squeezed into the filename.
+    $("#demo-banner").hidden = !isMock;
     updateStat("topbar-packets", result.packets, "pkts");
     updateStat("topbar-sip", result.sip_messages, "SIP");
     updateStat("topbar-dialogs", result.dialogs, "dialogs");
@@ -466,6 +503,7 @@ async function handleFile(file) {
 
     allDialogs = JSON.parse(session.get_dialogs());
     allStreams = (typeof session.get_streams === "function") ? JSON.parse(session.get_streams()) : [];
+    updateHealth();
     filteredCallIds = null;
     selectedCallId = null;
     selectedMsgIndex = null;
@@ -480,9 +518,29 @@ async function handleFile(file) {
     clearCallFlow();
     clearRawMessage();
   } catch (err) {
-    alert("Failed to parse file: " + (err.message || err));
+    showError("Could not parse “" + file.name + "”: " + (err.message || err) + ". If this is a valid capture, please open a GitHub issue with the file details.");
   } finally {
     hideLoading();
+  }
+}
+
+// Health summary before detail: the topbar answers "is anything wrong?"
+// before the tables answer "what, exactly?".
+function updateHealth() {
+  var el = $("#topbar-health");
+  while (el.firstChild) el.removeChild(el.firstChild);
+  function pill(text, cls) {
+    var s = document.createElement("span");
+    s.className = "health-pill " + cls;
+    s.textContent = text;
+    el.appendChild(s);
+  }
+  var failed = allDialogs.filter(function(d) { return (d.state || "") === "Failed"; }).length;
+  pill(failed === 0 ? "✓ no failed calls" : "✕ " + failed + " failed", failed === 0 ? "health-good" : "health-bad");
+  var mosVals = allStreams.map(function(s) { return s.mos; }).filter(function(m) { return m != null; });
+  if (mosVals.length) {
+    var worst = Math.min.apply(null, mosVals);
+    pill("worst MOS " + worst.toFixed(1), worst >= 3.5 ? "health-good" : (worst >= 3.0 ? "health-warn" : "health-bad"));
   }
 }
 
@@ -513,7 +571,7 @@ function sortDialogs(dialogs) {
     if (sortColumn === "index") {
       va = allDialogs.indexOf(a);
       vb = allDialogs.indexOf(b);
-    } else if (sortColumn === "message_count" || sortColumn === "pdd_ms" || sortColumn === "setup_ms") {
+    } else if (sortColumn === "message_count" || sortColumn === "pdd_ms") {
       va = a[sortColumn] != null ? a[sortColumn] : -1;
       vb = b[sortColumn] != null ? b[sortColumn] : -1;
     } else {
@@ -535,6 +593,20 @@ function renderDialogList() {
 
   var visible = sortDialogs(getVisibleDialogs());
 
+  var empty = $("#dialog-empty");
+  if (empty) {
+    if (!empty.dataset.defaultHtml) empty.dataset.defaultHtml = empty.innerHTML;
+    if (visible.length === 0 && filteredCallIds) {
+      empty.textContent = "No dialogs match the current filter.";
+      empty.style.display = "block";
+    } else if (visible.length === 0) {
+      empty.innerHTML = empty.dataset.defaultHtml; // the richer no-SIP explanation from the template
+      empty.style.display = "block";
+    } else {
+      empty.style.display = "none";
+    }
+  }
+
   for (var i = 0; i < visible.length; i++) {
     var d = visible[i];
     var idx = allDialogs.indexOf(d) + 1;
@@ -552,7 +624,9 @@ function renderDialogList() {
     appendCell(tr, d.to_user || "--", "");
     appendCell(tr, d.src_addr || "", "");
     appendCell(tr, d.dst_addr || "", "");
-    appendCell(tr, d.state || "", stateClass);
+    // Glyph + color: state must survive color-blindness.
+    var stateGlyph = d.state === "Failed" ? "✕ " : (d.state === "Completed" ? "✓ " : "");
+    appendCell(tr, stateGlyph + (d.state || ""), stateClass);
     appendCell(tr, String(d.message_count), "");
     appendCell(tr, pdd, "cell-pdd");
 

@@ -12,7 +12,7 @@
     <p class="hero-kicker">SIP &middot; RTP &middot; built in Rust</p>
     <h1 class="hero-title">sipnab <span class="version-badge">v{{ config.extra.version }}</span></h1>
     <p class="hero-tagline">The <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3261" target="_blank" rel="noopener noreferrer">SIP</a> &amp; <a class="std-ref" href="https://www.rfc-editor.org/rfc/rfc3550" target="_blank" rel="noopener noreferrer">RTP</a> analysis tool for people who ship voice infrastructure.</p>
-    <p class="hero-sub">One binary. One dependency (libpcap). Interactive TUI + CLI + REST API.<br>Built in Rust for speed, safety, and correctness.</p>
+    <p class="hero-sub">One static binary. One dependency (libpcap). Interactive TUI, CLI, and REST API.</p>
     <div class="hero-actions">
       <a href="{{ get_url(path='@/docs/install.md') }}" class="btn btn-primary">Get Started &rarr;</a>
       <a href="{{ config.extra.github_url }}" class="btn btn-secondary">View on GitHub &rarr;</a>
@@ -28,43 +28,35 @@
 <!-- Demo Video -->
 <section class="demos" id="demos">
   <div class="demos-inner">
-    <p class="section-kicker">Demos</p>
-    <h2>See It In Action</h2>
+    <header class="section-head">
+      <p class="section-kicker">Demos</p>
+      <h2>See It In Action</h2>
+    </header>
     <div class="demo-tabs">
       <button class="demo-tab active" onclick="showDemo(0, this)">Interactive TUI</button>
-      <button class="demo-tab" onclick="showDemo(1, this)">Mark + Delta</button>
-      <button class="demo-tab" onclick="showDemo(2, this)">Search</button>
-      <button class="demo-tab" onclick="showDemo(3, this)">File Open</button>
-      <button class="demo-tab" onclick="showDemo(4, this)">RTP Quality</button>
-      <button class="demo-tab" onclick="showDemo(5, this)">RTP Detail</button>
-      <button class="demo-tab" onclick="showDemo(6, this)">CLI &amp; JSON</button>
+      <button class="demo-tab" onclick="showDemo(1, this)">RTP Quality</button>
+      <button class="demo-tab" onclick="showDemo(2, this)">Mark + Delta</button>
+      <button class="demo-tab" onclick="showDemo(3, this)">Search</button>
+      <button class="demo-tab" onclick="showDemo(4, this)">CLI &amp; JSON</button>
     </div>
     <div class="demo-panels">
       <div class="demo-panel active" data-demo="0">
-        <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call flow ladder diagram with parsed message detail.</p>
+        <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call flow ladder diagram with parsed message detail. Open a different pcap any time with <kbd>o</kbd> — no restart.</p>
         <img src="{{ get_url(path='demos/01-intro.gif') }}?v=4" alt="sipnab TUI demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="1">
+        <p class="demo-desc">Press <kbd>Tab</kbd> for <strong>RTP Streams</strong> — SSRC, codec, jitter, loss, and duration per stream — then walk the ladder into the media bars for per-interval quality.</p>
+        <img src="{{ get_url(path='demos/08-rtp-tui.gif') }}?v=2" alt="sipnab RTP streams TUI demo" loading="lazy">
+      </div>
+      <div class="demo-panel" data-demo="2">
         <p class="demo-desc">Press <kbd>m</kbd> to mark any message, then navigate — the <strong>Δ badge</strong> shows exact millisecond delta.</p>
         <img src="{{ get_url(path='demos/02-mark-delta.gif') }}?v=4" alt="sipnab mark and delta demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="2">
+      <div class="demo-panel" data-demo="3">
         <p class="demo-desc">Press <kbd>/</kbd> to search dialogs by Call-ID, From, or To header in real time.</p>
         <img src="{{ get_url(path='demos/04-filter.gif') }}?v=4" alt="sipnab search demo" loading="lazy">
       </div>
-      <div class="demo-panel" data-demo="3">
-        <p class="demo-desc">Switch to a different pcap file from within the TUI — no need to restart. Data is reloaded instantly.</p>
-        <img src="{{ get_url(path='demos/05-file-open.gif') }}?v=4" alt="sipnab file open demo" loading="lazy">
-      </div>
       <div class="demo-panel" data-demo="4">
-        <p class="demo-desc">Press <kbd>Tab</kbd> to switch to <strong>RTP Streams</strong> — see SSRC, codec, jitter, packet loss, and duration for every media stream. Call flow shows RTP quality bars inline.</p>
-        <img src="{{ get_url(path='demos/08-rtp-tui.gif') }}?v=2" alt="sipnab RTP streams TUI demo" loading="lazy">
-      </div>
-      <div class="demo-panel" data-demo="5">
-        <p class="demo-desc">Walk the call-flow ladder past the SIP messages into the <strong>RTP media bars</strong>, then open a stream to inspect its per-interval quality and jitter.</p>
-        <img src="{{ get_url(path='demos/06-rtp-quality.gif') }}?v=1" alt="sipnab RTP stream detail demo" loading="lazy">
-      </div>
-      <div class="demo-panel" data-demo="6">
         <p class="demo-desc">Run sipnab headless: emit dialogs as <kbd>--json</kbd>, surface trouble calls with <kbd>--problems</kbd>, and print a full call report with <kbd>--report</kbd>.</p>
         <img src="{{ get_url(path='demos/07-rtp-cli.gif') }}?v=1" alt="sipnab CLI JSON and report demo" loading="lazy">
       </div>
@@ -84,22 +76,22 @@
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
         </div>
-        <h3>See Everything</h3>
-        <p>Interactive TUI with multi-participant ladder diagrams, auth collapse, retransmit folding, mark+delta timing. Four timestamp modes, message diff, split view with resizable panels.</p>
+        <h3>Inspect</h3>
+        <p>Ladder diagrams, auth collapse, retransmit folding, mark+delta timing — the whole call at a glance.</p>
       </div>
       <div class="feature-card feature-card--green fade-in-up">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
         </div>
-        <h3>Analyze Everything</h3>
-        <p>First-class RTP: jitter, loss, MOS per stream. RTCP XR. Comfort noise detection. One-way audio diagnosis. NAT mismatch detection. SDP offer/answer timeline. Post-dial delay and setup time measurement.</p>
+        <h3>Diagnose</h3>
+        <p>Per-stream jitter, loss, and MOS. One-way audio, NAT mismatch, post-dial delay — found, not guessed.</p>
       </div>
       <div class="feature-card feature-card--blue fade-in-up">
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         </div>
-        <h3>Export Everything</h3>
-        <p>PCAP, PCAP-NG, TXT, Mermaid sequence diagrams, JSON, NDJSON, Markdown call reports, fail2ban format, Wireshark filters, tshark display filters. Pipe NDJSON to jq for custom pipelines. Tick sngrep-style checkboxes to save just the dialogs you select, or export everything at once.</p>
+        <h3>Export</h3>
+        <p>PCAP-NG, JSON/NDJSON, Mermaid, Wireshark filters, fail2ban, WAV — pipe it anywhere. The full list is below.</p>
       </div>
     </div>
   </div>
@@ -121,9 +113,8 @@
           <span>Copy</span>
         </button>
       </div>
-      <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Build from source</span>
-git clone https://github.com/NormB/sipnab.git
-cd sipnab && cargo build --release
+      <pre class="line-numbers"><code class="language-bash"><span class="t-comment"># Install (macOS: brew install NormB/tap/sipnab)</span>
+curl -fsSL https://www.sipnab.com/install.sh | sh
 
 <span class="t-comment"># Capture live SIP traffic</span>
 sudo sipnab -d eth0
@@ -131,17 +122,8 @@ sudo sipnab -d eth0
 <span class="t-comment"># Analyze a pcap file</span>
 sipnab -I capture.pcap
 
-<span class="t-comment"># CLI mode with JSON output</span>
-sipnab -N --json -I capture.pcap
-
-<span class="t-comment"># Show only problematic calls</span>
-sudo sipnab -N -d eth0 --problems
-
-<span class="t-comment"># Filter specific calls</span>
-sipnab --filter "from.user == '1001' AND rtp.mos < 3.0"
-
-<span class="t-comment"># Detailed call report</span>
-sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
+<span class="t-comment"># Headless: JSON out, problem calls only</span>
+sipnab -N --json -I capture.pcap --problems</code></pre>
     </div>
   </div>
 </section>
@@ -173,7 +155,7 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. Eleven read-only tools cover dialogs, RTP, diagnostics, and security findings.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 2,059 automated tests. 5 MB static binary.</td></tr>
+          <tr><td>Built in Rust</td><td>Memory-safe by construction. 2365 automated tests. 5 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -233,11 +215,11 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
     <div class="arch-grid">
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="5" data-suffix=" MB">5 MB</span>
-        <span class="arch-label">Stripped binary (musl, static)</span>
+        <span class="arch-label"><a href="{{ config.extra.github_url }}/releases/latest">Stripped binary (musl, static)</a></span>
       </div>
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="100" data-suffix="/500ms">100/500ms</span>
-        <span class="arch-label">Adaptive poll (active/idle)</span>
+        <span class="arch-label">Poll rate — 100ms active, 500ms idle</span>
       </div>
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="2.5" data-suffix="M pkts/s">2.5M pkts/s</span>
@@ -245,7 +227,7 @@ sipnab -I capture.pcap --call-report "abc123@host" --markdown</code></pre>
       </div>
       <div class="arch-item fade-in-up">
         <span class="arch-stat" data-count="2365" data-suffix="">2365</span>
-        <span class="arch-label">Automated tests</span>
+        <span class="arch-label"><a href="{{ config.extra.github_url }}/actions/workflows/ci.yml">Automated tests</a></span>
       </div>
     </div>
   </div>
