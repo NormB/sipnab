@@ -17,6 +17,7 @@ $border-light:#3d4754;
 $error:       #ff6666;
 $good:        #bae67e;
 $warn:        #ffcc66;
+$ayu-orange:  #ffa759; // caution text that must read apart from the amber accent
 $bad:         #ff6666;
 
 // -- Typography --
@@ -197,6 +198,57 @@ input:focus-visible,
       to { transform: scaleX(1); }
     }
   }
+}
+
+// Docs dropdown: the 7 documentation links live under one top-level item so
+// the bar fits far narrower windows (hamburger only kicks in below 700px).
+.nav-drop {
+  position: relative;
+
+  .nav-drop-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    color: $text-dim;
+    font-size: 0.875rem;
+    font-weight: 500;
+    padding: 0.375rem 0.75rem;
+    border-radius: 6px;
+    transition: color 0.15s, background 0.15s;
+    white-space: nowrap;
+
+    &:hover { color: $text; background: rgba($text, 0.06); }
+    &.active { color: $accent; background: $accent-glow; }
+  }
+
+  .nav-caret {
+    font-size: 0.6rem;
+    transition: transform 0.15s;
+  }
+
+  .nav-drop-menu {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    min-width: 180px;
+    flex-direction: column;
+    background: $surface;
+    border: 1px solid $border;
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    padding: 0.4rem;
+    z-index: 110;
+  }
+
+  // Keyboard: tabbing into the menu keeps it open without any JS.
+  &.open .nav-drop-menu,
+  &:focus-within .nav-drop-menu { display: flex; }
+  &.open .nav-caret { transform: rotate(180deg); }
 }
 
 .nav-right {
@@ -1771,8 +1823,11 @@ input:focus-visible,
   .metrics-grid { grid-template-columns: repeat(3, 1fr); }
 }
 
-// Collapse the (wide) nav into the hamburger before it can clip the right-side actions.
-@media (max-width: 1200px) {
+// Collapse the nav into the hamburger only on genuinely narrow (phone-ish)
+// viewports. With Docs folded into a dropdown the bar fits at 700px, so
+// desktop and laptop windows always show the menu (this was 1200px, which
+// hid the whole menu on half-screen windows and read as "the nav is gone").
+@media (max-width: 700px) {
   .nav-links {
     display: none;
     position: absolute;
@@ -1782,6 +1837,7 @@ input:focus-visible,
     background: $surface;
     border-bottom: 1px solid $border;
     flex-direction: column;
+    align-items: stretch;
     padding: 0.5rem 1rem 1rem;
     gap: 0;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
@@ -1790,6 +1846,25 @@ input:focus-visible,
     a {
       padding: 0.5rem 0.75rem;
       font-size: 0.95rem;
+    }
+  }
+
+  // In the hamburger panel the dropdown flattens to a labelled group of
+  // plain links — no nested popover on touch screens.
+  .nav-drop {
+    .nav-drop-btn { display: none; }
+    .nav-drop-menu {
+      display: flex;
+      position: static;
+      flex-direction: column;
+      background: none;
+      border: none;
+      border-top: 1px solid $border;
+      border-radius: 0;
+      box-shadow: none;
+      padding: 0.25rem 0 0;
+      margin-top: 0.25rem;
+      min-width: 0;
     }
   }
 
@@ -1997,6 +2072,57 @@ input:focus-visible,
 .dl-verify-head h2 { font-size: 1.1rem; margin: 0; }
 .dl-verify-head p { color: $text-dim; font-size: 0.88rem; margin: 0.3rem 0 0; line-height: 1.55; max-width: 40rem; }
 .dl-cmt { color: $text-dim; user-select: none; }
+
+// Detection banner: tells rookies which of the files below is theirs.
+.dl-detect {
+  display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+  background: rgba(186, 230, 126, 0.07); border: 1px solid rgba(186, 230, 126, 0.25);
+  border-radius: 10px; padding: 0.8rem 1.1rem; margin-bottom: 1.8rem; font-size: 0.92rem;
+  b { color: $good; font-weight: 600; }
+  a { margin-left: auto; font-size: 0.82rem; }
+}
+.dl-detect-dot { width: 8px; height: 8px; border-radius: 50%; background: $good; flex: none; }
+.dl-detect-note { color: $text-dim; font-size: 0.82rem; }
+
+// Architecture naming equivalence (x86_64 = amd64, aarch64 = arm64).
+.dl-namemap-wrap { margin: 1.8rem 0 2.2rem; }
+.dl-namemap-lead { color: $text-dim; font-size: 0.88rem; margin: 0 0 0.7rem; max-width: 46rem; }
+.dl-namemap { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+.dl-chip {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  background: $surface; border: 1px solid $border; border-radius: 8px;
+  padding: 0.5rem 0.8rem; font-size: 0.82rem;
+  code { color: $accent; font-size: 0.8rem; }
+}
+.dl-eq { color: $text-dim; opacity: 0.6; }
+.dl-who { color: $text-dim; }
+
+// Guided decision box (e.g. "which Debian file?") — plain-language rules.
+.dl-decide {
+  background: $surface; border: 1px solid $border; border-radius: 10px;
+  padding: 1rem 1.2rem; margin: 0 0 1.4rem;
+  h3 { margin: 0 0 0.5rem; font-size: 0.94rem; }
+  ul { margin: 0; padding-left: 1.2rem; font-size: 0.88rem; color: $text-dim; }
+  li { margin: 0.3rem 0; line-height: 1.55; }
+  code { font-size: 0.8rem; }
+}
+.dl-pick { color: $good; font-weight: 600; }
+.dl-warn { color: $ayu-orange; font-weight: 600; }
+
+// Full artifact reference table.
+.dl-allfiles { margin-top: 3.5rem; }
+.dl-table-wrap { overflow-x: auto; border: 1px solid $border; border-radius: 10px; }
+.dl-table {
+  border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums;
+  th, td { text-align: left; padding: 0.55rem 0.85rem; border-bottom: 1px solid $border; white-space: nowrap; }
+  th {
+    font-family: $font-mono; font-size: 0.68rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: $text-dim; background: $surface;
+  }
+  tr:last-child td { border-bottom: none; }
+  td:nth-child(n+2) { color: $text-dim; }
+  code { font-size: 0.78rem; }
+}
 
 @keyframes dlUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 

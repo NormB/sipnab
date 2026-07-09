@@ -79,6 +79,19 @@ jobs:
         run: cargo test --features tui --test tui_e2e_test -- --ignored
         continue-on-error: true  # PTY tests can be flaky in CI
 
+  # Installer: unit tests for the platform/glibc detection and artifact
+  # selection in website/static/install.sh (served at sipnab.com/install.sh).
+  # Pure POSIX sh — no Rust toolchain needed.
+  install-sh:
+    name: Installer (install.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run install.sh test suite
+        run: sh tests/install-sh/run-tests.sh
+      - name: Shellcheck
+        run: shellcheck -s sh website/static/install.sh tests/install-sh/run-tests.sh
+
   # Deb packaging: build-deb.sh must produce correct control metadata and
   # payload for the full and noaudio variants (release.yml builds both).
   # Pure dpkg-deb over dummy binaries — no Rust toolchain needed.

@@ -14,6 +14,31 @@
     <p class="dl-sub">One binary, one dependency. <a href="{{ config.extra.github_url }}/releases/latest">v{{ v }}</a> &mdash; built and checksummed by CI for every platform below.</p>
   </header>
 
+  <div class="dl-detect" id="dl-detect" hidden>
+    <span class="dl-detect-dot" aria-hidden="true"></span>
+    <span>Detected: <b id="dl-detect-plat"></b> &mdash; the highlighted choice below is the one you want.</span>
+    <span class="dl-detect-note" id="dl-detect-note"></span>
+    <a href="#all-files">not right? see all files &darr;</a>
+  </div>
+
+  <div class="dl-method-head"><h2>Fastest path &mdash; the installer picks for you</h2></div>
+  <div class="dl-term">
+    <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">any Linux or macOS &middot; detects OS, CPU, and glibc</span></div>
+    <div class="dl-term-body">
+      <code><span class="dl-prompt">$</span>curl -fsSL https://www.sipnab.com/install.sh | sh</code>
+      <button class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+    </div>
+  </div>
+  <p class="dl-note">Detects your CPU, checks your glibc version, downloads the matching build, verifies its <code>sha256</code>, and installs to <code>/usr/local/bin</code>. Prefer to read it first? <a href="{{ get_url(path='install.sh') }}">View install.sh</a>.</p>
+
+  <div class="dl-namemap-wrap">
+    <p class="dl-namemap-lead">Same chip, different names &mdash; these are equivalent. Tarballs use the left name, <code>.deb</code> packages the middle one. Not sure? Run <code>uname -m</code>.</p>
+    <div class="dl-namemap">
+      <div class="dl-chip"><code>x86_64</code><span class="dl-eq">=</span><code>amd64</code><span class="dl-eq">=</span><span class="dl-who">Intel &amp; AMD &mdash; most servers and PCs</span></div>
+      <div class="dl-chip"><code>aarch64</code><span class="dl-eq">=</span><code>arm64</code><span class="dl-eq">=</span><span class="dl-who">ARM &mdash; Apple Silicon, Graviton, RPi&nbsp;4/5</span></div>
+    </div>
+  </div>
+
   <div class="dl-tabs" role="tablist" aria-label="Platform">
     <button class="dl-tab" data-os="mac" role="tab"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg><span>macOS</span></button>
     <button class="dl-tab" data-os="debian" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span>Debian</span></button>
@@ -51,6 +76,14 @@
   <!-- Debian / Ubuntu -->
   <div class="dl-panel" data-os="debian" role="tabpanel">
     <div class="dl-method-head"><h2>Debian / Ubuntu package</h2><span class="dl-rec">recommended</span></div>
+    <div class="dl-decide">
+      <h3>Which Debian file?</h3>
+      <ul>
+        <li><span class="dl-pick">{{ config.extra.glibc_floor_distros }}</span> &rarr; the <code>.deb</code> below; apt resolves libpcap for you.</li>
+        <li><span class="dl-warn">Older releases</span> &rarr; the .deb needs glibc &ge; {{ config.extra.glibc_floor }} and fails with <code>GLIBC_{{ config.extra.glibc_floor }} not found</code>. Use the <b>static binary</b> on the &ldquo;Linux&rdquo; tab &mdash; or run the installer above, which checks this for you.</li>
+        <li>Unsure? <code>cat /etc/debian_version</code> or <code>ldd --version</code> tells you where you stand.</li>
+      </ul>
+    </div>
     <div class="dl-direct">
       <span class="dl-direct-label">1 &middot; Download the .deb</span>
       <div class="dl-tiles">
@@ -76,12 +109,13 @@
         </div>
       </div>
     </div>
+    <p class="dl-note">Headless server? The <code>-noaudio</code> variants skip the ALSA sound dependency: <a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb">amd64-noaudio.deb</a> &middot; <a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb">arm64-noaudio.deb</a></p>
   </div>
 
   <!-- Linux (static + glibc) -->
   <div class="dl-panel" data-os="linux" role="tabpanel">
     <div class="dl-method-head"><h2>Static binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
-    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, Alpine included. Download, extract, run.</p>
+    <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure (the only thing it lacks is TUI audio playback).</p>
     <div class="dl-direct">
       <div class="dl-tiles">
         <a class="dl-tile" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz">
@@ -97,7 +131,7 @@
       </div>
     </div>
     <div class="dl-direct">
-      <span class="dl-direct-label">glibc build (dynamic, needs libpcap)</span>
+      <span class="dl-direct-label">glibc build (adds audio playback &mdash; needs glibc &ge; {{ config.extra.glibc_floor }} ({{ config.extra.glibc_floor_distros }}) and libpcap)</span>
       <div class="dl-tiles">
         <a class="dl-tile dl-tile--sm" href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz">
           <span class="dl-tile-txt"><span class="dl-tile-name">x86-64</span><span class="dl-tile-sub">glibc &middot; tar.gz</span></span>
@@ -124,6 +158,27 @@
     </div>
     <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>.</p>
   </div>
+
+  <section class="dl-allfiles" id="all-files">
+    <div class="dl-method-head"><h2>Every file, one table</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
+    <div class="dl-table-wrap">
+      <table class="dl-table">
+        <thead><tr><th>File</th><th>CPU</th><th>Runs on</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb"><code>sipnab_{{ v }}_amd64.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb"><code>sipnab_{{ v }}_arm64.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb"><code>sipnab_{{ v }}_amd64-noaudio.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb"><code>sipnab_{{ v }}_arm64-noaudio.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz"><code>&hellip;x86_64-unknown-linux-musl.tar.gz</code></a></td><td>x86_64 / amd64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz"><code>&hellip;aarch64-unknown-linux-musl.tar.gz</code></a></td><td>aarch64 / arm64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz"><code>&hellip;x86_64-unknown-linux-gnu.tar.gz</code></a></td><td>x86_64 / amd64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz"><code>&hellip;aarch64-unknown-linux-gnu.tar.gz</code></a></td><td>aarch64 / arm64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS 12+</td><td>M-series Macs</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS 12+</td><td>Intel Macs</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
 
   <section class="dl-verify">
     <div class="dl-verify-head">
@@ -169,15 +224,39 @@
   }
   tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.getAttribute('data-os')); }); });
 
+  // Platform + CPU detection: pick the right tab, then tell the visitor what
+  // we found so rookies don't have to know that x86_64 and amd64 are the same
+  // thing. UA gives the OS; Chromium's client hints upgrade the CPU answer.
   var ua = navigator.userAgent || '';
-  var os = 'mac';
-  if (/Macintosh|Mac OS X/.test(ua)) os = 'mac';
-  else if (/Android/.test(ua)) os = 'linux';
-  else if (/Linux/.test(ua)) os = 'debian';
-  else if (/Windows/.test(ua)) os = 'source';
-  var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
-  if (dt) dt.classList.add('dl-tab--detected');
-  show(os);
+  var os = 'mac', osName = 'macOS';
+  if (/Macintosh|Mac OS X/.test(ua)) { os = 'mac'; osName = 'macOS'; }
+  else if (/Android/.test(ua)) { os = 'linux'; osName = 'Linux'; }
+  else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
+  else if (/Linux/.test(ua)) { os = 'debian'; osName = 'Linux'; }
+  else if (/Windows/.test(ua)) { os = 'source'; osName = 'Windows — use WSL or build from source'; }
+  var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
+           : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
+
+  function applyDetect() {
+    var banner = document.getElementById('dl-detect');
+    if (banner) {
+      document.getElementById('dl-detect-plat').textContent = osName + (arch ? ' · ' + arch : '');
+      document.getElementById('dl-detect-note').textContent = arch ? '' : 'CPU unknown from this browser — run uname -m to check.';
+      banner.hidden = false;
+    }
+    var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
+    if (dt) dt.classList.add('dl-tab--detected');
+    show(os);
+  }
+  if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+    navigator.userAgentData.getHighEntropyValues(['architecture']).then(function (h) {
+      if (h.architecture === 'arm') arch = 'ARM (aarch64 / arm64)';
+      else if (h.architecture === 'x86') arch = 'Intel/AMD (x86_64 / amd64)';
+      applyDetect();
+    }).catch(applyDetect);
+  } else {
+    applyDetect();
+  }
 
   document.querySelectorAll('.dl-copy').forEach(function (btn) {
     btn.addEventListener('click', function () {
