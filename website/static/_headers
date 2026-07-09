@@ -1,0 +1,14 @@
+# Security response headers for hosts that honor this file (Cloudflare
+# Pages, Netlify) or as the reference set for a fronting proxy's transform
+# rules. GitHub Pages ignores it (it cannot set response headers — the
+# reason securityheaders.com grades Pages-hosted sites F); the meta CSP in
+# templates/base.html provides the browser-enforced subset there.
+/*
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; upgrade-insecure-requests
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
