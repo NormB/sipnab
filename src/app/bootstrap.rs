@@ -131,13 +131,11 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     let mut capture_config = build_capture_config(cli, config);
 
     // Portrange: CLI > config file > default "5060-5061".
-    let portrange_str = if cli.portrange != "5060-5061" {
-        &cli.portrange
-    } else if let Some(ref pr) = config.capture.portrange {
-        pr.as_str()
-    } else {
-        "5060-5061"
-    };
+    let portrange_str = cli
+        .portrange
+        .as_deref()
+        .or(config.capture.portrange.as_deref())
+        .unwrap_or("5060-5061");
     let portrange = parse_portrange(portrange_str)
         .map_err(|e| PlanError::arg(format!("Invalid --portrange: {e}")))?;
 
@@ -277,6 +275,21 @@ pub fn launch(
     source: Option<CaptureSource>,
     capture_config: &CaptureConfig,
 ) -> Launched {
+    // 13a. Feature gates that must fail fast, BEFORE any capture device is
+    // opened: without them the flag silently degrades (--mcp used to run a
+    // plain batch capture with no server; --hep-listen used to error late at
+    // capture spawn with a generic failure and exit 1).
+    #[cfg(not(feature = "mcp"))]
+    if cli.mcp {
+        tracing::error!("--mcp requires the 'mcp' feature (not compiled in)");
+        std::process::exit(2);
+    }
+    #[cfg(not(feature = "hep"))]
+    if cli.hep_listen.is_some() {
+        tracing::error!("--hep-listen requires the 'hep' feature (not compiled in)");
+        std::process::exit(2);
+    }
+
     let source = match source {
         Some(s) => s,
         None => {
@@ -531,9 +544,18 @@ pub fn init_logging(cli: &Cli) {
 }
 
 /// Handle the commands that run before config load and exit immediately
-/// (`--setup-caps`, `--strip-secrets`). Returns the process exit code when
-/// one of them ran.
+/// (`--completions`, `--setup-caps`, `--strip-secrets`). Returns the process
+/// exit code when one of them ran.
 pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
+    // --completions <shell>: print a completion script and exit. Needs no
+    // config, capture, or privileges.
+    if let Some(shell) = cli.completions {
+        use clap::CommandFactory;
+        let mut cmd = crate::cli::Cli::command();
+        clap_complete::generate(shell, &mut cmd, "sipnab", &mut std::io::stdout());
+        return Some(0);
+    }
+
     // --setup-caps: grant this binary the capabilities needed for live
     // capture. Handled before any config/capture setup so it works right
     // after a fresh `cargo install` with no config present.

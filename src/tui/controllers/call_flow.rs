@@ -351,6 +351,7 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         CallFlowAction::OpenFilterDialog => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
+            app.filter_dialog.error = None;
             app.active_popup = Some(Popup::FilterDialog);
         }
         CallFlowAction::ClearFilter => {
@@ -640,39 +641,134 @@ fn export_mermaid_to_clipboard(app: &mut App) {
         });
         if let Some((ref participants, ref msgs)) = prepared {
             let mermaid = call_flow::export::export_mermaid(participants, msgs);
-            let cmd = if cfg!(target_os = "macos") {
-                "pbcopy"
-            } else {
-                "xclip"
-            };
-            let args: Vec<&str> = if cfg!(target_os = "macos") {
-                vec![]
-            } else {
-                vec!["-selection", "clipboard"]
-            };
-            let result = std::process::Command::new(cmd)
-                .args(&args)
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .and_then(|mut child| {
-                    use std::io::Write;
-                    if let Some(ref mut stdin) = child.stdin {
-                        stdin.write_all(mermaid.as_bytes())?;
-                    }
-                    child.wait()
-                });
-            match result {
-                Ok(_) => {
-                    app.status_error = Some("Mermaid diagram copied to clipboard".to_string());
-                }
-                Err(e) => {
-                    app.status_error = Some(format!("Clipboard: {e}"));
-                }
-            }
+            // Copy on a detached worker: a wedged clipboard helper used to
+            // hang the whole TUI on child.wait(). The worker's result lands
+            // in the status line via the async_messages drain.
+            spawn_clipboard_copy(mermaid, Arc::clone(&app.async_messages));
+            app.status_error = Some("Copying Mermaid diagram to clipboard…".to_string());
         } else {
             app.status_error = Some("No messages to export".to_string());
         }
     }
+}
+
+/// Copy `text` to the system clipboard on a detached worker thread, pushing
+/// the outcome message into `messages` (drained into the status line by the
+/// event-loop tick). Never blocks the caller.
+pub(in crate::tui) fn spawn_clipboard_copy(
+    text: String,
+    messages: Arc<parking_lot::Mutex<Vec<String>>>,
+) {
+    let worker_messages = Arc::clone(&messages);
+    let spawned = std::thread::Builder::new()
+        .name("clipboard".to_string())
+        .spawn(move || {
+            let msg = clipboard_copy_bounded(&text);
+            worker_messages.lock().push(msg);
+        });
+    if let Err(e) = spawned {
+        messages.lock().push(format!("Clipboard: {e}"));
+    }
+}
+
+/// Run the platform clipboard helper (pbcopy/xclip) with a bounded wait so
+/// a wedged helper is killed instead of leaking. Worker-thread only.
+fn clipboard_copy_bounded(text: &str) -> String {
+    let cmd = if cfg!(target_os = "macos") {
+        "pbcopy"
+    } else {
+        "xclip"
+    };
+    let args: Vec<&str> = if cfg!(target_os = "macos") {
+        vec![]
+    } else {
+        vec!["-selection", "clipboard"]
+    };
+    let mut child = match std::process::Command::new(cmd)
+        .args(&args)
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return format!("Clipboard: {e}"),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        if let Err(e) = stdin.write_all(text.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return format!("Clipboard: {e}");
+        }
+        // Dropping stdin closes the pipe so the helper sees EOF and exits.
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => {
+                return "Mermaid diagram copied to clipboard".to_string();
+            }
+            Ok(Some(status)) => return format!("Clipboard helper exited with {status}"),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return format!("Clipboard: {cmd} did not finish within 5s (killed)");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return format!("Clipboard: {e}"),
+        }
+    }
+}
+
+/// Scroll the raw message view to the next/previous search-match line,
+/// wrapping at the ends. Uses the same display text the renderer builds so
+/// the jump target and the highlight always agree.
+fn jump_raw_search_match(app: &mut App, forward: bool) {
+    if app.search_query.is_empty() {
+        app.status_error = Some("No search active — press / to search".to_string());
+        return;
+    }
+    let View::RawMessage {
+        ref call_id,
+        message_index,
+    } = app.current_view
+    else {
+        return;
+    };
+    let matches = {
+        let Some(store) = app.dialog_store.try_read() else {
+            return;
+        };
+        let Some(msg) = store
+            .get(call_id)
+            .and_then(|d| d.messages.get(message_index))
+        else {
+            return;
+        };
+        let (info, raw_text) = crate::tui::msg_raw::raw_display_text(msg, app.header_form);
+        crate::tui::msg_raw::search_match_lines(&info, &raw_text, &app.search_query)
+    };
+    if matches.is_empty() {
+        app.status_error = Some(format!("No matches for '{}'", app.search_query));
+        return;
+    }
+    let cur = app.raw_msg_scroll;
+    let pos = if forward {
+        matches.iter().position(|&m| m > cur).unwrap_or(0) // wrap to the first match
+    } else {
+        matches
+            .iter()
+            .rposition(|&m| m < cur)
+            .unwrap_or(matches.len() - 1) // wrap to the last match
+    };
+    app.raw_msg_scroll = matches[pos];
+    app.status_error = Some(format!(
+        "Match {}/{} for '{}'",
+        pos + 1,
+        matches.len(),
+        app.search_query
+    ));
 }
 
 /// Everything the raw message view can do for a single key press.
@@ -686,6 +782,10 @@ pub enum RawMessageAction {
     ScrollTop,
     ScrollBottom,
     Search,
+    /// Jump to the next search-match line (vim/less `n`).
+    NextMatch,
+    /// Jump to the previous search-match line (vim/less `N`).
+    PrevMatch,
     ToggleSyntaxHighlight,
     CycleColorMode,
     CycleHeaderForm,
@@ -706,6 +806,11 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
         KeyCode::Home => ScrollTop,
         KeyCode::End => ScrollBottom,
         k if k == km.search => Search,
+        // vim/less match navigation. 'n' only reaches this mapper while a
+        // search query is active (see the global fallback in
+        // handle_key_event); 'N' is view-local.
+        KeyCode::Char('n') => NextMatch,
+        KeyCode::Char('N') => PrevMatch,
         KeyCode::Char('s') => ToggleSyntaxHighlight,
         KeyCode::Char('c') => CycleColorMode,
         KeyCode::Char('h') => CycleHeaderForm,
@@ -746,6 +851,8 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
             // Keep the existing query so it can be refined.
             app.search_active = true;
         }
+        RawMessageAction::NextMatch => jump_raw_search_match(app, true),
+        RawMessageAction::PrevMatch => jump_raw_search_match(app, false),
         RawMessageAction::ToggleSyntaxHighlight => {
             app.syntax_highlight = !app.syntax_highlight;
             app.status_error = Some(if app.syntax_highlight {
@@ -836,6 +943,10 @@ fn execute_message_diff_action(app: &mut App, action: MessageDiffAction) {
         MessageDiffAction::ScrollBottom => app.diff_scroll = u16::MAX,
         MessageDiffAction::CycleHeaderForm => cycle_header_form(app),
         MessageDiffAction::Back => {
+            // INVARIANT: the diff view is only reachable from the call flow
+            // of its own call_id, so returning there is always correct. If
+            // another opener is ever added, track a return view like
+            // raw_msg_return_view instead of hardcoding CallFlow.
             if let View::MessageDiff { ref call_id, .. } = app.current_view {
                 let cid = call_id.clone();
                 app.current_view = View::CallFlow(cid);
@@ -890,6 +1001,8 @@ fn execute_combined_detail_action(app: &mut App, action: CombinedDetailAction) {
         CombinedDetailAction::Quit => app.should_quit = true,
         CombinedDetailAction::Help => app.current_view = View::Help,
         CombinedDetailAction::Back => {
+            // INVARIANT: combined detail is only reachable from the call
+            // flow of its own call_id (see MessageDiffAction::Back).
             if let View::CombinedDetail { ref call_id, .. } = app.current_view {
                 let cid = call_id.clone();
                 app.current_view = View::CallFlow(cid);

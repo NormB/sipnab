@@ -247,6 +247,20 @@ pub async fn run_server(
     state: ApiState,
     server_config: ApiServerConfig,
 ) -> Result<(), crate::Error> {
+    let listener = prepare_listener(bind_addr, &state.verifier, &server_config)?;
+    serve_on(listener, state, server_config).await
+}
+
+/// Vet the API configuration and bind its listener synchronously, so
+/// configuration and bind errors (port in use, unauthenticated non-loopback
+/// bind, unsupported TLS flags) surface on the caller's thread BEFORE the TUI
+/// takes over the terminal — logged from the detached servers thread they are
+/// invisible.
+pub fn prepare_listener(
+    bind_addr: SocketAddr,
+    verifier: &crate::auth::TokenVerifier,
+    server_config: &ApiServerConfig,
+) -> Result<std::net::TcpListener, crate::Error> {
     let has_tls = server_config.tls_cert.is_some() && server_config.tls_key.is_some();
 
     if has_tls {
@@ -257,7 +271,7 @@ pub async fn run_server(
         ));
     }
 
-    enforce_bind_auth_policy(&bind_addr, &state.verifier)?;
+    enforce_bind_auth_policy(&bind_addr, verifier)?;
     if !bind_addr.ip().is_loopback() {
         tracing::warn!(
             "API server binding to non-loopback address {} without TLS — \
@@ -266,6 +280,21 @@ pub async fn run_server(
         );
     }
 
+    let listener = std::net::TcpListener::bind(bind_addr)
+        .map_err(|e| crate::Error::Server(format!("failed to bind API to {bind_addr}: {e}")))?;
+    // tokio's from_std requires the listener to be non-blocking already.
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| crate::Error::Server(format!("failed to configure the API listener: {e}")))?;
+    Ok(listener)
+}
+
+/// Serve the REST API on an already-bound listener from [`prepare_listener`].
+pub async fn serve_on(
+    listener: std::net::TcpListener,
+    state: ApiState,
+    server_config: ApiServerConfig,
+) -> Result<(), crate::Error> {
     let max_conn = server_config.max_conn;
     let router = build_router(state);
 
@@ -293,14 +322,16 @@ pub async fn run_server(
         router
     };
 
-    let listener = tokio::net::TcpListener::bind(bind_addr)
-        .await
-        .map_err(|e| crate::Error::Server(format!("failed to bind API to {bind_addr}: {e}")))?;
+    let listener = tokio::net::TcpListener::from_std(listener)
+        .map_err(|e| crate::Error::Server(format!("failed to register the API listener: {e}")))?;
 
     // Log the *actual* bound address: with port 0 the OS assigns an ephemeral
-    // port, so logging `bind_addr` would print ":0". Matches the MCP HTTP server.
-    let actual_addr = listener.local_addr().unwrap_or(bind_addr);
-    tracing::info!("REST API listening on {}", actual_addr);
+    // port, so logging the requested address would print ":0". Matches the
+    // MCP HTTP server.
+    match listener.local_addr() {
+        Ok(addr) => tracing::info!("REST API listening on {}", addr),
+        Err(_) => tracing::info!("REST API listening"),
+    }
 
     axum::serve(
         listener,

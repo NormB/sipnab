@@ -44,8 +44,7 @@ const KNOWN_UNTESTED: &[&str] = &[
     // ── Standalone servers that need a live source to stay alive ────────────
     "metrics",      // metrics-only process exits after an offline pcap read
     "metrics-auth", // (auth logic is unit-tested in prometheus_server.rs)
-    // ── Need crafted fixtures / hard-to-trigger events ──────────────────────
-    "hep-parse",       // needs a HEP-encapsulated pcap to unwrap
+    // ── Need crafted fixtures / hard-to-trigger events ──────────────────────       // needs a HEP-encapsulated pcap to unwrap
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
     "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture
     "alert-exec",      // fires on a security alert — needs a scanner/fraud trigger

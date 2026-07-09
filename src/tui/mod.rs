@@ -134,6 +134,14 @@ pub struct App {
     save: SaveDialogState,
     /// File-open dialog state (last-browsed directory survives reopening).
     file_open: FileOpenState,
+    /// In-flight background pcap load, polled by the event-loop tick.
+    pcap_load: Option<Arc<PcapLoadProgress>>,
+    /// Save deferred one tick so the "Saving…" status paints before the
+    /// (blocking) write runs.
+    pending_save: Option<PendingSave>,
+    /// Completion messages pushed by detached workers (clipboard export),
+    /// drained into the status line each tick.
+    async_messages: Arc<parking_lot::Mutex<Vec<String>>>,
 
     // ── Call flow display modes ────────────────────────────────────
     /// Header-name display form (as captured / expanded / compact) for
@@ -177,6 +185,10 @@ pub struct App {
     /// retrying (which would re-emit libasound errors).
     #[cfg(feature = "audio")]
     audio_init_error: Option<String>,
+    /// Playback deferred one tick so the "Decoding…" status paints before
+    /// the (blocking) decode/resample runs — same pattern as pending_save.
+    #[cfg(feature = "audio")]
+    pending_audio_play: bool,
 }
 
 impl App {
@@ -221,6 +233,9 @@ impl App {
             cached_displayed_count: 0,
             save: SaveDialogState::default(),
             file_open: FileOpenState::default(),
+            pcap_load: None,
+            pending_save: None,
+            async_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
             name_mode: NameMode::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
@@ -240,6 +255,8 @@ impl App {
             audio_player: None,
             #[cfg(feature = "audio")]
             audio_init_error: None,
+            #[cfg(feature = "audio")]
+            pending_audio_play: false,
         }
     }
 
@@ -256,6 +273,79 @@ impl App {
     /// Mark data as freshly updated (resets adaptive refresh timer).
     pub fn mark_data_updated(&mut self) {
         self.last_data_update = Instant::now();
+    }
+
+    /// Drain completion messages pushed by detached workers into the status
+    /// line — one per tick, so consecutive results each get a visible frame.
+    pub(crate) fn drain_async_messages(&mut self) {
+        let mut queue = self.async_messages.lock();
+        if !queue.is_empty() {
+            self.status_error = Some(queue.remove(0));
+        }
+    }
+
+    /// Execute a playback request deferred by one tick (the "Decoding…"
+    /// frame has painted by the time this runs): lazy player init, decode/
+    /// resample, and the plugin play call.
+    #[cfg(feature = "audio")]
+    pub(crate) fn run_pending_audio(&mut self) {
+        if !self.pending_audio_play {
+            return;
+        }
+        self.pending_audio_play = false;
+
+        if self.audio_player.is_none() {
+            match crate::rtp::playback::AudioPlayer::new() {
+                Ok(player) => self.audio_player = Some(player),
+                Err(e) => {
+                    let msg = format!("Audio init failed: {e}");
+                    self.status_error = Some(msg.clone());
+                    self.audio_init_error = Some(msg);
+                    return;
+                }
+            }
+        }
+
+        if let Some(player) = &self.audio_player
+            && let View::StreamDetail(ref key) = self.current_view
+        {
+            let result = {
+                let store = self.stream_store.read();
+                store.get(key).map(|stream| player.play_stream(stream))
+            };
+            match result {
+                Some(Ok(msg)) => self.status_error = Some(msg),
+                Some(Err(e)) => self.status_error = Some(format!("Playback error: {e}")),
+                None => self.status_error = Some("Stream not found".to_string()),
+            }
+        }
+    }
+
+    /// No-op without the audio feature so callers stay cfg-free.
+    #[cfg(not(feature = "audio"))]
+    pub(crate) fn run_pending_audio(&mut self) {}
+
+    /// Execute a save the dialog deferred by one tick (the "Saving…" frame
+    /// has painted by the time this runs, right after the draw).
+    pub(crate) fn run_pending_save(&mut self) {
+        let Some(pending) = self.pending_save.take() else {
+            return;
+        };
+        let path = pending.path;
+        let msg = match pending.format {
+            SaveFormat::Pcap => save_to_pcap_path(self, &path, false),
+            SaveFormat::PcapNg => save_to_pcap_path(self, &path, true),
+            SaveFormat::Txt => save_to_txt_path(self, &path),
+            SaveFormat::Json => save_to_json_path(self, &path),
+            SaveFormat::Ndjson => save_to_ndjson_path(self, &path),
+            SaveFormat::Csv => save_to_csv_path(self, &path),
+            SaveFormat::Html => save_to_mermaid_path(self, &path),
+            SaveFormat::Markdown => save_to_markdown_path(self, &path),
+            SaveFormat::Wav => save_to_wav_path(self, &path),
+            SaveFormat::SippXml => save_to_sipp_path(self, &path),
+            SaveFormat::RtpJson => save_to_rtp_json_path(self, &path),
+        };
+        self.status_error = Some(msg);
     }
 
     /// Reset all per-call transient state when entering a call flow view.
@@ -750,11 +840,26 @@ pub fn run_tui_with_pause(
     app.set_names_save_path(name_setup.save_path);
     app.set_names_config_path(name_setup.config_path);
 
+    // Dead rebinds (duplicates, or shadowed by a view's built-in key) used
+    // to fail silently; warn on stderr and in the status line at startup.
+    let keymap_warnings = app.keymap.collisions();
+    for warning in &keymap_warnings {
+        tracing::warn!("{warning}");
+    }
+    if let Some(first) = keymap_warnings.first() {
+        app.status_error = Some(first.clone());
+    }
+
     // Main event loop
     loop {
         if app.should_quit {
             break;
         }
+
+        // Background work: apply a finished pcap load (or refresh its
+        // progress line) and drain detached-worker completion messages.
+        controllers::poll_pcap_load(&mut app);
+        app.drain_async_messages();
 
         // Tick: refresh store-derived caches, render read-only, then
         // persist what the render pass computed (clamps, flow row caches).
@@ -762,6 +867,11 @@ pub fn run_tui_with_pause(
         let mut fb = RenderFeedback::default();
         terminal.draw(|frame| fb = render_app(frame, &mut app))?;
         app.apply_render_feedback(fb);
+
+        // Deferred work runs here, AFTER the frame that painted its
+        // "Saving…"/"Decoding…" status — the work itself may block.
+        app.run_pending_save();
+        app.run_pending_audio();
 
         // Poll with adaptive timeout, then drain every queued event before
         // the next redraw — a paste or key burst must not be metered out at
@@ -1542,8 +1652,13 @@ mod tests {
         assert!(st.is_text_field_focused());
         assert!(!st.is_checkbox_focused());
         assert!(st.checkbox_index().is_none());
-        // checkbox region
-        st.focused_field = FILTER_TEXT_FIELD_COUNT; // first checkbox
+        // "All" master checkbox sits right after the text fields, above the
+        // method grid — a checkbox, but not a method slot.
+        st.focused_field = ALL_METHODS_IDX;
+        assert!(st.is_checkbox_focused());
+        assert!(st.checkbox_index().is_none());
+        // first METHOD checkbox (REGISTER)
+        st.focused_field = METHOD_CHECKBOX_BASE;
         assert!(st.is_checkbox_focused());
         assert_eq!(st.checkbox_index(), Some(0));
         // button region
@@ -1555,10 +1670,10 @@ mod tests {
     #[test]
     fn filter_dialog_checkbox_grid_navigation() {
         let mut st = FilterDialogState {
-            focused_field: FILTER_TEXT_FIELD_COUNT,
+            focused_field: METHOD_CHECKBOX_BASE,
             ..Default::default()
         };
-        // Focus first checkbox (index 0).
+        // Focus first method checkbox (index 0).
         st.checkbox_right(); // 0 -> 1
         assert_eq!(st.checkbox_index(), Some(1));
         st.checkbox_left(); // 1 -> 0
@@ -1567,7 +1682,10 @@ mod tests {
         assert_eq!(st.checkbox_index(), Some(2));
         st.checkbox_up(); // 2 -> 0
         assert_eq!(st.checkbox_index(), Some(0));
-        // Up from top row → moves to last text field.
+        // Up from the top method row → the "All" row above the grid.
+        st.checkbox_up();
+        assert_eq!(st.focused_field(), ALL_METHODS_IDX);
+        // Up from "All" → the last text field.
         st.checkbox_up();
         assert!(st.is_text_field_focused());
         assert_eq!(st.focused_field(), FILTER_TEXT_FIELD_COUNT - 1);
@@ -1579,7 +1697,7 @@ mod tests {
         // RIGHT column, then to the buttons — so the right column is reachable
         // by vertical navigation.
         let mut st = FilterDialogState {
-            focused_field: FILTER_TEXT_FIELD_COUNT + 8, // INFO (left col bottom, idx 8)
+            focused_field: METHOD_CHECKBOX_BASE + 8, // INFO (left col bottom, idx 8)
             ..Default::default()
         };
         st.checkbox_down(); // -> top of RIGHT column (OPTIONS, idx 1)
@@ -1589,17 +1707,23 @@ mod tests {
         st.checkbox_down(); // 5 -> 7
         st.checkbox_down(); // 7 -> 9 (UPDATE, right col bottom)
         assert_eq!(st.checkbox_index(), Some(9));
-        st.checkbox_down(); // bottom of RIGHT column -> "All" master checkbox
-        assert_eq!(st.focused_field(), ALL_METHODS_IDX);
-        st.checkbox_up(); // and back up to the right-column bottom
-        assert_eq!(st.checkbox_index(), Some(9));
-        st.checkbox_down();
-        st.checkbox_down(); // "All" -> buttons
+        st.checkbox_down(); // bottom of RIGHT column -> buttons
         assert_eq!(st.focused_field(), FILTER_BUTTON_IDX);
+
+        // The "All" row sits ABOVE the grid: Down enters at REGISTER, Up
+        // leaves to it from the top-left method.
+        let mut st = FilterDialogState {
+            focused_field: ALL_METHODS_IDX,
+            ..Default::default()
+        };
+        st.checkbox_down();
+        assert_eq!(st.checkbox_index(), Some(0), "All -> REGISTER");
+        st.checkbox_up();
+        assert_eq!(st.focused_field(), ALL_METHODS_IDX, "REGISTER -> All");
 
         // Up reverses: from OPTIONS (idx 1) back to INFO (idx 8).
         let mut st = FilterDialogState {
-            focused_field: FILTER_TEXT_FIELD_COUNT + 1,
+            focused_field: METHOD_CHECKBOX_BASE + 1,
             ..Default::default()
         };
         st.checkbox_up();
@@ -1655,7 +1779,7 @@ mod tests {
         // From the all-checked default, unchecking INVITE (index 2) must produce
         // a method filter over the OTHER nine and exclude INVITE.
         let mut st = FilterDialogState {
-            focused_field: FILTER_TEXT_FIELD_COUNT + 2, // INVITE
+            focused_field: METHOD_CHECKBOX_BASE + 2, // INVITE
             ..Default::default()
         };
         st.toggle_checkbox();

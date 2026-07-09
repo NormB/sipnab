@@ -1,7 +1,7 @@
 .\" sipnab.1 -- man page for sipnab
 .\" Copyright 2024-2026 Norm Brandinger
-.\" License: GPL-3.0-only
-.TH SIPNAB 1 "2026-07-02" "sipnab 0.4.18" "User Commands"
+.\" License: MIT OR Apache-2.0
+.TH SIPNAB 1 "2026-07-09" "sipnab 0.5.2" "User Commands"
 .SH NAME
 sipnab \- SIP & RTP capture, analysis, and security tool
 .SH SYNOPSIS
@@ -183,12 +183,14 @@ System-wide configuration file.
 Success.
 .TP
 .B 1
-Runtime error (capture failure, invalid arguments).
+Runtime failure (capture error, I/O error, or a requested report could not
+be produced).
 .TP
 .B 2
-Invalid command-line usage.
+Invalid usage (bad flag value or combination, or a flag whose feature is not
+compiled in).
 .SH LICENSE
-GPL-3.0-only. Copyright 2024-2026 Norm Brandinger.
+MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.
 .SH SEE ALSO
 .BR sngrep (1),
 .BR tshark (1),

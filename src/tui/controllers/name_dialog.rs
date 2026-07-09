@@ -51,6 +51,7 @@ pub(in crate::tui) fn open_name_dialog_for(
     app.name_dialog.cursor = targets[active].name.len();
     app.name_dialog.targets = targets;
     app.name_dialog.active = active;
+    app.name_dialog.error = None;
     app.active_popup = Some(Popup::NameAddress);
 }
 
@@ -62,8 +63,12 @@ pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
             app.active_popup = None;
         }
         KeyCode::Enter => {
-            apply_name_dialog(app);
-            app.active_popup = None;
+            // Close only when everything applied: a validation failure keeps
+            // the popup open with an inline error so the typed name isn't
+            // discarded.
+            if apply_name_dialog(app) {
+                app.active_popup = None;
+            }
         }
         KeyCode::Tab => app.name_dialog.focus_next(),
         KeyCode::BackTab => app.name_dialog.focus_prev(),
@@ -119,7 +124,10 @@ pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
 /// Apply the Name Address popup: set or clear the manual mapping for every
 /// offered endpoint, persist the table, and turn name resolution on so the
 /// changes are visible immediately.
-fn apply_name_dialog(app: &mut App) {
+/// Apply every target's name. Returns `false` on a validation failure —
+/// the error is shown inline in the popup (which stays open) and NOTHING
+/// is applied, so a multi-endpoint edit is never left half-saved.
+fn apply_name_dialog(app: &mut App) -> bool {
     let mut set = 0usize;
     let mut cleared = 0usize;
     let mut last: Option<String> = None;
@@ -130,6 +138,15 @@ fn apply_name_dialog(app: &mut App) {
         .iter()
         .map(|t| (t.ip.clone(), t.name.trim().to_string()))
         .collect();
+    // Validate everything BEFORE applying anything.
+    for (_, name) in &targets {
+        if !name.is_empty() && !crate::names::is_valid_name(name) {
+            app.name_dialog.error =
+                Some("Invalid name (control characters or too long); not saved".to_string());
+            return false;
+        }
+    }
+    app.name_dialog.error = None;
     for (ip_str, name) in targets {
         let Ok(ip) = ip_str.parse::<std::net::IpAddr>() else {
             continue;
@@ -138,10 +155,6 @@ fn apply_name_dialog(app: &mut App) {
             if app.resolver.remove_manual(&ip).is_some() {
                 cleared += 1;
             }
-        } else if !crate::names::is_valid_name(&name) {
-            app.status_error =
-                Some("Invalid name (control characters or too long); not saved".to_string());
-            return;
         } else {
             app.resolver.set_manual(ip, name.clone());
             set += 1;
@@ -179,6 +192,7 @@ fn apply_name_dialog(app: &mut App) {
             ));
         }
     }
+    true
 }
 
 #[cfg(test)]
@@ -253,5 +267,52 @@ mod tests {
                 .label_ip(addr_a(), crate::names::NameMode::Names),
             "10.0.0.1"
         );
+    }
+}
+
+#[cfg(test)]
+mod validation_tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    /// An invalid name must keep the popup open with an inline error and
+    /// preserve the typed text — it used to close the dialog and discard
+    /// the input, leaving only a status-bar message.
+    #[test]
+    fn invalid_name_keeps_dialog_open_and_preserves_input() {
+        let mut app = App::new_test();
+        app.name_dialog.targets = vec![NameTarget {
+            ip: "10.0.0.1".to_string(),
+            name: "bad\u{7}name".to_string(),
+        }];
+        app.name_dialog.active = 0;
+        app.name_dialog.cursor = 0;
+        app.active_popup = Some(Popup::NameAddress);
+
+        handle_name_popup_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(
+            matches!(app.active_popup, Some(Popup::NameAddress)),
+            "popup must stay open on validation failure"
+        );
+        assert!(
+            app.name_dialog
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Invalid name"),
+            "inline error expected, got: {:?}",
+            app.name_dialog.error
+        );
+        assert_eq!(
+            app.name_dialog.targets[0].name, "bad\u{7}name",
+            "typed input must be preserved for correction"
+        );
+
+        // Correcting the name applies and closes.
+        app.name_dialog.targets[0].name = "sbc-edge".to_string();
+        handle_name_popup_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.active_popup.is_none(), "valid name closes the popup");
+        assert!(app.name_dialog.error.is_none());
     }
 }

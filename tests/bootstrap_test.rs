@@ -56,6 +56,16 @@ fn portrange_resolution_and_error() {
     let p = bootstrap::plan(&cli(&["--portrange", "7000-7010", "-N"]), &config).expect("plan");
     assert_eq!(p.portrange, (7000, 7010));
 
+    // Explicitly passing the DEFAULT range must still beat the config —
+    // clap can't distinguish "defaulted" from "explicitly set to the
+    // default" with a String field, so the flag is an Option now.
+    let p = bootstrap::plan(&cli(&["--portrange", "5060-5061", "-N"]), &config).expect("plan");
+    assert_eq!(
+        p.portrange,
+        (5060, 5061),
+        "an explicit --portrange equal to the default must override config"
+    );
+
     let p = bootstrap::plan(&cli(&["-N"]), &config).expect("plan");
     assert_eq!(p.portrange, (6000, 6001), "config fallback");
 

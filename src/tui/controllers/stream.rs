@@ -88,6 +88,7 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
         StreamListAction::OpenFilterDialog => {
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
+            app.filter_dialog.error = None;
             app.active_popup = Some(Popup::FilterDialog);
         }
         StreamListAction::OpenDetail => {
@@ -193,33 +194,20 @@ pub(in crate::tui) fn handle_stream_detail_play(app: &mut App) {
         return;
     }
 
-    // Initialize player lazily on first use
-    if app.audio_player.is_none() {
-        match crate::rtp::playback::AudioPlayer::new() {
-            Ok(player) => app.audio_player = Some(player),
-            Err(e) => {
-                let msg = format!("Audio init failed: {e}");
-                app.status_error = Some(msg.clone());
-                app.audio_init_error = Some(msg);
-                return;
-            }
-        }
+    // Toggle off immediately when already playing (fast plugin call).
+    if let Some(player) = &app.audio_player
+        && player.is_playing()
+    {
+        player.stop();
+        app.status_error = Some("Playback stopped".to_string());
+        return;
     }
 
-    if let Some(player) = &app.audio_player {
-        if player.is_playing() {
-            player.stop();
-            app.status_error = Some("Playback stopped".to_string());
-        } else if let View::StreamDetail(ref key) = app.current_view {
-            let store = app.stream_store.read();
-            if let Some(stream) = store.get(key) {
-                match player.play_stream(stream) {
-                    Ok(msg) => app.status_error = Some(msg),
-                    Err(e) => app.status_error = Some(format!("Playback error: {e}")),
-                }
-            }
-        }
-    }
+    // Defer init + decode + play one tick (App::run_pending_audio) so the
+    // "Decoding…" status paints first — decoding/resampling a long stream
+    // on the keypress stalled the UI with no feedback.
+    app.pending_audio_play = true;
+    app.status_error = Some("Decoding audio\u{2026}".to_string());
 }
 
 /// Get the StreamKey for the currently selected row in the stream list.
@@ -401,5 +389,55 @@ mod tests {
         let mut app = app_in_stream_detail();
         handle_stream_detail_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+}
+
+#[cfg(all(test, feature = "audio"))]
+mod deferred_audio_tests {
+    use super::*;
+
+    /// Shift+P must not decode on the keypress: a long Opus stream stalls
+    /// the UI noticeably. The toggle defers one event-loop tick so the
+    /// "Decoding…" status paints first (same pattern as the save dialog).
+    #[test]
+    fn toggle_playback_defers_decode_one_tick() {
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+
+        handle_stream_detail_play(&mut app);
+
+        assert!(
+            app.pending_audio_play,
+            "decode+play must be deferred, not run on the keypress"
+        );
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Decoding"),
+            "got: {:?}",
+            app.status_error
+        );
+
+        app.run_pending_audio();
+        assert!(!app.pending_audio_play, "deferred work consumed");
+        assert!(
+            !app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Decoding"),
+            "status resolved to a result (playing or an init error): {:?}",
+            app.status_error
+        );
+    }
+
+    /// A cached init failure still short-circuits without deferring.
+    #[test]
+    fn cached_init_failure_short_circuits() {
+        let mut app = App::new_test();
+        app.audio_init_error = Some("Audio init failed: nope".to_string());
+        handle_stream_detail_play(&mut app);
+        assert!(!app.pending_audio_play);
+        assert_eq!(app.status_error.as_deref(), Some("Audio init failed: nope"));
     }
 }

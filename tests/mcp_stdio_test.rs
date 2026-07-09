@@ -477,6 +477,91 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
     let _ = child.wait();
 }
 
+/// `tail_dialogs.source_exhausted` must flip to true once the pcap replay
+/// drains — a polling client (typically an LLM) relies on it to know the
+/// replay is complete and stop polling. It was a hardcoded `false` stub.
+#[test]
+fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() {
+    let binary = env!("CARGO_BIN_EXE_sipnab");
+    let pcap = fixture("sip_call.pcap");
+    let pcap_str = pcap.to_string_lossy().to_string();
+
+    let mut child = Command::new(binary)
+        .args([
+            "-N",
+            "-I",
+            &pcap_str,
+            "--mcp",
+            "--mcp-transport",
+            "stdio",
+            "--quiet",
+        ])
+        .env("SIPNAB_LOG", "info")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn sipnab --mcp");
+
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut reader = BufReader::new(&mut stdout);
+
+    send(
+        &mut child,
+        &serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "sipnab-test", "version": "0"}}
+        }),
+    );
+    read_response_with_id(&mut reader, 1, Duration::from_secs(5)).expect("initialize");
+    send(
+        &mut child,
+        &serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    );
+
+    // Poll tail_dialogs until the tiny fixture replay drains. The contract
+    // is polling-shaped, so the test polls exactly like a real client.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut id: i64 = 1;
+    let exhausted = loop {
+        assert!(
+            Instant::now() < deadline,
+            "source_exhausted never became true within 10s of a tiny pcap replay"
+        );
+        id += 1;
+        send(
+            &mut child,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "tail_dialogs", "arguments": {}}
+            }),
+        );
+        let resp = read_response_with_id(&mut reader, id, Duration::from_secs(5))
+            .expect("tail_dialogs response");
+        let body_text = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tail_dialogs text");
+        let body: serde_json::Value = serde_json::from_str(body_text).expect("inner JSON");
+        if body["source_exhausted"].as_bool() == Some(true) {
+            break true;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    assert!(exhausted);
+
+    drop(reader);
+    drop(stdout);
+    if let Some(stdin) = child.stdin.take() {
+        drop(stdin);
+    }
+    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+    let _ = child.wait();
+}
+
 /// M3 — T3.5: assert the COMPLETE MCP tool set (count + exact names) and
 /// exercise the two tools the other tests don't call (`find_problems`,
 /// `security_findings`). The plan referred to "12 tools"; the server actually

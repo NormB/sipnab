@@ -194,6 +194,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             // Always open the filter dialog (state is preserved)
             app.filter_dialog.focused_field = 0;
             app.filter_dialog.sync_cursor();
+            app.filter_dialog.error = None;
             app.active_popup = Some(Popup::FilterDialog);
         }
         CallListAction::OpenSettings => {

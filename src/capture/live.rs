@@ -125,10 +125,23 @@ pub fn capture_live(
         }) {
         Ok(cap) => cap,
         Err(e) => {
-            if let Some(ready) = ready_tx {
-                let _ = ready.send(Err(format!("{e:#}")));
+            // Help a typo'd device name: append what actually exists (the
+            // auto-detect path already does). Permission failures keep their
+            // own dedicated hint in the bootstrap, so skip the list there.
+            let mut msg = format!("{e:#}");
+            let is_permission = msg.contains("ermission")
+                || msg.contains("EPERM")
+                || msg.contains("Operation not permitted");
+            if !is_permission {
+                let devices = crate::capture::device::list_devices();
+                if !devices.is_empty() {
+                    msg.push_str(&format!("\n  Available devices: {}", devices.join(", ")));
+                }
             }
-            return Err(e);
+            if let Some(ready) = ready_tx {
+                let _ = ready.send(Err(msg.clone()));
+            }
+            return Err(anyhow::anyhow!(msg));
         }
     };
 
@@ -288,6 +301,32 @@ fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    /// A typo'd `-d <device>` used to fail with just "Failed to open device"
+    /// — the auto-detect path lists the available devices, and the explicit
+    /// path must too so the user can correct the name.
+    #[test]
+    fn open_failure_for_explicit_device_lists_available_devices() {
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let (tx, _rx) = crate::capture::channel::packet_channel(16);
+        let config = crate::capture::CaptureConfig::default();
+        let result = capture_live("sipnab-no-such-dev0", &config, tx, Some(ready_tx));
+        assert!(result.is_err(), "nonexistent device must fail");
+        let err = ready_rx
+            .try_recv()
+            .expect("ready channel must carry the error")
+            .expect_err("must be Err");
+        assert!(
+            err.contains("sipnab-no-such-dev0"),
+            "names the device: {err}"
+        );
+        if !crate::capture::device::list_devices().is_empty() {
+            assert!(
+                err.contains("Available devices:"),
+                "must list the real devices so the typo is correctable: {err}"
+            );
+        }
+    }
 
     fn tv(sec: i64, usec: i64) -> libc::timeval {
         libc::timeval {

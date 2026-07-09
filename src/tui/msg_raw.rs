@@ -86,19 +86,7 @@ pub fn render_raw_message(
         }
     };
 
-    // Header info line
-    let info = format!(
-        "{} {}:{} -> {}:{} [{}]",
-        msg.timestamp.format("%H:%M:%S%.3f"),
-        msg.src_addr,
-        msg.src_port,
-        msg.dst_addr,
-        msg.dst_port,
-        msg.transport,
-    );
-
-    let raw_bytes = String::from_utf8_lossy(&msg.raw);
-    let raw_text = super::header_form::reformat_headers(&raw_bytes, view.header_form);
+    let (info, raw_text) = raw_display_text(msg, view.header_form);
     let lines = if view.syntax_highlight {
         highlight_sip_message(&info, &raw_text, search_query, theme)
     } else {
@@ -113,6 +101,47 @@ pub fn render_raw_message(
 
     frame.render_widget(para, area);
     total_rows
+}
+
+/// The exact text the raw view displays for `msg` — the info line plus the
+/// header-reformatted raw message — so rendering and search-match
+/// navigation always agree on line positions.
+pub fn raw_display_text(
+    msg: &crate::sip::SipMessage,
+    header_form: super::header_form::HeaderFormMode,
+) -> (String, String) {
+    let info = format!(
+        "{} {}:{} -> {}:{} [{}]",
+        msg.timestamp.format("%H:%M:%S%.3f"),
+        msg.src_addr,
+        msg.src_port,
+        msg.dst_addr,
+        msg.dst_port,
+        msg.transport,
+    );
+    let raw_bytes = String::from_utf8_lossy(&msg.raw);
+    let raw_text = super::header_form::reformat_headers(&raw_bytes, header_form).to_string();
+    (info, raw_text)
+}
+
+/// Display-line indices (info = 0, blank = 1, raw lines from 2 — the layout
+/// both `plain_sip_message` and `highlight_sip_message` build) whose text
+/// contains `query`, case-insensitively. Powers n/N match navigation.
+pub fn search_match_lines(info: &str, raw_text: &str, query: &str) -> Vec<u16> {
+    if query.is_empty() {
+        return Vec::new();
+    }
+    let q = query.to_ascii_lowercase();
+    let mut out = Vec::new();
+    if info.to_ascii_lowercase().contains(&q) {
+        out.push(0);
+    }
+    for (i, line) in raw_text.lines().enumerate() {
+        if line.to_ascii_lowercase().contains(&q) {
+            out.push((i + 2).min(u16::MAX as usize) as u16);
+        }
+    }
+    out
 }
 
 /// Navigation and display state for the combined (transaction/dialog) viewer.

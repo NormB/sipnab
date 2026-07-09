@@ -82,7 +82,7 @@ All 31 addressable fields, organized by type.
 Notes:
 - Boolean fields only support `==` and `!=`.
 - Regex (`=~`) is not applicable to numeric or boolean fields.
-- Numeric equality uses epsilon comparison for floating-point precision.
+- Numeric equality uses epsilon comparison for floating-point precision. For computed values (`duration`, `pdd`, `rtp.mos`) prefer range operators (`>=`, `<`) over `==` — an exact match on a derived float rarely hits.
 
 ## Values
 

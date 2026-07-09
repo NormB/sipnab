@@ -23,8 +23,8 @@ expression: output
 │  /                 Search (arrows/Space work while typing; Enter opens)      │
 │  i                 Clear non-matching dialogs                                │
 │  I                 Clear matching dialogs                                    │
-│  F1                This help                                                 │
-│  F2                Save capture (PCAP/PCAP-NG/TXT)                           │
+│  F1, ?             This help (? works in every view)                         │
+│  F2                Save capture (Tab cycles PCAP/TXT/JSON/WAV/Mermaid/...)   │
 │  F3                Search (same as /)                                        │
 │  F5, Ctrl+L        Clear calls                                               │
 │  r, F6             Show raw SIP message                                      │
@@ -32,8 +32,8 @@ expression: output
 │  F8                Settings                                                  │
 │  t                 Cycle timestamps (absolute / delta-prev / delta-first /   │
 │scaled)                                                                       │
-│  u                 Cycle From/To column (user / host:port / both)            │
-│  n                 Cycle name resolution (off / static / DNS)                │
+│  u                 Cycle From/To (default/host:port/user/user@host:port)     │
+│  n                 Cycle name resolution (off/static/DNS) — global           │
 │  N                 Name selected address (IP -> host / FQDN)                 │
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │

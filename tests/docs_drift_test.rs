@@ -27,6 +27,8 @@ const FOREIGN_FLAGS: &[&str] = &[
     "discard-all-secrets",
     // systemctl (docs/mcp-setup.md)
     "now",
+    // voipmonitor (docs/benchmarks.md comparison command lines)
+    "config-file",
     // claude mcp add (website/mcp.md)
     "transport",
     "header",
@@ -85,6 +87,21 @@ fn readme_long_flags_exist_in_cli() {
         (
             "docs/config-reference.md",
             include_str!("../docs/config-reference.md"),
+        ),
+        (
+            "docs/keybindings.md",
+            include_str!("../docs/keybindings.md"),
+        ),
+        ("docs/auth.md", include_str!("../docs/auth.md")),
+        (
+            "docs/theme-guide.md",
+            include_str!("../docs/theme-guide.md"),
+        ),
+        ("docs/library.md", include_str!("../docs/library.md")),
+        ("docs/benchmarks.md", include_str!("../docs/benchmarks.md")),
+        (
+            "docs/fault-model.md",
+            include_str!("../docs/fault-model.md"),
         ),
         // Website documentation (Zola content) — same zero-drift contract.
         (
@@ -292,4 +309,96 @@ fn code_of_conduct_has_enforcement_contact() {
         readme.contains("CODE_OF_CONDUCT.md"),
         "README must link the Code of Conduct"
     );
+}
+
+/// The man page must track the crate: its .TH version and LICENSE section
+/// once rotted to "0.4.18" / "GPL-3.0-only" while Cargo.toml said 0.5.2 /
+/// "MIT OR Apache-2.0" — a licensing contradiction, not just staleness.
+#[test]
+fn man_page_version_and_license_match_cargo() {
+    let man = include_str!("../man/sipnab.1");
+    let version = env!("CARGO_PKG_VERSION");
+    assert!(
+        man.contains(&format!("\"sipnab {version}\"")),
+        "man/sipnab.1 .TH version must be the crate version {version}"
+    );
+    assert!(
+        !man.contains("GPL"),
+        "man/sipnab.1 license drifted: Cargo.toml says MIT OR Apache-2.0"
+    );
+    assert!(
+        man.contains("MIT OR Apache-2.0"),
+        "man/sipnab.1 must state the MIT OR Apache-2.0 license"
+    );
+}
+
+/// "Current version" strings sprinkled through the install/benchmark docs
+/// must equal the crate version — they sit outside the pre-commit gate that
+/// keeps website/config.toml in sync, so they rot on every release without
+/// this guard. Historical references (e.g. the benchmark provenance
+/// "0.4.16") are deliberately NOT matched.
+#[test]
+fn docs_current_version_markers_match_cargo() {
+    let version = env!("CARGO_PKG_VERSION");
+    // (path, contents, marker regex whose capture 1 must be the crate version)
+    let sources: &[(&str, &str, &str)] = &[
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"SIPNAB_VERSION=(\d+\.\d+\.\d+)",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
+        ),
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"sipnab (\d+\.\d+\.\d+) \(",
+        ),
+        (
+            "website/content/docs/install.md",
+            include_str!("../website/content/docs/install.md"),
+            r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+        (
+            "website/content/docs/install.md",
+            include_str!("../website/content/docs/install.md"),
+            r"sipnab (\d+\.\d+\.\d+) \(",
+        ),
+        (
+            "website/content/docs/benchmarks.md",
+            include_str!("../website/content/docs/benchmarks.md"),
+            r"current release (\d+\.\d+\.\d+)",
+        ),
+        (
+            "website/content/docs/api.md",
+            include_str!("../website/content/docs/api.md"),
+            r"as of (\d+\.\d+\.\d+)",
+        ),
+    ];
+    for (path, text, pattern) in sources {
+        let re = regex::Regex::new(pattern).unwrap();
+        let mut matched = false;
+        for cap in re.captures_iter(text) {
+            matched = true;
+            assert_eq!(
+                &cap[1], version,
+                "{path}: current-version marker '{pattern}' names {} but the crate \
+                 is {version} — update the doc (or this marker list)",
+                &cap[1]
+            );
+        }
+        assert!(
+            matched,
+            "{path}: expected at least one '{pattern}' marker; the doc changed — \
+             update the marker list"
+        );
+    }
 }

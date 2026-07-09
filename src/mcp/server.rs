@@ -44,6 +44,11 @@ pub struct SipnabMcp {
     /// Optional shared alert engine for `security_findings`. When None,
     /// the tool returns an empty list rather than erroring.
     pub alert_engine: Option<Arc<RwLock<AlertEngine>>>,
+    /// Shared flag the capture owner sets once the source (typically a pcap
+    /// file) is fully consumed; `tail_dialogs` reports it as
+    /// `source_exhausted` so pollers know no more updates will come. When
+    /// None (no capture owner attached), it reads as not exhausted.
+    source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -57,6 +62,7 @@ impl SipnabMcp {
             dialog_store,
             stream_store,
             alert_engine: None,
+            source_exhausted: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -65,6 +71,14 @@ impl SipnabMcp {
     /// read from its FindingsHistory ring buffer.
     pub fn with_alert_engine(mut self, alerts: Arc<RwLock<AlertEngine>>) -> Self {
         self.alert_engine = Some(alerts);
+        self
+    }
+
+    /// Attach the shared "capture source fully consumed" flag that
+    /// `tail_dialogs` reports as `source_exhausted`. The capture owner
+    /// stores `true` once the packet source drains (pcap EOF).
+    pub fn with_source_exhausted(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.source_exhausted = Some(flag);
         self
     }
 }
@@ -740,7 +754,10 @@ impl SipnabMcp {
             TailDialogsResponse {
                 dialogs: summaries,
                 next_cursor,
-                source_exhausted: false, // 8.3 stub; 8.5 sets this from capture state
+                source_exhausted: self
+                    .source_exhausted
+                    .as_ref()
+                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed)),
             }
         };
 
@@ -923,6 +940,52 @@ mod tests {
             .expect("content should be text-able")
             .text
             .clone()
+    }
+
+    #[tokio::test]
+    async fn tail_dialogs_reports_source_exhausted_from_shared_flag() {
+        // The tool description promises source_exhausted=true once the pcap
+        // source is fully consumed; an LLM polling tail_dialogs to know when
+        // a replay is done relies on it.
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let server = empty_server().with_source_exhausted(Arc::clone(&flag));
+
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams::default()))
+            .await
+            .expect("tail_dialogs should not error");
+        let json: serde_json::Value =
+            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+        assert_eq!(
+            json["source_exhausted"], false,
+            "flag unset ⇒ source not exhausted"
+        );
+
+        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams::default()))
+            .await
+            .expect("tail_dialogs should not error");
+        let json: serde_json::Value =
+            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+        assert_eq!(
+            json["source_exhausted"], true,
+            "flag set ⇒ source_exhausted must be reported"
+        );
+    }
+
+    #[tokio::test]
+    async fn tail_dialogs_without_flag_reports_not_exhausted() {
+        // No capture owner attached (e.g. unit contexts): stay false rather
+        // than lying about EOF.
+        let server = empty_server();
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams::default()))
+            .await
+            .expect("tail_dialogs should not error");
+        let json: serde_json::Value =
+            serde_json::from_str(&text_of(&result)).expect("valid JSON response");
+        assert_eq!(json["source_exhausted"], false);
     }
 
     #[tokio::test]

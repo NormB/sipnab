@@ -388,6 +388,42 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     Ok((input, Expr::Compare(field, op, value)))
 }
 
+/// Every field name the DSL accepts, for diagnostics. Kept in sync with
+/// `parse_field` by the `field_names_const_matches_parser` test.
+pub const FIELD_NAMES: &[&str] = &[
+    "from.user",
+    "to.user",
+    "method",
+    "ua",
+    "call_id",
+    "payload",
+    "src.ip",
+    "dst.ip",
+    "src.port",
+    "dst.port",
+    "state",
+    "duration",
+    "msg_count",
+    "pdd",
+    "setup_time",
+    "retransmits",
+    "rtp.mos",
+    "rtp.jitter",
+    "rtp.loss",
+    "rtp.packets",
+    "rtp.orphaned",
+    "rtp.codec",
+    "rtp.ssrc",
+    "one_way",
+    "nat_mismatch",
+    "no_media",
+    "codec_asymmetry",
+    "ptime_asymmetry",
+    "payload_asymmetry",
+    "duration_asymmetry",
+    "late_media",
+];
+
 /// Parse a dotted field identifier.
 fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     let (rest, ident) = recognize((
@@ -492,6 +528,7 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
 
     // Quoting hint: bare word right after a comparison operator.
     let before = expr[..pos].trim_end();
+    let mut quoting_hinted = false;
     if let Some(op) = ["=~", "==", "!=", "<=", ">=", "<", ">"]
         .iter()
         .find(|op| before.ends_with(**op))
@@ -501,11 +538,68 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         out.push_str(&format!(
             "\nhint: string values must be quoted: {op} '{offending}'"
         ));
+        quoting_hinted = true;
+    }
+
+    // Unknown-field hint: an identifier-looking token followed by a
+    // comparison operator sits in field position — name it, suggest the
+    // closest real field, and list the valid set.
+    let offending_raw = expr[pos..].split_whitespace().next().unwrap_or("");
+    let rest_after = expr[pos + offending_raw.len()..].trim_start();
+    let looks_like_field = !offending_raw.is_empty()
+        && offending_raw
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic())
+        && offending_raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
+    let in_field_position = ["=~", "==", "!=", "<=", ">=", "<", ">"]
+        .iter()
+        .any(|op| rest_after.starts_with(op));
+    if !quoting_hinted
+        && looks_like_field
+        && in_field_position
+        && !FIELD_NAMES.contains(&offending_raw)
+    {
+        out.push_str(&format!("\nhint: unknown field '{offending_raw}'"));
+        if let Some(best) = closest_field(offending_raw) {
+            out.push_str(&format!(" \u{2014} did you mean '{best}'?"));
+        }
+        out.push_str(&format!("\nvalid fields: {}", FIELD_NAMES.join(", ")));
     }
 
     out.push_str("\nvalid operators: ==, !=, <, <=, >, >=, =~ (regex)");
     out.push_str("\nsee docs/filter-dsl.md for fields, values, and diagnostic aliases");
     out
+}
+
+/// The valid field closest to `name` (edit distance ≤ 2), if any.
+fn closest_field(name: &str) -> Option<&'static str> {
+    FIELD_NAMES
+        .iter()
+        .map(|f| (edit_distance(name, f), *f))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, f)| f)
+}
+
+/// Plain Levenshtein distance — inputs are short field names, so the O(n·m)
+/// two-row implementation is plenty.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for (i, ca) in a.iter().enumerate() {
+        cur[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            cur[j + 1] = (prev[j + 1] + 1).min(cur[j] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
 }
 
 /// Parse a comparison operator.
@@ -1686,5 +1780,56 @@ mod tests {
         // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
         assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+    }
+}
+
+#[cfg(test)]
+mod unknown_field_hint_tests {
+    use super::*;
+
+    /// An unknown field used to render as a generic "unexpected input" —
+    /// no field named, no valid list, no suggestion.
+    #[test]
+    fn unknown_field_error_names_field_and_suggests_closest() {
+        let err = FilterExpr::parse("rtp.mso > 3").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field 'rtp.mso'"),
+            "must name the field: {msg}"
+        );
+        assert!(
+            msg.contains("did you mean 'rtp.mos'"),
+            "must suggest the closest field: {msg}"
+        );
+        assert!(msg.contains("valid fields:"), "must list fields: {msg}");
+    }
+
+    /// A field with no near match still gets the valid-fields list.
+    #[test]
+    fn unknown_field_without_close_match_lists_fields() {
+        let err = FilterExpr::parse("zzzzqqq == 'x'").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("unknown field 'zzzzqqq'"), "{msg}");
+        assert!(msg.contains("valid fields:"), "{msg}");
+    }
+
+    /// FIELD_NAMES must stay in sync with the parser's accepted set.
+    #[test]
+    fn field_names_const_matches_parser() {
+        for name in FIELD_NAMES {
+            assert!(
+                parse_field(name).is_ok(),
+                "FIELD_NAMES lists '{name}' but parse_field rejects it"
+            );
+        }
+    }
+
+    /// The quoting hint must still win for the classic unquoted-value case.
+    #[test]
+    fn quoting_hint_not_replaced_by_field_hint() {
+        let err = FilterExpr::parse("method == INVITE").expect_err("must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("must be quoted"), "{msg}");
+        assert!(!msg.contains("unknown field"), "{msg}");
     }
 }

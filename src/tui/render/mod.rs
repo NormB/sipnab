@@ -46,6 +46,22 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
     let mut fb = RenderFeedback::default();
     let area = frame.area();
 
+    // Below this the fixed chrome (3 status lines + f-key bar) leaves no
+    // usable main area — show an explicit notice instead of a garbled screen.
+    const MIN_WIDTH: u16 = 40;
+    const MIN_HEIGHT: u16 = 6;
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        frame.render_widget(
+            ratatui::widgets::Paragraph::new(format!(
+                "Terminal too small ({}x{}) — sipnab needs at least {MIN_WIDTH}x{MIN_HEIGHT}",
+                area.width, area.height
+            ))
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+            area,
+        );
+        return fb;
+    }
+
     // Layout: 3 status lines at top (sngrep-style), main content, F-key bar at bottom
     let [
         status1_area,
@@ -85,6 +101,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                         theme: &app.theme,
                         resolver: app.resolver.as_ref(),
                         name_mode: app.name_mode,
+                        offline: app.capture_mode.starts_with("Offline"),
                     },
                 );
             }
@@ -755,6 +772,42 @@ pub(crate) mod test_support {
             make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2)),
             make_bye("call-1@test", t0 + TimeDelta::seconds(62)),
         ])
+    }
+
+    /// Below the minimum size the layout collapses to nothing usable; the
+    /// user must get an explicit notice instead of a blank/garbled screen.
+    #[test]
+    fn tiny_terminal_shows_min_size_notice() {
+        let mut app = App::new_test();
+        let text = render_to_string(&mut app, 30, 4);
+        assert!(
+            text.contains("too small"),
+            "expected a terminal-too-small notice, got: {text}"
+        );
+    }
+
+    /// The empty-state hint must match the capture source: "may not
+    /// contain SIP traffic" only makes sense for a pcap file, not for a
+    /// live capture waiting for its first packet.
+    #[test]
+    fn empty_state_hint_matches_capture_source() {
+        let mut app = App::new_test(); // capture mode defaults to Online
+        let text = render_to_string(&mut app, 80, 20);
+        assert!(
+            text.contains("Waiting for SIP traffic"),
+            "live empty state must say it is waiting: {text}"
+        );
+        assert!(
+            !text.contains("pcap file"),
+            "live empty state must not talk about pcap files: {text}"
+        );
+
+        app.set_capture_mode("Offline (foo.pcap)".to_string());
+        let text = render_to_string(&mut app, 80, 20);
+        assert!(
+            text.contains("may not contain SIP traffic"),
+            "offline empty state keeps the pcap hint: {text}"
+        );
     }
 
     /// Render one full tick of `app` (cache sync, render, feedback

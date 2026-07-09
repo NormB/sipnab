@@ -59,7 +59,19 @@ pub(super) fn apply_key(field: &mut KeyCode, value: &Option<String>) {
 
 impl Theme {
     /// Build a resolved theme from config, falling back to defaults.
+    /// Honors NO_COLOR (<https://no-color.org>): when set non-empty, the
+    /// theme collapses to [`Self::monochrome`] and config colors are
+    /// ignored — the user asked for no color, full stop.
     pub fn from_config(config: &ThemeConfig) -> Self {
+        Self::from_config_with_no_color(config, no_color_requested())
+    }
+
+    /// [`Self::from_config`] with the NO_COLOR decision passed in, so tests
+    /// don't depend on process-global environment state.
+    pub fn from_config_with_no_color(config: &ThemeConfig, no_color: bool) -> Self {
+        if no_color {
+            return Self::monochrome();
+        }
         let mut t = Self::default();
         apply_color(&mut t.background, &config.background);
         apply_color(&mut t.foreground, &config.foreground);
@@ -75,6 +87,30 @@ impl Theme {
         apply_color(&mut t.border, &config.border);
         t
     }
+
+    /// NO_COLOR theme: every color collapses to the terminal default.
+    /// `selected` keeps a gray band so the selection highlight stays
+    /// visible without emitting real colors.
+    pub fn monochrome() -> Self {
+        Self {
+            background: Color::Reset,
+            foreground: Color::Reset,
+            header: Color::Reset,
+            selected: Color::Gray,
+            accent: Color::Reset,
+            good: Color::Reset,
+            warning: Color::Reset,
+            bad: Color::Reset,
+            muted: Color::Reset,
+            border: Color::Reset,
+            status_bg: Color::Reset,
+        }
+    }
+}
+
+/// NO_COLOR is honored when set to a non-empty value (<https://no-color.org>).
+fn no_color_requested() -> bool {
+    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
 }
 
 /// Resolved keymap — all fields are concrete `KeyCode` values.
@@ -128,6 +164,140 @@ impl Keymap {
         apply_key(&mut km.column_selector, &config.column_selector);
         km
     }
+
+    /// `(name, key)` pairs for every rebindable action.
+    fn fields(&self) -> [(&'static str, KeyCode); 11] {
+        [
+            ("quit", self.quit),
+            ("help", self.help),
+            ("save", self.save),
+            ("search", self.search),
+            ("filter", self.filter),
+            ("settings", self.settings),
+            ("pause", self.pause),
+            ("autoscroll", self.autoscroll),
+            ("extended_flow", self.extended_flow),
+            ("clear_calls", self.clear_calls),
+            ("column_selector", self.column_selector),
+        ]
+    }
+
+    /// Set the field named `name` to `code` (probe helper for collision
+    /// detection; names come from [`Self::fields`]).
+    fn set_field(&mut self, name: &str, code: KeyCode) {
+        match name {
+            "quit" => self.quit = code,
+            "help" => self.help = code,
+            "save" => self.save = code,
+            "search" => self.search = code,
+            "filter" => self.filter = code,
+            "settings" => self.settings = code,
+            "pause" => self.pause = code,
+            "autoscroll" => self.autoscroll = code,
+            "extended_flow" => self.extended_flow = code,
+            "clear_calls" => self.clear_calls = code,
+            "column_selector" => self.column_selector = code,
+            _ => unreachable!("unknown keymap field {name}"),
+        }
+    }
+
+    /// Detect user rebinds that can never fire: two actions bound to the
+    /// same key, and rebinds shadowed by a view's hardcoded literal key
+    /// (an earlier match arm wins, so the rebind is silently dead — the
+    /// exact footgun `call_list_action_literal_precedes_later_keymap_arm`
+    /// pins). Probes the real per-view action mappers, so a new literal or
+    /// mapper automatically participates. Returns human-readable warnings
+    /// for startup; empty when the keymap is sound.
+    pub fn collisions(&self) -> Vec<String> {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+
+        type Probe = fn(&Keymap, KeyEvent) -> Option<String>;
+        fn p_call_list(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::call_list_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_call_flow(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::call_flow_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_raw_message(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::raw_message_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_message_diff(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::message_diff_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_combined_detail(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::combined_detail_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_stream_list(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::stream_list_action(km, k).map(|a| format!("{a:?}"))
+        }
+        fn p_stream_detail(km: &Keymap, k: KeyEvent) -> Option<String> {
+            crate::tui::controllers::stream_detail_action(km, k).map(|a| format!("{a:?}"))
+        }
+        let mappers: [(&'static str, Probe); 7] = [
+            ("call list", p_call_list),
+            ("call flow", p_call_flow),
+            ("raw message", p_raw_message),
+            ("message diff", p_message_diff),
+            ("combined detail", p_combined_detail),
+            ("stream list", p_stream_list),
+            ("stream detail", p_stream_detail),
+        ];
+
+        let mut out = Vec::new();
+        let fields = self.fields();
+
+        // Two actions on the same key: only the first-checked arm can win.
+        for i in 0..fields.len() {
+            for j in (i + 1)..fields.len() {
+                if fields[i].1 == fields[j].1 {
+                    out.push(format!(
+                        "keybinding '{}' and '{}' are both {} — only one can fire",
+                        fields[i].0,
+                        fields[j].0,
+                        key_label(fields[i].1)
+                    ));
+                }
+            }
+        }
+
+        // A private-use char no view maps as a literal: binding a field to it
+        // and probing reveals which mappers consult that field at all.
+        const PROBE_KEY: KeyCode = KeyCode::Char('\u{e000}');
+        for (name, code) in fields {
+            for (view, mapper) in mappers {
+                let mut probe_km = self.clone();
+                probe_km.set_field(name, PROBE_KEY);
+                if mapper(&probe_km, KeyEvent::new(PROBE_KEY, KeyModifiers::NONE)).is_none() {
+                    continue; // this view does not consult this action
+                }
+                let mut unbound_km = self.clone();
+                unbound_km.set_field(name, KeyCode::Null);
+                let key = KeyEvent::new(code, KeyModifiers::NONE);
+                let bound = mapper(self, key);
+                let unbound = mapper(&unbound_km, key);
+                // Same non-None action with the binding removed ⇒ a literal
+                // arm matched first and the rebind can never fire.
+                if unbound.is_some() && bound == unbound {
+                    out.push(format!(
+                        "keybinding '{name}' = {} is shadowed by a built-in key in the \
+                         {view} view and will never fire there",
+                        key_label(code)
+                    ));
+                    break;
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Human-readable label for a key in collision warnings.
+fn key_label(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char(c) => format!("'{c}'"),
+        KeyCode::F(n) => format!("F{n}"),
+        other => format!("{other:?}"),
+    }
 }
 
 // ── Adaptive refresh constants ──────────────────────────────────────
@@ -138,3 +308,90 @@ pub(super) const ACTIVE_POLL_MS: u64 = 100;
 pub(super) const IDLE_POLL_MS: u64 = 500;
 /// Duration after the last data update before switching to idle polling.
 pub(super) const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
+
+#[cfg(test)]
+mod keymap_collision_tests {
+    use super::*;
+
+    /// A rebind onto a hardcoded view literal silently never fires (the
+    /// literal match arm wins). from_config callers surface these warnings
+    /// at startup instead of leaving the user with a dead binding.
+    #[test]
+    fn rebind_shadowed_by_view_literal_is_reported() {
+        // 't' is the call list's hardcoded CycleTimestampMode key.
+        let km = Keymap {
+            save: KeyCode::Char('t'),
+            ..Default::default()
+        };
+        let collisions = km.collisions();
+        assert!(
+            collisions
+                .iter()
+                .any(|c| c.contains("save") && c.contains('t')),
+            "expected a shadowing warning for save='t', got: {collisions:?}"
+        );
+    }
+
+    #[test]
+    fn default_keymap_has_no_collisions() {
+        let collisions = Keymap::default().collisions();
+        assert!(
+            collisions.is_empty(),
+            "defaults must be collision-free: {collisions:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_bindings_between_actions_are_reported() {
+        let km = Keymap {
+            quit: KeyCode::Char('/'), // duplicates the default search key
+            ..Default::default()
+        };
+        let collisions = km.collisions();
+        assert!(
+            collisions
+                .iter()
+                .any(|c| c.contains("quit") && c.contains("search")),
+            "expected a duplicate-binding warning, got: {collisions:?}"
+        );
+    }
+
+    /// A rebind onto a free key must NOT be reported.
+    #[test]
+    fn clean_rebind_is_not_reported() {
+        let km = Keymap {
+            save: KeyCode::Char('w'),
+            ..Default::default()
+        };
+        let collisions = km.collisions();
+        assert!(
+            collisions.is_empty(),
+            "save='w' is a clean rebind: {collisions:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod no_color_tests {
+    use super::*;
+
+    /// NO_COLOR (<https://no-color.org>) must collapse the theme — including
+    /// the hardcoded RGB status-bar background, which ignored both the
+    /// terminal palette and the user's no-color request.
+    #[test]
+    fn no_color_collapses_theme_to_monochrome() {
+        let config = crate::config::ThemeConfig {
+            good: Some("green".to_string()),
+            ..Default::default()
+        };
+        let t = Theme::from_config_with_no_color(&config, true);
+        assert_eq!(t.good, Color::Reset, "config colors ignored under NO_COLOR");
+        assert_eq!(t.bad, Color::Reset);
+        assert_eq!(t.header, Color::Reset);
+        assert_eq!(t.status_bg, Color::Reset, "RGB status bg must collapse");
+
+        let t = Theme::from_config_with_no_color(&config, false);
+        assert_eq!(t.good, Color::Green, "without NO_COLOR config still wins");
+        assert_eq!(t.status_bg, Color::Rgb(48, 48, 64));
+    }
+}

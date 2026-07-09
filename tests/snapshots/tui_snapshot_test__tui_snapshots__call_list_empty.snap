@@ -1,6 +1,5 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 284
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
@@ -10,7 +9,7 @@ expression: output
 
   No SIP dialogs found.
 
-  If reading a pcap file, it may not contain SIP traffic.
+  Waiting for SIP traffic on the capture source…
   Press 'q' to quit, F1 for help.
 
 

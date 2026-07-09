@@ -37,6 +37,10 @@ pub struct ServerHandles {
     /// flips rather than serving nobody forever. `None` when MCP stdio is
     /// not running.
     pub mcp_stdio_done: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// Shared flag the MCP `tail_dialogs` tool reports as `source_exhausted`.
+    /// The capture owner stores `true` once the packet source drains (pcap
+    /// EOF). `None` when MCP is not running.
+    pub source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 /// A server prepared on the caller's thread (address parsing and auth
@@ -45,7 +49,9 @@ pub struct ServerHandles {
 enum Prepared {
     #[cfg(feature = "api")]
     Api {
-        bind: std::net::SocketAddr,
+        /// Pre-bound on the caller's thread so a busy port (or any other
+        /// bind failure) is fatal before the TUI hides stderr.
+        listener: std::net::TcpListener,
         state: crate::output::api::ApiState,
         config: crate::output::api::ApiServerConfig,
     },
@@ -71,11 +77,11 @@ impl Prepared {
         match self {
             #[cfg(feature = "api")]
             Prepared::Api {
-                bind,
+                listener,
                 state,
                 config,
             } => {
-                if let Err(e) = crate::output::api::run_server(bind, state, config).await {
+                if let Err(e) = crate::output::api::serve_on(listener, state, config).await {
                     tracing::error!("API server error: {e}");
                 }
             }
@@ -107,9 +113,12 @@ impl Prepared {
 /// Start every server that is both selected and configured, on one shared
 /// runtime thread. Returns `Ok(None)` when nothing is enabled (the common
 /// plain-capture path), `Ok(Some(handle))` for the detached servers thread,
-/// and `Err` for configuration errors the caller should treat as fatal
-/// (invalid `--api` bind address — pre-WS2 this was an `exit(2)` buried in
-/// the bootstrap helper).
+/// and `Err` for configuration errors the caller should treat as fatal:
+/// an invalid `--api`/`--mcp-bind` address, an unknown or uncompiled
+/// `--mcp-transport`, and any API listener failure (port in use,
+/// unauthenticated non-loopback bind, unsupported TLS flags) — the API
+/// listener is bound HERE, synchronously, so these surface before the TUI
+/// takes the terminal instead of dying silently on the servers thread.
 ///
 /// `alerts` feeds the MCP `security_findings` tool; a caller without a
 /// detection pipeline passes `None` and MCP runs without findings history.
@@ -127,6 +136,9 @@ pub fn start_servers(
     #[cfg(any(feature = "api", feature = "mcp"))]
     #[allow(unused_mut)]
     let mut mcp_stdio_done: Option<Arc<std::sync::atomic::AtomicBool>> = None;
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    #[allow(unused_mut)]
+    let mut source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>> = None;
     let _ = (dialog_store, stream_store, alerts, &selection, cli);
 
     #[cfg(feature = "api")]
@@ -150,8 +162,12 @@ pub fn start_servers(
             tls_cert: cli.api_tls_cert.clone(),
             tls_key: cli.api_tls_key.clone(),
         };
+        // Vet the config and bind NOW, on the caller's thread: a bind failure
+        // (port already in use) logged from the detached servers thread is
+        // invisible once the TUI owns the terminal.
+        let listener = api::prepare_listener(bind, &state.verifier, &config)?;
         prepared.push(Prepared::Api {
-            bind,
+            listener,
             state,
             config,
         });
@@ -159,8 +175,11 @@ pub fn start_servers(
 
     #[cfg(feature = "mcp")]
     if selection.mcp && cli.mcp {
+        let exhausted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        source_exhausted = Some(Arc::clone(&exhausted));
         let new_server = || {
-            let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store));
+            let s = crate::mcp::SipnabMcp::new(Arc::clone(dialog_store), Arc::clone(stream_store))
+                .with_source_exhausted(Arc::clone(&exhausted));
             match alerts {
                 Some(a) => s.with_alert_engine(Arc::clone(a)),
                 None => s,
@@ -178,24 +197,27 @@ pub fn start_servers(
             #[cfg(feature = "mcp-http")]
             "http" => {
                 let bind_str = cli.mcp_bind.as_deref().unwrap_or("127.0.0.1:8731");
-                match crate::output::api::parse_bind_addr(bind_str) {
-                    Ok(bind) => prepared.push(Prepared::McpHttp {
-                        server: Box::new(new_server()),
-                        bind,
-                        auth: resolve_mcp_verifier_config(cli),
-                        extra_allowed_hosts: cli.mcp_allowed_host.clone(),
-                    }),
-                    // Pre-WS2 behavior: a bad --mcp-bind logs and skips the
-                    // server; capture continues.
-                    Err(e) => tracing::error!("--mcp-bind: {e}"),
-                }
+                let bind = crate::output::api::parse_bind_addr(bind_str)
+                    .map_err(|e| anyhow::anyhow!("Invalid --mcp-bind address: {e}"))?;
+                prepared.push(Prepared::McpHttp {
+                    server: Box::new(new_server()),
+                    bind,
+                    auth: resolve_mcp_verifier_config(cli),
+                    extra_allowed_hosts: cli.mcp_allowed_host.clone(),
+                });
             }
             #[cfg(not(feature = "mcp-http"))]
-            "http" => tracing::error!(
-                "--mcp-transport http requires the mcp-http feature; rebuild with \
-                 --features mcp-http (or full)."
-            ),
-            other => tracing::error!("unknown --mcp-transport '{other}', expected stdio or http"),
+            "http" => {
+                return Err(anyhow::anyhow!(
+                    "--mcp-transport http requires the mcp-http feature; rebuild with \
+                     --features mcp-http (or full)."
+                ));
+            }
+            other => {
+                return Err(anyhow::anyhow!(
+                    "unknown --mcp-transport '{other}', expected stdio or http"
+                ));
+            }
         }
     }
 
@@ -231,6 +253,7 @@ pub fn start_servers(
         Ok(Some(ServerHandles {
             thread: handle,
             mcp_stdio_done,
+            source_exhausted,
         }))
     }
     #[cfg(not(any(feature = "api", feature = "mcp")))]

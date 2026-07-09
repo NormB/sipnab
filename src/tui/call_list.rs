@@ -323,6 +323,8 @@ pub struct CallListDisplay<'a> {
     pub theme: &'a super::Theme,
     pub resolver: &'a crate::names::NameResolver,
     pub name_mode: crate::names::NameMode,
+    /// Reading a pcap file (vs live capture) — selects the empty-state hint.
+    pub offline: bool,
 }
 
 /// Render the call list table into the given area.
@@ -495,11 +497,13 @@ pub fn render_call_list(
                 width: table_area.width,
                 height: table_area.height - 1,
             };
+            let hint = if display.offline {
+                "\n  No SIP dialogs found.\n\n  The pcap file may not contain SIP traffic.\n  Press 'q' to quit, F1 for help."
+            } else {
+                "\n  No SIP dialogs found.\n\n  Waiting for SIP traffic on the capture source\u{2026}\n  Press 'q' to quit, F1 for help."
+            };
             frame.render_widget(
-                Paragraph::new(
-                    "\n  No SIP dialogs found.\n\n  If reading a pcap file, it may not contain SIP traffic.\n  Press 'q' to quit, F1 for help.",
-                )
-                .style(Style::default().fg(theme.muted)),
+                Paragraph::new(hint).style(Style::default().fg(theme.muted)),
                 msg_area,
             );
         }

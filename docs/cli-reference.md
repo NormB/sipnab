@@ -91,7 +91,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--json` | -- | off | Output as NDJSON (one JSON object per line, schema in [output-formats.md](output-formats.md)). Requires `-N` |
-| `--json-pretty` | -- | off | Output as pretty-printed JSON. Requires `-N` |
+| `--json-pretty` | -- | off | Output each message as pretty-printed multi-line JSON (use `--json` for line-oriented NDJSON). Requires `-N` |
 | `--report` | -- | off | Generate summary report after capture completes. Requires `-N` |
 | `--call-report` | `<CALL-ID>` | -- | Generate a detailed report for a specific Call-ID. Implies non-interactive |
 | `--markdown` | -- | off | Format report output as Markdown |
@@ -157,31 +157,31 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `0.0.0.0:9090`). Feature: `api` |
-| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` |
+| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` Feature: `api` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
-| `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` |
-| `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint |
-| `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint |
-| `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections |
+| `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` Feature: `api` |
+| `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint Feature: `api` |
+| `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint Feature: `api` |
+| `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
 | `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens (repeatable; the first mints, all are accepted on verify → key rotation). Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed). Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) and rejects stdout-writing flags (`--json`, `--report`, …). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
-| `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. |
-| `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. |
-| `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. |
-| `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). |
-| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens (repeatable; first mints, all verify). Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](./auth.md). |
-| `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed). |
-| `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). |
-| `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. |
-| `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (pair with a network-level source-IP allowlist). |
+| `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. Feature: `mcp` |
+| `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. Feature: `mcp-http` |
+| `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
+| `--mcp-token-file` | `<FILE>` | -- | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
+| `--mcp-signing-key` | `<KEY>` | -- | HMAC signing key for MCP bearer tokens (repeatable; first mints, all verify). Also reads `$SIPNAB_MCP_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `mcp-http` |
+| `--mcp-signing-key-file` | `<FILE>` | -- | Read an MCP signing key from a file (contents trimmed). Feature: `mcp-http` |
+| `--mcp-revoked-file` | `<FILE>` | -- | MCP revocation denylist (one token `id` per line; reloaded on mtime change). Feature: `mcp-http` |
+| `--mcp-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting MCP tokens with `--mint-token`. Feature: `mcp-http` |
+| `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (pair with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
-| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) |
-| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second |
+| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) Feature: `hep` |
+| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |
 | `--mint-token` | -- | off | Mint a signed bearer token from the first configured signing key, print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
 | `--token-id` | `<ID>` | -- | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
@@ -221,6 +221,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `-f`, `--config` | `<FILE>` | -- | Path to configuration file (must exist) |
 | `-F`, `--no-config` | -- | off | Skip loading any configuration file |
 | `-D`, `--dump-config` | -- | off | Dump effective configuration and exit |
+| `--completions` | `<SHELL>` | -- | Print a shell completion script (bash, zsh, fish, elvish, powershell) to stdout and exit |
 
 ## Validation Rules
 
@@ -264,3 +265,13 @@ sipnab -d eth0 -H 10.0.0.50:9060
 # Live TLS decryption
 sipnab -d eth0 --keylog /tmp/sslkeys.log --keylog-watch
 ```
+
+## Exit Codes
+
+Scripts can rely on these:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Runtime failure — capture error, I/O error, or a requested report could not be produced (e.g. `--call-report` Call-ID not found) |
+| `2` | Invalid usage — bad flag value or combination, or a flag whose feature is not compiled into this binary |
