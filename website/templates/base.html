@@ -4,6 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#0a0e14">
+  <!-- Browser-level security policy. GitHub Pages cannot set response
+       headers, so this meta CSP is the enforceable layer there; the full
+       header set (incl. frame-ancestors/HSTS, which meta cannot carry)
+       lives in static/_headers for hosts/proxies that honor it.
+       'wasm-unsafe-eval' + connect-src 'self' keep the /analyze/ WASM
+       tool working; 'unsafe-inline' matches the current inline handlers. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.bunny.net; font-src https://fonts.bunny.net; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
 
