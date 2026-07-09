@@ -998,6 +998,11 @@
    F-key Bar -- fixed at bottom, matches native TUI
    ============================================================================= */
 
+/* Keyboard hints are noise on touch-only devices — hide the bar there. */
+@media (hover: none) and (pointer: coarse) {
+  .fkey-bar { display: none; }
+}
+
 .fkey-bar {
   background: var(--status-bg);
   border-top: 1px solid var(--border);
