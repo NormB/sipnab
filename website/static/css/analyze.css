@@ -204,6 +204,127 @@
   flex-shrink: 0;
 }
 
+/* One-click sample loader for first-time visitors. */
+.dropzone-sample {
+  display: block;
+  margin: 1.2rem auto 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.dropzone-sample:hover {
+  border-color: var(--accent);
+  background: rgba(255, 204, 102, 0.08);
+}
+
+/* Inline error card — replaces native alert() for load failures. */
+.dropzone-error {
+  margin: 1.2rem auto 0;
+  max-width: 34rem;
+  color: var(--bad);
+  background: rgba(255, 102, 102, 0.07);
+  border: 1px solid rgba(255, 102, 102, 0.35);
+  border-radius: 10px;
+  padding: 0.8rem 1.1rem;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* Transient toast for errors after the workspace is up. */
+.analyze-toast {
+  position: fixed;
+  bottom: 3.2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 300;
+  max-width: 36rem;
+  color: var(--bad);
+  background: var(--surface);
+  border: 1px solid rgba(255, 102, 102, 0.45);
+  border-radius: 10px;
+  padding: 0.7rem 1.1rem;
+  font-size: 0.85rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+/* Demo-mode banner: fabricated data must be unmistakable. */
+.demo-banner {
+  background: rgba(255, 167, 89, 0.12);
+  border-bottom: 1px solid rgba(255, 167, 89, 0.4);
+  color: #ffa759;
+  font-size: 0.82rem;
+  padding: 0.45rem 1rem;
+}
+
+/* Topbar health pills — summary before detail. */
+.topbar-health { display: inline-flex; gap: 0.4rem; }
+.health-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 0.08rem 0.55rem;
+  white-space: nowrap;
+}
+.health-good { color: var(--good); background: rgba(186, 230, 126, 0.1); border: 1px solid rgba(186, 230, 126, 0.3); }
+.health-warn { color: #ffa759; background: rgba(255, 167, 89, 0.1); border: 1px solid rgba(255, 167, 89, 0.3); }
+.health-bad  { color: var(--bad); background: rgba(255, 102, 102, 0.1); border: 1px solid rgba(255, 102, 102, 0.35); }
+
+/* Empty state for the dialog table (parallel to .stream-empty). */
+.dialog-empty {
+  padding: 1.6rem 1.2rem;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+  line-height: 1.55;
+  text-align: center;
+}
+.dialog-empty code { color: var(--text); }
+
+/* Collapsible ladder legend for first-time readers. */
+.flow-legend {
+  display: inline-block;
+  margin-left: 0.9rem;
+  font-weight: 400;
+}
+.flow-legend summary {
+  cursor: pointer;
+  font-size: 0.72rem;
+  color: var(--text-dim);
+  text-transform: none;
+  letter-spacing: 0;
+  display: inline;
+}
+.flow-legend summary:hover { color: var(--accent); }
+.flow-legend-body {
+  position: absolute;
+  z-index: 50;
+  margin-top: 0.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+  padding: 0.75rem 0.95rem;
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  max-width: 30rem;
+  white-space: normal;
+}
+.flow-legend-body i { font-style: normal; font-weight: 600; }
+.flow-legend-body .lg-arrow { color: var(--accent); }
+.flow-legend-body .lg-good { color: var(--good); }
+.flow-legend-body .lg-info { color: var(--text-dim); }
+.flow-legend-body .lg-bad { color: var(--bad); }
+.flow-legend-body .lg-dim { opacity: 0.55; }
+
 /* =============================================================================
    Workspace Layout
    ============================================================================= */
@@ -793,12 +914,8 @@
   pointer-events: none;
 }
 
-.flow-arrow.right .flow-label {
-  left: 50%;
-  transform: translateX(-50%);
-}
-
-.flow-arrow.left .flow-label {
+/* Both directions center the label the same way. */
+.flow-arrow .flow-label {
   left: 50%;
   transform: translateX(-50%);
 }

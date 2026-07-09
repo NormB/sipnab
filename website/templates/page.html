@@ -7,12 +7,23 @@
 <div class="doc-layout">
   <article class="doc-content">
     <header class="doc-header">
-      <p class="doc-kicker">Documentation</p>
+      <p class="doc-kicker"><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a> <span aria-hidden="true">/</span> {{ page.title }}</p>
       <h1>{{ page.title }}</h1>
       {% if page.description %}
       <p class="doc-lead">{{ page.description }}</p>
       {% endif %}
     </header>
+
+    {% if page.toc | length > 0 %}
+    <details class="doc-toc-mobile">
+      <summary>On this page</summary>
+      <ul>
+        {% for h2 in page.toc %}
+        <li><a href="#{{ h2.id }}">{{ h2.title }}</a></li>
+        {% endfor %}
+      </ul>
+    </details>
+    {% endif %}
 
     <div class="doc-body">
       {{ page.content | safe }}
@@ -63,6 +74,29 @@
   </aside>
   {% endif %}
 </div>
+
+<script>
+// Copy buttons on every doc code block — the docs are mostly shell commands.
+(function () {
+  document.querySelectorAll(".doc-body pre").forEach(function (pre) {
+    var btn = document.createElement("button");
+    btn.className = "doc-copy-btn";
+    btn.type = "button";
+    btn.setAttribute("aria-label", "Copy code");
+    btn.textContent = "copy";
+    btn.addEventListener("click", function () {
+      var code = pre.querySelector("code");
+      var text = (code ? code.innerText : pre.innerText).replace(/\n$/, "");
+      navigator.clipboard.writeText(text).then(function () {
+        btn.textContent = "copied";
+        btn.classList.add("copied");
+        setTimeout(function () { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1600);
+      });
+    });
+    pre.appendChild(btn);
+  });
+})();
+</script>
 
 {% if page.toc | length > 0 %}
 <script>

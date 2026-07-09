@@ -14,11 +14,26 @@
       {% endif %}
     </header>
 
+    {% if section.extra.tasks %}
+    <nav class="doc-tasks" aria-label="Common tasks">
+      <h2 class="doc-tasks-title">What do you need to do?</h2>
+      <div class="doc-tasks-grid">
+        {% for task in section.extra.tasks %}
+        <a href="{{ task.href }}" class="doc-task-card">
+          <span class="doc-task-title">{{ task.title }}</span>
+          <code class="doc-task-cmd">{{ task.cmd }}</code>
+        </a>
+        {% endfor %}
+      </div>
+    </nav>
+    {% endif %}
+
     <div class="doc-body">
       {{ section.content | safe }}
     </div>
 
     {% if section.pages | length > 0 %}
+    <h2 class="doc-index-title">Reference</h2>
     <nav class="doc-index" aria-label="Documentation sections">
       {% for page in section.pages %}
       <a href="{{ page.permalink }}" class="doc-index-item">

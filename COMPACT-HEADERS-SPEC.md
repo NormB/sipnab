@@ -26,7 +26,11 @@ forms may be mixed freely within one message.
 RFC 3261 itself defines ten compact forms, but the authoritative list is the
 **IANA SIP Header Fields registry**, which as of 2026 registers **19**:
 
-| Compact | Header field | Defined by | sipnab today |
+> **Note (current state):** every form below is ✅ today — the table's last
+> column is the *pre-fix* determination from 2026-07-03, kept as the record
+> of what motivated the change. All 19 forms expand since v0.5.0.
+
+| Compact | Header field | Defined by | sipnab before this change |
 |---|---|---|---|
 | `c` | Content-Type | RFC 3261 | ✅ |
 | `e` | Content-Encoding | RFC 3261 | ✅ |
