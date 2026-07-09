@@ -266,7 +266,8 @@ fn every_documented_view_key_is_handled() {
     ];
     // Handled globally in handle_key_event, valid in every view.
     fn is_global(kc: KeyCode) -> bool {
-        matches!(kc, KeyCode::Char('v' | 'V' | 'n'))
+        // '?' re-dispatches as the help key from any view.
+        matches!(kc, KeyCode::Char('v' | 'V' | 'n' | '?'))
     }
 
     /// Map a help token to the KeyCode it advertises. `None` = not a plain
@@ -349,4 +350,73 @@ fn every_documented_view_key_is_handled() {
         "documented-but-unhandled keys:\n{}",
         failures.join("\n")
     );
+}
+
+/// Description-level drift the token-based checks above cannot catch: the
+/// help overlay once listed three From/To modes including an invented
+/// "both" while the real enum has four.
+#[test]
+fn help_documents_all_four_from_to_modes() {
+    let u_line = sipnab::tui::help::HELP_TEXT
+        .lines()
+        .find(|l| l.trim_start().starts_with("u "))
+        .expect("help must document the u key");
+    for mode in ["default", "host:port", "user", "user@host:port"] {
+        assert!(
+            u_line.contains(mode),
+            "u-line must name mode '{mode}': {u_line}"
+        );
+    }
+    assert!(
+        !u_line.contains("both"),
+        "stale invented 'both' mode: {u_line}"
+    );
+}
+
+/// The F2 save dialog cycles many formats (incl. Mermaid); the help line
+/// must not pretend it is PCAP/PCAP-NG/TXT only.
+#[test]
+fn help_f2_line_mentions_mermaid() {
+    let f2_line = sipnab::tui::help::HELP_TEXT
+        .lines()
+        .find(|l| l.trim_start().starts_with("F2 ") && l.contains("Save capture"))
+        .expect("help must document F2 save");
+    assert!(
+        f2_line.contains("Mermaid"),
+        "F2 line must mention the full format cycle: {f2_line}"
+    );
+}
+
+/// Statistics can be closed with q and s, not just Esc; the help section
+/// covering it must say so.
+#[test]
+fn help_documents_statistics_close_keys() {
+    let section = sipnab::tui::help::HELP_TEXT
+        .split("MESSAGE DIFF / COMBINED DETAIL / STATISTICS:")
+        .nth(1)
+        .expect("statistics section present")
+        .split("\n\n")
+        .next()
+        .unwrap()
+        .to_string();
+    assert!(
+        section.contains("q, s") || section.contains("q / s"),
+        "statistics close keys must be documented: {section}"
+    );
+}
+
+/// v/V and n work in EVERY view (global fallback keys) but were documented
+/// only under CALL LIST.
+#[test]
+fn help_marks_global_keys_as_global() {
+    for key in ["n ", "v "] {
+        let line = sipnab::tui::help::HELP_TEXT
+            .lines()
+            .find(|l| l.trim_start().starts_with(key))
+            .unwrap_or_else(|| panic!("help must document the {key}key"));
+        assert!(
+            line.contains("every view") || line.contains("global"),
+            "'{key}' is global and must say so: {line}"
+        );
+    }
 }

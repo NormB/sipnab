@@ -44,10 +44,35 @@ impl App {
         Self::new(ds, ss, Theme::default(), Keymap::default())
     }
 
-    /// Simulate a single keypress.
+    /// Simulate a single keypress, then settle any background work — the
+    /// real event loop ticks between key events, so tests keep synchronous
+    /// load/save semantics.
     pub fn handle_key(&mut self, code: KeyCode) {
         let key = KeyEvent::new(code, KeyModifiers::NONE);
         handle_key_event(self, key);
+        self.settle_background_work();
+    }
+
+    /// Settle everything the real event loop would process across ticks:
+    /// wait for an in-flight background pcap load and apply its outcome,
+    /// execute a deferred save, and drain detached-worker messages.
+    pub fn settle_background_work(&mut self) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while self.pcap_load.is_some() {
+            controllers::poll_pcap_load(self);
+            if self.pcap_load.is_none() {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                panic!("background pcap load did not settle within 30s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        self.run_pending_save();
+        self.run_pending_audio();
+        while !self.async_messages.lock().is_empty() {
+            self.drain_async_messages();
+        }
     }
 
     #[doc(hidden)]
@@ -95,10 +120,12 @@ impl App {
         controllers::handle_mouse_event(self, kind);
     }
 
-    /// Simulate a keypress with modifiers.
+    /// Simulate a keypress with modifiers (settles background work like
+    /// [`Self::handle_key`]).
     pub fn handle_key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let key = KeyEvent::new(code, modifiers);
         handle_key_event(self, key);
+        self.settle_background_work();
     }
 
     /// Return the current view.

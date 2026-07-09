@@ -63,6 +63,7 @@ flate2 = { version = "1", optional = true }
 tempfile = { version = "3", optional = true }
 etherparse = "0.20"
 clap = { version = "4", features = ["derive", "env", "string"], optional = true }
+clap_complete = { version = "4", optional = true }
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 log = "0.4"
@@ -179,7 +180,7 @@ harness = false
 [features]
 default = ["native", "tui", "audio"]
 # Native platform deps (not available in WASM)
-native = ["dep:pcap", "dep:clap", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:flate2", "dep:tempfile"]
+native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:flate2", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa"]
 hep = ["native"]

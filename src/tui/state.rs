@@ -343,11 +343,14 @@ pub(in crate::tui) const FILTER_TEXT_FIELD_COUNT: usize = 5;
 pub(in crate::tui) const FILTER_ITEM_COUNT: usize =
     FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len() + 3;
 
-/// Focus index of the "All" master checkbox (enable/disable every
-/// method at once), right after the per-method checkboxes.
-pub(in crate::tui) const ALL_METHODS_IDX: usize = FILTER_TEXT_FIELD_COUNT + FILTER_METHODS.len();
+/// Focus index of the "All" master checkbox (enable/disable every method
+/// at once), right after the text fields and ABOVE the method grid — it
+/// governs the methods, so it reads and tabs first.
+pub(in crate::tui) const ALL_METHODS_IDX: usize = FILTER_TEXT_FIELD_COUNT;
+/// Focus index of the FIRST per-method checkbox (REGISTER).
+pub(in crate::tui) const METHOD_CHECKBOX_BASE: usize = ALL_METHODS_IDX + 1;
 /// Index of the "Filter" button in focused_field.
-pub(in crate::tui) const FILTER_BUTTON_IDX: usize = ALL_METHODS_IDX + 1;
+pub(in crate::tui) const FILTER_BUTTON_IDX: usize = METHOD_CHECKBOX_BASE + FILTER_METHODS.len();
 /// Index of the "Cancel" button in focused_field.
 pub(in crate::tui) const CANCEL_BUTTON_IDX: usize = FILTER_BUTTON_IDX + 1;
 
@@ -384,6 +387,9 @@ pub(in crate::tui) struct NameDialogState {
     pub(in crate::tui) active: usize,
     /// Cursor position within the active target's name.
     pub(in crate::tui) cursor: usize,
+    /// Validation error shown inline; while set, Enter keeps the popup
+    /// open so the typed name can be corrected instead of being discarded.
+    pub(in crate::tui) error: Option<String>,
 }
 
 /// State for the F2 save dialog popup.
@@ -637,10 +643,14 @@ pub struct FilterDialogState {
     /// Method checkbox states, indexed by position in FILTER_METHODS.
     pub(in crate::tui) methods: [bool; 10],
     /// Currently focused UI element index.
-    /// 0-4 = text fields, 5-14 = checkboxes, 15 = Filter button, 16 = Cancel button.
+    /// 0-4 = text fields, 5 = "All" master checkbox, 6-15 = method
+    /// checkboxes, 16 = Filter button, 17 = Cancel button.
     pub(in crate::tui) focused_field: usize,
     /// Cursor position within the currently focused text field.
     pub(in crate::tui) cursor_pos: usize,
+    /// Parse error shown inline; while set, Enter keeps the dialog open so
+    /// the typed values can be corrected instead of being discarded.
+    pub(in crate::tui) error: Option<String>,
 }
 
 impl Default for FilterDialogState {
@@ -656,6 +666,7 @@ impl Default for FilterDialogState {
             methods: [true; 10],
             focused_field: 0,
             cursor_pos: 0,
+            error: None,
         }
     }
 }
@@ -718,7 +729,7 @@ impl FilterDialogState {
     /// element; the "All" master checkbox is not a method slot.
     pub(in crate::tui) fn checkbox_index(&self) -> Option<usize> {
         if self.is_checkbox_focused() && self.focused_field != ALL_METHODS_IDX {
-            Some(self.focused_field - FILTER_TEXT_FIELD_COUNT)
+            Some(self.focused_field - METHOD_CHECKBOX_BASE)
         } else {
             None
         }
@@ -760,21 +771,21 @@ impl FilterDialogState {
     /// every checkbox (the right column was previously unreachable this way).
     pub(in crate::tui) fn checkbox_down(&mut self) {
         if self.focused_field == ALL_METHODS_IDX {
-            // "All" row -> buttons row.
-            self.focused_field = FILTER_BUTTON_IDX;
+            // "All" row (above the grid) -> first method (REGISTER).
+            self.focused_field = METHOD_CHECKBOX_BASE;
             return;
         }
         if let Some(idx) = self.checkbox_index() {
             let next = idx + 2;
             if next < FILTER_METHODS.len() {
                 // Same column, one row down.
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + next;
+                self.focused_field = METHOD_CHECKBOX_BASE + next;
             } else if idx % 2 == 0 {
                 // Bottom of the LEFT column -> top of the RIGHT column.
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + 1;
+                self.focused_field = METHOD_CHECKBOX_BASE + 1;
             } else {
-                // Bottom of the RIGHT column -> the "All" row.
-                self.focused_field = ALL_METHODS_IDX;
+                // Bottom of the RIGHT column -> the buttons row.
+                self.focused_field = FILTER_BUTTON_IDX;
             }
         }
     }
@@ -782,21 +793,21 @@ impl FilterDialogState {
     /// Move checkbox focus up one row (reverse of [`Self::checkbox_down`]).
     pub(in crate::tui) fn checkbox_up(&mut self) {
         if self.focused_field == ALL_METHODS_IDX {
-            // "All" row -> bottom of the RIGHT column.
-            self.focused_field = FILTER_TEXT_FIELD_COUNT + (FILTER_METHODS.len() - 1);
+            // "All" row (above the grid) -> last text field.
+            self.focused_field = FILTER_TEXT_FIELD_COUNT - 1;
+            self.sync_cursor();
             return;
         }
         if let Some(idx) = self.checkbox_index() {
             if idx >= 2 {
                 // Same column, one row up.
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + (idx - 2);
+                self.focused_field = METHOD_CHECKBOX_BASE + (idx - 2);
             } else if idx == 1 {
                 // Top of the RIGHT column -> bottom of the LEFT column.
-                self.focused_field = FILTER_TEXT_FIELD_COUNT + (FILTER_METHODS.len() - 2);
+                self.focused_field = METHOD_CHECKBOX_BASE + (FILTER_METHODS.len() - 2);
             } else {
-                // Top of the LEFT column -> last text field.
-                self.focused_field = FILTER_TEXT_FIELD_COUNT - 1;
-                self.sync_cursor();
+                // Top of the LEFT column (REGISTER) -> the "All" row.
+                self.focused_field = ALL_METHODS_IDX;
             }
         }
     }
@@ -807,7 +818,7 @@ impl FilterDialogState {
             && idx % 2 == 0
             && idx + 1 < FILTER_METHODS.len()
         {
-            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx + 1;
+            self.focused_field = METHOD_CHECKBOX_BASE + idx + 1;
         }
     }
 
@@ -816,7 +827,7 @@ impl FilterDialogState {
         if let Some(idx) = self.checkbox_index()
             && idx % 2 == 1
         {
-            self.focused_field = FILTER_TEXT_FIELD_COUNT + idx - 1;
+            self.focused_field = METHOD_CHECKBOX_BASE + idx - 1;
         }
     }
 
@@ -1009,4 +1020,57 @@ pub(in crate::tui) struct DisplayedCache {
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
+}
+
+// ── Background work shared with the event loop ─────────────────────
+
+/// Progress shared between the UI thread and a background pcap-load worker.
+/// The worker increments `packets` while parsing, then deposits the
+/// [`PcapLoadOutcome`] and flips `done`; the event-loop tick polls it.
+pub struct PcapLoadProgress {
+    /// Basename shown in the "Loading …" status line.
+    pub filename: String,
+    /// Packets parsed so far (worker-incremented).
+    pub packets: std::sync::atomic::AtomicU64,
+    /// Set by the worker once parsing finished and `result` is present.
+    pub done: std::sync::atomic::AtomicBool,
+    /// The finished load's outcome, taken exactly once by the poller.
+    pub result: parking_lot::Mutex<Option<PcapLoadOutcome>>,
+}
+
+impl PcapLoadProgress {
+    /// Fresh progress for a load of `filename`.
+    pub fn new(filename: &str) -> Self {
+        Self {
+            filename: filename.to_string(),
+            packets: std::sync::atomic::AtomicU64::new(0),
+            done: std::sync::atomic::AtomicBool::new(false),
+            result: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+/// Everything a finished background pcap load hands back to the UI thread.
+/// Stores are already populated (the worker writes through the shared
+/// `Arc<RwLock>` stores exactly like live capture); this carries only what
+/// needs the `&mut App` the worker cannot have.
+pub struct PcapLoadOutcome {
+    /// Final status-line message.
+    pub message: String,
+    /// SIP message count (0 with streams present ⇒ jump to the stream list).
+    pub sip_count: u64,
+    /// Capture-mode label ("Offline (file)").
+    pub capture_mode: String,
+    /// Names from an embedded pcapng Name Resolution Block, applied to the
+    /// resolver on the UI thread.
+    pub file_names: Vec<(std::net::IpAddr, String)>,
+}
+
+/// A save accepted by the save dialog but deferred one event-loop tick, so
+/// the "Saving…" status paints before the (blocking) write runs.
+pub struct PendingSave {
+    /// Export format chosen in the dialog.
+    pub format: SaveFormat,
+    /// Destination path as typed.
+    pub path: String,
 }

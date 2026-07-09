@@ -33,21 +33,15 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
             app.active_popup = None;
         }
         KeyCode::Enter => {
-            let path = app.save.path.clone();
-            let msg = match app.save.format {
-                SaveFormat::Pcap => save_to_pcap_path(app, &path, false),
-                SaveFormat::PcapNg => save_to_pcap_path(app, &path, true),
-                SaveFormat::Txt => save_to_txt_path(app, &path),
-                SaveFormat::Json => save_to_json_path(app, &path),
-                SaveFormat::Ndjson => save_to_ndjson_path(app, &path),
-                SaveFormat::Csv => save_to_csv_path(app, &path),
-                SaveFormat::Html => save_to_mermaid_path(app, &path),
-                SaveFormat::Markdown => save_to_markdown_path(app, &path),
-                SaveFormat::Wav => save_to_wav_path(app, &path),
-                SaveFormat::SippXml => save_to_sipp_path(app, &path),
-                SaveFormat::RtpJson => save_to_rtp_json_path(app, &path),
-            };
-            app.status_error = Some(msg);
+            // Defer the write one event-loop tick (App::run_pending_save):
+            // large exports can block for a while, and running them on the
+            // keypress froze the UI with no feedback. This way the
+            // "Saving…" status paints first.
+            app.pending_save = Some(PendingSave {
+                format: app.save.format,
+                path: app.save.path.clone(),
+            });
+            app.status_error = Some(format!("Saving {}…", app.save.path));
             app.active_popup = None;
         }
         KeyCode::Tab | KeyCode::BackTab | KeyCode::Down | KeyCode::Up => {
@@ -116,5 +110,52 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
             app.save.cursor += c.len_utf8();
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// Enter must not perform the (possibly long) write on the keypress:
+    /// large exports froze the UI with no feedback. The write is deferred
+    /// one event-loop tick so the "Saving…" status paints first.
+    #[test]
+    fn enter_defers_the_write_and_paints_saving_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.txt");
+        let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+        app.save.format = SaveFormat::Txt;
+        app.save.path = path.to_string_lossy().into_owned();
+        app.active_popup = Some(Popup::SaveDialog);
+
+        handle_save_popup_key(&mut app, key(KeyCode::Enter));
+
+        assert!(app.active_popup.is_none(), "popup closes immediately");
+        assert!(!path.exists(), "the write must NOT run on the keypress");
+        assert!(
+            app.pending_save.is_some(),
+            "write deferred to the next tick"
+        );
+        assert!(
+            app.status_error.as_deref().unwrap_or("").contains("Saving"),
+            "got: {:?}",
+            app.status_error
+        );
+
+        app.run_pending_save();
+
+        assert!(path.exists(), "deferred write ran");
+        assert!(app.pending_save.is_none());
+        assert!(
+            app.status_error.as_deref().unwrap_or("").contains("Saved"),
+            "got: {:?}",
+            app.status_error
+        );
     }
 }

@@ -226,6 +226,20 @@ pub fn message_to_json(msg: &SipMessage) -> String {
     line
 }
 
+/// Pretty-printed variant of [`message_to_json`] for `--json-pretty`:
+/// multi-line, human-readable objects instead of NDJSON. Still a valid
+/// concatenated-JSON stream for tolerant parsers.
+pub fn message_to_json_pretty(msg: &SipMessage) -> String {
+    let compact = message_to_json(msg);
+    let mut pretty = serde_json::from_str::<serde_json::Value>(compact.trim_end())
+        .and_then(|v| serde_json::to_string_pretty(&v))
+        .unwrap_or(compact);
+    if !pretty.ends_with('\n') {
+        pretty.push('\n');
+    }
+    pretty
+}
+
 /// Serialize a dialog with associated streams and diagnosis as JSON.
 ///
 /// Produces a complete JSON object with timing, SDP timeline, diagnosis,

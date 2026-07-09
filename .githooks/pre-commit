@@ -127,6 +127,34 @@ else
     echo -e "${YELLOW}SKIP (no website)${NC}"
 fi
 
+# ── 5c. Man page + docs "current version" strings match the crate ──
+# The .TH line in man/sipnab.1 and the "e.g. X.Y.Z" / SIPNAB_VERSION= /
+# "current release X.Y.Z" / "as of X.Y.Z" markers in the install/benchmark
+# docs sit outside the 5b gate and rotted before (man page shipped 0.4.18 +
+# the wrong license). Mirrors tests/docs_drift_test.rs
+# docs_current_version_markers_match_cargo; historical references like the
+# benchmark provenance "0.4.16" are not matched.
+echo -n "  Man/docs version strings match crate... "
+CRATE_V=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "(.*)"/\1/')
+VERSION_DRIFT=""
+if [ -f "man/sipnab.1" ] && ! grep -q "\"sipnab $CRATE_V\"" man/sipnab.1; then
+    VERSION_DRIFT="$VERSION_DRIFT man/sipnab.1(.TH)"
+fi
+for f in docs/install.md website/content/docs/install.md \
+         website/content/docs/benchmarks.md website/content/docs/api.md; do
+    [ -f "$f" ] || continue
+    STALE=$(grep -oE "SIPNAB_VERSION=[0-9]+\.[0-9]+\.[0-9]+|e\.g\. [0-9]+\.[0-9]+\.[0-9]+|current release [0-9]+\.[0-9]+\.[0-9]+|as of [0-9]+\.[0-9]+\.[0-9]+|sipnab-[0-9]+\.[0-9]+\.[0-9]+-1\.x86_64" "$f" \
+        | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | grep -v "^$CRATE_V$" | sort -u | tr '\n' ' ')
+    [ -n "$STALE" ] && VERSION_DRIFT="$VERSION_DRIFT $f($STALE)"
+done
+if [ -n "$VERSION_DRIFT" ]; then
+    echo -e "${RED}FAIL${NC}"
+    echo "  Stale version strings (crate is $CRATE_V):$VERSION_DRIFT"
+    echo "  Update them to $CRATE_V (see tests/docs_drift_test.rs marker list)"
+    exit 1
+fi
+echo -e "${GREEN}OK ($CRATE_V)${NC}"
+
 # ── 6. No TODO stubs in production code ────────────────────────────
 echo -n "  No TODO stubs... "
 TODO_COUNT=$(grep -rn "TODO\|FIXME" src/ -g '*.rs' 2>/dev/null | grep -v test | grep -v '_test.rs' | wc -l | tr -d ' ')

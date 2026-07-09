@@ -62,7 +62,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | s | Switch to Statistics view |
 | O | Open pcap file (File Open dialog) |
 | Tab | Switch to RTP Streams view |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`). Searches SIP headers and message bodies (SDP, multipart payloads) |
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
@@ -99,7 +99,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | M | Clear mark |
 | E | Export Mermaid sequence diagram to clipboard |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)**. Shows related B2BUA/SBC call legs together in the flow view -- useful for tracing calls through proxies and back-to-back user agents. |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Start compare mode **(configurable: `clear_calls`)** |
 | r | Jump to RTP Streams list for this dialog |
@@ -118,6 +118,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | Home | Scroll to top |
 | End | Scroll to bottom |
 | / | Search within message |
+| n / N | Jump to the next / previous search-match line (wraps) |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
 | Esc | Back to the view it was opened from (call flow or call list) |
@@ -131,7 +132,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | Home / End | Jump to top/bottom |
 | q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 
 ## RTP Streams
 
@@ -146,7 +147,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | Enter | Open Stream Detail view for the selected stream |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 
 ## Stream Detail
@@ -183,14 +184,14 @@ The Stream Detail view shows comprehensive per-stream quality data: MOS score, j
 |-----|--------|
 | Esc | Cancel and close |
 | Enter | Save to the specified path |
-| Tab | Cycle format forward (PCAP -> PCAP-NG -> TXT -> Mermaid) |
+| Tab | Cycle format forward (PCAP -> PCAP-NG -> TXT -> JSON -> NDJSON -> CSV -> Mermaid/HTML -> Markdown -> WAV -> SIPp XML -> RTP JSON) |
 | Shift+Tab | Cycle format backward |
 | Left / Right | Move cursor in filename |
 | Home / End | Jump to start/end of filename |
 | Backspace | Delete character before cursor |
 | (any char) | Insert character |
 
-Save formats: **PCAP**, **PCAP-NG**, **TXT**, **Mermaid**
+Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
 
 ## Filter Popup
 

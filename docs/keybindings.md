@@ -46,7 +46,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | O | Open pcap file (File Open dialog) |
 | F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save capture **(configurable: `save`)** |
 | F3 | Search (same as `/`) |
 | F4 | Open extended multi-leg flow for the selected dialog **(configurable: `extended_flow`)** |
@@ -91,8 +91,8 @@ active filter.
 | E | Export Mermaid sequence diagram to clipboard |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** |
 | r | Jump to RTP Streams view |
-| N | Name the selected message's source address (map IP → host/FQDN) |
-| F1 | Help **(configurable: `help`)** |
+| N | Name endpoints (map IP → host/FQDN; Tab/Shift-Tab switch between the offered participants) |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
 | F6 / Ctrl+R | Toggle RTP display in flow |
@@ -115,10 +115,11 @@ detail pane regardless of focus.
 | PgDn | Page down |
 | Home / End | Jump to top/bottom |
 | / | Search within message |
+| n / N | Jump to the next / previous search-match line (wraps) |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
 | h | Cycle header-name display (as captured / expanded / compact) |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |
 | Esc | Back to the view it was opened from (call flow or call list) |
 
@@ -132,7 +133,7 @@ detail pane regardless of focus.
 | h | Cycle header-name display (as captured / expanded / compact) |
 | q | Quit **(configurable: `quit`)** |
 | Esc | Back to call flow |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 
 ## Combined Detail
 
@@ -161,7 +162,7 @@ message of the selection rendered as one scrollable document.
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the selected stream's audio as WAV **(configurable: `save`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
 
@@ -174,7 +175,7 @@ message of the selection rendered as one scrollable document.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
-| F1 | Help **(configurable: `help`)** |
+| F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
 | Esc | Back to RTP Streams |
 
@@ -199,14 +200,14 @@ message of the selection rendered as one scrollable document.
 |-----|--------|
 | Esc | Cancel and close |
 | Enter | Save to the specified path |
-| Tab | Cycle format forward (PCAP -> PCAP-NG -> TXT -> Mermaid) |
+| Tab | Cycle format forward (PCAP -> PCAP-NG -> TXT -> JSON -> NDJSON -> CSV -> Mermaid/HTML -> Markdown -> WAV -> SIPp XML -> RTP JSON) |
 | Shift+Tab | Cycle format backward |
 | Left / Right | Move cursor in filename |
 | Home / End | Jump to start/end of filename |
 | Backspace | Delete character before cursor |
 | (any char) | Insert character |
 
-Save formats: **PCAP**, **PCAP-NG**, **TXT**, **Mermaid**
+Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
 
 ## Filter Popup
 

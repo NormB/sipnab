@@ -72,10 +72,23 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
             app.status_error = Some(format!("sipnab {}", crate::cli::build_version()));
             return;
         }
-        // Cycle name-resolution mode (Off / Static / DNS).
+        // Cycle name-resolution mode (Off / Static / DNS) — except in the
+        // raw-message pager with an active search, where n/N are match
+        // navigation (vim/less convention) and belong to the view.
         if key.code == KeyCode::Char('n') {
-            app.name_mode = app.name_mode.next();
-            app.status_error = Some(app.name_mode.label().to_string());
+            let match_navigating =
+                matches!(app.current_view, View::RawMessage { .. }) && !app.search_query.is_empty();
+            if !match_navigating {
+                app.name_mode = app.name_mode.next();
+                app.status_error = Some(app.name_mode.label().to_string());
+                return;
+            }
+        }
+        // '?' opens help from any view — the near-universal TUI reflex —
+        // by re-dispatching as the configured help key.
+        if key.code == KeyCode::Char('?') {
+            let help = KeyEvent::new(app.keymap.help, KeyModifiers::NONE);
+            dispatch_view_key(app, help);
             return;
         }
     }
@@ -1071,5 +1084,178 @@ mod tests {
     fn get_selected_call_id_returns_first() {
         let app = app_with_dialogs();
         assert!(get_selected_call_id(&app).is_some());
+    }
+}
+
+#[cfg(test)]
+mod async_feedback_tests {
+    use super::*;
+
+    /// Detached workers (clipboard export) report via `async_messages`;
+    /// the event-loop tick drains them into the status line.
+    #[test]
+    fn drain_async_messages_moves_worker_results_into_status() {
+        let mut app = App::new_test();
+        app.async_messages.lock().push("Copied!".to_string());
+        app.drain_async_messages();
+        assert_eq!(app.status_error.as_deref(), Some("Copied!"));
+        assert!(app.async_messages.lock().is_empty());
+    }
+
+    /// The clipboard copy must not run on the UI thread: a wedged xclip
+    /// used to hang the whole TUI on `child.wait()`. The spawn returns
+    /// immediately and the worker reports (success or error) eventually.
+    #[test]
+    fn clipboard_copy_runs_detached_and_reports_eventually() {
+        let app = App::new_test();
+        let started = std::time::Instant::now();
+        spawn_clipboard_copy(
+            "graph TD;".to_string(),
+            std::sync::Arc::clone(&app.async_messages),
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "spawning the copy must not block"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.async_messages.lock().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "clipboard worker never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(test)]
+mod question_mark_help_tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    /// A novice reflexively presses '?' for help; it must open the help
+    /// view from anywhere (unless the user rebound '?' to something else).
+    #[test]
+    fn question_mark_opens_help_from_call_list_and_stream_list() {
+        let mut app = App::new_test();
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert!(
+            matches!(app.current_view, View::Help),
+            "? must open help, got {:?}",
+            app.current_view
+        );
+
+        let mut app = App::new_test();
+        app.current_view = View::StreamList;
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert!(matches!(app.current_view, View::Help));
+    }
+
+    /// A '?' rebound by the user must keep its rebound meaning.
+    #[test]
+    fn rebound_question_mark_wins_over_help_fallback() {
+        let mut app = App::new_test();
+        app.keymap.search = KeyCode::Char('?');
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert!(
+            app.search_active,
+            "rebound '?' must trigger search, not help"
+        );
+        assert!(!matches!(app.current_view, View::Help));
+    }
+}
+
+#[cfg(test)]
+mod search_match_nav_tests {
+    use super::*;
+    use crate::tui::controllers::test_support::*;
+
+    fn raw_view_app() -> App {
+        let mut app = app_with_dialogs();
+        app.current_view = View::RawMessage {
+            call_id: "call-1@test".to_string(),
+            message_index: 0,
+        };
+        app
+    }
+
+    /// vim/less muscle memory: with an active search in the raw-message
+    /// pager, n/N jump between matches (and wrap) instead of only
+    /// highlighting. The INVITE fixture matches on the request line and the
+    /// CSeq line.
+    #[test]
+    fn n_and_shift_n_jump_between_matches_in_raw_view() {
+        let mut app = raw_view_app();
+        app.search_query = "invite".to_string();
+
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        let first = app.raw_msg_scroll;
+        assert!(first > 0, "first match is below the info line");
+        assert_eq!(
+            app.name_mode,
+            crate::names::NameMode::Off,
+            "n must NOT cycle name mode while match-navigating"
+        );
+
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        let second = app.raw_msg_scroll;
+        assert!(second > first, "advances to the next match");
+
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.raw_msg_scroll, first, "wraps to the first match");
+
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::NONE),
+        );
+        assert_eq!(app.raw_msg_scroll, second, "N wraps backward");
+    }
+
+    /// Without an active query, n keeps its global name-mode meaning even
+    /// in the raw view.
+    #[test]
+    fn n_still_cycles_name_mode_without_a_query() {
+        let mut app = raw_view_app();
+        assert_eq!(app.name_mode, crate::names::NameMode::Off);
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_ne!(
+            app.name_mode,
+            crate::names::NameMode::Off,
+            "no query ⇒ n cycles name mode"
+        );
+    }
+
+    /// In non-pager views (call list), n cycles name mode even while a
+    /// search query narrows the list.
+    #[test]
+    fn n_cycles_name_mode_in_call_list_even_with_query() {
+        let mut app = app_with_dialogs();
+        app.search_query = "invite".to_string();
+        handle_key_event(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+        );
+        assert_ne!(app.name_mode, crate::names::NameMode::Off);
     }
 }

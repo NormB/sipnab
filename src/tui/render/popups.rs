@@ -249,7 +249,16 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
         None => field.push(Span::styled(" ", Style::default().bg(app.theme.selected))),
     }
     lines.push(Line::from(field));
-    lines.push(Line::from(""));
+    // Inline validation error: the popup stays open on failure so the typed
+    // name can be corrected.
+    if let Some(err) = &app.name_dialog.error {
+        lines.push(Line::from(Span::styled(
+            format!("  \u{26a0} {err}"),
+            Style::default().fg(app.theme.warning),
+        )));
+    } else {
+        lines.push(Line::from(""));
+    }
     let hint = if multi {
         "  Tab switch endpoint · Enter save all · empty clears · Esc cancel"
     } else {
@@ -709,10 +718,28 @@ pub(in crate::tui) fn render_filter_popup(
     let sep = "\u{2500}".repeat((iw - 4) as usize);
     buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(theme.muted));
 
-    // ── Method checkboxes (two columns, 5 rows) ───────────────────
-    let cb_y = sep_y + 1;
+    // ── "All" master checkbox — ABOVE the method grid it governs ──
+    let all_y = sep_y + 1;
     let col1_x = ix + 2;
     let col2_x = ix + (iw / 2) + 1;
+    let all_focused = state.focused_field == ALL_METHODS_IDX;
+    let all_marker = if state.all_methods_checked() {
+        "[*]"
+    } else {
+        "[ ]"
+    };
+    let all_style = if all_focused {
+        Style::default()
+            .fg(theme.selected)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.foreground)
+    };
+    buf.set_string(col1_x, all_y, format!("{:<10}", "All"), all_style);
+    buf.set_string(col1_x + 10, all_y, all_marker, all_style);
+
+    // ── Method checkboxes (two columns, 5 rows) ───────────────────
+    let cb_y = all_y + 1;
 
     for row in 0..5u16 {
         let left_idx = (row * 2) as usize;
@@ -722,7 +749,7 @@ pub(in crate::tui) fn render_filter_popup(
         if left_idx < FILTER_METHODS.len() {
             let method = FILTER_METHODS[left_idx];
             let checked = state.methods[left_idx];
-            let focused = state.focused_field == FILTER_TEXT_FIELD_COUNT + left_idx;
+            let focused = state.focused_field == METHOD_CHECKBOX_BASE + left_idx;
             let marker = if checked { "[*]" } else { "[ ]" };
             let name = format!("{:<10}", method);
             let style = if focused {
@@ -740,7 +767,7 @@ pub(in crate::tui) fn render_filter_popup(
         if right_idx < FILTER_METHODS.len() {
             let method = FILTER_METHODS[right_idx];
             let checked = state.methods[right_idx];
-            let focused = state.focused_field == FILTER_TEXT_FIELD_COUNT + right_idx;
+            let focused = state.focused_field == METHOD_CHECKBOX_BASE + right_idx;
             let marker = if checked { "[*]" } else { "[ ]" };
             let name = format!("{:<10}", method);
             let style = if focused {
@@ -755,26 +782,8 @@ pub(in crate::tui) fn render_filter_popup(
         }
     }
 
-    // ── "All" master checkbox (enable/disable every method) ───────
-    let all_y = cb_y + 5;
-    let all_focused = state.focused_field == ALL_METHODS_IDX;
-    let all_marker = if state.all_methods_checked() {
-        "[*]"
-    } else {
-        "[ ]"
-    };
-    let all_style = if all_focused {
-        Style::default()
-            .fg(theme.selected)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.foreground)
-    };
-    buf.set_string(col1_x, all_y, format!("{:<10}", "All"), all_style);
-    buf.set_string(col1_x + 10, all_y, all_marker, all_style);
-
     // ── Buttons ────────────────────────────────────────────────────
-    let btn_y = cb_y + 7;
+    let btn_y = cb_y + 6;
     let filter_focused = state.focused_field == FILTER_BUTTON_IDX;
     let cancel_focused = state.focused_field == CANCEL_BUTTON_IDX;
 
@@ -795,6 +804,15 @@ pub(in crate::tui) fn render_filter_popup(
     let btn_col2 = ix + iw / 2 + 5;
     buf.set_string(btn_col1, btn_y, "[ Filter ]", filter_style);
     buf.set_string(btn_col2, btn_y, "[ Cancel ]", cancel_style);
+
+    // ── Inline parse error (dialog stays open on failure) ─────────
+    if let Some(err) = &state.error {
+        let msg: String = format!("\u{26a0} {err}")
+            .chars()
+            .take((iw as usize).saturating_sub(4))
+            .collect();
+        buf.set_string(ix + 2, btn_y + 1, &msg, Style::default().fg(theme.warning));
+    }
 }
 
 /// Render the settings popup as a centered overlay.

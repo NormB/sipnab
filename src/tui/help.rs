@@ -27,23 +27,23 @@ CALL LIST:
   /                Search (arrows/Space work while typing; Enter opens)
   i                Clear non-matching dialogs
   I                Clear matching dialogs
-  F1               This help
-  F2               Save capture (PCAP/PCAP-NG/TXT)
+  F1, ?            This help (? works in every view)
+  F2               Save capture (Tab cycles PCAP/TXT/JSON/WAV/Mermaid/...)
   F3               Search (same as /)
   F5, Ctrl+L       Clear calls
   r, F6            Show raw SIP message
   F7               Filter dialog
   F8               Settings
   t                Cycle timestamps (absolute / delta-prev / delta-first / scaled)
-  u                Cycle From/To column (user / host:port / both)
-  n                Cycle name resolution (off / static / DNS)
+  u                Cycle From/To (default/host:port/user/user@host:port)
+  n                Cycle name resolution (off/static/DNS) \u{2014} global
   N                Name selected address (IP -> host / FQDN)
   O                Open pcap file
   s                Statistics view
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams
-  v                Show version / git commit
+  v                Show version / git commit \u{2014} global
 
 CALL FLOW:
   \u{2191}/\u{2193}             Navigate messages (detail panel updates)
@@ -77,6 +77,7 @@ RAW MESSAGE:
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   /                Search in message
+  n / N            Next / previous search match (wraps)
   s                Toggle syntax highlighting
   c                Cycle colors
   h                Header names (as captured / expanded / compact)
@@ -88,6 +89,7 @@ MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
   Home/End         Jump to top/bottom
   h                Header names (diff and combined detail)
   Esc              Back
+  q, s             Close statistics (Statistics view)
 
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams

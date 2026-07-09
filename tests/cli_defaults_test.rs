@@ -54,8 +54,8 @@ fn default_snaplen_is_none() {
 fn default_portrange() {
     let cli = defaults();
     assert_eq!(
-        cli.portrange, "5060-5061",
-        "default portrange should be 5060-5061"
+        cli.portrange, None,
+        "portrange stays None at the CLI layer; plan() applies the 5060-5061 default"
     );
 }
 

@@ -869,11 +869,22 @@ impl BatchRunner {
             Err(_) => tracing::error!("Capture thread panicked"),
         }
 
+        // 20a. The source is fully drained: flip the flag MCP's tail_dialogs
+        //      reports as source_exhausted, so a polling client knows no more
+        //      dialog updates will arrive.
+        if let Some(ref servers) = servers
+            && let Some(ref flag) = servers.source_exhausted
+        {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+
         // 21. Post-capture output
         {
             let ds_guard = dialog_store.read();
             let ss_guard = stream_store.read();
-            generate_reports(&cli, &ds_guard, &ss_guard);
+            if !generate_reports(&cli, &ds_guard, &ss_guard) {
+                std::process::exit(1);
+            }
         }
 
         // 21a. --wireshark: print Wireshark display filter for all tracked dialogs
@@ -1364,7 +1375,10 @@ fn dispatch_sip_output(
     if cli.no_cli_print {
         return;
     }
-    if cli.json || cli.json_pretty {
+    if cli.json_pretty {
+        let json = output::json::message_to_json_pretty(msg);
+        print!("{json}");
+    } else if cli.json {
         let json = output::json::message_to_json(msg);
         print!("{json}");
     } else if cli.fail2ban {
@@ -1393,8 +1407,10 @@ fn dispatch_sip_output(
 // ── Report generation ────────────────────────────────────────────────
 
 /// Generate post-capture reports (`--report`, `--call-report`) from the
-/// final store contents. Also used by the multi-core offline path in main.
-pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &StreamStore) {
+/// final store contents. Returns `false` when a requested report could not
+/// be produced (unknown `--call-report` Call-ID) so the caller can exit
+/// non-zero — scripts must be able to trust the exit code.
+pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &StreamStore) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
     // O(calls²) before the endpoint index; it now grows ~linearly with streams.
@@ -1439,9 +1455,13 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
             let report = output::generate_call_report(dialog, &dialog_streams, &diagnosis, format);
             print!("{report}");
         } else {
-            tracing::warn!("Call-ID '{}' not found in tracked dialogs", call_id);
+            // eprintln (not tracing) so the failure is visible even with
+            // logging off — it decides the process exit code.
+            eprintln!("Call-ID '{call_id}' not found in tracked dialogs");
+            return false;
         }
     }
+    true
 }
 
 // ── Unit tests for the batch runner's pure helpers ──────────────────────

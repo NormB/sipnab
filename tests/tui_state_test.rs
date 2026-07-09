@@ -425,11 +425,11 @@ mod tui_state {
 
     #[test]
     fn filter_all_checkbox_disables_then_enables_every_method() {
-        // Focus order: 5 text fields (0-4), 10 method checkboxes (5-14),
-        // then the "All" master checkbox (15).
+        // Focus order: 5 text fields (0-4), the "All" master checkbox (5),
+        // then the 10 method checkboxes (6-15).
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(7));
-        for _ in 0..15 {
+        for _ in 0..5 {
             app.handle_key(KeyCode::Tab);
         }
         app.handle_key(KeyCode::Char(' ')); // all checked -> disable all
@@ -449,8 +449,8 @@ mod tui_state {
     fn filter_all_checkbox_from_mixed_state_enables_all_first() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        // Uncheck INVITE (focus 7) for a mixed state.
-        for _ in 0..7 {
+        // Uncheck INVITE (focus 8) for a mixed state.
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab);
         }
         app.handle_key(KeyCode::Char(' '));
@@ -459,9 +459,9 @@ mod tui_state {
             !methods[INVITE_IDX] && methods[0],
             "mixed state established"
         );
-        // On to the All checkbox (7 + 8 = 15) and toggle.
-        for _ in 0..8 {
-            app.handle_key(KeyCode::Tab);
+        // Back up to the All checkbox (focus 5, above the grid) and toggle.
+        for _ in 0..3 {
+            app.handle_key(KeyCode::BackTab);
         }
         app.handle_key(KeyCode::Char(' '));
         let (_, methods) = app.filter_focus_and_methods_for_test();
@@ -500,9 +500,9 @@ mod tui_state {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(7));
         // Focus starts on text field 0. Tab advances one element at a time:
-        // 5 text fields then the checkboxes, so 7 Tabs lands on checkbox index 2
-        // (INVITE).
-        for _ in 0..7 {
+        // 5 text fields, the All checkbox, then the method checkboxes — so 8
+        // Tabs lands on method index 2 (INVITE).
+        for _ in 0..8 {
             app.handle_key(KeyCode::Tab);
         }
         app.handle_key(KeyCode::Char(' ')); // uncheck INVITE
@@ -518,14 +518,14 @@ mod tui_state {
     fn filter_right_column_reachable_by_tab_and_toggle() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        // 5 text fields (focus 0..4) then checkbox 0 (focus 5), checkbox 1 (focus 6).
-        for _ in 0..6 {
+        // 5 text fields (0-4), All (5), checkbox 0 (6), checkbox 1 (7).
+        for _ in 0..7 {
             app.handle_key(KeyCode::Tab);
         }
         let (focus, _) = app.filter_focus_and_methods_for_test();
         assert_eq!(
-            focus, 6,
-            "6 Tabs should land on right-column checkbox 1 (OPTIONS)"
+            focus, 7,
+            "7 Tabs should land on right-column checkbox 1 (OPTIONS)"
         );
         app.handle_key(KeyCode::Char(' '));
         let (_, methods) = app.filter_focus_and_methods_for_test();
@@ -542,7 +542,7 @@ mod tui_state {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        for _ in 0..6 {
+        for _ in 0..7 {
             app.handle_key(KeyCode::Tab); // focus checkbox 1 (OPTIONS, right column)
         }
         terminal.draw(|f| app.render(f)).unwrap();
@@ -567,17 +567,18 @@ mod tui_state {
     fn filter_down_arrow_reaches_second_column() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        // Into the checkbox grid: 5 Tabs -> checkbox 0 (REGISTER, focus 5).
-        for _ in 0..5 {
+        // Into the checkbox grid: 6 Tabs -> checkbox 0 (REGISTER, focus 6;
+        // the All master checkbox sits at focus 5).
+        for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
-        // Down 4 times walks the left column to INFO (idx 8, focus 13).
+        // Down 4 times walks the left column to INFO (idx 8, focus 14).
         for _ in 0..4 {
             app.handle_key(KeyCode::Down);
         }
         assert_eq!(
             app.filter_focus_and_methods_for_test().0,
-            5 + 8,
+            6 + 8,
             "Down reaches INFO (left col bottom)"
         );
         // One more Down must enter the SECOND column (OPTIONS, idx 1) rather than
@@ -586,7 +587,7 @@ mod tui_state {
         app.handle_key(KeyCode::Down);
         assert_eq!(
             app.filter_focus_and_methods_for_test().0,
-            5 + 1,
+            6 + 1,
             "Down from the bottom of column 1 must reach column 2 (OPTIONS)"
         );
     }
@@ -595,16 +596,16 @@ mod tui_state {
     fn filter_right_arrow_reaches_second_column() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        // Tab into the checkbox grid: 5 tabs -> checkbox 0 (REGISTER, focus 5).
-        for _ in 0..5 {
+        // Tab into the checkbox grid: 6 tabs -> checkbox 0 (REGISTER, focus 6).
+        for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
-        assert_eq!(app.filter_focus_and_methods_for_test().0, 5);
-        // Right arrow should move into the second column (checkbox 1, focus 6).
+        assert_eq!(app.filter_focus_and_methods_for_test().0, 6);
+        // Right arrow should move into the second column (checkbox 1, focus 7).
         app.handle_key(KeyCode::Right);
         assert_eq!(
             app.filter_focus_and_methods_for_test().0,
-            6,
+            7,
             "Right arrow should move from REGISTER into OPTIONS (second column)"
         );
         app.handle_key(KeyCode::Char(' '));
@@ -625,85 +626,89 @@ mod tui_state {
     #[test]
     fn filter_checkbox_down_moves_by_row() {
         // Layout: 2 columns, 5 rows. idx 0=REGISTER, 1=OPTIONS, 2=INVITE, ...
-        // Text fields: focused_field 0-4. Checkboxes: 5-14. Buttons: 15-16.
+        // Text fields: ff 0-4. All: ff 5. Method checkboxes: 6-15. Buttons: 16-17.
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7)); // open filter
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
 
-        // Tab down through 5 text fields to reach first checkbox (REGISTER, ff=5)
-        for _ in 0..5 {
+        // Tab through 5 text fields + the All row to the first method (REGISTER, ff=6)
+        for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
-        assert_eq!(app.filter_dialog.focused_field(), 5); // REGISTER (idx 0)
+        assert_eq!(app.filter_dialog.focused_field(), 6); // REGISTER (idx 0)
 
-        // Down should go to INVITE (idx 2, ff=7), not OPTIONS (idx 1, ff=6)
+        // Down should go to INVITE (idx 2, ff=8), not OPTIONS (idx 1, ff=7)
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 7); // INVITE (idx 2)
+        assert_eq!(app.filter_dialog.focused_field(), 8); // INVITE (idx 2)
 
-        // Down again -> SUBSCRIBE (idx 4, ff=9)
+        // Down again -> SUBSCRIBE (idx 4, ff=10)
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 9); // SUBSCRIBE (idx 4)
+        assert_eq!(app.filter_dialog.focused_field(), 10); // SUBSCRIBE (idx 4)
 
-        // Down again -> NOTIFY (idx 6, ff=11)
+        // Down again -> NOTIFY (idx 6, ff=12)
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 11); // NOTIFY (idx 6)
+        assert_eq!(app.filter_dialog.focused_field(), 12); // NOTIFY (idx 6)
 
-        // Down again -> INFO (idx 8, ff=13)
+        // Down again -> INFO (idx 8, ff=14)
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 13); // INFO (idx 8)
+        assert_eq!(app.filter_dialog.focused_field(), 14); // INFO (idx 8)
 
         // Down from the bottom of the LEFT column continues into the RIGHT
-        // column (OPTIONS, idx 1, ff=6) so it's reachable by vertical nav.
+        // column (OPTIONS, idx 1, ff=7) so it's reachable by vertical nav.
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 6); // OPTIONS (idx 1)
-        // ...down the right column: PUBLISH(3,8) MESSAGE(5,10) REFER(7,12) UPDATE(9,14)
-        for expected in [8, 10, 12, 14] {
+        assert_eq!(app.filter_dialog.focused_field(), 7); // OPTIONS (idx 1)
+        // ...down the right column: PUBLISH(3,9) MESSAGE(5,11) REFER(7,13) UPDATE(9,15)
+        for expected in [9, 11, 13, 15] {
             app.handle_key(KeyCode::Down);
             assert_eq!(app.filter_dialog.focused_field(), expected);
         }
-        // Down from the bottom of the RIGHT column -> buttons (ff=15).
+        // Down from the bottom of the RIGHT column -> buttons (ff=16).
         app.handle_key(KeyCode::Down);
-        assert_eq!(app.filter_dialog.focused_field(), 15); // Filter button
+        assert_eq!(app.filter_dialog.focused_field(), 16); // Filter button
     }
 
     #[test]
     fn filter_checkbox_right_moves_by_column() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        for _ in 0..5 {
+        for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
-        assert_eq!(app.filter_dialog.focused_field(), 5); // REGISTER (idx 0, left col)
+        assert_eq!(app.filter_dialog.focused_field(), 6); // REGISTER (idx 0, left col)
 
-        // Right should go to OPTIONS (idx 1, ff=6)
+        // Right should go to OPTIONS (idx 1, ff=7)
         app.handle_key(KeyCode::Right);
-        assert_eq!(app.filter_dialog.focused_field(), 6); // OPTIONS (idx 1)
+        assert_eq!(app.filter_dialog.focused_field(), 7); // OPTIONS (idx 1)
 
         // Right again from right column — no-op
         app.handle_key(KeyCode::Right);
-        assert_eq!(app.filter_dialog.focused_field(), 6); // still OPTIONS
+        assert_eq!(app.filter_dialog.focused_field(), 7); // still OPTIONS
 
-        // Left should go back to REGISTER (idx 0, ff=5)
+        // Left should go back to REGISTER (idx 0, ff=6)
         app.handle_key(KeyCode::Left);
-        assert_eq!(app.filter_dialog.focused_field(), 5); // REGISTER
+        assert_eq!(app.filter_dialog.focused_field(), 6); // REGISTER
     }
 
     #[test]
     fn filter_checkbox_up_moves_by_row() {
         let mut app = App::new_test();
         app.handle_key(KeyCode::F(7));
-        // Navigate to INVITE (idx 2, ff=7): tab to checkboxes, then down once
-        for _ in 0..5 {
+        // Navigate to INVITE (idx 2, ff=8): tab to the grid, then down once
+        for _ in 0..6 {
             app.handle_key(KeyCode::Tab);
         }
         app.handle_key(KeyCode::Down); // REGISTER -> INVITE
-        assert_eq!(app.filter_dialog.focused_field(), 7); // INVITE (idx 2)
+        assert_eq!(app.filter_dialog.focused_field(), 8); // INVITE (idx 2)
 
-        // Up should go back to REGISTER (idx 0, ff=5)
+        // Up should go back to REGISTER (idx 0, ff=6)
         app.handle_key(KeyCode::Up);
-        assert_eq!(app.filter_dialog.focused_field(), 5); // REGISTER
+        assert_eq!(app.filter_dialog.focused_field(), 6); // REGISTER
 
-        // Up from top row checkbox -> last text field (ff=4, Payload)
+        // Up from the top method row -> the All checkbox (ff=5)
+        app.handle_key(KeyCode::Up);
+        assert_eq!(app.filter_dialog.focused_field(), 5); // All
+
+        // Up from All -> last text field (ff=4, Payload)
         app.handle_key(KeyCode::Up);
         assert_eq!(app.filter_dialog.focused_field(), 4); // Payload text field
     }

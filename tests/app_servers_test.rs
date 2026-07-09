@@ -114,6 +114,174 @@ fn api_on_ephemeral_port_starts_servers_thread() {
     // intentionally detached here (the test process exits and reaps it).
 }
 
+/// A busy --api port must fail `start_servers` synchronously — once the TUI
+/// owns the terminal, a bind error logged from the detached servers thread is
+/// invisible and the user gets a running TUI with no API.
+#[cfg(feature = "api")]
+#[test]
+fn api_port_in_use_is_a_startup_error() {
+    let occupied = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe port");
+    let port = occupied.local_addr().expect("local_addr").port();
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.api = Some(format!("127.0.0.1:{port}"));
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: true,
+            mcp: false,
+        },
+    )
+    .err()
+    .expect("busy --api port must be a startup error, not a detached-thread log");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("bind"),
+        "error must name the bind failure: {msg}"
+    );
+}
+
+/// Non-loopback --api without auth must be refused at startup for the same
+/// reason: the policy error used to fire on the servers thread, hidden by
+/// the TUI alternate screen.
+#[cfg(feature = "api")]
+#[test]
+fn api_non_loopback_without_auth_is_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.api = Some("192.0.2.1:0".into()); // TEST-NET-1; policy fires before any bind
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: true,
+            mcp: false,
+        },
+    )
+    .err()
+    .expect("unauthenticated non-loopback --api must be a startup error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("non-loopback"),
+        "error must explain the auth policy: {msg}"
+    );
+}
+
+/// TLS flags (unimplemented) must also surface as a startup error rather
+/// than an async log.
+#[cfg(feature = "api")]
+#[test]
+fn api_tls_flags_are_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.api = Some("127.0.0.1:0".into());
+    cli.api_tls_cert = Some("/tmp/none.pem".into());
+    cli.api_tls_key = Some("/tmp/none.pem".into());
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: true,
+            mcp: false,
+        },
+    )
+    .err()
+    .expect("API TLS flags must be a startup error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("axum-server"),
+        "error must carry the documented TLS-not-implemented text: {msg}"
+    );
+}
+
+/// `--mcp-transport http` in a build without the mcp-http feature must be a
+/// startup error — the old log-and-skip left the user with a running capture
+/// and no server, silently.
+#[cfg(all(feature = "mcp", not(feature = "mcp-http")))]
+#[test]
+fn mcp_http_transport_without_feature_is_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.mcp = true;
+    cli.mcp_transport = "http".into();
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: false,
+            mcp: true,
+        },
+    )
+    .err()
+    .expect("http transport without mcp-http must be a startup error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("mcp-http"),
+        "error must name the missing feature: {msg}"
+    );
+}
+
+/// An unknown --mcp-transport is a configuration error, not a log-and-skip.
+#[cfg(feature = "mcp")]
+#[test]
+fn unknown_mcp_transport_is_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.mcp = true;
+    cli.mcp_transport = "carrier-pigeon".into();
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: false,
+            mcp: true,
+        },
+    )
+    .err()
+    .expect("unknown --mcp-transport must be a startup error");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("carrier-pigeon"),
+        "error must echo the bad transport: {msg}"
+    );
+}
+
+/// A malformed --mcp-bind is a configuration error, not a log-and-skip.
+#[cfg(feature = "mcp-http")]
+#[test]
+fn invalid_mcp_bind_is_a_startup_error() {
+    let mut cli = Cli::parse_from_args(["sipnab"]);
+    cli.mcp = true;
+    cli.mcp_transport = "http".into();
+    cli.mcp_bind = Some("not-a-bind-addr".into());
+    let (ds, ss, alerts) = stores();
+    let err = servers::start_servers(
+        &cli,
+        &ds,
+        &ss,
+        Some(&alerts),
+        Selection {
+            api: false,
+            mcp: true,
+        },
+    );
+    assert!(
+        err.is_err(),
+        "junk --mcp-bind must be a startup error, not log-and-skip"
+    );
+}
+
 /// The API verifier resolution (signing keys + static keys + revocation
 /// file) must be a pure, unit-testable Cli→VerifierConfig mapping.
 #[cfg(feature = "api")]

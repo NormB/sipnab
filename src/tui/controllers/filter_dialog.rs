@@ -4,24 +4,35 @@ use crate::tui::*;
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
 pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
+    let expr_text = app.filter_dialog.build_filter_expression();
+    apply_filter_expression(app, expr_text);
+}
+
+/// Parse and apply `expr_text`. On a parse error the dialog STAYS OPEN with
+/// the error shown inline (mirroring the file-open dialog), so the typed
+/// values can be corrected instead of being discarded with the popup.
+pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<String>) {
     // No SIP methods selected => show nothing. This is the explicit "mute
     // everything" state (distinct from all-checked, which shows everything).
     if !app.filter_dialog.any_method_checked() {
         app.active_filter = Some(FilterExpr::never());
         app.active_filter_text = "(no methods selected)".to_string();
         app.status_error = None;
+        app.filter_dialog.error = None;
         app.active_popup = None;
         return;
     }
-    match app.filter_dialog.build_filter_expression() {
+    match expr_text {
         Some(expr_text) => match FilterExpr::parse(&expr_text) {
             Ok(expr) => {
                 app.active_filter = Some(expr);
                 app.active_filter_text = expr_text;
                 app.status_error = None;
+                app.filter_dialog.error = None;
             }
             Err(e) => {
-                app.status_error = Some(format!("Filter error: {e}"));
+                app.filter_dialog.error = Some(format!("Filter error: {e}"));
+                return;
             }
         },
         None => {
@@ -29,6 +40,7 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
             app.active_filter = None;
             app.active_filter_text.clear();
             app.status_error = None;
+            app.filter_dialog.error = None;
         }
     }
     app.active_popup = None;
@@ -145,5 +157,165 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A filter expression that fails to parse must keep the dialog open
+    /// with an inline error (mirroring the file-open dialog) instead of
+    /// closing and discarding the user's typed values.
+    #[test]
+    fn invalid_filter_expression_keeps_dialog_open_with_inline_error() {
+        let mut app = App::new_test();
+        app.filter_dialog.sip_from = "alice".to_string();
+        app.active_popup = Some(Popup::FilterDialog);
+
+        // Unquoted value — the classic DSL parse error.
+        apply_filter_expression(&mut app, Some("method == INVITE".to_string()));
+
+        assert!(
+            matches!(app.active_popup, Some(Popup::FilterDialog)),
+            "dialog must stay open on a parse error"
+        );
+        assert!(
+            app.filter_dialog
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Filter error"),
+            "inline error expected, got: {:?}",
+            app.filter_dialog.error
+        );
+        assert_eq!(
+            app.filter_dialog.sip_from, "alice",
+            "typed input must be preserved"
+        );
+
+        // Fixing the expression applies, clears the error, and closes.
+        apply_filter_expression(&mut app, Some("method == 'INVITE'".to_string()));
+        assert!(app.active_popup.is_none(), "valid filter closes the dialog");
+        assert!(app.filter_dialog.error.is_none());
+        assert!(app.active_filter.is_some());
+    }
+}
+
+#[cfg(test)]
+mod all_checkbox_order_tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn open_filter(app: &mut App) {
+        app.filter_dialog = FilterDialogState::default();
+        app.active_popup = Some(Popup::FilterDialog);
+    }
+
+    /// Tab order after the reorder: text fields → All → methods (REGISTER
+    /// first) → Filter → Cancel → wrap. Space on All toggles every method.
+    #[test]
+    fn tab_traversal_visits_all_before_methods_and_wraps() {
+        let mut app = App::new_test();
+        open_filter(&mut app);
+        assert_eq!(app.filter_dialog.focused_field, 0);
+
+        // Tab through the 5 text fields lands on the All checkbox.
+        for _ in 0..5 {
+            handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        }
+        assert_eq!(
+            app.filter_dialog.focused_field, ALL_METHODS_IDX,
+            "All comes right after the text fields"
+        );
+
+        // Space on All (from all-checked) unchecks every method.
+        handle_filter_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(
+            app.filter_dialog.methods.iter().all(|&m| !m),
+            "All toggles every method"
+        );
+
+        // Next Tab enters the method grid at REGISTER (method 0).
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.filter_dialog.checkbox_index(),
+            Some(0),
+            "REGISTER is the first method after All"
+        );
+
+        // Tab across the 10 methods reaches Filter, then Cancel, then wraps.
+        for _ in 0..10 {
+            handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        }
+        assert_eq!(app.filter_dialog.focused_field, FILTER_BUTTON_IDX);
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(app.filter_dialog.focused_field, CANCEL_BUTTON_IDX);
+        handle_filter_popup_key(&mut app, key(KeyCode::Tab));
+        assert_eq!(
+            app.filter_dialog.focused_field, 0,
+            "wraps to the first field"
+        );
+
+        // Shift-Tab walks backward to Cancel.
+        handle_filter_popup_key(&mut app, key(KeyCode::BackTab));
+        assert_eq!(app.filter_dialog.focused_field, CANCEL_BUTTON_IDX);
+    }
+
+    /// Arrow navigation through the reordered rows: Down from All lands on
+    /// REGISTER; Up from REGISTER returns to All; Down from the bottom-right
+    /// method reaches the buttons; Up from All returns to the text fields.
+    #[test]
+    fn arrow_navigation_respects_all_above_methods() {
+        let mut app = App::new_test();
+        open_filter(&mut app);
+        app.filter_dialog.focused_field = ALL_METHODS_IDX;
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Down));
+        assert_eq!(
+            app.filter_dialog.checkbox_index(),
+            Some(0),
+            "Down from All lands on REGISTER"
+        );
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Up));
+        assert_eq!(
+            app.filter_dialog.focused_field, ALL_METHODS_IDX,
+            "Up from REGISTER returns to All"
+        );
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Up));
+        assert!(
+            app.filter_dialog.is_text_field_focused(),
+            "Up from All returns to the text fields"
+        );
+
+        // Bottom-right method (odd index, last) → buttons.
+        app.filter_dialog.focused_field = METHOD_CHECKBOX_BASE + FILTER_METHODS.len() - 1;
+        handle_filter_popup_key(&mut app, key(KeyCode::Down));
+        assert_eq!(
+            app.filter_dialog.focused_field, FILTER_BUTTON_IDX,
+            "Down from the bottom-right method reaches the buttons"
+        );
+    }
+
+    /// Space still applies/cancels on the buttons and toggles single
+    /// methods after the index reshuffle.
+    #[test]
+    fn space_semantics_survive_the_reorder() {
+        let mut app = App::new_test();
+        open_filter(&mut app);
+        app.filter_dialog.focused_field = METHOD_CHECKBOX_BASE; // REGISTER
+        handle_filter_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(!app.filter_dialog.methods[0], "single method toggled");
+        assert!(app.filter_dialog.methods[1], "others untouched");
+
+        app.filter_dialog.focused_field = CANCEL_BUTTON_IDX;
+        handle_filter_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(app.active_popup.is_none(), "Space on Cancel closes");
     }
 }

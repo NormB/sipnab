@@ -150,19 +150,29 @@ fn call_report_schema_rejects_malformed() {
 
 #[test]
 fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
-    // Both --json and --json-pretty emit the SAME compact NDJSON for the message
-    // stream (the "pretty" form only affects reports). Every line of each must
-    // validate, and both must yield the same message count as the fixture.
+    // --json emits compact NDJSON (one object per line); --json-pretty emits
+    // the same objects pretty-printed (multi-line, still a parseable
+    // concatenated-JSON stream). Every value of each must validate, and both
+    // must yield the same message count as the fixture.
     let v = load_validator("message.schema.json");
-    for flag in ["--json", "--json-pretty"] {
-        let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", flag]);
-        let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines.len(), 7, "{flag}: expected 7 NDJSON messages");
-        for (i, line) in lines.iter().enumerate() {
-            let inst: Value = serde_json::from_str(line)
-                .unwrap_or_else(|e| panic!("{flag} line {i} not JSON: {e}"));
-            assert_valid(&v, &inst, &format!("{flag} msg {i}"));
-        }
+
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"]);
+    let lines: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 7, "--json: expected 7 NDJSON messages");
+    for (i, line) in lines.iter().enumerate() {
+        let inst: Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("--json line {i} not JSON: {e}"));
+        assert_valid(&v, &inst, &format!("--json msg {i}"));
+    }
+
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json-pretty"]);
+    let values: Vec<Value> = serde_json::Deserializer::from_str(&out)
+        .into_iter::<Value>()
+        .collect::<Result<_, _>>()
+        .expect("--json-pretty must stay a parseable JSON stream");
+    assert_eq!(values.len(), 7, "--json-pretty: expected 7 messages");
+    for (i, inst) in values.iter().enumerate() {
+        assert_valid(&v, inst, &format!("--json-pretty msg {i}"));
     }
 }
 

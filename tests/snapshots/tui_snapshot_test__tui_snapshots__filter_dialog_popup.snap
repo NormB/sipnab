@@ -1,6 +1,5 @@
 ---
 source: tests/tui_snapshot_test.rs
-assertion_line: 574
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
@@ -10,15 +9,15 @@ expression: output
             │  SIP From:    [                                   ]  │
   No SIP dia│  SIP To:      [                                   ]  │
             │  Source:      [                                   ]  │
-  If reading│  Destination: [                                   ]  │
+  Waiting fo│  Destination: [                                   ]  │
   Press 'q' │  Payload:     [                                   ]  │
             │  ──────────────────────────────────────────────────  │
+            │  All       [*]                                       │
             │  REGISTER  [*]             OPTIONS   [*]             │
             │  INVITE    [*]             PUBLISH   [*]             │
             │  SUBSCRIBE [*]             MESSAGE   [*]             │
             │  NOTIFY    [*]             REFER     [*]             │
             │  INFO      [*]             UPDATE    [*]             │
-            │  All       [*]                                       │
             │                                                      │
             │     [ Filter ]                 [ Cancel ]            │
             │                                                      │

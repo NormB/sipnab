@@ -177,8 +177,7 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
                 refresh_file_entries(app);
             } else {
                 let path = entry.path.to_string_lossy().into_owned();
-                let msg = load_pcap_file(app, &path);
-                app.status_error = Some(msg);
+                begin_pcap_load(app, &path);
                 app.active_popup = None;
             }
         }
@@ -219,8 +218,7 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
                 app.active_popup = None;
                 return;
             }
-            let msg = load_pcap_file(app, &path);
-            app.status_error = Some(msg);
+            begin_pcap_load(app, &path);
             app.active_popup = None;
         }
         KeyCode::Backspace => {
@@ -276,27 +274,9 @@ pub(in crate::tui) fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
-/// Load a pcap file into the application, replacing all existing data.
-///
-/// Parses each packet through etherparse, then routes it through the shared
-/// [`crate::pipeline::classify_packet`] core — the same router as live
-/// capture — so RTP-only pcaps populate the stream store for playback and
-/// WAV export, and WebSocket-wrapped SIP is unwrapped.
-pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
-    let path = std::path::Path::new(path_str);
-    if !path.exists() {
-        return format!("File not found: {path_str}");
-    }
-
-    // Transparently handles gzip-compressed captures (libpcap cannot). The
-    // guard owns any decompressed temp file and must outlive the read loop
-    // below, so keep it bound for the rest of the function.
-    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
-        Ok(opened) => opened,
-        Err(e) => return format!("Failed to open: {e:#}"),
-    };
-
-    // Clear existing data
+/// Reset stores and per-capture TUI state before (re)loading a pcap,
+/// preserving column-visibility preferences.
+fn reset_for_load(app: &mut App) {
     {
         let mut ds = app.dialog_store.write();
         ds.clear();
@@ -305,8 +285,6 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
         let mut ss = app.stream_store.write();
         ss.clear();
     }
-
-    // Reset TUI state (preserve column visibility preferences)
     let saved_columns = app.call_list.visible_columns;
     app.call_list = CallListState::new();
     app.call_list.visible_columns = saved_columns;
@@ -320,6 +298,44 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     app.flow.fold_expanded.clear();
     app.flow.mark_index = None;
     app.current_view = View::CallList;
+}
+
+/// Parse `path` into the shared stores and build the load outcome. Runs on
+/// a worker thread for interactive loads (the stores are the same
+/// `Arc<RwLock>`s live capture writes through, so the UI renders the data
+/// progressively) and inline for the synchronous [`load_pcap_file`].
+///
+/// Routes every packet through the shared [`crate::pipeline::classify_packet`]
+/// core — the same router as live capture — so RTP-only pcaps populate the
+/// stream store for playback and WAV export, and WebSocket-wrapped SIP is
+/// unwrapped.
+fn run_pcap_load(
+    path: &std::path::Path,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    progress: &PcapLoadProgress,
+) -> PcapLoadOutcome {
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&progress.filename)
+        .to_string();
+    let capture_mode = format!("Offline ({filename})");
+
+    // Transparently handles gzip-compressed captures (libpcap cannot). The
+    // guard owns any decompressed temp file and must outlive the read loop
+    // below, so keep it bound for the rest of the function.
+    let (mut cap, _gz_guard) = match crate::capture::file::open_offline(path) {
+        Ok(opened) => opened,
+        Err(e) => {
+            return PcapLoadOutcome {
+                message: format!("Failed to open: {e:#}"),
+                sip_count: 0,
+                capture_mode,
+                file_names: Vec::new(),
+            };
+        }
+    };
 
     let mut packet_count = 0u64;
     let mut sip_count = 0u64;
@@ -330,6 +346,9 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
 
     while let Ok(pkt) = cap.next_packet() {
         packet_count += 1;
+        progress
+            .packets
+            .store(packet_count, std::sync::atomic::Ordering::Relaxed);
 
         let ts = chrono::DateTime::from_timestamp(
             pkt.header.ts.tv_sec,
@@ -364,23 +383,23 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
         ) {
             crate::pipeline::PacketAction::None => {}
             crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
-                app.dialog_store.write().process_message(msg);
+                dialog_store.write().process_message(msg);
                 sip_count += 1;
                 if !sdp_links.is_empty() {
-                    let mut ss = app.stream_store.write();
+                    let mut ss = stream_store.write();
                     for (ip, port, call_id, media) in &sdp_links {
                         ss.link_to_dialog_with_sdp(*ip, *port, call_id, media);
                     }
                 }
             }
             crate::pipeline::PacketAction::Rtcp(rtcp_packets) => {
-                app.stream_store.write().process_rtcp(&rtcp_packets);
+                stream_store.write().process_rtcp(&rtcp_packets);
                 rtcp_count += rtcp_packets.len() as u64;
             }
             crate::pipeline::PacketAction::Rtp { hdr, .. } => {
                 // No decryption keys on the file-open path, so there is never
                 // a substituted plaintext payload.
-                app.stream_store
+                stream_store
                     .write()
                     .process_rtp(&parsed, &hdr, parsed.timestamp);
                 rtp_count += 1;
@@ -388,42 +407,25 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
         }
     }
 
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or(path_str);
-    app.set_capture_mode(format!("Offline ({filename})"));
-    app.mark_data_updated();
-
-    // Read pcapng metadata blocks that the libpcap reader ignores: load embedded
-    // Name Resolution Block names into the resolver, and surface any embedded
-    // Decryption Secrets Block so the operator is alerted the file carries keys.
-    let mut names_loaded = 0;
+    // Read pcapng metadata blocks that the libpcap reader ignores: embedded
+    // Name Resolution Block names (applied to the resolver on the UI thread)
+    // and any Decryption Secrets Block so the operator is alerted the file
+    // carries keys.
+    let mut file_names = Vec::new();
     let mut secrets_present = 0;
     if let Ok(meta) = crate::capture::pcapng_meta::read_pcapng_metadata(path) {
-        if !meta.names.is_empty() {
-            names_loaded = app.resolver.load_file_names(meta.names);
-            if names_loaded > 0 && app.name_mode == crate::names::NameMode::Off {
-                app.name_mode = crate::names::NameMode::Names;
-            }
-        }
+        file_names = meta.names;
         secrets_present = meta.tls_secrets.len();
     }
 
-    // If the pcap had no SIP but did have RTP streams, jump straight to the
-    // stream list so playback / WAV export are immediately reachable.
-    let stream_count = app.stream_store.read().len();
-    if sip_count == 0 && stream_count > 0 {
-        app.current_view = View::StreamList;
-    }
-
+    let stream_count = stream_store.read().len();
     let rtcp_suffix = if rtcp_count > 0 {
         format!(", {rtcp_count} RTCP")
     } else {
         String::new()
     };
-    let names_suffix = if names_loaded > 0 {
-        format!(", {names_loaded} name(s)")
+    let names_suffix = if !file_names.is_empty() {
+        format!(", {} name(s)", file_names.len())
     } else {
         String::new()
     };
@@ -432,9 +434,120 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     } else {
         String::new()
     };
-    format!(
-        "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix}{names_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename}){secrets_suffix}"
-    )
+    PcapLoadOutcome {
+        message: format!(
+            "Loaded {sip_count} SIP, {rtp_count} RTP{rtcp_suffix}{names_suffix} from {packet_count} packets across {stream_count} stream(s) ({filename}){secrets_suffix}"
+        ),
+        sip_count,
+        capture_mode,
+        file_names,
+    }
+}
+
+/// Apply a finished load's outcome to the app: capture-mode label, embedded
+/// names into the resolver, and the RTP-only jump to the stream list.
+fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
+    app.set_capture_mode(outcome.capture_mode);
+    app.mark_data_updated();
+
+    if !outcome.file_names.is_empty() {
+        let names_loaded = app.resolver.load_file_names(outcome.file_names);
+        if names_loaded > 0 && app.name_mode == crate::names::NameMode::Off {
+            app.name_mode = crate::names::NameMode::Names;
+        }
+    }
+
+    // If the pcap had no SIP but did have RTP streams, jump straight to the
+    // stream list so playback / WAV export are immediately reachable.
+    let stream_count = app.stream_store.read().len();
+    if outcome.sip_count == 0 && stream_count > 0 {
+        app.current_view = View::StreamList;
+    }
+}
+
+/// Load a pcap file synchronously, replacing all existing data. Kept for
+/// unit tests (which need the final message immediately); interactive
+/// loads go through [`begin_pcap_load`] so the UI stays live.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
+    let path = std::path::Path::new(path_str);
+    if !path.exists() {
+        return format!("File not found: {path_str}");
+    }
+    reset_for_load(app);
+    let progress = PcapLoadProgress::new(path_str);
+    let outcome = run_pcap_load(path, &app.dialog_store, &app.stream_store, &progress);
+    let message = outcome.message.clone();
+    apply_load_outcome(app, outcome);
+    message
+}
+
+/// Start loading a pcap on a background worker so the event loop keeps
+/// running — parsing a large capture on the UI thread froze the TUI for the
+/// whole load. Progress and the final result are applied by
+/// [`poll_pcap_load`] each tick.
+pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
+    if app.pcap_load.is_some() {
+        app.status_error = Some("A pcap load is already in progress".to_string());
+        return;
+    }
+    let path = std::path::Path::new(path_str);
+    if !path.exists() {
+        app.status_error = Some(format!("File not found: {path_str}"));
+        return;
+    }
+
+    reset_for_load(app);
+
+    let filename = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path_str)
+        .to_string();
+    let progress = Arc::new(PcapLoadProgress::new(&filename));
+    let worker_progress = Arc::clone(&progress);
+    let dialog_store = Arc::clone(&app.dialog_store);
+    let stream_store = Arc::clone(&app.stream_store);
+    let path_owned = path.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("pcap-load".to_string())
+        .spawn(move || {
+            let outcome =
+                run_pcap_load(&path_owned, &dialog_store, &stream_store, &worker_progress);
+            *worker_progress.result.lock() = Some(outcome);
+            worker_progress
+                .done
+                .store(true, std::sync::atomic::Ordering::Release);
+        });
+    match spawned {
+        Ok(_) => {
+            app.status_error = Some(format!("Loading {filename}…"));
+            app.pcap_load = Some(progress);
+        }
+        Err(e) => {
+            app.status_error = Some(format!("Failed to start the load worker: {e}"));
+        }
+    }
+}
+
+/// Event-loop tick hook: refresh the "Loading…" progress line while a
+/// background load runs, and apply its outcome once it finishes.
+pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
+    let Some(progress) = app.pcap_load.clone() else {
+        return;
+    };
+    if progress.done.load(std::sync::atomic::Ordering::Acquire) {
+        app.pcap_load = None;
+        if let Some(outcome) = progress.result.lock().take() {
+            app.status_error = Some(outcome.message.clone());
+            apply_load_outcome(app, outcome);
+        }
+    } else {
+        let packets = progress.packets.load(std::sync::atomic::Ordering::Relaxed);
+        app.status_error = Some(format!("Loading {}… {packets} packets", progress.filename));
+        // Keep the adaptive refresh cadence active while data streams in.
+        app.mark_data_updated();
+    }
 }
 
 #[cfg(test)]
@@ -579,6 +692,71 @@ mod tests {
         let mut app = App::new_test();
         let msg = load_pcap_file(&mut app, "/nonexistent/path/file.pcap");
         assert!(msg.contains("File not found"), "got: {msg}");
+    }
+
+    fn fixture_pcap() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap")
+    }
+
+    /// The dialog's Enter path must NOT parse the file on the UI thread —
+    /// a large pcap froze the TUI for the whole load with no feedback.
+    /// begin starts a worker; poll applies progress and the final outcome.
+    #[test]
+    fn begin_pcap_load_populates_stores_in_background_and_poll_applies_result() {
+        let mut app = App::new_test();
+        let fixture = fixture_pcap();
+        begin_pcap_load(&mut app, fixture.to_str().unwrap());
+        assert!(app.pcap_load.is_some(), "a load worker must be in flight");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.pcap_load.is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background load never completed"
+            );
+            poll_pcap_load(&mut app);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !app.dialog_store.read().is_empty(),
+            "fixture dialogs must be loaded"
+        );
+        let msg = app.status_error.clone().unwrap_or_default();
+        assert!(msg.contains("Loaded"), "final status, got: {msg}");
+        assert!(
+            app.capture_mode.contains("Offline"),
+            "got: {}",
+            app.capture_mode
+        );
+    }
+
+    #[test]
+    fn begin_pcap_load_missing_file_reports_immediately() {
+        let mut app = App::new_test();
+        begin_pcap_load(&mut app, "/nonexistent/path/file.pcap");
+        assert!(app.pcap_load.is_none(), "no worker for a missing file");
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("File not found"),
+            "got: {:?}",
+            app.status_error
+        );
+    }
+
+    #[test]
+    fn begin_pcap_load_rejects_concurrent_load() {
+        let mut app = App::new_test();
+        app.pcap_load = Some(std::sync::Arc::new(PcapLoadProgress::new("other.pcap")));
+        let fixture = fixture_pcap();
+        begin_pcap_load(&mut app, fixture.to_str().unwrap());
+        let msg = app.status_error.clone().unwrap_or_default();
+        assert!(msg.contains("in progress"), "busy guard, got: {msg}");
+        assert_eq!(
+            app.pcap_load.as_ref().map(|p| p.filename.as_str()),
+            Some("other.pcap"),
+            "the in-flight load must not be replaced"
+        );
     }
 
     #[test]
