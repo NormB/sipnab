@@ -229,8 +229,14 @@
   // we found so rookies don't have to know that x86_64 and amd64 are the same
   // thing. UA gives the OS; Chromium's client hints upgrade the CPU answer.
   var ua = navigator.userAgent || '';
-  var os = 'mac', osName = 'macOS';
-  if (/Macintosh|Mac OS X/.test(ua)) { os = 'mac'; osName = 'macOS'; }
+  var os = 'mac', osName = 'macOS', osNote = null;
+  // iOS first: WebKit UAs contain "like Mac OS X", and desktop-mode iPads
+  // even claim "Macintosh" — without this branch iPhones read as macOS.
+  if (/iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) {
+    os = 'mac'; osName = 'iPhone/iPad';
+    osNote = 'sipnab runs on macOS and Linux — pick the file for that machine.';
+  }
+  else if (/Macintosh|Mac OS X/.test(ua)) { os = 'mac'; osName = 'macOS'; }
   else if (/Android/.test(ua)) { os = 'linux'; osName = 'Linux'; }
   else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
   else if (/Linux/.test(ua)) { os = 'debian'; osName = 'Linux'; }
@@ -241,8 +247,8 @@
   function applyDetect() {
     var banner = document.getElementById('dl-detect');
     if (banner) {
-      document.getElementById('dl-detect-plat').textContent = osName + (arch ? ' · ' + arch : '');
-      document.getElementById('dl-detect-note').textContent = arch ? '' : 'CPU unknown from this browser — run uname -m to check.';
+      document.getElementById('dl-detect-plat').textContent = osName + (arch && !osNote ? ' · ' + arch : '');
+      document.getElementById('dl-detect-note').textContent = osNote || (arch ? '' : 'CPU unknown from this browser — run uname -m to check.');
       banner.hidden = false;
     }
     var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
