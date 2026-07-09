@@ -36,7 +36,7 @@ Every [GitHub release](https://github.com/NormB/sipnab/releases) ships versioned
 - `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
 - `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
 
-Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.2):
+Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.3):
 
 ```bash
 V=<version> T=x86_64-unknown-linux-gnu
@@ -83,7 +83,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install it with `apt`, which resolves the `libpcap0.8` runtime dependency automatically:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.2
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.3
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -111,7 +111,7 @@ Alternatively, install the standard package with `sudo apt install --no-install-
 ### RHEL/Fedora (.rpm)
 
 ```bash
-sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.2
+sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.3
 ```
 
 ### Homebrew (macOS)
@@ -336,7 +336,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.5.2 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.3 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms

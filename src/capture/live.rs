@@ -320,7 +320,14 @@ mod tests {
             err.contains("sipnab-no-such-dev0"),
             "names the device: {err}"
         );
-        if !crate::capture::device::list_devices().is_empty() {
+        // Permission-flavored failures intentionally skip the device list
+        // (the bootstrap shows its own --setup-caps hint instead). On macOS
+        // an unprivileged open of a bogus device fails with exactly such an
+        // error, so mirror the production predicate here.
+        let is_permission = err.contains("ermission")
+            || err.contains("EPERM")
+            || err.contains("Operation not permitted");
+        if !is_permission && !crate::capture::device::list_devices().is_empty() {
             assert!(
                 err.contains("Available devices:"),
                 "must list the real devices so the typo is correctable: {err}"

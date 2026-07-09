@@ -4,6 +4,71 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-09
+
+### Added
+
+- **TUI**: pcap files now load on a background worker with a live
+  "Loading… N packets" status line — opening a large capture no longer
+  freezes the interface, and dialogs appear progressively while the file
+  parses (saves and audio decode likewise defer behind a visible
+  "Saving…"/"Decoding…" status; the Mermaid clipboard copy runs detached
+  with a bounded wait so a wedged xclip can't hang the UI).
+- **TUI**: `n`/`N` jump to the next/previous search match in the
+  raw-message view (wrapping, vim/less style); `?` opens the help overlay
+  from any view.
+- **TUI**: `NO_COLOR` is honored (the theme collapses to terminal
+  defaults, including the previously hardcoded RGB status-bar
+  background); terminals below 40x6 get an explicit too-small notice
+  instead of a garbled screen; the live-capture empty state says it is
+  waiting for traffic instead of speculating about pcap files.
+- **TUI**: rebinding a key that a view already uses as a built-in (or
+  binding two actions to the same key) now warns at startup — such
+  rebinds silently never fired.
+- **CLI**: `--completions <shell>` generates bash/zsh/fish/elvish/
+  powershell completion scripts; `--help` groups its flags under section
+  headings instead of one flat list.
+- **CLI**: an unknown `--filter` field now names the field, suggests the
+  closest valid one, and lists the valid set; a typo'd `-d <device>`
+  lists the available interfaces; exit codes (0/1/2) are documented.
+
+### Fixed
+
+- `--mcp` in a build without the `mcp` feature silently ran a plain
+  batch capture with no server; it now fails fast with exit 2, like
+  every other feature-gated flag (`--hep-listen` gates early too).
+- A busy `--api` port (or unauthenticated non-loopback bind, or TLS
+  flags) failed silently on a detached thread behind the TUI; the
+  listener is now bound before the TUI starts and the error is fatal
+  and visible. Bad `--mcp-bind`/`--mcp-transport` values are fatal
+  instead of log-and-skip.
+- The MCP `tail_dialogs` tool's `source_exhausted` field was a
+  hardcoded `false` stub; it now flips to `true` when a pcap replay is
+  fully consumed, so polling clients can stop.
+- `--json-pretty` produced byte-identical output to `--json`; it now
+  pretty-prints each message (still a parseable JSON stream).
+- `--call-report` with an unknown Call-ID warned on stderr but exited
+  0; it now exits 1.
+- An explicit `--portrange 5060-5061` lost to a config-file range
+  because clap couldn't distinguish it from the default.
+- A filter expression with exotic whitespace before a multibyte character
+  at the error position could panic while rendering the parse error
+  (found by the `filter_dsl_parse_is_total` property test; parsing is
+  total again).
+- The man page declared the wrong license (GPL-3.0-only instead of
+  MIT OR Apache-2.0) and a stale version; both fixed and now guarded by
+  drift tests plus a pre-commit gate covering docs version strings.
+- **TUI**: the F7 filter and `N` name dialogs closed and discarded the
+  typed input on a validation error; they now stay open with the error
+  shown inline. The help overlay's stale `u` (From/To modes) and F2
+  (save formats) descriptions were corrected and are drift-tested.
+
+### Changed
+
+- **TUI**: in the F7 filter dialog the **All** master checkbox moved
+  above the method grid (above REGISTER), and Tab/arrow traversal
+  follows the new order: text fields → All → methods → buttons.
+
 ## [0.5.2] - 2026-07-08
 
 ### Added
