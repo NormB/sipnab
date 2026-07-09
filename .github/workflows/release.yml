@@ -255,6 +255,40 @@ jobs:
           suffix="${{ steps.features.outputs.suffix }}"
           mv "sipnab_${deb_version}_${deb_arch}${suffix}.deb" dist/
 
+      - name: Build .rpm (gnu Linux targets)
+        if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          # rpmbuild is not preinstalled on the Ubuntu runners.
+          sudo apt-get update || true
+          sudo apt-get install -y rpm
+          version="${GITHUB_REF_NAME#v}"
+          [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
+          # RPM versions must start with a digit too; mirror the .deb scheme
+          # for non-tag (dev) builds (~ sorts before release in rpm as well).
+          case "$version" in
+            [0-9]*) rpm_version="$version" ;;
+            *) rpm_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)~$version" ;;
+          esac
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)  rpm_arch=x86_64 ;;
+            aarch64-unknown-linux-gnu) rpm_arch=aarch64 ;;
+            *) echo "unexpected target ${{ matrix.target }}" >&2; exit 1 ;;
+          esac
+          # Same prebuilt-binary/plugin contract as the .deb step; the
+          # builder appends the "-noaudio" filename suffix itself.
+          plugin_arg=""
+          if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ] \
+             && [ -f "target/${{ matrix.target }}/release/libsipnab_audio.so" ]; then
+            plugin_arg="target/${{ matrix.target }}/release/libsipnab_audio.so"
+          fi
+          SIPNAB_BIN="target/${{ matrix.target }}/release/sipnab" \
+          SIPNAB_AUDIO_PLUGIN="$plugin_arg" \
+            bash contrib/rpm/build-rpm.sh "$rpm_version" "$rpm_arch" "${{ matrix.variant }}"
+          mkdir -p dist
+          suffix="${{ steps.features.outputs.suffix }}"
+          mv "sipnab-${rpm_version}-1.${rpm_arch}${suffix}.rpm" dist/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
@@ -278,7 +312,7 @@ jobs:
       - name: Generate combined checksums
         run: |
           cd artifacts
-          sha256sum *.tar.gz *.deb > SHA256SUMS.txt
+          sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create GitHub Release
@@ -289,6 +323,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
             artifacts/*.deb
+            artifacts/*.rpm
             artifacts/SHA256SUMS.txt
 
   tap:

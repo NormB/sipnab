@@ -91,8 +91,16 @@ as soon as `libasound2` is installed).
 
 ### RHEL/Fedora (.rpm)
 
+`.rpm` packages ship per release for `x86_64` and `aarch64`, each in a
+standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
+dependency — for headless servers, mirroring the `.deb` variants):
+
 ```bash
 sudo rpm -i sipnab-0.5.3-1.x86_64.rpm
+# headless / no-ALSA variant:
+sudo rpm -i sipnab-0.5.3-1.x86_64-noaudio.rpm
+# arm64 hosts:
+sudo rpm -i sipnab-0.5.3-1.aarch64.rpm
 ```
 
 ### Homebrew (macOS)

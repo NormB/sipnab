@@ -110,8 +110,16 @@ Alternatively, install the standard package with `sudo apt install --no-install-
 
 ### RHEL/Fedora (.rpm)
 
+`.rpm` packages ship per release for `x86_64` and `aarch64`, each in a
+standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
+dependency — for headless servers, mirroring the `.deb` variants):
+
 ```bash
 sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.3
+# headless / no-ALSA variant:
+sudo rpm -i sipnab-<version>-1.x86_64-noaudio.rpm
+# arm64 hosts:
+sudo rpm -i sipnab-<version>-1.aarch64.rpm
 ```
 
 ### Homebrew (macOS)
