@@ -4,6 +4,13 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Packaging**: releases now include `.rpm` packages (RHEL/Fedora) for
+  `x86_64` and `aarch64`, each in standard and `-noaudio` variants —
+  mirroring the `.deb` set (`contrib/rpm/build-rpm.sh`). The v0.5.3
+  release was backfilled with RPMs built from the released binaries.
+
 ## [0.5.3] - 2026-07-09
 
 ### Added
