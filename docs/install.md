@@ -6,21 +6,42 @@
 - **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
 - **pkg-config** (for libpcap detection during build)
 
-## Pre-built Binaries
+## Installer (recommended)
 
-Download from [GitHub Releases](https://github.com/NormB/sipnab/releases):
+The install script detects your OS, CPU, and glibc version, picks the right
+build, verifies its sha256, and installs to `/usr/local/bin`:
 
 ```bash
-# Linux x86_64 (static musl)
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab-x86_64-unknown-linux-musl
-chmod +x sipnab-x86_64-unknown-linux-musl
-sudo mv sipnab-x86_64-unknown-linux-musl /usr/local/bin/sipnab
+curl -fsSL https://www.sipnab.com/install.sh | sh
+```
+
+Prefer to read it first: <https://www.sipnab.com/install.sh>. Pin a version
+with `SIPNAB_VERSION=0.5.2`, change the destination with `SIPNAB_INSTALL_DIR`.
+
+## Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/NormB/sipnab/releases).
+Architecture naming: `x86_64` = `amd64` (Intel/AMD), `aarch64` = `arm64`
+(ARM); tarballs use the former, `.deb` packages the latter. `uname -m` tells
+you which one you are.
+
+```bash
+# Linux x86_64 (static musl -- runs on any distro, any glibc, Alpine included)
+# Replace <version> with the latest, e.g. 0.5.2
+curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
+tar xzf sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
+sudo install -m 755 sipnab-<version>-x86_64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
 
 # Linux aarch64 (static musl)
-curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab-aarch64-unknown-linux-musl
-chmod +x sipnab-aarch64-unknown-linux-musl
-sudo mv sipnab-aarch64-unknown-linux-musl /usr/local/bin/sipnab
+curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
+tar xzf sipnab-<version>-aarch64-unknown-linux-musl.tar.gz
+sudo install -m 755 sipnab-<version>-aarch64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
 ```
+
+The dynamic `…-unknown-linux-gnu.tar.gz` builds add TUI audio playback but
+require glibc >= 2.39 (Debian 13+, Ubuntu 24.04+) and libpcap. On an older
+distro they fail with `` version `GLIBC_2.39' not found `` -- use the static
+musl build (or the installer, which checks this automatically).
 
 ## Cargo (from source)
 
@@ -32,7 +53,7 @@ cargo install sipnab --features full
 
 ### Debian/Ubuntu (.deb)
 
-Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency):
+Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.39, i.e. Debian 13+ / Ubuntu 24.04+ -- on older releases use the static musl tarball above:
 
 ```bash
 # amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.2

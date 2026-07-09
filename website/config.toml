@@ -27,6 +27,12 @@ theme = "ayu-dark"
 # pre-commit hook fails if the two drift — so the homepage version badge and the
 # download links always match the released crate. Update Cargo.toml, not this.
 version = "0.5.2"
+# Minimum glibc of the released -gnu binaries and .debs (see the "Enforce
+# glibc floor" step in release.yml). Drives the guidance on /download and
+# must match SIPNAB_GLIBC_FLOOR in static/install.sh. 2.39 = Debian 13 /
+# Ubuntu 24.04; drops to 2.36 (Debian 12) with the first bookworm-built release.
+glibc_floor = "2.39"
+glibc_floor_distros = "Debian 13+, Ubuntu 24.04+"
 github_url = "https://github.com/NormB/sipnab"
 author = "Norm Brandinger"
 linkedin_url = "https://www.linkedin.com/in/nbrandinger"
