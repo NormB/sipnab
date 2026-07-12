@@ -66,7 +66,7 @@ jobs:
             -max_total_time="$MAX_TOTAL_TIME" -print_final_stats=1
       - name: Upload crash reproducers
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}/
