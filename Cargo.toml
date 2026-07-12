@@ -151,7 +151,7 @@ bytes = "1"
 parking_lot = "0.12"
 proptest = "1"
 trycmd = "1"
-jsonschema = "0.46"
+jsonschema = "0.47"
 clap = { version = "4", features = ["derive", "env", "string"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3"
