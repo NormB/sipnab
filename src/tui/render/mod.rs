@@ -31,18 +31,24 @@ pub(in crate::tui) struct RenderFeedback {
 
 /// Render the entire application frame based on the current view.
 ///
-/// Uses `try_read()` for the shared stores so the TUI never blocks waiting
-/// for the processing thread to release a write lock. When the lock is
-/// contended, the previous frame's cached counts are shown in the status
-/// bar, and the main view simply skips its render (the terminal retains
-/// the last-drawn content).
+/// The caller (`draw_frame`) already holds read guards on both stores for
+/// the whole frame, passed in as `ds`/`ss` — a consistent snapshot, no
+/// per-arm lock acquisition. Locking (and skipping the tick on
+/// contention, BEFORE anything is flushed) is the caller's job: a frame
+/// that rendered with a missing store used to flush a blank main pane,
+/// which the next frame repainted — a visible flicker on busy captures.
 ///
 /// Takes `&mut App` only because the call/stream list tables are ratatui
 /// stateful widgets (their inner offset state updates during render);
 /// everything else is read-only. State writes are returned as
 /// [`RenderFeedback`], never applied here — `App::sync_caches` (pre-draw)
 /// and `App::apply_render_feedback` (post-draw) are the writers.
-pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> RenderFeedback {
+pub(in crate::tui) fn render_app(
+    frame: &mut ratatui::Frame,
+    app: &mut App,
+    ds: &DialogStore,
+    ss: &StreamStore,
+) -> RenderFeedback {
     let mut fb = RenderFeedback::default();
     let area = frame.area();
 
@@ -83,55 +89,54 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
     render_status_line2(frame, status2_area, app);
     render_status_line3(frame, status3_area, app);
 
-    // Render the current view using try_read() to avoid blocking.
-    // If the lock is contended, skip the render — the terminal retains
-    // the previous frame's content, so the user sees no flicker.
+    // Render the current view from the store snapshot held by the caller
+    // for this whole frame (see `draw_frame` — contended ticks were
+    // skipped before we got here, so nothing below can half-render).
     match &app.current_view.clone() {
         View::CallList => {
-            if let Some(store) = app.dialog_store.try_read() {
-                call_list::render_call_list(
-                    frame,
-                    main_area,
-                    &mut app.call_list,
-                    &store,
-                    &call_list::CallListDisplay {
-                        rows: &app.displayed.ids,
-                        timestamp_mode: app.timestamp_mode,
-                        from_to_mode: app.from_to_mode,
-                        theme: &app.theme,
-                        resolver: app.resolver.as_ref(),
-                        name_mode: app.name_mode,
-                        offline: app.capture_mode.starts_with("Offline"),
-                    },
-                );
-            }
+            let store = ds;
+            call_list::render_call_list(
+                frame,
+                main_area,
+                &mut app.call_list,
+                store,
+                &call_list::CallListDisplay {
+                    rows: &app.displayed.ids,
+                    timestamp_mode: app.timestamp_mode,
+                    from_to_mode: app.from_to_mode,
+                    theme: &app.theme,
+                    resolver: app.resolver.as_ref(),
+                    name_mode: app.name_mode,
+                    offline: app.capture_mode.starts_with("Offline"),
+                },
+            );
         }
         View::StreamList => {
-            if let Some(store) = app.stream_store.try_read() {
-                let dialog_store = app.dialog_store.try_read();
-                stream_list::render_stream_list(
-                    frame,
-                    main_area,
-                    &mut app.stream_list,
-                    &store,
-                    dialog_store.as_deref(),
-                    &stream_list::StreamListDisplay {
-                        filter: app.active_filter.as_ref(),
-                        search_query: &app.search_query,
-                        theme: &app.theme,
-                        resolver: app.resolver.as_ref(),
-                        name_mode: app.name_mode,
-                    },
-                );
-            }
+            let store = ss;
+            let dialog_store = Some(ds);
+            stream_list::render_stream_list(
+                frame,
+                main_area,
+                &mut app.stream_list,
+                store,
+                dialog_store,
+                &stream_list::StreamListDisplay {
+                    filter: app.active_filter.as_ref(),
+                    search_query: &app.search_query,
+                    theme: &app.theme,
+                    resolver: app.resolver.as_ref(),
+                    name_mode: app.name_mode,
+                },
+            );
         }
         View::StreamDetail(key) => {
-            if let Some(store) = app.stream_store.try_read() {
+            {
+                let store = ss;
                 let effective = stream_detail::render_stream_detail(
                     frame,
                     main_area,
                     key,
-                    &store,
+                    store,
                     app.stream_detail_scroll,
                     &stream_detail::StreamDetailDisplay {
                         theme: &app.theme,
@@ -145,7 +150,8 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
             }
         }
         View::CallFlow(call_id) => {
-            if let Some(store) = app.dialog_store.try_read() {
+            {
+                let store = ds;
                 let cid = call_id.clone();
                 let sel = app.flow.selected;
 
@@ -291,7 +297,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
                     let total_lines = call_flow::render_message_detail(
                         frame,
                         detail_area,
-                        &store,
+                        store,
                         &call_flow::render::MessageDetailView {
                             call_id: detail_cid,
                             selected_msg: detail_sel,
@@ -313,11 +319,12 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
             call_id,
             message_index,
         } => {
-            if let Some(store) = app.dialog_store.try_read() {
+            {
+                let store = ds;
                 let total_rows = msg_raw::render_raw_message(
                     frame,
                     main_area,
-                    &store,
+                    store,
                     &msg_raw::RawMessageView {
                         call_id,
                         message_index: *message_index,
@@ -339,34 +346,34 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
             msg1_idx,
             msg2_idx,
         } => {
-            if let Some(store) = app.dialog_store.try_read() {
-                let total_rows = render_message_diff(
-                    frame,
-                    main_area,
-                    &store,
-                    &MessageDiffView {
-                        call_id,
-                        msg1_idx: *msg1_idx,
-                        msg2_idx: *msg2_idx,
-                        scroll: app.diff_scroll,
-                        header_form: app.header_form,
-                        theme: &app.theme,
-                    },
-                );
-                let viewport = main_area.height.saturating_sub(2);
-                fb.diff_scroll = Some(app.diff_scroll.min(total_rows.saturating_sub(viewport)));
-            }
+            let store = ds;
+            let total_rows = render_message_diff(
+                frame,
+                main_area,
+                store,
+                &MessageDiffView {
+                    call_id,
+                    msg1_idx: *msg1_idx,
+                    msg2_idx: *msg2_idx,
+                    scroll: app.diff_scroll,
+                    header_form: app.header_form,
+                    theme: &app.theme,
+                },
+            );
+            let viewport = main_area.height.saturating_sub(2);
+            fb.diff_scroll = Some(app.diff_scroll.min(total_rows.saturating_sub(viewport)));
         }
         View::CombinedDetail {
             call_id,
             indices,
             scope,
         } => {
-            if let Some(store) = app.dialog_store.try_read() {
+            {
+                let store = ds;
                 let total_rows = msg_raw::render_combined_detail(
                     frame,
                     main_area,
-                    &store,
+                    store,
                     &msg_raw::CombinedDetailView {
                         call_id,
                         indices,
@@ -394,7 +401,7 @@ pub(in crate::tui) fn render_app(frame: &mut ratatui::Frame, app: &mut App) -> R
             help::render_help(frame, main_area, &app.theme, &app.version, clamped);
         }
         View::Statistics => {
-            fb.stats_scroll = Some(render_statistics(frame, main_area, app));
+            fb.stats_scroll = Some(render_statistics(frame, main_area, app, ds, ss));
         }
     }
 
@@ -441,19 +448,11 @@ pub(in crate::tui) fn render_statistics(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
     app: &App,
+    ds: &DialogStore,
+    ss: &StreamStore,
 ) -> u16 {
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
-
-    // Use try_read() to avoid blocking the TUI render loop
-    let ds = match app.dialog_store.try_read() {
-        Some(guard) => guard,
-        None => return app.stats_scroll,
-    };
-    let ss = match app.stream_store.try_read() {
-        Some(guard) => guard,
-        None => return app.stats_scroll,
-    };
 
     let dialog_count = ds.len();
     let active_count = ds.active_count();
@@ -817,7 +816,13 @@ pub(crate) mod test_support {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         app.sync_caches();
         let mut fb = RenderFeedback::default();
-        terminal.draw(|frame| fb = render_app(frame, app)).unwrap();
+        let dialogs = app.dialog_store.clone();
+        let streams = app.stream_store.clone();
+        let (ds, ss) = (dialogs.read(), streams.read());
+        terminal
+            .draw(|frame| fb = render_app(frame, app, &ds, &ss))
+            .unwrap();
+        drop((ds, ss));
         app.apply_render_feedback(fb);
         let buf = terminal.backend().buffer();
         let area = buf.area;

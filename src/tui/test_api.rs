@@ -396,7 +396,14 @@ impl App {
     /// feedback write-back — exactly the event loop's sequence.
     pub fn render(&mut self, frame: &mut ratatui::Frame) {
         self.sync_caches();
-        let fb = render_app(frame, self);
+        // Tests are single-threaded over the stores, so blocking reads
+        // here can't contend; the real loop's skip logic lives in
+        // `draw_frame`.
+        let dialogs = self.dialog_store.clone();
+        let streams = self.stream_store.clone();
+        let (ds, ss) = (dialogs.read(), streams.read());
+        let fb = render_app(frame, self, &ds, &ss);
+        drop((ds, ss));
         self.apply_render_feedback(fb);
     }
 }

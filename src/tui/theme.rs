@@ -308,6 +308,11 @@ pub(super) const ACTIVE_POLL_MS: u64 = 100;
 pub(super) const IDLE_POLL_MS: u64 = 500;
 /// Duration after the last data update before switching to idle polling.
 pub(super) const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
+/// Consecutive render ticks allowed to skip on store-lock contention
+/// before the next tick takes blocking reads instead. Bounds staleness
+/// to ~FORCED_DRAW_AFTER_SKIPS × ACTIVE_POLL_MS on a write-saturated
+/// capture without ever flushing a half-rendered frame.
+pub(super) const FORCED_DRAW_AFTER_SKIPS: u32 = 3;
 
 #[cfg(test)]
 mod keymap_collision_tests {

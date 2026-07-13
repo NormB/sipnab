@@ -87,6 +87,10 @@ pub struct App {
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
     last_known_dialog_count: usize,
+    /// Consecutive render ticks skipped because a store write lock was
+    /// contended; at FORCED_DRAW_AFTER_SKIPS the next tick blocks instead
+    /// of skipping, so a write-saturated capture can't starve the UI.
+    contended_skips: u32,
     stream_detail_scroll: usize,
     /// View to return to when pressing Esc from StreamDetail.
     stream_detail_return_view: Option<View>,
@@ -209,6 +213,7 @@ impl App {
             stream_list: StreamListState::new(),
             should_quit: false,
             last_data_update: Instant::now(),
+            contended_skips: 0,
             last_known_dialog_count: 0,
             stream_detail_scroll: 0,
             stream_detail_return_view: None,
@@ -710,6 +715,46 @@ impl App {
     }
 }
 
+// ── Render tick ─────────────────────────────────────────────────────
+
+/// One render tick: draw the frame from a consistent read snapshot of
+/// both stores, or — when the processing thread holds (or is queued on)
+/// either write lock — skip the tick entirely. Returns whether a frame
+/// was drawn.
+///
+/// Skipping must happen BEFORE `Terminal::draw`: ratatui resets the back
+/// buffer after every completed frame, so a frame rendered without store
+/// access flushes a blank main pane which the next frame repaints — a
+/// visible flicker every time the render tick lost the try_read race on
+/// a busy capture. An aborted tick flushes nothing, and the previous
+/// frame stays on screen.
+///
+/// After `FORCED_DRAW_AFTER_SKIPS` consecutive skips the tick takes
+/// blocking reads instead, so a write-saturated capture degrades to a
+/// briefly stale frame, never a frozen UI. Acquisition is always
+/// dialog→stream, the same order as every other multi-lock site.
+fn draw_frame<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+) -> Result<bool, B::Error> {
+    let dialogs = app.dialog_store.clone();
+    let streams = app.stream_store.clone();
+    let guards = if app.contended_skips >= FORCED_DRAW_AFTER_SKIPS {
+        Some((dialogs.read(), streams.read()))
+    } else {
+        dialogs.try_read().zip(streams.try_read())
+    };
+    let Some((ds, ss)) = guards else {
+        app.contended_skips += 1;
+        return Ok(false);
+    };
+    app.contended_skips = 0;
+    let mut fb = RenderFeedback::default();
+    terminal.draw(|frame| fb = render_app(frame, app, &ds, &ss))?;
+    app.apply_render_feedback(fb);
+    Ok(true)
+}
+
 // ── Terminal guard ──────────────────────────────────────────────────
 
 /// RAII guard that restores the terminal on drop, even during panics.
@@ -864,14 +909,17 @@ pub fn run_tui_with_pause(
         // Tick: refresh store-derived caches, render read-only, then
         // persist what the render pass computed (clamps, flow row caches).
         app.sync_caches();
-        let mut fb = RenderFeedback::default();
-        terminal.draw(|frame| fb = render_app(frame, &mut app))?;
-        app.apply_render_feedback(fb);
+        let drew = draw_frame(&mut terminal, &mut app)?;
 
         // Deferred work runs here, AFTER the frame that painted its
-        // "Saving…"/"Decoding…" status — the work itself may block.
-        app.run_pending_save();
-        app.run_pending_audio();
+        // "Saving…"/"Decoding…" status — the work itself may block. A
+        // contended tick drew no frame, so the status isn't on screen
+        // yet: hold the work until one draws (bounded — draw_frame
+        // forces a blocking frame after FORCED_DRAW_AFTER_SKIPS skips).
+        if drew {
+            app.run_pending_save();
+            app.run_pending_audio();
+        }
 
         // Poll with adaptive timeout, then drain every queued event before
         // the next redraw — a paste or key burst must not be metered out at
@@ -964,6 +1012,158 @@ mod tests {
             0,
             "unchanged data: the next frame must reuse the cached list"
         );
+    }
+
+    // ── Contended-store render ticks (busy-capture flicker) ────────
+    //
+    // ratatui resets the back buffer after every completed frame, so a
+    // frame whose main view silently skips rendering (store lock lost to
+    // the processing thread) flushes a BLANK pane and the next frame
+    // repaints it — a visible flicker every few seconds on a busy box.
+    // The contract: a contended tick skips the whole frame (nothing is
+    // flushed, previous frame stays on screen), and sustained contention
+    // eventually forces a blocking frame instead of starving the UI.
+
+    fn backend_text(terminal: &Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn contended_dialog_write_lock_must_not_blank_the_frame() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "flicker@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.sync_caches();
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        let before = terminal.backend().buffer().clone();
+        assert!(
+            backend_text(&terminal).contains("1001"),
+            "sanity: the call row is on screen before contention"
+        );
+
+        // The processing thread holds the write lock for this whole tick.
+        let ds = app.dialog_store.clone();
+        let _writer = ds.write();
+        app.sync_caches(); // the real loop runs this every tick too
+        let drew = draw_frame(&mut terminal, &mut app).unwrap();
+        assert!(!drew, "a tick under a contended store must skip the frame");
+        assert_eq!(
+            terminal.backend().buffer(),
+            &before,
+            "a skipped tick must leave the previous frame on screen (no blank flash)"
+        );
+    }
+
+    #[test]
+    fn contended_stream_write_lock_also_skips_the_frame() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "flicker-ss@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.sync_caches();
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        let before = terminal.backend().buffer().clone();
+
+        let ss = app.stream_store.clone();
+        let _writer = ss.write();
+        let drew = draw_frame(&mut terminal, &mut app).unwrap();
+        assert!(
+            !drew,
+            "the frame renders from a consistent snapshot of BOTH stores or not at all"
+        );
+        assert_eq!(terminal.backend().buffer(), &before);
+    }
+
+    #[test]
+    fn first_tick_under_contention_skips_cleanly() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::new_test();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let ds = app.dialog_store.clone();
+        let _writer = ds.write();
+        // Nothing drawn yet: skipping must not panic or flush anything.
+        assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+    }
+
+    #[test]
+    fn tick_after_contention_clears_redraws_and_resets_the_skip_counter() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "recover@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.sync_caches();
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+
+        let ds = app.dialog_store.clone();
+        {
+            let _writer = ds.write();
+            assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+        }
+        // Contention cleared: the next tick draws again.
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        assert!(backend_text(&terminal).contains("1001"));
+        // And the successful draw reset the skip counter: a fresh
+        // contended tick skips (a stale counter would block forever here,
+        // deadlocking on the same-thread write guard).
+        let _writer = ds.write();
+        assert!(!draw_frame(&mut terminal, &mut app).unwrap());
+    }
+
+    #[test]
+    fn sustained_contention_forces_a_blocking_frame() {
+        use controllers::test_support::{base_ts, make_invite};
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "starve@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        app.sync_caches();
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+
+        let ds = app.dialog_store.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let guard = ds.write();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(guard);
+        });
+        locked_rx.recv().unwrap();
+        for _ in 0..FORCED_DRAW_AFTER_SKIPS {
+            assert!(
+                !draw_frame(&mut terminal, &mut app).unwrap(),
+                "ticks under contention skip while below the force threshold"
+            );
+        }
+        // The next tick refuses to starve: it takes blocking reads and
+        // draws as soon as the writer releases.
+        assert!(draw_frame(&mut terminal, &mut app).unwrap());
+        writer.join().unwrap();
     }
 
     /// WS4.3c: one CallFlow frame lays out the ladder AT MOST once; an
