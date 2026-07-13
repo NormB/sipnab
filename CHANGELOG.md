@@ -4,12 +4,27 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-13
+
 ### Added
 
 - **Packaging**: releases now include `.rpm` packages (RHEL/Fedora) for
   `x86_64` and `aarch64`, each in standard and `-noaudio` variants —
   mirroring the `.deb` set (`contrib/rpm/build-rpm.sh`). The v0.5.3
   release was backfilled with RPMs built from the released binaries.
+
+### Fixed
+
+- **TUI**: the screen no longer flashes blank every few seconds on busy
+  live captures, even when the displayed page isn't changing. A render
+  tick that lost the store-lock race to the processing thread used to
+  flush a frame with an empty main pane (which the next frame repainted);
+  a tick now draws from a consistent snapshot of both stores or skips the
+  frame entirely, leaving the previous frame on screen. Sustained
+  contention forces a blocking frame after a few skipped ticks, so a
+  write-saturated capture degrades to a briefly stale frame instead of a
+  flickering or frozen UI. Deferred "Saving…"/"Decoding…" work now only
+  runs after its status frame actually painted.
 
 ## [0.5.3] - 2026-07-09
 
