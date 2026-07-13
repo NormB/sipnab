@@ -7,8 +7,8 @@ expression: output
  Time: Scaled
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/4] INVITE ────────────────────────┐
              │                                            │ │INVITE sip:1002@example.com SIP/2.0   │
-     +0.000s │───────────────── INVITE ──────────────────▶│ │From: "1001"                          │
-    (1000ms) ┊                                            ┊ │<sip:1001@example.com>;tag=t1         │
+     +0.000s │───────────────── INVITE ──────────────────▶│ │From: "1001" <sip:1001@example.com>;ta│
+    (1000ms) ┊                                            ┊ │g=t1                                  │
              ┊                                            ┊ │To: "1002" <sip:1002@example.com>     │
              ┊                                            ┊ │Call-ID: call-1@test                  │
              ┊                                            ┊ │CSeq: 1 INVITE                        │

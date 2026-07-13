@@ -69,7 +69,7 @@ active filter.
 | PgUp | Page up (ladder, or detail when focused) |
 | PgDn | Page down (ladder, or detail when focused) |
 | Home | Jump to first message (or top of detail when focused) |
-| End | Jump to last message |
+| End | Jump to last message (or bottom of detail when focused) |
 | Enter | Open full-screen raw message view |
 | Space | Select message for diff (press on two messages to compare) |
 | Esc | Back to call list |
@@ -80,6 +80,8 @@ active filter.
 | R | Toggle detail panel visibility |
 | + / = / 0 / Left | Widen the detail pane, narrowing the ladder (with the split off, shows a hint instead) |
 | - / 9 / Right | Narrow the detail pane, widening the ladder (with the split off, shows a hint instead) |
+| w | Toggle line wrapping in the detail pane (off = long lines truncate and a scrollbar appears along the bottom edge) |
+| ← / → | Scroll the detail pane horizontally when it is focused with wrap off |
 | [ | Scroll detail panel up |
 | ] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |

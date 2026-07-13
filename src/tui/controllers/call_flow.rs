@@ -90,6 +90,14 @@ pub enum CallFlowAction {
     ToggleSplit,
     GrowDetail,
     ShrinkDetail,
+    /// ← — resize the split, or scroll the detail pane left when it is
+    /// focused with wrapping off.
+    NavLeft,
+    /// → — resize the split, or scroll the detail pane right when it is
+    /// focused with wrapping off.
+    NavRight,
+    /// `w` — toggle line wrapping in the detail pane.
+    ToggleDetailWrap,
     DetailScrollUp,
     DetailScrollDown,
     ToggleExtended,
@@ -134,8 +142,11 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         KeyCode::Char('c') => CycleColorMode,
         KeyCode::Char('h') => CycleHeaderForm,
         KeyCode::Char('R') => ToggleSplit,
-        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') | KeyCode::Left => GrowDetail,
-        KeyCode::Char('-') | KeyCode::Char('9') | KeyCode::Right => ShrinkDetail,
+        KeyCode::Char('+') | KeyCode::Char('=') | KeyCode::Char('0') => GrowDetail,
+        KeyCode::Char('-') | KeyCode::Char('9') => ShrinkDetail,
+        KeyCode::Left => NavLeft,
+        KeyCode::Right => NavRight,
+        KeyCode::Char('w') => ToggleDetailWrap,
         KeyCode::Char('[') => DetailScrollUp,
         KeyCode::Char(']') => DetailScrollDown,
         k if k == km.extended_flow || k == KeyCode::Char('x') => ToggleExtended,
@@ -153,6 +164,33 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
         KeyCode::F(9) => ClearFilter,
         _ => return None,
     })
+}
+
+/// Increase detail panel size (← / + / = / 0 push the split leftward =
+/// detail wider).
+fn grow_detail(app: &mut App) {
+    if app.flow.raw_preview {
+        if app.flow.raw_preview_pct < 80 {
+            app.flow.raw_preview_pct = (app.flow.raw_preview_pct + 5).min(80);
+            app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
+        }
+    } else {
+        // Not a silent no-op: say why nothing resized.
+        app.status_error = Some("Split view is off — press R to enable it".to_string());
+    }
+}
+
+/// Decrease detail panel size (→ / - / 9 push the split rightward =
+/// ladder wider).
+fn shrink_detail(app: &mut App) {
+    if app.flow.raw_preview {
+        if app.flow.raw_preview_pct > 10 {
+            app.flow.raw_preview_pct = app.flow.raw_preview_pct.saturating_sub(5).max(10);
+            app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
+        }
+    } else {
+        app.status_error = Some("Split view is off — press R to enable it".to_string());
+    }
 }
 
 /// Handle keys in the call flow view: map, then execute.
@@ -211,6 +249,12 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
         }
         CallFlowAction::NavHome if detail_focused => {
             app.flow.detail_scroll = 0;
+            app.flow.detail_hscroll = 0;
+        }
+        CallFlowAction::NavEnd if detail_focused => {
+            // Request the bottom; the render pass clamps to the real
+            // (wrapped) row count.
+            app.flow.detail_scroll = u16::MAX;
         }
         CallFlowAction::NavPageUp => {
             app.flow.selected = app.flow.selected.saturating_sub(20);
@@ -274,28 +318,27 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
                 "Raw preview: OFF".to_string()
             });
         }
-        CallFlowAction::GrowDetail => {
-            // Increase detail panel size (Left = push split leftward = detail wider)
-            if app.flow.raw_preview {
-                if app.flow.raw_preview_pct < 80 {
-                    app.flow.raw_preview_pct = (app.flow.raw_preview_pct + 5).min(80);
-                    app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
-                }
-            } else {
-                // Not a silent no-op: say why nothing resized.
-                app.status_error = Some("Split view is off — press R to enable it".to_string());
-            }
+        CallFlowAction::GrowDetail => grow_detail(app),
+        CallFlowAction::ShrinkDetail => shrink_detail(app),
+        // Arrows drive the focused, unwrapped detail pane horizontally
+        // (the render pass clamps the offset to the widest line);
+        // everywhere else they keep their split-resize meaning.
+        CallFlowAction::NavLeft if detail_focused && !app.flow.detail_wrap => {
+            app.flow.detail_hscroll = app.flow.detail_hscroll.saturating_sub(4);
         }
-        CallFlowAction::ShrinkDetail => {
-            // Decrease detail panel size (Right = push split rightward = ladder wider)
-            if app.flow.raw_preview {
-                if app.flow.raw_preview_pct > 10 {
-                    app.flow.raw_preview_pct = app.flow.raw_preview_pct.saturating_sub(5).max(10);
-                    app.status_error = Some(format!("Detail panel: {}%", app.flow.raw_preview_pct));
-                }
+        CallFlowAction::NavRight if detail_focused && !app.flow.detail_wrap => {
+            app.flow.detail_hscroll = app.flow.detail_hscroll.saturating_add(4);
+        }
+        CallFlowAction::NavLeft => grow_detail(app),
+        CallFlowAction::NavRight => shrink_detail(app),
+        CallFlowAction::ToggleDetailWrap => {
+            app.flow.detail_wrap = !app.flow.detail_wrap;
+            app.flow.detail_hscroll = 0;
+            app.status_error = Some(if app.flow.detail_wrap {
+                "Detail wrap: ON".to_string()
             } else {
-                app.status_error = Some("Split view is off — press R to enable it".to_string());
-            }
+                "Detail wrap: OFF (←/→ scroll when focused)".to_string()
+            });
         }
         CallFlowAction::DetailScrollUp => {
             app.flow.detail_scroll = app.flow.detail_scroll.saturating_sub(1);
@@ -1033,6 +1076,145 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use crate::tui::controllers::test_support::*;
     use chrono::{DateTime, TimeDelta, Utc};
+
+    // ── Detail-pane wrap toggle & horizontal scrolling ───────────────
+
+    /// App on the CallFlow view with the split preview on and the detail
+    /// pane focused.
+    fn app_in_split_with_detail_focus() -> App {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        assert!(app.flow.raw_preview, "split view is on by default");
+        handle_call_flow_key(&mut app, key(KeyCode::Tab));
+        assert!(app.flow.detail_focused);
+        app
+    }
+
+    #[test]
+    fn w_toggles_detail_wrap_and_resets_hscroll() {
+        let mut app = app_in_split_with_detail_focus();
+        assert!(app.flow.detail_wrap, "wrapping is the default");
+        handle_call_flow_key(&mut app, key(KeyCode::Char('w')));
+        assert!(!app.flow.detail_wrap, "w turns wrapping off");
+        assert!(
+            app.status_error
+                .as_deref()
+                .is_some_and(|s| s.to_lowercase().contains("wrap")),
+            "status announces the wrap state: {:?}",
+            app.status_error
+        );
+        app.flow.detail_hscroll = 7;
+        handle_call_flow_key(&mut app, key(KeyCode::Char('w')));
+        assert!(app.flow.detail_wrap, "w turns wrapping back on");
+        assert_eq!(
+            app.flow.detail_hscroll, 0,
+            "re-enabling wrap resets the horizontal scroll"
+        );
+    }
+
+    #[test]
+    fn arrows_hscroll_the_focused_unwrapped_detail_pane() {
+        let mut app = app_in_split_with_detail_focus();
+        handle_call_flow_key(&mut app, key(KeyCode::Char('w'))); // wrap off
+        let pct = app.flow.raw_preview_pct;
+        handle_call_flow_key(&mut app, key(KeyCode::Right));
+        handle_call_flow_key(&mut app, key(KeyCode::Right));
+        assert_eq!(app.flow.detail_hscroll, 8, "→ scrolls right 4 cols/press");
+        assert_eq!(app.flow.raw_preview_pct, pct, "split size untouched");
+        handle_call_flow_key(&mut app, key(KeyCode::Left));
+        assert_eq!(app.flow.detail_hscroll, 4, "← scrolls back left");
+        handle_call_flow_key(&mut app, key(KeyCode::Left));
+        handle_call_flow_key(&mut app, key(KeyCode::Left));
+        assert_eq!(app.flow.detail_hscroll, 0, "← clamps at column zero");
+    }
+
+    #[test]
+    fn arrows_resize_the_split_when_wrapped_or_unfocused() {
+        // Focused but wrapping (default): arrows keep resizing the split.
+        let mut app = app_in_split_with_detail_focus();
+        let pct = app.flow.raw_preview_pct;
+        handle_call_flow_key(&mut app, key(KeyCode::Right));
+        assert_eq!(app.flow.raw_preview_pct, pct - 5, "→ shrinks the detail");
+        handle_call_flow_key(&mut app, key(KeyCode::Left));
+        assert_eq!(app.flow.raw_preview_pct, pct, "← grows it back");
+        assert_eq!(app.flow.detail_hscroll, 0);
+
+        // Unfocused with wrapping off: arrows still resize.
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Char('w')));
+        let pct = app.flow.raw_preview_pct;
+        handle_call_flow_key(&mut app, key(KeyCode::Left));
+        assert_eq!(app.flow.raw_preview_pct, pct + 5);
+        assert_eq!(app.flow.detail_hscroll, 0);
+    }
+
+    #[test]
+    fn home_and_end_drive_the_focused_detail_pane() {
+        let mut app = app_in_split_with_detail_focus();
+        app.flow.detail_scroll = 9;
+        app.flow.detail_hscroll = 6;
+        let selected = app.flow.selected;
+        handle_call_flow_key(&mut app, key(KeyCode::Home));
+        assert_eq!(app.flow.detail_scroll, 0, "Home rewinds vertically");
+        assert_eq!(app.flow.detail_hscroll, 0, "Home rewinds horizontally");
+        assert_eq!(app.flow.selected, selected, "ladder selection untouched");
+        handle_call_flow_key(&mut app, key(KeyCode::End));
+        assert_eq!(
+            app.flow.detail_scroll,
+            u16::MAX,
+            "End requests the bottom; the render pass clamps it"
+        );
+        assert_eq!(app.flow.selected, selected, "ladder selection untouched");
+    }
+
+    /// End-to-end regression for the field report: a message whose long
+    /// headers WRAP past the pane height (while its logical line count
+    /// fits) must stay scrollable after the render feedback clamp.
+    #[test]
+    fn focused_scroll_on_wrapped_overflow_survives_render_clamp() {
+        use crate::capture::parse::TransportProto;
+        use ratatui::{Terminal, backend::TestBackend};
+        let long = format!("X-Very-Long: {}", "a".repeat(120));
+        let raw = raw_sip(
+            "INVITE sip:b@example.com SIP/2.0",
+            &[
+                "From: <sip:a@example.com>;tag=t1",
+                "To: <sip:b@example.com>",
+                "Call-ID: wrapclamp@test",
+                "CSeq: 1 INVITE",
+                &long,
+                "Content-Length: 0",
+            ],
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse");
+        let mut app = App::with_processed_messages(vec![msg]);
+        app.sync_caches();
+        open_call_flow(&mut app);
+        handle_call_flow_key(&mut app, key(KeyCode::Tab)); // focus detail
+        for _ in 0..3 {
+            handle_call_flow_key(&mut app, key(KeyCode::Down));
+        }
+        assert_eq!(app.flow.detail_scroll, 3);
+        // A tall-enough terminal that the LOGICAL lines fit the pane while
+        // the wrapped rows overflow it — the old clamp zeroed the scroll.
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        assert!(
+            app.flow.detail_scroll >= 1,
+            "render clamp must respect wrapped rows (got {})",
+            app.flow.detail_scroll
+        );
+    }
 
     /// The mapping is pure over (Keymap, KeyEvent): a rebound quit key
     /// maps, the old one unbinds, and Ctrl+R maps differently from bare r.

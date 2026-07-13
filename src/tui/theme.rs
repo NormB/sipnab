@@ -361,17 +361,35 @@ mod keymap_collision_tests {
         );
     }
 
-    /// A rebind onto a free key must NOT be reported.
+    /// A rebind onto a free key must NOT be reported. ('w' stopped being
+    /// free when the call flow view gained the wrap toggle; 'z' is bound
+    /// nowhere.)
     #[test]
     fn clean_rebind_is_not_reported() {
         let km = Keymap {
-            save: KeyCode::Char('w'),
+            save: KeyCode::Char('z'),
             ..Default::default()
         };
         let collisions = km.collisions();
         assert!(
             collisions.is_empty(),
-            "save='w' is a clean rebind: {collisions:?}"
+            "save='z' is a clean rebind: {collisions:?}"
+        );
+    }
+
+    /// The wrap toggle is a call-flow built-in: rebinding onto 'w' must
+    /// warn that it is shadowed there.
+    #[test]
+    fn rebind_onto_wrap_toggle_key_is_reported() {
+        let km = Keymap {
+            save: KeyCode::Char('w'),
+            ..Default::default()
+        };
+        assert!(
+            km.collisions()
+                .iter()
+                .any(|c| c.contains("'save' = 'w'") && c.contains("call flow")),
+            "expected a shadowed-by-built-in warning for 'w'"
         );
     }
 }

@@ -7,17 +7,16 @@ expression: output
  SDP: Full
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [1/2] INVITE ────────────────────────┐
              │                                            │ │INVITE sip:2002@10.0.0.2 SIP/2.0      │
-     +0.000s │────────────── INVITE (SDP) ───────────────▶│ │Via: SIP/2.0/UDP                      │
-                v=0                                         │10.0.0.1:5060;branch=z9hG4bK-sdp-call@│
-                o=- 123456 654321 IN IP4 10.0.0.1           │test                                  │
-                s=-                                         │From: <sip:2001@10.0.0.1>;tag=t1      │
-                c=IN IP4 10.0.0.1                           │To: <sip:2002@10.0.0.2>               │
-                t=0 0                                       │Call-ID: sdp-call@test                │
-                m=audio 20000 RTP/AVP 0 8                   │CSeq: 1 INVITE                        │
-                a=rtpmap:0 PCMU/8000                        │Content-Type: application/sdp         │
-                a=rtpmap:8 PCMA/8000                        │Content-Length: 142                   │
-     +2.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │                                      │
-                                                            │v=0                                   │
+     +0.000s │────────────── INVITE (SDP) ───────────────▶│ │Via: SIP/2.0/UDP 10.0.0.1:5060;branch=│
+                v=0                                         │z9hG4bK-sdp-call@test                 │
+                o=- 123456 654321 IN IP4 10.0.0.1           │From: <sip:2001@10.0.0.1>;tag=t1      │
+                s=-                                         │To: <sip:2002@10.0.0.2>               │
+                c=IN IP4 10.0.0.1                           │Call-ID: sdp-call@test                │
+                t=0 0                                       │CSeq: 1 INVITE                        │
+                m=audio 20000 RTP/AVP 0 8                   │Content-Type: application/sdp         │
+                a=rtpmap:0 PCMU/8000                        │Content-Length: 142                   │
+                a=rtpmap:8 PCMA/8000                        │                                      │
+     +2.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │v=0                                   │
                                                             │o=- 123456 654321 IN IP4 10.0.0.1     │
                                                             │s=-                                   │
                                                             │c=IN IP4 10.0.0.1                     │
@@ -25,6 +24,7 @@ expression: output
                                                             │m=audio 20000 RTP/AVP 0 8             │
                                                             │a=rtpmap:0 PCMU/8000                  │
                                                             │a=rtpmap:8 PCMA/8000                  │
+                                                            │                                      │
                                                             │                                      │
                                                             │                                      │
                                                             │                                      │

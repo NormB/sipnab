@@ -4,6 +4,25 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-13
+
+### Added
+
+- **TUI**: `w` toggles line wrapping in the call-flow detail panel. With
+  wrapping off, long header lines truncate, ←/→ scroll the focused panel
+  horizontally, and a horizontal scrollbar tracks the widest line along
+  the panel's bottom edge. `End` in the focused panel now jumps to the
+  bottom of the message; `Home` also rewinds the horizontal scroll.
+
+### Fixed
+
+- **TUI**: the call-flow detail panel's scrollbar and scroll range are
+  now computed from the *wrapped* rows that actually render. Messages
+  whose long headers wrapped past the pane height (while their logical
+  line count fit) showed no scrollbar and ignored Up/Down; line wrapping
+  also switched from word-wrap to full-width character wrap so row
+  accounting is exact.
+
 ## [0.5.4] - 2026-07-13
 
 ### Added

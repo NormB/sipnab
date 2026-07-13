@@ -91,6 +91,8 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | R | Toggle detail panel visibility |
 | 0 / + / = / Right | Increase ladder panel width (with the split off, shows a hint instead) |
 | 9 / - / Left | Decrease ladder panel width (with the split off, shows a hint instead) |
+| w | Toggle line wrapping in the detail panel (off = long lines truncate; a horizontal scrollbar appears at the bottom edge) |
+| Left / Right | Scroll the detail panel horizontally when it is focused and wrap is off |
 | \[ | Scroll detail panel up |
 | \] | Scroll detail panel down |
 | e | Expand/collapse the selected fold header (retransmissions, auth retries) |
