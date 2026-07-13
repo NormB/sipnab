@@ -61,10 +61,12 @@ CALL FLOW:
   c                Cycle colors (method / call-id / cseq)
   h                Header names (as captured / expanded / compact)
   R                Toggle detail panel
+  w                Toggle line wrap in the detail panel
   m / M            Mark message / clear marks
   e                Fold / expand retransmits
   E                Export Mermaid sequence diagram
   9/0, +/-, ←/→    Resize ladder/detail split
+  ←/→              Scroll detail horizontally (focused, wrap off)
   [ / ]            Scroll detail panel (any focus)
   F2               Save
   F4, x            Extended multi-leg flow

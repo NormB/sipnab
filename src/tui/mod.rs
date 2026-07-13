@@ -657,6 +657,9 @@ impl App {
         if let Some(v) = fb.flow_detail_scroll {
             self.flow.detail_scroll = v;
         }
+        if let Some(v) = fb.flow_detail_hscroll {
+            self.flow.detail_hscroll = v;
+        }
         if let Some((count, bars, raws)) = fb.flow_caches {
             self.flow.cached_msg_count = count;
             self.flow.cached_rtp_bar_indices = bars;

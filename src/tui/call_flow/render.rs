@@ -666,7 +666,30 @@ pub struct MessageDetailView<'a> {
     pub focused: bool,
     /// Header-name display form (as captured / expanded / compact).
     pub header_form: crate::tui::header_form::HeaderFormMode,
+    /// Wrap long lines at the pane width; when off, lines truncate and
+    /// `hscroll` shifts the view horizontally.
+    pub wrap: bool,
+    /// Horizontal scroll offset (display columns); ignored while `wrap`
+    /// is on.
+    pub hscroll: u16,
     pub theme: &'a Theme,
+}
+
+/// What one detail-pane render actually used — visual geometry plus the
+/// clamped scroll offsets. The event loop persists the clamps via
+/// [`RenderFeedback`] so stale offsets self-correct on the next frame,
+/// and tests assert the scrollbar/scroll math on it directly.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DetailMetrics {
+    /// Visual rows of the whole message at the rendered width — WRAPPED
+    /// rows when wrapping is on, logical lines otherwise.
+    pub total_rows: usize,
+    /// Widest line in display columns (pre-wrap).
+    pub max_width: usize,
+    /// Vertical scroll after clamping to `total_rows - viewport`.
+    pub scroll: u16,
+    /// Horizontal scroll after clamping (always 0 while wrapping).
+    pub hscroll: u16,
 }
 
 /// Render the message detail panel (right side of the split view).
@@ -678,13 +701,15 @@ pub fn render_message_detail(
     area: Rect,
     store: &DialogStore,
     view: &MessageDetailView,
-) -> usize {
+) -> DetailMetrics {
     let MessageDetailView {
         call_id,
         selected_msg,
         scroll_offset,
         focused,
         header_form,
+        wrap,
+        hscroll,
         theme,
     } = *view;
     let dialog = match store.get(call_id) {
@@ -692,7 +717,7 @@ pub fn render_message_detail(
         None => {
             let para = Paragraph::new("Dialog not found.").style(Style::default().fg(theme.muted));
             frame.render_widget(para, area);
-            return 0;
+            return DetailMetrics::default();
         }
     };
 
@@ -702,7 +727,7 @@ pub fn render_message_detail(
             let para =
                 Paragraph::new("No message selected.").style(Style::default().fg(theme.muted));
             frame.render_widget(para, area);
-            return 0;
+            return DetailMetrics::default();
         }
     };
 
@@ -745,23 +770,48 @@ pub fn render_message_detail(
     let raw_bytes = String::from_utf8_lossy(&msg.raw);
     let raw_text = crate::tui::header_form::reformat_headers(&raw_bytes, header_form);
     let lines = highlight_sip_detail(&raw_text, theme);
-    let total_lines = lines.len();
+    // Widest logical line in display columns — drives the h-scroll clamp
+    // and its scrollbar in unwrapped mode.
+    let max_width = lines.iter().map(Line::width).max().unwrap_or(0);
 
-    // Clamp the display scroll so the End key (which sets a large value) and
+    if inner.width == 0 || inner.height == 0 {
+        return DetailMetrics {
+            total_rows: lines.len(),
+            max_width,
+            scroll: 0,
+            hscroll: 0,
+        };
+    }
+
+    // Wrapping happens HERE, not in the Paragraph: the scrollbar and the
+    // scroll clamp must count the same rows that render. Comparing
+    // logical lines against a wrapped viewport hid the scrollbar and
+    // pinned the scroll to 0 whenever long headers wrapped.
+    let display = if wrap {
+        wrap_styled_lines(lines, inner.width)
+    } else {
+        lines
+    };
+    let total_rows = display.len();
+
+    // Clamp both scrolls so the End key (which sets a large value) and
     // any stale offset never scroll the content entirely out of view.
     let viewport = inner.height as usize;
-    let max_scroll = total_lines.saturating_sub(viewport);
+    let max_scroll = total_rows.saturating_sub(viewport);
     let eff_scroll = (scroll_offset as usize).min(max_scroll) as u16;
+    let max_hscroll = if wrap {
+        0
+    } else {
+        max_width.saturating_sub(inner.width as usize)
+    };
+    let eff_hscroll = (hscroll as usize).min(max_hscroll) as u16;
 
-    let para = Paragraph::new(lines)
-        .scroll((eff_scroll, 0))
-        .wrap(Wrap { trim: false });
-
+    let para = Paragraph::new(display).scroll((eff_scroll, eff_hscroll));
     frame.render_widget(para, inner);
 
     // Vertical scrollbar on the right border when the message overflows.
-    if total_lines > viewport {
-        let mut sb_state = ScrollbarState::new(total_lines)
+    if total_rows > viewport {
+        let mut sb_state = ScrollbarState::new(total_rows)
             .viewport_content_length(viewport)
             .position(eff_scroll as usize);
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -772,7 +822,62 @@ pub fn render_message_detail(
         frame.render_stateful_widget(scrollbar, area, &mut sb_state);
     }
 
-    total_lines
+    // Horizontal scrollbar on the bottom border when unwrapped lines are
+    // wider than the pane.
+    if max_hscroll > 0 {
+        let mut sb_state = ScrollbarState::new(max_width)
+            .viewport_content_length(inner.width as usize)
+            .position(eff_hscroll as usize);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_style(Style::default().fg(theme.selected))
+            .track_style(Style::default().fg(theme.muted));
+        frame.render_stateful_widget(scrollbar, area, &mut sb_state);
+    }
+
+    DetailMetrics {
+        total_rows,
+        max_width,
+        scroll: eff_scroll,
+        hscroll: eff_hscroll,
+    }
+}
+
+/// Split styled lines at `width` display columns — character wrapping,
+/// display-width aware. A wide glyph (CJK, emoji) that would straddle the
+/// boundary moves wholly to the next row; zero-width characters attach to
+/// the current row. Every input line yields at least one output row, so
+/// row indices stay meaningful for empty lines.
+fn wrap_styled_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>> {
+    use unicode_width::UnicodeWidthChar;
+    let max = width as usize;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        let mut row: Vec<Span<'static>> = Vec::new();
+        let mut cols = 0usize;
+        for span in line.spans {
+            let style = span.style;
+            let mut frag = String::new();
+            for ch in span.content.chars() {
+                let w = ch.width().unwrap_or(0);
+                if w > 0 && cols + w > max {
+                    if !frag.is_empty() {
+                        row.push(Span::styled(std::mem::take(&mut frag), style));
+                    }
+                    out.push(Line::from(std::mem::take(&mut row)));
+                    cols = 0;
+                }
+                frag.push(ch);
+                cols += w;
+            }
+            if !frag.is_empty() {
+                row.push(Span::styled(frag, style));
+            }
+        }
+        out.push(Line::from(row));
+    }
+    out
 }
 
 /// Total logical rows the ladder occupies. Each message paints `1 + extra_lines`
@@ -2029,7 +2134,7 @@ mod tests {
         // A short pane forces the SIP message to overflow → scrollbar path.
         let mut term = terminal(40, 6);
         let area = Rect::new(0, 0, 40, 6);
-        let mut lines = 0usize;
+        let mut lines = DetailMetrics::default();
         term.draw(|f| {
             lines = render_message_detail(
                 f,
@@ -2041,13 +2146,15 @@ mod tests {
                     scroll_offset: 0,
                     focused: true,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+                    wrap: true,
+                    hscroll: 0,
                     theme: &theme,
                 },
             );
         })
         .unwrap();
         assert!(
-            lines > 0,
+            lines.total_rows > 0,
             "detail panel should report its content line count"
         );
         // The thumb glyph '█' is unique to the scrollbar (the block border uses
@@ -2077,6 +2184,8 @@ mod tests {
                     scroll_offset: 0,
                     focused: false,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+                    wrap: true,
+                    hscroll: 0,
                     theme: &theme,
                 },
             );
@@ -2087,6 +2196,295 @@ mod tests {
             !text.contains('\u{2588}'),
             "scrollbar should be absent when content fits:\n{text}"
         );
+    }
+
+    // ── Detail-pane geometry: wrap accounting, off-by-one boundaries,
+    //    horizontal scrolling (field report: long wrapping headers showed
+    //    no scrollbar and Up/Down did nothing — logical lines were
+    //    compared against a wrapped viewport) ──────────────────────────
+
+    /// Store holding ONE request with the given extra headers and body.
+    fn store_with_message(call_id: &str, extra_headers: &[&str], body: &str) -> DialogStore {
+        let mut headers: Vec<String> = vec![
+            "From: <sip:a@example.com>;tag=t1".into(),
+            "To: <sip:b@example.com>".into(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".into(),
+        ];
+        headers.extend(extra_headers.iter().map(|h| h.to_string()));
+        let hdr_refs: Vec<&str> = headers.iter().map(String::as_str).collect();
+        let raw = build_raw("INVITE sip:b@example.com SIP/2.0", &hdr_refs, body);
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            ip_a(),
+            ip_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse custom INVITE");
+        let mut store = DialogStore::new(100, false);
+        store.process_message(msg);
+        store
+    }
+
+    fn detail_view(call_id: &str, scroll: u16, wrap: bool, hscroll: u16) -> MessageDetailView<'_> {
+        static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
+        MessageDetailView {
+            call_id,
+            selected_msg: 0,
+            scroll_offset: scroll,
+            focused: true,
+            header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+            wrap,
+            hscroll,
+            theme: THEME.get_or_init(Theme::default),
+        }
+    }
+
+    fn draw_detail(
+        w: u16,
+        h: u16,
+        store: &DialogStore,
+        view: &MessageDetailView,
+    ) -> (DetailMetrics, String) {
+        let mut term = terminal(w, h);
+        let area = Rect::new(0, 0, w, h);
+        let mut m = DetailMetrics::default();
+        term.draw(|f| m = render_message_detail(f, area, store, view))
+            .unwrap();
+        (m, buffer_text(&term))
+    }
+
+    /// Bottom border row of the buffer (where the h-scrollbar paints).
+    fn bottom_row(text: &str, h: u16) -> String {
+        text.lines().nth(h as usize - 1).unwrap_or("").to_string()
+    }
+
+    /// Logical (unwrapped) row count of the store's first message, learned
+    /// by rendering into a pane far wider than any line.
+    fn logical_rows(call_id: &str, store: &DialogStore) -> usize {
+        let (m, _) = draw_detail(200, 50, store, &detail_view(call_id, 0, true, 0));
+        assert!(m.total_rows > 0, "sanity: message renders");
+        m.total_rows
+    }
+
+    #[test]
+    fn detail_exact_fit_has_no_scrollbar_and_clamps_stale_scroll_to_zero() {
+        let store = store_with_message("fit@test", &[], "LASTBODY");
+        let rows = logical_rows("fit@test", &store);
+        // Pane inner height == content rows: nothing to scroll.
+        let h = rows as u16 + 2;
+        let (m, text) = draw_detail(60, h, &store, &detail_view("fit@test", 5, true, 0));
+        assert_eq!(m.total_rows, rows);
+        assert_eq!(m.scroll, 0, "stale offset must clamp to 0 on exact fit");
+        assert!(
+            !text.contains('\u{2588}'),
+            "no scrollbar on exact fit:\n{text}"
+        );
+        assert!(
+            text.contains("LASTBODY"),
+            "last row visible unscrolled:\n{text}"
+        );
+    }
+
+    #[test]
+    fn detail_single_row_overflow_scrolls_exactly_one() {
+        let store = store_with_message("plus1@test", &[], "LASTBODY");
+        let rows = logical_rows("plus1@test", &store);
+        // Pane one row SHORTER than the content: max scroll is exactly 1.
+        let h = rows as u16 + 1;
+        let (m0, t0) = draw_detail(60, h, &store, &detail_view("plus1@test", 0, true, 0));
+        assert!(
+            t0.contains('\u{2588}'),
+            "one-row overflow needs a scrollbar:\n{t0}"
+        );
+        assert!(
+            !t0.contains("LASTBODY"),
+            "unscrolled, the last row is just off-screen:\n{t0}"
+        );
+        let (m1, t1) = draw_detail(60, h, &store, &detail_view("plus1@test", u16::MAX, true, 0));
+        assert_eq!(m1.scroll, 1, "End must clamp to exactly one row of scroll");
+        assert!(
+            t1.contains("LASTBODY"),
+            "scrolled to bottom, the last row is visible:\n{t1}"
+        );
+        assert_eq!(m0.total_rows, m1.total_rows);
+    }
+
+    #[test]
+    fn wrapped_long_header_counts_visual_rows_not_logical_lines() {
+        let long = format!("X-A: {}", "a".repeat(95)); // 100 cols
+        let store = store_with_message("wrapcount@test", &[&long], "LASTBODY");
+        let logical = logical_rows("wrapcount@test", &store);
+        // Inner width 33 — wider than every standard header (≤32 cols),
+        // so ONLY the 100-col header wraps: 33+33+33+1 → 4 rows (+3).
+        let (m, _) = draw_detail(35, 40, &store, &detail_view("wrapcount@test", 0, true, 0));
+        assert_eq!(
+            m.total_rows,
+            logical + 3,
+            "wrapped row accounting must count continuation rows"
+        );
+    }
+
+    #[test]
+    fn wrapped_overflow_shows_scrollbar_even_when_logical_lines_fit() {
+        let long = format!("X-A: {}", "a".repeat(60));
+        let store = store_with_message("wrapbar@test", &[&long], "LASTBODY");
+        let logical = logical_rows("wrapbar@test", &store);
+        // Inner height exactly == LOGICAL rows, but wrapping adds 2 more:
+        // the old logical-vs-viewport comparison hid the scrollbar here.
+        let h = logical as u16 + 2;
+        let (m, text) = draw_detail(26, h, &store, &detail_view("wrapbar@test", 1, true, 0));
+        assert!(
+            text.contains('\u{2588}'),
+            "wrapped overflow must show a scrollbar:\n{text}"
+        );
+        assert_eq!(
+            m.scroll, 1,
+            "scroll must not clamp to 0 while wrapped rows overflow"
+        );
+    }
+
+    #[test]
+    fn wrapped_scroll_reaches_the_last_row() {
+        let long = format!("X-A: {}", "a".repeat(60));
+        let store = store_with_message("wrapbottom@test", &[&long], "LASTBODY");
+        let logical = logical_rows("wrapbottom@test", &store);
+        let h = logical as u16 + 2; // viewport == logical rows, content == logical+2
+        let (m, text) = draw_detail(
+            26,
+            h,
+            &store,
+            &detail_view("wrapbottom@test", u16::MAX, true, 0),
+        );
+        assert_eq!(
+            m.scroll as usize,
+            m.total_rows - logical,
+            "End clamps to total wrapped rows minus viewport"
+        );
+        assert!(
+            text.contains("LASTBODY"),
+            "the last row must be reachable under wrapping:\n{text}"
+        );
+    }
+
+    #[test]
+    fn unwrapped_lines_truncate_and_report_max_width() {
+        let long = format!("X-A: {}", "a".repeat(60)); // 65 cols
+        let store = store_with_message("nowrap@test", &[&long], "LASTBODY");
+        let logical = logical_rows("nowrap@test", &store);
+        let (m, text) = draw_detail(26, 40, &store, &detail_view("nowrap@test", 0, false, 0));
+        assert_eq!(m.total_rows, logical, "no wrap: rows == logical lines");
+        assert_eq!(m.max_width, 65, "widest line in display columns");
+        // The row after the long header must hold the NEXT line, not a
+        // wrapped continuation of 'a's.
+        let lines: Vec<&str> = text.lines().collect();
+        let long_row = lines
+            .iter()
+            .position(|l| l.contains("X-A: aaa"))
+            .expect("long header row rendered");
+        assert!(
+            !lines[long_row + 1].contains("aaaa"),
+            "line must truncate, not wrap:\n{text}"
+        );
+    }
+
+    #[test]
+    fn unwrapped_hscroll_shifts_content_and_clamps_at_the_widest_line() {
+        let long = format!("X-A: {}", "a".repeat(60)); // 65 cols, inner width 24
+        let store = store_with_message("hscroll@test", &[&long], "LASTBODY");
+        let (m, text) = draw_detail(
+            26,
+            40,
+            &store,
+            &detail_view("hscroll@test", 0, false, u16::MAX),
+        );
+        assert_eq!(
+            m.hscroll as usize,
+            65 - 24,
+            "h-scroll clamps so the line's tail lands on the last column"
+        );
+        assert!(
+            text.contains("aaaa"),
+            "tail of the long line visible at max h-scroll:\n{text}"
+        );
+        assert!(
+            !text.contains("X-A:"),
+            "line beginnings scrolled out of view:\n{text}"
+        );
+        let (m0, t0) = draw_detail(26, 40, &store, &detail_view("hscroll@test", 0, false, 0));
+        assert_eq!(m0.hscroll, 0);
+        assert!(t0.contains("X-A:"), "unscrolled shows line starts:\n{t0}");
+    }
+
+    #[test]
+    fn horizontal_scrollbar_only_for_unwrapped_overflow() {
+        let long = format!("X-A: {}", "a".repeat(60));
+        let store = store_with_message("hbar@test", &[&long], "LASTBODY");
+        let h = 40u16;
+        // Unwrapped + overflowing → thumb on the bottom border row.
+        let (_, t_off) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, false, 0));
+        assert!(
+            bottom_row(&t_off, h).contains('\u{2588}'),
+            "h-scrollbar expected on bottom border:\n{t_off}"
+        );
+        // Wrapped → no horizontal overflow by definition.
+        let (_, t_on) = draw_detail(26, h, &store, &detail_view("hbar@test", 0, true, 0));
+        assert!(
+            !bottom_row(&t_on, h).contains('\u{2588}'),
+            "no h-scrollbar while wrapping:\n{t_on}"
+        );
+        // Unwrapped but everything fits → no h-scrollbar either.
+        let (_, t_wide) = draw_detail(100, h, &store, &detail_view("hbar@test", 0, false, 0));
+        assert!(
+            !bottom_row(&t_wide, h).contains('\u{2588}'),
+            "no h-scrollbar when lines fit:\n{t_wide}"
+        );
+    }
+
+    #[test]
+    fn multibyte_wide_chars_wrap_and_hscroll_by_display_width() {
+        // "X-U: " (5 cols) + 30 CJK chars (60 cols) = 65 display columns
+        // in only 35 chars — the width-vs-chars distinction under test.
+        let cjk = format!("X-U: {}", "好".repeat(30));
+        let store = store_with_message("cjk@test", &[&cjk], "LASTBODY");
+        let logical = logical_rows("cjk@test", &store);
+        // Inner width 33 — only the CJK line wraps: 5+14 glyphs (33 cols
+        // exactly), then 16 glyphs (32 cols) → 2 rows (+1 vs logical).
+        let (m, _) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, true, 0));
+        assert_eq!(
+            m.total_rows,
+            logical + 1,
+            "wide-char wrapping must count display columns, not chars"
+        );
+        // Unwrapped: max_width in display columns; hscroll clamps against
+        // it (65 - 33 = 32, impossible if widths were counted in chars).
+        let (mh, th) = draw_detail(35, 40, &store, &detail_view("cjk@test", 0, false, u16::MAX));
+        assert_eq!(mh.max_width, 65);
+        assert_eq!(mh.hscroll as usize, 65 - 33);
+        assert!(th.contains('好'), "CJK tail renders at max h-scroll:\n{th}");
+    }
+
+    #[test]
+    fn detail_tiny_panes_never_panic() {
+        let long = format!("X-A: {}", "a".repeat(60));
+        let store = store_with_message("tiny@test", &[&long], "LASTBODY");
+        for (w, h) in [(2u16, 2u16), (3, 3), (1, 1), (4, 2)] {
+            for wrap in [true, false] {
+                let (m, _) = draw_detail(
+                    w,
+                    h,
+                    &store,
+                    &detail_view("tiny@test", u16::MAX, wrap, u16::MAX),
+                );
+                assert!(
+                    (m.scroll as usize) <= m.total_rows,
+                    "{w}x{h} wrap={wrap}: clamped scroll within content"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2123,8 +2521,8 @@ mod tests {
         // Render focused vs unfocused; both must paint without panicking and
         // report the same line count (focus only changes styling).
         let area = Rect::new(0, 0, 50, 20);
-        let mut a = 0usize;
-        let mut b = 0usize;
+        let mut a = DetailMetrics::default();
+        let mut b = DetailMetrics::default();
         let mut term = terminal(50, 20);
         term.draw(|f| {
             a = render_message_detail(
@@ -2137,6 +2535,8 @@ mod tests {
                     scroll_offset: 0,
                     focused: true,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+                    wrap: true,
+                    hscroll: 0,
                     theme: &theme,
                 },
             )
@@ -2153,6 +2553,8 @@ mod tests {
                     scroll_offset: 0,
                     focused: false,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+                    wrap: true,
+                    hscroll: 0,
                     theme: &theme,
                 },
             )

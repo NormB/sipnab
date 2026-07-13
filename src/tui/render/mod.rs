@@ -20,6 +20,7 @@ pub(in crate::tui) struct RenderFeedback {
     pub(in crate::tui) stream_detail_scroll: Option<usize>,
     pub(in crate::tui) flow_scroll: Option<usize>,
     pub(in crate::tui) flow_detail_scroll: Option<u16>,
+    pub(in crate::tui) flow_detail_hscroll: Option<u16>,
     /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
     pub(in crate::tui) flow_caches:
         Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
@@ -294,7 +295,7 @@ pub(in crate::tui) fn render_app(
                         Some((row_cid, idx)) => (row_cid.as_str(), *idx),
                         None => (cid.as_str(), detail_sel),
                     };
-                    let total_lines = call_flow::render_message_detail(
+                    let metrics = call_flow::render_message_detail(
                         frame,
                         detail_area,
                         store,
@@ -304,14 +305,16 @@ pub(in crate::tui) fn render_app(
                             scroll_offset: app.flow.detail_scroll,
                             focused: app.flow.detail_focused,
                             header_form: app.header_form,
+                            wrap: app.flow.detail_wrap,
+                            hscroll: app.flow.detail_hscroll,
                             theme: &app.theme,
                         },
                     );
-                    // Keep the stored scroll offset within the message length so
-                    // End / repeated Down never strand the view past the content.
-                    let viewport = detail_area.height.saturating_sub(2);
-                    let max_scroll = (total_lines as u16).saturating_sub(viewport);
-                    fb.flow_detail_scroll = Some(app.flow.detail_scroll.min(max_scroll));
+                    // Persist the render's clamped offsets so End / repeated
+                    // Down/Right never strand the view past the content; the
+                    // renderer clamps against the real (wrapped) geometry.
+                    fb.flow_detail_scroll = Some(metrics.scroll);
+                    fb.flow_detail_hscroll = Some(metrics.hscroll);
                 }
             }
         }

@@ -464,6 +464,14 @@ pub(in crate::tui) struct CallFlowViewState {
     pub(in crate::tui) selected: usize,
     /// Scroll offset for the detail (right) panel in split view.
     pub(in crate::tui) detail_scroll: u16,
+    /// Line-wrap mode for the detail panel: `true` wraps long header lines
+    /// at the pane width, `false` truncates them and lets ←/→ scroll
+    /// horizontally (an h-scrollbar appears when lines overflow). Toggled
+    /// with `w`; toggling resets [`Self::detail_hscroll`].
+    pub(in crate::tui) detail_wrap: bool,
+    /// Horizontal scroll offset (display columns) for the detail panel,
+    /// only active while [`Self::detail_wrap`] is off.
+    pub(in crate::tui) detail_hscroll: u16,
     /// In the split view, whether keyboard focus is on the detail (right)
     /// pane. `false` = ladder (left). Toggled with Tab. Only meaningful while
     /// [`Self::raw_preview`] is on; navigation keys act on the focused pane.
@@ -512,6 +520,8 @@ impl Default for CallFlowViewState {
             scroll: 0,
             selected: 0,
             detail_scroll: 0,
+            detail_wrap: true,
+            detail_hscroll: 0,
             detail_focused: false,
             raw_preview: true,
             raw_preview_pct: 40,
