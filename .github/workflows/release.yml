@@ -259,9 +259,11 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-gnu'
         shell: bash
         run: |
-          # rpmbuild is not preinstalled on the Ubuntu runners.
-          sudo apt-get update || true
-          sudo apt-get install -y rpm
+          # rpmbuild is preinstalled nowhere: the gnu jobs run as root in a
+          # rust:1-bookworm container (no sudo binary), host runners need sudo.
+          SUDO=""; command -v sudo >/dev/null && SUDO=sudo
+          $SUDO apt-get update || true
+          $SUDO apt-get install -y rpm
           version="${GITHUB_REF_NAME#v}"
           [ "$version" = "${GITHUB_REF_NAME}" ] && version="dev"
           # RPM versions must start with a digit too; mirror the .deb scheme
