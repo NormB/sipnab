@@ -677,7 +677,7 @@ pub struct MessageDetailView<'a> {
 
 /// What one detail-pane render actually used — visual geometry plus the
 /// clamped scroll offsets. The event loop persists the clamps via
-/// [`RenderFeedback`] so stale offsets self-correct on the next frame,
+/// `RenderFeedback` so stale offsets self-correct on the next frame,
 /// and tests assert the scrollbar/scroll math on it directly.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct DetailMetrics {
