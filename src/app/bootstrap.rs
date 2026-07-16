@@ -857,6 +857,14 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
             }
         });
 
+    // Promiscuous mode: on by default; `--no-promisc` (or `[capture] promisc`)
+    // turns it off. The CLI flag wins over the config value.
+    let promisc = if cli.no_promisc {
+        false
+    } else {
+        config.capture.promisc.unwrap_or(true)
+    };
+
     CaptureConfig {
         snaplen,
         buffer_mb,
@@ -865,6 +873,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         duration,
         replay: cli.replay,
         buffer_budget_mb,
+        promisc,
     }
 }
 
@@ -1039,6 +1048,45 @@ mod tests {
         assert_eq!(cc.count, None);
         assert_eq!(cc.duration, None);
         assert!(!cc.replay);
+    }
+
+    #[test]
+    fn build_capture_config_promisc_default_on() {
+        let cc = build_capture_config(&base_cli(), &Config::default());
+        assert!(cc.promisc, "promiscuous mode should default to on");
+    }
+
+    #[test]
+    fn build_capture_config_no_promisc_flag_disables() {
+        let mut cli = base_cli();
+        cli.no_promisc = true;
+        let cc = build_capture_config(&cli, &Config::default());
+        assert!(!cc.promisc, "--no-promisc should disable promiscuous mode");
+    }
+
+    #[test]
+    fn build_capture_config_promisc_config_fallback() {
+        let mut config = Config::default();
+        config.capture.promisc = Some(false);
+        // CLI leaves --no-promisc unset -> config value wins.
+        let cc = build_capture_config(&base_cli(), &config);
+        assert!(
+            !cc.promisc,
+            "[capture] promisc=false should disable promisc"
+        );
+    }
+
+    #[test]
+    fn build_capture_config_no_promisc_flag_overrides_config() {
+        let mut config = Config::default();
+        config.capture.promisc = Some(true);
+        let mut cli = base_cli();
+        cli.no_promisc = true;
+        let cc = build_capture_config(&cli, &config);
+        assert!(
+            !cc.promisc,
+            "--no-promisc must override [capture] promisc=true"
+        );
     }
 
     #[test]

@@ -65,6 +65,9 @@ pub struct ParallelConfig {
     pub no_dialog: bool,
     /// Skip RTP/RTCP processing (`--no-rtp`).
     pub no_rtp: bool,
+    /// Correlation header names for B2BUA leg matching (sngrep `sip.xcid`).
+    /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
+    pub xcid_headers: Vec<String>,
 }
 
 /// Merged reconstruction output of all workers.
@@ -155,7 +158,8 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
             let cfg = cfg.clone();
             thread::spawn(move || {
                 let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
-                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
+                    .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false); // batch mode never reads audio buffers
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -197,7 +201,8 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     drop(txs); // signal workers to finish
 
     // Merge thread-local stores into one, then resolve cross-worker associations.
-    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+    let mut ds =
+        DialogStore::new(cfg.max_dialogs, cfg.rotate).with_xcid_headers(cfg.xcid_headers.clone());
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -254,7 +259,8 @@ pub fn run_offline_parallel_file(
             let cfg = cfg.clone();
             thread::spawn(move || {
                 let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
-                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+                let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
+                    .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
                 ss.set_audio_capture(false);
                 let mut heuristic = crate::rtp::heuristic::RtpHeuristic::new();
@@ -337,7 +343,8 @@ pub fn run_offline_parallel_file(
     }
     drop(txs);
 
-    let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
+    let mut ds =
+        DialogStore::new(cfg.max_dialogs, cfg.rotate).with_xcid_headers(cfg.xcid_headers.clone());
     let mut ss = StreamStore::new(cfg.max_streams);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     for w in workers {
@@ -485,6 +492,7 @@ mod tests {
             portrange: (1, 65535),
             no_dialog: false,
             no_rtp: false,
+            xcid_headers: Vec::new(),
         }
     }
 

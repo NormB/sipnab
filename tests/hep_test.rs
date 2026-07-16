@@ -45,7 +45,7 @@ fn hep3_sip(payload: &[u8]) -> Vec<u8> {
         src_port: 5060,
         dst_port: 5062,
     };
-    build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, payload)
+    build_hep_v3(&ep, Utc::now(), HepProtocol::Sip, 0, None, payload)
 }
 
 /// A spawned `sipnab --hep-listen` process with line-buffered stdout/stderr.

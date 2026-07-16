@@ -138,6 +138,7 @@ pub fn run_cores_file(
         portrange,
         no_dialog: cli.no_dialog,
         no_rtp,
+        xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
     };
     match crate::parallel::run_offline_parallel_file(
         std::path::Path::new(input),
@@ -193,6 +194,7 @@ pub fn run(
             portrange,
             no_dialog: cli.no_dialog,
             no_rtp,
+            xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         };
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
@@ -263,9 +265,17 @@ impl BatchRunner {
         #[cfg(feature = "hep")]
         let hep_sender: Option<crate::capture::hep::HepSender> =
             if let Some(ref addr) = cli.hep_send {
-                match crate::capture::hep::HepSender::new(addr, 1) {
+                let capture_id = cli.hep_id.unwrap_or(1);
+                match crate::capture::hep::HepSender::new(addr, capture_id, cli.hep_auth.clone()) {
                     Ok(sender) => {
-                        tracing::info!("HEP sender targeting {addr}");
+                        tracing::info!(
+                            "HEP sender targeting {addr} (capture id {capture_id}{})",
+                            if cli.hep_auth.is_some() {
+                                ", authenticated"
+                            } else {
+                                ""
+                            }
+                        );
                         Some(sender)
                     }
                     Err(e) => {
@@ -284,10 +294,10 @@ impl BatchRunner {
         // to, eliminating the prior mirror-and-double-parse pattern. In the
         // common single-writer batch case the locks are uncontested.
         let processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
-        let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(DialogStore::new(
-            cli.limit as usize,
-            cli.rotate_enabled(),
-        )));
+        let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
+            DialogStore::new(cli.limit as usize, cli.rotate_enabled())
+                .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
+        ));
         let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
         let stream_store: Arc<RwLock<StreamStore>> = {
             let mut ss = StreamStore::new(cli.max_streams as usize);
