@@ -294,6 +294,18 @@ impl CallListState {
         }
     }
 
+    /// The labels of the currently-visible columns, in [`COLUMN_LABELS`] order.
+    /// Inverse of [`apply_visible_columns`](Self::apply_visible_columns); used to
+    /// persist the column layout to `[display] visible_columns`.
+    pub fn visible_column_names(&self) -> Vec<String> {
+        COLUMN_LABELS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.visible_columns[*i])
+            .map(|(_, &label)| label.to_string())
+            .collect()
+    }
+
     /// Clear the multi-selected rows list.
     pub fn clear_selections(&mut self) {
         self.selected_rows.clear();
@@ -857,7 +869,7 @@ pub fn render_column_selector(
     theme: &super::Theme,
 ) {
     let popup_width: u16 = 38;
-    let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 5; // columns + borders + footer
+    let popup_height: u16 = (ALL_COLUMNS.len() as u16) + 6; // columns + borders + 2-line footer
     let w = popup_width.min(area.width);
     let h = popup_height.min(area.height);
     let x = area.x + (area.width.saturating_sub(w)) / 2;
@@ -897,6 +909,10 @@ pub fn render_column_selector(
     lines.push(ratatui::text::Line::from(""));
     lines.push(ratatui::text::Line::from(Span::styled(
         "  Space: toggle  Enter: apply",
+        Style::default().fg(theme.muted),
+    )));
+    lines.push(ratatui::text::Line::from(Span::styled(
+        "  s: save layout to config",
         Style::default().fg(theme.muted),
     )));
 
@@ -1389,5 +1405,46 @@ mod tests {
         assert_eq!(state_display_str(&DialogState::InCall), "InCall");
         assert_eq!(state_display_str(&DialogState::Failed), "FAILED");
         assert_eq!(state_display_str(&DialogState::Completed), "Completed");
+    }
+
+    #[test]
+    fn visible_column_names_default_is_all() {
+        let state = CallListState::new();
+        assert_eq!(state.visible_column_names(), COLUMN_LABELS.to_vec());
+    }
+
+    #[test]
+    fn visible_column_names_subset_in_order() {
+        let mut state = CallListState::new();
+        // Hide "Method" (idx 1) and "Date" (idx 8); the rest stay in order.
+        state.visible_columns[1] = false;
+        state.visible_columns[8] = false;
+        let names = state.visible_column_names();
+        assert!(!names.contains(&"Method".to_string()));
+        assert!(!names.contains(&"Date".to_string()));
+        assert_eq!(names.first().map(String::as_str), Some("#"));
+        assert_eq!(names.last().map(String::as_str), Some("Duration"));
+        assert_eq!(names.len(), 9);
+    }
+
+    #[test]
+    fn visible_column_names_none_visible_is_empty() {
+        let mut state = CallListState::new();
+        state.visible_columns = [false; 11];
+        assert!(state.visible_column_names().is_empty());
+    }
+
+    #[test]
+    fn visible_column_names_round_trips_through_apply() {
+        // Names produced by the getter re-apply to the same visibility set —
+        // the exact contract the save→reload path relies on.
+        let mut state = CallListState::new();
+        state.visible_columns[2] = false; // hide "From"
+        state.visible_columns[5] = false; // hide "Destination"
+        let names = state.visible_column_names();
+
+        let mut reloaded = CallListState::new();
+        reloaded.apply_visible_columns(&names);
+        assert_eq!(reloaded.visible_columns, state.visible_columns);
     }
 }
