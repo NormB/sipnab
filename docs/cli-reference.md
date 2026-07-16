@@ -134,9 +134,10 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--kill-scanner` | -- | off | Detect and report SIP scanning activity |
-| `--kill-ua` | `<PATTERN>` | -- | Detect scanners by User-Agent pattern (regex) |
-| `--kill-response` | `<CODE>` | `200` | SIP response code for scanner kill reports (100-699) |
+| `--kill-scanner` | -- | off | Detect SIP scanning (known UA signatures + behavioral rate/enumeration) and send the kill response back to the scanner (sipgrep `-J`/`-j`) |
+| `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection |
+| `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
+| `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`10.0.0.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
 | `--reg-flood` | -- | off | Detect registration flood attacks |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |
