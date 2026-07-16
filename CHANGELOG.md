@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-07-16
+
 ### Added
 
 - **TUI**: the F10 column selector now saves the current column layout with
