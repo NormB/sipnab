@@ -162,6 +162,12 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long)]
     pub no_rtp: bool,
 
+    /// Do not put the interface into promiscuous mode (sipgrep -p). By default
+    /// promiscuous mode is enabled for a named device (never for the "any"
+    /// pseudo-device, which does not support it).
+    #[arg(help_heading = "Capture", short = 'p', long = "no-promisc")]
+    pub no_promisc: bool,
+
     /// Read BPF filter from a file.
     #[arg(help_heading = "Capture", long, value_name = "FILE")]
     pub bpf_file: Option<String>,
@@ -718,6 +724,26 @@ pub struct Cli {
     )]
     pub hep_send: Option<String>,
 
+    /// Capture-agent id (HEP 0x000c chunk) stamped on every packet sent via
+    /// `--hep-send`. Distinguishes this agent to the Homer collector. Default 1.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "hep-id",
+        value_name = "ID"
+    )]
+    pub hep_id: Option<u32>,
+
+    /// Homer authenticate key (HEP 0x000e chunk) added to every packet sent via
+    /// `--hep-send`. Prefer the env var over the flag so the secret is not
+    /// visible in the process list.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "hep-auth",
+        value_name = "KEY",
+        env = "SIPNAB_HEP_AUTH"
+    )]
+    pub hep_auth: Option<String>,
+
     /// Parse incoming HEP packets (enable HEP decoding).
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
@@ -1201,6 +1227,23 @@ mod tests {
             cli.bpf_filter,
             vec!["host", "10.0.0.1", "and", "port", "5060"]
         );
+    }
+
+    #[test]
+    fn hep_id_and_auth_flags_parse() {
+        let cli = Cli::parse_from_args(["sipnab", "--hep-id", "7", "--hep-auth", "secret"]);
+        assert_eq!(cli.hep_id, Some(7));
+        assert_eq!(cli.hep_auth.as_deref(), Some("secret"));
+        let none = Cli::parse_from_args(["sipnab"]);
+        assert_eq!(none.hep_id, None);
+        assert_eq!(none.hep_auth, None);
+    }
+
+    #[test]
+    fn no_promisc_short_and_long_flags() {
+        assert!(Cli::parse_from_args(["sipnab", "-p"]).no_promisc);
+        assert!(Cli::parse_from_args(["sipnab", "--no-promisc"]).no_promisc);
+        assert!(!Cli::parse_from_args(["sipnab"]).no_promisc);
     }
 
     #[test]
