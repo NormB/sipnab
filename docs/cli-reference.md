@@ -17,6 +17,7 @@ CLI flags always override config file values (see [config-reference.md](config-r
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
+| `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
 | `-n`, `--count` | `<N>` | -- | Stop after capturing N packets |
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
@@ -181,6 +182,8 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--mcp-allowed-host` | `<HOST>` | -- | Additional `Host` header values the HTTP MCP server will accept (repeatable). rmcp's DNS-rebind protection defaults to `localhost`, `127.0.0.1`, `::1` only — add the public hostname or bind IP when clients connect via that name. Use `*` to disable host checking entirely (pair with a network-level source-IP allowlist). Feature: `mcp-http` |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
+| `--hep-id` | `<ID>` | `1` | Capture-agent id (HEP `0x000c` chunk) stamped on packets sent via `--hep-send`. Feature: `hep` |
+| `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk) added to packets sent via `--hep-send`. Also read from `SIPNAB_HEP_AUTH` (preferred, keeps the secret out of the process list). Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second Feature: `hep` |

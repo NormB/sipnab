@@ -58,6 +58,9 @@ const CHUNK_TS_USEC: u16 = 0x000a;
 const CHUNK_PROTO_TYPE: u16 = 0x000b;
 /// Chunk type: Capture agent ID (4 bytes, big-endian).
 const CHUNK_CAPTURE_ID: u16 = 0x000c;
+/// Chunk type: Authenticate key / password (variable length) — Homer's
+/// per-capture-agent shared secret.
+const CHUNK_AUTH_KEY: u16 = 0x000e;
 /// Chunk type: Payload — the actual SIP/RTP message (variable length).
 const CHUNK_PAYLOAD: u16 = 0x000f;
 /// Chunk type: Correlation ID — typically the Call-ID (variable length).
@@ -431,6 +434,7 @@ pub fn build_hep_v3(
     timestamp: DateTime<Utc>,
     protocol: HepProtocol,
     capture_id: u32,
+    auth_key: Option<&str>,
     payload: &[u8],
 ) -> Vec<u8> {
     let src_addr = endpoint.src_addr;
@@ -487,6 +491,11 @@ pub fn build_hep_v3(
         CHUNK_CAPTURE_ID,
         &capture_id.to_be_bytes(),
     );
+
+    // Authenticate key (Homer shared secret), when configured.
+    if let Some(key) = auth_key {
+        append_chunk(&mut chunks, 0x0000, CHUNK_AUTH_KEY, key.as_bytes());
+    }
 
     // Payload
     append_chunk(&mut chunks, 0x0000, CHUNK_PAYLOAD, payload);
@@ -892,6 +901,8 @@ pub struct HepSender {
     socket: UdpSocket,
     /// Capture agent ID included in every HEP packet.
     capture_id: u32,
+    /// Optional Homer authenticate key (0x000e chunk) added to every packet.
+    auth_key: Option<String>,
 }
 
 impl HepSender {
@@ -902,13 +913,17 @@ impl HepSender {
     /// # Errors
     ///
     /// Returns an error if the socket cannot be created or connected.
-    pub fn new(dest_addr: &str, capture_id: u32) -> Result<Self> {
+    pub fn new(dest_addr: &str, capture_id: u32, auth_key: Option<String>) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .context("Failed to bind ephemeral UDP socket for HEP sender")?;
         socket
             .connect(dest_addr)
             .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
-        Ok(Self { socket, capture_id })
+        Ok(Self {
+            socket,
+            capture_id,
+            auth_key,
+        })
     }
 
     /// Encapsulate and send a SIP message as a HEP v3 packet.
@@ -932,6 +947,7 @@ impl HepSender {
             msg.timestamp,
             HepProtocol::Sip,
             self.capture_id,
+            self.auth_key.as_deref(),
             &msg.raw,
         );
 
@@ -1168,7 +1184,7 @@ mod tests {
             src_port: 5060,
             dst_port: 5061,
         };
-        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, payload);
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 99, None, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 
         assert_eq!(parsed.version, 3);
@@ -1184,6 +1200,65 @@ mod tests {
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 500_000);
     }
 
+    /// Walk HEP3 chunks and return the data of the first (vendor,type) match.
+    fn find_hep_chunk(pkt: &[u8], vendor: u16, ctype: u16) -> Option<Vec<u8>> {
+        let mut i = HEP3_HEADER_LEN;
+        while i + CHUNK_HEADER_LEN <= pkt.len() {
+            let v = u16::from_be_bytes([pkt[i], pkt[i + 1]]);
+            let t = u16::from_be_bytes([pkt[i + 2], pkt[i + 3]]);
+            let len = u16::from_be_bytes([pkt[i + 4], pkt[i + 5]]) as usize;
+            if len < CHUNK_HEADER_LEN || i + len > pkt.len() {
+                break;
+            }
+            if v == vendor && t == ctype {
+                return Some(pkt[i + CHUNK_HEADER_LEN..i + len].to_vec());
+            }
+            i += len;
+        }
+        None
+    }
+
+    fn v4_endpoint() -> HepEndpoint {
+        HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+        }
+    }
+
+    #[test]
+    fn hep_auth_chunk_emitted_when_key_present() {
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let pkt = build_hep_v3(
+            &v4_endpoint(),
+            ts,
+            HepProtocol::Sip,
+            42,
+            Some("s3cr3t"),
+            b"INVITE",
+        );
+        // The 0x000e auth-key chunk carries the key verbatim.
+        assert_eq!(
+            find_hep_chunk(&pkt, 0x0000, 0x000e).as_deref(),
+            Some(b"s3cr3t".as_slice())
+        );
+        // The configured capture/agent id still round-trips.
+        assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(42));
+    }
+
+    #[test]
+    fn hep_no_auth_chunk_when_key_absent() {
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
+        assert!(
+            find_hep_chunk(&pkt, 0x0000, 0x000e).is_none(),
+            "no auth chunk should be emitted without a key"
+        );
+        // The packet is still a valid HEP3 message.
+        assert!(parse_hep(&pkt).is_ok());
+    }
+
     #[test]
     fn build_and_parse_round_trip_ipv6() {
         let src = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
@@ -1197,7 +1272,7 @@ mod tests {
             src_port: 6000,
             dst_port: 7000,
         };
-        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, payload);
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtp, 1, None, payload);
         let parsed = parse_hep(&built).expect("round-trip parse should succeed");
 
         assert_eq!(parsed.src_addr, src);
@@ -1676,7 +1751,7 @@ mod tests {
             dst_port: 5061,
         };
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
-        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 7, b"hello");
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Sip, 7, None, b"hello");
 
         assert_eq!(&built[..4], HEP3_MAGIC);
         let declared = u16::from_be_bytes([built[4], built[5]]) as usize;
@@ -1729,7 +1804,7 @@ mod tests {
         };
         let ts = Utc.timestamp_opt(1234567890, 250_000_000).single().unwrap();
         let payload = &[0x80, 0xc8, 0x00, 0x06]; // RTCP SR header start
-        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtcp, 1000, payload);
+        let built = build_hep_v3(&endpoint, ts, HepProtocol::Rtcp, 1000, None, payload);
         let parsed = parse_hep(&built).expect("round-trip");
 
         assert_eq!(parsed.protocol, HepProtocol::Rtcp);

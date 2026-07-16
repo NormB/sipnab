@@ -70,10 +70,10 @@ pub fn run_tui_mode(
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
-    let dialog_store = Arc::new(RwLock::new(DialogStore::new(
-        cli.limit as usize,
-        cli.rotate_enabled(),
-    )));
+    let dialog_store = Arc::new(RwLock::new(
+        DialogStore::new(cli.limit as usize, cli.rotate_enabled())
+            .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),
+    ));
     let stream_store = {
         let mut ss = StreamStore::new(cli.max_streams as usize);
         if let Some(max_frames) = config.limits.max_audio_frames {
