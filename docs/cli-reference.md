@@ -39,6 +39,7 @@ CLI flags always override config file values (see [config-reference.md](config-r
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
+| `-e`, `--match` | `<PATTERN>` | -- | SIP payload match-expression (the sngrep/sipgrep positional match expression). Regex tested against the whole raw message; once any message in a dialog matches, the rest of that dialog is shown too (dialog-following). Honors `-i`/`-v`/`-w`/`--single-line`. Independent of the trailing `<BPF_FILTER>` positional |
 | `-i`, `--ignore-case` | -- | off | Case-insensitive matching for header filters and patterns |
 | `-v`, `--invert` | -- | off | Invert the match: show messages that do NOT match |
 | `-w`, `--word` | -- | off | Match whole words only |

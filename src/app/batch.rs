@@ -52,6 +52,9 @@ struct PacketCounters {
     rtp_count: u64,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     trailing_remaining: usize,
+    /// Call-IDs of dialogs "armed" by a `-e` payload match. Once a dialog is
+    /// armed, every subsequent message of it is emitted (dialog-following).
+    followed_dialogs: std::collections::HashSet<String>,
 }
 
 /// Owned batch-mode processing components, built by the binary's
@@ -618,6 +621,7 @@ impl BatchRunner {
             rtp_count: 0,
             prev_timestamp: None,
             trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
         };
 
         // Autostop filesize in bytes (input is in MB)
@@ -992,6 +996,55 @@ impl BatchRunner {
 /// Process a single parsed packet: classify via the shared pipeline core,
 /// then apply the batch extras — counters, matcher/DSL filter, output
 /// dispatch, security detectors, dialog events, DTMF, quality events.
+/// Decide whether a SIP message should be emitted, updating dialog-follow and
+/// trailing-context state.
+///
+/// This implements two overlapping selection rules:
+///
+/// * **Dialog-following** (sngrep/sipgrep `-e`): when `follow_dialogs` is set, a
+///   `direct_match` arms the message's dialog, and every later message of an
+///   armed dialog is emitted regardless of its own content. Followed messages
+///   are not "trailing context" and never spend the `-A` budget.
+/// * **Trailing context** (`-A N`): a `direct_match` (re)arms an `after_count`
+///   budget; the next non-matching messages are emitted until it drains.
+///
+/// With `follow_dialogs == false` the follow set stays empty and behavior is
+/// identical to trailing-context-only selection.
+fn decide_emit(
+    direct_match: bool,
+    call_id: Option<&str>,
+    follow_dialogs: bool,
+    followed: &mut std::collections::HashSet<String>,
+    trailing_remaining: &mut usize,
+    after_count: usize,
+) -> bool {
+    let followed_match = follow_dialogs && call_id.is_some_and(|id| followed.contains(id));
+
+    // A direct match arms the dialog so its remaining messages follow.
+    if direct_match
+        && follow_dialogs
+        && let Some(id) = call_id
+    {
+        followed.insert(id.to_string());
+    }
+
+    let trailing_match = *trailing_remaining > 0;
+    let emit = direct_match || followed_match || trailing_match;
+
+    if emit {
+        if direct_match {
+            // A fresh match re-arms the trailing (`-A`) budget.
+            *trailing_remaining = after_count;
+        } else if trailing_match && !followed_match {
+            // Only pure trailing-context messages spend the budget; a
+            // followed-dialog message emits without consuming it.
+            *trailing_remaining -= 1;
+        }
+    }
+
+    emit
+}
+
 fn process_parsed_packet(
     pp: &ParsedPacket,
     ctx: &BatchContext<'_>,
@@ -1020,6 +1073,7 @@ fn process_parsed_packet(
     let rtp_count = &mut counters.rtp_count;
     let prev_timestamp = &mut counters.prev_timestamp;
     let trailing_remaining = &mut counters.trailing_remaining;
+    let followed_dialogs = &mut counters.followed_dialogs;
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
         let dump = output::hexdump(&pp.payload);
@@ -1226,19 +1280,22 @@ fn process_parsed_packet(
                 true
             };
 
-            // Output if matcher/filter pass, or if trailing context is active
+            // Emit if the message directly matches, if it belongs to a dialog
+            // armed by a `-e` payload match (dialog-following), or if trailing
+            // context (`-A`) is still active.
             let direct_match = matcher_pass && filter_pass && calls_only_pass;
-            let trailing_match = *trailing_remaining > 0;
+            let follow_dialogs = cli.match_expr.is_some();
+            let emit = decide_emit(
+                direct_match,
+                sip_msg.call_id(),
+                follow_dialogs,
+                followed_dialogs,
+                trailing_remaining,
+                after_count,
+            );
 
-            if (direct_match || trailing_match) && cli.no_tui {
+            if emit && cli.no_tui {
                 dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
-
-                if direct_match {
-                    // Reset trailing counter on new match
-                    *trailing_remaining = after_count;
-                } else if trailing_match {
-                    *trailing_remaining -= 1;
-                }
             }
 
             *prev_timestamp = Some(sip_msg.timestamp);
@@ -1634,6 +1691,7 @@ mod tests {
             rtp_count: 0,
             prev_timestamp: None,
             trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
         };
 
         let ctx = BatchContext {
@@ -1690,6 +1748,7 @@ mod tests {
             rtp_count: 0,
             prev_timestamp: None,
             trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
         };
         let ctx = BatchContext {
             matcher: &matcher,
@@ -1775,5 +1834,157 @@ mod tests {
         let pp = parsed_sip_packet(invite_bytes("oor-1@example.com"), 40000, 40001);
         let (sip, _rtp) = drive_packet(&cli, &pp, (5060, 5061));
         assert_eq!(sip, 0);
+    }
+
+    // ── decide_emit: dialog-following (`-e`) + trailing context (`-A`) ────
+
+    use std::collections::HashSet;
+
+    /// Convenience: run decide_emit with fresh trailing/no -A, follow on.
+    fn emit_follow(direct: bool, call_id: Option<&str>, followed: &mut HashSet<String>) -> bool {
+        let mut trailing = 0usize;
+        decide_emit(direct, call_id, true, followed, &mut trailing, 0)
+    }
+
+    #[test]
+    fn follow_arms_dialog_then_emits_rest() {
+        let mut followed = HashSet::new();
+        // A direct match on dialog X arms it and emits.
+        assert!(emit_follow(true, Some("X"), &mut followed));
+        // A later non-matching message of X is still emitted (followed).
+        assert!(emit_follow(false, Some("X"), &mut followed));
+        assert!(emit_follow(false, Some("X"), &mut followed));
+        // An unrelated dialog Y that never matched is not emitted.
+        assert!(!emit_follow(false, Some("Y"), &mut followed));
+    }
+
+    #[test]
+    fn no_follow_when_expression_absent() {
+        // follow_dialogs = false → per-message semantics, no arming.
+        let mut followed = HashSet::new();
+        let mut trailing = 0usize;
+        assert!(decide_emit(
+            true,
+            Some("X"),
+            false,
+            &mut followed,
+            &mut trailing,
+            0
+        ));
+        // Next non-matching message of X must NOT be emitted (no dialog-follow).
+        assert!(!decide_emit(
+            false,
+            Some("X"),
+            false,
+            &mut followed,
+            &mut trailing,
+            0
+        ));
+        assert!(
+            followed.is_empty(),
+            "follow set must stay empty when inactive"
+        );
+    }
+
+    #[test]
+    fn trailing_context_preserved_without_follow() {
+        // -A 2, no match-expression: a match shows the next 2 messages, then stops.
+        let mut followed = HashSet::new();
+        let mut trailing = 0usize;
+        assert!(decide_emit(
+            true,
+            Some("X"),
+            false,
+            &mut followed,
+            &mut trailing,
+            2
+        ));
+        assert_eq!(trailing, 2);
+        assert!(decide_emit(
+            false,
+            Some("X"),
+            false,
+            &mut followed,
+            &mut trailing,
+            2
+        ));
+        assert_eq!(trailing, 1);
+        assert!(decide_emit(
+            false,
+            Some("Y"),
+            false,
+            &mut followed,
+            &mut trailing,
+            2
+        ));
+        assert_eq!(trailing, 0);
+        // Budget exhausted → no more trailing emits.
+        assert!(!decide_emit(
+            false,
+            Some("Z"),
+            false,
+            &mut followed,
+            &mut trailing,
+            2
+        ));
+    }
+
+    #[test]
+    fn followed_messages_do_not_consume_trailing_budget() {
+        // With both -A 1 and a match-expression: a followed-dialog message is
+        // emitted but must not spend the trailing budget meant for context.
+        let mut followed = HashSet::new();
+        let mut trailing = 0usize;
+        // Direct match on X arms X and sets trailing budget to 1.
+        assert!(decide_emit(
+            true,
+            Some("X"),
+            true,
+            &mut followed,
+            &mut trailing,
+            1
+        ));
+        assert_eq!(trailing, 1);
+        // A followed message of X emits but leaves the budget untouched.
+        assert!(decide_emit(
+            false,
+            Some("X"),
+            true,
+            &mut followed,
+            &mut trailing,
+            1
+        ));
+        assert_eq!(trailing, 1, "followed message must not decrement -A budget");
+        // An unrelated dialog Y consumes the trailing budget as pure context.
+        assert!(decide_emit(
+            false,
+            Some("Y"),
+            true,
+            &mut followed,
+            &mut trailing,
+            1
+        ));
+        assert_eq!(trailing, 0);
+    }
+
+    #[test]
+    fn follow_with_missing_call_id_does_not_arm_or_panic() {
+        // A direct match with no Call-ID cannot arm any dialog.
+        let mut followed = HashSet::new();
+        assert!(emit_follow(true, None, &mut followed));
+        assert!(followed.is_empty(), "no Call-ID must not arm a dialog");
+        // A subsequent Call-ID-less non-match is not emitted.
+        assert!(!emit_follow(false, None, &mut followed));
+    }
+
+    #[test]
+    fn follow_handles_adversarial_call_id_bytes() {
+        // Call-IDs with backslashes / embedded NUL must round-trip through the
+        // follow set unharmed.
+        let weird = "call\u{0}id\\weird\t";
+        let mut followed = HashSet::new();
+        assert!(emit_follow(true, Some(weird), &mut followed));
+        assert!(emit_follow(false, Some(weird), &mut followed));
+        assert!(!emit_follow(false, Some("other"), &mut followed));
     }
 }

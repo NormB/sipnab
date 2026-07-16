@@ -94,7 +94,8 @@ fn compiled_features() -> Vec<&'static str> {
         sipnab --problems                Show problematic calls\n  \
         sipnab --kill-scanner            Detect SIP scanners\n  \
         sipnab --from alice --to bob     Filter by From/To headers\n  \
-        sipnab 'INVITE sip:'             BPF display filter"
+        sipnab -e 'INVITE sip:'          Grep SIP payload, follow the dialog\n  \
+        sipnab 'host 10.0.0.1 and port 5060'   BPF capture filter"
 )]
 pub struct Cli {
     // ── Capture ──────────────────────────────────────────────────────
@@ -251,6 +252,19 @@ pub struct Cli {
     pub strip_secrets: Option<String>,
 
     // ── Matching ─────────────────────────────────────────────────────
+    /// SIP payload match-expression (the sngrep/sipgrep positional match
+    /// expression). A regex tested against the whole raw SIP message; once any
+    /// message in a dialog matches, every later message of that dialog is shown
+    /// too (dialog-following). Honors -i/-v/-w/--single-line. Separate from the
+    /// trailing BPF filter positional.
+    #[arg(
+        help_heading = "Matching",
+        short = 'e',
+        long = "match",
+        value_name = "PATTERN"
+    )]
+    pub match_expr: Option<String>,
+
     /// Case-insensitive matching for header filters and patterns.
     #[arg(help_heading = "Matching", short = 'i', long = "ignore-case")]
     pub ignore_case: bool,
@@ -1167,6 +1181,27 @@ mod tests {
             cli.bpf_filter,
             vec!["host", "10.0.0.1", "and", "port", "5060"]
         );
+    }
+
+    #[test]
+    fn match_expr_short_and_long_flags() {
+        let short = Cli::parse_from_args(["sipnab", "-e", "INVITE sip:"]);
+        assert_eq!(short.match_expr.as_deref(), Some("INVITE sip:"));
+
+        let long = Cli::parse_from_args(["sipnab", "--match", "sipsak"]);
+        assert_eq!(long.match_expr.as_deref(), Some("sipsak"));
+
+        let none = Cli::parse_from_args(["sipnab"]);
+        assert_eq!(none.match_expr, None);
+    }
+
+    #[test]
+    fn match_expr_coexists_with_bpf_positional() {
+        // The payload match-expression (-e) and the trailing BPF positional
+        // are independent: neither steals the other's tokens.
+        let cli = Cli::parse_from_args(["sipnab", "-e", "friendly-scanner", "host", "10.0.0.1"]);
+        assert_eq!(cli.match_expr.as_deref(), Some("friendly-scanner"));
+        assert_eq!(cli.bpf_filter, vec!["host", "10.0.0.1"]);
     }
 
     #[test]
