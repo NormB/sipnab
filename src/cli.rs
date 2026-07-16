@@ -471,6 +471,19 @@ pub struct Cli {
     #[arg(help_heading = "Security", long, value_name = "CODE", default_value = "200", value_parser = clap::value_parser!(u16).range(100..=699))]
     pub kill_response: u16,
 
+    /// Targeted scanner kill (sipgrep -K): send the kill response to any SIP
+    /// request whose source matches ADDR and an optional port range, e.g.
+    /// `10.0.0.1:5060-5090` or `[::1]:5060`, regardless of UA/behavioral
+    /// detection. Repeatable. Spawns the kill worker on its own; `--kill-scanner`
+    /// is not required.
+    #[arg(
+        help_heading = "Security",
+        short = 'K',
+        long = "kill-target",
+        value_name = "ADDR[:PORT-RANGE]"
+    )]
+    pub kill_target: Vec<String>,
+
     /// Enable fraud detection heuristics.
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
@@ -982,6 +995,13 @@ impl Cli {
             }
         }
 
+        // Fail fast on a malformed --kill-target so a typo can't silently leave
+        // an attacker unblocked.
+        for spec in &self.kill_target {
+            crate::security::scanner_kill::KillTarget::parse(spec)
+                .map_err(|e| crate::Error::CliValidation(format!("--kill-target '{spec}': {e}")))?;
+        }
+
         Ok(())
     }
 
@@ -1181,6 +1201,33 @@ mod tests {
             cli.bpf_filter,
             vec!["host", "10.0.0.1", "and", "port", "5060"]
         );
+    }
+
+    #[test]
+    fn kill_target_repeatable_and_coexists() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-K",
+            "10.0.0.1:5060-5090",
+            "--kill-target",
+            "192.168.1.5",
+            "host 10.0.0.1",
+        ]);
+        assert_eq!(cli.kill_target, vec!["10.0.0.1:5060-5090", "192.168.1.5"]);
+        assert_eq!(cli.bpf_filter, vec!["host 10.0.0.1"]);
+    }
+
+    #[test]
+    fn validate_rejects_bad_kill_target() {
+        let cli = Cli::parse_from_args(["sipnab", "-K", "not-an-ip"]);
+        let err = cli.validate().unwrap_err();
+        assert!(err.to_string().contains("--kill-target"));
+    }
+
+    #[test]
+    fn validate_accepts_good_kill_targets() {
+        let cli = Cli::parse_from_args(["sipnab", "-K", "10.0.0.1:5060-5090", "-K", "[::1]:5060"]);
+        assert!(cli.validate().is_ok());
     }
 
     #[test]

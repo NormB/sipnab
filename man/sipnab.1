@@ -84,7 +84,16 @@ Output as JSON, one object per line.
 Generate a detailed diagnostic report for a specific Call-ID.
 .TP
 .B \-\-kill\-scanner
-Detect and report SIP scanning activity.
+Detect SIP scanning (UA signatures and behavioral heuristics) and send the
+kill response back to the scanner.
+.TP
+.BI \-K " addr[:port-range]"
+Targeted scanner kill: send the kill response to any request whose source
+matches
+.I addr
+and an optional port range (e.g.
+.IR 10.0.0.1:5060\-5090 ).
+Repeatable.
 .TP
 .BI \-l " N"
 Maximum number of dialogs to track (default: 100000).

@@ -44,6 +44,9 @@ struct DetectionEngines {
     alerts: Arc<RwLock<AlertEngine>>,
     kill_handle: Option<ScannerKillHandle>,
     kill_response_code: u16,
+    /// Targeted-kill directives (`-K` / `--kill-target`): any SIP request whose
+    /// source matches is killed regardless of UA/behavioral detection.
+    kill_targets: Vec<sec::scanner_kill::KillTarget>,
 }
 
 /// Packet processing counters and state.
@@ -300,6 +303,25 @@ impl BatchRunner {
 
         // 17a. Initialize security detectors
         let kill_scanner_active = cli.kill_scanner || config.security.kill_scanner.unwrap_or(false);
+
+        // Targeted-kill directives (-K). Already validated in Cli::validate();
+        // reparse here and skip (loudly) any that somehow fail so a bad entry
+        // can't take the whole run down mid-capture.
+        let kill_targets: Vec<sec::scanner_kill::KillTarget> = cli
+            .kill_target
+            .iter()
+            .filter_map(|spec| match sec::scanner_kill::KillTarget::parse(spec) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    tracing::error!("Ignoring invalid --kill-target '{spec}': {e}");
+                    None
+                }
+            })
+            .collect();
+        // The kill worker is needed whenever we may emit a kill response —
+        // detection-driven (--kill-scanner) OR targeted (-K).
+        let kill_worker_active = kill_scanner_active || !kill_targets.is_empty();
+
         let scanner_detector = if kill_scanner_active {
             let custom = cli
                 .kill_ua
@@ -312,7 +334,7 @@ impl BatchRunner {
         };
 
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
-        let scanner_kill_handle: Option<ScannerKillHandle> = if kill_scanner_active {
+        let scanner_kill_handle: Option<ScannerKillHandle> = if kill_worker_active {
             match process_isolation::spawn_scanner_kill_worker(None) {
                 Ok(handle) => Some(handle),
                 Err(e) => {
@@ -381,6 +403,7 @@ impl BatchRunner {
             alerts: alert_engine,
             kill_handle: scanner_kill_handle,
             kill_response_code,
+            kill_targets,
         };
 
         // 17c. Initialize TLS decryptor if --keylog and/or --tls-key is provided
@@ -1069,6 +1092,7 @@ fn process_parsed_packet(
     let alert_engine = &mut engines.alerts;
     let scanner_kill_handle = &engines.kill_handle;
     let kill_response_code = engines.kill_response_code;
+    let kill_targets = &engines.kill_targets;
     let sip_count = &mut counters.sip_count;
     let rtp_count = &mut counters.rtp_count;
     let prev_timestamp = &mut counters.prev_timestamp;
@@ -1187,6 +1211,38 @@ fn process_parsed_packet(
                 }
 
                 // D16: Send kill response via isolated worker thread
+                if let Some(handle) = &scanner_kill_handle
+                    && let Some(response_bytes) =
+                        sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
+                {
+                    let _ = handle.send_kill(KillRequest::SendResponse {
+                        dst_addr: sip_msg.src_addr,
+                        dst_port: sip_msg.src_port,
+                        response_bytes,
+                    });
+                }
+            }
+
+            // Targeted scanner kill (sipgrep -K): kill any request whose source
+            // matches a --kill-target, independent of UA/behavioral detection.
+            if !kill_targets.is_empty()
+                && sip_msg.is_request
+                && kill_targets
+                    .iter()
+                    .any(|t| t.matches(sip_msg.src_addr, sip_msg.src_port))
+            {
+                let method = sip_msg.method.as_ref().map_or("-", |m| m.as_str());
+                let ua = sip_msg.user_agent().unwrap_or("-");
+                alert_engine.write().fire(
+                    "scanner",
+                    sip_msg.src_addr,
+                    &format!("method={method} ua={ua} detection=kill-target"),
+                );
+                if cli.fail2ban {
+                    let event =
+                        output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
+                    println!("{event}");
+                }
                 if let Some(handle) = &scanner_kill_handle
                     && let Some(response_bytes) =
                         sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
@@ -1685,6 +1741,7 @@ mod tests {
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
             kill_response_code: 0,
+            kill_targets: Vec::new(),
         };
         let mut counters = PacketCounters {
             sip_count: 0,
@@ -1718,6 +1775,110 @@ mod tests {
         (counters.sip_count, counters.rtp_count)
     }
 
+    /// Drive one packet with `--kill-target` directives active and return the
+    /// detail lines of any "scanner" findings the alert engine recorded. Uses
+    /// `kill_handle: None`, so no socket send is attempted — the targeted-kill
+    /// alert still fires before the (absent) worker handoff.
+    fn drive_kill_targets(cli: &Cli, pp: &ParsedPacket, targets: &[&str]) -> Vec<String> {
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+
+        let kill_targets = targets
+            .iter()
+            .map(|s| sec::scanner_kill::KillTarget::parse(s).expect("valid target"))
+            .collect();
+        let alerts = Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None)));
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::clone(&alerts),
+            kill_handle: None,
+            kill_response_code: 200,
+            kill_targets,
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange: (5060, 5061),
+        };
+        let mut state = ProcessingState {
+            dialog_store: &mut dialog_store,
+            stream_store: &mut stream_store,
+            rtp_heuristic: &mut rtp_heuristic,
+            event_exec: &mut event_exec,
+            #[cfg(feature = "tls")]
+            srtp: None,
+            #[cfg(feature = "tls")]
+            dtls: None,
+        };
+        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
+
+        alerts
+            .read()
+            .iter_findings(&["scanner"], None, 16)
+            .into_iter()
+            .map(|f| f.detail.clone())
+            .collect()
+    }
+
+    #[test]
+    fn kill_target_matching_request_fires_kill_alert() {
+        // parsed_sip_packet sources from 10.0.0.1; src_port 5075 is inside the
+        // target's 5060-5090 range → the targeted kill must fire.
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+        let pp = parsed_sip_packet(invite_bytes("kt-hit@example.com"), 5075, 5060);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
+        assert!(
+            details.iter().any(|d| d.contains("detection=kill-target")),
+            "expected a kill-target alert, got {details:?}"
+        );
+    }
+
+    #[test]
+    fn kill_target_out_of_range_port_does_not_fire() {
+        // src_port 6000 is outside 5060-5090 → no targeted kill.
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+        let pp = parsed_sip_packet(invite_bytes("kt-miss@example.com"), 6000, 5060);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.1:5060-5090"]);
+        assert!(
+            !details.iter().any(|d| d.contains("kill-target")),
+            "should not kill a source outside the port range, got {details:?}"
+        );
+    }
+
+    #[test]
+    fn kill_target_wrong_ip_does_not_fire() {
+        // Target a different IP than the packet's source (10.0.0.1) → no kill.
+        let mut cli = base_cli();
+        cli.no_cli_print = true;
+        let pp = parsed_sip_packet(invite_bytes("kt-ip@example.com"), 5075, 5060);
+        let details = drive_kill_targets(&cli, &pp, &["10.0.0.99:5060-5090"]);
+        assert!(
+            !details.iter().any(|d| d.contains("kill-target")),
+            "should not kill a non-targeted source IP, got {details:?}"
+        );
+    }
+
     /// Drive a packet through `process_parsed_packet` with an active SRTP
     /// context, returning the rtp_count so wiring can be asserted.
     #[cfg(feature = "tls")]
@@ -1742,6 +1903,7 @@ mod tests {
             alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
             kill_handle: None,
             kill_response_code: 0,
+            kill_targets: Vec::new(),
         };
         let mut counters = PacketCounters {
             sip_count: 0,

@@ -5,7 +5,107 @@
 //! To, Call-ID, CSeq) per RFC 3261 SS8.2.6, keeping the scanner's state
 //! machine satisfied while wasting its resources.
 
+use std::net::IpAddr;
+
 use crate::sip::SipMessage;
+
+/// A targeted-kill directive (sipgrep `-K` / `--kill-target`): an IP address
+/// and an optional inclusive source-port range. A SIP request whose source
+/// matches is killed regardless of UA/behavioral scanner detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KillTarget {
+    ip: IpAddr,
+    /// Inclusive `(lo, hi)` source-port range; `None` matches any port.
+    ports: Option<(u16, u16)>,
+}
+
+impl KillTarget {
+    /// Parse a `-K` / `--kill-target` spec into a [`KillTarget`].
+    ///
+    /// Accepted forms:
+    /// - `ADDR` — bare IPv4/IPv6, matches any source port (`10.0.0.1`, `::1`).
+    /// - `ADDR:PORT` — a single port (`10.0.0.1:5060`).
+    /// - `ADDR:LO-HI` — an inclusive port range (`10.0.0.1:5060-5090`).
+    ///
+    /// IPv6 with a port MUST be bracketed (`[::1]:5060`) so the address colons
+    /// are unambiguous; a bare IPv6 (no port) needs no brackets.
+    ///
+    /// # Errors
+    ///
+    /// Returns a human-readable message when the address is invalid, the port
+    /// spec is malformed, or a range is inverted (`lo > hi`).
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        if spec.is_empty() {
+            return Err("empty kill-target".to_string());
+        }
+
+        // Bracketed IPv6: `[addr]` or `[addr]:portspec`.
+        if let Some(rest) = spec.strip_prefix('[') {
+            let end = rest
+                .find(']')
+                .ok_or_else(|| format!("unclosed '[' in '{spec}'"))?;
+            let ip: IpAddr = rest[..end]
+                .parse()
+                .map_err(|_| format!("invalid IPv6 address in '{spec}'"))?;
+            let after = &rest[end + 1..];
+            let ports = if after.is_empty() {
+                None
+            } else {
+                let port_spec = after
+                    .strip_prefix(':')
+                    .ok_or_else(|| format!("expected ':port' after ']' in '{spec}'"))?;
+                Some(parse_port_range(port_spec)?)
+            };
+            return Ok(Self { ip, ports });
+        }
+
+        // A bare address (IPv4 or unbracketed IPv6) with no port spec.
+        if let Ok(ip) = spec.parse::<IpAddr>() {
+            return Ok(Self { ip, ports: None });
+        }
+
+        // Otherwise it must be `ADDR:portspec`. Split on the FIRST colon; a
+        // valid IPv4 has none, so anything left containing a colon (an
+        // unbracketed IPv6 + port) fails the address parse below — as intended.
+        let (ip_str, port_spec) = spec
+            .split_once(':')
+            .ok_or_else(|| format!("invalid kill-target '{spec}'"))?;
+        let ip: IpAddr = ip_str
+            .parse()
+            .map_err(|_| format!("invalid address '{ip_str}' in '{spec}'"))?;
+        Ok(Self {
+            ip,
+            ports: Some(parse_port_range(port_spec)?),
+        })
+    }
+
+    /// True if a SIP request from `src_ip:src_port` matches this target.
+    pub fn matches(&self, src_ip: IpAddr, src_port: u16) -> bool {
+        self.ip == src_ip
+            && self
+                .ports
+                .is_none_or(|(lo, hi)| (lo..=hi).contains(&src_port))
+    }
+}
+
+/// Parse a `LO-HI` inclusive range or a single `PORT` into `(lo, hi)`.
+fn parse_port_range(spec: &str) -> Result<(u16, u16), String> {
+    if let Some((lo_str, hi_str)) = spec.split_once('-') {
+        let lo: u16 = lo_str
+            .parse()
+            .map_err(|_| format!("invalid port '{lo_str}'"))?;
+        let hi: u16 = hi_str
+            .parse()
+            .map_err(|_| format!("invalid port '{hi_str}'"))?;
+        if lo > hi {
+            return Err(format!("inverted port range {lo}-{hi}"));
+        }
+        Ok((lo, hi))
+    } else {
+        let p: u16 = spec.parse().map_err(|_| format!("invalid port '{spec}'"))?;
+        Ok((p, p))
+    }
+}
 
 /// Standard SIP reason phrases for common response codes.
 fn reason_phrase(code: u16) -> &'static str {
@@ -282,5 +382,75 @@ mod tests {
         let text = String::from_utf8(resp).expect("valid utf8");
 
         assert!(text.starts_with("SIP/2.0 699 Unknown\r\n"));
+    }
+
+    // ── KillTarget (sipgrep -K targeted kill) ────────────────────────
+
+    fn ip4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    #[test]
+    fn parse_bare_ipv4_matches_any_port() {
+        let t = KillTarget::parse("10.0.0.1").expect("valid");
+        assert!(t.matches(ip4(10, 0, 0, 1), 5060));
+        assert!(t.matches(ip4(10, 0, 0, 1), 1));
+        assert!(t.matches(ip4(10, 0, 0, 1), 65535));
+        assert!(!t.matches(ip4(10, 0, 0, 2), 5060));
+    }
+
+    #[test]
+    fn parse_ipv4_single_port() {
+        let t = KillTarget::parse("10.0.0.1:5060").expect("valid");
+        assert!(t.matches(ip4(10, 0, 0, 1), 5060));
+        assert!(!t.matches(ip4(10, 0, 0, 1), 5061));
+    }
+
+    #[test]
+    fn parse_ipv4_port_range_inclusive() {
+        let t = KillTarget::parse("10.0.0.1:5060-5090").expect("valid");
+        assert!(t.matches(ip4(10, 0, 0, 1), 5060)); // lo boundary
+        assert!(t.matches(ip4(10, 0, 0, 1), 5075));
+        assert!(t.matches(ip4(10, 0, 0, 1), 5090)); // hi boundary
+        assert!(!t.matches(ip4(10, 0, 0, 1), 5059));
+        assert!(!t.matches(ip4(10, 0, 0, 1), 5091));
+        assert!(!t.matches(ip4(10, 0, 0, 2), 5075)); // wrong ip
+    }
+
+    #[test]
+    fn parse_bare_ipv6_and_bracketed_with_port() {
+        let bare = KillTarget::parse("::1").expect("valid bare v6");
+        let v6 = IpAddr::V6(std::net::Ipv6Addr::LOCALHOST);
+        assert!(bare.matches(v6, 12345));
+
+        let bracketed = KillTarget::parse("[::1]:5060-5061").expect("valid bracketed v6");
+        assert!(bracketed.matches(v6, 5060));
+        assert!(bracketed.matches(v6, 5061));
+        assert!(!bracketed.matches(v6, 5062));
+    }
+
+    #[test]
+    fn parse_rejects_invalid_specs() {
+        // Each of these must be a hard error, not a silently-permissive target.
+        for bad in [
+            "",                   // empty
+            "not-an-ip",          // garbage
+            "999.0.0.1",          // bad octet
+            "10.0.0.1:abc",       // non-numeric port
+            "10.0.0.1:",          // empty port spec
+            "10.0.0.1:5060-",     // empty range hi
+            "10.0.0.1:-5090",     // empty range lo
+            "10.0.0.1:5090-5060", // lo > hi
+            "10.0.0.1:70000",     // port out of u16 range
+            "gggg::1:5060",       // not a valid IPv6, and not ADDR:port
+            "[::1",               // unclosed bracket
+            "[::1]:99999",        // bracketed v6 with out-of-range port
+            "10.0.0.1:5060\\",    // trailing backslash junk
+        ] {
+            assert!(
+                KillTarget::parse(bad).is_err(),
+                "expected error for {bad:?}"
+            );
+        }
     }
 }
