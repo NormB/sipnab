@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-07-16
+
 ### Added
 
 - **Security**: `-K` / `--kill-target <ADDR[:PORT-RANGE]>` — targeted scanner

@@ -7,7 +7,7 @@ description = "Reproducible throughput and memory benchmarks: sipnab multi-core 
 How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
-Measured on sipnab 0.4.16 (2026-06-24); current release 0.5.6 — numbers not
+Measured on sipnab 0.4.16 (2026-06-24); current release 0.5.7 — numbers not
 yet re-validated.
 
 > **Read this first.** These tools do *different amounts of work*, so a raw
