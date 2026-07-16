@@ -4,6 +4,22 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-07-16
+
+### Added
+
+- **Matching**: new `-e` / `--match <PATTERN>` flag — the sngrep/sipgrep
+  payload match-expression. A regex is tested against the whole raw SIP
+  message; once any message in a dialog matches, every later message of that
+  dialog is emitted too (dialog-following). Honors `-i`/`-v`/`-w`/
+  `--single-line` and is independent of the trailing BPF filter positional.
+
+### Fixed
+
+- **CLI**: corrected a misleading `--help` example that presented
+  `'INVITE sip:'` as a BPF filter (it is not valid BPF); the examples now show
+  a real BPF filter and the new `-e` payload grep.
+
 ## [0.5.5] - 2026-07-13
 
 ### Added
