@@ -68,6 +68,10 @@ pub struct ParallelConfig {
     /// Correlation header names for B2BUA leg matching (sngrep `sip.xcid`).
     /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
     pub xcid_headers: Vec<String>,
+    /// Reassemble IP fragments / TCP segments (`--no-reassembly` sets false).
+    pub reassembly: bool,
+    /// Cap on parsed bytes per packet (`-S`/`--limitlen`).
+    pub parse_limit: Option<usize>,
 }
 
 /// Merged reconstruction output of all workers.
@@ -157,7 +161,9 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         .map(|wrx| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
+                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
+                    .with_reassembly(cfg.reassembly)
+                    .with_parse_limit(cfg.parse_limit);
                 let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
                     .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
@@ -258,7 +264,9 @@ pub fn run_offline_parallel_file(
         .map(|wrx| {
             let cfg = cfg.clone();
             thread::spawn(move || {
-                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly);
+                let mut processor = PacketProcessor::with_max_sessions(cfg.max_reassembly)
+                    .with_reassembly(cfg.reassembly)
+                    .with_parse_limit(cfg.parse_limit);
                 let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate)
                     .with_xcid_headers(cfg.xcid_headers.clone());
                 let mut ss = StreamStore::new(cfg.max_streams);
@@ -493,6 +501,8 @@ mod tests {
             no_dialog: false,
             no_rtp: false,
             xcid_headers: Vec::new(),
+            reassembly: true,
+            parse_limit: None,
         }
     }
 

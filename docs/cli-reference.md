@@ -14,6 +14,8 @@ CLI flags always override config file values (see [config-reference.md](config-r
 | `-B`, `--buffer` | `<MIB>` | `2` | Kernel capture buffer size in MiB |
 | `--buffer-budget` | `<MIB>` | `64` | Memory budget for the in-flight capture→processing queue. The queue grows under load up to this budget (capped, never OOM) and shrinks when idle; overrides `[capture] buffer_budget_mb` |
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
+| `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
+| `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; every packet is parsed standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
