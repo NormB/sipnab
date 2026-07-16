@@ -4,6 +4,15 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Security**: `-K` / `--kill-target <ADDR[:PORT-RANGE]>` — targeted scanner
+  kill (sipgrep `-K`). Sends the kill response to any SIP request whose source
+  matches the given address and an optional port range (e.g.
+  `10.0.0.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection.
+  Repeatable; spawns the kill worker on its own, so `--kill-scanner` is not
+  required. Malformed targets are rejected at startup.
+
 ## [0.5.6] - 2026-07-16
 
 ### Added
