@@ -139,6 +139,8 @@ pub fn run_cores_file(
         no_dialog: cli.no_dialog,
         no_rtp,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
+        reassembly: !cli.no_reassembly,
+        parse_limit: cli.limitlen,
     };
     match crate::parallel::run_offline_parallel_file(
         std::path::Path::new(input),
@@ -195,6 +197,8 @@ pub fn run(
             no_dialog: cli.no_dialog,
             no_rtp,
             xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
+            reassembly: !cli.no_reassembly,
+            parse_limit: cli.limitlen,
         };
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
@@ -293,7 +297,9 @@ impl BatchRunner {
         // (when --api is set) reads from the SAME store the packet loop writes
         // to, eliminating the prior mirror-and-double-parse pattern. In the
         // common single-writer batch case the locks are uncontested.
-        let processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize);
+        let processor = capture::PacketProcessor::with_max_sessions(cli.max_reassembly as usize)
+            .with_reassembly(!cli.no_reassembly)
+            .with_parse_limit(cli.limitlen);
         let dialog_store: Arc<RwLock<DialogStore>> = Arc::new(RwLock::new(
             DialogStore::new(cli.limit as usize, cli.rotate_enabled())
                 .with_xcid_headers(config.sip.xcid_headers.clone().unwrap_or_default()),

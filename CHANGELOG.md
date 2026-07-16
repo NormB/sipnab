@@ -4,6 +4,17 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **TUI**: the F10 column selector now saves the current column layout with
+  `s`, writing `[display] visible_columns` into your sipnabrc so it persists
+  across runs (previously the layout had to be hand-edited into the config).
+- **Capture**: `-S` / `--limitlen <BYTES>` (sipgrep `-S`) — parse only the
+  first N bytes of each packet, independent of the capture snaplen and the
+  display truncation.
+- **Capture**: `--no-reassembly` — disable IP-fragment and TCP-segment
+  reassembly (inverse of sipgrep `-a`); every packet is parsed standalone.
+
 ## [0.5.8] - 2026-07-16
 
 ### Added

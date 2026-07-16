@@ -268,6 +268,7 @@ browse your own files.
 | Up / k | Move selection up |
 | Down / j | Move selection down |
 | Space | Toggle column visibility |
+| s | Save the current layout to `[display] visible_columns` in your sipnabrc (persists across runs) |
 | Enter / Esc | Close selector |
 
 ## Timestamp Modes

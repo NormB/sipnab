@@ -116,7 +116,9 @@ pub fn run_tui_mode(
         .name("tui-processor".to_string())
         .spawn(move || {
             let mut processor =
-                capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize);
+                capture::PacketProcessor::with_max_sessions(cli_clone.max_reassembly as usize)
+                    .with_reassembly(!cli_clone.no_reassembly)
+                    .with_parse_limit(cli_clone.limitlen);
             let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
             // SRTP/DTLS-SRTP media-decryption state for the live pipeline.

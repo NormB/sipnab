@@ -737,6 +737,51 @@ pub fn upsert_manual_mappings(
     Ok(doc.to_string())
 }
 
+/// Surgically set `[display] visible_columns` in a sipnabrc document.
+///
+/// Parses `existing` (may be empty), writes `columns` (ordered column labels)
+/// as `[display] visible_columns`, and returns the new document text with all
+/// comments, key ordering, and other sections preserved. The previous value is
+/// fully replaced.
+pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<String, crate::Error> {
+    use toml_edit::{Array, DocumentMut, Item, Table, value};
+
+    let mut doc = existing
+        .parse::<DocumentMut>()
+        .map_err(|e| crate::Error::ConfigInvalid(format!("sipnabrc is not valid TOML: {e}")))?;
+
+    if doc.get("display").is_none() {
+        doc["display"] = Item::Table(Table::new());
+    }
+    let display = doc["display"]
+        .as_table_mut()
+        .ok_or_else(|| crate::Error::ConfigInvalid("[display] is not a table".into()))?;
+
+    let mut arr = Array::new();
+    for c in columns {
+        arr.push(c.as_str());
+    }
+    display["visible_columns"] = value(arr);
+
+    Ok(doc.to_string())
+}
+
+/// Write the current visible column layout into `[display] visible_columns` of
+/// the sipnabrc at `path`, preserving the rest of the file (see
+/// [`upsert_display_columns`]). Creates the file and parent directory if needed.
+pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(), crate::Error> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let updated = upsert_display_columns(&existing, columns)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
+        })?;
+    }
+    std::fs::write(path, updated)
+        .map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))?;
+    Ok(())
+}
+
 /// Return the default config file search paths (items 3-5).
 fn default_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -856,6 +901,84 @@ enabled = true
     #[test]
     fn upsert_manual_rejects_invalid_toml() {
         assert!(upsert_manual_mappings("this is = = not toml", &[]).is_err());
+    }
+
+    // ── display column persistence (F10 save) ────────────────────────
+
+    #[test]
+    fn upsert_display_columns_preserves_other_sections() {
+        let existing = "# my config\n[capture]\nsnaplen = 1500\n";
+        let cols = vec!["#".to_string(), "Method".to_string(), "From".to_string()];
+        let out = upsert_display_columns(existing, &cols).expect("valid toml");
+        // Unrelated section + comment survive.
+        assert!(out.contains("# my config"));
+        assert!(out.contains("snaplen = 1500"));
+        // Round-trips into the typed config.
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(
+            cfg.display.visible_columns.as_deref(),
+            Some(cols.as_slice())
+        );
+        assert_eq!(cfg.capture.snaplen, Some(1500));
+    }
+
+    #[test]
+    fn upsert_display_columns_replaces_existing() {
+        let existing = "[display]\nvisible_columns = [\"#\", \"State\"]\n";
+        let cols = vec!["Method".to_string(), "Duration".to_string()];
+        let out = upsert_display_columns(existing, &cols).unwrap();
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(
+            cfg.display.visible_columns.as_deref(),
+            Some(cols.as_slice())
+        );
+        assert!(
+            !out.contains("State"),
+            "stale columns must be replaced:\n{out}"
+        );
+    }
+
+    #[test]
+    fn upsert_display_columns_rejects_invalid_toml() {
+        assert!(upsert_display_columns("this is = = not toml", &[]).is_err());
+    }
+
+    #[test]
+    fn upsert_display_columns_empty_writes_empty_array() {
+        // Hiding every column persists as an empty list, not a missing key.
+        let out = upsert_display_columns("", &[]).unwrap();
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.display.visible_columns.as_deref(), Some([].as_slice()));
+    }
+
+    #[test]
+    fn write_display_columns_file_creates_dirs_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/sipnab.toml");
+        let cols = vec![
+            "#".to_string(),
+            "Method".to_string(),
+            "Duration".to_string(),
+        ];
+        write_display_columns_file(&path, &cols).unwrap();
+        let cfg = Config::load(Some(path.to_str().unwrap()), false)
+            .unwrap()
+            .config;
+        assert_eq!(
+            cfg.display.visible_columns.as_deref(),
+            Some(cols.as_slice())
+        );
+
+        // A second write replaces the set.
+        let cols2 = vec!["From".to_string(), "To".to_string()];
+        write_display_columns_file(&path, &cols2).unwrap();
+        let cfg = Config::load(Some(path.to_str().unwrap()), false)
+            .unwrap()
+            .config;
+        assert_eq!(
+            cfg.display.visible_columns.as_deref(),
+            Some(cols2.as_slice())
+        );
     }
 
     #[test]

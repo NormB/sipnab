@@ -145,6 +145,23 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "BYTES")]
     pub snaplen: Option<u32>,
 
+    /// Parse only the first N bytes of each packet (sipgrep -S). Caps what the
+    /// SIP parser and matchers inspect, independent of the capture snaplen
+    /// (`--snaplen`) and the display truncation (`--payload-limit`).
+    #[arg(
+        help_heading = "Capture",
+        short = 'S',
+        long = "limitlen",
+        value_name = "BYTES"
+    )]
+    pub limitlen: Option<usize>,
+
+    /// Disable IP-fragment and TCP-segment reassembly; every packet is parsed
+    /// standalone. The inverse of sipgrep's `-a`. Useful for pure single-packet
+    /// UDP scanning where reassembly is only overhead.
+    #[arg(help_heading = "Capture", long = "no-reassembly")]
+    pub no_reassembly: bool,
+
     /// SIP port range to capture [default: 5060-5061]. An Option (not a
     /// clap default) so an explicit `--portrange 5060-5061` still overrides
     /// a config-file range.
@@ -1227,6 +1244,20 @@ mod tests {
             cli.bpf_filter,
             vec!["host", "10.0.0.1", "and", "port", "5060"]
         );
+    }
+
+    #[test]
+    fn limitlen_and_no_reassembly_flags_parse() {
+        // Short form.
+        let cli = Cli::parse_from_args(["sipnab", "-S", "512", "--no-reassembly"]);
+        assert_eq!(cli.limitlen, Some(512));
+        assert!(cli.no_reassembly);
+        // Long form (`--limitlen`).
+        let long = Cli::parse_from_args(["sipnab", "--limitlen", "256"]);
+        assert_eq!(long.limitlen, Some(256));
+        let d = Cli::parse_from_args(["sipnab"]);
+        assert_eq!(d.limitlen, None);
+        assert!(!d.no_reassembly);
     }
 
     #[test]

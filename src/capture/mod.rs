@@ -75,6 +75,13 @@ pub struct PacketProcessor {
     tcp_sip_leftover:
         std::collections::HashMap<(std::net::SocketAddr, std::net::SocketAddr), Vec<u8>>,
     max_sessions: usize,
+    /// When `false` (`--no-reassembly`), IP fragments and TCP segments pass
+    /// through as individual packets instead of being reassembled/reframed.
+    reassembly: bool,
+    /// When `Some(n)` (`-S`/`--limitlen`), each emitted packet's payload is
+    /// truncated to `n` bytes before upper-layer parsing — the sipgrep `-S`
+    /// "look at only the first N bytes" cap, independent of the capture snaplen.
+    parse_limit: Option<usize>,
 }
 
 /// Default reassembly session cap (matches the reassemblers' default).
@@ -93,7 +100,25 @@ impl PacketProcessor {
             tcp_reassembler: TcpReassembler::new(),
             tcp_sip_leftover: std::collections::HashMap::new(),
             max_sessions: DEFAULT_MAX_SESSIONS,
+            reassembly: true,
+            parse_limit: None,
         }
+    }
+
+    /// Builder: enable or disable IP-fragment / TCP-segment reassembly
+    /// (`--no-reassembly` sets this `false`). Default `true`.
+    #[must_use]
+    pub fn with_reassembly(mut self, on: bool) -> Self {
+        self.reassembly = on;
+        self
+    }
+
+    /// Builder: cap the bytes of each emitted packet handed to the parser
+    /// (`-S`/`--limitlen`). Default `None` (no cap).
+    #[must_use]
+    pub fn with_parse_limit(mut self, limit: Option<usize>) -> Self {
+        self.parse_limit = limit;
+        self
     }
 
     /// Create a new packet processor with a custom maximum reassembly session count.
@@ -109,6 +134,8 @@ impl PacketProcessor {
             ),
             tcp_sip_leftover: std::collections::HashMap::new(),
             max_sessions,
+            reassembly: true,
+            parse_limit: None,
         }
     }
 
@@ -118,7 +145,21 @@ impl PacketProcessor {
     /// - **Zero:** packet is non-IP, a buffered fragment, or a buffered TCP segment.
     /// - **One:** typical UDP packet or a completed fragment/TCP flush.
     /// - **Multiple:** TCP reassembly may flush several accumulated segments.
+    ///
+    /// Applies the `-S`/`--limitlen` parse cap to every emitted packet.
     pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
+        let mut out = self.process_inner(packet);
+        if let Some(limit) = self.parse_limit {
+            for p in out.iter_mut() {
+                if p.payload.len() > limit {
+                    p.payload = p.payload.slice(..limit);
+                }
+            }
+        }
+        out
+    }
+
+    fn process_inner(&mut self, packet: &Packet) -> ParsedPackets {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
             Err(e) => {
@@ -126,6 +167,12 @@ impl PacketProcessor {
                 return SmallVec::new();
             }
         };
+
+        // Reassembly disabled (`--no-reassembly`): every packet stands alone —
+        // IP fragments and TCP segments are neither reassembled nor reframed.
+        if !self.reassembly {
+            return smallvec![parsed];
+        }
 
         // Check if this is an IP fragment that needs reassembly
         let is_fragment =
@@ -612,6 +659,43 @@ mod tests {
     }
 
     #[test]
+    fn no_reassembly_passes_tcp_segment_through_unframed() {
+        // Two SIP messages packed in one TCP segment: with reassembly OFF
+        // (sipgrep -a inverse) the raw segment emerges as a single packet,
+        // not reframed into individual messages.
+        let mut payload = opts("a");
+        payload.extend(opts("b"));
+        let pkt = tcp_frame(&payload, 1000, true, false);
+
+        let mut proc = PacketProcessor::new().with_reassembly(false);
+        let out = proc.process(&pkt);
+        assert_eq!(
+            out.len(),
+            1,
+            "no reassembly emits the raw segment as one packet"
+        );
+        assert_eq!(
+            &out[0].payload[..],
+            &payload[..],
+            "bytes pass through intact"
+        );
+    }
+
+    #[test]
+    fn reassembly_on_by_default_reframes_tcp() {
+        // Contrast: the default processor DOES reframe the same segment.
+        let mut payload = opts("a");
+        payload.extend(opts("b"));
+        let mut proc = PacketProcessor::new();
+        let out = proc.process(&tcp_frame(&payload, 1000, true, false));
+        assert_eq!(
+            out.len(),
+            2,
+            "default reassembly reframes into two messages"
+        );
+    }
+
+    #[test]
     fn process_passes_non_sip_tcp_through_unframed() {
         // TLS-over-TCP (and other binary payloads) must NOT be SIP-framed — they
         // pass through whole so downstream TLS decryption still sees them.
@@ -705,6 +789,42 @@ mod tests {
             assert_eq!(out.len(), 1);
             assert_eq!(out[0].transport, parse::TransportProto::Udp);
             assert_eq!(out[0].dst_port, 5060);
+        }
+
+        #[test]
+        fn parse_limit_truncates_payload() {
+            // `-S`/`--limitlen`: only the first N bytes of each message are
+            // handed downstream, independent of capture snaplen.
+            let mut proc = PacketProcessor::new().with_parse_limit(Some(10));
+            let sip = b"REGISTER sip:x SIP/2.0\r\nCall-ID: hidden-after-limit\r\n\r\n";
+            let out = proc.process(&packet(eth_ipv4_udp(5060, 5060, sip)));
+            assert_eq!(out.len(), 1);
+            assert_eq!(
+                out[0].payload.len(),
+                10,
+                "payload capped to the parse limit"
+            );
+            assert_eq!(&out[0].payload[..], &sip[..10]);
+        }
+
+        #[test]
+        fn parse_limit_none_keeps_full_payload() {
+            let mut proc = PacketProcessor::new();
+            let sip = b"REGISTER sip:x SIP/2.0\r\n\r\n";
+            let out = proc.process(&packet(eth_ipv4_udp(5060, 5060, sip)));
+            assert_eq!(out[0].payload.len(), sip.len(), "no limit → full payload");
+        }
+
+        #[test]
+        fn parse_limit_larger_than_payload_is_noop() {
+            let mut proc = PacketProcessor::new().with_parse_limit(Some(100_000));
+            let sip = b"REGISTER sip:x SIP/2.0\r\n\r\n";
+            let out = proc.process(&packet(eth_ipv4_udp(5060, 5060, sip)));
+            assert_eq!(
+                out[0].payload.len(),
+                sip.len(),
+                "limit beyond payload is a no-op"
+            );
         }
 
         #[test]

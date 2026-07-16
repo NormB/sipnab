@@ -1248,6 +1248,27 @@ mod tests {
     }
 
     #[test]
+    fn hep_auth_chunk_handles_special_bytes() {
+        // An auth key with backslashes / colons / slashes must round-trip
+        // verbatim in the 0x000e chunk (no escaping or truncation).
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let key = "k3y\\with:special/chars";
+        let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 7, Some(key), b"X");
+        assert_eq!(
+            find_hep_chunk(&pkt, 0x0000, 0x000e).as_deref(),
+            Some(key.as_bytes())
+        );
+    }
+
+    #[test]
+    fn hep_custom_capture_id_round_trips() {
+        // A non-default capture/agent id is emitted and parses back.
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 4242, None, b"X");
+        assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(4242));
+    }
+
+    #[test]
     fn hep_no_auth_chunk_when_key_absent() {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
