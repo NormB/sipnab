@@ -607,6 +607,38 @@ mod tests {
         assert!(!matcher.matches(&msg));
     }
 
+    // ── -e / --match wiring (sngrep/sipgrep positional match-expression) ──
+
+    #[test]
+    fn match_expr_flag_feeds_payload_regex() {
+        // `-e REGISTER` should match REGISTER but not INVITE, exactly like a
+        // positional payload pattern.
+        let cli = Cli::parse_from_args(["sipnab", "-e", "REGISTER"]);
+        let matcher = SipMatcher::new(&cli, cli.match_expr.as_deref()).expect("should build");
+        assert!(matcher.is_active());
+
+        let register = make_test_register("1001");
+        assert!(matcher.matches(&register));
+
+        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        assert!(!matcher.matches(&invite));
+    }
+
+    #[test]
+    fn match_expr_honors_ignore_case_and_invert() {
+        // -i makes the expression case-insensitive; -v inverts the result.
+        let cli = Cli::parse_from_args(["sipnab", "-i", "-v", "-e", "register"]);
+        let matcher = SipMatcher::new(&cli, cli.match_expr.as_deref()).expect("should build");
+
+        // REGISTER matches case-insensitively, then invert flips it out.
+        let register = make_test_register("1001");
+        assert!(!matcher.matches(&register));
+
+        // INVITE never matches "register", invert flips it in.
+        let invite = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        assert!(matcher.matches(&invite));
+    }
+
     // ── Regex size limit ─────────────────────────────────────────────
 
     #[test]

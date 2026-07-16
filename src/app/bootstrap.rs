@@ -178,8 +178,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // SIP matcher from CLI filter flags, with config fallbacks.
     let effective_from = cli.from.as_deref().or(config.filter.from.as_deref());
     let effective_to = cli.to.as_deref().or(config.filter.to.as_deref());
-    let matcher = SipMatcher::new_with_overrides(cli, None, effective_from, effective_to)
-        .map_err(|e| PlanError::arg(format!("Invalid filter pattern: {e}")))?;
+    let matcher = SipMatcher::new_with_overrides(
+        cli,
+        cli.match_expr.as_deref(),
+        effective_from,
+        effective_to,
+    )
+    .map_err(|e| PlanError::arg(format!("Invalid filter pattern: {e}")))?;
 
     // Filter DSL expression (--filter or diagnostic aliases), falling back
     // to config.filter.expression.
