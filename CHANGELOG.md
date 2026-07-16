@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-07-16
+
 ### Added
 
 - **Capture**: `-p` / `--no-promisc` — do not put the interface into
