@@ -161,6 +161,9 @@ pub struct App {
     /// When `Some`, `N`-dialog edits are also written into this sipnabrc's
     /// `[names.manual]` table (opt-in via `[names] persist_to_config`).
     names_config_path: Option<PathBuf>,
+    /// Where the F10 column selector's `s` (save) action writes
+    /// `[display] visible_columns`. `None` in tests / when no home dir exists.
+    column_config_path: Option<PathBuf>,
     /// "Name Address" popup state.
     name_dialog: NameDialogState,
     sdp_display_mode: SdpDisplayMode,
@@ -245,6 +248,7 @@ impl App {
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
             names_config_path: None,
+            column_config_path: None,
             name_dialog: NameDialogState::default(),
             header_form: header_form::HeaderFormMode::default(),
             sdp_display_mode: SdpDisplayMode::default(),
@@ -887,6 +891,8 @@ pub fn run_tui_with_pause(
     app.set_name_mode(name_setup.mode);
     app.set_names_save_path(name_setup.save_path);
     app.set_names_config_path(name_setup.config_path);
+    // The F10 column selector's `s` saves into the user's sipnabrc.
+    app.set_column_config_path(crate::config::default_user_config_path());
 
     // Dead rebinds (duplicates, or shadowed by a view's built-in key) used
     // to fail silently; warn on stderr and in the status line at startup.

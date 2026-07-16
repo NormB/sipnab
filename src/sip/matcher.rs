@@ -625,6 +625,26 @@ mod tests {
     }
 
     #[test]
+    fn match_expr_invalid_regex_via_flag_errors() {
+        // A malformed `-e` pattern must fail to build the matcher (not panic or
+        // silently match nothing).
+        let cli = Cli::parse_from_args(["sipnab", "-e", "[unterminated"]);
+        let result = SipMatcher::new(&cli, cli.match_expr.as_deref());
+        assert!(
+            result.is_err(),
+            "-e with invalid regex must return an error"
+        );
+    }
+
+    #[test]
+    fn match_expr_oversized_via_flag_errors() {
+        // A >1 MB `-e` pattern trips the ReDoS size guard.
+        let huge = "a".repeat(2_000_000);
+        let cli = Cli::parse_from_args(["sipnab", "-e", &huge]);
+        assert!(SipMatcher::new(&cli, cli.match_expr.as_deref()).is_err());
+    }
+
+    #[test]
     fn match_expr_honors_ignore_case_and_invert() {
         // -i makes the expression case-insensitive; -v inverts the result.
         let cli = Cli::parse_from_args(["sipnab", "-i", "-v", "-e", "register"]);

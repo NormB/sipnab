@@ -200,6 +200,12 @@ impl App {
         self.names_config_path = path;
     }
 
+    /// Where the F10 column selector's save (`s`) action writes
+    /// `[display] visible_columns`.
+    pub fn set_column_config_path(&mut self, path: Option<PathBuf>) {
+        self.column_config_path = path;
+    }
+
     /// Count dialogs visible after applying the active filter.
     pub fn visible_dialog_count(&self) -> usize {
         filtered_dialog_count(self)

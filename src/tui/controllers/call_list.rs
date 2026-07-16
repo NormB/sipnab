@@ -231,10 +231,27 @@ pub(in crate::tui) fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => app.call_list.column_selector_up(),
         KeyCode::Down | KeyCode::Char('j') => app.call_list.column_selector_down(),
         KeyCode::Char(' ') => app.call_list.toggle_column_visibility(),
+        KeyCode::Char('s') => save_columns(app),
         KeyCode::Enter | KeyCode::Esc => {
             app.call_list.column_selector_open = false;
         }
         _ => {}
+    }
+}
+
+/// Persist the current column layout to `[display] visible_columns` in the
+/// user's sipnabrc, then close the selector. Reports the outcome on the status
+/// line. A no-op (with an error message) when no config path is available.
+pub(in crate::tui) fn save_columns(app: &mut App) {
+    app.call_list.column_selector_open = false;
+    let cols = app.call_list.visible_column_names();
+    let Some(path) = app.column_config_path.clone() else {
+        app.status_error = Some("Cannot save columns: no config path".to_string());
+        return;
+    };
+    match crate::config::write_display_columns_file(&path, &cols) {
+        Ok(()) => app.status_error = Some(format!("Saved columns to {}", path.display())),
+        Err(e) => app.status_error = Some(format!("Save columns failed: {e}")),
     }
 }
 
@@ -318,6 +335,61 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
+
+    #[test]
+    fn save_columns_without_config_path_reports_error() {
+        // Default test App has no column_config_path → save is a safe no-op
+        // that surfaces an error rather than writing anywhere.
+        let mut app = App::new_test();
+        app.call_list.column_selector_open = true;
+        handle_call_list_key(&mut app, key(KeyCode::Char('s')));
+        assert!(!app.call_list.column_selector_open, "selector should close");
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("no config path"),
+            "got: {:?}",
+            app.status_error
+        );
+    }
+
+    #[test]
+    fn save_columns_writes_visible_layout_to_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/sipnab.toml");
+        let mut app = App::new_test();
+        app.set_column_config_path(Some(path.clone()));
+
+        // Hide the first column ("#") via the selector, then save with `s`.
+        app.call_list.column_selector_open = true;
+        app.call_list.column_selector_cursor = 0;
+        handle_call_list_key(&mut app, key(KeyCode::Char(' '))); // toggle "#" off
+        handle_call_list_key(&mut app, key(KeyCode::Char('s'))); // save
+
+        assert!(!app.call_list.column_selector_open);
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("Saved columns")
+        );
+
+        // The written config reloads with "#" hidden and the other 10 present.
+        let cfg = crate::config::Config::load(Some(path.to_str().unwrap()), false)
+            .unwrap()
+            .config;
+        let cols = cfg
+            .display
+            .visible_columns
+            .expect("visible_columns written");
+        assert_eq!(cols.len(), 10);
+        assert!(
+            !cols.iter().any(|c| c == "#"),
+            "hidden column must be absent"
+        );
+        assert!(cols.iter().any(|c| c == "Method"));
+    }
 
     #[test]
     fn call_list_u_cycles_from_to_mode() {
