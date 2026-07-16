@@ -61,6 +61,9 @@ pub struct CaptureConfig {
     /// Memory budget (MiB) for the in-flight packet queue between capture and
     /// processing. Converted to a packet-count cap via [`Self::channel_capacity`].
     pub buffer_budget_mb: u32,
+    /// Put a named interface into promiscuous mode. The `"any"` pseudo-device is
+    /// never promiscuous regardless of this flag. Disabled by `--no-promisc`.
+    pub promisc: bool,
 }
 
 impl Default for CaptureConfig {
@@ -73,6 +76,7 @@ impl Default for CaptureConfig {
             duration: None,
             replay: false,
             buffer_budget_mb: 64,
+            promisc: true,
         }
     }
 }

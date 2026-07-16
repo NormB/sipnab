@@ -4,6 +4,20 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Capture**: `-p` / `--no-promisc` — do not put the interface into
+  promiscuous mode (sipgrep `-p`). Promiscuous mode stays on by default for a
+  named device (never for the `any` pseudo-device). Also settable via
+  `[capture] promisc`.
+- **SIP**: `[sip] xcid_headers` — configurable B2BUA leg-correlation header
+  names (sngrep `sip.xcid`). Defaults to `["X-Call-ID"]`; add carrier-specific
+  headers (e.g. `["X-Call-ID", "X-CID"]`) so multi-leg calls correlate.
+- **HEP**: `--hep-auth <KEY>` (Homer authenticate-key `0x000e` chunk, also read
+  from `SIPNAB_HEP_AUTH`) and `--hep-id <ID>` (capture-agent id `0x000c` chunk,
+  default 1) for `--hep-send`. Previously the sender emitted no auth key and a
+  hardcoded capture id of 1.
+
 ## [0.5.7] - 2026-07-16
 
 ### Added

@@ -36,6 +36,7 @@ Packet capture defaults.
 | `buffer` | integer | `2` | Kernel capture buffer size in MiB |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue. Grows under load up to this budget (capped, never OOM) and shrinks when idle. `--buffer-budget` overrides it |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
+| `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 
 ```toml
 [capture]
@@ -45,6 +46,7 @@ snaplen = 65535
 buffer = 16
 buffer_budget_mb = 64
 no_rtp = false
+promisc = true
 ```
 
 ### [display]
@@ -82,6 +84,19 @@ Default filter presets applied at startup.
 from = "^1001@"
 to = "^1002@"
 expression = "method == 'INVITE'"
+```
+
+### [sip]
+
+SIP protocol handling.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID is correlated. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
+
+```toml
+[sip]
+xcid_headers = ["X-Call-ID", "X-CID"]
 ```
 
 ### [security]

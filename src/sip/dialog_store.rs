@@ -100,6 +100,11 @@ pub struct DialogStore {
     idle_messages_evicted: u64,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
+    /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`). A
+    /// candidate dialog whose message carries one of these headers pointing at
+    /// another dialog's Call-ID (or vice versa) is correlated at score 100.
+    /// Defaults to `["X-Call-ID"]`.
+    xcid_headers: Vec<String>,
 }
 
 /// A dialog idle longer than this has its stored messages compacted.
@@ -144,7 +149,19 @@ impl DialogStore {
             rotate,
             idle_messages_evicted: 0,
             generation: 0,
+            xcid_headers: vec!["X-Call-ID".to_string()],
         }
+    }
+
+    /// Override the correlation header names (sngrep `sip.xcid`). An empty list
+    /// is ignored so the default `["X-Call-ID"]` is preserved. Builder-style:
+    /// returns `self` for chaining after [`new`](Self::new).
+    #[must_use]
+    pub fn with_xcid_headers(mut self, headers: Vec<String>) -> Self {
+        if !headers.is_empty() {
+            self.xcid_headers = headers;
+        }
+        self
     }
 
     /// Monotonic mutation counter: bumped by every operation that can
@@ -405,11 +422,12 @@ impl DialogStore {
             None => return Vec::new(),
         };
 
-        // Strategy 1 data: X-Call-ID values from the source dialog
+        // Strategy 1 data: correlation-header values from the source dialog,
+        // across every configured xcid header name.
         let x_call_ids: Vec<&str> = dialog
             .messages
             .iter()
-            .filter_map(|m| m.header("X-Call-ID"))
+            .flat_map(|m| self.xcid_headers.iter().filter_map(move |h| m.header(h)))
             .collect();
 
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
@@ -432,12 +450,13 @@ impl DialogStore {
                 continue;
             }
 
-            // Strategy 1: X-Call-ID match (score=100)
+            // Strategy 1: correlation-header match (score=100)
             let xcid_match = x_call_ids.iter().any(|&xid| xid == candidate.call_id)
-                || candidate
-                    .messages
-                    .iter()
-                    .any(|m| m.header("X-Call-ID").is_some_and(|v| v == call_id));
+                || candidate.messages.iter().any(|m| {
+                    self.xcid_headers
+                        .iter()
+                        .any(|h| m.header(h).is_some_and(|v| v == call_id))
+                });
 
             if xcid_match {
                 results.push(CorrelationResult {
@@ -1324,6 +1343,88 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("should parse INVITE with X-Call-ID")
+    }
+
+    /// Build an INVITE carrying an arbitrary correlation header.
+    fn make_invite_with_header(
+        call_id: &str,
+        header_name: &str,
+        header_value: &str,
+        ts: DateTime<Utc>,
+    ) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                &format!("{header_name}: {header_value}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE with custom header")
+    }
+
+    #[test]
+    fn xcid_custom_header_correlates() {
+        // With a custom correlation header configured, a B-leg pointing back via
+        // that header (X-CID here, not X-Call-ID) must correlate.
+        let mut store = DialogStore::new(100, false).with_xcid_headers(vec!["X-CID".to_string()]);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("a-leg@test", t0));
+        store.process_message(make_invite_with_header(
+            "b-leg@test",
+            "X-CID",
+            "a-leg@test",
+            t0 + TimeDelta::seconds(30),
+        ));
+        let correlated = store.find_correlated("a-leg@test");
+        assert_eq!(correlated.len(), 1);
+        assert_eq!(correlated[0].call_id, "b-leg@test");
+    }
+
+    #[test]
+    fn xcid_header_not_in_configured_list_is_ignored() {
+        // Default list is just ["X-Call-ID"]; a B-leg carrying only X-CID (30s
+        // later, so the timing heuristic can't match) must NOT correlate.
+        let mut store = DialogStore::new(100, false);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("a-leg@test", t0));
+        store.process_message(make_invite_with_header(
+            "b-leg@test",
+            "X-CID",
+            "a-leg@test",
+            t0 + TimeDelta::seconds(30),
+        ));
+        assert!(
+            store.find_correlated("a-leg@test").is_empty(),
+            "X-CID must not correlate when only X-Call-ID is configured"
+        );
+    }
+
+    #[test]
+    fn with_xcid_headers_empty_keeps_default() {
+        // An empty override must not wipe out the default X-Call-ID correlation.
+        let mut store = DialogStore::new(100, false).with_xcid_headers(vec![]);
+        let t0 = base_ts();
+        store.process_message(make_invite_msg("a-leg@test", t0));
+        store.process_message(make_invite_with_x_call_id(
+            "b-leg@test",
+            "a-leg@test",
+            t0 + TimeDelta::seconds(30),
+        ));
+        assert_eq!(store.find_correlated("a-leg@test").len(), 1);
     }
 
     #[test]

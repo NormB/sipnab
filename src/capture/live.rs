@@ -104,8 +104,9 @@ pub fn capture_live(
     tx: PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
-    // The "any" pseudo-device on Linux does not support promiscuous mode.
-    let use_promisc = device != "any";
+    // Promiscuous mode is opt-out (`--no-promisc` / `config.promisc`). The "any"
+    // pseudo-device on Linux does not support it regardless.
+    let use_promisc = config.promisc && device != "any";
 
     let mut cap = match pcap::Capture::from_device(device)
         .with_context(|| format!("Failed to open device '{device}'"))

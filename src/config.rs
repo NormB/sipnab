@@ -185,6 +185,9 @@ pub struct Config {
     /// Filter presets.
     #[serde(default)]
     pub filter: FilterConfig,
+    /// SIP protocol handling (dialog correlation, ...).
+    #[serde(default)]
+    pub sip: SipConfig,
     /// Security detection settings.
     #[serde(default)]
     pub security: SecurityConfig,
@@ -208,6 +211,16 @@ pub struct Config {
     pub crash: CrashConfig,
 }
 
+/// SIP protocol handling configuration.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+#[serde(default)]
+pub struct SipConfig {
+    /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`).
+    /// Defaults to `["X-Call-ID"]` when unset or empty. Set to add
+    /// carrier-specific headers, e.g. `["X-Call-ID", "X-CID"]`.
+    pub xcid_headers: Option<Vec<String>>,
+}
+
 /// Packet capture configuration.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -226,6 +239,9 @@ pub struct CaptureConfig {
     pub buffer_budget_mb: Option<u32>,
     /// Disable RTP capture by default.
     pub no_rtp: Option<bool>,
+    /// Put the interface into promiscuous mode (default true). `--no-promisc`
+    /// overrides this to false.
+    pub promisc: Option<bool>,
 }
 
 /// Display configuration.
@@ -1085,6 +1101,22 @@ visible_columns = ["#", "Method", "From", "To", "State"]
         let toml_str = "[display]\ncolor = \"auto\"\n";
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.display.visible_columns.is_none());
+    }
+
+    #[test]
+    fn sip_xcid_headers_parse() {
+        let toml_str = "[sip]\nxcid_headers = [\"X-Call-ID\", \"X-CID\"]\n";
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.sip.xcid_headers.as_deref(),
+            Some(["X-Call-ID".to_string(), "X-CID".to_string()].as_slice())
+        );
+    }
+
+    #[test]
+    fn sip_xcid_headers_absent_is_none() {
+        let config: Config = toml::from_str("[capture]\nsnaplen = 1500\n").unwrap();
+        assert!(config.sip.xcid_headers.is_none());
     }
 
     #[test]
