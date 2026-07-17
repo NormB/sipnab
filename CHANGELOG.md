@@ -4,6 +4,15 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.14] - 2026-07-17
+
+### Fixed
+
+- **Config**: a config using the valid `[sip]` section (`xcid_headers`) or the
+  `[capture] promisc` key no longer emits a spurious "Unknown config key"
+  warning at load. `known_keys()` had omitted both even though the code reads
+  them; typos inside `[sip]` are still flagged.
+
 ## [0.5.13] - 2026-07-17
 
 ### Added
