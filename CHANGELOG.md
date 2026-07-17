@@ -4,6 +4,19 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.11] - 2026-07-17
+
+### Fixed
+
+- **Security**: `-K` / `--kill-target` and `--kill-scanner` now actually
+  transmit the SIP kill response to the scanner over UDP. The worker
+  previously matched the target, built the response, and rate-limited it, but
+  only logged `would send …` without putting anything on the wire (pcap
+  injection was a stub). Send failures now surface as an error instead of
+  silently vanishing. The response leaves from an ephemeral source port, not
+  the SIP listener port the scanner targeted (source-port matching would need
+  raw sockets / `CAP_NET_RAW`, tracked as future work).
+
 ## [0.5.10] - 2026-07-17
 
 ### Added
