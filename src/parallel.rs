@@ -65,6 +65,8 @@ pub struct ParallelConfig {
     pub no_dialog: bool,
     /// Skip RTP/RTCP processing (`--no-rtp`).
     pub no_rtp: bool,
+    /// Suppress the bad-parse diagnostic (`--quiet-bad-parse`, sipgrep `-x`).
+    pub quiet_bad_parse: bool,
     /// Correlation header names for B2BUA leg matching (sngrep `sip.xcid`).
     /// Empty falls back to the `DialogStore` default (`["X-Call-ID"]`).
     pub xcid_headers: Vec<String>,
@@ -110,6 +112,7 @@ fn reconstruct(
         no_dialog: cfg.no_dialog,
         no_rtp: cfg.no_rtp,
         sip_portrange: Some(cfg.portrange),
+        quiet_bad_parse: cfg.quiet_bad_parse,
     };
     let mut decrypt = MediaDecrypt::default();
     match classify_packet(pp, heuristic, &opts, &mut decrypt) {
@@ -500,6 +503,7 @@ mod tests {
             portrange: (1, 65535),
             no_dialog: false,
             no_rtp: false,
+            quiet_bad_parse: false,
             xcid_headers: Vec::new(),
             reassembly: true,
             parse_limit: None,

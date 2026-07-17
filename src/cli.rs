@@ -162,6 +162,13 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long = "no-reassembly")]
     pub no_reassembly: bool,
 
+    /// Quiet bad-parse packets (sipgrep -x): suppress the per-packet
+    /// diagnostic emitted when a SIP-looking packet fails to parse. The packet
+    /// is dropped either way; this only silences the "SIP parse error" notice
+    /// on a noisy link (visible under -v / debug logging).
+    #[arg(help_heading = "Capture", short = 'x', long = "quiet-bad-parse")]
+    pub quiet_bad_parse: bool,
+
     /// SIP port range to capture [default: 5060-5061]. An Option (not a
     /// clap default) so an explicit `--portrange 5060-5061` still overrides
     /// a config-file range.
@@ -385,6 +392,12 @@ pub struct Cli {
     /// Show messages with empty bodies.
     #[arg(help_heading = "Output", long)]
     pub show_empty: bool,
+
+    /// Annotate the transport tag with the IANA IP protocol number, e.g.
+    /// `UDP(17)` / `TCP(6)` (sipgrep -N). `-N` itself is `--no-tui` here, so
+    /// this flag is long-only. TLS/WS report their TCP carrier's number (6).
+    #[arg(help_heading = "Output", long = "proto-number")]
+    pub proto_number: bool,
 
     /// Flush output after each line (useful for piping).
     #[arg(help_heading = "Output", long)]
@@ -1314,6 +1327,20 @@ mod tests {
 
         let none = Cli::parse_from_args(["sipnab"]);
         assert_eq!(none.match_expr, None);
+    }
+
+    #[test]
+    fn proto_number_flag_parses() {
+        // Long-only: `-N` is already taken by `--no-tui`.
+        assert!(Cli::parse_from_args(["sipnab", "--proto-number"]).proto_number);
+        assert!(!Cli::parse_from_args(["sipnab"]).proto_number);
+    }
+
+    #[test]
+    fn quiet_bad_parse_short_and_long_flags() {
+        assert!(Cli::parse_from_args(["sipnab", "-x"]).quiet_bad_parse);
+        assert!(Cli::parse_from_args(["sipnab", "--quiet-bad-parse"]).quiet_bad_parse);
+        assert!(!Cli::parse_from_args(["sipnab"]).quiet_bad_parse);
     }
 
     #[test]

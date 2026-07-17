@@ -42,6 +42,9 @@ pub struct OutputOptions {
     pub payload_limit: Option<usize>,
     /// If `true`, show messages even when the body is empty.
     pub show_empty: bool,
+    /// If `true`, annotate the transport tag with the IANA IP protocol number
+    /// (`sipgrep -N`), e.g. `UDP(17)`.
+    pub show_proto_number: bool,
 }
 
 impl Default for OutputOptions {
@@ -51,6 +54,7 @@ impl Default for OutputOptions {
             delta_time: false,
             payload_limit: None,
             show_empty: true,
+            show_proto_number: false,
         }
     }
 }
@@ -151,9 +155,12 @@ pub fn format_sip_message(
         );
     }
 
-    // Transport tag
+    // Transport tag (optionally annotated with the IP proto number, sipgrep -N)
     out.push(' ');
     out.push_str(msg.transport.as_str());
+    if opts.show_proto_number {
+        let _ = write!(out, "({})", msg.transport.ip_proto_number());
+    }
     out.push('\n');
 
     // Payload (optional, with truncation)
@@ -363,6 +370,54 @@ mod tests {
             output.contains("+1.500s"),
             "should show delta time: got {output}"
         );
+    }
+
+    #[test]
+    fn proto_number_appended_to_transport_tag() {
+        let msg = make_invite();
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            show_proto_number: true,
+            ..Default::default()
+        };
+        let output = format_sip_message(&msg, &opts, None);
+        // UDP transport → IANA number 17, rendered adjacent to the tag.
+        assert!(
+            output.contains("UDP(17)"),
+            "should annotate transport with proto number: got {output}"
+        );
+    }
+
+    #[test]
+    fn proto_number_off_by_default() {
+        let msg = make_invite();
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            ..Default::default()
+        };
+        let output = format_sip_message(&msg, &opts, None);
+        assert!(
+            output.contains("UDP") && !output.contains("UDP("),
+            "default must show bare transport tag: got {output}"
+        );
+    }
+
+    #[test]
+    fn proto_number_with_color_stays_outside_reset() {
+        // Adversarial: the number must not land inside the ANSI color span
+        // for the method, which would corrupt the escape sequence.
+        let msg = make_invite();
+        let opts = OutputOptions {
+            color: ColorMode::Always,
+            show_proto_number: true,
+            ..Default::default()
+        };
+        let output = format_sip_message(&msg, &opts, None);
+        assert!(output.contains("UDP(17)"), "got {output}");
+        // The transport annotation sits after the method's RESET.
+        let reset_pos = output.find(RESET).expect("reset present");
+        let tag_pos = output.find("UDP(17)").expect("tag present");
+        assert!(tag_pos > reset_pos, "transport tag must follow reset");
     }
 
     #[test]

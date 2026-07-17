@@ -33,6 +33,19 @@ impl TransportProto {
             Self::Ws => "WS",
         }
     }
+
+    /// IANA IP protocol number of the underlying transport (`sipgrep -N`).
+    ///
+    /// TLS and WebSocket are application framings over TCP, so both report
+    /// TCP's number (6) — the number identifies the IP-layer transport, not
+    /// the SIP framing.
+    pub fn ip_proto_number(self) -> u8 {
+        match self {
+            Self::Udp => 17,
+            Self::Tcp | Self::Tls | Self::Ws => 6,
+            Self::Sctp => 132,
+        }
+    }
 }
 
 impl std::fmt::Display for TransportProto {
@@ -57,5 +70,16 @@ mod tests {
             assert_eq!(proto.as_str(), s);
             assert_eq!(proto.to_string(), s);
         }
+    }
+
+    #[test]
+    fn ip_proto_number_maps_to_iana_transport() {
+        // sipgrep -N prints the IP sub-protocol number. TLS and WS both ride
+        // on TCP, so they report TCP's number (6), never their own tag.
+        assert_eq!(TransportProto::Udp.ip_proto_number(), 17);
+        assert_eq!(TransportProto::Tcp.ip_proto_number(), 6);
+        assert_eq!(TransportProto::Sctp.ip_proto_number(), 132);
+        assert_eq!(TransportProto::Tls.ip_proto_number(), 6);
+        assert_eq!(TransportProto::Ws.ip_proto_number(), 6);
     }
 }

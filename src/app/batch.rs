@@ -138,6 +138,7 @@ pub fn run_cores_file(
         portrange,
         no_dialog: cli.no_dialog,
         no_rtp,
+        quiet_bad_parse: cli.quiet_bad_parse,
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         reassembly: !cli.no_reassembly,
         parse_limit: cli.limitlen,
@@ -196,6 +197,7 @@ pub fn run(
             portrange,
             no_dialog: cli.no_dialog,
             no_rtp,
+            quiet_bad_parse: cli.quiet_bad_parse,
             xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
             reassembly: !cli.no_reassembly,
             parse_limit: cli.limitlen,
@@ -1137,6 +1139,7 @@ fn process_parsed_packet(
         no_dialog: cli.no_dialog,
         no_rtp,
         sip_portrange: Some(portrange),
+        quiet_bad_parse: cli.quiet_bad_parse,
     };
     #[cfg(feature = "tls")]
     let mut decrypt = crate::pipeline::MediaDecrypt {
