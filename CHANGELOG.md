@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.13] - 2026-07-17
+
 ### Added
 
 - **Security**: scanner-kill source-port spoofing (`--kill-spoof`, added in
