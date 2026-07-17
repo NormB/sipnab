@@ -10,7 +10,7 @@
 //! process-level isolation with separate address spaces.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -35,7 +35,7 @@ pub enum KillRequest {
 /// Response from the scanner-kill worker back to the main thread.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum KillResponse {
-    /// Response was successfully sent (or logged, before pcap injection is wired).
+    /// Response was successfully transmitted to the scanner over UDP.
     Sent,
     /// Request was dropped due to rate limiting.
     RateLimited,
@@ -213,13 +213,26 @@ impl PerDstRateLimiter {
 /// Scanner-kill worker that runs in a dedicated thread.
 ///
 /// Receives [`KillRequest`]s via channel, validates them, applies rate
-/// limiting (both global and per-destination-IP), and (in future) injects
-/// SIP responses via pcap.
+/// limiting (both global and per-destination-IP), and transmits the SIP
+/// response to the scanner over UDP.
+///
+/// The response leaves from an ephemeral source port on `sock_v4`/`sock_v6`
+/// (bound once at spawn), not from the SIP listener port the scanner
+/// originally targeted — sipnab is a passive sniffer and does not own that
+/// socket. Scanners that key on the SIP transaction (Call-ID / branch /
+/// CSeq / To-tag) accept it regardless; matching the source port would
+/// require raw sockets (`CAP_NET_RAW`) and is left as a future enhancement.
 struct ScannerKillWorker {
     rx: Receiver<KillRequest>,
     resp_tx: Sender<KillResponse>,
     rate_limiter: RateLimiter,
     per_dst_limiter: PerDstRateLimiter,
+    /// UDP socket for IPv4 destinations (bound to `0.0.0.0:0`); `None` if the
+    /// bind failed at spawn.
+    sock_v4: Option<UdpSocket>,
+    /// UDP socket for IPv6 destinations (bound to `[::]:0`); `None` if the
+    /// bind failed at spawn.
+    sock_v6: Option<UdpSocket>,
 }
 
 impl ScannerKillWorker {
@@ -294,13 +307,27 @@ impl ScannerKillWorker {
         // Periodic cleanup of per-dst limiter
         self.per_dst_limiter.cleanup();
 
-        // Log the response (actual pcap injection is a future enhancement)
-        tracing::info!(
-            "Scanner-kill: would send {} byte response to {dst_addr}:{dst_port}",
-            response_bytes.len(),
-        );
-
-        KillResponse::Sent
+        // Transmit the response to the scanner over UDP.
+        let sock = match dst_addr {
+            IpAddr::V4(_) => self.sock_v4.as_ref(),
+            IpAddr::V6(_) => self.sock_v6.as_ref(),
+        };
+        let Some(sock) = sock else {
+            let message = format!("no UDP socket available for {dst_addr}");
+            tracing::error!("Scanner-kill: {message}");
+            return KillResponse::Error { message };
+        };
+        match sock.send_to(response_bytes, (dst_addr, dst_port)) {
+            Ok(n) => {
+                tracing::info!("Scanner-kill: sent {n} byte response to {dst_addr}:{dst_port}");
+                KillResponse::Sent
+            }
+            Err(e) => {
+                let message = format!("send to {dst_addr}:{dst_port} failed: {e}");
+                tracing::warn!("Scanner-kill: {message}");
+                KillResponse::Error { message }
+            }
+        }
     }
 }
 
@@ -337,11 +364,24 @@ pub fn spawn_scanner_kill_worker(
     let (tx, rx) = crossbeam_channel::bounded(256);
     let (resp_tx, resp_rx) = crossbeam_channel::bounded(256);
 
+    // Bind the send sockets once, up front. Either family may be unavailable
+    // (e.g. no IPv6 stack); a destination whose family has no socket is
+    // reported as an error at send time rather than silently dropped.
+    let sock_v4 = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok();
+    let sock_v6 = UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok();
+    if sock_v4.is_none() && sock_v6.is_none() {
+        tracing::error!(
+            "Scanner-kill: could not bind any UDP send socket; kill responses will error"
+        );
+    }
+
     let worker = ScannerKillWorker {
         rx,
         resp_tx,
         rate_limiter: RateLimiter::new(rate),
         per_dst_limiter: PerDstRateLimiter::new(),
+        sock_v4,
+        sock_v6,
     };
 
     let thread = std::thread::Builder::new()
@@ -412,9 +452,10 @@ mod tests {
         let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
 
         // Send 15 requests to different destination IPs so the per-dst
-        // limiter doesn't interfere with the global rate limit test.
+        // limiter doesn't interfere with the global rate limit test. Loopback
+        // (127.0.0.0/8) so the now-real UDP send never leaves the host.
         for i in 0..15u8 {
-            let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, i.wrapping_add(1)));
+            let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, i.wrapping_add(1)));
             let _ = handle.send_kill(KillRequest::SendResponse {
                 dst_addr: dst,
                 dst_port: 5060,
@@ -537,6 +578,77 @@ mod tests {
         assert!(
             matches!(resp, Some(KillResponse::Rejected { .. })),
             "empty response should be rejected"
+        );
+
+        handle.shutdown();
+    }
+
+    #[test]
+    fn process_send_actually_transmits_over_udp() {
+        // The worker must put the response bytes on the wire, not just log
+        // them. Bind a real UDP listener and assert it receives the datagram.
+        let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
+        listener
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+        handle
+            .send_kill(KillRequest::SendResponse {
+                dst_addr: localhost_v4(),
+                dst_port: port,
+                response_bytes: payload.clone(),
+            })
+            .expect("send should succeed");
+
+        let mut buf = [0u8; 2048];
+        let (n, _from) = listener
+            .recv_from(&mut buf)
+            .expect("listener must receive the kill packet");
+        assert_eq!(
+            &buf[..n],
+            &payload[..],
+            "listener must receive the exact response bytes"
+        );
+
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
+        assert_eq!(resp, Some(KillResponse::Sent));
+
+        handle.shutdown();
+    }
+
+    #[test]
+    fn transmits_response_bytes_verbatim_including_nul() {
+        // Adversarial: response bytes carrying embedded NUL and high bytes
+        // must be delivered verbatim — no truncation, no re-encoding.
+        let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
+        listener
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let payload = vec![
+            0x00u8, 0xff, b'S', b'I', b'P', b'\\', 0x0d, 0x0a, 0x00, 0x80, 0x7f,
+        ];
+        handle
+            .send_kill(KillRequest::SendResponse {
+                dst_addr: localhost_v4(),
+                dst_port: port,
+                response_bytes: payload.clone(),
+            })
+            .expect("send should succeed");
+
+        let mut buf = [0u8; 2048];
+        let (n, _from) = listener
+            .recv_from(&mut buf)
+            .expect("listener must receive the kill packet");
+        assert_eq!(
+            &buf[..n],
+            &payload[..],
+            "binary response bytes must be delivered byte-for-byte"
         );
 
         handle.shutdown();
