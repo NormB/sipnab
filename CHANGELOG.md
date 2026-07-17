@@ -4,6 +4,18 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.10] - 2026-07-17
+
+### Added
+
+- **Display**: `--proto-number` (sipgrep `-N`) — annotate the transport tag
+  with the IANA IP protocol number (`UDP(17)`, `TCP(6)`). TLS and WS report
+  their TCP carrier's number, since the number identifies the IP-layer
+  transport, not the SIP framing.
+- **Capture**: `-x` / `--quiet-bad-parse` (sipgrep `-x`) — suppress the
+  per-packet SIP parse-error diagnostic for SIP-looking-but-unparseable
+  packets. The packet is dropped either way; only the notice is silenced.
+
 ## [0.5.9] - 2026-07-16
 
 ### Added
