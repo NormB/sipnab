@@ -10,21 +10,141 @@
 //! process-level isolation with separate address spaces.
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, UdpSocket};
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
+
+/// Raw IPv4 socket (`IP_HDRINCL`) for source-spoofed scanner-kill responses.
+///
+/// Must be opened during the privileged window (before `drop_privileges`),
+/// since it needs `CAP_NET_RAW`; it is then moved into the worker thread and
+/// remains usable after the drop. Linux-only — on other platforms `open_v4`
+/// returns an error and the worker falls back to the ephemeral UDP send.
+pub struct RawKillSocket {
+    #[cfg(target_os = "linux")]
+    fd: std::os::fd::OwnedFd,
+}
+
+impl RawKillSocket {
+    /// Open a raw `AF_INET`/`IPPROTO_RAW` socket with `IP_HDRINCL`. Requires
+    /// `CAP_NET_RAW`; call before dropping privileges.
+    #[cfg(target_os = "linux")]
+    pub fn open_v4() -> std::io::Result<Self> {
+        use std::os::fd::FromRawFd;
+        // SAFETY: raw syscall; the returned fd is immediately adopted by an
+        // OwnedFd so it is closed exactly once on drop.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is a fresh, valid, owned descriptor from socket() above;
+        // adopting it here gives it a single owner that closes it on drop.
+        let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+        let one: libc::c_int = 1;
+        // SAFETY: fd is valid; &one outlives the call.
+        let rc = unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_IP,
+                libc::IP_HDRINCL,
+                std::ptr::addr_of!(one).cast(),
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            )
+        };
+        if rc < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { fd: owned })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub fn open_v4() -> std::io::Result<Self> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "raw-socket kill-response spoofing is only supported on Linux",
+        ))
+    }
+
+    /// Send a pre-built IPv4 datagram (its own IP header carries the spoofed
+    /// source) to `dst`. The kernel routes on `dst`; the datagram's L3/L4
+    /// headers are ours.
+    #[cfg(target_os = "linux")]
+    fn send_to_v4(&self, packet: &[u8], dst: SocketAddrV4) -> std::io::Result<usize> {
+        use std::os::fd::AsRawFd;
+        // SAFETY: sockaddr_in is a plain-old-data C struct; an all-zero bit
+        // pattern is a valid (unspecified) value that we fully populate below.
+        let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        sa.sin_family = libc::AF_INET as libc::sa_family_t;
+        sa.sin_port = dst.port().to_be();
+        sa.sin_addr.s_addr = u32::from_ne_bytes(dst.ip().octets());
+        // SAFETY: fd is valid; packet slice and sockaddr outlive the call.
+        let n = unsafe {
+            libc::sendto(
+                self.fd.as_raw_fd(),
+                packet.as_ptr().cast(),
+                packet.len(),
+                0,
+                std::ptr::addr_of!(sa).cast(),
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn send_to_v4(&self, _packet: &[u8], _dst: SocketAddrV4) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "raw-socket send is only supported on Linux",
+        ))
+    }
+}
+
+/// Count of scanner-kill responses sent via the source-spoofed raw path.
+static KILL_SENT_RAW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Count of scanner-kill responses sent via the ephemeral UDP fallback.
+static KILL_SENT_EPHEMERAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Increment the per-mode scanner-kill send counter.
+fn inc_kill_response_sent(raw: bool) {
+    let c = if raw {
+        &KILL_SENT_RAW
+    } else {
+        &KILL_SENT_EPHEMERAL
+    };
+    c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Scanner-kill responses sent, as `(raw, ephemeral)`, for the metrics
+/// exporter. Process-global and monotonic.
+pub fn kill_responses_sent() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        KILL_SENT_RAW.load(Relaxed),
+        KILL_SENT_EPHEMERAL.load(Relaxed),
+    )
+}
 
 /// Message types sent from the main thread to the scanner-kill worker.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum KillRequest {
     /// Request to send a SIP response to a scanner.
     SendResponse {
-        /// Destination IP address.
+        /// Destination IP address (the scanner).
         dst_addr: IpAddr,
-        /// Destination transport port.
+        /// Destination transport port (the scanner's source port).
         dst_port: u16,
+        /// Spoof source: the victim IP the scanner targeted. Used as the
+        /// forged source when raw-socket spoofing is active; ignored by the
+        /// ephemeral fallback.
+        src_addr: IpAddr,
+        /// Spoof source port: the victim port the scanner targeted.
+        src_port: u16,
         /// Pre-built SIP response bytes to inject.
         response_bytes: Vec<u8>,
     },
@@ -233,6 +353,9 @@ struct ScannerKillWorker {
     /// UDP socket for IPv6 destinations (bound to `[::]:0`); `None` if the
     /// bind failed at spawn.
     sock_v6: Option<UdpSocket>,
+    /// Raw socket for source-spoofed IPv4 responses, opened privileged and
+    /// moved in at spawn. `None` → the ephemeral UDP send is used.
+    raw_sock: Option<RawKillSocket>,
 }
 
 impl ScannerKillWorker {
@@ -261,9 +384,12 @@ impl ScannerKillWorker {
                 KillRequest::SendResponse {
                     dst_addr,
                     dst_port,
+                    src_addr,
+                    src_port,
                     response_bytes,
                 } => {
-                    let response = self.process_send(dst_addr, dst_port, &response_bytes);
+                    let response =
+                        self.process_send(dst_addr, dst_port, src_addr, src_port, &response_bytes);
                     // Best-effort send of response; ignore if main thread dropped its end
                     let _ = self.resp_tx.send(response);
                 }
@@ -276,6 +402,8 @@ impl ScannerKillWorker {
         &mut self,
         dst_addr: IpAddr,
         dst_port: u16,
+        src_addr: IpAddr,
+        src_port: u16,
         response_bytes: &[u8],
     ) -> KillResponse {
         // Reject broadcast addresses
@@ -307,7 +435,40 @@ impl ScannerKillWorker {
         // Periodic cleanup of per-dst limiter
         self.per_dst_limiter.cleanup();
 
-        // Transmit the response to the scanner over UDP.
+        // Prefer source-spoofed raw send when a raw socket is available and
+        // both endpoints are IPv4 (the only spoof path implemented). The
+        // forged source is the victim ip:port the scanner targeted, so the
+        // reply appears to come from the SIP listener rather than sipnab's
+        // ephemeral port. Fall back to the plain UDP send otherwise.
+        if let (Some(raw), IpAddr::V4(dst_v4), IpAddr::V4(src_v4)) =
+            (self.raw_sock.as_ref(), dst_addr, src_addr)
+        {
+            let dst = SocketAddrV4::new(dst_v4, dst_port);
+            let src = SocketAddrV4::new(src_v4, src_port);
+            if let Some(packet) =
+                crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
+            {
+                match raw.send_to_v4(&packet, dst) {
+                    Ok(_) => {
+                        inc_kill_response_sent(true);
+                        tracing::info!(
+                            "Scanner-kill: sent {} byte spoofed response to {dst_addr}:{dst_port} (source {src_addr}:{src_port})",
+                            response_bytes.len(),
+                        );
+                        return KillResponse::Sent;
+                    }
+                    Err(e) => {
+                        // Raw send failed at runtime; fall through to the
+                        // ephemeral path rather than dropping the response.
+                        tracing::warn!(
+                            "Scanner-kill: spoofed send to {dst_addr}:{dst_port} failed ({e}); falling back to ephemeral source"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Ephemeral fallback: plain UDP send from our own source port.
         let sock = match dst_addr {
             IpAddr::V4(_) => self.sock_v4.as_ref(),
             IpAddr::V6(_) => self.sock_v6.as_ref(),
@@ -319,6 +480,7 @@ impl ScannerKillWorker {
         };
         match sock.send_to(response_bytes, (dst_addr, dst_port)) {
             Ok(n) => {
+                inc_kill_response_sent(false);
                 tracing::info!("Scanner-kill: sent {n} byte response to {dst_addr}:{dst_port}");
                 KillResponse::Sent
             }
@@ -353,12 +515,15 @@ const DEFAULT_RATE_LIMIT: u32 = 10;
 ///
 /// * `rate_limit` — Maximum responses per second. Pass `None` for the
 ///   default of 10/sec.
+/// * `raw_sock` — Raw IPv4 socket for source-spoofed responses, opened during
+///   the privileged window. Pass `None` to always use the ephemeral UDP send.
 ///
 /// # Errors
 ///
 /// Returns an error if the worker thread cannot be spawned.
 pub fn spawn_scanner_kill_worker(
     rate_limit: Option<u32>,
+    raw_sock: Option<RawKillSocket>,
 ) -> Result<ScannerKillHandle, std::io::Error> {
     let rate = rate_limit.unwrap_or(DEFAULT_RATE_LIMIT);
     let (tx, rx) = crossbeam_channel::bounded(256);
@@ -382,6 +547,7 @@ pub fn spawn_scanner_kill_worker(
         per_dst_limiter: PerDstRateLimiter::new(),
         sock_v4,
         sock_v6,
+        raw_sock,
     };
 
     let thread = std::thread::Builder::new()
@@ -429,14 +595,78 @@ mod tests {
         b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()
     }
 
+    /// Source-spoofed raw send: the datagram must arrive at the listener with
+    /// the **forged victim** source ip:port, not sipnab's own. Requires
+    /// `CAP_NET_RAW`; skipped (not failed) when the raw socket can't be opened,
+    /// so unprivileged CI stays green. Run under sudo to exercise it.
+    #[test]
+    fn spoofed_send_forges_source_ip_and_port() {
+        let raw = match RawKillSocket::open_v4() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping spoof test: raw socket unavailable ({e})");
+                return;
+            }
+        };
+
+        let listener = std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind listener");
+        listener
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let port = listener.local_addr().expect("local addr").port();
+
+        // Forge the source as a distinctive loopback "victim" the scanner
+        // would have targeted.
+        let victim_ip = Ipv4Addr::new(127, 0, 0, 9);
+        let victim_port = 5060u16;
+
+        let mut handle = spawn_scanner_kill_worker(Some(10), Some(raw)).expect("spawn worker");
+        let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+        handle
+            .send_kill(KillRequest::SendResponse {
+                dst_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                dst_port: port,
+                src_addr: IpAddr::V4(victim_ip),
+                src_port: victim_port,
+                response_bytes: payload.clone(),
+            })
+            .expect("send should succeed");
+
+        let mut buf = [0u8; 2048];
+        let (n, from) = listener
+            .recv_from(&mut buf)
+            .expect("listener must receive the spoofed packet");
+        assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
+        assert_eq!(
+            from.ip(),
+            IpAddr::V4(victim_ip),
+            "source IP must be the forged victim, not sipnab's"
+        );
+        assert_eq!(
+            from.port(),
+            victim_port,
+            "source port must be the forged victim port"
+        );
+
+        let resp = recv_response_within(&handle, std::time::Duration::from_secs(5));
+        assert_eq!(resp, Some(KillResponse::Sent));
+
+        let (raw_sent, _ephemeral) = kill_responses_sent();
+        assert!(raw_sent >= 1, "raw-mode send counter must have incremented");
+
+        handle.shutdown();
+    }
+
     #[test]
     fn handle_send_and_receive() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: localhost_v4(),
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: sample_response(),
             })
             .expect("send should succeed");
@@ -449,7 +679,7 @@ mod tests {
 
     #[test]
     fn rate_limiter_enforces_limit() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         // Send 15 requests to different destination IPs so the per-dst
         // limiter doesn't interfere with the global rate limit test. Loopback
@@ -459,6 +689,8 @@ mod tests {
             let _ = handle.send_kill(KillRequest::SendResponse {
                 dst_addr: dst,
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: sample_response(),
             });
         }
@@ -491,12 +723,14 @@ mod tests {
 
     #[test]
     fn broadcast_address_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: IpAddr::V4(Ipv4Addr::BROADCAST),
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: sample_response(),
             })
             .expect("send should succeed");
@@ -512,13 +746,15 @@ mod tests {
 
     #[test]
     fn multicast_v4_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         // 224.0.0.1 is multicast
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: sample_response(),
             })
             .expect("send should succeed");
@@ -534,7 +770,7 @@ mod tests {
 
     #[test]
     fn multicast_v6_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         // ff02::1 is IPv6 multicast
         let multicast_v6 = IpAddr::V6(Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1));
@@ -542,6 +778,8 @@ mod tests {
             .send_kill(KillRequest::SendResponse {
                 dst_addr: multicast_v6,
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: sample_response(),
             })
             .expect("send should succeed");
@@ -557,19 +795,21 @@ mod tests {
 
     #[test]
     fn shutdown_exits_cleanly() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
         handle.shutdown();
         // No panic, thread joined successfully
     }
 
     #[test]
     fn empty_response_rejected() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
 
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: localhost_v4(),
                 dst_port: 5060,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: vec![],
             })
             .expect("send should succeed");
@@ -593,12 +833,14 @@ mod tests {
             .expect("set read timeout");
         let port = listener.local_addr().expect("local addr").port();
 
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
         let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
         handle
             .send_kill(KillRequest::SendResponse {
                 dst_addr: localhost_v4(),
                 dst_port: port,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: payload.clone(),
             })
             .expect("send should succeed");
@@ -629,7 +871,7 @@ mod tests {
             .expect("set read timeout");
         let port = listener.local_addr().expect("local addr").port();
 
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
         let payload = vec![
             0x00u8, 0xff, b'S', b'I', b'P', b'\\', 0x0d, 0x0a, 0x00, 0x80, 0x7f,
         ];
@@ -637,6 +879,8 @@ mod tests {
             .send_kill(KillRequest::SendResponse {
                 dst_addr: localhost_v4(),
                 dst_port: port,
+                src_addr: localhost_v4(),
+                src_port: 5060,
                 response_bytes: payload.clone(),
             })
             .expect("send should succeed");
@@ -665,7 +909,7 @@ mod tests {
 
     #[test]
     fn is_alive_true_for_running_worker() {
-        let mut handle = spawn_scanner_kill_worker(Some(10)).expect("spawn worker");
+        let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
         assert!(handle.is_alive(), "freshly spawned worker must be alive");
         assert!(!handle.defense_disabled());
         handle.shutdown();
@@ -704,6 +948,8 @@ mod tests {
         let result = handle.send_kill(KillRequest::SendResponse {
             dst_addr: localhost_v4(),
             dst_port: 5060,
+            src_addr: localhost_v4(),
+            src_port: 5060,
             response_bytes: sample_response(),
         });
         assert!(result.is_err(), "send to dead worker must fail, not vanish");

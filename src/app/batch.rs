@@ -170,6 +170,7 @@ pub fn run_cores_file(
 
 /// Run batch mode to completion: the multi-core offline fast path when
 /// `--cores N` applies, otherwise the single-threaded [`BatchRunner`].
+#[expect(clippy::too_many_arguments)]
 pub fn run(
     cli: Cli,
     config: &Config,
@@ -178,6 +179,7 @@ pub fn run(
     rx: capture::channel::PacketRx,
     batch: BatchProcessing,
     policy: CapturePolicy,
+    raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
 ) {
     let portrange = policy.portrange;
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
@@ -218,7 +220,11 @@ pub fn run(
         return;
     }
 
-    BatchRunner::new(cli, config, batch, policy).run_loop(capture_config, handle, rx);
+    BatchRunner::new(cli, config, batch, policy, raw_kill_sock).run_loop(
+        capture_config,
+        handle,
+        rx,
+    );
 }
 
 /// All owned batch-mode state: writer, detector engines, decryption state,
@@ -256,7 +262,13 @@ impl BatchRunner {
     /// Build every piece of batch state (bootstrap steps 16-17): output
     /// writer policy, HEP sender, stores, security detectors + alert engine,
     /// TLS/SRTP/DTLS decryption state, and the companion servers.
-    fn new(cli: Cli, config: &Config, batch: BatchProcessing, policy: CapturePolicy) -> Self {
+    fn new(
+        cli: Cli,
+        config: &Config,
+        batch: BatchProcessing,
+        policy: CapturePolicy,
+        raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
+    ) -> Self {
         let matcher = batch.matcher;
         let filter_expr = batch.filter_expr;
         let output_opts = batch.output_opts;
@@ -353,7 +365,7 @@ impl BatchRunner {
 
         // 17a-2. Spawn scanner-kill worker thread (D16: process isolation)
         let scanner_kill_handle: Option<ScannerKillHandle> = if kill_worker_active {
-            match process_isolation::spawn_scanner_kill_worker(None) {
+            match process_isolation::spawn_scanner_kill_worker(None, raw_kill_sock) {
                 Ok(handle) => Some(handle),
                 Err(e) => {
                     tracing::error!("Failed to spawn scanner-kill worker: {e}");
@@ -1237,6 +1249,8 @@ fn process_parsed_packet(
                     let _ = handle.send_kill(KillRequest::SendResponse {
                         dst_addr: sip_msg.src_addr,
                         dst_port: sip_msg.src_port,
+                        src_addr: sip_msg.dst_addr,
+                        src_port: sip_msg.dst_port,
                         response_bytes,
                     });
                 }
@@ -1269,6 +1283,8 @@ fn process_parsed_packet(
                     let _ = handle.send_kill(KillRequest::SendResponse {
                         dst_addr: sip_msg.src_addr,
                         dst_port: sip_msg.src_port,
+                        src_addr: sip_msg.dst_addr,
+                        src_port: sip_msg.dst_port,
                         response_bytes,
                     });
                 }
