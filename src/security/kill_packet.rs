@@ -1,15 +1,15 @@
-//! Raw IPv4/UDP datagram construction for source-spoofed scanner-kill
+//! Raw IPv4/IPv6 UDP datagram construction for source-spoofed scanner-kill
 //! responses.
 //!
 //! The scanner-kill worker sends its SIP response so it appears to originate
 //! from the `ip:port` the scanner targeted (the victim), not from sipnab's own
 //! ephemeral port. That requires forging the IP and UDP headers and injecting
-//! the result through a raw socket (`IP_HDRINCL`); the kernel still handles L2
-//! (ARP, routing). These builders produce the fully-formed, checksummed
-//! datagram and are pure (no I/O), so the header/checksum logic is unit-tested
-//! against golden bytes independently of any privileged socket.
+//! the result through a raw socket (`IP_HDRINCL` / `IPV6_HDRINCL`); the kernel
+//! still handles L2 (ARP/ND, routing). These builders produce the fully-formed,
+//! checksummed datagram and are pure (no I/O), so the header/checksum logic is
+//! unit-tested against golden bytes independently of any privileged socket.
 
-use std::net::SocketAddrV4;
+use std::net::{SocketAddrV4, SocketAddrV6};
 
 /// IPv4 header length without options, in bytes.
 const IPV4_HEADER_LEN: usize = 20;
@@ -75,6 +75,64 @@ pub fn build_ipv4_udp(src: SocketAddrV4, dst: SocketAddrV4, payload: &[u8]) -> O
         udp_csum = 0xffff;
     }
     let udp_csum_off = IPV4_HEADER_LEN + 6;
+    pkt[udp_csum_off..udp_csum_off + 2].copy_from_slice(&udp_csum.to_be_bytes());
+
+    Some(pkt)
+}
+
+/// IPv6 fixed header length, in bytes.
+const IPV6_HEADER_LEN: usize = 40;
+
+/// Largest UDP payload that fits in a single (non-jumbogram) IPv6 datagram
+/// (`u16::MAX` payload-length − UDP header).
+const MAX_UDP_PAYLOAD_V6: usize = u16::MAX as usize - UDP_HEADER_LEN;
+
+/// Build a complete IPv6 + UDP datagram with the given (possibly spoofed)
+/// source, destination, and payload.
+///
+/// Returns the wire bytes (40-byte IPv6 header + 8-byte UDP header + payload)
+/// with the mandatory UDP checksum, ready to hand to a raw `IPV6_HDRINCL`
+/// socket. Returns `None` if `payload` is too large for a single datagram.
+pub fn build_ipv6_udp(src: SocketAddrV6, dst: SocketAddrV6, payload: &[u8]) -> Option<Vec<u8>> {
+    if payload.len() > MAX_UDP_PAYLOAD_V6 {
+        return None;
+    }
+
+    let udp_len = (UDP_HEADER_LEN + payload.len()) as u16;
+
+    let mut pkt = Vec::with_capacity(IPV6_HEADER_LEN + udp_len as usize);
+
+    // ── IPv6 header ──
+    // version 6 (top nibble), traffic class 0, flow label 0.
+    pkt.extend_from_slice(&0x6000_0000u32.to_be_bytes());
+    pkt.extend_from_slice(&udp_len.to_be_bytes()); // payload length
+    pkt.push(IPPROTO_UDP); // next header
+    pkt.push(64); // hop limit
+    pkt.extend_from_slice(&src.ip().octets());
+    pkt.extend_from_slice(&dst.ip().octets());
+
+    // ── UDP header ──
+    pkt.extend_from_slice(&src.port().to_be_bytes());
+    pkt.extend_from_slice(&dst.port().to_be_bytes());
+    pkt.extend_from_slice(&udp_len.to_be_bytes());
+    pkt.extend_from_slice(&0u16.to_be_bytes()); // checksum placeholder
+    pkt.extend_from_slice(payload);
+
+    // UDP checksum over the IPv6 pseudo-header + UDP header + payload.
+    let mut pseudo = Vec::with_capacity(40 + udp_len as usize);
+    pseudo.extend_from_slice(&src.ip().octets());
+    pseudo.extend_from_slice(&dst.ip().octets());
+    pseudo.extend_from_slice(&(udp_len as u32).to_be_bytes()); // upper-layer length
+    pseudo.extend_from_slice(&[0, 0, 0]); // zeros
+    pseudo.push(IPPROTO_UDP); // next header
+    pseudo.extend_from_slice(&pkt[IPV6_HEADER_LEN..]); // UDP header (csum 0) + payload
+    let mut udp_csum = checksum16(&pseudo);
+    // For IPv6 the UDP checksum is mandatory; a computed zero is sent as
+    // all-ones (zero would mean "no checksum", which IPv6 forbids).
+    if udp_csum == 0 {
+        udp_csum = 0xffff;
+    }
+    let udp_csum_off = IPV6_HEADER_LEN + 6;
     pkt[udp_csum_off..udp_csum_off + 2].copy_from_slice(&udp_csum.to_be_bytes());
 
     Some(pkt)
@@ -243,5 +301,101 @@ mod tests {
         assert!(
             build_ipv4_udp(addr([10, 0, 0, 1], 5060), addr([10, 0, 0, 2], 5060), &max).is_some()
         );
+    }
+
+    // ── IPv6 ──
+
+    fn addr6(a: [u16; 8], p: u16) -> SocketAddrV6 {
+        SocketAddrV6::new(std::net::Ipv6Addr::from(a), p, 0, 0)
+    }
+
+    /// The IPv6 UDP checksum validates over its pseudo-header, and the header
+    /// fields (version, next-header, payload length, addresses, ports) are
+    /// correct. Rebuilding the pseudo-header + segment with the stored checksum
+    /// must re-sum to zero — the receiver's validity test.
+    fn ipv6_udp_check(pkt: &[u8], src: [u16; 8], dst: [u16; 8]) {
+        let sip = std::net::Ipv6Addr::from(src).octets();
+        let dip = std::net::Ipv6Addr::from(dst).octets();
+        let udp_len = u16::from_be_bytes([pkt[44], pkt[45]]);
+        let mut check = Vec::new();
+        check.extend_from_slice(&sip);
+        check.extend_from_slice(&dip);
+        check.extend_from_slice(&(udp_len as u32).to_be_bytes());
+        check.extend_from_slice(&[0, 0, 0]);
+        check.push(17);
+        check.extend_from_slice(&pkt[40..]);
+        assert_eq!(
+            ref_checksum(&check),
+            0,
+            "IPv6 UDP checksum must validate to 0"
+        );
+    }
+
+    #[test]
+    fn builds_ipv6_expected_header_and_checksum() {
+        let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];
+        let dst = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 2];
+        let payload = b"SIP/2.0 403 Forbidden\r\n\r\n";
+        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 40000), payload).expect("build");
+
+        assert_eq!(pkt.len(), 40 + 8 + payload.len());
+        assert_eq!(pkt[0] >> 4, 6, "version 6");
+        assert_eq!(pkt[6], 17, "next header UDP");
+        assert_eq!(
+            &pkt[4..6],
+            &((8 + payload.len()) as u16).to_be_bytes(),
+            "payload length"
+        );
+        assert_eq!(
+            &pkt[8..24],
+            &std::net::Ipv6Addr::from(src).octets(),
+            "source addr (spoofed)"
+        );
+        assert_eq!(
+            &pkt[24..40],
+            &std::net::Ipv6Addr::from(dst).octets(),
+            "dest addr"
+        );
+        assert_eq!(
+            &pkt[40..42],
+            &5060u16.to_be_bytes(),
+            "udp src port (spoofed)"
+        );
+        assert_eq!(&pkt[42..44], &40000u16.to_be_bytes(), "udp dst port");
+        assert_ne!(
+            &pkt[46..48],
+            &[0, 0],
+            "IPv6 UDP checksum is mandatory, never zero"
+        );
+        ipv6_udp_check(&pkt, src, dst);
+    }
+
+    #[test]
+    fn ipv6_empty_and_adversarial_payloads() {
+        let src = [0xfe80, 0, 0, 0, 0, 0, 0, 1];
+        let dst = [0xfe80, 0, 0, 0, 0, 0, 0, 2];
+        let empty = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), b"").expect("build");
+        assert_eq!(empty.len(), 48);
+        assert_eq!(
+            &empty[4..6],
+            &8u16.to_be_bytes(),
+            "payload length header-only"
+        );
+        ipv6_udp_check(&empty, src, dst);
+
+        let payload = vec![0x00u8, 0xff, b'\\', 0x0d, 0x0a, 0x80, 0x7f, 0x00, b'S'];
+        let pkt = build_ipv6_udp(addr6(src, 5060), addr6(dst, 5062), &payload).expect("build");
+        assert_eq!(&pkt[48..], &payload[..], "payload carried byte-for-byte");
+        ipv6_udp_check(&pkt, src, dst);
+    }
+
+    #[test]
+    fn ipv6_oversize_payload_rejected() {
+        let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];
+        let dst = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 2];
+        let too_big = vec![0u8; MAX_UDP_PAYLOAD_V6 + 1];
+        assert!(build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), &too_big).is_none());
+        let max = vec![0u8; MAX_UDP_PAYLOAD_V6];
+        assert!(build_ipv6_udp(addr6(src, 5060), addr6(dst, 5060), &max).is_some());
     }
 }

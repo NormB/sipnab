@@ -4,6 +4,15 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Security**: scanner-kill source-port spoofing (`--kill-spoof`, added in
+  0.5.12) now covers **IPv6** as well as IPv4. A raw `AF_INET6` socket
+  (`IPV6_HDRINCL`) forges the victim's IPv6 `ip:port` so the reply appears to
+  come from the targeted listener; the `sipnab_kill_responses_sent_total{mode}`
+  metric is unchanged. Each family is opened best-effort, so a host with only
+  one stack still spoofs that family.
+
 ## [0.5.12] - 2026-07-17
 
 ### Added
