@@ -418,7 +418,7 @@ pub fn launch(
     //         kill feature is active and --kill-spoof permits it.
     let kill_active = cli.kill_scanner || !cli.kill_target.is_empty();
     let raw_kill_sock = if kill_active && cli.kill_spoof != crate::cli::KillSpoof::Ephemeral {
-        match crate::process_isolation::RawKillSocket::open_v4() {
+        match crate::process_isolation::RawKillSocket::open() {
             Ok(sock) => {
                 tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
                 Some(sock)
