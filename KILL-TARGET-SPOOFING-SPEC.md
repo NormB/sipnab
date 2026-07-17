@@ -177,8 +177,8 @@ per-destination rate limit.
 1. **Default posture:** `auto` (spoof when `CAP_NET_RAW` is available, else
    ephemeral fallback), with an explicit `--kill-spoof {auto|raw|ephemeral}`
    override. `raw` fails loudly if the socket can't be opened.
-2. **IPv6:** v4-first shipped; v6 deferred to a follow-up PR. IPv6 kill targets
-   safely take the ephemeral fallback in the meantime.
+2. **IPv6:** v4 shipped in 0.5.12; **IPv6 now implemented** (raw `AF_INET6` +
+   `IPV6_HDRINCL`, `sin6_port` 0 on send). Both families spoof.
 3. **macOS:** ephemeral-only, `#[cfg(target_os = "linux")]`-gated raw path.
 4. **Metric:** added `sipnab_kill_responses_sent_total{mode="raw"|"ephemeral"}`.
 
