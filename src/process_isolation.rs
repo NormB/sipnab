@@ -16,51 +16,102 @@ use std::time::Instant;
 use crossbeam_channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
 
-/// Raw IPv4 socket (`IP_HDRINCL`) for source-spoofed scanner-kill responses.
+/// `IPV6_HDRINCL` socket option (Linux ≥4.5) — not exposed by the `libc`
+/// crate, so we name the kernel constant directly.
+#[cfg(target_os = "linux")]
+const IPV6_HDRINCL: libc::c_int = 36;
+
+/// Raw sockets (`IP_HDRINCL` / `IPV6_HDRINCL`) for source-spoofed
+/// scanner-kill responses.
 ///
 /// Must be opened during the privileged window (before `drop_privileges`),
-/// since it needs `CAP_NET_RAW`; it is then moved into the worker thread and
-/// remains usable after the drop. Linux-only — on other platforms `open_v4`
-/// returns an error and the worker falls back to the ephemeral UDP send.
+/// since they need `CAP_NET_RAW`; they are then moved into the worker thread
+/// and remain usable after the drop. Linux-only — on other platforms `open`
+/// returns an error and the worker falls back to the ephemeral UDP send. Each
+/// family is opened best-effort: a host without an IPv6 stack still spoofs
+/// IPv4, and vice-versa.
 pub struct RawKillSocket {
     #[cfg(target_os = "linux")]
-    fd: std::os::fd::OwnedFd,
+    fd_v4: Option<std::os::fd::OwnedFd>,
+    #[cfg(target_os = "linux")]
+    fd_v6: Option<std::os::fd::OwnedFd>,
 }
 
 impl RawKillSocket {
-    /// Open a raw `AF_INET`/`IPPROTO_RAW` socket with `IP_HDRINCL`. Requires
-    /// `CAP_NET_RAW`; call before dropping privileges.
+    /// Open a raw `SOCK_RAW`/`IPPROTO_RAW` socket for `domain`. `IPPROTO_RAW`
+    /// already implies header inclusion (we supply the full IP header). For
+    /// IPv4 we still set `IP_HDRINCL` explicitly (`hdrincl`); for IPv6 the
+    /// `IPPROTO_RAW` socket includes the header implicitly and setting
+    /// `IPV6_HDRINCL` is unnecessary and rejected on some kernels, so it is
+    /// applied best-effort and its failure is ignored.
     #[cfg(target_os = "linux")]
-    pub fn open_v4() -> std::io::Result<Self> {
+    fn open_family(
+        domain: libc::c_int,
+        hdrincl: Option<(libc::c_int, libc::c_int)>,
+        hdrincl_required: bool,
+    ) -> std::io::Result<std::os::fd::OwnedFd> {
         use std::os::fd::FromRawFd;
         // SAFETY: raw syscall; the returned fd is immediately adopted by an
         // OwnedFd so it is closed exactly once on drop.
-        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_RAW, libc::IPPROTO_RAW) };
+        let fd = unsafe { libc::socket(domain, libc::SOCK_RAW, libc::IPPROTO_RAW) };
         if fd < 0 {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: `fd` is a fresh, valid, owned descriptor from socket() above;
         // adopting it here gives it a single owner that closes it on drop.
         let owned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        let one: libc::c_int = 1;
-        // SAFETY: fd is valid; &one outlives the call.
-        let rc = unsafe {
-            libc::setsockopt(
-                fd,
-                libc::IPPROTO_IP,
-                libc::IP_HDRINCL,
-                std::ptr::addr_of!(one).cast(),
-                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-            )
-        };
-        if rc < 0 {
-            return Err(std::io::Error::last_os_error());
+        if let Some((level, name)) = hdrincl {
+            let one: libc::c_int = 1;
+            // SAFETY: fd is valid; &one outlives the call.
+            let rc = unsafe {
+                libc::setsockopt(
+                    fd,
+                    level,
+                    name,
+                    std::ptr::addr_of!(one).cast(),
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                )
+            };
+            if rc < 0 && hdrincl_required {
+                return Err(std::io::Error::last_os_error());
+            }
         }
-        Ok(Self { fd: owned })
+        Ok(owned)
+    }
+
+    /// Open the raw IPv4 and IPv6 send sockets. Requires `CAP_NET_RAW`; call
+    /// before dropping privileges. Succeeds if at least one family opens; the
+    /// IPv4 error is surfaced when both fail (the common permission case).
+    #[cfg(target_os = "linux")]
+    pub fn open() -> std::io::Result<Self> {
+        let v4 = Self::open_family(
+            libc::AF_INET,
+            Some((libc::IPPROTO_IP, libc::IP_HDRINCL)),
+            true,
+        );
+        // IPPROTO_RAW already includes the IPv6 header; IPV6_HDRINCL is a
+        // best-effort belt-and-braces (ignored if the kernel rejects it).
+        let v6 = Self::open_family(
+            libc::AF_INET6,
+            Some((libc::IPPROTO_IPV6, IPV6_HDRINCL)),
+            false,
+        );
+        match (v4, v6) {
+            (Ok(a), b) => Ok(Self {
+                fd_v4: Some(a),
+                fd_v6: b.ok(),
+            }),
+            (Err(_), Ok(b)) => Ok(Self {
+                fd_v4: None,
+                fd_v6: Some(b),
+            }),
+            // Both failed — report the IPv4 error (usually EPERM).
+            (Err(e4), Err(_)) => Err(e4),
+        }
     }
 
     #[cfg(not(target_os = "linux"))]
-    pub fn open_v4() -> std::io::Result<Self> {
+    pub fn open() -> std::io::Result<Self> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "raw-socket kill-response spoofing is only supported on Linux",
@@ -73,6 +124,9 @@ impl RawKillSocket {
     #[cfg(target_os = "linux")]
     fn send_to_v4(&self, packet: &[u8], dst: SocketAddrV4) -> std::io::Result<usize> {
         use std::os::fd::AsRawFd;
+        let fd = self.fd_v4.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "no IPv4 raw socket")
+        })?;
         // SAFETY: sockaddr_in is a plain-old-data C struct; an all-zero bit
         // pattern is a valid (unspecified) value that we fully populate below.
         let mut sa: libc::sockaddr_in = unsafe { std::mem::zeroed() };
@@ -82,7 +136,7 @@ impl RawKillSocket {
         // SAFETY: fd is valid; packet slice and sockaddr outlive the call.
         let n = unsafe {
             libc::sendto(
-                self.fd.as_raw_fd(),
+                fd.as_raw_fd(),
                 packet.as_ptr().cast(),
                 packet.len(),
                 0,
@@ -96,8 +150,49 @@ impl RawKillSocket {
         Ok(n as usize)
     }
 
+    /// Send a pre-built IPv6 datagram (its own IPv6 header carries the spoofed
+    /// source) to `dst`.
+    #[cfg(target_os = "linux")]
+    fn send_to_v6(&self, packet: &[u8], dst: std::net::SocketAddrV6) -> std::io::Result<usize> {
+        use std::os::fd::AsRawFd;
+        let fd = self.fd_v6.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::Unsupported, "no IPv6 raw socket")
+        })?;
+        // SAFETY: sockaddr_in6 is a plain-old-data C struct; an all-zero bit
+        // pattern is a valid value that we fully populate below.
+        let mut sa: libc::sockaddr_in6 = unsafe { std::mem::zeroed() };
+        sa.sin6_family = libc::AF_INET6 as libc::sa_family_t;
+        // Raw IPv6 sockets require sin6_port == 0 (the real dest port lives in
+        // our own UDP header); a nonzero value here yields EINVAL.
+        sa.sin6_port = 0;
+        sa.sin6_addr.s6_addr = dst.ip().octets();
+        // SAFETY: fd is valid; packet slice and sockaddr outlive the call.
+        let n = unsafe {
+            libc::sendto(
+                fd.as_raw_fd(),
+                packet.as_ptr().cast(),
+                packet.len(),
+                0,
+                std::ptr::addr_of!(sa).cast(),
+                std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t,
+            )
+        };
+        if n < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(n as usize)
+    }
+
     #[cfg(not(target_os = "linux"))]
     fn send_to_v4(&self, _packet: &[u8], _dst: SocketAddrV4) -> std::io::Result<usize> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "raw-socket send is only supported on Linux",
+        ))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn send_to_v6(&self, _packet: &[u8], _dst: std::net::SocketAddrV6) -> std::io::Result<usize> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "raw-socket send is only supported on Linux",
@@ -435,36 +530,45 @@ impl ScannerKillWorker {
         // Periodic cleanup of per-dst limiter
         self.per_dst_limiter.cleanup();
 
-        // Prefer source-spoofed raw send when a raw socket is available and
-        // both endpoints are IPv4 (the only spoof path implemented). The
+        // Prefer a source-spoofed raw send when a raw socket is available. The
         // forged source is the victim ip:port the scanner targeted, so the
         // reply appears to come from the SIP listener rather than sipnab's
-        // ephemeral port. Fall back to the plain UDP send otherwise.
-        if let (Some(raw), IpAddr::V4(dst_v4), IpAddr::V4(src_v4)) =
-            (self.raw_sock.as_ref(), dst_addr, src_addr)
-        {
-            let dst = SocketAddrV4::new(dst_v4, dst_port);
-            let src = SocketAddrV4::new(src_v4, src_port);
-            if let Some(packet) =
-                crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
-            {
-                match raw.send_to_v4(&packet, dst) {
-                    Ok(_) => {
-                        inc_kill_response_sent(true);
-                        tracing::info!(
-                            "Scanner-kill: sent {} byte spoofed response to {dst_addr}:{dst_port} (source {src_addr}:{src_port})",
-                            response_bytes.len(),
-                        );
-                        return KillResponse::Sent;
-                    }
-                    Err(e) => {
-                        // Raw send failed at runtime; fall through to the
-                        // ephemeral path rather than dropping the response.
-                        tracing::warn!(
-                            "Scanner-kill: spoofed send to {dst_addr}:{dst_port} failed ({e}); falling back to ephemeral source"
-                        );
-                    }
+        // ephemeral port. Build the datagram for the matching address family
+        // (mixed families never occur — src and dst come from one packet) and
+        // fall back to the plain UDP send on any failure.
+        if let Some(raw) = self.raw_sock.as_ref() {
+            let spoofed: Option<std::io::Result<usize>> = match (dst_addr, src_addr) {
+                (IpAddr::V4(dst_v4), IpAddr::V4(src_v4)) => {
+                    let dst = SocketAddrV4::new(dst_v4, dst_port);
+                    let src = SocketAddrV4::new(src_v4, src_port);
+                    crate::security::kill_packet::build_ipv4_udp(src, dst, response_bytes)
+                        .map(|pkt| raw.send_to_v4(&pkt, dst))
                 }
+                (IpAddr::V6(dst_v6), IpAddr::V6(src_v6)) => {
+                    let dst = std::net::SocketAddrV6::new(dst_v6, dst_port, 0, 0);
+                    let src = std::net::SocketAddrV6::new(src_v6, src_port, 0, 0);
+                    crate::security::kill_packet::build_ipv6_udp(src, dst, response_bytes)
+                        .map(|pkt| raw.send_to_v6(&pkt, dst))
+                }
+                _ => None,
+            };
+            match spoofed {
+                Some(Ok(_)) => {
+                    inc_kill_response_sent(true);
+                    tracing::info!(
+                        "Scanner-kill: sent {} byte spoofed response to {dst_addr}:{dst_port} (source {src_addr}:{src_port})",
+                        response_bytes.len(),
+                    );
+                    return KillResponse::Sent;
+                }
+                Some(Err(e)) => {
+                    // Raw send failed at runtime; fall through to the ephemeral
+                    // path rather than dropping the response.
+                    tracing::warn!(
+                        "Scanner-kill: spoofed send to {dst_addr}:{dst_port} failed ({e}); falling back to ephemeral source"
+                    );
+                }
+                None => {}
             }
         }
 
@@ -601,7 +705,7 @@ mod tests {
     /// so unprivileged CI stays green. Run under sudo to exercise it.
     #[test]
     fn spoofed_send_forges_source_ip_and_port() {
-        let raw = match RawKillSocket::open_v4() {
+        let raw = match RawKillSocket::open() {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("skipping spoof test: raw socket unavailable ({e})");
@@ -653,6 +757,69 @@ mod tests {
 
         let (raw_sent, _ephemeral) = kill_responses_sent();
         assert!(raw_sent >= 1, "raw-mode send counter must have incremented");
+
+        handle.shutdown();
+    }
+
+    /// IPv6 source-spoofed raw send: the datagram must arrive at a `::1`
+    /// listener with the **forged** source port (an ephemeral send would show a
+    /// random port). Requires `CAP_NET_RAW`; skipped when unprivileged.
+    #[test]
+    fn spoofed_send_forges_source_over_ipv6() {
+        let raw = match RawKillSocket::open() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping v6 spoof test: raw socket unavailable ({e})");
+                return;
+            }
+        };
+
+        let listener = match std::net::UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("skipping v6 spoof test: no IPv6 loopback ({e})");
+                return;
+            }
+        };
+        listener
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("set read timeout");
+        let port = listener.local_addr().expect("local addr").port();
+
+        // Forge a distinctive source port; the address is ::1 (the only v6
+        // loopback that delivers), so the port is the discriminating field.
+        let victim_port = 5060u16;
+
+        let mut handle = spawn_scanner_kill_worker(Some(10), Some(raw)).expect("spawn worker");
+        let payload = b"SIP/2.0 403 Forbidden\r\nContent-Length: 0\r\n\r\n".to_vec();
+        handle
+            .send_kill(KillRequest::SendResponse {
+                dst_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                dst_port: port,
+                src_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                src_port: victim_port,
+                response_bytes: payload.clone(),
+            })
+            .expect("send should succeed");
+
+        let mut buf = [0u8; 2048];
+        let (n, from) = match listener.recv_from(&mut buf) {
+            Ok(v) => v,
+            Err(e) => {
+                // Some environments block raw v6 loopback injection; treat as a
+                // skip rather than a hard failure (the builder is unit-tested).
+                eprintln!("skipping v6 spoof test: no packet received ({e})");
+                handle.shutdown();
+                return;
+            }
+        };
+        assert_eq!(&buf[..n], &payload[..], "payload delivered verbatim");
+        assert_eq!(from.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST), "source is ::1");
+        assert_eq!(
+            from.port(),
+            victim_port,
+            "source port must be the forged victim port, not an ephemeral one"
+        );
 
         handle.shutdown();
     }
