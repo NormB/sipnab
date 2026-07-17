@@ -20,6 +20,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "capture",
             "display",
             "filter",
+            "sip",
             "security",
             "limits",
             "privilege",
@@ -43,6 +44,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
             "buffer",
             "buffer_budget_mb",
             "no_rtp",
+            "promisc",
         ]
         .as_slice(),
     );
@@ -58,6 +60,7 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
         .as_slice(),
     );
     m.insert("filter", ["from", "to", "expression"].as_slice());
+    m.insert("sip", ["xcid_headers"].as_slice());
     m.insert(
         "security",
         [
@@ -1159,6 +1162,35 @@ filter = "/"
             collect_unknown_keys(&value),
             vec!["crash.bogus".to_string()]
         );
+    }
+
+    /// The `[sip]` section and the `[capture] promisc` key are valid config the
+    /// code actually reads; neither may be flagged as unknown, or the warning
+    /// trains users to ignore it.
+    #[test]
+    fn sip_section_and_capture_promisc_are_known() {
+        let toml_str = "[sip]\nxcid_headers = [\"X-CID\"]\n[capture]\npromisc = false\n";
+        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            collect_unknown_keys(&value),
+            Vec::<String>::new(),
+            "valid [sip] section and [capture] promisc must not be flagged"
+        );
+        // And they actually parse into the config.
+        let config = Config::parse_toml(toml_str, None).unwrap();
+        assert_eq!(
+            config.sip.xcid_headers.as_deref(),
+            Some(["X-CID".to_string()].as_slice())
+        );
+        assert_eq!(config.capture.promisc, Some(false));
+    }
+
+    /// With `[sip]` now a known section, a typo inside it must still be flagged
+    /// (the fix must not turn the section into a wildcard).
+    #[test]
+    fn sip_section_typo_is_flagged() {
+        let value: toml::Value = toml::from_str("[sip]\nbogus = 1\n").unwrap();
+        assert_eq!(collect_unknown_keys(&value), vec!["sip.bogus".to_string()]);
     }
 
     #[test]
