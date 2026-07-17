@@ -8,6 +8,7 @@
 pub mod alerting;
 pub mod digest_leak;
 pub mod fraud_detect;
+pub mod kill_packet;
 pub mod reg_flood;
 pub mod scanner_detect;
 pub mod scanner_kill;

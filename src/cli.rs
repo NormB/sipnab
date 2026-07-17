@@ -520,6 +520,22 @@ pub struct Cli {
     )]
     pub kill_target: Vec<String>,
 
+    /// How to source the scanner-kill response packet (Linux only; other
+    /// platforms always use `ephemeral`). `auto` forges the victim's ip:port
+    /// via a raw socket when `CAP_NET_RAW` is available (already granted for
+    /// live capture), so the reply appears to come from the port the scanner
+    /// targeted — falling back to an ephemeral UDP source otherwise. `raw`
+    /// requires the spoof and errors if the raw socket cannot be opened;
+    /// `ephemeral` never spoofs.
+    #[arg(
+        help_heading = "Security",
+        long = "kill-spoof",
+        value_name = "MODE",
+        value_enum,
+        default_value = "auto"
+    )]
+    pub kill_spoof: KillSpoof,
+
     /// Enable fraud detection heuristics.
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
@@ -945,6 +961,19 @@ pub struct Cli {
 /// clap renders the variants in kebab-case (`default`, `host-port`, `user`,
 /// `user-host-port`), matching the `[display] from_to` config spellings and
 /// `tui::FromToMode::as_config_str`.
+/// Source-address strategy for the scanner-kill response packet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum KillSpoof {
+    /// Spoof the victim's ip:port via a raw socket when `CAP_NET_RAW` is
+    /// available, else fall back to an ephemeral UDP source.
+    #[default]
+    Auto,
+    /// Require raw-socket spoofing; error if it cannot be opened.
+    Raw,
+    /// Never spoof; always send from an ephemeral UDP source.
+    Ephemeral,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FromToModeArg {
     Default,
@@ -1288,6 +1317,21 @@ mod tests {
         assert!(Cli::parse_from_args(["sipnab", "-p"]).no_promisc);
         assert!(Cli::parse_from_args(["sipnab", "--no-promisc"]).no_promisc);
         assert!(!Cli::parse_from_args(["sipnab"]).no_promisc);
+    }
+
+    #[test]
+    fn kill_spoof_flag_parses_with_auto_default() {
+        assert_eq!(Cli::parse_from_args(["sipnab"]).kill_spoof, KillSpoof::Auto);
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--kill-spoof", "raw"]).kill_spoof,
+            KillSpoof::Raw
+        );
+        assert_eq!(
+            Cli::parse_from_args(["sipnab", "--kill-spoof", "ephemeral"]).kill_spoof,
+            KillSpoof::Ephemeral
+        );
+        // Unknown mode is rejected by clap's value-enum parsing.
+        assert!(Cli::try_parse_from(["sipnab", "--kill-spoof", "bogus"]).is_err());
     }
 
     #[test]

@@ -268,6 +268,10 @@ pub struct Launched {
     pub handle: capture::CaptureHandle,
     /// Receiving side of the packet channel.
     pub rx: capture::channel::PacketRx,
+    /// Raw socket for source-spoofed scanner-kill responses, opened in the
+    /// privileged window when the kill feature is active and `--kill-spoof`
+    /// permits it. `None` → the worker uses the ephemeral UDP send.
+    pub raw_kill_sock: Option<crate::process_isolation::RawKillSocket>,
 }
 
 /// Perform the side-effectful launch sequence exactly as main() did:
@@ -409,6 +413,36 @@ pub fn launch(
         std::process::exit(1);
     }
 
+    // 16-kill. Open the raw scanner-kill socket while still privileged (it
+    //         needs CAP_NET_RAW, which the drop below sheds). Only when the
+    //         kill feature is active and --kill-spoof permits it.
+    let kill_active = cli.kill_scanner || !cli.kill_target.is_empty();
+    let raw_kill_sock = if kill_active && cli.kill_spoof != crate::cli::KillSpoof::Ephemeral {
+        match crate::process_isolation::RawKillSocket::open_v4() {
+            Ok(sock) => {
+                tracing::info!("Scanner-kill: source-spoofing enabled (raw socket)");
+                Some(sock)
+            }
+            Err(e) => {
+                if cli.kill_spoof == crate::cli::KillSpoof::Raw {
+                    tracing::error!(
+                        "--kill-spoof raw requires a raw socket but it could not be opened: {e}. \
+                         Grant CAP_NET_RAW (sipnab --setup-caps / run under sudo) or use \
+                         --kill-spoof ephemeral."
+                    );
+                    std::process::exit(1);
+                }
+                tracing::warn!(
+                    "Scanner-kill: raw socket unavailable ({e}); falling back to ephemeral \
+                     source port. Kill responses will come from sipnab's own port."
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
     let effective_user = cli.user.as_deref().or(config.privilege.user.as_deref());
     let effective_no_priv_drop = cli.no_priv_drop || config.privilege.no_priv_drop.unwrap_or(false);
@@ -516,7 +550,11 @@ pub fn launch(
         std::process::exit(1);
     }
 
-    Launched { handle, rx }
+    Launched {
+        handle,
+        rx,
+        raw_kill_sock,
+    }
 }
 
 /// Initialize the tracing/log subscriber from `SIPNAB_LOG` and the CLI's

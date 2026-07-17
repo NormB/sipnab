@@ -4,6 +4,19 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Security**: scanner-kill responses (`-K`/`--kill-target`, `--kill-scanner`)
+  can now **source-spoof** the victim's `ip:port` via a raw socket, so the
+  reply appears to come from the SIP listener the scanner targeted rather than
+  sipnab's ephemeral port. Controlled by `--kill-spoof {auto|raw|ephemeral}`
+  (default `auto`): `auto` spoofs when `CAP_NET_RAW` is available (already
+  granted for live capture) and falls back to the ephemeral source otherwise;
+  `raw` requires spoofing and errors if the raw socket cannot be opened;
+  `ephemeral` never spoofs. Linux-only; other platforms always use the
+  ephemeral source. New metric `sipnab_kill_responses_sent_total{mode="raw"|"ephemeral"}`
+  exposes which path was used.
+
 ## [0.5.11] - 2026-07-17
 
 ### Fixed

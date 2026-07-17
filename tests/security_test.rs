@@ -1110,9 +1110,10 @@ fn writer_warns_on_path_traversal() {
 fn scanner_kill_per_destination_rate_limit() {
     use sipnab::process_isolation::{KillRequest, KillResponse, spawn_scanner_kill_worker};
 
-    let mut handle = spawn_scanner_kill_worker(Some(100)).expect("spawn worker");
+    let mut handle = spawn_scanner_kill_worker(Some(100), None).expect("spawn worker");
 
-    let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50));
+    // Loopback destination so the real UDP send never leaves the host.
+    let dst = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 50));
     let response_bytes = b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec();
 
     // Send 5 kill requests to the same destination IP
@@ -1121,6 +1122,8 @@ fn scanner_kill_per_destination_rate_limit() {
             .send_kill(KillRequest::SendResponse {
                 dst_addr: dst,
                 dst_port: 5060,
+                src_addr: dst,
+                src_port: 5060,
                 response_bytes: response_bytes.clone(),
             })
             .expect("send");
