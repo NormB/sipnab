@@ -156,6 +156,29 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
         &metrics.security_alerts_total,
     );
 
+    // Scanner-kill responses sent, split by how the source was set: `raw`
+    // (source-spoofed via a raw socket) vs `ephemeral` (sipnab's own port).
+    // Alert on an unexpected `ephemeral` count to catch a silent fallback.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    {
+        let (raw, ephemeral) = crate::process_isolation::kill_responses_sent();
+        write_help_type(
+            &mut out,
+            "sipnab_kill_responses_sent_total",
+            "Total scanner-kill responses sent, by source mode",
+            "counter",
+        );
+        let _ = writeln!(
+            out,
+            "sipnab_kill_responses_sent_total{{mode=\"raw\"}} {raw}"
+        );
+        let _ = writeln!(
+            out,
+            "sipnab_kill_responses_sent_total{{mode=\"ephemeral\"}} {ephemeral}"
+        );
+        out.push('\n');
+    }
+
     // Reassembly timeouts
     write_help_type(
         &mut out,

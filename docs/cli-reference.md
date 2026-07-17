@@ -141,6 +141,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--kill-ua` | `<PATTERN>` | -- | Add a custom scanner User-Agent pattern (regex) to `--kill-scanner` detection |
 | `--kill-response` | `<CODE>` | `200` | SIP response code for the kill response (100-699) |
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | Targeted kill (sipgrep `-K`): send the kill response to any SIP request whose source matches ADDR and an optional port range (`10.0.0.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed) |
+| `--kill-spoof` | `<MODE>` | `auto` | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors if the raw socket can't be opened; `ephemeral` never spoofs |
 | `--fraud-detect` | -- | off | Enable fraud detection heuristics |
 | `--reg-flood` | -- | off | Detect registration flood attacks |
 | `--digest-leak` | -- | off | Detect digest credential leaks in SIP messages |

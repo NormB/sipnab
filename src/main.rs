@@ -108,6 +108,7 @@ fn main() {
                     event_exec: plan.event_exec,
                 },
                 plan.policy,
+                launched.raw_kill_sock,
             );
         }
         RunMode::CoresFile => unreachable!("handled before launch"),
