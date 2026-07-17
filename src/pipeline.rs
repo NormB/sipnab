@@ -107,6 +107,10 @@ pub struct PipelineOptions {
     /// only; RTP uses SDP-negotiated dynamic ports and is never gated).
     /// `None` disables the gate (live capture, where BPF already filtered).
     pub sip_portrange: Option<(u16, u16)>,
+    /// Suppress the per-packet "SIP parse error" diagnostic for SIP-looking
+    /// packets that fail to parse (`--quiet-bad-parse`, sipgrep `-x`). The
+    /// packet is dropped either way; only the notice is silenced.
+    pub quiet_bad_parse: bool,
 }
 
 /// Optional media-decryption state threaded through the live pipeline: the SRTP
@@ -249,7 +253,9 @@ pub fn classify_packet(
                 };
             }
             Err(e) => {
-                tracing::debug!("SIP parse error: {e}");
+                if !opts.quiet_bad_parse {
+                    tracing::debug!("SIP parse error: {e}");
+                }
                 return PacketAction::None;
             }
         }
@@ -367,5 +373,143 @@ pub fn process_packet(
                 stream_store.write().process_rtp(pp, &hdr, pp.timestamp);
             }
         },
+    }
+}
+
+// ── Tests ────────────────────────────────────────────────────────────
+
+// The `--quiet-bad-parse` diagnostic gate is verified by capturing tracing
+// output, which needs `tracing-subscriber` (only compiled under `native`).
+#[cfg(all(test, feature = "native"))]
+mod quiet_bad_parse_tests {
+    use super::*;
+    use crate::capture::parse::{ParsedPacket, TransportProto};
+    use chrono::Utc;
+    use parking_lot::Mutex;
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::Arc;
+
+    /// A `tracing` writer that accumulates every emitted line into a shared
+    /// buffer so a test can assert on what was (or was not) logged.
+    #[derive(Clone, Default)]
+    struct CaptureBuf(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CaptureBuf {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().extend_from_slice(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CaptureBuf {
+        type Writer = CaptureBuf;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Run `f` with a thread-local DEBUG subscriber and return captured output.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        let buf = CaptureBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(buf.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buf.0.lock().clone();
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    fn packet(payload: &[u8]) -> ParsedPacket {
+        ParsedPacket {
+            timestamp: Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+            payload: payload.to_vec().into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        }
+    }
+
+    /// `is_sip_message()` accepts the `SIP/2.0 ` response prefix, but the
+    /// status token `XYZ` is not numeric, so `parse_sip_bytes()` errors — this
+    /// is exactly the bad-parse path `--quiet-bad-parse` controls.
+    fn malformed_sip() -> ParsedPacket {
+        packet(b"SIP/2.0 XYZ Bad Status\r\n\r\n")
+    }
+
+    fn valid_invite() -> ParsedPacket {
+        packet(
+            b"INVITE sip:bob@example.com SIP/2.0\r\n\
+              Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKq1\r\n\
+              From: <sip:alice@example.com>;tag=q1\r\n\
+              To: <sip:bob@example.com>\r\n\
+              Call-ID: quiet-parse@test\r\n\
+              CSeq: 1 INVITE\r\n\
+              Content-Length: 0\r\n\r\n",
+        )
+    }
+
+    fn classify(pp: &ParsedPacket, opts: &PipelineOptions) -> PacketAction {
+        let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
+        let mut decrypt = MediaDecrypt::default();
+        classify_packet(pp, &mut heur, opts, &mut decrypt)
+    }
+
+    #[test]
+    fn default_reports_bad_parse() {
+        let pp = malformed_sip();
+        let logs = capture_logs(|| {
+            let action = classify(&pp, &PipelineOptions::default());
+            assert!(matches!(action, PacketAction::None), "bad parse → None");
+        });
+        assert!(
+            logs.contains("SIP parse error"),
+            "default must emit the bad-parse diagnostic; got {logs:?}"
+        );
+    }
+
+    #[test]
+    fn quiet_flag_suppresses_diagnostic() {
+        let pp = malformed_sip();
+        let opts = PipelineOptions {
+            quiet_bad_parse: true,
+            ..Default::default()
+        };
+        let logs = capture_logs(|| {
+            let action = classify(&pp, &opts);
+            assert!(matches!(action, PacketAction::None), "still dropped");
+        });
+        assert!(
+            !logs.contains("SIP parse error"),
+            "quiet_bad_parse must silence the diagnostic; got {logs:?}"
+        );
+    }
+
+    #[test]
+    fn quiet_flag_does_not_affect_valid_sip() {
+        // Adversarial: the flag must only gate the error notice, never change
+        // how a well-formed message classifies.
+        let pp = valid_invite();
+        let opts = PipelineOptions {
+            quiet_bad_parse: true,
+            ..Default::default()
+        };
+        let action = classify(&pp, &opts);
+        assert!(
+            matches!(action, PacketAction::Sip { .. }),
+            "valid INVITE must still classify as Sip"
+        );
     }
 }

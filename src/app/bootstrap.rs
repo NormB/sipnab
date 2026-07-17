@@ -200,6 +200,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         delta_time: cli.delta_time || config.display.delta_time.unwrap_or(false),
         payload_limit: cli.payload_limit.or(config.display.payload_limit),
         show_empty: cli.show_empty,
+        show_proto_number: cli.proto_number,
     };
 
     // Event exec engine.

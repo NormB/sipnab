@@ -245,6 +245,7 @@ pub fn run_tui_mode(
                             // Live capture: BPF (auto-generated from
                             // --portrange) already filtered; no SIP port gate.
                             sip_portrange: None,
+                            quiet_bad_parse: cli_clone.quiet_bad_parse,
                         },
                         &mut media_decrypt,
                     );
