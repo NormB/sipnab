@@ -1,6 +1,6 @@
 +++
 title = "REST API & Metrics"
-weight = 10
+weight = 11
 description = "REST API endpoints and Prometheus metrics."
 +++
 

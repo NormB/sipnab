@@ -1,6 +1,6 @@
 +++
 title = "API Client Examples"
-weight = 11
+weight = 12
 description = "Client code for the sipnab REST API in curl, Python, Node/TypeScript, Rust, and Go."
 +++
 

@@ -1,6 +1,6 @@
 +++
 title = "Theme Guide"
-weight = 5
+weight = 6
 description = "Customize sipnab's TUI colors with 10 semantic color slots and preset themes."
 +++
 
