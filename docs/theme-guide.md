@@ -32,15 +32,10 @@ The internal `status_bg` color (dark blue-gray `#303040`) is not configurable an
 
 ## How to Apply
 
-Create or edit your config file at one of these locations (searched in order):
-
-1. Path specified via `--config <FILE>`
-2. `$SIPNAB_CONFIG` environment variable
-3. `~/.config/sipnab/sipnab.toml`
-4. `~/.sipnabrc`
-5. `/etc/sipnab/sipnab.toml`
-
-Add a `[theme]` section with the color values you want to override. Omitted fields use the built-in defaults.
+Create or edit your config file (sipnab loads the first one found — see the
+[config file locations](config-reference.md#file-locations)), then add a
+`[theme]` section with the color values you want to override. Omitted fields
+use the built-in defaults.
 
 ## Example Themes
 

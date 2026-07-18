@@ -2,7 +2,7 @@
 
 sipnab has four output modes: interactive TUI (default), per-message CLI
 text (`-N`), structured NDJSON (`--json`), and the MCP server
-([mcp-overview.md](./mcp-overview.md)). This page documents the
+([mcp.md](./mcp.md)). This page documents the
 machine-readable formats.
 
 ## NDJSON (`--json`)
@@ -104,7 +104,7 @@ jitter/loss/MOS, and media diagnosis flags like `one_way_audio`) is the
 payload of:
 
 - `SIPNAB_JSON` in `--on-dialog-exec` / `--on-quality-exec` hooks
-- MCP tool responses ([mcp-tools.md](./mcp-tools.md))
+- MCP tool responses ([mcp.md](./mcp.md))
 
 ## pcap / pcapng
 

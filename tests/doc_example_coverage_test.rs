@@ -30,6 +30,17 @@ const WAIVED: &[(&str, &str)] = &[
         "panic-selftest",
         "hidden internal panic-hook self-test, not user-facing",
     ),
+    // Built-in API TLS is not wired up (axum-server not integrated): setting
+    // these makes sipnab exit at startup. Documented as reverse-proxy-only, so
+    // a runnable example would be a command that always errors.
+    (
+        "api-tls-cert",
+        "API TLS not implemented; documented as reverse-proxy-only",
+    ),
+    (
+        "api-tls-key",
+        "API TLS not implemented; documented as reverse-proxy-only",
+    ),
 ];
 
 /// Every markdown doc that carries user-facing command examples. Read at
