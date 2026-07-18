@@ -203,7 +203,7 @@ package; install it for live playback. Only `libpcap0.8` is a hard dependency.
 For a fully audio-free build, drop the `audio` feature and the plugin is not
 built.
 
-See [mcp-setup.md](mcp-setup.md) (or the website install guide, [www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
+See [mcp.md](mcp.md) (or the website install guide, [www.sipnab.com/docs/install](https://www.sipnab.com/docs/install/)) for the full MCP enablement walkthrough including token-file generation and the systemd unit pattern.
 
 ## Release Profile
 

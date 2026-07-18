@@ -328,14 +328,14 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 | `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` Feature: `api` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` Feature: `api` |
-| `--api-tls-cert` | `<FILE>` | -- | TLS certificate file for API endpoint Feature: `api` |
-| `--api-tls-key` | `<FILE>` | -- | TLS private key file for API endpoint Feature: `api` |
+| `--api-tls-cert` | `<FILE>` | -- | **Not yet implemented** — built-in API TLS is not wired up, and sipnab exits if this is set. Terminate TLS at a reverse proxy instead. Feature: `api` |
+| `--api-tls-key` | `<FILE>` | -- | **Not yet implemented** — see `--api-tls-cert`; terminate TLS at a reverse proxy. Feature: `api` |
 | `--api-max-conn` | `<N>` | `100` | Maximum concurrent API connections Feature: `api` |
 | `--api-signing-key` | `<KEY>` | -- | HMAC signing key for self-describing bearer tokens (repeatable; the first mints, all are accepted on verify → key rotation). Also reads `$SIPNAB_API_SIGNING_KEY`. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | Read an API signing key from a file (contents trimmed). Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
 | `--api-token-ttl` | `<SECS>` | `3600` | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
-| `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) and rejects stdout-writing flags (`--json`, `--report`, …). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp-overview.md`](./mcp-overview.md). |
+| `--mcp` | -- | off | Run sipnab as an MCP server. Requires `-N`/`--no-tui` (stdout carries the JSON-RPC wire) and rejects stdout-writing flags (`--json`, `--report`, …). Feature: `mcp` (or `mcp-http` for HTTP transport). See [`mcp.md`](./mcp.md). |
 | `--mcp-transport` | `stdio\|http` | `stdio` | MCP transport. `http` requires the `mcp-http` feature. Feature: `mcp` |
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime if `--mcp-transport http` is set without an explicit bind) | HTTP MCP bind address. Non-loopback requires `--mcp-token`. Feature: `mcp-http` |
 | `--mcp-token` | `<TOKEN>` | -- | Bearer token. Also reads `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
@@ -359,10 +359,10 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 **Examples**
 
 ```bash
-# Live capture serving a TLS REST API (cert+key) with signed tokens, a revocation list, and a Basic-auth'd Prometheus endpoint
-sudo sipnab -d eth0 --api 127.0.0.1:8080 --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-signing-key-file /etc/sipnab/signing.key --api-revoked-file /etc/sipnab/revoked.txt --api-token-ttl 7200 --api-max-conn 200 --metrics 127.0.0.1:9090 --metrics-auth alice:s3cret
-# Public-facing TLS API tuned to 100 connections and 1h token TTL, with its own auth'd metrics endpoint
-sudo sipnab -d eth0 --api 0.0.0.0:8080 --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600 --api-max-conn 100 --metrics 127.0.0.1:9090 --metrics-auth bob:hunter2
+# Live capture serving a signed-token REST API, a revocation list, and a Basic-auth'd Prometheus endpoint (terminate TLS at a reverse proxy)
+sudo sipnab -d eth0 --api 127.0.0.1:8080 --api-signing-key-file /etc/sipnab/signing.key --api-revoked-file /etc/sipnab/revoked.txt --api-token-ttl 7200 --api-max-conn 200 --metrics 127.0.0.1:9090 --metrics-auth alice:s3cret
+# Public-facing API tuned to 100 connections and 1h token TTL, with its own auth'd metrics endpoint
+sudo sipnab -d eth0 --api 0.0.0.0:8080 --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600 --api-max-conn 100 --metrics 127.0.0.1:9090 --metrics-auth bob:hunter2
 # Loopback HTTP MCP server with a bearer token, file-loaded signing key, revocation denylist, and a 30-minute mint TTL
 sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-token t0ken-alice --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-token-ttl 1800
 # Non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients

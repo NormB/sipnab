@@ -25,7 +25,7 @@ const FOREIGN_FLAGS: &[&str] = &[
     "no-install-recommends",
     // editcap (docs/cli-reference.md — `--strip-secrets` is the analog)
     "discard-all-secrets",
-    // systemctl (docs/mcp-setup.md)
+    // systemctl (docs/mcp.md)
     "now",
     // voipmonitor (docs/benchmarks.md comparison command lines)
     "config-file",
@@ -73,12 +73,12 @@ fn readme_long_flags_exist_in_cli() {
         ),
         ("docs/filter-dsl.md", include_str!("../docs/filter-dsl.md")),
         ("docs/install.md", include_str!("../docs/install.md")),
+        ("docs/mcp.md", include_str!("../docs/mcp.md")),
         (
-            "docs/mcp-overview.md",
-            include_str!("../docs/mcp-overview.md"),
+            "docs/troubleshooting.md",
+            include_str!("../docs/troubleshooting.md"),
         ),
-        ("docs/mcp-setup.md", include_str!("../docs/mcp-setup.md")),
-        ("docs/mcp-tools.md", include_str!("../docs/mcp-tools.md")),
+        ("docs/rest-api.md", include_str!("../docs/rest-api.md")),
         (
             "docs/output-formats.md",
             include_str!("../docs/output-formats.md"),
