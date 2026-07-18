@@ -33,13 +33,13 @@
       <h2>See It In Action</h2>
     </header>
     <div class="demo-tabs" role="tablist" aria-label="Demo videos">
-      <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0" onclick="showDemo(0, this)">Interactive TUI</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1" onclick="showDemo(1, this)">Detail Pane</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2" onclick="showDemo(2, this)">Mark + Delta</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3" onclick="showDemo(3, this)">Search</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4" onclick="showDemo(4, this)">Multi-Leg</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5" onclick="showDemo(5, this)">RTP Quality</button>
-      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6" onclick="showDemo(6, this)">CLI &amp; JSON</button>
+      <button class="demo-tab active" role="tab" aria-selected="true" id="demo-tab-0" aria-controls="demo-panel-0">Interactive TUI</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-1" aria-controls="demo-panel-1">Detail Pane</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-2" aria-controls="demo-panel-2">Mark + Delta</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-3" aria-controls="demo-panel-3">Search</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-4" aria-controls="demo-panel-4">Multi-Leg</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-5" aria-controls="demo-panel-5">RTP Quality</button>
+      <button class="demo-tab" role="tab" aria-selected="false" id="demo-tab-6" aria-controls="demo-panel-6">CLI &amp; JSON</button>
     </div>
     <div class="demo-panels">
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
@@ -118,7 +118,7 @@
       <div class="code-block-head">
         <span class="code-block-dots"><i></i><i></i><i></i></span>
         <span class="code-block-title">bash</span>
-        <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy to clipboard">
+        <button class="copy-btn" aria-label="Copy to clipboard">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
           <span aria-live="polite">Copy</span>
         </button>
@@ -165,7 +165,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
           <tr><td>REST API + Prometheus</td><td>Query dialogs, streams, stats via HTTP. Prometheus metrics endpoint.</td></tr>
           <tr><td>MCP server</td><td>Drive sipnab from an AI agent (Claude Code, Claude Desktop, …) over stdio or HTTP. Eleven read-only tools cover dialogs, RTP, diagnostics, and security findings.</td></tr>
           <tr><td>Browser analysis</td><td>Analyze pcap files in the browser via WASM. Zero upload, zero install.</td></tr>
-          <tr><td>Built in Rust</td><td>Memory-safe by construction. 2541 automated tests. 5 MB static binary.</td></tr>
+          <tr><td>Built in Rust</td><td>Memory-safe by construction. 2542 automated tests. 5 MB static binary.</td></tr>
         </tbody>
       </table>
     </div>
@@ -236,7 +236,7 @@ sipnab -N --json -I capture.pcap --problems</code></pre>
         <span class="arch-label"><a href="{{ get_url(path='@/docs/benchmarks.md') }}">Offline reconstruction, multi-core (measured v0.4.16)</a></span>
       </div>
       <div class="arch-item fade-in-up">
-        <span class="arch-stat" data-count="2541" data-suffix="">2541</span>
+        <span class="arch-stat" data-count="2542" data-suffix="">2542</span>
         <span class="arch-label"><a href="{{ config.extra.github_url }}/actions/workflows/ci.yml">Automated tests</a></span>
       </div>
     </div>
@@ -255,6 +255,14 @@ function showDemo(idx, btn) {
   btn.setAttribute('aria-selected', 'true');
   document.querySelector('.demo-panel[data-demo="' + idx + '"]').classList.add('active');
 }
+
+// Wire tab + copy buttons here (not via inline onclick=, which the CSP blocks).
+document.querySelectorAll('.demo-tab').forEach(function(tab, i) {
+  tab.addEventListener('click', function() { showDemo(i, tab); });
+});
+document.querySelectorAll('.copy-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() { copyCode(btn); });
+});
 
 // Arrow-key navigation on the demo tablist
 document.querySelector('.demo-tabs').addEventListener('keydown', function(e) {

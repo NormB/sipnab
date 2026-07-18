@@ -287,3 +287,52 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
         missing_desc.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// CSP journey: the production Content-Security-Policy allows inline <script>
+// blocks by sha256 hash but does NOT grant 'unsafe-inline'/'unsafe-hashes',
+// so inline event-handler attributes (onclick=, onkeydown=, oninput=, ...)
+// are BLOCKED by the browser and silently do nothing. This shipped once: the
+// homepage demo tabs + copy button used onclick="..." and every button was
+// dead on the live site while returning HTTP 200. Wire events with
+// addEventListener inside a hashed <script> instead. This guard makes an
+// inline handler unshippable.
+// ---------------------------------------------------------------------------
+#[test]
+fn no_inline_event_handlers_in_templates() {
+    // Match an inline handler used as an HTML attribute (quote follows the `=`).
+    // JS assignments like `el.onclick = fn` and prose don't have that shape, and
+    // `<script>`/`<style>` bodies are stripped first so real JS never trips this.
+    let re = regex::Regex::new(r#"(?i)\son(click|keydown|keyup|keypress|input|change|submit|mouseover|mouseout|focus|blur|load|error)\s*=\s*["']"#).unwrap();
+    let block = regex::Regex::new(r"(?is)<(script|style)\b.*?</(script|style)>").unwrap();
+    let dir = repo().join("website/templates");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).expect("read template");
+        // Blank out script/style bodies (keep newlines so line numbers hold).
+        let markup = block.replace_all(&text, |c: &regex::Captures| {
+            c[0].chars()
+                .map(|ch| if ch == '\n' { '\n' } else { ' ' })
+                .collect::<String>()
+        });
+        for (lineno, line) in markup.lines().enumerate() {
+            if let Some(m) = re.find(line) {
+                offenders.push(format!(
+                    "{}:{}: inline handler `{}` — CSP blocks it; use addEventListener",
+                    p.file_name().unwrap().to_string_lossy(),
+                    lineno + 1,
+                    m.as_str().trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "inline event handlers are CSP-blocked on the live site (buttons will silently do nothing):\n{}",
+        offenders.join("\n")
+    );
+}
