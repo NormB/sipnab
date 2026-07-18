@@ -15,7 +15,8 @@ New here? Follow the path below; each step links to the page with the detail.
    interface live with `sudo sipnab -d eth0`. Both open the TUI.
 3. **[Learn the TUI](keybindings.md)** — browse dialogs, drill into the
    call-flow ladder, mark messages for delta timing, and switch to the RTP
-   Streams view. Recolor it with the [Theme Guide](theme-guide.md).
+   Streams view; the page covers every view and its keybindings. Recolor it
+   with the [Theme Guide](theme-guide.md).
 4. **[Filter and search](filter-dsl.md)** — narrow to what matters with the
    filter DSL (`method == 'INVITE' and rtp.mos < 3.5`) or the diagnostic
    aliases (`--filter codec-asym`).

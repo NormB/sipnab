@@ -4,6 +4,30 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.15] - 2026-07-18
+
+### Fixed
+- **Homepage demo images rendered with a broken font.** The VHS demo tapes
+  named "JetBrains Mono", which was not installed on the render host, so
+  ttyd/VHS silently fell back with broken metrics (stretched letter-spacing,
+  clipped glyphs). Pinned an installed monospace family (DejaVu Sans Mono) and
+  re-rendered every demo GIF and the hero still; bumped the asset cache-bust so
+  the fixed images are served.
+
+### Added
+- End-to-end journey tests for the site artifacts (`tests/site_journey_test.rs`,
+  `tests/link_integrity_test.rs`): every demo tape must name an *installed*
+  monospace font, every referenced demo asset must exist (no orphans), every
+  nav/docs link must resolve, docs page weights must be unique, and link text
+  must not misdescribe its destination.
+
+### Changed
+- Documentation & site overhaul (also landing in this release): per-parameter
+  CLI examples with a coverage ratchet, RFC 5737 example-IP sweep, the animated
+  demos rebuilt on one shared style, the Wiki gaps closed (Troubleshooting +
+  REST API ported, MCP docs merged), site navigation and learning-path
+  reordered, and the oversized `api.md`/`install.md` split into focused pages.
+
 ## [0.5.14] - 2026-07-17
 
 ### Fixed
