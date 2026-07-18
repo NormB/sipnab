@@ -125,6 +125,18 @@ fn readme_long_flags_exist_in_cli() {
             include_str!("../website/content/docs/api.md"),
         ),
         (
+            "website/api-clients.md",
+            include_str!("../website/content/docs/api-clients.md"),
+        ),
+        (
+            "website/integrations.md",
+            include_str!("../website/content/docs/integrations.md"),
+        ),
+        (
+            "website/build.md",
+            include_str!("../website/content/docs/build.md"),
+        ),
+        (
             "website/mcp.md",
             include_str!("../website/content/docs/mcp.md"),
         ),
