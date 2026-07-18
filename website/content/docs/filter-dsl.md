@@ -1,6 +1,6 @@
 +++
 title = "Filter DSL"
-weight = 5
+weight = 7
 description = "Declarative filter language for matching SIP dialogs and RTP streams."
 +++
 
