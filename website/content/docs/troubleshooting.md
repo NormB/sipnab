@@ -1,6 +1,6 @@
 +++
 title = "Troubleshooting"
-weight = 12
+weight = 3
 description = "Real-world VoIP diagnostic workflows with exact commands."
 +++
 
