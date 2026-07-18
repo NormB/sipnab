@@ -1,6 +1,6 @@
 +++
 title = "Integrations"
-weight = 12
+weight = 13
 description = "Forward to HEP/Homer, run event-exec hooks, and emit fail2ban and syslog alerts."
 +++
 

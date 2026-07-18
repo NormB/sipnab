@@ -6,6 +6,20 @@ description = "Real-world VoIP diagnostic workflows with exact commands."
 
 > **Under pressure?** Each scenario below is: Problem, Command, What to look for, Next steps. Copy-paste and go.
 
+## Start here: one pass over everything
+
+Don't know which problem you have yet? The `--problems` alias surfaces every
+troubled call in a single sweep -- failed calls **plus** one-way audio, high
+loss/jitter, NAT mismatches, retransmit storms, slow setup, and media
+asymmetries:
+
+```bash
+# Every problematic call, newest signal first
+sipnab -N -I capture.pcap --problems --json
+```
+
+`--problems` is shorthand for the full Filter-DSL expression `state == 'Failed' OR one_way == true OR rtp.loss > 2.0 OR rtp.jitter > 50.0 OR nat_mismatch == true OR retransmits > 3 OR pdd > 32.0 OR ...` -- so it is a superset of "failed calls". Once you know the symptom, jump to the matching section below for the precise filter.
+
 ## Failed Calls
 
 Calls rejected with `403 Forbidden`, `404 Not Found`, `486 Busy Here`, `488 Not Acceptable Here`, or timing out with `408 Request Timeout`? Find every call that never established, then triage by response code.
@@ -100,11 +114,14 @@ The call report's **SDP timeline** lists each offer/answer with its codec set. A
 One direction of RTP has zero packets. The caller can hear the callee (or vice versa) but not both.
 
 ```bash
-# Find calls flagged for one-way audio
-sipnab -N -I capture.pcap --filter "one_way == true" --json
+# Find calls flagged for one-way audio (--one-way is shorthand for the filter below)
+sipnab -N -I capture.pcap --one-way --json
 
 # Full diagnostic output
-sipnab -N -I capture.pcap --filter "one_way == true" --report
+sipnab -N -I capture.pcap --one-way --report
+
+# The equivalent explicit Filter-DSL form, if you want to combine it with others
+sipnab -N -I capture.pcap --filter "one_way == true" --json
 ```
 
 You should see one NDJSON record per SIP message of each flagged call (abridged -- real records carry the full field set):

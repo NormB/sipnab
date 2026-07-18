@@ -1,6 +1,6 @@
 +++
 title = "Output Formats"
-weight = 8
+weight = 9
 description = "Machine-readable output: NDJSON, summary reports, dialog/stream JSON, and pcap/pcapng."
 +++
 

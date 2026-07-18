@@ -1,6 +1,6 @@
 +++
 title = "CLI Reference"
-weight = 6
+weight = 7
 description = "Complete flag reference for sipnab, organized by functional group."
 +++
 
