@@ -12,7 +12,7 @@
   <header class="dl-hero">
     <p class="dl-kicker">Install</p>
     <h1>Get sipnab running</h1>
-    <p class="dl-sub">One binary, one dependency. <a href="{{ config.extra.github_url }}/releases/latest">v{{ v }}</a> &mdash; built and checksummed by CI for every platform below.</p>
+    <p class="dl-sub">One binary, one dependency. <a href="{{ config.extra.github_url }}/releases/latest">v{{ v }}</a> &middot; released {{ config.extra.release_date }} &mdash; built and checksummed by CI for every platform below.</p>
   </header>
 
   <div class="dl-detect" id="dl-detect" hidden>
@@ -22,12 +22,12 @@
     <a href="#all-files">not right? see all files &darr;</a>
   </div>
 
-  <div class="dl-method-head"><h2>Fastest path &mdash; the installer picks for you</h2></div>
+  <div class="dl-method-head"><h2>Fastest path &mdash; the installer picks for you</h2><span class="dl-rec">recommended &middot; start here</span></div>
   <div class="dl-term">
     <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">any Linux or macOS &middot; detects OS, CPU, and glibc</span></div>
     <div class="dl-term-body">
       <code><span class="dl-prompt">$</span>curl -fsSL https://www.sipnab.com/install.sh | sh</code>
-      <button class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      <button type="button" class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | sh" aria-label="Copy install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
     </div>
   </div>
   <p class="dl-note">Detects your CPU, checks your glibc version, downloads the matching build, verifies its <code>sha256</code>, and installs to <code>/usr/local/bin</code>. Prefer to read it first? <a href="{{ get_url(path='install.sh') }}">View install.sh</a>.</p>
@@ -41,20 +41,22 @@
   </div>
 
   <div class="dl-tabs" role="tablist" aria-label="Platform">
-    <button class="dl-tab" data-os="mac" role="tab"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg><span>macOS</span></button>
-    <button class="dl-tab" data-os="debian" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span>Deb / RPM</span></button>
-    <button class="dl-tab" data-os="linux" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg><span>Linux</span></button>
-    <button class="dl-tab" data-os="source" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span>Source</span></button>
+    <button type="button" class="dl-tab active" data-os="mac" id="dl-tab-mac" role="tab" aria-controls="dl-panel-mac" aria-selected="true" tabindex="0"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M17.05 12.04c-.03-2.6 2.13-3.85 2.23-3.91-1.22-1.78-3.11-2.02-3.78-2.05-1.61-.16-3.14.95-3.96.95-.81 0-2.07-.93-3.4-.9-1.75.03-3.36 1.02-4.26 2.58-1.82 3.16-.47 7.84 1.3 10.39.86 1.25 1.89 2.66 3.24 2.61 1.3-.05 1.79-.84 3.36-.84 1.57 0 2.01.84 3.39.81 1.4-.02 2.28-1.28 3.14-2.54.99-1.45 1.4-2.85 1.42-2.93-.03-.01-2.73-1.05-2.76-4.16zM14.5 4.7c.72-.87 1.2-2.08 1.07-3.28-1.03.04-2.28.69-3.02 1.56-.66.77-1.24 2-1.08 3.18 1.15.09 2.32-.58 3.03-1.46z"/></svg><span>macOS</span></button>
+    <button type="button" class="dl-tab" data-os="debian" id="dl-tab-debian" role="tab" aria-controls="dl-panel-debian" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg><span>Deb/RPM</span></button>
+    <button type="button" class="dl-tab" data-os="linux" id="dl-tab-linux" role="tab" aria-controls="dl-panel-linux" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg><span>Linux</span></button>
+    <button type="button" class="dl-tab" data-os="source" id="dl-tab-source" role="tab" aria-controls="dl-panel-source" aria-selected="false" tabindex="-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span>Source</span></button>
   </div>
 
+  <noscript><p class="dl-note dl-noscript">Tab switching needs JavaScript. Without it, the macOS options show below &mdash; every platform&rsquo;s files are in the <a href="#all-files">full table further down</a>.</p></noscript>
+
   <!-- macOS -->
-  <div class="dl-panel" data-os="mac" role="tabpanel">
-    <div class="dl-method-head"><h2>Homebrew</h2><span class="dl-rec">recommended</span></div>
+  <div class="dl-panel active" data-os="mac" id="dl-panel-mac" role="tabpanel" aria-labelledby="dl-tab-mac">
+    <div class="dl-method-head"><h2>Homebrew</h2><span class="dl-rec dl-rec--dim">best on macOS</span></div>
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">macOS &middot; Intel &amp; Apple Silicon</span></div>
       <div class="dl-term-body">
         <code><span class="dl-prompt">$</span>brew install NormB/tap/sipnab</code>
-        <button class="dl-copy" data-copy="brew install NormB/tap/sipnab" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        <button type="button" class="dl-copy" data-copy="brew install NormB/tap/sipnab" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <div class="dl-direct">
@@ -75,8 +77,8 @@
   </div>
 
   <!-- Debian / Ubuntu -->
-  <div class="dl-panel" data-os="debian" role="tabpanel">
-    <div class="dl-method-head"><h2>Debian / Ubuntu package</h2><span class="dl-rec">recommended</span></div>
+  <div class="dl-panel" data-os="debian" id="dl-panel-debian" role="tabpanel" aria-labelledby="dl-tab-debian">
+    <div class="dl-method-head"><h2>Debian / Ubuntu package</h2><span class="dl-rec dl-rec--dim">best on Debian/Ubuntu</span></div>
     <div class="dl-decide">
       <h3>Which Debian file?</h3>
       <ul>
@@ -106,7 +108,7 @@
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">run in your download folder</span></div>
         <div class="dl-term-body">
           <code><span class="dl-prompt">$</span>sudo apt install ./sipnab_{{ v }}_amd64.deb</code>
-          <button class="dl-copy" data-copy="sudo apt install ./sipnab_{{ v }}_amd64.deb" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+          <button type="button" class="dl-copy" data-copy="sudo apt install ./sipnab_{{ v }}_amd64.deb" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
     </div>
@@ -134,7 +136,7 @@
         <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">run in your download folder</span></div>
         <div class="dl-term-body">
           <code><span class="dl-prompt">$</span>sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm</code>
-          <button class="dl-copy" data-copy="sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+          <button type="button" class="dl-copy" data-copy="sudo dnf install ./sipnab-{{ v }}-1.x86_64.rpm" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
         </div>
       </div>
     </div>
@@ -142,7 +144,7 @@
   </div>
 
   <!-- Linux (static + glibc) -->
-  <div class="dl-panel" data-os="linux" role="tabpanel">
+  <div class="dl-panel" data-os="linux" id="dl-panel-linux" role="tabpanel" aria-labelledby="dl-tab-linux">
     <div class="dl-method-head"><h2>Static binary</h2><span class="dl-rec dl-rec--blue">zero dependencies</span></div>
     <p class="dl-lead">musl-linked and fully self-contained &mdash; runs on any distro, any glibc version, Alpine included. Download, extract, run. This is the safe choice when you&rsquo;re not sure (the only thing it lacks is TUI audio playback).</p>
     <div class="dl-direct">
@@ -175,24 +177,27 @@
   </div>
 
   <!-- Source -->
-  <div class="dl-panel" data-os="source" role="tabpanel">
+  <div class="dl-panel" data-os="source" id="dl-panel-source" role="tabpanel" aria-labelledby="dl-tab-source">
     <div class="dl-method-head"><h2>Build from source</h2><span class="dl-rec dl-rec--dim">Rust 1.92+</span></div>
     <div class="dl-term">
       <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">cargo</span></div>
       <div class="dl-term-body dl-term-body--multi">
         <code><span class="dl-prompt">$</span>git clone {{ config.extra.github_url }}.git
 <span class="dl-prompt">$</span>cd sipnab &amp;&amp; cargo build --release --features full</code>
-        <button class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        <button type="button" class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
     <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>.</p>
   </div>
 
+  <p class="dl-verify-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg><span>Grabbed a file above? <a href="#verify">Verify its checksum &darr;</a> &mdash; sipnab is a security tool.</span></p>
+
   <section class="dl-allfiles" id="all-files">
     <div class="dl-method-head"><h2>Every file, one table</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
-    <div class="dl-table-wrap">
+    <div class="dl-table-wrap" tabindex="0" role="region" aria-label="Release artifacts table">
       <table class="dl-table">
-        <thead><tr><th>File</th><th>CPU</th><th>Runs on</th><th>Notes</th></tr></thead>
+        <caption class="dl-table-cap">Every sipnab v{{ v }} release artifact &mdash; filename, CPU architecture, what it runs on, and notes.</caption>
+        <thead><tr><th scope="col">File</th><th scope="col">CPU</th><th scope="col">Runs on</th><th scope="col">Notes</th></tr></thead>
         <tbody>
           <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb"><code>sipnab_{{ v }}_amd64.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
           <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb"><code>sipnab_{{ v }}_arm64.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
@@ -213,7 +218,7 @@
     </div>
   </section>
 
-  <section class="dl-verify">
+  <section class="dl-verify" id="verify">
     <div class="dl-verify-head">
       <span class="dl-verify-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg></span>
       <div>
@@ -222,19 +227,21 @@
       </div>
     </div>
     <div class="dl-term">
-      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">sha-256 &middot; run in your download folder</span></div>
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">sha256 &middot; run in your download folder</span></div>
       <div class="dl-term-body dl-term-body--multi">
         <code><span class="dl-cmt"># macOS</span>
 <span class="dl-prompt">$</span>shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 <span class="dl-cmt"># Linux</span>
 <span class="dl-prompt">$</span>sha256sum -c SHA256SUMS.txt --ignore-missing</code>
-        <button class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing&#10;sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        <button type="button" class="dl-copy" data-copy="shasum -a 256 -c SHA256SUMS.txt --ignore-missing&#10;sha256sum -c SHA256SUMS.txt --ignore-missing" aria-label="Copy verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
-    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. A <code>OK</code> line means it&rsquo;s authentic. Each artifact also ships an individual <code>.sha256</code> file.</p>
+    <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means it&rsquo;s authentic. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code> and <code>.rpm</code> checksums live only in <code>SHA256SUMS.txt</code>.</p>
   </section>
 
   <footer class="dl-meta">
+    <a href="{{ config.extra.github_url }}/releases/tag/v{{ v }}">Release notes for v{{ v }}</a>
+    <span class="dl-dot">&middot;</span>
     <a href="{{ config.extra.github_url }}/releases">All releases</a>
     <span class="dl-dot">&middot;</span>
     <a href="{{ get_url(path='@/docs/install.md') }}">Install guide</a>
@@ -247,15 +254,37 @@
 (function () {
   var tabs = Array.prototype.slice.call(document.querySelectorAll('.dl-tab'));
   var panels = Array.prototype.slice.call(document.querySelectorAll('.dl-panel'));
-  function show(os) {
+  // Selects a tab/panel and updates the roving tabindex (only the active tab is
+  // in the tab order; arrows move between the rest). Tolerates the pre-active
+  // macOS tab rendered in the markup for the no-JS case.
+  function show(os, focus) {
+    var activeTab = null;
     tabs.forEach(function (t) {
       var on = t.getAttribute('data-os') === os;
       t.classList.toggle('active', on);
       t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.setAttribute('tabindex', on ? '0' : '-1');
+      if (on) { activeTab = t; }
     });
     panels.forEach(function (p) { p.classList.toggle('active', p.getAttribute('data-os') === os); });
+    if (focus && activeTab) { activeTab.focus(); }
   }
-  tabs.forEach(function (t) { t.addEventListener('click', function () { show(t.getAttribute('data-os')); }); });
+  // WAI-ARIA APG tabs keyboard pattern: arrows wrap, Home/End jump to ends.
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { show(t.getAttribute('data-os')); });
+    t.addEventListener('keydown', function (e) {
+      var idx;
+      switch (e.key) {
+        case 'ArrowLeft': case 'ArrowUp':   idx = (i - 1 + tabs.length) % tabs.length; break;
+        case 'ArrowRight': case 'ArrowDown': idx = (i + 1) % tabs.length; break;
+        case 'Home': idx = 0; break;
+        case 'End':  idx = tabs.length - 1; break;
+        default: return;
+      }
+      e.preventDefault();
+      show(tabs[idx].getAttribute('data-os'), true);
+    });
+  });
 
   // Platform + CPU detection: pick the right tab, then tell the visitor what
   // we found so rookies don't have to know that x86_64 and amd64 are the same
@@ -272,7 +301,7 @@
   else if (/Android/.test(ua)) { os = 'linux'; osName = 'Linux'; }
   else if (/Ubuntu|Debian/.test(ua)) { os = 'debian'; osName = 'Debian/Ubuntu'; }
   else if (/Fedora|Red Hat|CentOS|AlmaLinux|Rocky/.test(ua)) { os = 'debian'; osName = 'RHEL/Fedora'; }
-  else if (/Linux/.test(ua)) { os = 'debian'; osName = 'Linux'; }
+  else if (/Linux/.test(ua)) { os = 'linux'; osName = 'Linux'; }
   else if (/Windows/.test(ua)) { os = 'source'; osName = 'Windows — use WSL or build from source'; }
   var arch = /aarch64|arm64/i.test(ua) ? 'ARM (aarch64 / arm64)'
            : (/x86_64|x64|amd64|Win64|Intel Mac/i.test(ua) ? 'Intel/AMD (x86_64 / amd64)' : null);
@@ -285,7 +314,14 @@
       banner.hidden = false;
     }
     var dt = document.querySelector('.dl-tab[data-os="' + os + '"]');
-    if (dt) dt.classList.add('dl-tab--detected');
+    if (dt && !dt.querySelector('.dl-tab-you')) {
+      dt.classList.add('dl-tab--detected');
+      var you = document.createElement('span');
+      you.className = 'dl-tab-you';
+      you.setAttribute('aria-hidden', 'true');
+      you.textContent = 'you';
+      dt.appendChild(you);
+    }
     show(os);
   }
   if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
@@ -299,11 +335,16 @@
   }
 
   document.querySelectorAll('.dl-copy').forEach(function (btn) {
+    var label = btn.getAttribute('aria-label');
     btn.addEventListener('click', function () {
       var text = (btn.getAttribute('data-copy') || '').replace(/&amp;/g, '&');
       navigator.clipboard.writeText(text).then(function () {
         btn.classList.add('copied');
-        setTimeout(function () { btn.classList.remove('copied'); }, 1600);
+        btn.setAttribute('aria-label', 'Copied');
+        setTimeout(function () {
+          btn.classList.remove('copied');
+          btn.setAttribute('aria-label', label);
+        }, 1600);
       });
     });
   });

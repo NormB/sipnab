@@ -386,9 +386,18 @@ function downloadBlob(content, filename, mime) {
 function setupDropzone() {
   var dropzone = $("#dropzone");
   var fileInput = $("#file-input");
-  var inner = dropzone.querySelector(".dropzone-inner");
+  var box = $("#dropzone-box");
+  var live = $("#dropzone-live");
 
-  inner.addEventListener("click", function() { fileInput.click(); });
+  // The box is the primary control (role=button): pointer + keyboard both open
+  // the picker. Scoped to the box so the privacy pill / error card don't.
+  box.addEventListener("click", function() { fileInput.click(); });
+  box.addEventListener("keydown", function(e) {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      fileInput.click();
+    }
+  });
 
   fileInput.addEventListener("change", function(e) {
     if (e.target.files.length > 0) handleFile(e.target.files[0]);
@@ -414,19 +423,24 @@ function setupDropzone() {
   dropzone.addEventListener("dragover", function(e) {
     e.preventDefault();
     e.stopPropagation();
-    dropzone.classList.add("drag-over");
+    if (!dropzone.classList.contains("drag-over")) {
+      dropzone.classList.add("drag-over");
+      if (live) live.textContent = "File over drop zone — release to analyze";
+    }
   });
 
   dropzone.addEventListener("dragleave", function(e) {
     e.preventDefault();
     e.stopPropagation();
     dropzone.classList.remove("drag-over");
+    if (live) live.textContent = "";
   });
 
   dropzone.addEventListener("drop", function(e) {
     e.preventDefault();
     e.stopPropagation();
     dropzone.classList.remove("drag-over");
+    if (live) live.textContent = "";
     if (e.dataTransfer.files.length > 0) handleFile(e.dataTransfer.files[0]);
   });
 
@@ -451,6 +465,8 @@ function showLoading(filename) {
   spinner.className = "analyze-loading-spinner";
   var text = document.createElement("div");
   text.className = "analyze-loading-text";
+  text.setAttribute("role", "status");
+  text.setAttribute("aria-live", "polite");
   text.textContent = "Analyzing " + filename + "...";
   overlay.appendChild(spinner);
   overlay.appendChild(text);
@@ -547,7 +563,7 @@ function updateHealth() {
 function updateStat(id, value, label) {
   var el = document.getElementById(id);
   var strong = document.createElement("strong");
-  strong.textContent = value.toLocaleString();
+  strong.textContent = (value || 0).toLocaleString();
   el.textContent = "";
   el.appendChild(strong);
   el.appendChild(document.createTextNode(" " + label));
@@ -657,6 +673,7 @@ function selectDialog(callId) {
   var flowStr = session.get_call_flow(callId);
   currentFlow = JSON.parse(flowStr);
   renderCallFlow();
+  updateMermaidExportState();
 
   // Auto-select first message so raw SIP is always visible
   if (currentFlow.length > 0) {
@@ -673,8 +690,8 @@ function selectDialog(callId) {
 function setupSorting() {
   var headers = $$(".call-list th.sortable");
   for (var i = 0; i < headers.length; i++) {
-    headers[i].addEventListener("click", (function(th) {
-      return function() {
+    (function(th) {
+      function activate() {
         var col = th.dataset.sort;
         if (sortColumn === col) {
           sortAsc = !sortAsc;
@@ -686,12 +703,21 @@ function setupSorting() {
         var allHeaders = $$(".call-list th.sortable");
         for (var j = 0; j < allHeaders.length; j++) {
           allHeaders[j].classList.remove("sort-active", "sort-asc", "sort-desc");
+          allHeaders[j].setAttribute("aria-sort", "none");
         }
         th.classList.add("sort-active", sortAsc ? "sort-asc" : "sort-desc");
+        th.setAttribute("aria-sort", sortAsc ? "ascending" : "descending");
 
         renderDialogList();
-      };
-    })(headers[i]));
+      }
+      th.addEventListener("click", activate);
+      th.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          e.preventDefault();
+          activate();
+        }
+      });
+    })(headers[i]);
   }
 }
 
@@ -1034,6 +1060,27 @@ function setupFilter() {
 // Export
 // ---------------------------------------------------------------------------
 
+// Keep the trigger's aria-expanded in sync with the menu's open state so the
+// dropdown reads as a proper menu button to assistive tech.
+function syncExportAria() {
+  var btn = $("#export-btn");
+  var dropdown = $("#export-dropdown");
+  if (btn && dropdown) {
+    btn.setAttribute("aria-expanded", dropdown.classList.contains("open") ? "true" : "false");
+  }
+}
+
+// Mermaid export needs a selected dialog; disable the item until there is one
+// (belt-and-suspenders with the showError guard in exportData()).
+function updateMermaidExportState() {
+  var item = $("#export-mermaid");
+  if (!item) return;
+  var enabled = !!selectedCallId;
+  item.disabled = !enabled;
+  item.setAttribute("aria-disabled", enabled ? "false" : "true");
+  item.title = enabled ? "" : "Select a dialog first";
+}
+
 function setupExport() {
   var btn = $("#export-btn");
   var dropdown = $("#export-dropdown");
@@ -1041,21 +1088,27 @@ function setupExport() {
   btn.addEventListener("click", function(e) {
     e.stopPropagation();
     dropdown.classList.toggle("open");
+    syncExportAria();
   });
 
   document.addEventListener("click", function() {
     dropdown.classList.remove("open");
+    syncExportAria();
   });
 
   var items = dropdown.querySelectorAll("button");
   for (var i = 0; i < items.length; i++) {
     items[i].addEventListener("click", function(e) {
       e.stopPropagation();
+      if (this.disabled) return;
       var format = this.dataset.format;
       exportData(format);
       dropdown.classList.remove("open");
+      syncExportAria();
     });
   }
+
+  updateMermaidExportState();
 }
 
 function exportData(format) {
@@ -1074,7 +1127,7 @@ function exportData(format) {
       break;
     case "mermaid":
       if (!selectedCallId) {
-        alert("Select a dialog first to export its Mermaid diagram.");
+        showError("Select a dialog first to export its Mermaid diagram.");
         return;
       }
       content = session.export_mermaid(selectedCallId);
@@ -1113,6 +1166,7 @@ function setupClear() {
     clearCallFlow();
     clearRawMessage();
     clearStreamDetail();
+    updateMermaidExportState();
 
     // Reset to dialogs tab
     switchTab("dialogs");
@@ -1181,14 +1235,72 @@ function setupResizeHandle(handle, direction) {
 // Keyboard shortcuts
 // ---------------------------------------------------------------------------
 
-function toggleHelpPopup() {
+var helpLastFocus = null;
+
+function helpIsOpen() {
+  var popup = $("#help-popup");
+  return popup && popup.style.display !== "none" && popup.style.display;
+}
+
+function openHelp() {
   var popup = $("#help-popup");
   if (!popup) return;
-  if (popup.style.display === "none" || !popup.style.display) {
-    popup.style.display = "flex";
-  } else {
-    popup.style.display = "none";
+  helpLastFocus = document.activeElement;
+  popup.style.display = "flex";
+  var closeBtn = popup.querySelector(".help-popup-close");
+  if (closeBtn) closeBtn.focus();
+}
+
+function closeHelp() {
+  var popup = $("#help-popup");
+  if (!popup) return;
+  popup.style.display = "none";
+  // Restore focus to whatever opened the dialog.
+  if (helpLastFocus && typeof helpLastFocus.focus === "function") {
+    helpLastFocus.focus();
   }
+  helpLastFocus = null;
+}
+
+function toggleHelpPopup() {
+  if (helpIsOpen()) closeHelp();
+  else openHelp();
+}
+
+function setupHelp() {
+  var popup = $("#help-popup");
+  if (!popup) return;
+
+  var closeBtn = popup.querySelector(".help-popup-close");
+  if (closeBtn) closeBtn.addEventListener("click", closeHelp);
+
+  // Always-visible topbar control so Help is reachable without a keyboard
+  // (the f-key hint bar is hidden on touch devices).
+  var helpBtn = $("#help-btn");
+  if (helpBtn) helpBtn.addEventListener("click", toggleHelpPopup);
+
+  // Backdrop click closes (click landed on the overlay, not its inner card).
+  popup.addEventListener("click", function(e) {
+    if (e.target === popup) closeHelp();
+  });
+
+  // Trap Tab within the dialog while it is open.
+  popup.addEventListener("keydown", function(e) {
+    if (e.key !== "Tab") return;
+    var focusables = popup.querySelectorAll(
+      "button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])"
+    );
+    if (!focusables.length) return;
+    var first = focusables[0];
+    var last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  });
 }
 
 function navigateList(selector, direction) {
@@ -1214,9 +1326,17 @@ function setupKeyboard() {
   document.addEventListener("keydown", function(e) {
     // Let Escape close help popup first, then blur/go back
     if (e.key === "Escape") {
-      var helpPopup = $("#help-popup");
-      if (helpPopup && helpPopup.style.display !== "none" && helpPopup.style.display) {
-        helpPopup.style.display = "none";
+      if (helpIsOpen()) {
+        closeHelp();
+        return;
+      }
+      // Close the export dropdown if it is open, returning focus to its trigger.
+      var exportDropdown = $("#export-dropdown");
+      if (exportDropdown && exportDropdown.classList.contains("open")) {
+        exportDropdown.classList.remove("open");
+        syncExportAria();
+        var exportBtn = $("#export-btn");
+        if (exportBtn) exportBtn.focus();
         return;
       }
       if (e.target.tagName === "INPUT") {
@@ -1252,6 +1372,7 @@ function setupKeyboard() {
           for (var i = 0; i < trs.length; i++) trs[i].classList.remove("selected");
           clearCallFlow();
           clearRawMessage();
+          updateMermaidExportState();
           return;
         }
       }
@@ -1274,6 +1395,7 @@ function setupKeyboard() {
       e.preventDefault();
       var dropdown = $("#export-dropdown");
       if (dropdown) dropdown.classList.toggle("open");
+      syncExportAria();
       return;
     }
     // Search / filter
@@ -1494,8 +1616,8 @@ function selectStream(s) {
 function setupStreamSorting() {
   var headers = $$(".stream-sortable");
   for (var i = 0; i < headers.length; i++) {
-    headers[i].addEventListener("click", (function(th) {
-      return function() {
+    (function(th) {
+      function activate() {
         var col = th.dataset.sort;
         if (streamSortColumn === col) {
           streamSortAsc = !streamSortAsc;
@@ -1507,12 +1629,21 @@ function setupStreamSorting() {
         var allHeaders = $$(".stream-sortable");
         for (var j = 0; j < allHeaders.length; j++) {
           allHeaders[j].classList.remove("sort-active", "sort-asc", "sort-desc");
+          allHeaders[j].setAttribute("aria-sort", "none");
         }
         th.classList.add("sort-active", streamSortAsc ? "sort-asc" : "sort-desc");
+        th.setAttribute("aria-sort", streamSortAsc ? "ascending" : "descending");
 
         renderStreamList();
-      };
-    })(headers[i]));
+      }
+      th.addEventListener("click", activate);
+      th.addEventListener("keydown", function(e) {
+        if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+          e.preventDefault();
+          activate();
+        }
+      });
+    })(headers[i]);
   }
 }
 
@@ -1699,6 +1830,7 @@ async function init() {
   setupClear();
   setupResize();
   setupKeyboard();
+  setupHelp();
 }
 
 init();

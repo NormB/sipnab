@@ -7,7 +7,8 @@
   --surface: #1f2430;
   --surface-2: #242936;
   --text: #cbccc6;
-  --text-dim: #707a8c;
+  /* Lifted from #707a8c to meet WCAG AA (>=4.5:1) on --bg and the surfaces. */
+  --text-dim: #96a0b0;
   --accent: #ffcc66;
   --accent-glow: rgba(255, 204, 102, 0.12);
   --link: #73d0ff;
@@ -32,7 +33,8 @@
   --color-ack: #95e6cb;
   --color-cancel: #ffa759;
   --color-register: #73d0ff;
-  --color-options: #707a8c;
+  /* Lifted from #707a8c to meet WCAG AA — twin of --text-dim. */
+  --color-options: #96a0b0;
 
   /* TUI semantic colors */
   --tui-cyan: #5fafaf;
@@ -87,7 +89,6 @@
   text-align: center;
   max-width: 520px;
   width: 100%;
-  cursor: pointer;
 }
 
 .dropzone-kicker {
@@ -98,7 +99,7 @@
   margin-bottom: 1.1rem;
 }
 
-/* The drop target box */
+/* The drop target box -- a real (role=button) control */
 .dropzone-box {
   position: relative;
   width: 100%;
@@ -106,15 +107,22 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  cursor: pointer;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent);
   border: 1px dashed var(--border-light);
   border-radius: 14px;
   transition: border-color 0.2s, background 0.2s, transform 0.2s, box-shadow 0.2s;
 }
 
-.dropzone-inner:hover .dropzone-box {
+.dropzone-box:hover {
   border-color: var(--accent);
   background: linear-gradient(180deg, rgba(255, 204, 102, 0.05), transparent);
+}
+
+.dropzone-box:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-color: var(--accent);
 }
 
 .analyze-dropzone.drag-over .dropzone-box {
@@ -143,7 +151,7 @@
   height: 30px;
 }
 
-.dropzone-inner:hover .dropzone-icon,
+.dropzone-box:hover .dropzone-icon,
 .analyze-dropzone.drag-over .dropzone-icon {
   transform: translateY(-2px);
   background: rgba(255, 204, 102, 0.16);
@@ -185,6 +193,57 @@
   padding: 0.18rem 0.5rem;
 }
 
+/* Size ceiling + local-processing reassurance, in the box itself. */
+.dropzone-hint {
+  margin: 1rem 0 0;
+  font-size: 0.74rem;
+  color: var(--text-dim);
+}
+
+/* Outcome preview: tells you what you get back before you drop anything. */
+.dropzone-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem 0.55rem;
+  margin-top: 1.4rem;
+  font-size: 0.76rem;
+  color: var(--text-dim);
+}
+.dropzone-outcome-label {
+  color: var(--accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.dropzone-outcome-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.16rem 0.5rem;
+  color: var(--text);
+}
+
+/* Screen-reader-only utility, scoped to the analyzer. */
+.analyze-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Inline lock glyph replacing the emoji in the topbar. */
+.tui-lock {
+  width: 11px;
+  height: 11px;
+  vertical-align: -1px;
+}
+
 .dropzone-privacy {
   display: inline-flex;
   align-items: center;
@@ -222,6 +281,26 @@
 .dropzone-sample:hover {
   border-color: var(--accent);
   background: rgba(255, 204, 102, 0.08);
+}
+
+/* =============================================================================
+   Keyboard focus -- consistent visible ring on every interactive control
+   ============================================================================= */
+.dropzone-sample:focus-visible,
+.topbar-btn:focus-visible,
+.panel-tab:focus-visible,
+.export-dropdown button:focus-visible,
+.help-popup-close:focus-visible,
+.flow-legend summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Sortable headers are keyboard-reachable (tabindex=0); ring sits inside. */
+.call-list th.sortable:focus-visible,
+.call-list th.stream-sortable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Inline error card — replaces native alert() for load failures. */
@@ -1001,6 +1080,8 @@
 /* Keyboard hints are noise on touch-only devices — hide the bar there. */
 @media (hover: none) and (pointer: coarse) {
   .fkey-bar { display: none; }
+  /* No f-key bar here, so drop the strip reserved for it. */
+  .analyze-workspace { padding-bottom: 0; }
 }
 
 .fkey-bar {
@@ -1156,6 +1237,31 @@
     width: 26px;
     height: 26px;
   }
+
+  /* Give the (now horizontally-scrolling) list more vertical room. */
+  .panel-left {
+    height: 50%;
+  }
+
+  /* Drop low-priority columns so the essentials fit without h-scroll. */
+  #call-list th:nth-child(5),
+  #call-list th:nth-child(6),
+  #call-list th:nth-child(8),
+  #call-list th:nth-child(9),
+  #call-list td:nth-child(5),
+  #call-list td:nth-child(6),
+  #call-list td:nth-child(8),
+  #call-list td:nth-child(9),
+  #stream-list th:nth-child(3),
+  #stream-list th:nth-child(4),
+  #stream-list th:nth-child(5),
+  #stream-list th:nth-child(9),
+  #stream-list td:nth-child(3),
+  #stream-list td:nth-child(4),
+  #stream-list td:nth-child(5),
+  #stream-list td:nth-child(9) {
+    display: none;
+  }
 }
 
 /* Help popup */
@@ -1206,9 +1312,13 @@
   height: 24px;
   display: grid;
   place-items: center;
+  padding: 0;
+  font-family: inherit;
   font-size: 18px;
   line-height: 1;
   color: var(--text-dim);
+  background: none;
+  border: none;
   border-radius: 6px;
   cursor: pointer;
   transition: color 0.15s, background 0.15s;

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "macros.html" as macros %}
 
 {% block title %}{{ page.title }} -- {{ config.title }}{% endblock title %}
 {% block description %}{{ page.description | default(value=config.description) }}{% endblock description %}
@@ -7,6 +8,17 @@
 
 {% block content %}
 <div class="doc-layout">
+  <aside class="doc-sidebar" aria-label="Documentation navigation" id="doc-sidebar">
+    <nav class="doc-nav" aria-label="Docs sections">
+      {{ macros::nav_group(title="Getting started", paths=["install.md", "cookbook.md", "troubleshooting.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="Using the TUI", paths=["keybindings.md", "theme.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="CLI & automation", paths=["cli.md", "filter-dsl.md", "output-formats.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="Configuration", paths=["config.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="API & integrations", paths=["api.md", "api-clients.md", "integrations.md", "mcp.md"], current_url=page.permalink) }}
+      {{ macros::nav_group(title="Build & benchmarks", paths=["build.md", "benchmarks.md"], current_url=page.permalink) }}
+    </nav>
+  </aside>
+
   <article class="doc-content">
     <header class="doc-header">
       <p class="doc-kicker"><a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a> <span aria-hidden="true">/</span> {{ page.title }}</p>
@@ -53,28 +65,6 @@
     </nav>
     {% endif %}
   </article>
-
-  <!-- Mini TOC -->
-  {% if page.toc | length > 0 %}
-  <aside class="doc-toc" aria-label="Table of contents">
-    <nav class="doc-toc-inner">
-      <span class="doc-toc-title">On this page</span>
-      <ul>
-        {% for h2 in page.toc %}
-        <li><a href="#{{ h2.id }}" class="doc-toc-link">{{ h2.title }}</a>
-          {% if h2.children | length > 0 %}
-          <ul>
-            {% for h3 in h2.children %}
-            <li><a href="#{{ h3.id }}" class="doc-toc-link">{{ h3.title }}</a></li>
-            {% endfor %}
-          </ul>
-          {% endif %}
-        </li>
-        {% endfor %}
-      </ul>
-    </nav>
-  </aside>
-  {% endif %}
 </div>
 
 <script>
@@ -118,9 +108,22 @@
   function setActive(id) {
     if (id === current) return;
     current = id;
-    links.forEach(function (l) { l.classList.remove("active"); });
-    if (map[id]) map[id].classList.add("active");
+    links.forEach(function (l) {
+      l.classList.remove("active");
+      l.removeAttribute("aria-current");
+    });
+    if (map[id]) {
+      map[id].classList.add("active");
+      map[id].setAttribute("aria-current", "location");
+      map[id].scrollIntoView({ block: "nearest" });
+    }
   }
+
+  // Seed the first link so there's always a highlight at page top; the
+  // observer's rootMargin can leave the final H2 unhighlighted at page
+  // bottom, but seeding avoids a no-highlight state on load.
+  links[0].classList.add("active");
+  links[0].setAttribute("aria-current", "location");
 
   var observer = new IntersectionObserver(function (entries) {
     entries.forEach(function (entry) {
