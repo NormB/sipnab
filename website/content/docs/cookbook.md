@@ -1,6 +1,6 @@
 +++
 title = "Cookbook"
-weight = 10
+weight = 2
 description = "Step-by-step recipes for every major sipnab feature: triage, filtering, HEP, TLS decryption, MCP, observability, security, audio export."
 +++
 
