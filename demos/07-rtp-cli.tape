@@ -3,18 +3,18 @@ Source demos/common.tape
 Set Framerate 8
 
 # Headless CLI: JSON dialogs, problem detection, and a full call report.
-Type "# Emit every SIP dialog as JSON"
+Type "# Every SIP dialog as JSON -- one completed call and four failures"
 Enter
 Sleep 700ms
-Type "sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --json 2>/dev/null | head -8"
+Type "sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --json 2>/dev/null | head -8"
 Enter
 Sleep 3.5s
-Type "# Surface only the calls with problems"
+Type "# Surface only the calls with problems -- the 200 OK call drops out"
 Enter
 Sleep 700ms
-Type "sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --problems 2>/dev/null | head -12"
+Type "sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --problems 2>/dev/null | head -12"
 Enter
-Sleep 3.5s
+Sleep 4s
 Type "# Print a detailed call report"
 Enter
 Sleep 700ms
