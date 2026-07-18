@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 
 {% block title %}Download -- {{ config.title }}{% endblock title %}
-{% block og_title %}Install sipnab{% endblock og_title %}
+{% block og_title %}Download sipnab{% endblock og_title %}
 {% block description %}Install sipnab {{ config.extra.version }} -- Homebrew for macOS, .deb for Debian/Ubuntu, .rpm for RHEL/Fedora, static binaries for Linux. Intel and ARM64.{% endblock description %}
 {% block og_description %}Install sipnab {{ config.extra.version }} -- one-line installer, Homebrew, .deb, .rpm, or static binaries. Intel and ARM64.{% endblock og_description %}
 
@@ -10,7 +10,7 @@
 {% set rel = config.extra.github_url ~ "/releases/download/v" ~ v %}
 <section class="dl">
   <header class="dl-hero">
-    <p class="dl-kicker">Install</p>
+    <p class="dl-kicker">Download</p>
     <h1>Get sipnab running</h1>
     <p class="dl-sub">One binary, one dependency. <a href="{{ config.extra.github_url }}/releases/latest">v{{ v }}</a> &middot; released {{ config.extra.release_date }} &mdash; built and checksummed by CI for every platform below.</p>
   </header>
