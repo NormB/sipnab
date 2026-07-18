@@ -12,7 +12,11 @@ CLI flags always override config file values. Boolean flags default to `off` (fa
 
 ## Common Recipes
 
-Real-world examples to get productive fast. Each recipe combines flags that work well together.
+A few flag combinations to get productive fast. For the full task-oriented
+collection — triage, filtering, recording, security, HEP — see the
+[Cookbook](@/docs/cookbook.md); for symptom-driven diagnostics see
+[Troubleshooting](@/docs/troubleshooting.md). This page is otherwise a flag
+reference (grouped below).
 
 ### Debug a failed call
 
