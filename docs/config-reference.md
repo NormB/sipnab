@@ -181,7 +181,7 @@ persist_to_config = true
 
 # Inline mappings (also written here when persist_to_config = true):
 [names.manual]
-"10.0.0.1" = "sbc-edge"
+"192.0.2.1" = "sbc-edge"
 "2001:db8::1" = "core6"
 ```
 
@@ -289,12 +289,14 @@ device = "eth0"
 portrange = "5060-5080"
 snaplen = 65535
 buffer = 16
+buffer_budget_mb = 128
 no_rtp = false
 
 [display]
 color = "always"
 payload_limit = 4096
 delta_time = true
+from_to = "host-port"
 
 [filter]
 from = "^1001@"
@@ -324,7 +326,7 @@ enabled = true
 hosts_file = "/etc/sipnab/hosts"
 
 [names.manual]
-"10.0.0.1" = "sbc-edge"
+"192.0.2.1" = "sbc-edge"
 
 [crash]
 reports = true

@@ -291,13 +291,13 @@ The call list is the main view when sipnab starts. It shows all tracked SIP dial
 <span class="t-muted"> Match Expression:             BPF Filter: port 5060</span>
 <span class="t-muted"> Time: Delta-prev</span>
 <span class="t-muted">  #  Method     From           To             Src IP         Dst IP         State        Msgs  Date        PDD</span>
-<span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            10.0.0.1       10.0.0.2       </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
-  <span class="t-accent">2  INVITE     charlie        dave           10.0.0.3       10.0.0.4       </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
-  <span class="t-accent">3  REGISTER   admin          --             10.0.0.5       10.0.0.1       </span><span class="t-good">Registered</span><span class="t-accent">      4  +0.012s     --</span>
-  <span class="t-accent">4  INVITE     +15551234      +15559876      10.0.0.6       10.0.0.7       </span><span class="t-bad">Failed</span><span class="t-accent">          8  +3.456s     --</span>
-  <span class="t-accent">5  INVITE     1005           1006           10.0.0.1       10.0.0.2       </span><span class="t-good">Completed</span><span class="t-accent">      14  +0.003s     923ms</span>
-  <span class="t-accent">6  OPTIONS    monitor        --             10.0.0.8       10.0.0.1       </span><span class="t-good">Completed</span><span class="t-accent">       2  +0.001s     --</span>
-  <span class="t-accent">7  INVITE     1010           +441234567     10.0.0.9       10.0.0.7       </span><span class="t-good">InCall</span><span class="t-accent">         10  +0.215s     1.2s</span>
+<span class="t-selected">▸</span><span class="t-accent"> 1  INVITE     alice          bob            192.0.2.1      192.0.2.2      </span><span class="t-good">InCall</span><span class="t-accent">         12  +0.000s     847ms</span>
+  <span class="t-accent">2  INVITE     charlie        dave           192.0.2.3      192.0.2.4      </span><span class="t-warn">Ringing</span><span class="t-accent">         6  +1.234s     --</span>
+  <span class="t-accent">3  REGISTER   admin          --             192.0.2.5      192.0.2.1      </span><span class="t-good">Registered</span><span class="t-accent">      4  +0.012s     --</span>
+  <span class="t-accent">4  INVITE     +15551234      +15559876      192.0.2.6      192.0.2.7      </span><span class="t-bad">Failed</span><span class="t-accent">          8  +3.456s     --</span>
+  <span class="t-accent">5  INVITE     1005           1006           192.0.2.1      192.0.2.2      </span><span class="t-good">Completed</span><span class="t-accent">      14  +0.003s     923ms</span>
+  <span class="t-accent">6  OPTIONS    monitor        --             192.0.2.8      192.0.2.1      </span><span class="t-good">Completed</span><span class="t-accent">       2  +0.001s     --</span>
+  <span class="t-accent">7  INVITE     1010           +441234567     192.0.2.9      192.0.2.7      </span><span class="t-good">InCall</span><span class="t-accent">         10  +0.215s     1.2s</span>
 <span class="t-muted">  Esc Quit  Enter Show  F2 Save  F7 Filter  F8 Settings  F10 Columns  Tab Streams</span></pre>
 </div>
 
@@ -312,7 +312,7 @@ The call flow shows a ladder diagram for a selected dialog, with timing, SDP, an
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Call Flow</span>
 </div>
-<pre class="terminal-body"><span class="t-header">    10.0.0.1:5060            10.0.0.3:5060            10.0.0.2:5060</span>
+<pre class="terminal-body"><span class="t-header">    192.0.2.1:5060           192.0.2.3:5060           192.0.2.2:5060</span>
 <span class="t-header">     (alice UAC)           (OpenSIPS proxy)             (bob UAS)</span>
 <span class="t-muted">          |                        |                        |</span>
 <span class="t-accent"> +0.000s  </span><span class="t-good">|------- INVITE --------&gt;|</span><span class="t-muted">                        |</span>
@@ -345,22 +345,22 @@ Full SIP message with optional syntax highlighting, searchable.
 <span class="terminal-dot red"></span><span class="terminal-dot yellow"></span><span class="terminal-dot green"></span>
 <span class="terminal-title">sipnab -- Raw Message</span>
 </div>
-<pre class="terminal-body"><span class="t-good">INVITE</span> sip:bob@10.0.0.2:5060 SIP/2.0
-<span class="t-header">Via:</span> SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-524287-1
+<pre class="terminal-body"><span class="t-good">INVITE</span> sip:bob@192.0.2.2:5060 SIP/2.0
+<span class="t-header">Via:</span> SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-524287-1
 <span class="t-header">Max-Forwards:</span> 70
-<span class="t-header">From:</span> "alice" &lt;sip:alice@10.0.0.1&gt;;tag=as6e4f2c8b
-<span class="t-header">To:</span> &lt;sip:bob@10.0.0.2&gt;
-<span class="t-header">Contact:</span> &lt;sip:alice@10.0.0.1:5060&gt;
-<span class="t-header">Call-ID:</span> 3c9a82f1e7b4@10.0.0.1
+<span class="t-header">From:</span> "alice" &lt;sip:alice@192.0.2.1&gt;;tag=as6e4f2c8b
+<span class="t-header">To:</span> &lt;sip:bob@192.0.2.2&gt;
+<span class="t-header">Contact:</span> &lt;sip:alice@192.0.2.1:5060&gt;
+<span class="t-header">Call-ID:</span> 3c9a82f1e7b4@192.0.2.1
 <span class="t-header">CSeq:</span> 102 INVITE
 <span class="t-header">User-Agent:</span> Olle/1.0
 <span class="t-header">Content-Type:</span> application/sdp
 <span class="t-header">Content-Length:</span> 263
 
 <span class="t-accent">v=</span>0
-<span class="t-accent">o=</span>alice 2890844526 2890844526 IN IP4 10.0.0.1
+<span class="t-accent">o=</span>alice 2890844526 2890844526 IN IP4 192.0.2.1
 <span class="t-accent">s=</span>-
-<span class="t-accent">c=</span>IN IP4 10.0.0.1
+<span class="t-accent">c=</span>IN IP4 192.0.2.1
 <span class="t-accent">t=</span>0 0
 <span class="t-accent">m=</span>audio 10000 RTP/AVP 0 8 101
 <span class="t-accent">a=</span>rtpmap:0 PCMU/8000
@@ -381,13 +381,13 @@ Shows all tracked RTP streams with quality metrics. Switch here from the Call Li
 </div>
 <pre class="terminal-body"><span class="t-header"> RTP Streams: 14 tracked                                                         </span>
 <span class="t-muted">  #  SSRC        Src IP:Port          Dst IP:Port          Codec   Pkts    Jitter  Loss%   MOS</span>
-<span class="t-selected">▸</span><span class="t-accent"> 1  0x1a2b3c4d  10.0.0.1:10000       10.0.0.2:20000       PCMU    4820    </span><span class="t-good">2.1ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
-  <span class="t-accent">2  0x5e6f7a8b  10.0.0.2:20000       10.0.0.1:10000       PCMU    4815    </span><span class="t-good">1.8ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.3</span>
-  <span class="t-accent">3  0x9c0d1e2f  10.0.0.6:12000       10.0.0.7:22000       PCMA    1205    </span><span class="t-warn">18.3ms</span><span class="t-accent">  </span><span class="t-warn">1.2%</span><span class="t-accent">    </span><span class="t-warn">3.4</span>
-  <span class="t-accent">4  0xa1b2c3d4  10.0.0.7:22000       10.0.0.6:12000       PCMA    1198    </span><span class="t-bad">45.7ms</span><span class="t-accent">  </span><span class="t-bad">3.8%</span><span class="t-accent">    </span><span class="t-bad">2.1</span>
-  <span class="t-accent">5  0xe5f60718  10.0.0.9:14000       10.0.0.7:24000       opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
-  <span class="t-accent">6  0x29304150  10.0.0.7:24000       10.0.0.9:14000       opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
-  <span class="t-muted">7  0xdeadbeef  10.0.0.3:16000       --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
+<span class="t-selected">▸</span><span class="t-accent"> 1  0x1a2b3c4d  192.0.2.1:10000      192.0.2.2:20000      PCMU    4820    </span><span class="t-good">2.1ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
+  <span class="t-accent">2  0x5e6f7a8b  192.0.2.2:20000      192.0.2.1:10000      PCMU    4815    </span><span class="t-good">1.8ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.3</span>
+  <span class="t-accent">3  0x9c0d1e2f  192.0.2.6:12000      192.0.2.7:22000      PCMA    1205    </span><span class="t-warn">18.3ms</span><span class="t-accent">  </span><span class="t-warn">1.2%</span><span class="t-accent">    </span><span class="t-warn">3.4</span>
+  <span class="t-accent">4  0xa1b2c3d4  192.0.2.7:22000      192.0.2.6:12000      PCMA    1198    </span><span class="t-bad">45.7ms</span><span class="t-accent">  </span><span class="t-bad">3.8%</span><span class="t-accent">    </span><span class="t-bad">2.1</span>
+  <span class="t-accent">5  0xe5f60718  192.0.2.9:14000      192.0.2.7:24000      opus    9612    </span><span class="t-good">3.2ms</span><span class="t-accent">   </span><span class="t-good">0.1%</span><span class="t-accent">    </span><span class="t-good">4.1</span>
+  <span class="t-accent">6  0x29304150  192.0.2.7:24000      192.0.2.9:14000      opus    9608    </span><span class="t-good">2.9ms</span><span class="t-accent">   </span><span class="t-good">0.0%</span><span class="t-accent">    </span><span class="t-good">4.2</span>
+  <span class="t-muted">7  0xdeadbeef  192.0.2.3:16000      --                   PCMU    340     </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">--</span><span class="t-muted">      </span><span class="t-bad">orphan</span>
 <span class="t-muted">  Tab Call List  Esc Back  F7 Filter</span></pre>
 </div>
 

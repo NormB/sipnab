@@ -226,7 +226,7 @@ persist_to_config = true
 
 # Inline mappings (also written here when persist_to_config = true):
 [names.manual]
-"10.0.0.1" = "sbc-edge"
+"192.0.2.1" = "sbc-edge"
 "2001:db8::1" = "core6"
 ```
 

@@ -110,7 +110,7 @@ sipnab -N -I capture.pcap --filter "one_way == true" --report
 You should see one NDJSON record per SIP message of each flagged call (abridged -- real records carry the full field set):
 
 ```json
-{"is_request":true,"method":"INVITE","call_id":"7f3a9c@10.0.0.5","from":"...","to":"...", "...":"..."}
+{"is_request":true,"method":"INVITE","call_id":"7f3a9c@192.0.2.5","from":"...","to":"...", "...":"..."}
 ```
 
 Get the diagnosis detail (`one_way_audio`, `nat_mismatch`, hints) per call with `--call-report <call-id>`.

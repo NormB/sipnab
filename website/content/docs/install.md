@@ -347,9 +347,9 @@ sipnab -D
 sipnab 0.5.14 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
-<span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms
-<span class="t-accent">REGISTER</span> admin -> --  10.0.0.5:5060 -> 10.0.0.1:5060  <span class="t-good">Registered</span>
-<span class="t-accent">INVITE</span> +15551234 -> +15559876  10.0.0.6:5060 -> 10.0.0.7:5060  <span class="t-bad">Failed</span>  408 Request Timeout</pre>
+<span class="t-accent">INVITE</span> alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 <span class="t-good">InCall</span> PDD=847ms
+<span class="t-accent">REGISTER</span> admin -> --  192.0.2.5:5060 -> 192.0.2.1:5060 <span class="t-good">Registered</span>
+<span class="t-accent">INVITE</span> +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060 <span class="t-bad">Failed</span> 408 Request Timeout</pre>
 </div>
 
 > **Tip:** sipnab requires libpcap for live capture. For pcap file analysis, no special permissions are needed. For live capture, run with `sudo` or set capabilities:

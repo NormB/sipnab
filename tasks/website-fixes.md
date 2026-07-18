@@ -1,119 +1,38 @@
 # Website Remaining Issues Plan
 
-> Created: 2026-04-14
-> Status: Pending
+> Created: 2026-04-14 · **Reconciled: 2026-07-18** (post July site overhaul +
+> PR #142). Original effort estimates removed; per-issue status below.
 
-## Issue 1: Terminal Mockup Pipe Alignment
+## Issue 1: Terminal Mockup Pipe Alignment — RESOLVED
 
-**Problem:** Terminal mockups in doc pages have pipe characters (`│`) that may not align vertically because each line wasn't manually character-counted. The monospace font fix helps but doesn't guarantee alignment if the source Markdown has inconsistent spacing.
+The specific misaligned mockups (keybindings call-flow ladder, Save/Settings
+dialogs) were rebuilt to exact column widths in PR #142. The CI validation
+script this issue asked for now exists as `tests/mockup_alignment_test.rs`:
+it extracts every `<pre class="terminal-body">` block from the website
+sources, strips tags/entities, and enforces box-outline and ladder-lifeline
+alignment by display column (Unicode-width aware). Runs in the normal
+`cargo test` CI lane. The `theme.md` mockups this plan listed no longer
+exist — the July overhaul replaced them with `toml` theme-definition blocks.
 
-**Fix approach:**
-- Write a validation script that parses every `<pre class="terminal-body">` block from the built HTML
-- Strip HTML tags, find pipe positions on each line, verify they match across lines
-- For any misaligned mockup, fix the source Markdown by padding/trimming to exact column widths
-- Add the validation script to CI so future changes don't break alignment
+## Issue 2: Publish to crates.io — DEFERRED (owner action)
 
-**Files:** `website/content/docs/keybindings.md` (8 mockups), `website/content/docs/theme.md` (7 mockups), `website/templates/index.html` (2 mockups)
+Blocked on the owner's `cargo login` token; explicitly deferred. The metadata
+prep steps remain valid when picked up.
 
-**Effort:** 2-3 hours (script + manual fixes)
+## Issue 3: Real PNG Screenshots — SUPERSEDED
 
----
+The July 2026 site overhaul kept the styled `<pre>` mockups deliberately
+(searchable, theme-consistent) and added animated demo GIFs
+(`website/static/demos/`), which cover the "show the real TUI" goal.
+Revisit only if a decision is made to replace mockups with static PNGs;
+the VHS capture recipe in the git history of this file is a good start.
 
-## Issue 2: Publish to crates.io
+## Issue 4: Search Quality Validation — DONE (2026-07-18)
 
-**Problem:** The install page says "build from source" because sipnab isn't on crates.io. `cargo install sipnab` would be the ideal user experience.
-
-**Fix approach:**
-- Verify `Cargo.toml` metadata is complete (description, license, repository, homepage, keywords, categories, readme, exclude)
-- Add `exclude` patterns for test pcaps, website, tasks, and other non-essential files to keep the crate size under 1MB
-- Run `cargo publish --dry-run` to validate
-- Publish with `cargo publish`
-- Update website: landing page install command back to `cargo install sipnab`, install page adds crates.io as primary method
-- Add crates.io badge to README
-
-**Prereqs:** Repository owner (you) needs a crates.io API token. Run `cargo login` first.
-
-**Files:** `Cargo.toml` (metadata + exclude), `website/templates/index.html`, `website/content/docs/install.md`, `README.md`
-
-**Effort:** 30 minutes (metadata) + your action (cargo login + publish)
-
----
-
-## Issue 3: Real PNG Screenshots
-
-**Problem:** All "screenshots" are styled `<pre>` blocks that depend on monospace fonts loading correctly. Real PNG/WebP screenshots would be font-independent and show the actual TUI pixel-perfect.
-
-**Fix approach:**
-- Use `vhs` (VHS by Charmbracelet) to record terminal GIFs/PNGs programmatically:
-  ```
-  # tape.vhs
-  Set Shell bash
-  Set FontSize 14
-  Set Width 1200
-  Set Height 800
-  Type "sipnab -I tests/pcap-samples/SIP_CALL_RTP_G711"
-  Enter
-  Sleep 2s
-  Screenshot screenshots/call-list.png
-  Type "j"
-  Sleep 500ms
-  Enter
-  Sleep 1s
-  Screenshot screenshots/call-flow.png
-  ```
-- Alternatively, use `ttyd` + Playwright to render the TUI in a browser and screenshot
-- Or simplest: manually run sipnab, take macOS screenshots, crop and optimize
-- Store screenshots in `website/static/img/` (WebP format, ~50-100KB each)
-- Replace `<pre>` mockups on the landing page with `<img>` tags
-- Keep `<pre>` mockups on doc pages as fallback (they're searchable)
-
-**Screenshots needed:**
-1. Call list view (full terminal, shows multiple dialogs with state colors)
-2. Call flow ladder (3-participant, Unicode arrows, auth collapse)
-3. Raw message view (syntax highlighted SIP INVITE)
-4. RTP streams view (quality metrics table)
-5. F2 save dialog (vertical format picker)
-6. F7 filter dialog
-7. F8 settings dialog
-
-**Files:** `website/static/img/` (new), `website/templates/index.html`, `website/content/docs/keybindings.md`
-
-**Effort:** 1-2 hours (capture + optimize + integrate)
-
----
-
-## Issue 4: Search Quality Validation
-
-**Problem:** The elasticlunr search index builds correctly but search result quality hasn't been tested. Users searching for specific topics (e.g., "MOS", "retransmit", "filter method") may not find relevant results.
-
-**Fix approach:**
-- Test 10 representative search queries against the built index:
-  1. "MOS" → should find RTP quality docs
-  2. "retransmit" → should find filter DSL + keybindings (fold)
-  3. "filter method" → should find filter DSL
-  4. "theme dark" → should find theme guide
-  5. "REGISTER" → should find keybindings + CLI
-  6. "TLS decrypt" → should find CLI + install
-  7. "save pcap" → should find keybindings + CLI
-  8. "API endpoint" → should find API docs
-  9. "jitter loss" → should find filter DSL + CLI
-  10. "F7" → should find keybindings
-- If results are poor, tune Zola's search config (boost title vs body, adjust `include_content`)
-- Add a "search tips" note to the search overlay: "Try: MOS, retransmit, filter, theme"
-
-**Files:** `website/config.toml` (search config), `website/templates/base.html` (search UI)
-
-**Effort:** 1 hour
-
----
-
-## Priority Order
-
-1. **Issue 1 (alignment)** — users see this immediately, embarrassing
-2. **Issue 3 (PNG screenshots)** — makes the site look professional vs. amateur
-3. **Issue 2 (crates.io)** — improves install experience significantly
-4. **Issue 4 (search)** — nice-to-have, affects repeat visitors
-
-## Total Effort
-
-~5-6 hours for all four issues.
+Built the site with zola 0.19.2 and replayed the shipped elasticlunr index
+under node with the 10 representative queries from this plan (MOS,
+retransmit, filter method, theme dark, REGISTER, TLS decrypt, save pcap,
+API endpoint, jitter loss, F7). All 10 return relevant top-3 results —
+no search-config tuning needed. Replay harness: session scratchpad
+`search_check.js` (trivial to recreate: `elasticlunr.Index.load` +
+`idx.search(q, {bool:'OR', expand:true})`).
