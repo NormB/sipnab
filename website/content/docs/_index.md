@@ -9,7 +9,7 @@ page_template = "page.html"
 # entry points for people who arrive with a problem, not a topic.
 tasks = [
   { title = "Analyze a pcap file", cmd = "sipnab -I capture.pcap", href = "/docs/cookbook/" },
-  { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cli/" },
+  { title = "Capture live SIP traffic", cmd = "sudo sipnab -d eth0", href = "/docs/cookbook/#2-live-capture-narrow-to-a-single-user" },
   { title = "Diagnose one-way audio", cmd = "sipnab -I dump.pcap --one-way", href = "/docs/troubleshooting/" },
   { title = "Find failed calls", cmd = "sipnab -N -I dump.pcap --problems", href = "/docs/troubleshooting/" },
   { title = "Set up a HEP capture server", cmd = "sipnab --hep-listen 0.0.0.0:9060", href = "/docs/cookbook/" },

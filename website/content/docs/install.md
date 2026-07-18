@@ -4,6 +4,8 @@ weight = 1
 description = "Install sipnab from pre-built binaries, cargo, or package managers."
 +++
 
+> Just want the binary? The [Download page](@/download.md) auto-detects your OS, CPU, and glibc and highlights the right file. This page is the full reference — every method, package manager, and platform note.
+>
 > Want a custom feature set or a cross-compiled target? See [Build from Source](@/docs/build.md).
 
 ## Installer (recommended)
