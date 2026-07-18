@@ -1132,13 +1132,15 @@ input:focus-visible,
 // =============================================================================
 
 .doc-layout {
-  max-width: $max-width;
+  max-width: 1220px;
   margin: 0 auto;
   padding: 2.5rem 1.5rem 5rem;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) $toc-width;
+  // Left navigation rail, then content (LTR reading + F-pattern: nav lives
+  // where the eye scans; content flows to its right). No right rail.
+  grid-template-columns: 15.5rem minmax(0, 1fr);
   align-items: start;
-  gap: 3.5rem;
+  gap: 3.25rem;
 }
 
 .doc-content {
@@ -1448,68 +1450,82 @@ input:focus-visible,
 }
 
 // -- Mini TOC (sticky sidebar) --
-.doc-toc {
+// -- Left documentation sidebar: page navigation grouped by journey, with the
+// active page's on-page anchors nested beneath it (Docusaurus/Stripe pattern).
+.doc-sidebar {
   position: sticky;
-  top: calc(#{$nav-height} + 2rem);
+  top: calc(#{$nav-height} + 1.5rem);
   align-self: start;
-  max-height: calc(100vh - #{$nav-height} - 4rem);
+  max-height: calc(100vh - #{$nav-height} - 2.5rem);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  padding: 0.15rem 0.9rem 1rem 0;
+  border-right: 1px solid $border;
 
   &::-webkit-scrollbar { width: 6px; }
   &::-webkit-scrollbar-thumb { background: $border; border-radius: 6px; }
+  &::-webkit-scrollbar-track { background: transparent; }
 }
 
-.doc-toc-inner {
-  padding-left: 1rem;
-  border-left: 1px solid $border;
-}
+.doc-nav-group + .doc-nav-group { margin-top: 1.4rem; }
 
-.doc-toc-title {
-  display: block;
-  font-size: 0.72rem;
+.doc-nav-group-title {
+  font-family: $font-mono;
+  font-size: 0.68rem;
   font-weight: 600;
-  color: $text-dim;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
-  letter-spacing: 0.09em;
-  margin-bottom: 0.9rem;
+  color: $text-dim;
+  margin: 0 0 0.45rem;
+  padding-left: 0.85rem;
 }
 
-.doc-toc ul {
+.doc-nav-list {
   list-style: none;
-  padding: 0;
   margin: 0;
-
+  padding: 0;
   li { margin: 0; }
+}
+
+.doc-nav-link {
+  display: block;
+  font-size: 0.86rem;
+  color: $text-dim;
+  padding: 0.34rem 0.6rem 0.34rem 0.85rem;
+  border-left: 2px solid transparent;
+  border-radius: 0 6px 6px 0;
+  line-height: 1.4;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+
+  &:hover { color: $text; background: rgba($surface, 0.55); }
+
+  &.active {
+    color: $accent;
+    font-weight: 600;
+    border-left-color: $accent;
+    background: $accent-glow;
+  }
+}
+
+// On-page section anchors, shown only under the active page.
+.doc-nav-toc {
+  list-style: none;
+  margin: 0.15rem 0 0.35rem;
+  padding: 0;
 
   a {
     display: block;
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     color: $text-dim;
-    padding: 0.32rem 0 0.32rem 0.85rem;
-    margin-left: -1rem;
-    border-left: 2px solid transparent;
-    line-height: 1.45;
+    padding: 0.24rem 0 0.24rem 1.7rem;
+    margin-left: 0.85rem;
+    border-left: 2px solid $border;
+    line-height: 1.4;
     transition: color 0.15s ease, border-color 0.15s ease;
 
-    &:hover {
-      color: $text;
-      border-left-color: $border-light;
-    }
-
-    &.active {
-      color: $accent;
-      border-left-color: $accent;
-      font-weight: 500;
-    }
-  }
-
-  ul {
-    a {
-      font-size: 0.78rem;
-      padding-left: 1.7rem;
-    }
+    &:hover { color: $text; border-left-color: $border-light; }
+    &.active { color: $accent; border-left-color: $accent; font-weight: 500; }
   }
 }
 
@@ -1918,7 +1934,7 @@ input:focus-visible,
 // =============================================================================
 
 @media print {
-  .topnav, .search-overlay, .doc-toc, .site-footer, .doc-prevnext { display: none !important; }
+  .topnav, .search-overlay, .doc-sidebar, .site-footer, .doc-prevnext { display: none !important; }
 
   body {
     background: #fff;
@@ -1947,7 +1963,7 @@ input:focus-visible,
 // =============================================================================
 
 @media (max-width: 1140px) {
-  .doc-toc { display: none; }
+  .doc-sidebar { display: none; }
   .doc-toc-mobile { display: block; }
   .doc-layout {
     grid-template-columns: minmax(0, 1fr);
