@@ -73,6 +73,11 @@
   </script>
 
   {% block head_extra %}{% endblock head_extra %}
+
+  <!-- Progressive enhancement: scroll-reveal sections start hidden and are
+       revealed by an IntersectionObserver. Without JS they must stay visible,
+       or ~half the homepage renders blank. -->
+  <noscript><style>.fade-in-up { opacity: 1 !important; transform: none !important; }</style></noscript>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -88,26 +93,26 @@
 
       <div class="nav-links" id="nav-links">
         <a href="{{ get_url(path='@/download.md') }}" {% if current_path is defined and current_path == "/download/" %}class="active"{% endif %}>Download</a>
-        <a href="{{ get_url(path='@/_index.md') }}#metrics">Metrics</a>
         <a href="{{ get_url(path='@/analyze/_index.md') }}" {% if current_path is defined and current_path is starting_with("/analyze") %}class="active"{% endif %}>Analyze</a>
         <div class="nav-drop" id="nav-drop">
           <button class="nav-drop-btn{% if current_path is defined and current_path is starting_with("/docs") %} active{% endif %}" id="nav-drop-btn" aria-haspopup="true" aria-expanded="false">Docs <span class="nav-caret" aria-hidden="true">&#9662;</span></button>
           <div class="nav-drop-menu" role="menu">
             <a href="{{ get_url(path='@/docs/_index.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/" %}class="active"{% endif %}>Overview</a>
             <a href="{{ get_url(path='@/docs/install.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/install/" %}class="active"{% endif %}>Install</a>
-            <a href="{{ get_url(path='@/docs/build.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/build/" %}class="active"{% endif %}>Build from Source</a>
             <a href="{{ get_url(path='@/docs/cookbook.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cookbook/" %}class="active"{% endif %}>Cookbook</a>
             <a href="{{ get_url(path='@/docs/troubleshooting.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/troubleshooting/" %}class="active"{% endif %}>Troubleshooting</a>
+            <a href="{{ get_url(path='@/docs/keybindings.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/keybindings/" %}class="active"{% endif %}>Keybindings</a>
+            <a href="{{ get_url(path='@/docs/theme.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/theme/" %}class="active"{% endif %}>Theme</a>
             <a href="{{ get_url(path='@/docs/cli.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/cli/" %}class="active"{% endif %}>CLI</a>
             <a href="{{ get_url(path='@/docs/filter-dsl.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/filter-dsl/" %}class="active"{% endif %}>Filter DSL</a>
             <a href="{{ get_url(path='@/docs/output-formats.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/output-formats/" %}class="active"{% endif %}>Output Formats</a>
             <a href="{{ get_url(path='@/docs/config.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/config/" %}class="active"{% endif %}>Config</a>
-            <a href="{{ get_url(path='@/docs/keybindings.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/keybindings/" %}class="active"{% endif %}>Keybindings</a>
-            <a href="{{ get_url(path='@/docs/theme.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/theme/" %}class="active"{% endif %}>Theme</a>
             <a href="{{ get_url(path='@/docs/api.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api/" %}class="active"{% endif %}>API</a>
             <a href="{{ get_url(path='@/docs/api-clients.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/api-clients/" %}class="active"{% endif %}>API Clients</a>
             <a href="{{ get_url(path='@/docs/integrations.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/integrations/" %}class="active"{% endif %}>Integrations</a>
             <a href="{{ get_url(path='@/docs/mcp.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/mcp/" %}class="active"{% endif %}>MCP</a>
+            <a href="{{ get_url(path='@/docs/build.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/build/" %}class="active"{% endif %}>Build from Source</a>
+            <a href="{{ get_url(path='@/docs/benchmarks.md') }}" role="menuitem" {% if current_path is defined and current_path == "/docs/benchmarks/" %}class="active"{% endif %}>Benchmarks</a>
           </div>
         </div>
       </div>
@@ -154,7 +159,7 @@
       <div class="footer-col footer-links">
         <a href="{{ get_url(path='@/download.md') }}">Download</a>
         <a href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
-        <a href="{{ get_url(path='@/analyze/_index.md') }}">Analyze a pcap</a>
+        <a href="{{ get_url(path='@/analyze/_index.md') }}">Analyze</a>
         <a href="{{ config.extra.github_url }}">GitHub</a>
         <a href="{{ config.extra.github_url }}/blob/main/CHANGELOG.md">Changelog</a>
         <a href="{{ config.extra.github_url }}#license">License: MIT / Apache-2.0</a>

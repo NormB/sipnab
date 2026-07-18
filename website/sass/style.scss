@@ -1461,7 +1461,6 @@ input:focus-visible,
   overscroll-behavior: contain;
   scrollbar-width: thin;
   padding: 0.15rem 0.9rem 1rem 0;
-  border-right: 1px solid $border;
 
   &::-webkit-scrollbar { width: 6px; }
   &::-webkit-scrollbar-thumb { background: $border; border-radius: 6px; }
@@ -2082,7 +2081,11 @@ input:focus-visible,
   .version-badge { font-size: 0.7rem; }
 
   .demo-tabs { gap: 0.3rem; }
-  .demo-tab { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+  .demo-tab { padding: 0.6rem 0.8rem; font-size: 0.8rem; min-height: 44px; }
+
+  // Wrap the quickstart install command instead of clipping it (the most
+  // important copy-paste on the page); matches the download page's installer.
+  .code-block-wrap pre { white-space: pre-wrap; word-break: break-word; }
 
   // Keep the reference table readable on narrow screens.
   .comparison-table { font-size: 0.82rem; }
@@ -2117,15 +2120,21 @@ input:focus-visible,
 .dl-tab:hover { color: $text; }
 .dl-tab.active { background: $accent; color: $bg; }
 .dl-tab.active svg { opacity: 1; }
-.dl-tab--detected:not(.active)::after {
-  content: ""; position: absolute; top: 0.45rem; right: 0.55rem;
-  width: 5px; height: 5px; border-radius: 50%; background: $code-green;
+// "you" badge (JS-added) marking the tab matched to the visitor's system —
+// solid so it reads on both the amber active tab and the inactive ones.
+.dl-tab-you {
+  font-family: $font-mono; font-size: 0.58rem; font-weight: 700; line-height: 1;
+  text-transform: uppercase; letter-spacing: 0.03em;
+  background: $code-green; color: $bg; border-radius: 4px; padding: 0.16rem 0.32rem;
 }
 
 .dl-panel { display: none; }
 .dl-panel.active { display: block; animation: dlUp 0.4s ease both; }
 
 .dl-method-head { display: flex; align-items: center; gap: 0.65rem; margin-bottom: 1rem; }
+// A second install method within a panel (e.g. RHEL/Fedora after Debian) must
+// separate clearly from the block above it, or the two read as one.
+.dl-panel > .dl-method-head:not(:first-child) { margin-top: 2.75rem; }
 .dl-method-head h2 { font-size: 1.15rem; margin: 0; }
 .dl-rec {
   font-family: $font-mono; font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em;
@@ -2258,7 +2267,7 @@ input:focus-visible,
 
 // Full artifact reference table.
 .dl-allfiles { margin-top: 3.5rem; }
-.dl-table-wrap { overflow-x: auto; border: 1px solid $border; border-radius: 10px; }
+.dl-table-wrap { position: relative; overflow-x: auto; border: 1px solid $border; border-radius: 10px; }
 .dl-table {
   border-collapse: collapse; width: 100%; font-size: 0.84rem; font-variant-numeric: tabular-nums;
   th, td { text-align: left; padding: 0.55rem 0.85rem; border-bottom: 1px solid $border; white-space: nowrap; }
@@ -2271,13 +2280,44 @@ input:focus-visible,
   code { font-size: 0.78rem; }
 }
 
+// Nudge between the download tiles and the far-down "Verify" section.
+.dl-verify-hint {
+  display: flex; align-items: center; gap: 0.55rem; margin: 2.75rem 0 0;
+  font-size: 0.88rem; color: $text-dim;
+  svg { width: 17px; height: 17px; flex: none; color: $accent; }
+  a { color: $accent; text-decoration: none; border-bottom: 1px solid rgba($accent, 0.3); }
+}
+
+// Screen-reader-only table caption. The adjacent <h2> already labels the table
+// visually, so hide the caption on screen while keeping it announced.
+.dl-table-cap {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
 @keyframes dlUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
 @media (max-width: 560px) {
-  .dl { padding: 3.25rem 1.1rem 4rem; }
+  // Tighten the top rhythm so the installer CTA sits closer to the fold.
+  .dl { padding: 2.25rem 1.1rem 4rem; }
+  .dl-hero { margin-bottom: 1.5rem; }
+  .dl-hero h1 { margin-top: 0.4rem; }
+  .dl-sub { margin-top: 0.7rem; }
+  // Compact the detection banner (it precedes the CTA).
+  .dl-detect { padding: 0.6rem 0.85rem; margin-bottom: 1.2rem; font-size: 0.86rem; gap: 0.5rem; }
+  .dl-namemap-wrap { margin: 1.4rem 0 1.6rem; }
+  .dl-tabs { width: 100%; margin-bottom: 1.6rem; }
   .dl-tiles { grid-template-columns: 1fr; }
-  .dl-tabs { width: 100%; }
-  .dl-tab { flex: 1; justify-content: center; padding: 0.55rem 0.3rem; }
+  .dl-tab { flex: 1; justify-content: center; padding: 0.6rem 0.3rem; min-height: 44px; }
+  .dl-copy { min-height: 44px; min-width: 44px; }
   .dl-term-body { flex-direction: column; align-items: stretch; }
+  // Let the single-line installer command wrap instead of clipping.
+  .dl-term-body:not(.dl-term-body--multi) code { white-space: pre-wrap; word-break: break-word; }
   .dl-copy { align-self: flex-end; }
+  // Right-edge fade cueing that the artifact table scrolls horizontally.
+  .dl-table-wrap::after {
+    content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 2rem;
+    pointer-events: none; border-radius: 0 10px 10px 0;
+    background: linear-gradient(90deg, rgba($bg, 0), $bg);
+  }
 }

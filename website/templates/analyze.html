@@ -6,17 +6,22 @@
 {% block og_description %}{{ section.description }}{% endblock og_description %}
 
 {% block head_extra %}
-<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=12">
+<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=13">
 {% endblock head_extra %}
 
 {% block content %}
 <div class="analyze-app" id="analyze-app">
 
+  <!-- Persistent page heading for AT/heading-nav; hidden after load too. -->
+  <h1 class="analyze-sr-only">PCAP analysis</h1>
+
   <!-- Drop zone (initial view) -->
   <div class="analyze-dropzone" id="dropzone">
     <div class="dropzone-inner">
       <span class="dropzone-kicker">sipnab &middot; in-browser analyzer</span>
-      <div class="dropzone-box">
+      <h2 class="dropzone-title">Drop a .pcap here to analyze</h2>
+      <div class="dropzone-box" id="dropzone-box" role="button" tabindex="0"
+           aria-label="Drop a pcap file here, or press Enter or Space to browse for one">
         <div class="dropzone-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 3v4a1 1 0 0 0 1 1h4"/>
@@ -25,15 +30,22 @@
             <path d="m8.5 17.5 3.5 3.5 3.5-3.5"/>
           </svg>
         </div>
-        <h1 class="dropzone-title">Drop a .pcap here to analyze</h1>
         <p class="dropzone-sub">or <span class="dropzone-browse">click to browse</span></p>
-        <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
         <div class="dropzone-formats">
           <span class="dropzone-fmt">.pcap</span>
           <span class="dropzone-fmt">.pcapng</span>
           <span class="dropzone-fmt">.cap</span>
         </div>
-        <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
+        <p class="dropzone-hint">Up to ~250&nbsp;MB &middot; parsed locally in your browser</p>
+      </div>
+      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+      <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
+      <div class="dropzone-outcome" aria-label="What you get from an analysis">
+        <span class="dropzone-outcome-label">You'll get</span>
+        <span class="dropzone-outcome-item">call list</span>
+        <span class="dropzone-outcome-item">flow ladder</span>
+        <span class="dropzone-outcome-item">raw SIP</span>
+        <span class="dropzone-outcome-item">RTP MOS / jitter / loss</span>
       </div>
       <div class="dropzone-error" id="dropzone-error" hidden role="alert"></div>
       <div class="dropzone-privacy">
@@ -43,6 +55,7 @@
         </svg>
         <span>All processing happens in your browser &mdash; nothing is uploaded</span>
       </div>
+      <div class="analyze-sr-only" id="dropzone-live" role="status" aria-live="polite"></div>
     </div>
   </div>
 
@@ -51,11 +64,11 @@
 
     <!-- Top bar -- TUI status lines -->
     <div class="analyze-topbar" id="topbar">
-      <div class="demo-banner" id="demo-banner" hidden role="status">
+      <div class="demo-banner" id="demo-banner" hidden role="alert">
         Demo data &mdash; the WASM analyzer failed to load, so this is a built-in sample, <b>not your file</b>. Reload to retry.
       </div>
       <div class="topbar-status-line">
-        <span class="tui-label" title="Analysis runs entirely in your browser — nothing is uploaded.">&#128274;</span>&nbsp;<span class="tui-value" title="Analysis runs entirely in your browser — nothing is uploaded.">in-browser</span>
+        <span class="tui-label" title="Analysis runs entirely in your browser — nothing is uploaded."><svg class="tui-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></span>&nbsp;<span class="tui-value" title="Analysis runs entirely in your browser — nothing is uploaded.">in-browser</span>
         <span class="tui-sep">|</span>
         <span class="topbar-health" id="topbar-health"></span>
         <span class="tui-sep">|</span>
@@ -72,19 +85,20 @@
         <span class="topbar-stat" id="topbar-rtp"><strong>0</strong> RTP</span>
         <div class="topbar-actions">
           <div class="topbar-export-wrap">
-            <button class="topbar-btn" id="export-btn">Export</button>
-            <div class="export-dropdown" id="export-dropdown">
+            <button class="topbar-btn" id="export-btn" aria-haspopup="true" aria-expanded="false" aria-controls="export-dropdown">Export</button>
+            <div class="export-dropdown" id="export-dropdown" aria-label="Export format">
               <button data-format="json">JSON</button>
               <button data-format="csv">CSV</button>
-              <button data-format="mermaid">Mermaid</button>
+              <button data-format="mermaid" id="export-mermaid">Mermaid</button>
             </div>
           </div>
+          <button class="topbar-btn" id="help-btn" type="button" aria-label="Keyboard shortcuts">?</button>
           <button class="topbar-btn topbar-btn--clear" id="clear-btn">Clear</button>
         </div>
       </div>
       <div class="topbar-filter-line">
         <span class="tui-label">Filter:</span>&nbsp;
-        <input type="text" class="topbar-filter" id="filter-input" placeholder="Type to search (e.g. INVITE, alice, Failed) or use DSL: method == 'INVITE'" spellcheck="false">
+        <input type="text" class="topbar-filter" id="filter-input" aria-label="Search and filter dialogs" placeholder="Type to search (e.g. INVITE, alice, Failed) or use DSL: method == 'INVITE'" spellcheck="false">
       </div>
     </div>
 
@@ -104,15 +118,15 @@
             <table class="call-list" id="call-list">
               <thead>
                 <tr>
-                  <th data-sort="index" class="sortable sort-active sort-asc">#</th>
-                  <th data-sort="method" class="sortable">Method</th>
-                  <th data-sort="from_user" class="sortable">From</th>
-                  <th data-sort="to_user" class="sortable">To</th>
-                  <th data-sort="src_addr" class="sortable">Source</th>
-                  <th data-sort="dst_addr" class="sortable">Dest</th>
-                  <th data-sort="state" class="sortable">State</th>
-                  <th data-sort="message_count" class="sortable">Msgs</th>
-                  <th data-sort="pdd_ms" class="sortable">PDD</th>
+                  <th data-sort="index" class="sortable sort-active sort-asc" tabindex="0" aria-sort="ascending" title="Sort by row order">#</th>
+                  <th data-sort="method" class="sortable" tabindex="0" aria-sort="none" title="Sort by method">Method</th>
+                  <th data-sort="from_user" class="sortable" tabindex="0" aria-sort="none" title="Sort by from-user">From</th>
+                  <th data-sort="to_user" class="sortable" tabindex="0" aria-sort="none" title="Sort by to-user">To</th>
+                  <th data-sort="src_addr" class="sortable" tabindex="0" aria-sort="none" title="Sort by source address">Source</th>
+                  <th data-sort="dst_addr" class="sortable" tabindex="0" aria-sort="none" title="Sort by destination address">Dest</th>
+                  <th data-sort="state" class="sortable" tabindex="0" aria-sort="none" title="Sort by state">State</th>
+                  <th data-sort="message_count" class="sortable" tabindex="0" aria-sort="none" title="Sort by message count">Msgs</th>
+                  <th data-sort="pdd_ms" class="sortable" tabindex="0" aria-sort="none" title="Sort by post-dial delay">PDD</th>
                 </tr>
               </thead>
               <tbody id="call-list-body"></tbody>
@@ -131,15 +145,15 @@
             <table class="call-list" id="stream-list">
               <thead>
                 <tr>
-                  <th data-sort="ssrc" class="stream-sortable sort-active sort-asc">SSRC</th>
-                  <th data-sort="codec" class="stream-sortable">Codec</th>
-                  <th data-sort="src" class="stream-sortable">Source</th>
-                  <th data-sort="dst" class="stream-sortable">Dest</th>
-                  <th data-sort="packets" class="stream-sortable">Pkts</th>
-                  <th data-sort="jitter_ms" class="stream-sortable">Jitter</th>
-                  <th data-sort="loss_pct" class="stream-sortable">Loss%</th>
-                  <th data-sort="mos" class="stream-sortable">MOS</th>
-                  <th data-sort="duration_secs" class="stream-sortable">Dur</th>
+                  <th data-sort="ssrc" class="stream-sortable sort-active sort-asc" tabindex="0" aria-sort="ascending" title="Sort by SSRC">SSRC</th>
+                  <th data-sort="codec" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by codec">Codec</th>
+                  <th data-sort="src" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by source">Source</th>
+                  <th data-sort="dst" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by destination">Dest</th>
+                  <th data-sort="packets" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by packet count">Pkts</th>
+                  <th data-sort="jitter_ms" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by jitter">Jitter</th>
+                  <th data-sort="loss_pct" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by loss percentage">Loss%</th>
+                  <th data-sort="mos" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by MOS">MOS</th>
+                  <th data-sort="duration_secs" class="stream-sortable" tabindex="0" aria-sort="none" title="Sort by duration">Dur</th>
                 </tr>
               </thead>
               <tbody id="stream-list-body"></tbody>
@@ -157,7 +171,7 @@
       <!-- Right: Call flow + Raw message / Stream detail -->
       <div class="panel panel-right" id="panel-right">
         <div class="panel-right-top" id="panel-flow">
-          <div class="panel-header" id="panel-flow-header">Call Flow
+          <div class="panel-header" id="panel-flow-header" role="heading" aria-level="2">Call Flow
             <details class="flow-legend">
               <summary>What am I looking at?</summary>
               <div class="flow-legend-body">
@@ -185,7 +199,7 @@
 
         <!-- Bottom: Raw SIP message / Stream burst-gap -->
         <div class="panel-right-bottom" id="panel-raw">
-          <div class="panel-header" id="panel-raw-header">Raw Message</div>
+          <div class="panel-header" id="panel-raw-header" role="heading" aria-level="2">Raw Message</div>
           <div class="raw-placeholder" id="raw-placeholder">Click a message in the call flow to view raw SIP</div>
           <pre class="raw-message" id="raw-message" style="display: none;"></pre>
           <div class="stream-burst-gap" id="stream-burst-gap" style="display: none;"></div>
@@ -208,10 +222,10 @@
   </div>
 
   <!-- Help popup (toggle with h or F1) -->
-  <div class="help-popup" id="help-popup" style="display: none;" onclick="this.style.display='none'">
-    <div class="help-popup-inner" onclick="event.stopPropagation()">
-      <div class="help-popup-title">Keyboard Shortcuts</div>
-      <div class="help-popup-close" onclick="this.parentElement.parentElement.style.display='none'">&times;</div>
+  <div class="help-popup" id="help-popup" style="display: none;">
+    <div class="help-popup-inner" role="dialog" aria-modal="true" aria-labelledby="help-popup-title">
+      <div class="help-popup-title" id="help-popup-title">Keyboard Shortcuts</div>
+      <button class="help-popup-close" id="help-popup-close" type="button" aria-label="Close keyboard shortcuts">&times;</button>
       <table class="help-popup-table">
         <tr><th colspan="2">Navigation</th></tr>
         <tr><td><kbd>j</kbd> / <kbd>&#x2193;</kbd></td><td>Move down in call list</td></tr>
@@ -236,7 +250,7 @@
 
 </div>
 
-<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=11"></script>
+<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=12"></script>
 {% endblock content %}
 
 {% block footer %}{% endblock footer %}
