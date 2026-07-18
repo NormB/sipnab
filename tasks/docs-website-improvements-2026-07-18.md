@@ -3,6 +3,17 @@
 > Created 2026-07-18. Source: three parallel audits (repo docs vs 0.5.14 code;
 > website tree; live sipnab.com). crates.io publish explicitly **out of scope**
 > (deferred by owner). Attribution/credit "gaps" not applicable.
+>
+> **STATUS: COMPLETE (2026-07-18).** All Tier A + Tier B items shipped in
+> PR #142 (`6152144`) and verified on the live site. The Cloudflare email
+> obfuscation was disabled the same day via the zone-settings API (no
+> dashboard needed — `CLOUDFLARE_DNS_TOKEN` has Zone Settings Edit).
+> Follow-up hardening landed after the merge: mockup alignment is now gated
+> by `tests/mockup_alignment_test.rs`, and the deferred search-quality
+> validation was run (zola 0.19.2 + node replay of the elasticlunr index:
+> all 10 representative queries return relevant top-3 results, no tuning
+> needed). Still deferred: re-benchmark on 0.5.x, full RFC 5737 sweep,
+> crates.io publish (owner).
 
 ## External / owner action (cannot fix in repo)
 
@@ -56,12 +67,36 @@
     (`05-file-open.gif`, `06-rtp-quality.gif`); `-1` duplicate-slug anchor
     fragility in output-formats.md/mcp.md (low, optional).
 
-## Deferred (not this pass)
+## Follow-up pass — 2026-07-18 (completeness sweep)
+
+Closing the remaining gaps after the maintainer asked for full per-parameter
+example coverage and "every gap closed":
+
+- **Per-parameter examples — DONE.** A coverage audit found 80 CLI flags with
+  zero runnable examples and 17 with only one (in the doc corpus = `docs/*.md`
+  + README + `website/content/docs/*.md`). Added grouped `**Examples**` bash
+  blocks after every flag table in `docs/cli-reference.md` (15 groups) and
+  mirrored 14 to `website/content/docs/cli.md`. Now **135/135 flags and 56/56
+  config keys have ≥2 example occurrences**. Every drafted command was executed
+  against the installed 0.5.14 binary and proven to clear clap parsing (241
+  commands across the four example docs, 0 clap-rejected; harness detects
+  clap-rejection signatures, not just exit-2, so missing-file/root runtime
+  errors don't false-positive). Two config keys (`buffer_budget_mb`,
+  `from_to`) gained a second toml occurrence. One real doc bug found+fixed:
+  `--hep-allow` needs CIDR (`192.0.2.0/24`), not a bare host.
+- **Full RFC 5737 sweep — DONE** (was deferred as "large churn"). All example
+  IPs converted to TEST-NET ranges (`10.0.0.x`→`192.0.2.x`,
+  `192.168.1.x`→`198.51.100.x`) across docs, website content, and the man
+  page — including the width-sensitive terminal mockups in `keybindings.md` /
+  `install.md`, done with a column-preserving replacer (each +1 delta absorbed
+  from the next padding run) and verified: rendered call-list/RTP/ladder
+  columns still align and `mockup_alignment_test` stays green. Zero private
+  IPs remain in any doc.
+
+## Deferred (owner action / genuinely blocked)
 
 - Re-benchmark on 0.5.x (Tier A #6 adds provenance instead).
-- Search 10-query quality validation (zola not installed on this box).
-- Full RFC 5737 sweep of all example IPs (large churn, only .40 was real).
-- crates.io publish (owner deferred).
+- crates.io publish (owner deferred — needs `cargo login`).
 
 ## Test/gate notes
 

@@ -317,7 +317,7 @@ sections are preserved). You can also pre-declare mappings there by hand:
 
 ```toml
 [names.manual]
-"10.0.0.1" = "sbc-edge"
+"192.0.2.1" = "sbc-edge"
 ```
 
 When saving a capture as **PCAP-NG** with resolution active, the mappings are

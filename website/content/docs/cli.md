@@ -131,6 +131,32 @@ sipnab -d any --multi-device --delta-time
 | `--strip-secrets` | `<OUTPUT>` | -- | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. The input is never modified; the output is written atomically |
 | `<BPF_FILTER>...` | positional | -- | BPF display filter expression (trailing positional args) |
 
+**Examples**
+
+```bash
+# Record up to 10000 packets from eth0 into a pcap, watching a widened SIP port range
+sudo sipnab --device eth0 --output capture.pcap --portrange 5060-5080 --count 10000
+# Live-capture a busy link with bigger kernel and queue buffers, a capped snapshot length, and parse-error notices silenced (sipgrep -x)
+sudo sipnab --device eth0 --buffer 16 --buffer-budget 128 --snaplen 2048 --quiet-bad-parse
+# Capture on all available interfaces headlessly, stopping once the output file reaches 100 MiB
+sudo sipnab -N --multi-device --output capture.pcap --autostop filesize:100
+# Replay a pcap at its original timing with RTP capture and analysis disabled
+sipnab -N --input capture.pcap --replay --no-rtp
+# Scan a pcap sipgrep-style: parse only the first 512 bytes of each packet, every packet standalone (no reassembly), without parse-error noise
+sipnab -N --input capture.pcap --limitlen 512 --no-reassembly --quiet-bad-parse
+# Capture for 5 minutes using a BPF filter read from sip.bpf, without putting the interface into promiscuous mode (sipgrep -p)
+sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --duration 5m
+# Monitor an hour of traffic across a wide SIP port range with enlarged capture buffers
+sudo sipnab --device eth0 --portrange 5060-5090 --buffer 8 --buffer-budget 256 --duration 1h
+# Replay signaling only from a pcap, parsing at most 1500 bytes of each packet
+sipnab -N --input capture.pcap --replay --limitlen 1500 --no-rtp
+# Stop after 500 packets that pass the sip.bpf filter, non-promiscuous, with the snapshot length sized for jumbo frames
+sudo sipnab --device eth0 --bpf-file sip.bpf --no-promisc --snaplen 9000 --count 500
+# Write a one-minute capture that treats every packet standalone (IP-fragment and TCP-segment reassembly off)
+sudo sipnab -N --device eth0 --output capture.pcap --autostop duration:60 --no-reassembly
+```
+
+
 ## Mode
 
 | Flag | Value | Default | Description |
@@ -139,6 +165,18 @@ sipnab -d any --multi-device --delta-time
 | `-c`, `--calls-only` | -- | off | Show only SIP dialogs (calls), not standalone messages |
 | `-t`, `--telephone-event` | -- | off | Capture and display telephone-event (DTMF) RTP payloads |
 | `-q`, `--quiet` | -- | off | Suppress informational output; only show results |
+
+**Examples**
+
+```bash
+# Analyze a pcap headlessly, showing only complete SIP dialogs (calls), not standalone messages
+sipnab --no-tui -I capture.pcap --calls-only
+# Watch live calls in the TUI with telephone-event (DTMF) RTP payloads captured and displayed
+sudo sipnab -d eth0 --calls-only --telephone-event
+# Headless live capture that decodes DTMF and suppresses informational output
+sudo sipnab --no-tui -d eth0 --telephone-event --quiet
+```
+
 
 ## Matching
 
@@ -154,6 +192,24 @@ sipnab -d any --multi-device --delta-time
 | `--ua` | `<PATTERN>` | -- | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | Advanced filter DSL expression (see [Filter DSL](@/docs/filter-dsl.md)) |
 
+**Examples**
+
+```bash
+# Show every dialog that mentions alice@example.com, case-insensitively (dialog-following payload match)
+sipnab -N -I capture.pcap --match "alice@example.com" --ignore-case
+# Whole-word match for 486 rejections, folding multi-line headers into one line before matching
+sipnab -N -I capture.pcap --match "486 Busy Here" --word --single-line
+# Live view of everything except REGISTER traffic (inverted match)
+sudo sipnab -d eth0 --match "REGISTER" --invert
+# Flag scanner traffic live: a known scanner User-Agent (any case) with a Contact pointing into 203.0.113.0/24
+sudo sipnab -d eth0 --ua "friendly-scanner" --contact "203\.0\.113\." --ignore-case
+# Filter a pcap by User-Agent and a Contact in 192.0.2.0/24, matching even when headers span folded lines
+sipnab -N -I capture.pcap --ua "sipcli" --contact "192\.0\.2\." --single-line
+# Suppress keep-alive noise: show messages that do not contain the whole word OPTIONS
+sipnab -N -I capture.pcap --match "OPTIONS" --word --invert
+```
+
+
 ## Diagnostic Aliases
 
 Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL](@/docs/filter-dsl.md) for the exact expansion of each alias.
@@ -165,6 +221,18 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--short-calls` | Show completed calls shorter than 5 seconds |
 | `--one-way` | Show calls with potential one-way audio issues |
 | `--nat-issues` | Show calls with Contact/Via NAT mismatch |
+
+**Examples**
+
+```bash
+# Flag completed calls under 5 seconds and calls with suspected one-way audio in a capture
+sipnab -N -I capture.pcap --short-calls --one-way
+# Live-monitor for one-way audio and Contact/Via NAT mismatches
+sudo sipnab -d eth0 -N --one-way --nat-issues
+# Summarize short completed calls from a capture in a post-run report
+sipnab -N -I capture.pcap --short-calls --report
+```
+
 
 ## Output
 
@@ -190,6 +258,30 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--fail2ban` | -- | off | Output in fail2ban-compatible format for SIP security events. Requires `-N` |
 | `--group-by` | `<FIELD>` | -- | Group output by field (e.g., `call-id`, `from`, `method`) |
 
+**Examples**
+
+```bash
+# Export every SIP message from a capture as pretty-printed JSON, truncating displayed payloads to 1000 bytes
+sipnab -N -I capture.pcap --json-pretty --payload-limit 1000 > messages.json
+# Stream live SIP traffic as pretty-printed JSON grouped by method, flushing after each line for downstream tooling
+sudo sipnab -d eth0 -N --json-pretty --group-by method --line-buffer > live.json
+# Dump raw SIP text with hex payloads and IANA protocol numbers, uncolored for log archiving
+sipnab -N -I capture.pcap --text-dump --hexdump --proto-number --color never
+# Follow live REGISTER traffic in real time, printing raw text plus 2 messages of context after each match
+sudo sipnab -d eth0 -N --match REGISTER --after 2 --text-dump --line-buffer --color always
+# Review a capture with per-message delta times, empty-bodied messages included, and hex dumps grouped per call
+sipnab -N -I capture.pcap --show-empty --delta-time --hexdump --group-by call-id
+# Inspect OPTIONS keepalives with 5 messages of trailing context, empty bodies shown, and display capped at 256 payload bytes
+sudo sipnab -d eth0 -N --match OPTIONS --after 5 --show-empty --proto-number --payload-limit 256
+# Watch the live TUI with host:port From/To columns and hand the capture to Wireshark with a matching display filter
+sudo sipnab -d eth0 --from-to-mode host-port --wireshark
+# Browse an existing capture in the TUI with full user@host:port From/To columns
+sipnab -I capture.pcap --from-to-mode user-host-port
+# Print a tshark-compatible display filter for the INVITE traffic in a capture
+sipnab -N -I capture.pcap --tshark-filter "method=INVITE"
+```
+
+
 ## Name Resolution
 
 | Flag | Value | Default | Description |
@@ -197,6 +289,20 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--resolve` | -- | off | Start with name resolution enabled (manual mappings + hosts file) |
 | `--reverse-dns` | -- | off | Also resolve via reverse DNS (PTR); implies `--resolve` |
 | `--names` | `<FILE>` | -- | Preload an `/etc/hosts`-format mapping file (repeatable) |
+
+**Examples**
+
+```bash
+# Live capture with name resolution from a static hosts-format mapping file
+sudo sipnab -d eth0 --resolve --names /etc/sipnab/hosts.map
+# Annotate an offline pcap with names, preloading two mapping files on top of /etc/hosts
+sipnab -N -I capture.pcap --resolve --names /etc/sipnab/hosts.map --names ~/.config/sipnab/lab-names
+# Live capture that also resolves captured IPs via reverse DNS (PTR) lookups
+sudo sipnab -d eth0 --reverse-dns
+# Replay an offline pcap and resolve its addresses with reverse DNS, supplemented by a local mapping file
+sipnab -N -I capture.pcap --reverse-dns --names ~/.config/sipnab/lab-names
+```
+
 
 ## Dialog
 
@@ -209,6 +315,24 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--no-dialog` | -- | off | Disable dialog tracking entirely (message-only mode) |
 | `--tag` | `<TAG>` | -- | Filter dialogs by tag value |
 
+**Examples**
+
+```bash
+# Monitor a busy proxy with a tight 5000-dialog memory bound, explicitly evicting the oldest dialog at capacity
+sudo sipnab -d eth0 --limit 5000 --rotate --dialog-track call-id
+# Analyze a capture keyed by Via branch, dropping new dialogs (instead of evicting old ones) past 20000 tracked
+sipnab -N -I capture.pcap --limit 20000 --no-rotate --dialog-track branch
+# Show only dialogs carrying a specific From/To tag, with explicit LRU rotation
+sipnab -N -I capture.pcap --tag 1928301774 --rotate
+# Live-follow dialogs matching a tag while refusing new dialogs once the tracker is full
+sudo sipnab -d eth0 --tag as7d60e14a --no-rotate
+# Scan a capture message-by-message with dialog tracking disabled entirely
+sipnab -N -I capture.pcap --no-dialog
+# Watch raw live SIP messages on an interface without keeping any per-dialog state
+sudo sipnab -d eth0 -N --no-dialog
+```
+
+
 ## RTP
 
 | Flag | Value | Default | Description |
@@ -216,6 +340,16 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--rtp-interval` | `<SECS>` | `1` | RTP statistics reporting interval in seconds |
 | `--max-streams` | `<N>` | `50000` | Maximum number of RTP streams to track simultaneously |
 | `--quality-threshold` | `<MOS>` | `3.0` | MOS quality threshold for alerts (1.0-5.0 scale) |
+
+**Examples**
+
+```bash
+# Monitor live RTP with 5-second statistics reports and MOS alerts below 3.5
+sudo sipnab -d eth0 --rtp-interval 5 --quality-threshold 3.5 --max-streams 10000
+# Batch-analyze RTP streams in a capture, reporting stats every 2 seconds with a raised stream cap
+sipnab -N -I capture.pcap --rtp-interval 2 --max-streams 100000
+```
+
 
 ## Security
 
@@ -231,6 +365,22 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--alert-exec` | `<CMD>` | -- | Execute this command when an alert fires |
 | `--alert-json` | -- | off | Emit each security alert as a structured JSON line on stderr (in addition to the human `[ALERT]` line) |
 | `--stir-shaken` | -- | off | Validate STIR/SHAKEN identity headers |
+
+**Examples**
+
+```bash
+# Detect SIP scanners (plus a custom UA pattern) and reply 486 with the victim's spoofed source
+sudo sipnab -d eth0 --kill-scanner --kill-ua 'friendly-scanner' --kill-response 486 --kill-spoof auto
+# Targeted kill of a scanning host across a port range, plus a second scanner UA, replying 480 via raw-socket spoof
+sudo sipnab -d eth0 --kill-target 192.0.2.66:5060-5090 --kill-ua 'sipvicious' --kill-response 480 --kill-spoof raw
+# Kill requests from one more source port using a non-spoofed ephemeral reply
+sudo sipnab -d eth0 --kill-target 198.51.100.77:5060 --kill-spoof ephemeral
+# Live security monitoring: registration floods, digest leaks, fraud, STIR/SHAKEN, with JSON alerts and an exec hook
+sudo sipnab -N -d eth0 --reg-flood --digest-leak --fraud-detect --stir-shaken --alert json --alert-json --alert-exec '/usr/local/bin/notify.sh'
+# Offline audit of a pcap for digest leaks and STIR/SHAKEN validity, emitting structured JSON alerts
+sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
+```
+
 
 ## Event Execution
 
@@ -261,6 +411,28 @@ Shortcut flags that expand to predefined filter DSL expressions. See [Filter DSL
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |
+
+**Examples**
+
+```bash
+# Live capture serving a TLS REST API (cert+key) with signed tokens, a revocation list, and a Basic-auth'd Prometheus endpoint
+sudo sipnab -d eth0 --api 127.0.0.1:8080 --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-signing-key-file /etc/sipnab/signing.key --api-revoked-file /etc/sipnab/revoked.txt --api-token-ttl 7200 --api-max-conn 200 --metrics 127.0.0.1:9090 --metrics-auth alice:s3cret
+# Public-facing TLS API tuned to 100 connections and 1h token TTL, with its own auth'd metrics endpoint
+sudo sipnab -d eth0 --api 0.0.0.0:8080 --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600 --api-max-conn 100 --metrics 127.0.0.1:9090 --metrics-auth bob:hunter2
+# Loopback HTTP MCP server with a bearer token, file-loaded signing key, revocation denylist, and a 30-minute mint TTL
+sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-token t0ken-alice --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-token-ttl 1800
+# Non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients
+sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token t0ken-bob --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-allowed-host mcp.example.com
+# Forward captured packets to a Homer collector, stamping capture-agent id 42 and an authenticate key
+sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key
+# Forward to a second collector under a different agent id and auth key
+sudo sipnab -N -d eth0 --hep-send 198.51.100.20:9060 --hep-id 7 --hep-auth homerkey2
+# Run a HEP collector that parses incoming packets, only from two allowed CIDRs, capped at 20k pkts/sec
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-allow 192.0.2.0/24 --hep-allow 198.51.100.20/32 --hep-rate-limit 20000
+# Mint a signed bearer token with a fixed id (for later revocation) and a 1-hour TTL, then exit
+sipnab --mint-token --token-id alice-2026 --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600
+```
+
 
 ## MCP Server
 
@@ -294,6 +466,18 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--pcap-export-mode` | `<MODE>` | `decrypted` | Pcap export mode for encrypted traffic: `decrypted` (plaintext payloads, no DSB), `raw` (original encrypted bytes, no DSB), `encrypted+dsb` (original encrypted bytes + Decryption Secrets Block so Wireshark can decrypt) |
 | `--allow-coredump` | -- | off | Allow core dumps (do not call `prctl` to disable them) |
 
+**Examples**
+
+```bash
+# Decrypt TLS 1.2 RSA-key-exchange SIP from a pcap using an RSA private key, with core dumps left enabled
+sipnab -N -I capture.pcap --tls-key /etc/sipnab/tls-rsa.key --keylog /etc/sipnab/keys.log --allow-coredump
+# Decrypt SRTP media in an offline pcap from an SRTP master-keys file plus DTLS-SRTP handshake keys
+sipnab -N -I capture.pcap --srtp-keys /etc/sipnab/srtp.keys --dtls-keylog /etc/sipnab/dtls.log
+# Live decrypt both SIP (RSA key) and SRTP media, watching the key log for new PFS session keys
+sudo sipnab -d eth0 --tls-key /etc/sipnab/tls-rsa.key --srtp-keys /etc/sipnab/srtp.keys --keylog /etc/sipnab/keys.log --keylog-watch --allow-coredump
+```
+
+
 ## Privilege
 
 | Flag | Value | Default | Description |
@@ -303,12 +487,36 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `--chroot` | `<DIR>` | -- | Chroot to this directory after initialization |
 | `--setup-caps` | -- | off | Grant the binary `CAP_NET_RAW`/`CAP_NET_ADMIN` via setcap (one-time, needs sudo) and exit |
 
+**Examples**
+
+```bash
+# Live capture that drops root to the sipnab service user once the capture device is open
+sudo sipnab -d eth0 --user sipnab
+# Long-running monitor that drops to nobody and confines itself to an empty chroot
+sudo sipnab -d eth0 --user nobody --chroot /var/empty
+# Chrooted capture that keeps root privileges for the whole run
+sudo sipnab -d eth0 --chroot /var/empty --no-priv-drop
+# Grant the binary the capture capabilities (cap_net_raw,cap_net_admin) so future runs work without sudo, then exit
+sudo sipnab --setup-caps
+```
+
+
 ## Resource Limits
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
 | `--max-reassembly` | `<N>` | `10000` | Maximum concurrent TCP/TLS reassembly sessions |
 | `--cores` | `<N>` | `1` | CPU cores for offline pcap reconstruction (`-I`). 1 = single-threaded; >1 shards by host pair for multi-core throughput (dialog+RTP reconstruction, `--report`/`--json`) |
+
+**Examples**
+
+```bash
+# Live capture on a busy TCP/TLS trunk with a raised reassembly-session ceiling
+sudo sipnab -d eth0 --max-reassembly 50000
+# Offline reconstruction sharded across 4 cores, with a tight reassembly bound for an untrusted capture
+sipnab -N -I capture.pcap --cores 4 --max-reassembly 2000
+```
+
 
 ## Config
 
@@ -318,6 +526,24 @@ it. See [MCP Server](@/docs/mcp.md) for the full guide.
 | `-F`, `--no-config` | -- | off | Skip loading any configuration file |
 | `-D`, `--dump-config` | -- | off | Dump effective configuration and exit |
 | `--completions` | `<SHELL>` | -- | Print a shell completion script (bash, zsh, fish, elvish, powershell) to stdout and exit |
+
+**Examples**
+
+```bash
+# Dump the effective configuration produced by a specific config file, then exit
+sipnab --config /etc/sipnab/sipnab.toml --dump-config
+# Dump the built-in defaults, skipping any configuration file, then exit
+sipnab --no-config --dump-config
+# Live capture using a per-user configuration file
+sudo sipnab -d eth0 --config ~/.config/sipnab/config.toml
+# Analyze an offline pcap with all configuration files ignored
+sipnab -N -I capture.pcap --no-config
+# Print a bash completion script into a file suitable for /etc/bash_completion.d
+sipnab --completions bash > sipnab.bash
+# Print a zsh completion script into a file suitable for the zsh fpath
+sipnab --completions zsh > _sipnab
+```
+
 
 ## Validation Rules
 
