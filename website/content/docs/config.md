@@ -1,6 +1,6 @@
 +++
 title = "Config Reference"
-weight = 9
+weight = 10
 description = "TOML configuration file format and all configurable sections."
 +++
 

@@ -1,6 +1,6 @@
 +++
 title = "Keybindings"
-weight = 4
+weight = 5
 description = "Complete TUI keyboard shortcut reference for all views."
 +++
 
