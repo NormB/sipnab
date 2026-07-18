@@ -189,7 +189,10 @@ NOT ua =~ 'friendly-scanner'
 
 ## Operational Recipes
 
-One deduplicated recipe per real-world task, each as a complete command line. Swap `-I capture.pcap` for `-d eth0` (as root) to run any of them against live traffic.
+Filter-DSL recipes, one per real-world task, each a complete command line. Swap
+`-I capture.pcap` for `-d eth0` (as root) to run any of them against live
+traffic. For broader task recipes beyond the DSL, see the
+[Cookbook](@/docs/cookbook.md) and [Troubleshooting](@/docs/troubleshooting.md).
 
 ### Poor audio quality (low MOS)
 

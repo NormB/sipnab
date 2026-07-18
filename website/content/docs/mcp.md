@@ -1,7 +1,7 @@
 +++
 title = "MCP Server"
 description = "Run sipnab as a Model Context Protocol server, exposing its read-only analysis surface as tools for an AI agent."
-weight = 11
+weight = 13
 +++
 
 sipnab can run as a **Model Context Protocol** server, exposing its
