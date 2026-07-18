@@ -33,6 +33,8 @@
   <!-- Canonical -->
   <link rel="canonical" href="{{ config.base_url }}{% if current_path is defined %}{{ current_path }}{% endif %}">
 
+  <!-- Favicon: classic .ico fallback for bookmarks / non-SVG clients, then inline SVG -->
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <!-- Favicon (inline SVG — amber "s" in monospace) -->
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='4' fill='%23ffcc66'/><text x='16' y='24' font-family='monospace' font-size='24' font-weight='700' text-anchor='middle' fill='%230a0e14'>s</text></svg>">
 

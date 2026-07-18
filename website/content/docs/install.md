@@ -344,7 +344,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.5.14 (c9620a5f) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.14 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  10.0.0.1:5060 -> 10.0.0.2:5060  <span class="t-good">InCall</span>  PDD=847ms

@@ -92,15 +92,24 @@ else
 fi
 
 # ── 5. Homepage test count matches actual ──────────────────────────
+# Two independent places on the homepage carry the test count: the stat card
+# (data-count, anchored here to its "Automated tests" label rather than to
+# position so adding another stat can't silently mis-target it) and the prose
+# "N automated tests" in the feature table. Both must equal the real count.
 echo -n "  Homepage test count... "
 if [ -f "website/templates/index.html" ]; then
     ACTUAL=$(cargo test --features full 2>&1 | grep "test result:" | awk '{sum += $4} END {print sum}')
-    HOMEPAGE=$(grep -o 'data-count="[0-9]*"' website/templates/index.html | grep -o '[0-9]*' | tail -1)
-    if [ -n "$ACTUAL" ] && [ -n "$HOMEPAGE" ] && [ "$ACTUAL" != "$HOMEPAGE" ]; then
-        echo -e "${RED}FAIL${NC}"
-        echo "  Homepage shows $HOMEPAGE tests but actual count is $ACTUAL"
-        echo "  Update website/templates/index.html"
-        exit 1
+    STAT=$(grep -B1 'Automated tests' website/templates/index.html | grep -o 'data-count="[0-9]*"' | grep -o '[0-9]*' | head -1)
+    PROSE=$(grep -oE '[0-9]+ automated tests' website/templates/index.html | grep -oE '[0-9]+' | sort -u)
+    if [ -n "$ACTUAL" ]; then
+        for FOUND in $STAT $PROSE; do
+            if [ "$FOUND" != "$ACTUAL" ]; then
+                echo -e "${RED}FAIL${NC}"
+                echo "  Homepage shows $FOUND tests but actual count is $ACTUAL"
+                echo "  Update website/templates/index.html (stat card + prose)"
+                exit 1
+            fi
+        done
     fi
     echo -e "${GREEN}OK ($ACTUAL)${NC}"
 else
