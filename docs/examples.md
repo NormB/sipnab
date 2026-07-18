@@ -104,4 +104,4 @@ sudo sipnab -N -d eth0 -H homer.example.net:9060
 
 - [keybindings.md](keybindings.md) — the interactive TUI these captures feed
 - [filter-dsl.md](filter-dsl.md) — the full filter language behind `--filter`
-- [mcp-overview.md](mcp-overview.md) — drive the same analysis from an AI agent
+- [mcp.md](mcp.md) — drive the same analysis from an AI agent

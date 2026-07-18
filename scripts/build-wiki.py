@@ -29,15 +29,15 @@ BLOB = f"https://github.com/{REPO}/blob/main"
 PAGES: dict[str, str] = {
     "install.md": "Installation",
     "examples.md": "Cookbook",
+    "troubleshooting.md": "Troubleshooting",
     "keybindings.md": "Keybindings",
     "theme-guide.md": "Theme-Guide",
     "cli-reference.md": "CLI-Reference",
     "filter-dsl.md": "Filter-DSL",
     "output-formats.md": "Output-Formats",
     "config-reference.md": "Configuration",
-    "mcp-overview.md": "MCP-Overview",
-    "mcp-setup.md": "MCP-Setup",
-    "mcp-tools.md": "MCP-Tools",
+    "rest-api.md": "REST-API",
+    "mcp.md": "MCP",
     "auth.md": "Authentication",
     "library.md": "Library-API",
     "benchmarks.md": "Benchmarks",
@@ -50,12 +50,11 @@ PAGES: dict[str, str] = {
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "examples.md"]),
+    ("Getting started", ["install.md", "examples.md", "troubleshooting.md"]),
     ("Using the TUI", ["keybindings.md", "theme-guide.md"]),
     ("CLI & automation", ["cli-reference.md", "filter-dsl.md", "output-formats.md"]),
     ("Configuration", ["config-reference.md"]),
-    ("Integrations (API & MCP)", ["mcp-overview.md", "mcp-setup.md",
-                                  "mcp-tools.md", "auth.md"]),
+    ("Integrations (API & MCP)", ["rest-api.md", "auth.md", "mcp.md"]),
     ("Development & internals", ["library.md", "benchmarks.md", "fault-model.md",
                                  "internals/threading.md", "internals/tui-testing.md",
                                  "internals/zero-copy-payloads.md"]),
@@ -151,7 +150,9 @@ def build_home() -> str:
         "4. [[Filter DSL|Filter-DSL]] — narrowing to the calls you care about",
         "5. [[CLI Reference|CLI-Reference]] and "
         "[[Output Formats|Output-Formats]] — headless use and NDJSON pipelines",
-        "6. [[MCP Overview|MCP-Overview]] — letting an AI agent drive sipnab",
+        "6. [[Troubleshooting]] — symptom → command when a call misbehaves",
+        "7. [[REST API|REST-API]] and [[MCP]] — programmatic access and "
+        "AI-agent integration",
         "",
         "## All pages",
         "",

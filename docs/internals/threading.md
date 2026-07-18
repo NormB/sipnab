@@ -35,7 +35,7 @@ capture thread(s)              │                          │
                                                                crossbeam channel)
 ```
 
-`--jobs N` offline mode replaces the single processing thread with a
+`--cores N` offline mode replaces the single processing thread with a
 dispatcher + N workers: the dispatcher does a cheap host-pair peek and shards
 raw packets over bounded channels; each worker owns a private
 `PacketProcessor` + thread-local `DialogStore`/`StreamStore` (no locks on the
@@ -64,7 +64,7 @@ flow's packets share a host pair and therefore a worker.
 |---|---|
 | capture → processing | `capture::channel` (capped wrapper) |
 | batch main loop | crossbeam bounded |
-| `--jobs` dispatcher → workers | crossbeam bounded (8192) |
+| `--cores` dispatcher → workers | crossbeam bounded (8192) |
 | DNS resolve queue | `std::sync::mpsc` |
 | inside api/mcp servers | tokio (axum/rmcp internals) |
 
