@@ -1,0 +1,23 @@
+{# Left-sidebar navigation group: a titled section of doc-page links, with the
+   active page's on-page section anchors nested beneath it. #}
+{% macro nav_group(title, paths, current_url) %}
+<div class="doc-nav-group">
+  <p class="doc-nav-group-title">{{ title }}</p>
+  <ul class="doc-nav-list">
+    {% for path in paths %}
+    {% set p = get_page(path="docs/" ~ path) %}
+    {% set is_current = p.permalink == current_url %}
+    <li>
+      <a href="{{ p.permalink }}" class="doc-nav-link{% if is_current %} active{% endif %}"{% if is_current %} aria-current="page"{% endif %}>{{ p.title }}</a>
+      {% if is_current and p.toc | length > 0 %}
+      <ul class="doc-nav-toc">
+        {% for h2 in p.toc %}
+        <li><a href="#{{ h2.id }}" class="doc-toc-link">{{ h2.title }}</a></li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endmacro %}

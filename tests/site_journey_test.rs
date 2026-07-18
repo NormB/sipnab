@@ -118,6 +118,14 @@ fn referenced_demo_assets() -> BTreeSet<String> {
     if read("website/static/js/analyze.js").contains("demos/sample-call.pcap") {
         out.insert("sample-call.pcap".to_string());
     }
+    // The homepage demo JS derives a `<name>-poster.png` first-frame from each
+    // GIF for prefers-reduced-motion, so those posters are referenced too.
+    let posters: Vec<String> = out
+        .iter()
+        .filter(|f| f.ends_with(".gif"))
+        .map(|f| f.replace(".gif", "-poster.png"))
+        .collect();
+    out.extend(posters);
     out
 }
 
