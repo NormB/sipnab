@@ -20,14 +20,14 @@ Message record (fields with no value are omitted, not null):
 {
   "schema_version": 1,
   "timestamp": "2026-06-12T14:03:21.412345+00:00",
-  "src": "10.0.0.1",
+  "src": "192.0.2.1",
   "src_port": 5060,
-  "dst": "10.0.0.2",
+  "dst": "192.0.2.2",
   "dst_port": 5060,
   "transport": "UDP",
   "is_request": true,
   "method": "INVITE",
-  "call_id": "abc123@10.0.0.1",
+  "call_id": "abc123@192.0.2.1",
   "cseq": { "number": 1, "method": "INVITE" },
   "from": "1001",
   "to": "1002",
@@ -93,7 +93,7 @@ per-message stream but not the report):
 sipnab -N -I capture.pcap --report --no-cli-print
 
 # Single-call deep dive only
-sipnab -N -I capture.pcap --call-report 'abc123@10.0.0.1' --no-cli-print
+sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --no-cli-print
 ```
 
 ## Dialog / stream JSON

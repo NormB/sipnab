@@ -31,7 +31,7 @@ sipnab -N -I capture.pcap --problems --json
 The `--problems` sweep prints one line per SIP message of each flagged call, then the end-of-capture summary. You should see something like (abridged):
 
 ```
-INVITE +15551234 -> +15559876  10.0.0.6:5060 -> 10.0.0.7:5060  Failed  408 Request Timeout
+INVITE +15551234 -> +15559876  192.0.2.6:5060 -> 192.0.2.7:5060  Failed  408 Request Timeout
 ...
 852 packets captured, 10 SIP messages, 839 RTP packets across 2 streams
 ```
@@ -151,8 +151,8 @@ Step 1 should print a diagnosis object like:
     "nat_mismatch": true,
     "no_media": false,
     "hints": [
-      "RTP from 203.0.113.7 -> 10.0.0.5 only. No reverse media flow detected.",
-      "SDP c= address (192.168.1.20) differs from actual RTP source (203.0.113.7) — likely NAT issue.",
+      "RTP from 203.0.113.7 -> 192.0.2.5 only. No reverse media flow detected.",
+      "SDP c= address (198.51.100.20) differs from actual RTP source (203.0.113.7) — likely NAT issue.",
       "One-way audio combined with NAT mismatch — media likely being sent to the wrong address."
     ]
   }
@@ -286,7 +286,7 @@ watch -n 1 'curl -s http://localhost:9100/v1/dialogs?limit=5 | jq ".dialogs[] | 
 **Pitfalls:**
 
 - HEP is UDP — silently drops if the listener can't keep up. The `--hep-rate-limit 50000` default lets you tune.
-- The default HEP listener accepts from any source. Add `--hep-allow 10.0.0.0/24` (repeatable) to lock it down to your SIP-server subnet.
+- The default HEP listener accepts from any source. Add `--hep-allow 192.0.2.0/24` (repeatable) to lock it down to your SIP-server subnet.
 - If your central host is reachable by hostname only, set `--mcp-allowed-host` for the MCP transport too (see Recipe 8).
 
 ---

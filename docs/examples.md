@@ -18,10 +18,10 @@ sudo sipnab -d eth0
 sipnab -N -I capture.pcap --problems
 
 # 3. Deep-dive one call: ladder, timing, SDP, RTP quality, diagnosis
-sipnab -N -I capture.pcap --call-report 'abc123@10.0.0.1'
+sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1'
 
 # 4. The same as a Markdown report for a ticket
-sipnab -N -I capture.pcap --call-report 'abc123@10.0.0.1' --markdown > call.md
+sipnab -N -I capture.pcap --call-report 'abc123@192.0.2.1' --markdown > call.md
 
 # 5. Post-capture aggregate summary only (no per-message noise)
 sipnab -N -I capture.pcap --report --no-cli-print

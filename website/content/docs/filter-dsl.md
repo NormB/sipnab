@@ -35,8 +35,8 @@ All addressable fields, organized by type.
 | `ua` | User-Agent header (first non-empty across dialog messages) | `"Olle"`, `"friendly-scanner"` |
 | `call_id` | SIP Call-ID header | `"abc123@host"` |
 | `payload` | Raw message content — matches when ANY message in the dialog contains/matches the value (sngrep-style payload grep) | `"X-Custom-Header"`, `"sipsak"` |
-| `src.ip` | Source IP address (first message) | `"10.0.0.1"` |
-| `dst.ip` | Destination IP address (first message) | `"10.0.0.2"` |
+| `src.ip` | Source IP address (first message) | `"192.0.2.1"` |
+| `dst.ip` | Destination IP address (first message) | `"192.0.2.2"` |
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
 | `rtp.codec` | RTP codec name (first stream) | `"PCMU"`, `"opus"` |
 | `rtp.ssrc` | RTP SSRC in hex format (first stream) | `"0x12345678"` |
@@ -237,7 +237,7 @@ The `^\+` regex matches E.164 formatted numbers (international prefix).
 sipnab -N -I capture.pcap --filter "method == 'REGISTER' AND retransmits > 5" --report
 ```
 
-High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Append `AND src.ip == '10.0.0.50'` to isolate a specific endpoint.
+High retransmit counts on REGISTER indicate network issues, DNS failures, or server overload. Append `AND src.ip == '192.0.2.50'` to isolate a specific endpoint.
 
 ### Scanner activity
 
@@ -254,7 +254,7 @@ sipnab -N -I capture.pcap --filter "duration < 5.0 AND state == 'Completed' AND 
 ### SIP trunk failures
 
 ```bash
-sipnab -N -I capture.pcap --filter "dst.ip == '192.168.1.100' AND state == 'Failed' AND method == 'INVITE'" --report
+sipnab -N -I capture.pcap --filter "dst.ip == '198.51.100.100' AND state == 'Failed' AND method == 'INVITE'" --report
 ```
 
 Filter for failures targeting a specific SIP trunk IP.

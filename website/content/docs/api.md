@@ -298,7 +298,7 @@ console.log(`State: ${dialog.state}`);
       "timestamp": "2026-04-13T10:30:00Z",
       "direction": "offer",
       "codecs": ["PCMU", "PCMA", "telephone-event"],
-      "media_addr": "10.0.0.1",
+      "media_addr": "192.0.2.1",
       "media_port": 10000,
       "mode": "sendrecv"
     },
@@ -306,7 +306,7 @@ console.log(`State: ${dialog.state}`);
       "timestamp": "2026-04-13T10:30:02Z",
       "direction": "answer",
       "codecs": ["PCMU", "telephone-event"],
-      "media_addr": "10.0.0.2",
+      "media_addr": "192.0.2.2",
       "media_port": 20000,
       "mode": "sendrecv"
     }
@@ -325,8 +325,8 @@ console.log(`State: ${dialog.state}`);
       "ssrc": "0x1a2b3c4d",
       "codec": "PCMU",
       "payload_type": 0,
-      "src": "10.0.0.1:10000",
-      "dst": "10.0.0.2:20000",
+      "src": "192.0.2.1:10000",
+      "dst": "192.0.2.2:20000",
       "packets": 4820,
       "octets": 771200,
       "jitter_ms": 2.1,
@@ -532,8 +532,8 @@ streams.forEach(s =>
     {
       "ssrc": "0x1a2b3c4d",
       "codec": "PCMU",
-      "src": "10.0.0.1:10000",
-      "dst": "10.0.0.2:20000",
+      "src": "192.0.2.1:10000",
+      "dst": "192.0.2.2:20000",
       "packets": 4820,
       "jitter_ms": 2.1,
       "loss_pct": 0.0,
@@ -1455,7 +1455,7 @@ sipnab -L 0.0.0.0:9060 -E
 Restrict sources with `--hep-allow` and rate-limit with `--hep-rate-limit`:
 
 ```bash
-sipnab -L 0.0.0.0:9060 -E --hep-allow 10.0.0.0/24 --hep-rate-limit 25000
+sipnab -L 0.0.0.0:9060 -E --hep-allow 192.0.2.0/24 --hep-rate-limit 25000
 ```
 
 ### Sending HEP
@@ -1463,7 +1463,7 @@ sipnab -L 0.0.0.0:9060 -E --hep-allow 10.0.0.0/24 --hep-rate-limit 25000
 Mirror captured traffic to a Homer collector:
 
 ```bash
-sipnab -d eth0 -H 10.0.0.50:9060
+sipnab -d eth0 -H 192.0.2.50:9060
 ```
 
 ## Security Model

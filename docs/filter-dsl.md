@@ -29,8 +29,8 @@ All 31 addressable fields, organized by type.
 | `ua` | User-Agent header (first non-empty across dialog messages) | `"Olle"`, `"friendly-scanner"` |
 | `call_id` | SIP Call-ID header | `"abc123@host"` |
 | `payload` | Raw message content — matches when ANY message in the dialog contains/matches the value (sngrep-style payload grep) | `"X-Custom-Header"`, `"sipsak"` |
-| `src.ip` | Source IP address (first message) | `"10.0.0.1"` |
-| `dst.ip` | Destination IP address (first message) | `"10.0.0.2"` |
+| `src.ip` | Source IP address (first message) | `"192.0.2.1"` |
+| `dst.ip` | Destination IP address (first message) | `"192.0.2.2"` |
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
 | `rtp.codec` | RTP codec name (first stream) | `"PCMU"`, `"opus"` |
 | `rtp.ssrc` | RTP SSRC in hex format (first stream) | `"0x12345678"` |
