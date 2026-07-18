@@ -56,6 +56,30 @@ website/
 └── public/                 # Generated output (committed for deploy stability)
 ```
 
+## Regenerating the animated demos
+
+The homepage demo tabs are GIFs rendered with [VHS](https://github.com/charmbracelet/vhs)
+from tape scripts in `../demos/`. Every tape `Source`s `demos/common.tape`
+for a single shared look (theme, font, size), so styling lives in one place.
+
+```sh
+# needs: vhs, ttyd, ffmpeg on PATH, and `sipnab` (0.5.x) installed
+make -C demos            # render every demo + the hero still into static/demos/
+make -C demos 09-detail.gif   # just one
+```
+
+Run from the repo root so tapes resolve `tests/pcap-samples/*`. Outputs land
+in `static/demos/`. After re-rendering, bump the `?v=N` query on the affected
+`<img>`/hero in `templates/index.html` to bust the CDN cache.
+
+Notes:
+- VHS cannot send function keys (F2/F7/F10…) or `Escape`-prefixed sequences
+  cleanly, so demos use letter/arrow/`Ctrl` keys only (the TUI treats `Esc`
+  as quit). F-key-only flows (Save dialog, Filter dialog, Column selector)
+  are intentionally not demoed.
+- If `gifsicle` is installed, `gifsicle -O3 --lossy=40` shrinks the larger
+  GIFs (notably the CLI demo) further; it is not required.
+
 ## Updating the test count
 
 The "Engineered for Production" stats panel on the homepage shows an
