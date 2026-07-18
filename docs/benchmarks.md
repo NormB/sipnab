@@ -13,7 +13,7 @@ host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 ## Test host & method
 
-- **Host:** `thor-02` — NVIDIA Jetson Thor (aarch64), 14 cores, PREEMPT_RT
+- **Host:** NVIDIA Jetson Thor devboard (aarch64), 14 cores, PREEMPT_RT
   kernel. (A 4-vCPU VM is not used for throughput numbers.)
 - **Corpus:** a synthetic carrier capture — N concurrent calls, each
   `INVITE → … → 200 → ACK → [bidirectional RTP] → BYE`, ~93% RTP by packet count.

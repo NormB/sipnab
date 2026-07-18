@@ -58,6 +58,7 @@ Packet capture defaults.
 | `snaplen` | integer | OS default | Snapshot length in bytes |
 | `buffer` | integer | OS default | Kernel capture buffer size in MiB |
 | `buffer_budget_mb` | integer | `64` | Memory budget for the in-flight capture→processing queue (grows under load up to this, capped; shrinks when idle). `--buffer-budget` overrides |
+| `promisc` | boolean | `true` | Put a named interface into promiscuous mode (the `any` device is never promiscuous). `--no-promisc` overrides this to `false` |
 | `no_rtp` | boolean | `false` | Disable RTP capture by default |
 
 ```toml
@@ -66,7 +67,21 @@ device = "eth0"
 portrange = "5060-5080"
 snaplen = 65535
 buffer = 16
+promisc = true
 no_rtp = false
+```
+
+### \[sip\]
+
+SIP protocol handling.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `xcid_headers` | array | `["X-Call-ID"]` | Header names used to correlate B2BUA call legs (sngrep `sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID is correlated. Add carrier-specific headers here; an empty/unset list keeps the `X-Call-ID` default |
+
+```toml
+[sip]
+xcid_headers = ["X-Call-ID", "X-CID"]
 ```
 
 ### \[display\]
@@ -169,6 +184,25 @@ Privilege separation settings (Linux only).
 user = "sipnab"
 no_priv_drop = false
 chroot = "/var/lib/sipnab"
+```
+
+### \[crash\]
+
+What happens when sipnab panics: the panic hook restores the terminal, writes a crash report, and then either exits cleanly or aborts so the OS can produce a core dump.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
+| `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
+| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports (`sipnab-crash-<timestamp>-<pid>.log`) are written to |
+| `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
+
+```toml
+[crash]
+reports = true
+backtrace = true
+report_dir = "/var/log/sipnab"
+core = false
 ```
 
 ### \[names\]

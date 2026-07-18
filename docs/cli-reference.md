@@ -16,6 +16,7 @@ CLI flags always override config file values (see [config-reference.md](config-r
 | `--snaplen` | `<BYTES>` | `65535` | Snapshot length for packet capture (bytes) |
 | `-S`, `--limitlen` | `<BYTES>` | -- | Parse only the first N bytes of each packet (sipgrep `-S`). Caps what the SIP parser and matchers inspect, independent of `--snaplen` (capture length) and `--payload-limit` (display truncation) |
 | `--no-reassembly` | -- | off | Disable IP-fragment and TCP-segment reassembly; every packet is parsed standalone (inverse of sipgrep `-a`). Useful for pure single-packet UDP scanning |
+| `-x`, `--quiet-bad-parse` | -- | off | Suppress the per-packet "SIP parse error" diagnostic emitted when a SIP-looking packet fails to parse (sipgrep `-x`). The packet is dropped either way; this only silences the notice on a noisy link |
 | `--portrange` | `<RANGE>` | `5060-5061` | SIP port range to capture |
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
@@ -103,6 +104,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
 | `--show-empty` | -- | off | Show messages with empty bodies |
+| `--proto-number` | -- | off | Annotate the transport tag with the IANA IP protocol number, e.g. `UDP(17)` / `TCP(6)` (sipgrep `-N`). Long-only because `-N` is `--no-tui` here; TLS/WS report their TCP carrier's number (6) |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u`. Overrides `[display] from_to` |
@@ -235,7 +237,7 @@ Shortcut flags that expand to predefined filter DSL expressions. See [filter-dsl
 
 - Output flags (`--json`, `--json-pretty`, `--report`, `--hexdump`, `--fail2ban`) require `-N` / `--no-tui` mode, unless `--call-report` is also specified.
 - `--kill-response` accepts values 100-699 only.
-- Feature-gated flags (`tls`, `hep`, `api`) produce startup errors when the required feature is not compiled in.
+- Feature-gated flags (`tls`, `hep`, `api`, `mcp`, `mcp-http`) produce startup errors when the required feature is not compiled in.
 
 ## Examples
 
