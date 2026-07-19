@@ -45,6 +45,11 @@ impl SipnabSession {
     }
 
     /// Load a pcap file from raw bytes. Returns a JSON summary.
+    ///
+    /// Gzip-compressed captures (`.pcap.gz`, or gzip mislabeled as `.pcap`)
+    /// are decompressed transparently; when that happens the summary carries a
+    /// `gzip` object with the compressed/decompressed byte counts so the page
+    /// can tell the user.
     pub fn load_pcap(&mut self, data: &[u8]) -> Result<String, JsError> {
         // Clear previous data
         self.dialog_store.clear();
@@ -53,7 +58,24 @@ impl SipnabSession {
         self.sip_count = 0;
         self.rtp_count = 0;
 
-        let reader = PcapReader::new(data).map_err(|e| JsError::new(&e.to_string()))?;
+        // Match Wireshark (and native sipnab): gunzip on the fly, bounded
+        // against decompression bombs.
+        let compressed_len = data.len();
+        let inflated = crate::capture::pcap_reader::decompress_capture(data)
+            .map_err(|e| JsError::new(&e.to_string()))?;
+        let was_gzip = matches!(inflated, std::borrow::Cow::Owned(_));
+
+        let reader = PcapReader::new(&inflated).map_err(|e| {
+            if was_gzip {
+                // The gzip wrapper was fine but the payload is not a capture;
+                // say so instead of a bare "unknown magic".
+                JsError::new(&format!(
+                    "gzip-compressed file decompressed OK, but the contents are {e}"
+                ))
+            } else {
+                JsError::new(&e.to_string())
+            }
+        })?;
         let link_type = reader.link_type as i32;
 
         for pkt in reader {
@@ -101,6 +123,14 @@ impl SipnabSession {
             "dialogs": self.dialog_store.len(),
             "rtp_packets": self.rtp_count,
             "streams": self.stream_store.len(),
+            "gzip": if was_gzip {
+                serde_json::json!({
+                    "compressed_bytes": compressed_len,
+                    "decompressed_bytes": inflated.len(),
+                })
+            } else {
+                serde_json::Value::Null
+            },
         })
         .to_string())
     }

@@ -2,5 +2,8 @@
 # Modern browsers (2019+) and Node.js 12+ all support these.
 # Without this, Rust 1.82+ emits memory.copy/memory.fill that
 # wasm-bindgen's validator rejects under the baseline spec.
+# getrandom 0.3 (via ahash's runtime RNG) has no default wasm32 backend; the
+# browser backend must be opted into with this cfg PLUS the crate's `wasm_js`
+# feature (enabled in Cargo.toml's wasm32 target dependencies).
 [target.wasm32-unknown-unknown]
-rustflags = ["-C", "target-feature=+bulk-memory,+mutable-globals"]
+rustflags = ["-C", "target-feature=+bulk-memory,+mutable-globals", "--cfg", "getrandom_backend=\"wasm_js\""]

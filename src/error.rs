@@ -262,10 +262,41 @@ pub enum CaptureError {
     /// The file magic matches no supported capture format.
     #[error(
         "not a pcap/pcapng file (magic: 0x{magic:08x}). \
-         Supported formats: .pcap, .pcapng, .cap (pcap format)"
+         Supported formats: .pcap, .pcapng, .cap (pcap format), and their \
+         gzip-compressed variants (.pcap.gz, .pcapng.gz)"
     )]
     UnknownFormat {
         /// The unrecognized magic number.
         magic: u32,
+    },
+
+    /// The bytes are a gzip stream, not a raw capture; decompress first.
+    ///
+    /// [`crate::capture::pcap_reader::decompress_capture`] (and sipnab's file
+    /// loaders, which call it) handle this transparently — this error is only
+    /// seen by callers that hand a still-compressed buffer straight to
+    /// [`crate::PcapReader::new`].
+    #[error(
+        "gzip-compressed capture; decompress it first \
+         (sipnab's file loaders and decompress_capture do this automatically)"
+    )]
+    GzipData,
+
+    /// A gzip-compressed capture failed to decompress.
+    #[error("gzip stream is corrupt or truncated: {source}")]
+    GzipDecode {
+        /// The underlying decompression error.
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// Decompressing a gzip capture would exceed the in-memory safety cap.
+    #[error(
+        "gzip-compressed capture inflates past the {limit}-byte safety cap; \
+         decompress it manually (e.g. gunzip) and open the raw file"
+    )]
+    GzipTooLarge {
+        /// The inflation cap, in bytes.
+        limit: u64,
     },
 }

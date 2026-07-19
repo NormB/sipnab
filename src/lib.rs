@@ -83,7 +83,7 @@ pub mod wasm;
 pub mod test_utils;
 
 // Convenience re-exports for library consumers
-pub use capture::pcap_reader::PcapReader;
+pub use capture::pcap_reader::{PcapReader, decompress_capture};
 pub use rtp::quality::estimate_mos;
 pub use rtp::stream::{RtpStream, StreamKey};
 pub use rtp::stream_store::StreamStore;
