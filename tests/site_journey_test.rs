@@ -289,6 +289,100 @@ fn docs_page_weights_are_unique_and_descriptions_present() {
 }
 
 // ---------------------------------------------------------------------------
+// Search-demo journey: every query the filter demo tape types must actually
+// narrow the dialog list of the pcap the tape plays. Shipped broken on
+// 2026-07-18: 04-filter.tape searched "INVITE"/"REGIS" against
+// b2bua-asterisk.pcapng, but the search's full-text fallback scans raw
+// message bytes and every dialog carries `Allow: ... INVITE ...` headers —
+// the GIF showed "/INVITE" typed with the header pinned at "12 (12
+// displayed)" for its whole runtime. A filter demo where nothing filters.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod search_demo_narrowing {
+    use super::{read, repo};
+    use crossterm::event::KeyCode;
+    use sipnab::tui::App;
+    use sipnab::tui::call_list::{SortColumn, displayed_dialogs};
+
+    /// The pcap the tape plays and each search query it types (`Type "/"`
+    /// immediately followed by another `Type "..."` line).
+    fn tape_pcap_and_queries(tape: &str) -> (String, Vec<String>) {
+        let cmd = regex::Regex::new(r#"(?m)^Type "sipnab [^"]*-I ([^"\s]+)"#).unwrap();
+        let pcap = cmd
+            .captures(tape)
+            .expect("tape types a `sipnab -I <pcap>` command")[1]
+            .to_string();
+        let typed: Vec<String> = regex::Regex::new(r#"(?m)^Type "([^"]*)""#)
+            .unwrap()
+            .captures_iter(tape)
+            .map(|c| c[1].to_string())
+            .collect();
+        let queries = typed
+            .windows(2)
+            .filter(|w| w[0] == "/")
+            .map(|w| w[1].clone())
+            .collect();
+        (pcap, queries)
+    }
+
+    #[test]
+    fn every_typed_search_query_narrows_the_demo_pcap() {
+        let tape = read("demos/04-filter.tape");
+        let (pcap_rel, queries) = tape_pcap_and_queries(&tape);
+        assert!(
+            !queries.is_empty(),
+            "no '/'-search queries found in 04-filter.tape — extractor broken \
+             or the demo was rewritten; update this guard alongside it"
+        );
+        let pcap = repo().join(&pcap_rel);
+        assert!(pcap.is_file(), "tape references missing pcap: {pcap_rel}");
+
+        // Load the pcap through the real file-open path, then type each
+        // query exactly as the tape does and count the rows a viewer sees.
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('O'));
+        app.handle_key(KeyCode::Tab);
+        app.open_path_clear_for_test();
+        for c in pcap.to_string_lossy().chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let shown_with = |app: &App, q: &str| {
+            let store = app.dialog_store_ref().read();
+            displayed_dialogs(&store, None, q, SortColumn::Index, true).len()
+        };
+        let total = shown_with(&app, "");
+        assert!(
+            total > 1,
+            "expected a multi-dialog pcap, got {total} dialogs"
+        );
+
+        for q in &queries {
+            app.handle_key(KeyCode::Char('/'));
+            for c in q.chars() {
+                app.handle_key(KeyCode::Char(c));
+            }
+            let shown = shown_with(&app, app.search_query());
+            app.handle_key(KeyCode::Esc);
+            assert!(
+                shown > 0,
+                "demo query \"/{q}\" matches nothing in {pcap_rel} — the \
+                 viewer would watch the list vanish"
+            );
+            assert!(
+                shown < total,
+                "demo query \"/{q}\" matches all {total} dialogs in \
+                 {pcap_rel} (full-text fallback scans raw messages, e.g. \
+                 Allow: headers) — the list never visibly narrows, so the \
+                 filter demo demonstrates nothing"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CSP journey: the production Content-Security-Policy allows inline <script>
 // blocks by sha256 hash but does NOT grant 'unsafe-inline'/'unsafe-hashes',
 // so inline event-handler attributes (onclick=, onkeydown=, oninput=, ...)
