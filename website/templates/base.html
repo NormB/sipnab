@@ -153,26 +153,32 @@
   {% block footer %}
   <footer class="site-footer">
     <div class="footer-inner">
-      <div class="footer-col">
-        <span class="footer-logo">sipnab</span>
-        <span class="footer-version">v{{ config.extra.version }}</span>
+      <div class="footer-top">
+        <div class="footer-col">
+          <span class="footer-logo">sipnab</span>
+          <span class="footer-version">v{{ config.extra.version }}</span>
+        </div>
+        <nav class="footer-col footer-links" aria-label="Footer">
+          <a href="{{ get_url(path='@/download.md') }}">Download</a>
+          <a href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
+          <a href="{{ get_url(path='@/analyze/_index.md') }}">Analyze</a>
+          <a href="{{ config.extra.github_url }}">GitHub</a>
+          <a href="{{ config.extra.github_url }}/blob/main/CHANGELOG.md">Changelog</a>
+        </nav>
       </div>
-      <div class="footer-col footer-links">
-        <a href="{{ get_url(path='@/download.md') }}">Download</a>
-        <a href="{{ get_url(path='@/docs/_index.md') }}">Documentation</a>
-        <a href="{{ get_url(path='@/analyze/_index.md') }}">Analyze</a>
-        <a href="{{ config.extra.github_url }}">GitHub</a>
-        <a href="{{ config.extra.github_url }}/blob/main/CHANGELOG.md">Changelog</a>
-        <a href="{{ config.extra.github_url }}#license">License: MIT / Apache-2.0</a>
-      </div>
-      <div class="footer-col footer-meta">
-        <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
-        <span class="footer-sep">&middot;</span>
-        <span class="footer-credit"><a href="{{ config.extra.linkedin_url }}">{{ config.extra.author }}</a></span>
-        <span class="footer-sep">&middot;</span>
-        <span class="footer-credit"><a href="{{ config.extra.patreon_url }}">Support on Patreon</a></span>
-        <span class="footer-sep">&middot;</span>
-        <span class="footer-credit"><a href="{{ config.extra.github_sponsors_url }}">GitHub Sponsors</a></span>
+      <div class="footer-bottom">
+        <div class="footer-col">
+          <span class="footer-credit"><a href="{{ config.extra.github_url }}#license">MIT / Apache-2.0</a></span>
+          <span class="footer-sep">&middot;</span>
+          <span class="footer-credit">Built with <a href="https://www.rust-lang.org">Rust</a></span>
+        </div>
+        <div class="footer-col footer-meta">
+          <span class="footer-credit"><a href="{{ config.extra.linkedin_url }}">{{ config.extra.author }}</a></span>
+          <span class="footer-sep">&middot;</span>
+          <span class="footer-credit"><a href="{{ config.extra.patreon_url }}">Support on Patreon</a></span>
+          <span class="footer-sep">&middot;</span>
+          <span class="footer-credit"><a href="{{ config.extra.github_sponsors_url }}">GitHub Sponsors</a></span>
+        </div>
       </div>
     </div>
   </footer>
