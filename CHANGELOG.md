@@ -4,6 +4,42 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.16] - 2026-07-19
+
+### Added
+- **Gzip-compressed captures open transparently everywhere.** A
+  `.pcap`/`.pcapng` file that is gzip-compressed — including one mislabeled
+  as plain `.pcap`, which previously failed with
+  `Not a pcap/pcapng file (magic: 0x00088b1f)` (that magic is the gzip
+  header read as a little-endian word) — is now decompressed automatically,
+  the way Wireshark does. The native CLI/TUI paths already gunzipped;
+  the browser analyzer and the TUI's pcapng-metadata pass (NRB names /
+  DSB secrets) now do too, sharing one bounded core: 1 GiB inflation cap
+  (a decompression bomb is refused, not materialized), concatenated gzip
+  members supported, zero-copy passthrough for plain files. The analyze
+  page accepts `.pcap.gz`/`.pcapng.gz`, shows a notice with
+  compressed → decompressed sizes when it gunzipped, and a gzip stream
+  wrapping non-capture data reports the decompressed magic instead of a
+  bare parse failure.
+- The download page now carries the same left "On this page" sidebar as the
+  docs pages: quick install, the four platform choices (which also switch
+  the matching tab), the all-files table, and download verification — with
+  a scrollspy tracking the reading position.
+
+### Fixed
+- **The analyze page had no site footer** — the template blanked the footer
+  block. Every page keeps the footer now, enforced by a journey gate.
+- **The filter demo showed nothing filtering.** It searched `INVITE`, which
+  matches every dialog via `Allow:` headers, so the list never narrowed.
+  The tape now types queries that visibly narrow, and a journey gate
+  replays every tape query against the tape's own pcap through the real
+  TUI search path.
+
+### Changed
+- The site footer is restructured into two deliberate tiers (brand + nav
+  links; license and credits under a hairline) instead of one overloaded
+  row that wrapped raggedly.
+
 ## [0.5.15] - 2026-07-18
 
 ### Fixed
