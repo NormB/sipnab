@@ -485,3 +485,41 @@ fn download_page_has_left_toc_sidebar_like_docs() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Footer journey: the site footer must appear on every page. base.html wraps
+// it in `{% block footer %}` so a child template can blank it away with an
+// empty override — analyze.html did exactly that, so the app page shipped
+// with no footer at all (no nav links, no license, no credits).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_page_template_keeps_the_site_footer() {
+    let base = read("website/templates/base.html");
+    assert!(
+        base.contains("class=\"site-footer\""),
+        "base.html no longer renders .site-footer"
+    );
+
+    let empty_override = regex::Regex::new(r"\{%\s*block footer\s*%\}\s*\{%\s*endblock").unwrap();
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        if name == "base.html" {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).expect("read template");
+        if empty_override.is_match(&text) {
+            offenders.push(name);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these templates blank the footer block, hiding the site footer on \
+         their pages: {offenders:?}"
+    );
+}
