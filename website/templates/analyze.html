@@ -6,7 +6,7 @@
 {% block og_description %}{{ section.description }}{% endblock og_description %}
 
 {% block head_extra %}
-<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=13">
+<link rel="stylesheet" href="{{ get_url(path='css/analyze.css') }}?v=14">
 {% endblock head_extra %}
 
 {% block content %}
@@ -35,10 +35,11 @@
           <span class="dropzone-fmt">.pcap</span>
           <span class="dropzone-fmt">.pcapng</span>
           <span class="dropzone-fmt">.cap</span>
+          <span class="dropzone-fmt">.pcap.gz</span>
         </div>
         <p class="dropzone-hint">Up to ~250&nbsp;MB &middot; parsed locally in your browser</p>
       </div>
-      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap" hidden>
+      <input type="file" id="file-input" accept=".pcap,.pcapng,.cap,.gz" hidden>
       <button class="dropzone-sample" id="load-sample" type="button">No capture handy? Load a sample call &rarr;</button>
       <div class="dropzone-outcome" aria-label="What you get from an analysis">
         <span class="dropzone-outcome-label">You'll get</span>
@@ -250,5 +251,5 @@
 
 </div>
 
-<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=12"></script>
+<script type="module" src="{{ get_url(path='js/analyze.js') }}?v=13"></script>
 {% endblock content %}

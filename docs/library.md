@@ -15,6 +15,7 @@ sipnab = { version = "0.5", default-features = false, features = ["native"] }
 | Item | What it is |
 |---|---|
 | `PcapReader` | Pure-Rust pcap/pcapng reader (iterator of packets) |
+| `decompress_capture` | Transparent, bounded gunzip for gzip-compressed captures |
 | `sip::parser::parse_sip` / `parse_sip_bytes` | Parse raw bytes → `SipMessage` |
 | `capture::parse::parse_packet` | Decode a captured `Packet` → `ParsedPacket` |
 | `rtp::parser::parse_rtp_header` | Parse an RTP header |

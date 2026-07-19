@@ -232,6 +232,75 @@ impl<'a> NgReader<'a> {
     }
 }
 
+// ── Gzip transparency ─────────────────────────────────────────────────
+
+/// Cap on the decompressed size accepted from a gzip-compressed capture
+/// (1 GiB). A hostile "gzip bomb" expands by up to ~1000×, so a small upload
+/// could otherwise inflate into an allocation that OOMs the process. Real
+/// captures near this size should be decompressed manually and streamed
+/// through the native libpcap reader instead.
+pub const MAX_GUNZIP_BYTES: u64 = 1 << 30;
+
+/// True if `data` starts with the gzip magic (`1f 8b`).
+fn is_gzip(data: &[u8]) -> bool {
+    data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b
+}
+
+/// Transparently decompress a gzip-compressed capture, passing everything
+/// else through unchanged.
+///
+/// Wireshark opens `.pcap.gz`/`.pcapng.gz` (and gzip files mislabeled as
+/// plain `.pcap`) by gunzipping on the fly; sipnab matches that. Non-gzip
+/// input is returned as a borrowed slice (zero-copy); gzip input is inflated
+/// into an owned buffer, bounded by [`MAX_GUNZIP_BYTES`] so a gzip bomb
+/// cannot OOM the process. Concatenated gzip members (which some capture
+/// tools emit) are handled.
+///
+/// # Errors
+///
+/// [`CaptureError::GzipDecode`] when the stream is corrupt or truncated;
+/// [`CaptureError::GzipTooLarge`] when the decompressed size would exceed
+/// [`MAX_GUNZIP_BYTES`].
+///
+/// # Examples
+///
+/// ```
+/// use sipnab::capture::pcap_reader::decompress_capture;
+///
+/// // Non-gzip data passes through without copying.
+/// let raw = [0xd4, 0xc3, 0xb2, 0xa1];
+/// assert!(matches!(
+///     decompress_capture(&raw),
+///     Ok(std::borrow::Cow::Borrowed(_))
+/// ));
+/// ```
+#[must_use = "decompression result must be handled"]
+pub fn decompress_capture(data: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, CaptureError> {
+    gunzip_limited(data, MAX_GUNZIP_BYTES)
+}
+
+/// [`decompress_capture`] with an explicit inflation cap (unit-testable
+/// without building a gigabyte-scale bomb).
+fn gunzip_limited(data: &[u8], limit: u64) -> Result<std::borrow::Cow<'_, [u8]>, CaptureError> {
+    use std::io::Read;
+
+    if !is_gzip(data) {
+        return Ok(std::borrow::Cow::Borrowed(data));
+    }
+
+    // Read at most limit + 1 bytes: landing past `limit` proves the stream
+    // inflates beyond the cap without materializing the whole expansion.
+    let mut out = Vec::new();
+    let mut decoder = flate2::read::MultiGzDecoder::new(data).take(limit.saturating_add(1));
+    decoder
+        .read_to_end(&mut out)
+        .map_err(|source| CaptureError::GzipDecode { source })?;
+    if out.len() as u64 > limit {
+        return Err(CaptureError::GzipTooLarge { limit });
+    }
+    Ok(std::borrow::Cow::Owned(out))
+}
+
 // ── PcapReader public API ─────────────────────────────────────────────
 
 impl<'a> PcapReader<'a> {
@@ -241,7 +310,9 @@ impl<'a> PcapReader<'a> {
     /// # Errors
     ///
     /// [`CaptureError::TooShort`] when the data cannot hold the file
-    /// header; [`CaptureError::NetMonFormat`] /
+    /// header; [`CaptureError::GzipData`] when the buffer is still
+    /// gzip-compressed (run it through [`decompress_capture`] first);
+    /// [`CaptureError::NetMonFormat`] /
     /// [`CaptureError::UnknownFormat`] for unsupported formats.
     ///
     /// # Examples
@@ -278,6 +349,11 @@ impl<'a> PcapReader<'a> {
                 need: 12,
                 got: data.len(),
             });
+        }
+        // A still-compressed buffer deserves a pointed error, not
+        // "unknown magic 0x00088b1f" — see [`decompress_capture`].
+        if is_gzip(data) {
+            return Err(CaptureError::GzipData);
         }
         let magic = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
@@ -424,8 +500,10 @@ mod tests {
             matches!(err, CaptureError::UnknownFormat { magic: 0xFFFFFFFF }),
             "expected UnknownFormat, got: {err:?}"
         );
-        // Display still tells a human what the supported formats are.
+        // Display still tells a human what the supported formats are,
+        // including the gzip-compressed variants.
         assert!(err.to_string().contains("pcapng"), "got: {err}");
+        assert!(err.to_string().contains(".pcap.gz"), "got: {err}");
     }
 
     #[test]
@@ -823,6 +901,140 @@ mod tests {
         assert_eq!(packets[0].data.len(), 16);
         // Timestamp may be clamped/weird, but must be finite and not cause panic
         // (the division by u64::MAX yields 0 for ts_sec, which is fine)
+    }
+
+    // ── Gzip-compressed captures ─────────────────────────────────────
+
+    /// gzip-compress `data` into a single-member stream.
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn gzip_classic_pcap_yields_same_packets_as_uncompressed_twin() {
+        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
+        let compressed = gzip(&plain);
+        let inflated = decompress_capture(&compressed).unwrap();
+        assert!(
+            matches!(inflated, std::borrow::Cow::Owned(_)),
+            "gzip input must be inflated into an owned buffer"
+        );
+        let twin: Vec<_> = PcapReader::new(&plain).unwrap().map(|p| p.data).collect();
+        let via_gz: Vec<_> = PcapReader::new(&inflated)
+            .unwrap()
+            .map(|p| p.data)
+            .collect();
+        assert!(!twin.is_empty(), "sample must contain packets");
+        assert_eq!(
+            twin, via_gz,
+            "gzipped capture must yield the same packets as its uncompressed twin"
+        );
+    }
+
+    #[test]
+    fn gzip_pcapng_yields_same_packets_as_uncompressed_twin() {
+        let plain = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
+        let compressed = gzip(&plain);
+        let inflated = decompress_capture(&compressed).unwrap();
+        let twin: Vec<_> = PcapReader::new(&plain).unwrap().map(|p| p.data).collect();
+        let via_gz: Vec<_> = PcapReader::new(&inflated)
+            .unwrap()
+            .map(|p| p.data)
+            .collect();
+        assert!(!twin.is_empty(), "sample must contain packets");
+        assert_eq!(twin, via_gz);
+    }
+
+    #[test]
+    fn non_gzip_data_passes_through_borrowed() {
+        let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
+        let out = decompress_capture(&plain).unwrap();
+        assert!(
+            matches!(out, std::borrow::Cow::Borrowed(_)),
+            "plain pcap must pass through without copying"
+        );
+    }
+
+    #[test]
+    fn truncated_gzip_stream_errors_cleanly() {
+        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap());
+        let cut = &compressed[..compressed.len() / 2];
+        let err = decompress_capture(cut).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::GzipDecode { .. }),
+            "expected GzipDecode, got: {err:?}"
+        );
+        assert!(err.to_string().contains("gzip"), "got: {err}");
+    }
+
+    #[test]
+    fn gzip_wrapping_garbage_reports_decompressed_magic() {
+        // 24 bytes of 0xdeadbeef (LE byte order ef be ad de) inside a valid
+        // gzip wrapper: decompression succeeds, the format sniff must then
+        // name the DECOMPRESSED magic, not the gzip one.
+        let garbage = [0xEFu8, 0xBE, 0xAD, 0xDE].repeat(6);
+        let compressed = gzip(&garbage);
+        let inflated = decompress_capture(&compressed).unwrap();
+        let err = PcapReader::new(&inflated).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::UnknownFormat { magic: 0xDEADBEEF }),
+            "expected UnknownFormat with the decompressed magic, got: {err:?}"
+        );
+        assert!(err.to_string().contains("0xdeadbeef"), "got: {err}");
+    }
+
+    #[test]
+    fn empty_gzip_member_reports_too_short() {
+        let compressed = gzip(&[]);
+        let inflated = decompress_capture(&compressed).unwrap();
+        assert!(inflated.is_empty());
+        let err = PcapReader::new(&inflated).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::TooShort { .. }),
+            "expected TooShort, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn gzip_magic_prefix_with_corrupt_body_errors() {
+        // Starts with 1f 8b but the rest is junk — not a valid gzip stream.
+        let mut junk = vec![0x1f, 0x8b];
+        junk.extend_from_slice(&[0xFF; 30]);
+        let err = decompress_capture(&junk).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::GzipDecode { .. }),
+            "expected GzipDecode, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn gzip_bomb_is_bounded() {
+        // 1 MiB of zeros compresses to ~1 KiB. A small inflation cap must
+        // refuse it instead of allocating the full expansion…
+        let compressed = gzip(&vec![0u8; 1 << 20]);
+        let err = gunzip_limited(&compressed, 4096).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::GzipTooLarge { limit: 4096 }),
+            "expected GzipTooLarge, got: {err:?}"
+        );
+        // …while the default cap admits an ordinary capture.
+        assert!(decompress_capture(&compressed).is_ok());
+    }
+
+    #[test]
+    fn pcap_reader_new_on_gzip_bytes_says_gzip_not_unknown_magic() {
+        // A caller that skips decompress_capture must get a self-explanatory
+        // error, not "unknown magic 0x00088b1f".
+        let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap());
+        let err = PcapReader::new(&compressed).unwrap_err();
+        assert!(
+            matches!(err, CaptureError::GzipData),
+            "expected GzipData, got: {err:?}"
+        );
+        assert!(err.to_string().contains("gzip"), "got: {err}");
     }
 
     #[test]
