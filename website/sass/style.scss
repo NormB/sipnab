@@ -2098,6 +2098,12 @@ input:focus-visible,
 // Download page
 .dl { max-width: 840px; margin: 0 auto; padding: 5rem 1.5rem 6rem; }
 
+// Inside the docs-style left-rail layout the grid supplies the horizontal
+// rhythm, so the section drops its own centering; ToC anchors need to clear
+// the sticky top nav.
+.dl-layout .dl { margin: 0; padding: 2rem 0 6rem; }
+.dl-layout .dl [id] { scroll-margin-top: calc(#{$nav-height} + 1.25rem); }
+
 .dl-hero { text-align: center; margin-bottom: 2.75rem; animation: dlUp 0.6s ease both; }
 .dl-kicker { font-family: $font-mono; font-size: 0.74rem; letter-spacing: 0.22em; text-transform: uppercase; color: $accent; margin: 0; }
 .dl-hero h1 { font-size: clamp(2.1rem, 5vw, 3rem); margin: 0.6rem 0 0; letter-spacing: -0.02em; }

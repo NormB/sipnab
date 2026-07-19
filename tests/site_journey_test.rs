@@ -430,3 +430,58 @@ fn no_inline_event_handlers_in_templates() {
         offenders.join("\n")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Download-page ToC journey: every other content-heavy page (the docs) gives
+// the reader a left sidebar to jump around with; the download page shipped
+// without one, leaving its six sections (installer, four platform panels,
+// all-files table, verify) reachable only by scrolling. The sidebar must use
+// the same doc-sidebar treatment as the docs pages, and every anchor it
+// offers must resolve to a real id in the template — a ToC that points at
+// nothing is worse than no ToC.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn download_page_has_left_toc_sidebar_like_docs() {
+    let tpl = read("website/templates/download.html");
+
+    let aside_at = tpl.find("<aside class=\"doc-sidebar").unwrap_or_else(|| {
+        panic!(
+            "download.html has no <aside class=\"doc-sidebar\"> — the download \
+             page must carry the same left ToC treatment as the docs pages"
+        )
+    });
+    let aside = &tpl[aside_at
+        ..aside_at
+            + tpl[aside_at..]
+                .find("</aside>")
+                .expect("doc-sidebar aside is unterminated")];
+
+    // Every anchor the ToC offers must land on a real id in the template.
+    let href = regex::Regex::new(r##"href="#([A-Za-z0-9_-]+)""##).unwrap();
+    let anchors: Vec<String> = href
+        .captures_iter(aside)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        anchors.len() >= 4,
+        "download ToC lists only {} section link(s) — expected the page's \
+         major sections (installer, platforms, all files, verify)",
+        anchors.len()
+    );
+    for id in &anchors {
+        assert!(
+            tpl.contains(&format!("id=\"{id}\"")),
+            "download ToC links to #{id} but no element in download.html \
+             carries id=\"{id}\" — dead anchor"
+        );
+    }
+
+    // The two sections visitors most often want must be one click away.
+    for must in ["all-files", "verify"] {
+        assert!(
+            anchors.iter().any(|a| a == must),
+            "download ToC is missing a link to #{must}"
+        );
+    }
+}
