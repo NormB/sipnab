@@ -333,6 +333,13 @@
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
 }
 
+/* Informational variant (e.g. "compressed capture decompressed"): same
+   placement as the error toast, calmer good-news colors. */
+.analyze-toast--info {
+  color: var(--good);
+  border-color: rgba(186, 230, 126, 0.4);
+}
+
 /* Demo-mode banner: fabricated data must be unmistakable. */
 .demo-banner {
   background: rgba(255, 167, 89, 0.12);

@@ -3885,6 +3885,7 @@ dependencies = [
  "env_logger",
  "etherparse",
  "flate2",
+ "getrandom 0.3.4",
  "hmac",
  "http-body-util",
  "indexmap",

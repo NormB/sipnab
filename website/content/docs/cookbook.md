@@ -725,7 +725,7 @@ If you've built with the `audio` feature (in default), `P` in the RTP stream vie
 
 Open </analyze/> in any modern browser. Drag-and-drop a pcap or `.pcapng` file. Everything runs locally via WebAssembly — the pcap never leaves your machine.
 
-The analyze page supports `.pcap`, `.pcapng`, `.cap` (NetMon), and gives you the same call list, ladder diagram, RTP stream view, search, and filter DSL as the native TUI. Keyboard shortcuts match the TUI (`?` opens the help popup).
+The analyze page supports `.pcap`, `.pcapng`, `.cap` (pcap format), and their gzip-compressed variants (`.pcap.gz`, `.pcapng.gz` — decompressed transparently, with a notice), and gives you the same call list, ladder diagram, RTP stream view, search, and filter DSL as the native TUI. Keyboard shortcuts match the TUI (`?` opens the help popup).
 
 **Pitfalls:**
 

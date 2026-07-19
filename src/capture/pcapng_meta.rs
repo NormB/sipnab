@@ -48,6 +48,14 @@ pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
     let mut meta = PcapngMetadata::default();
     ensure_within_size_cap(std::fs::metadata(path)?.len(), MAX_METADATA_FILE_BYTES)?;
     let bytes = std::fs::read(path)?;
+    // The file-open path hands us the ORIGINAL file, which may be
+    // gzip-compressed (the packet loader gunzips separately); inflate so
+    // embedded names/secrets survive compression. A corrupt gzip stream is
+    // not fatal here — it simply carries no readable metadata.
+    let bytes = match crate::capture::pcap_reader::decompress_capture(&bytes) {
+        Ok(inflated) => inflated,
+        Err(_) => return Ok(meta),
+    };
     // A non-pcapng file (e.g. legacy pcap) simply carries no metadata blocks.
     let mut reader = match pcap_file::pcapng::PcapNgReader::new(&bytes[..]) {
         Ok(r) => r,
@@ -213,6 +221,32 @@ mod tests {
             PcapWriter::with_format(path, 1, None, None, true, PcapExportMode::Raw).unwrap();
         w.write_name_resolution_block(entries).unwrap();
         w.finish().unwrap();
+    }
+
+    #[test]
+    fn reads_nrb_names_from_gzip_compressed_pcapng() {
+        // The TUI file-open path hands this reader the ORIGINAL (possibly
+        // gzip-compressed) file; embedded names must survive compression.
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("named.pcapng");
+        let ip: IpAddr = "10.0.0.2".parse().unwrap();
+        write_pcapng_with_nrb(&plain, &[(ip, vec!["sbc-edge".to_string()])]);
+
+        let gz_path = dir.path().join("named.pcapng.gz");
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz_path).unwrap(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(&std::fs::read(&plain).unwrap()).unwrap();
+        enc.finish().unwrap();
+
+        let meta = read_pcapng_metadata(&gz_path).unwrap();
+        assert!(
+            meta.names.contains(&(ip, "sbc-edge".to_string())),
+            "gzipped pcapng must still yield NRB names, got: {:?}",
+            meta.names
+        );
     }
 
     #[test]

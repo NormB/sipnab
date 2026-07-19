@@ -345,6 +345,25 @@ function showError(msg) {
   setTimeout(function() { toast.remove(); }, 6000);
 }
 
+// Non-blocking informational toast (e.g. "compressed capture decompressed").
+// Same placement as the error toast, calmer styling, polite live region.
+function showNotice(msg) {
+  var toast = document.createElement("div");
+  toast.className = "analyze-toast analyze-toast--info";
+  toast.setAttribute("role", "status");
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(function() { toast.remove(); }, 8000);
+}
+
+// "12345678" -> "11.8 MB" (binary units, one decimal above KB).
+function fmtBytes(n) {
+  if (!isFinite(n) || n < 0) return "?";
+  if (n < 1024) return n + " B";
+  if (n < 1048576) return Math.round(n / 1024) + " KB";
+  return (n / 1048576).toFixed(1) + " MB";
+}
+
 function getMethodColor(method) {
   var m = (method || "").toUpperCase();
   var map = {
@@ -480,10 +499,14 @@ function hideLoading() {
 
 async function handleFile(file) {
   var validExts = [".pcap", ".pcapng", ".cap"];
-  var dot = file.name.lastIndexOf(".");
-  var ext = dot >= 0 ? file.name.substring(dot).toLowerCase() : "";
+  // A trailing .gz is fine — the analyzer gunzips transparently — but the
+  // name underneath must still be a capture (foo.pcap.gz, not archive.gz).
+  var name = file.name.toLowerCase();
+  var stem = name.endsWith(".gz") ? name.slice(0, -3) : name;
+  var dot = stem.lastIndexOf(".");
+  var ext = dot >= 0 ? stem.substring(dot) : "";
   if (validExts.indexOf(ext) === -1) {
-    showError("“" + file.name + "” is not a capture file. sipnab reads .pcap, .pcapng, and .cap.");
+    showError("“" + file.name + "” is not a capture file. sipnab reads .pcap, .pcapng, and .cap, optionally gzip-compressed (.pcap.gz).");
     return;
   }
   // The whole file is decoded in browser memory; past ~250 MB the tab freezes.
@@ -533,6 +556,13 @@ async function handleFile(file) {
     renderStreamList();
     clearCallFlow();
     clearRawMessage();
+
+    // The WASM loader gunzips transparently; when it did, say so — a user who
+    // dropped a "plain" .pcap that was secretly gzip should learn both facts.
+    if (result.gzip) {
+      showNotice("Compressed capture detected — decompressed “" + file.name + "” (" +
+        fmtBytes(result.gzip.compressed_bytes) + " → " + fmtBytes(result.gzip.decompressed_bytes) + ")");
+    }
   } catch (err) {
     showError("Could not parse “" + file.name + "”: " + (err.message || err) + ". If this is a valid capture, please open a GitHub issue with the file details.");
   } finally {
