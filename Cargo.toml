@@ -153,6 +153,8 @@ console_error_panic_hook = { version = "0.1", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
+base64 = "0.22"
+sha2 = "0.11"
 bytes = "1"
 unicode-width = "0.2"
 parking_lot = "0.12"
