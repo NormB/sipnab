@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.18] - 2026-07-20
+
 ### Changed
 - `-O` pcap output is written by a hand-rolled buffered writer instead of
   libpcap's `Savefile` (WS8.3): classic pcap records go through a 512 KiB
