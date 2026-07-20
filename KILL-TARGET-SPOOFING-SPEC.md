@@ -182,4 +182,6 @@ per-destination rate limit.
 3. **macOS:** ephemeral-only, `#[cfg(target_os = "linux")]`-gated raw path.
 4. **Metric:** added `sipnab_kill_responses_sent_total{mode="raw"|"ephemeral"}`.
 
-Implemented in P1–P4; P5 (IPv6) remains the only open item.
+Fully implemented (P1–P5): both IPv4 (0.5.12) and IPv6 source-port spoofing
+ship, with the ephemeral fallback for platforms/permissions without raw
+sockets.

@@ -21,13 +21,13 @@ capture thread(s)              │                          │
   capture::channel  ────► processing thread ──────► TUI event loop (main thread)
   (capped channel)        (TUI mode: pipeline::         │ crossterm events, render
                            process_packet;              │
-                           batch mode: main.rs loop     ├── API server thread (api)
-                           on the main thread)          │     own tokio runtime, axum
-                                                        ├── MCP stdio thread (mcp)
-                                                        │     own tokio runtime, rmcp
-                                                        ├── MCP-HTTP thread (mcp-http)
-                                                        │     own tokio runtime
-                                                        ├── Prometheus server thread
+                           batch mode: main.rs loop     ├── server runtime thread
+                           on the main thread)          │     one shared current-thread
+                                                        │     tokio runtime hosting every
+                                                        │     enabled async server as a
+                                                        │     task: api (axum), mcp (rmcp),
+                                                        │     mcp-http, Prometheus metrics
+                                                        │     (src/app/servers.rs)
                                                         ├── DNS resolver thread (names)
                                                         │     std::mpsc queue
                                                         └── scanner-kill worker
@@ -67,11 +67,3 @@ flow's packets share a host pair and therefore a worker.
 | `--cores` dispatcher → workers | crossbeam bounded (8192) |
 | DNS resolve queue | `std::sync::mpsc` |
 | inside api/mcp servers | tokio (axum/rmcp internals) |
-
-## Known debt (tracked in MAINTAINABILITY-PERF-SPEC.md)
-
-- Three single-thread tokio runtimes (api, mcp, mcp-http) where one shared
-  runtime would do (WS2).
-- Four channel flavors where crossbeam could serve all non-tokio edges (WS2).
-- The TUI's long read-lock hold during filtered/searched call-list scans
-  backpressures the processing thread's writes (WS4.3).

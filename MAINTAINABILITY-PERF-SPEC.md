@@ -7,6 +7,14 @@ plus `crates/sipnab-audio`.
 each grounded in file:line evidence.
 **Date:** 2026-07-03.
 
+> **Status (2026-07-20): WS0–WS7 all shipped in v0.5.0.** Sections 0–9 below
+> are the original 2026-07-03 review of v0.4.18 and are kept as the historical
+> record — their counts (11 fuzz targets, ~2,200 tests) and "to build" framing
+> describe the state *at review time*, not today. Current tree: 15 fuzz
+> targets, 2,569 tests. The only live section is **WS8** (§10, perf
+> follow-ups), tracked against current `main`; see `CHANGELOG.md` for what
+> each workstream landed in.
+
 ---
 
 ## 0. Executive summary
