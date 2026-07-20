@@ -4,6 +4,8 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.17] - 2026-07-20
+
 ### Added
 - `--strip-secrets` now reads gzip-compressed input (`.pcapng.gz`) like every
   other path; the sanitized output is always written uncompressed.
@@ -11,6 +13,15 @@ All notable changes to sipnab will be documented in this file.
 ### Fixed
 - wasm32 builds are warning-free again: the six `SipnabSession` counter
   accessors were missing doc comments.
+
+### Changed
+- Dependencies: clap 4.6.2, regex 1.13.1, serde 1.0.229, anyhow 1.0.104,
+  thiserror 2.0.19, rustls 0.23.42, tokio 1.53.0, http-body-util 0.1.4,
+  jsonschema 0.48.1, and friends (minor/patch group).
+- Benchmarks re-measured on 0.5.16/thor-02: multi-core scaling +13–30%,
+  carrier sweep +31–107% vs the 0.4.16 session; two regressions tracked as
+  WS8.1/WS8.2. The ruby CodeQL job (matched only the Homebrew formula) is
+  gone from CI.
 
 ## [0.5.16] - 2026-07-19
 
