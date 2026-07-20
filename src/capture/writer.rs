@@ -1,6 +1,6 @@
 //! Pcap output writer with rotation support.
 //!
-//! [`PcapWriter`] wraps `pcap::Savefile` and adds support for:
+//! [`PcapWriter`] writes classic pcap directly (buffered) or PCAP-NG via
 //! - Writing captured packets to pcap files (standard pcap or PCAP-NG)
 //! - File rotation by size (`--split filesize:N`)
 //! - File rotation by duration (`--split duration:N`)
@@ -67,15 +67,89 @@ impl PcapExportMode {
 
 /// Internal writer backend: either standard pcap or PCAP-NG.
 enum WriterBackend {
-    /// Standard pcap via the `pcap` crate.
-    Pcap(pcap::Savefile),
+    /// Standard pcap via the hand-rolled buffered writer.
+    Pcap(RawPcapWriter),
     /// PCAP-NG via the `pcap-file` crate.
     PcapNg(PcapFileNgWriter<BufWriter<std::fs::File>>),
 }
 
+/// Buffer for the raw classic-pcap writer: large enough that an offline
+/// re-emit spills to the kernel thousands of packets at a time.
+const RAW_PCAP_BUF_BYTES: usize = 512 * 1024;
+/// Snap length recorded in the classic-pcap global header (matches the
+/// pcapng backend's IDB snaplen).
+const RAW_PCAP_SNAPLEN: u32 = 0xFFFF;
+
+/// Hand-rolled buffered classic-pcap writer.
+///
+/// Replaces libpcap's `Savefile` on the plain-pcap output path: `Savefile`
+/// costs an FFI call plus a locked stdio `fwrite` per packet and silently
+/// discards write errors. Classic pcap is a 24-byte global header followed
+/// by 16-byte little-endian record headers, so writing it directly through
+/// a large `BufWriter` turns the per-packet cost into a bounds-checked
+/// memcpy — and write failures surface as errors.
+struct RawPcapWriter {
+    out: BufWriter<std::fs::File>,
+}
+
+impl RawPcapWriter {
+    /// Create the file and write the canonical little-endian global header
+    /// (magic `d4c3b2a1`, version 2.4, microsecond timestamps).
+    fn create(path: &Path, link_type: i32) -> Result<Self> {
+        use std::io::Write;
+        let file = std::fs::File::create(path)
+            .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
+        let mut out = BufWriter::with_capacity(RAW_PCAP_BUF_BYTES, file);
+        let mut header = [0u8; 24];
+        header[0..4].copy_from_slice(&0xA1B2_C3D4u32.to_le_bytes());
+        header[4..6].copy_from_slice(&2u16.to_le_bytes()); // version major
+        header[6..8].copy_from_slice(&4u16.to_le_bytes()); // version minor
+        // thiszone + sigfigs stay zero
+        header[16..20].copy_from_slice(&RAW_PCAP_SNAPLEN.to_le_bytes());
+        header[20..24].copy_from_slice(&(link_type as u32).to_le_bytes());
+        out.write_all(&header)
+            .with_context(|| format!("Failed to write pcap header to '{}'", path.display()))?;
+        Ok(Self { out })
+    }
+
+    /// Append one record: 16-byte LE header (seconds, microseconds,
+    /// captured length, original length) followed by the captured bytes.
+    /// `incl_len` is always `data.len()` — the record must describe exactly
+    /// the bytes that follow it.
+    fn write_record(
+        &mut self,
+        ts_sec: i64,
+        ts_usec: u32,
+        origlen: usize,
+        data: &[u8],
+    ) -> Result<()> {
+        use std::io::Write;
+        let mut rec = [0u8; 16];
+        // Classic pcap carries 32-bit timestamps; saturate rather than wrap
+        // (matches the format's own 2038 horizon).
+        let secs = u32::try_from(ts_sec).unwrap_or(if ts_sec < 0 { 0 } else { u32::MAX });
+        rec[0..4].copy_from_slice(&secs.to_le_bytes());
+        rec[4..8].copy_from_slice(&ts_usec.to_le_bytes());
+        rec[8..12].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        let orig = u32::try_from(origlen.max(data.len())).unwrap_or(u32::MAX);
+        rec[12..16].copy_from_slice(&orig.to_le_bytes());
+        self.out
+            .write_all(&rec)
+            .context("pcap record header write")?;
+        self.out.write_all(data).context("pcap record data write")?;
+        Ok(())
+    }
+
+    /// Flush buffered records to the file, surfacing any deferred error.
+    fn flush(&mut self) -> Result<()> {
+        use std::io::Write;
+        self.out.flush().context("pcap output flush")
+    }
+}
+
 /// Pcap output writer with optional file rotation.
 ///
-/// Wraps a pcap `Savefile` or a PCAP-NG writer and tracks state for rotation decisions.
+/// Wraps the raw classic-pcap writer or a PCAP-NG writer and tracks state for rotation decisions.
 pub struct PcapWriter {
     /// The underlying writer backend.
     backend: WriterBackend,
@@ -182,8 +256,7 @@ impl PcapWriter {
         let backend = if pcapng {
             create_pcapng_backend(path, link_type, interface_name.as_deref())?
         } else {
-            let linktype = pcap::Linktype(link_type);
-            WriterBackend::Pcap(create_savefile(path, linktype)?)
+            WriterBackend::Pcap(RawPcapWriter::create(path, link_type)?)
         };
 
         tracing::info!(
@@ -225,24 +298,14 @@ impl PcapWriter {
         }
 
         match &mut self.backend {
-            WriterBackend::Pcap(savefile) => {
+            WriterBackend::Pcap(w) => {
                 let ts = packet.timestamp;
-                let secs = ts.timestamp();
-                let usecs = ts.timestamp_subsec_micros();
-
-                let header = pcap::PacketHeader {
-                    ts: libc::timeval {
-                        tv_sec: secs as libc::time_t,
-                        tv_usec: usecs as libc::suseconds_t,
-                    },
-                    caplen: packet.caplen as u32,
-                    len: packet.origlen as u32,
-                };
-
-                savefile.write(&pcap::Packet {
-                    header: &header,
-                    data: &packet.data,
-                });
+                w.write_record(
+                    ts.timestamp(),
+                    ts.timestamp_subsec_micros(),
+                    packet.origlen,
+                    &packet.data,
+                )?;
             }
             WriterBackend::PcapNg(writer) => {
                 let ts = packet.timestamp;
@@ -423,9 +486,7 @@ impl PcapWriter {
     /// the error.
     pub fn finish(&mut self) -> Result<()> {
         match &mut self.backend {
-            WriterBackend::Pcap(savefile) => savefile
-                .flush()
-                .context("flushing pcap output at end of capture"),
+            WriterBackend::Pcap(w) => w.flush().context("flushing pcap output at end of capture"),
             WriterBackend::PcapNg(writer) => {
                 use std::io::Write;
                 writer
@@ -460,8 +521,7 @@ impl PcapWriter {
                 self.interface_name.as_deref(),
             )?
         } else {
-            let linktype = pcap::Linktype(self.link_type_raw);
-            WriterBackend::Pcap(create_savefile(&new_path, linktype)?)
+            WriterBackend::Pcap(RawPcapWriter::create(&new_path, self.link_type_raw)?)
         };
         self.bytes_written = 0;
         self.dsb_written = false;
@@ -499,14 +559,6 @@ impl PcapWriter {
 
         false
     }
-}
-
-/// Create a pcap `Savefile` at the given path using a dead capture handle.
-fn create_savefile(path: &Path, linktype: pcap::Linktype) -> Result<pcap::Savefile> {
-    let dead =
-        pcap::Capture::dead(linktype).context("Failed to create dead capture for savefile")?;
-    dead.savefile(path)
-        .with_context(|| format!("Failed to create output file '{}'", path.display()))
 }
 
 /// Create a PCAP-NG writer backend at the given path.
@@ -1260,5 +1312,106 @@ mod tests {
             w2.maybe_write_keylog_dsb(dir.path().join("nope.txt").as_path())
                 .unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod raw_pcap_writer_tests {
+    use super::*;
+    use crate::capture::packet::Packet;
+    use crate::capture::pcap_reader::PcapReader;
+
+    fn pkt_at(secs: i64, usecs: u32, data: Vec<u8>, origlen: usize) -> Packet {
+        let caplen = data.len();
+        let ts = chrono::DateTime::from_timestamp(secs, usecs * 1000).unwrap();
+        Packet::new(ts, data, caplen, origlen, None, 1)
+    }
+
+    /// The hand-rolled writer must emit the canonical little-endian classic
+    /// pcap global header: magic d4c3b2a1, version 2.4, zone/sigfigs 0,
+    /// snaplen 0xFFFF (matching the pcapng backend's convention), then the
+    /// link type.
+    #[test]
+    fn raw_pcap_header_is_canonical_le() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("hdr.pcap");
+        {
+            let mut w = RawPcapWriter::create(&path, 1).unwrap();
+            w.flush().unwrap();
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 24, "header only");
+        assert_eq!(&bytes[0..4], &[0xd4, 0xc3, 0xb2, 0xa1], "LE usec magic");
+        assert_eq!(&bytes[4..8], &[2, 0, 4, 0], "version 2.4");
+        assert_eq!(&bytes[8..16], &[0u8; 8], "thiszone + sigfigs zero");
+        assert_eq!(
+            u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            0xFFFF,
+            "snaplen"
+        );
+        assert_eq!(
+            u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+            1,
+            "linktype ethernet"
+        );
+    }
+
+    /// Everything written through the plain-pcap PcapWriter (which the raw
+    /// writer now backs) must round-trip byte-for-byte through PcapReader —
+    /// including the adversarial shapes: an empty-payload packet, a
+    /// truncated packet (origlen > caplen), and sub-second timestamps.
+    #[test]
+    fn plain_pcap_round_trips_edge_shapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rt.pcap");
+
+        let packets = vec![
+            pkt_at(1_700_000_000, 0, vec![0xAA; 60], 60),
+            pkt_at(1_700_000_001, 999_999, vec![], 0),
+            pkt_at(1_700_000_002, 123_456, vec![0x55; 40], 1500), // truncated
+            pkt_at(0, 1, vec![0x01], 1),                          // epoch + 1µs
+        ];
+
+        {
+            let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
+            for p in &packets {
+                w.write(p).unwrap();
+            }
+            w.finish().unwrap();
+        }
+
+        let bytes = std::fs::read(&path).unwrap();
+        let rd: Vec<_> = PcapReader::new(&bytes).unwrap().collect();
+        assert_eq!(rd.len(), packets.len());
+        for (got, want) in rd.iter().zip(&packets) {
+            assert_eq!(&got.data[..], &want.data[..], "payload bytes");
+            assert_eq!(got.orig_len as usize, want.origlen, "original length");
+            assert_eq!(i64::from(got.timestamp_secs), want.timestamp.timestamp());
+            assert_eq!(
+                got.timestamp_usecs,
+                want.timestamp.timestamp_subsec_micros(),
+                "microsecond timestamp fidelity"
+            );
+        }
+    }
+
+    /// Writes to a full device must surface an Err from the raw writer
+    /// (libpcap's Savefile::write silently returned unit). Buffered records
+    /// may succeed until the buffer spills; at the latest, flush must fail.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raw_writer_write_errors_are_not_silent() {
+        let mut w = RawPcapWriter::create(Path::new("/dev/full"), 1).unwrap();
+        let mut result = Ok(());
+        for _ in 0..10_000 {
+            if let Err(e) = w.write_record(1, 0, 0xFFFF_usize, &[0u8; 4096][..]) {
+                result = Err(e);
+                break;
+            }
+        }
+        if result.is_ok() {
+            result = w.flush();
+        }
+        assert!(result.is_err(), "write/flush to a full device must error");
     }
 }
