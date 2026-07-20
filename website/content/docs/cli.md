@@ -251,7 +251,7 @@ sipnab -N -I capture.pcap --short-calls --report
 | `--no-cli-print` | -- | off | Suppress per-message CLI output (use with `--report` / `--call-report` so only the post-capture summary reaches stdout) |
 | `--delta-time` | -- | off | Show delta time between consecutive messages |
 | `-A`, `--after` | `<N>` | -- | Show N messages after each match (like `grep -A`) |
-| `--show-empty` | -- | off | Show messages with empty bodies |
+| `--show-empty` (`--full`) | -- | off | Show the full header block of bodyless messages (responses, OPTIONS, REGISTER, ACK, BYE); by default they show only the summary line |
 | `--line-buffer` | -- | off | Flush output after each line (useful for piping) |
 | `--color` | `<WHEN>` | `auto` | Color output mode: `auto`, `always`, `never` |
 | `--from-to-mode` | `<MODE>` | `default` | Default TUI From/To column display: `default` (user else host:port), `host-port`, `user`, `user-host-port`. Cycle at runtime with `u` |
