@@ -664,3 +664,88 @@ fn stylesheet_link_is_content_hash_cachebusted() {
          changes whenever the CSS content does: {link}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CSP hash journey: the production CSP (a Cloudflare transform rule, managed
+// by ops/cloudflare/refresh_csp_hashes.py) allows inline <script> blocks by
+// sha256 hash, NOT 'unsafe-inline'. Editing an inline script without
+// refreshing the rule ships a page whose script the browser silently blocks —
+// the download page's platform tabs were dead in production for a day this
+// way. This pin list makes the refresh step unforgettable: any inline-script
+// edit fails here until the dev (a) deploys, (b) runs
+// `python3 ops/cloudflare/refresh_csp_hashes.py`, and (c) re-pins.
+//
+// Pins are computed over the RAW TEMPLATE script bodies; where a script has
+// no Tera syntax the pin equals the deployed CSP token exactly (all except
+// base.html today).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inline_script_edits_require_csp_hash_refresh() {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    const PINNED: &[(&str, &str)] = &[
+        (
+            "base.html",
+            "sha256-J1UbBOogoXxCXnxiSeI0gyXiVXXoOpudQyXbBuS54aI=",
+        ),
+        (
+            "download.html",
+            "sha256-ctMMjX6eGBuCwOn4PgMH0LM2iCFYYMKSllifowD+6fA=",
+        ),
+        (
+            "index.html",
+            "sha256-HQzT0Db6Er849zDjz/Oh1NAg+q8aPwW+sSXD928L7W4=",
+        ),
+        (
+            "page.html",
+            "sha256-M17DoO9piJx5EpFaDEJn5Q9DZKuTLZWWKx2H19xX9CU=",
+        ),
+        (
+            "page.html",
+            "sha256-UOwnn7uXvW/gl+mP2NGmMuxif0eKdH7ocCwmMTGCjcY=",
+        ),
+    ];
+
+    // Same extraction semantics as refresh_csp_hashes.py: inline, executable.
+    let tag = regex::Regex::new(r"(?is)<script([^>]*)>(.*?)</script>").unwrap();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(repo().join("website/templates")).expect("templates dir") {
+        let p = entry.expect("entry").path();
+        if p.extension().and_then(|e| e.to_str()) != Some("html") {
+            continue;
+        }
+        let name = p.file_name().expect("name").to_string_lossy().to_string();
+        let text = std::fs::read_to_string(&p).expect("read template");
+        for cap in tag.captures_iter(&text) {
+            let attrs = &cap[1];
+            if attrs.contains("src=") || attrs.contains("ld+json") {
+                continue;
+            }
+            let digest = sha2::Sha256::digest(cap[2].as_bytes());
+            let token = format!(
+                "sha256-{}",
+                base64::engine::general_purpose::STANDARD.encode(digest)
+            );
+            found.push((name.clone(), token));
+        }
+    }
+    found.sort();
+
+    let mut pinned: Vec<(String, String)> = PINNED
+        .iter()
+        .map(|(f, h)| (f.to_string(), h.to_string()))
+        .collect();
+    pinned.sort();
+
+    assert_eq!(
+        found, pinned,
+        "an inline <script> in website/templates/ changed. The production CSP \
+         only allows inline scripts by sha256 hash — the edited script will be \
+         SILENTLY BLOCKED in production until the Cloudflare rule is updated. \
+         After this change deploys, run \
+         `python3 ops/cloudflare/refresh_csp_hashes.py`, then update PINNED in \
+         this test to the computed list above."
+    );
+}
