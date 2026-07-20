@@ -756,9 +756,10 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
             Constraint::Length(8),
         ]
     } else {
-        // Tighter layout: #(5) + Method(8) + State(10) + Msgs(4) + Date(8)
-        // + PDD(6) + Duration(7) = 48. #(5) holds "[ ]" plus a 2-digit index.
-        let fixed: u16 = 48 + overhead;
+        // Tighter layout: #(5) + Method(9) + State(10) + Msgs(4) + Date(8)
+        // + PDD(6) + Duration(7) = 49. #(5) holds "[ ]" plus a 2-digit index.
+        // Method is 9 so the longest common method (SUBSCRIBE) never truncates.
+        let fixed: u16 = 49 + overhead;
         let flex = total_width.saturating_sub(fixed);
         let addr_each = (flex * 2 / 5).max(11);
         let from_to_pool = flex.saturating_sub(addr_each * 2);
@@ -766,7 +767,7 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
         let to_w = from_to_pool.saturating_sub(from_w).max(4);
         vec![
             Constraint::Length(5),
-            Constraint::Length(8),
+            Constraint::Length(9),
             Constraint::Length(from_w),
             Constraint::Length(to_w),
             Constraint::Length(addr_each),
@@ -997,6 +998,25 @@ fn format_from_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Regression: below 120 cols the Method column was `Length(8)`, which
+    /// truncated `SUBSCRIBE` (9 chars) — visible on any 80-119-col terminal
+    /// and in the 98-col demo GIFs. The Method column is a key field and must
+    /// never truncate a standard SIP method.
+    #[test]
+    fn method_column_fits_longest_sip_method_below_120_cols() {
+        // Longest common SIP methods: SUBSCRIBE(9), REGISTER(8), OPTIONS(7).
+        for width in [80u16, 98, 110, 119] {
+            let widths = compute_column_widths(width);
+            // Index 1 is the Method column (see COLUMN_LABELS order).
+            assert!(
+                matches!(widths[1], Constraint::Length(w) if w >= 9),
+                "Method column at {width} cols must be >= 9 to fit SUBSCRIBE, \
+                 got {:?}",
+                widths[1]
+            );
+        }
+    }
 
     /// The allocation-free search must match exactly what
     /// `to_ascii_lowercase().contains()` matched: ASCII case folding only,
