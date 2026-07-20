@@ -523,3 +523,117 @@ fn every_page_template_keeps_the_site_footer() {
          their pages: {offenders:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Sponsor/GitHub placement journey: the Patreon sponsor button, the GitHub
+// Sponsors heart, and the GitHub link belong ONLY in the footer — the top nav
+// carries navigation and search, nothing else. In the footer they render as
+// icon links (svg + aria-label), not as "Support on Patreon"-style text, and
+// the whole footer is ONE non-wrapping row: no footer-top/footer-bottom
+// tiers, no "Built with Rust" credit.
+// ---------------------------------------------------------------------------
+
+/// Slice a named `{% block X %}...{% endblock %}` region out of base.html.
+fn base_block(name: &str) -> String {
+    let base = read("website/templates/base.html");
+    let open = format!("{{% block {name} %}}");
+    let start = base
+        .find(&open)
+        .unwrap_or_else(|| panic!("base.html has no `{open}`"));
+    let end = base[start..]
+        .find("{% endblock")
+        .unwrap_or_else(|| panic!("`{open}` is unterminated"));
+    base[start..start + end].to_string()
+}
+
+#[test]
+fn sponsor_heart_and_github_live_only_in_the_footer() {
+    let nav = base_block("nav");
+    for banned in [
+        "patreon_url",
+        "github_sponsors_url",
+        "config.extra.github_url",
+    ] {
+        assert!(
+            !nav.contains(banned),
+            "top nav still links `{banned}` — sponsor/heart/GitHub links \
+             belong only in the footer"
+        );
+    }
+
+    let footer = base_block("footer");
+    for required in [
+        "patreon_url",
+        "github_sponsors_url",
+        "config.extra.github_url",
+    ] {
+        assert!(
+            footer.contains(required),
+            "footer lost its `{required}` link — moving it out of the nav \
+             must not drop it from the site"
+        );
+    }
+}
+
+#[test]
+fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
+    let footer = base_block("footer");
+
+    // One row, not two tiers.
+    for tier in ["footer-top", "footer-bottom"] {
+        assert!(
+            !footer.contains(tier),
+            "footer still has the two-tier `{tier}` layout — it must be a \
+             single `footer-row`"
+        );
+    }
+    assert!(
+        footer.contains("class=\"footer-row\""),
+        "footer has no .footer-row container"
+    );
+
+    // "Built with Rust" is gone.
+    assert!(
+        !footer.contains("Built with"),
+        "footer still carries the `Built with Rust` credit"
+    );
+
+    // Patreon / GitHub Sponsors are icons, not text links.
+    for text in ["Support on Patreon", ">GitHub Sponsors<"] {
+        assert!(
+            !footer.contains(text),
+            "footer still renders `{text}` as a text link — use an icon"
+        );
+    }
+    for (url, what) in [
+        ("patreon_url", "Patreon"),
+        ("github_sponsors_url", "GitHub Sponsors"),
+    ] {
+        let at = footer
+            .find(url)
+            .unwrap_or_else(|| panic!("footer has no `{url}` link"));
+        let anchor_end = footer[at..]
+            .find("</a>")
+            .unwrap_or_else(|| panic!("`{url}` anchor is unterminated"));
+        let anchor = &footer[at..at + anchor_end];
+        assert!(
+            anchor.contains("<svg") && anchor.contains("aria-label"),
+            "the {what} footer link must be an svg icon with an aria-label"
+        );
+    }
+
+    // The stylesheet must actually forbid wrapping on the row.
+    let scss = read("website/sass/style.scss");
+    let rule_at = scss
+        .find(".footer-row")
+        .expect("style.scss has no .footer-row rule");
+    let rule_end = scss[rule_at..]
+        .find('}')
+        .expect(".footer-row rule is unterminated");
+    let rule = &scss[rule_at..rule_at + rule_end];
+    assert!(
+        rule.contains("flex-wrap: nowrap"),
+        ".footer-row must declare `flex-wrap: nowrap` so the footer never \
+         breaks into a second line"
+    );
+}
