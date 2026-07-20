@@ -9,26 +9,40 @@
 **Slots into:** `implementation-plan-v6.md` as Phases 8–10 (follow Phase 7 — Polish, Packaging, Release).
 **Origin:** Issue request — *"So that I can have a local AI agent go and talk to a server that we're debugging stuff on."* — expanded after architectural review to cover the full integration story (AI agents, scripts/SDKs, dashboards, observability).
 
+> **Status as of 2026-07-20 (current release v0.5.19).** This plan is
+> partly delivered. The **MCP server** (stdio + Streamable-HTTP), the **HEP
+> source mode**, the **per-call asymmetry heuristics**, and the whole
+> **documentation & website overhaul (Phase 12)** all shipped; the
+> foundational cleanups this plan lists under Phase 8.0 were folded into the
+> WS0–WS7 maintainability workstreams and shipped in v0.5.0 (see
+> `MAINTAINABILITY-PERF-SPEC.md`). Still unbuilt: the event-bus sinks
+> (8.4), the `.sipnab` project file + `open_project` tool (8.6), all of
+> **Phase 9** (OpenAPI + OpenTelemetry — neither the `otel` feature nor an
+> OpenAPI spec exists yet), and **Phase 11** (NISQA perceptual MOS). Phase 10
+> (NATS) remains deferred. The sub-phase specs below are retained as the
+> design record for the unbuilt work and as history for the shipped work.
+
 ## Phase Roadmap
 
-| Phase | Theme | Release | Status |
+| Phase | Theme | Target | Status |
 |---|---|---|---|
-| 8 | Foundational cleanups (parse-path consolidation, log→tracing) + MCP server mode (stdio + HTTP) + feature-gated event bus exposing MCP / WebSocket / SSE | v0.4.0 | **In Progress.** 8.0a, 8.0b, 8.1, 8.2, 8.3, 8.7 landed (commits `b125999`, `c01a769`, `5b3538e`, `1dd105d`, `bd82d6e`, `20559f6`). 8.5 partially done — `--hep-listen` HEP source mode shipped via `cd17cc2` (Option C: `Packet::with_pre_parsed`). 8.4a/4b (event bus + WebSocket/SSE sinks) and 8.6 (release polish, `.sipnab` project file, `open_project` MCP tool) still outstanding. |
-| 9 | REST API self-description (OpenAPI) and observability (OpenTelemetry) | v0.5.0 | Planned |
-| 10 | NATS event bus | — | **Deferred to Future Considerations.** WebSocket and SSE from 8.4b cover the "external consumers" case for the vast majority of deployments. Design preserved; un-defer when an operator with NATS in production specifically asks. |
-| 11 | Cross-stream statistical analysis and perceptual MOS (NISQA) | v0.6.0 | Planned (design before Phase 8 ships, build after) |
-| 12 | Documentation & website overhaul | Threaded across v0.4.0–v0.6.0 | Planned (infrastructure + CI quality gates first, content progressive) |
+| 8 | Foundational cleanups + MCP server mode (stdio + HTTP) + feature-gated event bus exposing MCP / WebSocket / SSE | v0.4.x | **Mostly shipped.** MCP stdio + HTTP (8.1–8.3), HEP source mode (8.5), and per-call asymmetry heuristics (8.7) shipped; the 8.0 cleanups shipped as WS0–WS7 in v0.5.0. **Unbuilt:** event-bus sinks (8.4a/4b) and release polish / `.sipnab` project file / `open_project` tool (8.6). |
+| 9 | REST API self-description (OpenAPI) and observability (OpenTelemetry) | — | **Not started.** No `otel` feature and no OpenAPI spec in the tree; slipped past the original v0.5.0 target. |
+| 10 | NATS event bus | — | **Deferred to Future Considerations.** Design preserved; un-defer when an operator with NATS in production specifically asks. |
+| 11 | Cross-stream statistical analysis and perceptual MOS (NISQA) | — | **Not started.** No NISQA/ViSQOL path in the tree. |
+| 12 | Documentation & website overhaul | Shipped 2026-07 | **Shipped.** Zola site, Diátaxis docs, CI quality gates, and the marketing surface are live at sipnab.com. |
 
 ## ★ Priority Sequencing
 
-Items marked **★** below are the highest-ROI additions, derived from competitive analysis (Pcaptix), implementation readiness review, and documentation gap analysis. They should be sequenced first within their respective phases:
+Historical sequencing note (the highest-ROI items, from competitive analysis
+and the docs gap review). Most have since resolved; retained for the rationale:
 
-1. **★ Phase 12.1–12.2 — Documentation infrastructure & information architecture** — set up the docs system (mkdocs-material or equivalent), establish Diátaxis taxonomy, audit existing content, structure the sidebar for the eventual ~35-doc state. **Must land before Phase 8 starts producing doc deliverables**, otherwise new docs accumulate in the current ad-hoc structure and the overhaul gets harder. ~3–5 days.
+1. **★ Phase 12.1–12.2 — Documentation infrastructure & information architecture** — *Shipped.* The docs system went live as a Zola site (not the originally-floated mkdocs-material) with a Diátaxis taxonomy; the site overhaul landed 2026-07.
 2. **★ Phase 8.7 — Per-call asymmetry heuristics** — *Shipped (commit `20559f6`).* Five of the originally planned six checks landed: codec / ptime / payload / duration asymmetry + late media. The sixth (one-sided silence) requires the `audio` feature's PCM analysis path and was deferred — still tracked under "Out of scope (initial 8.7)" below.
-3. **★ Phase 8.6 expansion — quality timeline bump + `.sipnab` project file** — 1.5 days total. Match Pcaptix's 680ms quality intervals and trichotomy (OK/poor/uncertain), formalize the `.sipnab` directory convention.
-4. **★ Phase 11 design** — write the design for cross-stream statistics and NISQA-based perceptual MOS *before* Phase 8 ships, but defer the build. Lets the design sit while higher-priority work proceeds; revisit priority after Phase 8.
+3. **★ Phase 8.6 expansion — quality timeline bump + `.sipnab` project file** — *Not built.* Match Pcaptix's 680ms quality intervals and trichotomy (OK/poor/uncertain), formalize the `.sipnab` directory convention.
+4. **★ Phase 11 design** — *Not built.* Design for cross-stream statistics and NISQA-based perceptual MOS.
 
-All other items (Phase 11 build, Phase 12.3–12.7, waveform display, impairment detection beyond clipping, PDF export) are valuable but not urgent. They appear in the plan in ROI order so when bandwidth opens up there's a queue ready.
+All other items (Phase 11 build, waveform display, impairment detection beyond clipping, PDF export) remain valuable but not urgent, in ROI order so there's a queue ready when bandwidth opens up.
 
 ## Resolved Decisions
 
@@ -59,12 +73,12 @@ Any external infrastructure integration (metrics backends, event buses, tracing 
 
 Both kinds are equally valid; the choice between them is dictated by the backend protocol, not by sipnab.
 
-**Currently applied to:**
+**Applied / planned:**
 
-- Phase 5 — Prometheus endpoint (pull, behind `api` feature, activated by `--metrics`)
-- Phase 9.2 — OpenTelemetry traces and metrics (push, behind `otel` feature, activated by `--otel-endpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` env)
-- Phase 10 — NATS event bus (push, behind `nats` feature, activated by `--nats-url`)
-- Phase 4 (existing) — syslog alerting (push to local syslog daemon, activated by `--syslog`)
+- Prometheus endpoint — *shipped* (pull, behind `api` feature, activated by `--metrics`)
+- syslog alerting — *shipped* (push to local syslog daemon, activated by `--syslog`)
+- OpenTelemetry traces and metrics — *planned, Phase 9.2, not yet built* (push, would sit behind an `otel` feature, activated by `--otel-endpoint` / `OTEL_EXPORTER_OTLP_ENDPOINT`)
+- NATS event bus — *deferred, Phase 10* (push, behind a `nats` feature, activated by `--nats-url`)
 
 **Future integrations covered by this rule:** Loki log shipping, Kafka event publishing, OpenSearch indexing, OpsGenie/PagerDuty alerting, Datadog/New Relic agents, anything similar that comes up. New contributor adding integration X consults D20 first; the answer is always the same shape.
 
@@ -113,7 +127,7 @@ When other tools (Pcaptix, sngrep, sipgrep, Wireshark, commercial voice-quality 
 - A free implementation requires licensed crypto/codec libraries with restrictive terms (PESQ/POLQA — use ViSQOL or NISQA instead)
 - The feature would tie sipnab to a single vendor's ecosystem (OpenAI-only LLM, one specific PCAP format, etc.) when generic alternatives exist
 
-**Currently applied:** Phase 8.7 (per-call heuristics borrowed from Pcaptix), Phase 8.6 quality-timeline bump (matches Pcaptix's 680ms intervals), Phase 11 (cross-stream stats + perceptual MOS via NISQA, not via Sevana's licensed AQuA). Rejected: Pcaptix-style chat UI (MCP is the better abstraction), Qt desktop GUI (TUI/WASM is sipnab's positioning), OpenAI-only integration (MCP is provider-agnostic).
+**Applied / planned:** Phase 8.7 per-call heuristics borrowed from Pcaptix — *shipped*; Phase 8.6 quality-timeline bump and Phase 11 cross-stream stats + perceptual MOS via NISQA (not Sevana's licensed AQuA) — *planned, not yet built*. Rejected: Pcaptix-style chat UI (MCP is the better abstraction), Qt desktop GUI (TUI/WASM is sipnab's positioning), OpenAI-only integration (MCP is provider-agnostic).
 
 ### D23 — Documentation as Tier-1 Deliverable
 
@@ -127,9 +141,9 @@ Documentation is not a post-hoc addition to a release — it's part of the deliv
 4. **Versioned docs match released versions.** Each released version of sipnab has a corresponding pinned version of the docs site. Users on v0.3 see v0.3 docs by default; users on `main` see unreleased docs. Phase 12.1 sets up the versioning infrastructure (mike or equivalent).
 5. **Quality is gated in CI.** Link checking, spell checking, "every CLI flag is documented," "every MCP tool is documented," "every public Rust API has rustdoc" all run in CI. Phase 12.7 specifies the tooling.
 
-**Why this is a load-bearing rule:** the existing docs/ directory has 10 files, mostly reference. The roadmap (Phases 8–11) adds ~20+ new doc files. Without D23, those new docs accumulate in the same flat, no-IA structure that already doesn't scale, and the gap between "code shipped" and "users can use it" widens with every release. With D23, each phase's doc work is sized into the phase from the start, and the documentation system that Phase 12 builds catches the new content as it lands rather than being asked to retrofit it later.
+**Why this is a load-bearing rule:** without it, new docs accumulate in a flat, no-IA structure that doesn't scale, and the gap between "code shipped" and "users can use it" widens with every release. With D23, each phase's doc work is sized into the phase from the start, and the documentation system Phase 12 built (the Zola/Diátaxis site, now live) catches new content as it lands rather than retrofitting later.
 
-**Specifically excluded from this rule:** internal design documents (`docs/superpowers/specs/`, `tasks/`), implementation plans (this document), and CHANGELOG entries — these are project-internal artifacts, not user-facing documentation, and follow different conventions.
+**Specifically excluded from this rule:** internal design documents under `docs/design/` and `tasks/`, implementation plans (this document), and CHANGELOG entries — these are project-internal artifacts, not user-facing documentation, and follow different conventions.
 
 ### D24 — Tests Gate Phase Completion
 
@@ -181,7 +195,7 @@ D-decisions referenced from v6: D15 (privilege drop), D16 (process isolation), D
 
 ---
 
-## Phase 8 — MCP Server Mode
+## Phase 8 — MCP Server Mode  *(mostly shipped; 8.4 + 8.6 unbuilt)*
 
 **Goal:** A local AI agent can drive sipnab against a live capture or pcap on a remote host using Model Context Protocol.
 **Milestone:** `sipnab --mcp -d eth0 --mcp-bind 127.0.0.1:8731 --mcp-token-file /etc/sipnab/token` serves an MCP server that an agent on another host (via reverse proxy) can use to list dialogs, fetch call reports, and search SIP messages.
@@ -764,7 +778,7 @@ Six new diagnostic checks comparing the two RTP legs of a SIP call to flag asymm
 
 ---
 
-## Phase 9 — REST API Self-Description & Observability
+## Phase 9 — REST API Self-Description & Observability  *(not started)*
 
 **Goal:** Make the REST API self-describing for SDK generation and instrument the entire pipeline with OpenTelemetry so sipnab is observable in a standard Tempo/Prometheus/Loki stack.
 **Milestone (9.1):** `openapi-generator` produces a working Python client from sipnab's published `openapi.json` that calls `/v1/dialogs/:call_id` and parses the response into typed objects without manual schema writing.
@@ -950,7 +964,7 @@ The design notes — subject hierarchy, NDJSON envelope, NATS message headers, J
 
 ---
 
-## Phase 11 — Statistical Analysis & Perceptual MOS
+## Phase 11 — Statistical Analysis & Perceptual MOS  *(not started)*
 
 **Goal:** Add two analyses that commercial tools (Pcaptix, Sevana AQuA) ship and that sipnab currently lacks: cross-stream feature regression and perceptual MOS scoring of decoded audio.
 **Milestone (11.1):** `sipnab -I large_corpus.pcap --stats-analyze --target=mos --json` returns a feature-importance ranking ("loss_ratio explains 73% of MOS variance, jitter_max is second") that an operator can use to identify the dominant cause of quality issues across a fleet.
@@ -1085,7 +1099,7 @@ Add a perceptual quality score derived from decoded audio, complementary to the 
 
 ---
 
-## Phase 12 — Documentation & Website Overhaul
+## Phase 12 — Documentation & Website Overhaul  *(shipped 2026-07)*
 
 **Goal:** Replace the ad-hoc current documentation (10 reference files, no tutorials, no how-tos, no concepts, no glossary, no IA, unknown website state) with a versioned, searchable, audience-organized documentation system that scales from a 10-doc baseline to the 35+ docs the rest of this roadmap will produce.
 

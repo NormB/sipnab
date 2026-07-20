@@ -47,9 +47,6 @@ jobs:
           build-mode: none
         - language: javascript-typescript
           build-mode: none
-        # No ruby: the only .rb in the repo is the Homebrew formula
-        # (contrib/homebrew/sipnab.rb), which auto-detection over-eagerly
-        # matched — not worth a whole analysis job.
         - language: rust
           build-mode: none
         # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'rust', 'swift'

@@ -204,9 +204,9 @@ fn md_files_recursive(rel: &str) -> Vec<PathBuf> {
 }
 
 /// The wiki-source pages whose links a reader actually walks: the top-level
-/// docs plus internals/. design/, research/, superpowers/ are internal
-/// planning material, not part of the published wiki journey (but links
-/// pointing INTO them from scanned pages are still resolved).
+/// docs plus internals/. design/ and research/ are internal planning
+/// material, not part of the published wiki journey (but links pointing INTO
+/// them from scanned pages are still resolved).
 fn wiki_source_files() -> Vec<PathBuf> {
     md_files_recursive("docs")
         .into_iter()

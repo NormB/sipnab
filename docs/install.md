@@ -100,7 +100,7 @@ sudo rpm -i sipnab-0.5.19-1.x86_64.rpm
 # headless / no-ALSA variant:
 sudo rpm -i sipnab-0.5.19-1.x86_64-noaudio.rpm
 # arm64 hosts:
-sudo rpm -i sipnab-0.5.18-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.19-1.aarch64.rpm
 ```
 
 ### Homebrew (macOS)
