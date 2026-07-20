@@ -14,6 +14,7 @@ export class SipnabSession {
         wasm.__wbg_sipnabsession_free(ptr, 0);
     }
     /**
+     * Number of SIP dialogs in the loaded capture.
      * @returns {number}
      */
     dialog_count() {
@@ -264,6 +265,10 @@ export class SipnabSession {
             wasm.__wbindgen_export(deferred3_0, deferred3_1, 1);
         }
     }
+    /**
+     * Create an empty analysis session (the `new SipnabSession()` the
+     * analyze page calls before loading a capture).
+     */
     constructor() {
         const ret = wasm.sipnabsession_new();
         this.__wbg_ptr = ret >>> 0;
@@ -271,6 +276,7 @@ export class SipnabSession {
         return this;
     }
     /**
+     * Total packets read from the loaded capture.
      * @returns {bigint}
      */
     packet_count() {
@@ -278,6 +284,7 @@ export class SipnabSession {
         return BigInt.asUintN(64, ret);
     }
     /**
+     * RTP packets seen in the loaded capture.
      * @returns {bigint}
      */
     rtp_packet_count() {
@@ -285,6 +292,7 @@ export class SipnabSession {
         return BigInt.asUintN(64, ret);
     }
     /**
+     * SIP messages parsed from the loaded capture.
      * @returns {bigint}
      */
     sip_message_count() {
@@ -292,6 +300,7 @@ export class SipnabSession {
         return BigInt.asUintN(64, ret);
     }
     /**
+     * RTP streams detected in the loaded capture.
      * @returns {number}
      */
     stream_count() {

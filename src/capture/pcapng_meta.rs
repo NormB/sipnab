@@ -131,7 +131,8 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
 /// Block removed (the `editcap --discard-all-secrets` analog). All other blocks
 /// are copied byte-for-byte. Written atomically (temp+rename) so a failure never
 /// corrupts `dst`, and `src` is never modified. Returns the number of DSBs
-/// stripped.
+/// stripped. Gzip-compressed input (`.pcapng.gz`) is inflated first, like every
+/// other read path; the sanitized output is always written uncompressed.
 pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     use std::io::{Error, ErrorKind};
     const DSB_TYPE: u32 = 0x0000_000A;
@@ -140,7 +141,13 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     const SHB_BYTES: [u8; 4] = [0x0A, 0x0D, 0x0D, 0x0A];
 
     ensure_within_size_cap(std::fs::metadata(src)?.len(), MAX_METADATA_FILE_BYTES)?;
-    let bytes = std::fs::read(src)?;
+    let raw = std::fs::read(src)?;
+    let bytes = crate::capture::pcap_reader::decompress_capture(&raw)
+        .map_err(|e| Error::new(ErrorKind::InvalidData, e.to_string()))?;
+    // The on-disk cap above saw the compressed size; re-check what it inflated
+    // to before block-walking it.
+    ensure_within_size_cap(bytes.len() as u64, MAX_METADATA_FILE_BYTES)?;
+    let bytes: &[u8] = &bytes;
     if bytes.len() < 12 || bytes[0..4] != SHB_BYTES {
         return Err(Error::new(
             ErrorKind::InvalidData,
@@ -382,5 +389,67 @@ mod tests {
         std::fs::write(&src, b"definitely not a pcapng file").unwrap();
         let dst = dir.path().join("out.pcapng");
         assert!(strip_secrets(&src, &dst).is_err());
+    }
+
+    /// gzip-compress the file at `src` into `<src>.gz` and return that path.
+    fn gzip_file(src: &Path) -> std::path::PathBuf {
+        use std::io::Write;
+        let gz = src.with_extension("pcapng.gz");
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz).unwrap(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(&std::fs::read(src).unwrap()).unwrap();
+        enc.finish().unwrap();
+        gz
+    }
+
+    #[test]
+    fn strip_secrets_reads_gzip_compressed_input() {
+        // Every other read path gunzips transparently; the sanitizer must
+        // too, or a .pcapng.gz can't be stripped without a manual gunzip.
+        let dir = tempfile::tempdir().unwrap();
+        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
+        let gz = gzip_file(&plain);
+        let dst = dir.path().join("clean.pcapng");
+
+        let n = strip_secrets(&gz, &dst).unwrap();
+        assert_eq!(n, 1, "one DSB stripped from gzip input");
+
+        // Output is a plain (uncompressed) sanitized pcapng.
+        let after = read_pcapng_metadata(&dst).unwrap();
+        assert!(after.tls_secrets.is_empty(), "secrets must be gone");
+        assert!(
+            after.names.iter().any(|(_, name)| name == "sbc-edge"),
+            "names preserved: {:?}",
+            after.names
+        );
+    }
+
+    #[test]
+    fn strip_secrets_gzip_wrapping_non_pcapng_errors() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("garbage.pcapng.gz");
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&src).unwrap(),
+            flate2::Compression::default(),
+        );
+        enc.write_all(b"definitely not a pcapng file").unwrap();
+        enc.finish().unwrap();
+        let dst = dir.path().join("out.pcapng");
+        assert!(strip_secrets(&src, &dst).is_err());
+    }
+
+    #[test]
+    fn strip_secrets_truncated_gzip_errors_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = write_pcapng_with(dir.path(), "withsecret.pcapng", true);
+        let gz = gzip_file(&plain);
+        let whole = std::fs::read(&gz).unwrap();
+        let cut = dir.path().join("truncated.pcapng.gz");
+        std::fs::write(&cut, &whole[..whole.len() / 2]).unwrap();
+        let dst = dir.path().join("out.pcapng");
+        assert!(strip_secrets(&cut, &dst).is_err(), "no panic, clean error");
     }
 }
