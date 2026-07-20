@@ -666,6 +666,69 @@ fn stylesheet_link_is_content_hash_cachebusted() {
 }
 
 // ---------------------------------------------------------------------------
+// Download-personas journey: the download page serves two audiences that the
+// platform tabs alone don't. DevOps wants binaries with no interactive steps:
+// the ghcr.io container image (published on every tag since v0.5.x but absent
+// from the site for months), a version-pinned scripted install, raw artifact
+// URLs with checksum sidecars, and latest-version discovery without HTML
+// scraping. Developers want the source alongside the binaries: source
+// archives for the tag, cargo install, and the build docs. Modeled on how
+// rclone ("Downloads for scripting") and Prometheus (artifact table with
+// checksums) organize theirs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn download_page_serves_devops_and_source_personas() {
+    let tpl = read("website/templates/download.html");
+
+    // DevOps: container image, pinned + latest tags.
+    assert!(
+        tpl.contains("ghcr.io/normb/sipnab"),
+        "download page must offer the ghcr.io/normb/sipnab container image \
+         (docker.yml publishes it on every tag)"
+    );
+    // DevOps: an automation section, reachable from the page ToC.
+    assert!(
+        tpl.contains("id=\"automation\""),
+        "download page needs an #automation section for the scripted/CI path"
+    );
+    assert!(
+        tpl.contains("href=\"#automation\""),
+        "the page ToC must link to #automation"
+    );
+    // DevOps: version-pinned scripted install (install.sh honors these).
+    assert!(
+        tpl.contains("SIPNAB_VERSION"),
+        "automation section must document SIPNAB_VERSION for pinned installs"
+    );
+    // DevOps: latest-version discovery without scraping HTML.
+    assert!(
+        tpl.contains("api.github.com/repos/NormB/sipnab/releases/latest"),
+        "automation section must show latest-version discovery via the \
+         releases API"
+    );
+    // DevOps: checksum sidecars are linked next to the artifacts.
+    assert!(
+        tpl.contains(".tar.gz.sha256"),
+        "artifact table must link the per-tarball .sha256 sidecars"
+    );
+
+    // Developers: source alongside binaries.
+    assert!(
+        tpl.contains("archive/refs/tags/v"),
+        "source panel must link the tag's source archives"
+    );
+    assert!(
+        tpl.contains("cargo install sipnab"),
+        "source panel must offer cargo install (sipnab is on crates.io)"
+    );
+    assert!(
+        tpl.contains("@/docs/build.md"),
+        "source panel must link the Build-from-Source docs page"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // CSP hash journey: the production CSP (a Cloudflare transform rule, managed
 // by ops/cloudflare/refresh_csp_hashes.py) allows inline <script> blocks by
 // sha256 hash, NOT 'unsafe-inline'. Editing an inline script without
@@ -692,7 +755,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
         ),
         (
             "download.html",
-            "sha256-ctMMjX6eGBuCwOn4PgMH0LM2iCFYYMKSllifowD+6fA=",
+            "sha256-Xtyi8+j9vCissO93mpqXa8azlys1i9B1bM6M7KOXx6Q=",
         ),
         (
             "index.html",
