@@ -8,8 +8,9 @@ How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 sipnab numbers are measured on sipnab 0.5.16 (2026-07-20); the
-current release 0.5.17 is a dependency-and-docs delta with no changes to the
-measured paths, so the numbers carry over. The comparison tools' numbers come from the
+current release 0.5.18 leaves those paths unchanged except one: the `-O`
+pcap re-emit writer was rebuilt (WS8.3), measured on this host at
+831k → 901k p/s single-core (+8.3%). All other numbers carry over. The comparison tools' numbers come from the
 2026-06-24 session — same host, corpus, and method, and their versions are
 unchanged. Versus the 0.4.16 session, 0.5.16 measures faster at every
 multi-core operating point (+13–30%) and across the carrier sweep
