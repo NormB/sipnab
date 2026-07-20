@@ -19,6 +19,7 @@
           <li><a class="doc-nav-link dl-toc-os" data-os="debian" href="#platforms">Debian &amp; RHEL packages</a></li>
           <li><a class="doc-nav-link dl-toc-os" data-os="linux" href="#platforms">Linux static binary</a></li>
           <li><a class="doc-nav-link dl-toc-os" data-os="source" href="#platforms">Build from source</a></li>
+          <li><a class="doc-nav-link" href="#automation">Docker &amp; automation</a></li>
           <li><a class="doc-nav-link" href="#all-files">All release files</a></li>
           <li><a class="doc-nav-link" href="#verify">Verify your download</a></li>
         </ul>
@@ -205,32 +206,99 @@
         <button type="button" class="dl-copy" data-copy="git clone {{ config.extra.github_url }}.git&#10;cd sipnab &amp;&amp; cargo build --release --features full" aria-label="Copy commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
       </div>
     </div>
-    <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>.</p>
+    <p class="dl-note">The release binary lands at <code>target/release/sipnab</code>. Toolchain, build deps, and feature flags: <a href="{{ get_url(path='@/docs/build.md') }}">Build from Source</a>.</p>
+    <div class="dl-term">
+      <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">or straight from crates.io</span></div>
+      <div class="dl-term-body">
+        <code><span class="dl-prompt">$</span>cargo install sipnab --features full</code>
+        <button type="button" class="dl-copy" data-copy="cargo install sipnab --features full" aria-label="Copy command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+      </div>
+    </div>
+    <div class="dl-direct">
+      <span class="dl-direct-label">Source archives for v{{ v }} &mdash; the exact tagged tree, no git needed</span>
+      <div class="dl-tiles">
+        <a class="dl-tile dl-tile--sm" href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.tar.gz">
+          <span class="dl-tile-txt"><span class="dl-tile-name">Source</span><span class="dl-tile-sub">v{{ v }} &middot; tar.gz</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+        <a class="dl-tile dl-tile--sm" href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.zip">
+          <span class="dl-tile-txt"><span class="dl-tile-name">Source</span><span class="dl-tile-sub">v{{ v }} &middot; zip</span></span>
+          <span class="dl-tile-dl"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        </a>
+      </div>
+    </div>
   </div>
 
   <p class="dl-verify-hint"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7l7-4z"/><path d="M9 12l2 2 4-4"/></svg><span>Grabbed a file above? <a href="#verify">Verify its checksum &darr;</a> &mdash; sipnab is a security tool.</span></p>
+
+  <section class="dl-automation" id="automation">
+    <div class="dl-method-head"><h2>Docker &amp; automation</h2><span class="dl-rec dl-rec--blue">for CI &amp; fleets</span></div>
+    <p class="dl-lead">No interactive steps: a container image on every release, version-pinned scripted installs, and raw artifact URLs your tooling can fetch and verify.</p>
+
+    <div class="dl-direct">
+      <span class="dl-direct-label">Container image &mdash; ghcr.io, x86-64 &amp; ARM64, runs as non-root</span>
+      <div class="dl-term">
+        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">pin the version tag; <code>latest</code> tracks releases</span></div>
+        <div class="dl-term-body dl-term-body--multi">
+          <code><span class="dl-prompt">$</span>docker pull ghcr.io/normb/sipnab:{{ v }}
+<span class="dl-prompt">$</span>docker run --rm -v "$PWD:/data" ghcr.io/normb/sipnab:{{ v }} -N -I /data/capture.pcap --report</code>
+          <button type="button" class="dl-copy" data-copy="docker pull ghcr.io/normb/sipnab:{{ v }}&#10;docker run --rm -v &quot;$PWD:/data&quot; ghcr.io/normb/sipnab:{{ v }} -N -I /data/capture.pcap --report" aria-label="Copy docker commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        </div>
+      </div>
+      <p class="dl-note">Offline pcap analysis needs nothing extra. Live capture inside the container needs <code>--cap-add NET_RAW --net host</code>.</p>
+    </div>
+
+    <div class="dl-direct">
+      <span class="dl-direct-label">Scripted install &mdash; pin the version, checksum-verified, no prompts</span>
+      <div class="dl-term">
+        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">same installer the Quick-install path uses</span></div>
+        <div class="dl-term-body">
+          <code><span class="dl-prompt">$</span>curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION={{ v }} sh</code>
+          <button type="button" class="dl-copy" data-copy="curl -fsSL https://www.sipnab.com/install.sh | SIPNAB_VERSION={{ v }} sh" aria-label="Copy pinned install command"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        </div>
+      </div>
+      <p class="dl-note">Omit <code>SIPNAB_VERSION</code> to track the latest release; <code>SIPNAB_INSTALL_DIR</code> overrides the <code>/usr/local/bin</code> destination. The script picks the CPU and glibc-appropriate build and verifies its <code>sha256</code> before installing.</p>
+    </div>
+
+    <div class="dl-direct">
+      <span class="dl-direct-label">Raw URLs for your own tooling</span>
+      <div class="dl-term">
+        <div class="dl-term-head"><span class="dl-dots"><i></i><i></i><i></i></span><span class="dl-term-title">fetch artifact + checksum sidecar, then verify</span></div>
+        <div class="dl-term-body dl-term-body--multi">
+          <code><span class="dl-prompt">$</span>curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz \
+       -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256
+<span class="dl-prompt">$</span>sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256</code>
+          <button type="button" class="dl-copy" data-copy="curl -fsSLO {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz -O {{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256&#10;sha256sum -c sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256" aria-label="Copy fetch-and-verify commands"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>
+        </div>
+      </div>
+      <p class="dl-note">Swap the target triple from the <a href="#all-files">table below</a>. Latest-version discovery without scraping HTML: <code>curl -fsSL https://api.github.com/repos/NormB/sipnab/releases/latest | jq -r .tag_name</code></p>
+    </div>
+  </section>
 
   <section class="dl-allfiles" id="all-files">
     <div class="dl-method-head"><h2>Every file, one table</h2><span class="dl-rec dl-rec--dim">for the seasoned</span></div>
     <div class="dl-table-wrap" tabindex="0" role="region" aria-label="Release artifacts table">
       <table class="dl-table">
-        <caption class="dl-table-cap">Every sipnab v{{ v }} release artifact &mdash; filename, CPU architecture, what it runs on, and notes.</caption>
-        <thead><tr><th scope="col">File</th><th scope="col">CPU</th><th scope="col">Runs on</th><th scope="col">Notes</th></tr></thead>
+        <caption class="dl-table-cap">Every sipnab v{{ v }} release artifact &mdash; filename, CPU architecture, what it runs on, notes, and its checksum.</caption>
+        <thead><tr><th scope="col">File</th><th scope="col">CPU</th><th scope="col">Runs on</th><th scope="col">Notes</th><th scope="col">sha256</th></tr></thead>
         <tbody>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb"><code>sipnab_{{ v }}_amd64.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb"><code>sipnab_{{ v }}_arm64.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb"><code>sipnab_{{ v }}_amd64-noaudio.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb"><code>sipnab_{{ v }}_arm64-noaudio.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64.rpm"><code>sipnab-{{ v }}-1.x86_64.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64.rpm"><code>sipnab-{{ v }}-1.aarch64.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64-noaudio.rpm"><code>sipnab-{{ v }}-1.x86_64-noaudio.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64-noaudio.rpm"><code>sipnab-{{ v }}-1.aarch64-noaudio.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz"><code>&hellip;x86_64-unknown-linux-musl.tar.gz</code></a></td><td>x86_64 / amd64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz"><code>&hellip;aarch64-unknown-linux-musl.tar.gz</code></a></td><td>aarch64 / arm64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz"><code>&hellip;x86_64-unknown-linux-gnu.tar.gz</code></a></td><td>x86_64 / amd64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz"><code>&hellip;aarch64-unknown-linux-gnu.tar.gz</code></a></td><td>aarch64 / arm64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS 12+</td><td>M-series Macs</td></tr>
-          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS 12+</td><td>Intel Macs</td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64.deb"><code>sipnab_{{ v }}_amd64.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64.deb"><code>sipnab_{{ v }}_arm64.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>apt-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_amd64-noaudio.deb"><code>sipnab_{{ v }}_amd64-noaudio.deb</code></a></td><td>x86_64 / amd64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab_{{ v }}_arm64-noaudio.deb"><code>sipnab_{{ v }}_arm64-noaudio.deb</code></a></td><td>aarch64 / arm64</td><td>{{ config.extra.glibc_floor_distros }}</td><td>no ALSA dependency &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64.rpm"><code>sipnab-{{ v }}-1.x86_64.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64.rpm"><code>sipnab-{{ v }}-1.aarch64.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>dnf/rpm-managed, full features</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.x86_64-noaudio.rpm"><code>sipnab-{{ v }}-1.x86_64-noaudio.rpm</code></a></td><td>x86_64 / amd64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-1.aarch64-noaudio.rpm"><code>sipnab-{{ v }}-1.aarch64-noaudio.rpm</code></a></td><td>aarch64 / arm64</td><td>RHEL/Fedora (glibc &ge; {{ config.extra.glibc_floor }})</td><td>no ALSA weak dep &mdash; headless servers</td><td><a href="{{ rel }}/SHA256SUMS.txt">SUMS</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz"><code>&hellip;x86_64-unknown-linux-musl.tar.gz</code></a></td><td>x86_64 / amd64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-musl.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz"><code>&hellip;aarch64-unknown-linux-musl.tar.gz</code></a></td><td>aarch64 / arm64</td><td>any Linux, any glibc, Alpine</td><td>static &mdash; no audio playback</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-musl.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz"><code>&hellip;x86_64-unknown-linux-gnu.tar.gz</code></a></td><td>x86_64 / amd64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz"><code>&hellip;aarch64-unknown-linux-gnu.tar.gz</code></a></td><td>aarch64 / arm64</td><td>glibc &ge; {{ config.extra.glibc_floor }} + libpcap</td><td>full features incl. audio</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-unknown-linux-gnu.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz"><code>&hellip;aarch64-apple-darwin.tar.gz</code></a></td><td>Apple Silicon</td><td>macOS 12+</td><td>M-series Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-aarch64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz"><code>&hellip;x86_64-apple-darwin.tar.gz</code></a></td><td>Intel</td><td>macOS 12+</td><td>Intel Macs</td><td><a href="{{ rel }}/sipnab-{{ v }}-x86_64-apple-darwin.tar.gz.sha256">.sha256</a></td></tr>
+          <tr><td><a href="{{ rel }}/SHA256SUMS.txt"><code>SHA256SUMS.txt</code></a></td><td>&mdash;</td><td>&mdash;</td><td>checksums for every artifact above</td><td>&mdash;</td></tr>
+          <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.tar.gz"><code>v{{ v }}.tar.gz</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.92+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
+          <tr><td><a href="{{ config.extra.github_url }}/archive/refs/tags/v{{ v }}.zip"><code>v{{ v }}.zip</code> (source)</a></td><td>&mdash;</td><td>anywhere Rust 1.92+ builds</td><td>tagged source tree</td><td>&mdash;</td></tr>
         </tbody>
       </table>
     </div>
@@ -317,7 +385,7 @@
         if (en.isIntersecting) { tocSection = en.target.id; markToc(); }
       });
     }, { rootMargin: '-15% 0px -70% 0px' });
-    ['installer', 'platforms', 'all-files', 'verify'].forEach(function (id) {
+    ['installer', 'platforms', 'automation', 'all-files', 'verify'].forEach(function (id) {
       var el = document.getElementById(id);
       if (el) { io.observe(el); }
     });
