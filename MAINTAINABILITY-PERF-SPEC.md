@@ -712,13 +712,20 @@ land once, after the structure settles.
 ## WS8 — 0.5.16 benchmark re-validation follow-ups (2026-07-20, thor-02)
 
 The 0.5.16 re-run (see docs/benchmarks page) improved every multi-core and
-sweep throughput number but surfaced two regressions vs the 0.4.16 session:
+sweep throughput number but appeared to surface two regressions vs the
+0.4.16 session. **Both were closed the same day by a controlled A/B** of the
+0.4.16 and 0.5.17 release binaries, same host/corpus/pinning, median-of-5:
 
-- **WS8.1 — single-core `-O` pcap re-emit −19%** (0.85M vs 1.05M p/s on the
-  535k corpus; plain single-core is flat at 1.22M and multi-core with `-O`
-  *improved* +14%, so the suspect is the pcap writer serializing against
-  single-core decode). Profile `-O` on `--cores 1`.
-- **WS8.2 — sweep RSS +18–43% at small scales** (39 vs 33 MiB @500 calls,
-  103 vs 72 @2000; converges by 8k calls: 233 vs 217, 522 vs 507 @20k).
-  Growth pattern suggests a new per-dialog/stream allocation; heap-profile
-  at 2000 calls.
+- **WS8.1 — CLOSED, not a regression.** cores=1 with `-O`: 0.4.16 = 826k
+  p/s, 0.5.17 = 814k p/s (−1.5%, noise); plain cores=1: 1.26M vs 1.24M.
+  The June "1.05M" row does not reproduce with the 0.4.16 binary itself —
+  session variance in the June figures.
+- **WS8.2 — CLOSED, not a regression.** Sweep RSS with `-O`: @500 calls
+  0.4.16 = 40 MiB vs 0.5.17 = 39; @2000 calls 99 vs 103. The June 33/72
+  figures do not reproduce with 0.4.16 either.
+- **WS8.3 — OPEN (opportunity, version-independent):** `-O` pcap re-emit
+  costs ~35% of single-core throughput on either version (1.26M → 0.83M
+  p/s), while multi-core absorbs it. The writer sits inline in the packet
+  loop (src/app/batch.rs, PcapWriter::write per packet); candidate: batch
+  or buffer writes off the hot path. Not scheduled — pick up
+  opportunistically.
