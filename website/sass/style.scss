@@ -445,16 +445,6 @@ input:focus-visible,
   margin: 0 auto;
 }
 
-.hero-kicker {
-  font-family: $font-mono;
-  font-size: 0.74rem;
-  font-weight: 600;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: $accent;
-  margin: 0 0 1.1rem;
-}
-
 .hero-title {
   font-family: $font-mono;
   font-size: clamp(3rem, 8vw, 4.75rem);
@@ -2055,7 +2045,6 @@ input:focus-visible,
 @media (max-width: 480px) {
   .nav-right { gap: 0.5rem; }
   .hero { padding: 3.25rem 1rem 1.5rem; }
-  .hero-kicker { font-size: 0.66rem; letter-spacing: 0.18em; }
   .hero-actions { flex-direction: column; align-items: stretch; }
   .hero-actions .btn { justify-content: center; }
   .arch-grid { grid-template-columns: 1fr; }
