@@ -708,3 +708,17 @@ land once, after the structure settles.
 - **Existing allocator/hashing choices** (mimalloc, ahash, memchr line
   scanner, crossbeam, parking_lot): confirmed present and correct; not
   revisited.
+
+## WS8 — 0.5.16 benchmark re-validation follow-ups (2026-07-20, thor-02)
+
+The 0.5.16 re-run (see docs/benchmarks page) improved every multi-core and
+sweep throughput number but surfaced two regressions vs the 0.4.16 session:
+
+- **WS8.1 — single-core `-O` pcap re-emit −19%** (0.85M vs 1.05M p/s on the
+  535k corpus; plain single-core is flat at 1.22M and multi-core with `-O`
+  *improved* +14%, so the suspect is the pcap writer serializing against
+  single-core decode). Profile `-O` on `--cores 1`.
+- **WS8.2 — sweep RSS +18–43% at small scales** (39 vs 33 MiB @500 calls,
+  103 vs 72 @2000; converges by 8k calls: 233 vs 217, 522 vs 507 @20k).
+  Growth pattern suggests a new per-dialog/stream allocation; heap-profile
+  at 2000 calls.

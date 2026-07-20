@@ -4,6 +4,14 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `--strip-secrets` now reads gzip-compressed input (`.pcapng.gz`) like every
+  other path; the sanitized output is always written uncompressed.
+
+### Fixed
+- wasm32 builds are warning-free again: the six `SipnabSession` counter
+  accessors were missing doc comments.
+
 ## [0.5.16] - 2026-07-19
 
 ### Added
