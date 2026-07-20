@@ -114,6 +114,30 @@ pub const TS_COL_WIDTH: usize = 13;
 /// Width reserved for each endpoint column (pipe + padding).
 pub const ENDPOINT_COL_WIDTH: usize = 20;
 
+/// Width to give the ladder pane when the call-flow view is split with the
+/// detail pane (`raw_preview`).
+///
+/// The ladder spreads `n_participants` columns across its width; the gap
+/// between adjacent columns must fit a SIP method / status label on the arrow
+/// (~14 cols incl. the arrowhead) or `format_arrow` truncates it — the
+/// multi-leg (B2BUA) case, where 4-6 legs packed into the default ~60% split
+/// squeezed methods like `SUBSCRIBE` into `SUBSC...`. When the configured
+/// split would starve the ladder, widen it (shrinking the detail pane down to
+/// a floor). The common 2-participant call is unaffected — it keeps the
+/// configured split exactly.
+pub fn ladder_split_width(n_participants: usize, detail_pct: u16, total: u16) -> u16 {
+    let default_ladder = total.saturating_mul(100u16.saturating_sub(detail_pct)) / 100;
+    if n_participants <= 2 {
+        return default_ladder;
+    }
+    const GAP: u16 = 14; // pipe-to-pipe span that fits a ~10-char label + arrow
+    const DETAIL_FLOOR: u16 = 24; // never shrink the detail pane below this
+    let n = n_participants as u16;
+    let needed = TS_COL_WIDTH as u16 + 2 + n.saturating_sub(1) * GAP;
+    let cap = total.saturating_sub(DETAIL_FLOOR).max(default_ladder);
+    needed.max(default_ladder).min(cap)
+}
+
 // ── Public types ────────────────────────────────────────────────────
 
 /// Visual selection state for a message in the call flow.
@@ -184,6 +208,47 @@ pub struct FormattedMessage {
     /// synthetic rows: spacers and RTP bars). Keeps folding, expansion and
     /// selection independent of display-mode row insertion.
     pub raw_index: Option<usize>,
+}
+
+#[cfg(test)]
+mod ladder_split_tests {
+    use super::*;
+
+    /// The gap between adjacent participant pipes for a given ladder width.
+    fn min_gap(ladder_w: u16, n: usize) -> u16 {
+        let usable = ladder_w.saturating_sub(TS_COL_WIDTH as u16 + 2);
+        usable / (n as u16 - 1)
+    }
+
+    #[test]
+    fn two_party_call_keeps_the_configured_split() {
+        // The common case must be untouched: 60/40 at 100 cols -> 60.
+        assert_eq!(ladder_split_width(2, 40, 100), 60);
+        assert_eq!(ladder_split_width(1, 40, 100), 60);
+    }
+
+    #[test]
+    fn multileg_widens_so_methods_do_not_truncate() {
+        // SUBSCRIBE (9) needs a >= 13-col gap. At the 98-col demo width with
+        // 4-5 B2BUA legs, the default 60% split gives gaps < 13 (truncation);
+        // the widened ladder must restore a method-fitting gap.
+        for n in 3..=5usize {
+            let w = ladder_split_width(n, 40, 98);
+            assert!(
+                min_gap(w, n) >= 13,
+                "n={n}: ladder {w} gives gap {} (< 13, SUBSCRIBE truncates)",
+                min_gap(w, n)
+            );
+        }
+    }
+
+    #[test]
+    fn detail_pane_keeps_a_floor() {
+        // Even a 6-leg ladder must leave the detail pane usable width.
+        let total = 98;
+        let w = ladder_split_width(6, 40, total);
+        assert!(total - w >= 24, "detail pane starved: {} left", total - w);
+    }
 }
 
 #[cfg(test)]

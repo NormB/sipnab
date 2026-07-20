@@ -156,14 +156,19 @@ pub(in crate::tui) fn render_app(
                 let cid = call_id.clone();
                 let sel = app.flow.selected;
 
-                // Horizontal split: ladder on left, raw detail on right (sngrep style)
+                // Horizontal split: ladder on left, raw detail on right (sngrep
+                // style). The ladder width is widened past the configured split
+                // when a multi-leg (B2BUA) flow needs it, so packed participant
+                // columns don't truncate their method/status arrow labels.
                 let (ladder_area, detail_area) = if app.flow.raw_preview {
-                    let pct = app.flow.raw_preview_pct;
-                    let [left, right] = Layout::horizontal([
-                        Constraint::Percentage(100 - pct),
-                        Constraint::Percentage(pct),
-                    ])
-                    .areas(main_area);
+                    let ladder_w = call_flow::ladder_split_width(
+                        app.flow.ladder.participants.len(),
+                        app.flow.raw_preview_pct,
+                        main_area.width,
+                    );
+                    let [left, right] =
+                        Layout::horizontal([Constraint::Length(ladder_w), Constraint::Min(0)])
+                            .areas(main_area);
                     (left, Some(right))
                 } else {
                     (main_area, None)
