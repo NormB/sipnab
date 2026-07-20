@@ -172,12 +172,13 @@ pub fn format_sip_message(
                 out.push_str("\n[truncated]\n");
             }
             _ => {
-                // Don't dump full raw for show_empty with no body
-                if !msg.body.is_empty() {
-                    out.push_str(&raw_str);
-                    if !raw_str.ends_with('\n') {
-                        out.push('\n');
-                    }
+                // We only reach here when the message has a body OR show_empty
+                // is set (the outer guard). Either way, print the full raw so
+                // bodyless messages reveal their header block instead of being
+                // stuck at the one-line summary.
+                out.push_str(&raw_str);
+                if !raw_str.ends_with('\n') {
+                    out.push('\n');
                 }
             }
         }
@@ -263,6 +264,71 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("should parse response")
+    }
+
+    fn make_options() -> SipMessage {
+        // A bodyless request, like the OPTIONS keepalives in a real trace.
+        let raw = build_sip(
+            "OPTIONS sip:bob@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKopt",
+                "From: <sip:alice@example.com>;tag=opt1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: options-keepalive@example.com",
+                "CSeq: 42 OPTIONS",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse OPTIONS")
+    }
+
+    // Regression: `--show-empty` was a dead flag. Bodyless messages (every
+    // response, OPTIONS, REGISTER, ACK, BYE, in-dialog SUBSCRIBE) could only
+    // ever show their one-line summary — the raw header block was hard-blocked
+    // regardless of the flag, so From/To/Call-ID/CSeq/Via were unreachable in
+    // `-N` output. show_empty must actually reveal those headers.
+    #[test]
+    fn show_empty_reveals_headers_of_bodyless_messages() {
+        for msg in [make_options(), make_error_response()] {
+            let opts = OutputOptions {
+                color: ColorMode::Never,
+                show_empty: true,
+                ..Default::default()
+            };
+            let out = format_sip_message(&msg, &opts, None);
+            assert!(
+                out.contains("Call-ID:") && out.contains("CSeq:"),
+                "show_empty must print the full header block of a bodyless \
+                 message, but got only:\n{out}"
+            );
+        }
+    }
+
+    // The terse default (no --show-empty) still shows only the summary line for
+    // bodyless messages — no wall of headers for every OPTIONS keepalive.
+    #[test]
+    fn bodyless_messages_stay_terse_without_show_empty() {
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            show_empty: false,
+            ..Default::default()
+        };
+        let out = format_sip_message(&make_options(), &opts, None);
+        assert!(
+            out.contains("OPTIONS") && !out.contains("Call-ID:"),
+            "without show_empty a bodyless message must be one line only, \
+             got:\n{out}"
+        );
     }
 
     #[test]

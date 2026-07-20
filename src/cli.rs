@@ -389,8 +389,11 @@ pub struct Cli {
     #[arg(help_heading = "Output", short = 'A', long = "after", value_name = "N")]
     pub after: Option<usize>,
 
-    /// Show messages with empty bodies.
-    #[arg(help_heading = "Output", long)]
+    /// Show the full header block of messages that have no body (responses,
+    /// OPTIONS, REGISTER, ACK, BYE, ...). Without this, bodyless messages show
+    /// only their one-line summary; messages that carry a body always show
+    /// their full detail.
+    #[arg(help_heading = "Output", long, visible_alias = "full")]
     pub show_empty: bool,
 
     /// Annotate the transport tag with the IANA IP protocol number, e.g.
@@ -1378,6 +1381,14 @@ mod tests {
         // Long-only: `-N` is already taken by `--no-tui`.
         assert!(Cli::parse_from_args(["sipnab", "--proto-number"]).proto_number);
         assert!(!Cli::parse_from_args(["sipnab"]).proto_number);
+    }
+
+    #[test]
+    fn show_empty_flag_and_full_alias_parse() {
+        assert!(Cli::parse_from_args(["sipnab", "--show-empty"]).show_empty);
+        // `--full` is a visible alias of --show-empty.
+        assert!(Cli::parse_from_args(["sipnab", "--full"]).show_empty);
+        assert!(!Cli::parse_from_args(["sipnab"]).show_empty);
     }
 
     #[test]

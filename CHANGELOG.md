@@ -4,6 +4,14 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- `-N` CLI output: `--show-empty` was a dead flag — bodyless SIP messages
+  (all responses, `OPTIONS`, `REGISTER`, `ACK`, `BYE`, in-dialog `SUBSCRIBE`)
+  could only ever show their one-line summary; their header block
+  (From/To/Call-ID/CSeq/Via/Contact/...) was unreachable. `--show-empty`
+  (new alias `--full`) now prints the full headers of bodyless messages as
+  documented. The terse one-line default is unchanged.
+
 ## [0.5.19] - 2026-07-20
 
 No packet-path code changes versus 0.5.18 — this release exists to ship
