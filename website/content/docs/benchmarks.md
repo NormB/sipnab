@@ -7,20 +7,24 @@ description = "Reproducible throughput and memory benchmarks: sipnab multi-core 
 How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
-sipnab numbers are measured on sipnab 0.5.16 (2026-07-20); the
-current release 0.5.18 leaves those paths unchanged except one: the `-O`
-pcap re-emit writer was rebuilt (WS8.3), measured on this host at
-831k → 901k p/s single-core (+8.3%). All other numbers carry over. The comparison tools' numbers come from the
-2026-06-24 session — same host, corpus, and method, and their versions are
-unchanged. Versus the 0.4.16 session, 0.5.16 measures faster at every
-multi-core operating point (+13–30%) and across the carrier sweep
-(+31–107%). Two apparent regressions in the first re-run (single-core `-O`
-throughput, small-scale RSS) were checked with a controlled same-day A/B of
-the 0.4.16 and 0.5.17 binaries: both measure identically, so those deltas
-were session variance in the June figures, not version regressions. What the
-A/B does confirm — for either version — is that `-O` pcap re-emit costs
-about a third of single-core throughput (1.26M → 0.83M p/s), a standing
-optimization opportunity (WS8.3), not a regression.
+sipnab numbers are measured on the released 0.5.18 artifact — the
+current release 0.5.18, checksum-verified, run 2026-07-20. The comparison
+tools' numbers come from the 2026-06-24 session — same host, corpus, and
+method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
+measures faster at every multi-core operating point (+9–16%) and across the
+carrier sweep (+30–107%).
+
+0.5.18's rebuilt `-O` re-emit writer (WS8.3) deserves an honest word: a
+same-toolchain A/B shows the per-packet write cost down 43%, and write
+errors (full disk, dead mount) now surface instead of being silently
+discarded — but end-to-end `-O` throughput on *this* host is unchanged,
+because here the re-emit is bound by pushing the corpus's bytes through the
+page cache, not by per-packet overhead. On an x86 dev box the same change
+measures +8–16% end-to-end. (Two apparent regressions in an earlier re-run —
+single-core `-O` throughput and small-scale RSS — were checked with a
+controlled same-day A/B of the 0.4.16 and 0.5.17 binaries: both measured
+identically, so those deltas were session variance in the June figures, not
+version regressions.)
 
 > **Read this first.** These tools do *different amounts of work*, so a raw
 > throughput number only means something next to *what was reconstructed*.
@@ -38,7 +42,7 @@ optimization opportunity (WS8.3), not a regression.
   `INVITE → … → 200 → ACK → [bidirectional RTP] → BYE`, ~93% RTP by packet count.
 - **Method:** offline pcap reconstruction (`-I file`), median-of-5 after one
   discarded warmup. `pkts/s = packets ÷ wall-clock seconds`.
-- **Version:** sipnab 0.5.16. **Date:** 2026-07-20.
+- **Version:** sipnab 0.5.18 (release artifact). **Date:** 2026-07-20.
 
 ## Multi-core offline reconstruction (sipnab)
 
@@ -47,10 +51,10 @@ throughput holds a flat plateau from 2 cores up:
 
 | cores | pkts/s |
 |------:|-------:|
-| 1 | 1.22M |
-| 2 | **3.27M** |
-| 4 | 2.63M |
-| 8 | 2.44M |
+| 1 | 1.20M |
+| 2 | **2.90M** |
+| 4 | 2.52M |
+| 8 | 2.35M |
 
 The plateau past cores 2 is the single sequential pcap reader (read + buffer copy
 + host-pair peek), not the core count. Before v0.4.16 a per-packet cross-core
@@ -70,8 +74,8 @@ throughput number only means something next to the work behind it.
 | sngrep 1.8.0 | 0.20M | 1.0× | SIP dialogs (100); no RTP-stream reconstruction headless |
 | sipgrep 2.2.0 | 2.46M | 12.2× | grep-style SIP line match + Call-ID grouping; **no RTP** |
 | voipmonitor 2026.05.0 | 0.73M | 3.7× | full call/CDR + RTP-stream association |
-| **sipnab 0.5.16 `--cores 1`** | 0.85M | **4.2×** | SIP dialogs + **200 RTP streams** |
-| **sipnab 0.5.16 `--cores 4`** | 2.62M | **13.1×** | identical full SIP + RTP reconstruction |
+| **sipnab 0.5.18 `--cores 1`** | 0.83M | **4.2×** | SIP dialogs + **200 RTP streams** |
+| **sipnab 0.5.18 `--cores 4`** | 2.50M | **12.5×** | identical full SIP + RTP reconstruction |
 
 Read it in three buckets:
 
@@ -80,14 +84,14 @@ Read it in three buckets:
   500k RTP packets into streams). Its lead is mostly "it does less."
 - **Full reconstruction (sngrep, voipmonitor, sipnab)** parse SIP into dialogs;
   voipmonitor and sipnab additionally associate RTP into media streams.
-- Within that class **sipnab wins**: single-core is **4.2× sngrep and 1.2×
-  voipmonitor**, four-core is **13.1× sngrep and 3.6× voipmonitor** — and four-core
-  now beats grep-only sipgrep's wall-clock (0.20 s vs 0.22 s) *while also
+- Within that class **sipnab wins**: single-core is **4.2× sngrep and 1.1×
+  voipmonitor**, four-core is **12.5× sngrep and 3.4× voipmonitor** — and four-core
+  matches grep-only sipgrep's wall-clock (0.21 s vs 0.22 s) *while also
   reconstructing all 200 RTP streams*. There is no configuration where sipnab is
   the slowest at comparable work. (Single-core with `-O` re-emit measures the
   same on 0.4.16 and 0.5.17 in a controlled A/B — the June 1.05M row was
   session variance. The `-O` write itself costs ~35% single-core on either
-  version; without `-O` single-core is flat at 1.22M.)
+  version; without `-O` single-core is flat at 1.20M.)
 
 > **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
 > voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
@@ -107,15 +111,15 @@ correctly at every scale** — the difference is throughput and memory:
 
 | calls | pkts | voipmonitor | sipnab | sipnab speed-up | sipnab RSS edge |
 |------:|-----:|---|---|---:|---:|
-| 500 | 53.5k | 72k p/s · 150 MiB | 707k p/s · 39 MiB | 9.8× | 3.8× |
-| 2000 | 214k | 155k p/s · 506 MiB | 690k p/s · 103 MiB | 4.5× | 4.9× |
-| 8000 | 856k | 233k p/s · 1931 MiB | 685k p/s · 233 MiB | 2.9× | 8.3× |
-| 20000 | 2.14M | 264k p/s · 4782 MiB | 703k p/s · 522 MiB | 2.7× | 9.2× |
+| 500 | 53.5k | 72k p/s · 150 MiB | 699k p/s · 42 MiB | 9.7× | 3.6× |
+| 2000 | 214k | 155k p/s · 506 MiB | 697k p/s · 96 MiB | 4.5× | 5.3× |
+| 8000 | 856k | 233k p/s · 1931 MiB | 726k p/s · 230 MiB | 3.1× | 8.4× |
+| 20000 | 2.14M | 264k p/s · 4782 MiB | 703k p/s · 519 MiB | 2.7× | 9.2× |
 
 **Honest read:** sipnab leads on throughput at every measured scale, holding a
 flat ~700k p/s while voipmonitor's multithreaded per-packet throughput *climbs*
 with scale (72k → 264k p/s) — on 0.4.16 that climb crossed over at roughly
-~40k calls; on 0.5.16 the sweep no longer flags a crossover inside any
+~40k calls; on 0.5.18 the sweep no longer flags a crossover inside any
 plausible operating range. sipnab's standing advantage is still **memory** —
 about 9.2× less RSS at 20k calls (0.5 GiB vs 4.7 GiB), because voipmonitor
 buffers and spools heavily. (An apparent small-scale RSS growth vs the June

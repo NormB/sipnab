@@ -729,6 +729,12 @@ sweep throughput number but appeared to surface two regressions vs the
   also silently discarded write errors). Replaced with `RawPcapWriter`
   (writer.rs): classic-pcap records through a 512 KiB `BufWriter`, LE
   headers written directly, errors surfaced. Measured (535k corpus,
-  cores=1, median-of-5): thor-02 831k → 901k p/s (+8.3%; writer-portion
-  cost −18%), x86 dev box +4%. Residual `-O` cost is data-volume bound
-  (page-cache memcpy of the re-emitted bytes) — no further cheap wins.
+  cores=1, median-of-5) — CORRECTED 2026-07-20 after a provenance error:
+  the initial "+8.3% on thor" compared a thor-native build against a CI
+  cross-built artifact and was mostly toolchain delta. The clean numbers:
+  same-toolchain A/B (writer commit vs parent, identical local rustc) puts
+  the per-packet write cost at −43% (overhead 115ms → 65ms over 535k pkts)
+  and x86 e2e at +8–16%; artifact-vs-artifact on thor-02 shows e2e
+  UNCHANGED (831k → 827k) because there the re-emit is bound by page-cache
+  data volume, not per-packet overhead. The unconditional win is error
+  surfacing. Lesson: A/B only same-provenance binaries.
