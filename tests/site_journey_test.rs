@@ -791,6 +791,82 @@ fn releases_are_attested_and_site_content_is_licensed() {
 }
 
 // ---------------------------------------------------------------------------
+// Stat-tile journey: each homepage `.arch-stat` carries a `data-count` (the
+// JS count-up target) AND visible fallback text (what no-JS / pre-animation
+// visitors see). These drifted apart — data-count="2569" while the visible
+// text still read 2562 — and the version-count pre-commit gate only checks
+// data-count + prose, so the stale fallback shipped. This guard fails when a
+// tile's integer fallback text disagrees with its own data-count.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn homepage_stat_fallback_text_matches_data_count() {
+    let html = read("website/templates/index.html");
+    // Capture the data-count value and the element's inner text together.
+    let re = regex::Regex::new(
+        r#"(?s)<span class="arch-stat" data-count="([0-9.]+)"[^>]*>(.*?)</span>"#,
+    )
+    .unwrap();
+    let mut offenders = Vec::new();
+    for cap in re.captures_iter(&html) {
+        let data = &cap[1];
+        // The leading numeric run of the visible text (e.g. "12.5&times; sngrep" -> "12.5").
+        let text = cap[2].trim();
+        let num: String = text
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if num.is_empty() {
+            continue;
+        }
+        if num != *data {
+            offenders.push(format!(
+                "data-count={data} but fallback text starts {num:?}"
+            ));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "homepage stat tile fallback text disagrees with its data-count \
+         (no-JS visitors see the stale number):\n{}",
+        offenders.join("\n")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// MSRV journey: the download page once advertised "Rust 1.92+" while
+// Cargo.toml's rust-version was 1.94 — a floor the site under-stated. The
+// download page's Rust version claims must equal the crate's real MSRV.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn download_page_msrv_matches_cargo() {
+    let cargo = read("Cargo.toml");
+    let msrv = cargo
+        .lines()
+        .find_map(|l| l.strip_prefix("rust-version = "))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .expect("Cargo.toml has no rust-version");
+
+    let dl = read("website/templates/download.html");
+    let rust_ref = regex::Regex::new(r"Rust (\d+\.\d+)\+").unwrap();
+    let mut found_any = false;
+    for cap in rust_ref.captures_iter(&dl) {
+        found_any = true;
+        assert_eq!(
+            &cap[1], &msrv,
+            "download.html advertises Rust {}+ but Cargo.toml rust-version is {msrv}",
+            &cap[1]
+        );
+    }
+    assert!(
+        found_any,
+        "download.html no longer states a 'Rust <x.y>+' floor — the MSRV \
+         guard has nothing to check; update this test if that's intentional"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // CSP hash journey: the production CSP (a Cloudflare transform rule, managed
 // by ops/cloudflare/refresh_csp_hashes.py) allows inline <script> blocks by
 // sha256 hash, NOT 'unsafe-inline'. Editing an inline script without

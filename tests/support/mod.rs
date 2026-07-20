@@ -1,9 +1,10 @@
-//! Shared test-support helpers (verification plan M1 — T1.1 `normalize`, T1.5 env).
+//! Shared test-support helpers.
 //!
 //! `normalize()` replaces volatile substrings (timestamps, durations, temp
 //! paths, PIDs, ephemeral loopback ports) with stable placeholders so golden /
 //! snapshot comparisons stay reproducible across runs, machines, and locales.
-//! See `tasks/verification-spec.md` §4d (determinism contract) and §13.4.
+//! This is the determinism contract every golden/snapshot test relies on: two
+//! runs that differ only in those volatile substrings must normalize equal.
 //!
 //! This file lives in a `tests/` subdirectory, so cargo does not compile it as
 //! its own test binary; consumers include it with

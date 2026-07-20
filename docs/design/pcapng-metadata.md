@@ -1,15 +1,17 @@
 # Design: pcapng metadata — name resolution (NRB) and decryption secrets (DSB)
 
-Status: **proposal / spec** · 2026-06-16
+Status: **implemented** · design 2026-06-16
 
-This document analyzes storing sipnab metadata in pcapng blocks and specs the
-work. Two block types are in scope, with **opposite risk profiles**:
+Both block types specced here shipped: `src/capture/writer.rs` writes the NRB
+(`write_name_resolution_block`) and the DSB, with `strip-secrets` tooling for
+sanitization. This document is retained as the design rationale. Two block
+types were in scope, with **opposite risk profiles**:
 
 - **Name Resolution Block (NRB)** — IP → host/FQDN mappings. *Low risk, high
-  cross-tool value.* **Recommended to build.**
+  cross-tool value.* Built: written by default.
 - **Decryption Secrets Block (DSB)** — keys that decrypt the captured traffic.
-  *High risk.* **Recommended: external-by-default + sanitize tooling; embedding
-  only as a guarded, explicit opt-in (or decline embedding entirely).**
+  *High risk.* Built external-by-default with sanitize tooling; embedding is a
+  guarded, explicit opt-in.
 
 Guiding principle, mirrored from Wireshark: **an NRB makes a file more useful to
 share; a DSB makes a file more dangerous to share.** Wireshark exposes name

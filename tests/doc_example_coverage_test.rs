@@ -4,7 +4,7 @@
 //! Companion to `docs_drift_test` (which proves documented flags EXIST) and
 //! `flag_coverage_test` (which proves flags are TESTED). This one proves flags
 //! are DEMONSTRATED — the maintainer's "every parameter gets multiple
-//! examples" requirement (tasks/docs-website-improvements-2026-07-18.md).
+//! examples" requirement.
 //!
 //! Regression history: an audit on 2026-07-18 found 80 flags with zero
 //! examples and 17 with one; grouped `**Examples**` blocks in
