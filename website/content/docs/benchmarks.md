@@ -11,11 +11,15 @@ sipnab numbers are measured on sipnab 0.5.16 (2026-07-20); the
 current release 0.5.17 is a dependency-and-docs delta with no changes to the
 measured paths, so the numbers carry over. The comparison tools' numbers come from the
 2026-06-24 session — same host, corpus, and method, and their versions are
-unchanged. Versus 0.4.16, 0.5.16 is faster at every
+unchanged. Versus the 0.4.16 session, 0.5.16 measures faster at every
 multi-core operating point (+13–30%) and across the carrier sweep
-(+31–107%); two regressions are called out honestly below and tracked for
-the next release: single-core throughput with `-O` pcap re-emit (−19%) and
-small-scale sweep RSS (+18–43%, still far below the peer tool).
+(+31–107%). Two apparent regressions in the first re-run (single-core `-O`
+throughput, small-scale RSS) were checked with a controlled same-day A/B of
+the 0.4.16 and 0.5.17 binaries: both measure identically, so those deltas
+were session variance in the June figures, not version regressions. What the
+A/B does confirm — for either version — is that `-O` pcap re-emit costs
+about a third of single-core throughput (1.26M → 0.83M p/s), a standing
+optimization opportunity (WS8.3), not a regression.
 
 > **Read this first.** These tools do *different amounts of work*, so a raw
 > throughput number only means something next to *what was reconstructed*.
@@ -79,9 +83,10 @@ Read it in three buckets:
   voipmonitor**, four-core is **13.1× sngrep and 3.6× voipmonitor** — and four-core
   now beats grep-only sipgrep's wall-clock (0.20 s vs 0.22 s) *while also
   reconstructing all 200 RTP streams*. There is no configuration where sipnab is
-  the slowest at comparable work. (Single-core with `-O` re-emit is 19% slower
-  than 0.4.16 measured — a tracked regression; without `-O` single-core is flat
-  at 1.22M.)
+  the slowest at comparable work. (Single-core with `-O` re-emit measures the
+  same on 0.4.16 and 0.5.17 in a controlled A/B — the June 1.05M row was
+  session variance. The `-O` write itself costs ~35% single-core on either
+  version; without `-O` single-core is flat at 1.22M.)
 
 > **Fairness notes.** The corpus is synthetic and reuses SDP media endpoints, so
 > voipmonitor's default `sdp_multiplication=3` DoS-guard would suppress the
@@ -112,9 +117,10 @@ with scale (72k → 264k p/s) — on 0.4.16 that climb crossed over at roughly
 ~40k calls; on 0.5.16 the sweep no longer flags a crossover inside any
 plausible operating range. sipnab's standing advantage is still **memory** —
 about 9.2× less RSS at 20k calls (0.5 GiB vs 4.7 GiB), because voipmonitor
-buffers and spools heavily. (sipnab's small-scale RSS grew vs 0.4.16 — 39 vs
-33 MiB at 500 calls, 103 vs 72 at 2000 — a tracked regression, though still
-4–5× below voipmonitor at those scales.) (voipmonitor's *live*
+buffers and spools heavily. (An apparent small-scale RSS growth vs the June
+figures — 39 vs 33 MiB at 500 calls — was A/B-checked: 0.4.16 measures
+40/99 MiB on the same day 0.5.17 measures 39/103, so the delta was session
+variance, not a version regression.) (voipmonitor's *live*
 capture reconstructed 0 calls on this box's virtual NIC — an mmap-ring quirk — so
 this comparison is offline-only.)
 
