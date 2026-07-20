@@ -4,6 +4,43 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.19] - 2026-07-20
+
+No packet-path code changes versus 0.5.18 — this release exists to ship
+build provenance and the reworked website/download experience.
+
+### Added
+- Sigstore build-provenance attestations on every release artifact
+  (tarballs, `.deb`, `.rpm`, `SHA256SUMS.txt`) and on the ghcr container
+  image. Verify a download with
+  `gh attestation verify <file> --repo NormB/sipnab`, or the image with
+  `gh attestation verify oci://ghcr.io/normb/sipnab:<tag> --repo NormB/sipnab`.
+- Download page: "Docker & automation" section (ghcr image with pin-vs-latest
+  tags, version-pinned scripted install via `SIPNAB_VERSION`, raw-URL
+  fetch-and-verify, latest-version discovery through the releases API);
+  source archives, `cargo install`, and build-docs links on the Source tab;
+  sha256 column and complete artifact inventory in the all-files table.
+- Site footer states authorship and content licensing:
+  MIT / Apache-2.0 (code) · CC BY 4.0 (docs) · copyright.
+
+### Fixed
+- Download page platform tabs (Deb/RPM, Linux, Source) were dead in
+  production: the tab script's sha256 no longer matched the CSP header's
+  allowlist, so browsers silently blocked it. The CSP rule is refreshed and
+  a pinned-hash test gate now fails any inline-script edit until the rule
+  is updated.
+- Footer rendered as three unstyled rows for returning visitors: the
+  stylesheet cache-buster was the release version, which site-only changes
+  never bump, so new HTML shipped against stale cached CSS. The stylesheet
+  URL now carries a content hash.
+- GitHub Wiki benchmarks were stale (0.4.16 tables and a retracted perf
+  claim): the wiki-source docs are re-synced and a drift gate keeps the
+  benchmark tables identical between the wiki source and the website.
+
+### Changed
+- Site footer is a single non-wrapping row; the Patreon / GitHub Sponsors /
+  GitHub links moved out of the top nav into the footer as icons.
+
 ## [0.5.18] - 2026-07-20
 
 ### Changed
