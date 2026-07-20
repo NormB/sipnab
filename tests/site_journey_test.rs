@@ -637,3 +637,30 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
          breaks into a second line"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CSS cache-buster journey: the stylesheet link once used `?v=<version>`, so
+// a site-only change (same crate version) shipped new HTML against CACHED old
+// CSS — the single-row footer rendered as three unstyled block rows for every
+// returning visitor until their cache expired. The buster must be Zola's
+// content hash (`cachebust=true`), which changes whenever the CSS does.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn stylesheet_link_is_content_hash_cachebusted() {
+    let base = read("website/templates/base.html");
+    let link = base
+        .lines()
+        .find(|l| l.contains("style.css") && l.contains("stylesheet"))
+        .expect("base.html has no style.css <link>");
+    assert!(
+        !link.contains("?v="),
+        "style.css is busted by release version — a site-only change keeps \
+         the URL identical and ships new HTML with stale cached CSS: {link}"
+    );
+    assert!(
+        link.contains("cachebust=true"),
+        "style.css link must use get_url(..., cachebust=true) so the URL \
+         changes whenever the CSS content does: {link}"
+    );
+}
