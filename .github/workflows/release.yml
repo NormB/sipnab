@@ -302,6 +302,13 @@ jobs:
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # id-token + attestations power the sigstore provenance step below;
+    # contents must be restated because a job-level block replaces the
+    # workflow-level grant.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -316,6 +323,19 @@ jobs:
           cd artifacts
           sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS.txt
           cat SHA256SUMS.txt
+
+      # Sigstore build provenance for every artifact: cryptographic proof it
+      # was built by THIS workflow from THIS commit, so a rehosted or tampered
+      # copy is detectable. Anyone can check a download with
+      #   gh attestation verify <file> --repo NormB/sipnab
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/*.deb
+            artifacts/*.rpm
+            artifacts/SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
