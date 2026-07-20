@@ -723,9 +723,12 @@ sweep throughput number but appeared to surface two regressions vs the
 - **WS8.2 — CLOSED, not a regression.** Sweep RSS with `-O`: @500 calls
   0.4.16 = 40 MiB vs 0.5.17 = 39; @2000 calls 99 vs 103. The June 33/72
   figures do not reproduce with 0.4.16 either.
-- **WS8.3 — OPEN (opportunity, version-independent):** `-O` pcap re-emit
-  costs ~35% of single-core throughput on either version (1.26M → 0.83M
-  p/s), while multi-core absorbs it. The writer sits inline in the packet
-  loop (src/app/batch.rs, PcapWriter::write per packet); candidate: batch
-  or buffer writes off the hot path. Not scheduled — pick up
-  opportunistically.
+- **WS8.3 — SHIPPED (2026-07-20):** `-O` pcap re-emit cost ~35% of
+  single-core throughput because the plain-pcap backend paid one FFI call
+  + locked stdio `fwrite` per packet through libpcap's `Savefile` (which
+  also silently discarded write errors). Replaced with `RawPcapWriter`
+  (writer.rs): classic-pcap records through a 512 KiB `BufWriter`, LE
+  headers written directly, errors surfaced. Measured (535k corpus,
+  cores=1, median-of-5): thor-02 831k → 901k p/s (+8.3%; writer-portion
+  cost −18%), x86 dev box +4%. Residual `-O` cost is data-volume bound
+  (page-cache memcpy of the re-emitted bytes) — no further cheap wins.

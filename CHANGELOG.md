@@ -4,6 +4,15 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- `-O` pcap output is written by a hand-rolled buffered writer instead of
+  libpcap's `Savefile` (WS8.3): classic pcap records go through a 512 KiB
+  `BufWriter` rather than one FFI call + locked stdio `fwrite` per packet.
+  Single-core `-O` re-emit throughput +8% on the reference aarch64 host
+  (831k → 901k p/s, 535k-packet corpus), +4% on x86; write errors (full
+  disk, dead mount) now surface as errors instead of being silently
+  discarded by libpcap.
+
 ## [0.5.17] - 2026-07-20
 
 ### Added
