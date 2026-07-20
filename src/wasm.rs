@@ -32,6 +32,8 @@ pub struct SipnabSession {
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 impl SipnabSession {
+    /// Create an empty analysis session (the `new SipnabSession()` the
+    /// analyze page calls before loading a capture).
     #[wasm_bindgen(constructor)]
     pub fn new() -> Self {
         console_error_panic_hook::set_once();
@@ -289,18 +291,23 @@ impl SipnabSession {
         }
     }
 
+    /// Number of SIP dialogs in the loaded capture.
     pub fn dialog_count(&self) -> u32 {
         self.dialog_store.len() as u32
     }
+    /// Total packets read from the loaded capture.
     pub fn packet_count(&self) -> u64 {
         self.packet_count
     }
+    /// SIP messages parsed from the loaded capture.
     pub fn sip_message_count(&self) -> u64 {
         self.sip_count
     }
+    /// RTP streams detected in the loaded capture.
     pub fn stream_count(&self) -> u32 {
         self.stream_store.len() as u32
     }
+    /// RTP packets seen in the loaded capture.
     pub fn rtp_packet_count(&self) -> u64 {
         self.rtp_count
     }
