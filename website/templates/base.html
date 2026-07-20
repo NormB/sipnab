@@ -43,8 +43,9 @@
   <link href="https://fonts.bunny.net/css?family=inter:400,500,600,700|jetbrains-mono:400,500&display=swap" rel="stylesheet">
 
   <!-- Styles -->
-  <!-- Buster tracks the release version so CSS can't go stale between releases. -->
-  <link rel="stylesheet" href="{{ get_url(path='style.css') }}?v={{ config.extra.version }}">
+  <!-- Content-hash buster: the URL changes whenever the CSS does, so site-only
+       edits (same release version) can never ship new HTML on stale CSS. -->
+  <link rel="stylesheet" href="{{ get_url(path='style.css', cachebust=true) }}">
 
   <!-- Search -->
   {% if config.build_search_index %}

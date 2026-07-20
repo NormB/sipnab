@@ -414,3 +414,30 @@ fn docs_current_version_markers_match_cargo() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The benchmarks page exists twice — docs/benchmarks.md (source of the GitHub
+// Wiki) and website/content/docs/benchmarks.md (the site) — with deliberately
+// different framing but the SAME measured data. A re-benchmark once landed
+// only on the website (0.5.18 numbers) while the wiki kept publishing the
+// 0.4.16 tables plus a perf claim the same PR had retracted. The prose may
+// differ; the tables may not.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn benchmark_tables_match_between_docs_and_website() {
+    fn rows(text: &str) -> Vec<&str> {
+        text.lines()
+            .filter(|l| l.starts_with('|'))
+            .map(str::trim_end)
+            .collect()
+    }
+    let docs = rows(include_str!("../docs/benchmarks.md"));
+    let site = rows(include_str!("../website/content/docs/benchmarks.md"));
+    assert_eq!(
+        docs, site,
+        "benchmark tables differ between docs/benchmarks.md (wiki source) and \
+         website/content/docs/benchmarks.md — re-benchmarks must update BOTH \
+         files in the same commit, or the wiki publishes stale numbers"
+    );
+}
