@@ -729,6 +729,68 @@ fn download_page_serves_devops_and_source_personas() {
 }
 
 // ---------------------------------------------------------------------------
+// Provenance & authorship journey: sipnab is a security tool, so a rehosted
+// or tampered copy of its artifacts must be detectable. Every release binary
+// and the container image carry sigstore build-provenance attestations
+// (verify with `gh attestation verify`), and the site states its authorship
+// and content license so republished copies without attribution are a clean
+// takedown case. These guards keep the attestation steps and the notice from
+// being silently dropped.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn releases_are_attested_and_site_content_is_licensed() {
+    // Release artifacts: one attestation pass over everything uploaded.
+    let rel = read(".github/workflows/release.yml");
+    assert!(
+        rel.contains("actions/attest-build-provenance@"),
+        "release.yml lost its build-provenance attestation step"
+    );
+    for perm in ["id-token: write", "attestations: write"] {
+        assert!(
+            rel.contains(perm),
+            "release.yml needs `{perm}` for sigstore attestations"
+        );
+    }
+
+    // Container image: attested by digest and pushed to the registry.
+    let docker = read(".github/workflows/docker.yml");
+    assert!(
+        docker.contains("actions/attest-build-provenance@"),
+        "docker.yml lost its image attestation step"
+    );
+    for perm in ["id-token: write", "attestations: write"] {
+        assert!(
+            docker.contains(perm),
+            "docker.yml needs `{perm}` for sigstore attestations"
+        );
+    }
+    assert!(
+        docker.contains("push-to-registry: true"),
+        "the image attestation must be pushed to ghcr so \
+         `gh attestation verify oci://...` works"
+    );
+
+    // The download page tells verifiers the attestation exists.
+    let dl = read("website/templates/download.html");
+    assert!(
+        dl.contains("gh attestation verify"),
+        "download verify section must mention `gh attestation verify`"
+    );
+
+    // Site footer: copyright + docs content license.
+    let footer = base_block("footer");
+    assert!(
+        footer.contains("&copy;"),
+        "footer must carry a copyright notice"
+    );
+    assert!(
+        footer.contains("creativecommons.org/licenses/by/4.0"),
+        "footer must link the docs content license (CC BY 4.0)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // CSP hash journey: the production CSP (a Cloudflare transform rule, managed
 // by ops/cloudflare/refresh_csp_hashes.py) allows inline <script> blocks by
 // sha256 hash, NOT 'unsafe-inline'. Editing an inline script without

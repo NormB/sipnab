@@ -323,6 +323,7 @@
       </div>
     </div>
     <p class="dl-note">Grab <a href="{{ rel }}/SHA256SUMS.txt">SHA256SUMS.txt</a> into the same folder as your download, then run the check for your OS. An <code>OK</code> line means it&rsquo;s authentic. Each tarball also ships an individual <code>.sha256</code>; <code>.deb</code> and <code>.rpm</code> checksums live only in <code>SHA256SUMS.txt</code>.</p>
+    <p class="dl-note">Beyond checksums, releases carry sigstore build provenance &mdash; cryptographic proof an artifact was built by this repository&rsquo;s CI from a specific commit, so a rehosted or tampered copy can&rsquo;t impersonate a real one: <code>gh attestation verify sipnab-&lt;file&gt; --repo NormB/sipnab</code> (or <code>oci://ghcr.io/normb/sipnab:&lt;tag&gt;</code> for the container image).</p>
   </section>
 
   <footer class="dl-meta">
