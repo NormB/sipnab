@@ -162,6 +162,13 @@ impl PacketRx {
     pub fn meter(&self) -> CaptureMeter {
         self.meter.clone()
     }
+
+    /// `true` when no packet is immediately available. The batch loop uses
+    /// this to flush its buffered output sink exactly when the pipeline goes
+    /// idle (lock-free peek at the underlying channel).
+    pub fn is_empty(&self) -> bool {
+        self.data_rx.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -285,6 +292,18 @@ mod tests {
         );
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert!(h.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn is_empty_tracks_pending_packets() {
+        let (tx, rx) = packet_channel(2);
+        assert!(rx.is_empty(), "fresh channel starts empty");
+        tx.send(pkt(8)).unwrap();
+        assert!(!rx.is_empty(), "a sent packet must be visible");
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(rx.is_empty(), "drained channel is empty again");
+        drop(tx);
+        assert!(rx.is_empty(), "disconnected channel reads as empty");
     }
 
     #[test]

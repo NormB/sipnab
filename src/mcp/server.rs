@@ -492,11 +492,7 @@ impl SipnabMcp {
             } else {
                 dialog.messages[cursor..end]
                     .iter()
-                    .map(|m| {
-                        let line = crate::output::json::message_to_json(m);
-                        serde_json::from_str::<serde_json::Value>(line.trim_end())
-                            .unwrap_or(serde_json::Value::String(line))
-                    })
+                    .map(crate::output::json::message_to_json_value)
                     .collect()
             };
             let summary = DialogSummary::from(dialog);
@@ -525,7 +521,7 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<GetMessageParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let line: String = {
+        let parsed: serde_json::Value = {
             let ds = self.dialog_store.read();
             let dialog = ds.get(&params.call_id).ok_or_else(|| {
                 rmcp::ErrorData::invalid_params(
@@ -543,10 +539,8 @@ impl SipnabMcp {
                     None,
                 )
             })?;
-            crate::output::json::message_to_json(msg)
+            crate::output::json::message_to_json_value(msg)
         };
-        let parsed: serde_json::Value =
-            serde_json::from_str(line.trim_end()).unwrap_or(serde_json::Value::String(line));
         Ok(CallToolResult::success(vec![ContentBlock::json(parsed)?]))
     }
 
