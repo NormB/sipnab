@@ -1929,8 +1929,7 @@ mod tests {
                 if text.contains("Terminal too narrow") {
                     continue; // legitimately refused, nothing painted
                 }
-                let truncated: Vec<String> =
-                    parts.iter().map(|p| p.label.clone()).collect();
+                let truncated: Vec<String> = parts.iter().map(|p| p.label.clone()).collect();
                 let refs: Vec<&str> = truncated.iter().map(String::as_str).collect();
                 assert_labels_reconstruct(rows[0], &refs);
                 assert_labels_reconstruct(rows[11], &refs);

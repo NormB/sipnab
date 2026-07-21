@@ -968,11 +968,13 @@ mod multileg_demo_ladder {
     use ratatui::{Terminal, backend::TestBackend};
     use sipnab::tui::App;
 
-    /// Cell geometry of demos/common.tape: 1200x700 px, Padding 10,
-    /// DejaVu Sans Mono at FontSize 20 (12.04 px advance, 24 px line
-    /// height) -> 98 columns x 28 rows.
-    const DEMO_COLS: u16 = 98;
-    const DEMO_ROWS: u16 = 28;
+    /// Cell geometry of demos/10-multileg.tape: 1200x700 px, Padding 10,
+    /// DejaVu Sans Mono at FontSize 19 -> 96 columns x 30 rows. Measured
+    /// empirically (`stty size` inside a VHS probe tape) — xterm.js rounds
+    /// glyph metrics, so px/font arithmetic over-estimates the grid (the
+    /// common.tape FontSize 20 gives 88x27, NOT the naive 98x28).
+    const DEMO_COLS: u16 = 96;
+    const DEMO_ROWS: u16 = 30;
 
     fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
         let buf = term.backend().buffer();
