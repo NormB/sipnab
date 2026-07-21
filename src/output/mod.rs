@@ -24,6 +24,7 @@ pub mod model;
 pub mod prometheus;
 #[cfg(feature = "api")]
 pub mod prometheus_server;
+pub mod sink;
 pub mod synthetic;
 pub mod wireshark;
 
@@ -34,3 +35,4 @@ pub use event_exec::EventExecEngine;
 pub use fail2ban::{format_reg_flood_event, format_scanner_event};
 pub use hexdump::hexdump;
 pub use json::{dialog_to_json, message_to_json, stream_to_json};
+pub use sink::BatchSink;

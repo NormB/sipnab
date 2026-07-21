@@ -170,11 +170,9 @@ struct DialogJson {
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Serialize a SIP message as NDJSON (one JSON object per line).
-///
-/// Returns a single JSON line with a trailing newline, suitable for
-/// piping to `jq` or other stream processors.
-pub fn message_to_json(msg: &SipMessage) -> String {
+/// Build the borrowed [`MessageJson`] projection of a SIP message — the
+/// single source of truth for the NDJSON, writer, and `Value` variants.
+fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
     let cseq = msg
         .cseq()
         .map(|(number, method)| CSeqJson { number, method });
@@ -196,7 +194,7 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         None
     };
 
-    let json = MessageJson {
+    MessageJson {
         schema_version: 1,
         timestamp: msg.timestamp.to_rfc3339(),
         src: msg.src_addr.to_string(),
@@ -217,13 +215,48 @@ pub fn message_to_json(msg: &SipMessage) -> String {
         cseq,
         response_context,
         malformed: msg.malformations(),
-    };
+    }
+}
 
-    // serde_json::to_string should not fail on these well-typed fields
-    let mut line = serde_json::to_string(&json)
-        .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"));
-    line.push('\n');
-    line
+/// Serialize a SIP message as NDJSON (one JSON object per line).
+///
+/// Returns a single JSON line with a trailing newline, suitable for
+/// piping to `jq` or other stream processors.
+pub fn message_to_json(msg: &SipMessage) -> String {
+    let mut buf = Vec::with_capacity(512);
+    // The Vec writer cannot fail; write_message_json handles serializer
+    // errors internally, so the buffer always holds a complete line.
+    let _ = write_message_json(msg, &mut buf);
+    // build_message_json emits only valid UTF-8 (strings are checked or
+    // escaped by serde_json).
+    String::from_utf8(buf).unwrap_or_default()
+}
+
+/// Serialize a SIP message as one NDJSON line (trailing newline included)
+/// directly into `w` — the batch `-N --json` hot path, which avoids the
+/// per-message intermediate `String` of [`message_to_json`].
+///
+/// Output is byte-identical to [`message_to_json`].
+pub fn write_message_json<W: std::io::Write>(msg: &SipMessage, w: &mut W) -> std::io::Result<()> {
+    let json = build_message_json(msg);
+    // serde_json::to_writer should not fail on these well-typed fields; an
+    // I/O error propagates, a pure serialization error falls back to the
+    // same error object message_to_json historically produced.
+    match serde_json::to_writer(&mut *w, &json) {
+        Ok(()) => {}
+        Err(e) if e.is_io() => return Err(e.into()),
+        Err(e) => write!(w, "{{\"error\":\"serialization failed: {e}\"}}")?,
+    }
+    w.write_all(b"\n")
+}
+
+/// Serialize a SIP message directly to a [`serde_json::Value`] — for
+/// callers that need a structured object (MCP tool responses). Equal to
+/// parsing the [`message_to_json`] line, without the print→re-parse
+/// round-trip.
+pub fn message_to_json_value(msg: &SipMessage) -> serde_json::Value {
+    serde_json::to_value(build_message_json(msg))
+        .unwrap_or_else(|e| serde_json::json!({"error": format!("serialization failed: {e}")}))
 }
 
 /// Pretty-printed variant of [`message_to_json`] for `--json-pretty`:
@@ -434,6 +467,84 @@ mod tests {
             payload_offset: 12,
         };
         RtpStream::new(key, &hdr, ts())
+    }
+
+    // Perf path (batch `-N --json`): the writer variant must produce bytes
+    // identical to `message_to_json` — same NDJSON line, same trailing
+    // newline — so switching the batch loop to it cannot change output.
+    #[test]
+    fn write_message_json_matches_message_to_json() {
+        let body = b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 6000 RTP/AVP 8\r\na=label:a\\b\"c\r\n";
+        let cl = format!("Content-Length: {}", body.len());
+        let with_sdp = parse_sip(
+            &build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: \"Alice\" <sip:1001@example.com>;tag=t1",
+                    "To: <sip:1002@example.com>",
+                    "Call-ID: writer-eq@example.com",
+                    "CSeq: 1 INVITE",
+                    "Content-Type: application/sdp",
+                    &cl,
+                ],
+                body,
+            ),
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        // A malformed message (missing mandatory headers) exercises the
+        // `malformed` array path.
+        let malformed = req_with_headers(&["CSeq: 1 REGISTER", "Content-Length: 0"]);
+        for msg in [make_invite(), with_sdp, malformed] {
+            let mut buf = Vec::new();
+            write_message_json(&msg, &mut buf).expect("write should succeed");
+            assert_eq!(
+                String::from_utf8(buf).expect("utf8"),
+                message_to_json(&msg),
+                "writer variant must be byte-identical"
+            );
+        }
+    }
+
+    // Perf path (MCP get_dialog/get_message): the Value variant must equal
+    // parse(message_to_json) so replacing the to_string→from_str round-trip
+    // cannot change any MCP response.
+    #[test]
+    fn message_to_json_value_matches_parsed_string() {
+        let resp = parse_sip(
+            &build_sip(
+                "SIP/2.0 200 OK",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>;tag=t2",
+                    "Call-ID: value-eq@example.com",
+                    "CSeq: 7 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            ),
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        for msg in [make_invite(), resp] {
+            let via_string: serde_json::Value =
+                serde_json::from_str(message_to_json(&msg).trim_end()).expect("valid JSON");
+            assert_eq!(
+                message_to_json_value(&msg),
+                via_string,
+                "Value variant must match the parsed NDJSON line"
+            );
+        }
     }
 
     #[test]

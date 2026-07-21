@@ -666,6 +666,12 @@ impl BatchRunner {
         let mut last_sweep = std::time::Instant::now();
         let sweep_interval = std::time::Duration::from_secs(5);
 
+        // Shared buffered stdout sink for every per-message emitter (JSON,
+        // sipgrep-style text, fail2ban, hexdump). Flushed whenever the packet
+        // channel goes idle — live output stays real-time — and at end of
+        // capture; `--line-buffer` flushes after every message.
+        let mut sink = output::BatchSink::stdout(cli.line_buffer);
+
         // 18. Main receive loop
         let start = std::time::Instant::now();
         let mut total_count: u64 = 0;
@@ -722,7 +728,12 @@ impl BatchRunner {
                 last_sweep = std::time::Instant::now();
             }
 
-            // Use recv_timeout so we can check shutdown periodically
+            // Use recv_timeout so we can check shutdown periodically. Flush
+            // pending output first whenever the channel has gone idle, so a
+            // quiet live capture never sits on buffered messages.
+            if rx.is_empty() {
+                sink.flush();
+            }
             let packet = match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                 Ok(pkt) => pkt,
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -846,6 +857,7 @@ impl BatchRunner {
                         &mut proc_state,
                         &mut engines,
                         &mut counters,
+                        &mut sink,
                     );
                 }
 
@@ -902,6 +914,10 @@ impl BatchRunner {
                 break;
             }
         }
+
+        // Drain the per-message output sink before anything else writes to
+        // stdout (reports, wireshark/tshark lines), preserving output order.
+        sink.flush();
 
         // Flush the output writer explicitly: BufWriter's Drop discards
         // flush errors, so without this an ENOSPC at end of capture would
@@ -1098,12 +1114,13 @@ fn decide_emit(
     emit
 }
 
-fn process_parsed_packet(
+fn process_parsed_packet<W: std::io::Write>(
     pp: &ParsedPacket,
     ctx: &BatchContext<'_>,
     state: &mut ProcessingState<'_>,
     engines: &mut DetectionEngines,
     counters: &mut PacketCounters,
+    sink: &mut output::BatchSink<W>,
 ) {
     let matcher = ctx.matcher;
     let filter_expr = ctx.filter_expr;
@@ -1131,7 +1148,8 @@ fn process_parsed_packet(
     // Hexdump output (applies to all packets)
     if cli.hexdump && cli.no_tui {
         let dump = output::hexdump(&pp.payload);
-        print!(
+        write!(
+            sink,
             "{} {}:{} -> {}:{} {}\n{}",
             pp.timestamp.format("%H:%M:%S%.3f"),
             pp.src_addr,
@@ -1238,7 +1256,8 @@ fn process_parsed_packet(
                         &alert.ua,
                         &alert.method,
                     );
-                    println!("{event}");
+                    sink.write_str(&event);
+                    sink.write_str("\n");
                 }
 
                 // D16: Send kill response via isolated worker thread
@@ -1274,7 +1293,8 @@ fn process_parsed_packet(
                 if cli.fail2ban {
                     let event =
                         output::format_scanner_event(&sip_msg.src_addr.to_string(), ua, method);
-                    println!("{event}");
+                    sink.write_str(&event);
+                    sink.write_str("\n");
                 }
                 if let Some(handle) = &scanner_kill_handle
                     && let Some(response_bytes) =
@@ -1332,7 +1352,8 @@ fn process_parsed_packet(
                         &alert.src_ip.to_string(),
                         alert.register_count,
                     );
-                    println!("{event}");
+                    sink.write_str(&event);
+                    sink.write_str("\n");
                 }
             }
 
@@ -1386,7 +1407,7 @@ fn process_parsed_packet(
             );
 
             if emit && cli.no_tui {
-                dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp);
+                dispatch_sip_output(&sip_msg, output_opts, cli, *prev_timestamp, sink);
             }
 
             *prev_timestamp = Some(sip_msg.timestamp);
@@ -1507,11 +1528,12 @@ fn try_tls_decrypt(
 // ── SIP output dispatch ──────────────────────────────────────────────
 
 /// Dispatch a matched SIP message to the configured output backend.
-fn dispatch_sip_output(
+fn dispatch_sip_output<W: std::io::Write>(
     msg: &sip::SipMessage,
     opts: &OutputOptions,
     cli: &Cli,
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    sink: &mut output::BatchSink<W>,
 ) {
     // Phase 8.1 — MCP mode owns stdout; no per-packet text/JSON output.
     #[cfg(feature = "mcp")]
@@ -1525,31 +1547,32 @@ fn dispatch_sip_output(
     }
     if cli.json_pretty {
         let json = output::json::message_to_json_pretty(msg);
-        print!("{json}");
+        sink.write_str(&json);
     } else if cli.json {
-        let json = output::json::message_to_json(msg);
-        print!("{json}");
+        // Hot path: serialize straight into the sink's buffer — no
+        // per-message String, no per-message write(2).
+        let _ = output::json::write_message_json(msg, sink.writer());
     } else if cli.fail2ban {
         // Fail2ban output for scanner-like messages
         if msg.is_request {
             let ua = msg.user_agent().unwrap_or("unknown");
             let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("UNKNOWN");
             let event = output::format_scanner_event(&msg.src_addr.to_string(), ua, method);
-            println!("{event}");
+            sink.write_str(&event);
+            sink.write_str("\n");
         }
     } else if cli.text_dump {
         // Raw SIP message text dump
         let raw = String::from_utf8_lossy(&msg.raw);
-        println!("{raw}");
+        sink.write_str(&raw);
+        sink.write_str("\n");
     } else {
-        output::print_sip_message(msg, opts, prev_timestamp);
+        let text = output::cli_print::format_sip_message(msg, opts, prev_timestamp);
+        sink.write_str(&text);
     }
 
     // Flush if --line-buffer is set
-    if cli.line_buffer {
-        use std::io::Write;
-        let _ = std::io::stdout().flush();
-    }
+    sink.end_message();
 }
 
 // ── Report generation ────────────────────────────────────────────────
@@ -1681,35 +1704,66 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("invite should parse");
-        let opts = OutputOptions::default();
+        // Force color OFF so the expected text output is deterministic even
+        // when the test runner is attached to a TTY.
+        let opts = OutputOptions {
+            color: output::ColorMode::Never,
+            ..Default::default()
+        };
+        let sink_bytes = |cli: &Cli, prev: Option<chrono::DateTime<chrono::Utc>>| {
+            let mut sink = output::BatchSink::new(Vec::new(), cli.line_buffer);
+            dispatch_sip_output(&msg, &opts, cli, prev, &mut sink);
+            sink.into_inner()
+        };
 
-        // Default pretty print.
-        dispatch_sip_output(&msg, &opts, &base_cli(), None);
+        // Default sipgrep-style print: byte-identical to format_sip_message.
+        let out = sink_bytes(&base_cli(), None);
+        assert_eq!(
+            String::from_utf8(out).expect("utf8"),
+            crate::output::cli_print::format_sip_message(&msg, &opts, None),
+        );
 
-        // JSON.
+        // JSON: byte-identical to message_to_json (NDJSON line + newline).
         let mut cli = base_cli();
         cli.json = true;
-        dispatch_sip_output(&msg, &opts, &cli, None);
+        assert_eq!(
+            String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
+            output::json::message_to_json(&msg),
+        );
 
-        // fail2ban (request path).
+        // Pretty JSON: byte-identical to message_to_json_pretty.
+        let mut cli = base_cli();
+        cli.json_pretty = true;
+        assert_eq!(
+            String::from_utf8(sink_bytes(&cli, None)).expect("utf8"),
+            output::json::message_to_json_pretty(&msg),
+        );
+
+        // fail2ban (request path): one event line.
         let mut cli = base_cli();
         cli.fail2ban = true;
-        dispatch_sip_output(&msg, &opts, &cli, None);
+        let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
+        assert!(
+            out.contains("10.0.0.1") && out.ends_with('\n'),
+            "fail2ban event line expected, got {out:?}"
+        );
 
-        // raw text dump.
+        // raw text dump: raw message + newline.
         let mut cli = base_cli();
         cli.text_dump = true;
-        dispatch_sip_output(&msg, &opts, &cli, None);
+        let out = String::from_utf8(sink_bytes(&cli, None)).expect("utf8");
+        assert!(out.starts_with("INVITE sip:bob@example.com SIP/2.0"));
+        assert!(out.ends_with('\n'));
 
         // suppressed entirely.
         let mut cli = base_cli();
         cli.no_cli_print = true;
-        dispatch_sip_output(&msg, &opts, &cli, None);
+        assert!(sink_bytes(&cli, None).is_empty());
 
-        // line-buffer flush branch.
+        // line-buffer flush branch still writes the message.
         let mut cli = base_cli();
         cli.line_buffer = true;
-        dispatch_sip_output(&msg, &opts, &cli, Some(chrono::Utc::now()));
+        assert!(!sink_bytes(&cli, Some(chrono::Utc::now())).is_empty());
     }
 
     // ── generate_reports ───────────────────────────────────────────────
@@ -1806,7 +1860,14 @@ mod tests {
             dtls: None,
         };
 
-        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
+        process_parsed_packet(
+            pp,
+            &ctx,
+            &mut state,
+            &mut engines,
+            &mut counters,
+            &mut output::BatchSink::new(Vec::new(), false),
+        );
         (counters.sip_count, counters.rtp_count)
     }
 
@@ -1864,7 +1925,14 @@ mod tests {
             #[cfg(feature = "tls")]
             dtls: None,
         };
-        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
+        process_parsed_packet(
+            pp,
+            &ctx,
+            &mut state,
+            &mut engines,
+            &mut counters,
+            &mut output::BatchSink::new(Vec::new(), false),
+        );
 
         alerts
             .read()
@@ -1964,7 +2032,14 @@ mod tests {
             srtp: Some(srtp),
             dtls: None,
         };
-        process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters);
+        process_parsed_packet(
+            pp,
+            &ctx,
+            &mut state,
+            &mut engines,
+            &mut counters,
+            &mut output::BatchSink::new(Vec::new(), false),
+        );
         counters.rtp_count
     }
 
