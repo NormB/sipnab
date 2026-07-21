@@ -837,7 +837,12 @@ fn fold_messages(
                     "{} msgs folded (auth retry) - press e to expand",
                     fold_len
                 ));
-                fm.label = format!("{} (auth retry)", fm.label);
+                // On-arrow badge, kept short like "(+N retx)": it must fit
+                // the pipe gap in the split multi-leg view (the verbose
+                // wording lives in fold_label). " (auth retry)" pushed the
+                // demo's widest label to 25 chars, an un-satisfiable 30-col
+                // gap demand at the 98-col demo geometry.
+                fm.label = format!("{} (+auth)", fm.label);
                 result.push(fm);
             }
             // Drop the member rows: every following row whose raw index is
@@ -2218,7 +2223,7 @@ mod tests {
         assert_eq!(folded.len(), 1, "auth sequence should collapse to one row");
         assert_eq!(folded[0].folded_count, 4);
         assert!(
-            folded[0].label.contains("(auth retry)"),
+            folded[0].label.contains("(+auth)"),
             "got: {}",
             folded[0].label
         );

@@ -161,8 +161,33 @@ pub(in crate::tui) fn render_app(
                 // when a multi-leg (B2BUA) flow needs it, so packed participant
                 // columns don't truncate their method/status arrow labels.
                 let (ladder_area, detail_area) = if app.flow.raw_preview {
+                    // Widest per-gap demand of the arrow labels actually on
+                    // screen (a retx fold header carries its "(+N retx)"
+                    // count on the arrow; an arrow spanning several columns
+                    // divides its demand across them).
+                    let required_gap = app
+                        .flow
+                        .ladder
+                        .rows
+                        .iter()
+                        .filter(|r| {
+                            matches!(r.kind, call_flow::prepare::RowKind::Message { .. })
+                                && r.src_col != r.dst_col
+                        })
+                        .map(|r| {
+                            let mut len = r.label.chars().count();
+                            if r.folded_count > 0
+                                && r.fold_label.as_deref().is_some_and(|f| f.starts_with("(+"))
+                            {
+                                len += format!(" (+{} retx)", r.folded_count).chars().count();
+                            }
+                            call_flow::arrow_gap_for_label(len, r.src_col.abs_diff(r.dst_col))
+                        })
+                        .max()
+                        .unwrap_or(0);
                     let ladder_w = call_flow::ladder_split_width(
                         app.flow.ladder.participants.len(),
+                        required_gap,
                         app.flow.raw_preview_pct,
                         main_area.width,
                     );
