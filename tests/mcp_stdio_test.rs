@@ -65,6 +65,49 @@ fn read_response_with_id(
     None
 }
 
+/// Call `list_dialogs` repeatedly (reusing `id`) until it returns a
+/// non-empty summaries array, or fail once `timeout` elapses. Replay
+/// ingestion runs asynchronously to the MCP server loop, so the first
+/// call after `initialize` can legitimately observe zero dialogs on a
+/// slow runner; every reply must still be well-formed.
+fn list_dialogs_until_nonempty(
+    child: &mut std::process::Child,
+    reader: &mut BufReader<&mut std::process::ChildStdout>,
+    id: i64,
+    timeout: Duration,
+) -> serde_json::Value {
+    let deadline = Instant::now() + timeout;
+    loop {
+        send(
+            child,
+            &serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": "list_dialogs", "arguments": {}}
+            }),
+        );
+        let resp = read_response_with_id(reader, id, Duration::from_secs(5))
+            .expect("list_dialogs response within 5s");
+        assert!(
+            resp["result"].is_object(),
+            "list_dialogs must succeed: {resp}"
+        );
+        let body = resp["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text content");
+        let parsed: serde_json::Value = serde_json::from_str(body).expect("inner JSON parses");
+        let arr = parsed.as_array().expect("dialog summaries array");
+        if !arr.is_empty() {
+            return parsed;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "list_dialogs still empty after {timeout:?}; \
+             fixture replay never surfaced a dialog"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Spawn `sipnab --mcp` with the given pcap and verify the stdio JSON-RPC
 /// session round-trips correctly for all three v0.4 tools.
 #[test]
@@ -149,32 +192,11 @@ fn stdio_mcp_round_trips_three_tools() {
         "find_problems must be advertised; got: {names:?}"
     );
 
-    // 3. tools/call list_dialogs with no filter — should return some dialogs
-    //    from the pcap (sip_call.pcap has 1 dialog).
-    let call = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "list_dialogs",
-            "arguments": {}
-        }
-    });
-    send(&mut child, &call);
-
-    let call_resp = read_response_with_id(&mut reader, 3, Duration::from_secs(5))
-        .expect("list_dialogs response within 5s");
-    let result = &call_resp["result"];
-    assert!(result.is_object(), "result must be present: {call_resp}");
-    // The result.content[0].text is a JSON-encoded array of summaries.
-    let content = &result["content"][0];
-    let body = content["text"].as_str().expect("text content");
-    let parsed: serde_json::Value = serde_json::from_str(body).expect("inner JSON parses");
+    // 3. tools/call list_dialogs with no filter — poll until the fixture
+    //    pcap's dialog appears (sip_call.pcap has 1 dialog; ingestion is
+    //    asynchronous, so the first reply may be empty on a slow runner).
+    let parsed = list_dialogs_until_nonempty(&mut child, &mut reader, 3, Duration::from_secs(10));
     let arr = parsed.as_array().expect("dialog summaries array");
-    assert!(
-        !arr.is_empty(),
-        "fixture pcap has at least 1 dialog; expected non-empty list"
-    );
 
     // 4. tools/call get_dialog_report with the call_id from the list — round-trip
     let call_id = arr[0]["call_id"].as_str().expect("call_id field");
@@ -307,18 +329,10 @@ fn stdio_mcp_phase_8_3_tools_round_trip() {
         );
     }
 
-    // Get the call_id we'll use for tool calls.
-    send(
-        &mut child,
-        &serde_json::json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": {"name": "list_dialogs", "arguments": {}}
-        }),
-    );
-    let resp = read_response_with_id(&mut reader, 3, Duration::from_secs(5))
-        .expect("list_dialogs response");
-    let dialogs_text = resp["result"]["content"][0]["text"].as_str().unwrap();
-    let dialogs: serde_json::Value = serde_json::from_str(dialogs_text).unwrap();
+    // Get the call_id we'll use for tool calls. Poll: replay ingestion is
+    // asynchronous, so the dialog may not be visible yet (macOS CI flake,
+    // run 29791219683: dialogs[0] was None on the first call).
+    let dialogs = list_dialogs_until_nonempty(&mut child, &mut reader, 3, Duration::from_secs(10));
     let call_id = dialogs[0]["call_id"].as_str().unwrap().to_string();
 
     // get_dialog
