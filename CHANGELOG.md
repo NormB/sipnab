@@ -4,6 +4,14 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.20] - 2026-07-21
+
+### Performance
+- `-N --json` export rewritten: buffered batch sink plus direct JSON
+  serialization (no intermediate `Value` tree). ~29% faster wall-clock and
+  98.5% fewer `write()` syscalls on the export path; output is
+  byte-identical to 0.5.19.
+
 ### Fixed
 - `-N` CLI output: `--show-empty` was a dead flag — bodyless SIP messages
   (all responses, `OPTIONS`, `REGISTER`, `ACK`, `BYE`, in-dialog `SUBSCRIBE`)
@@ -11,6 +19,17 @@ All notable changes to sipnab will be documented in this file.
   (From/To/Call-ID/CSeq/Via/Contact/...) was unreachable. `--show-empty`
   (new alias `--full`) now prints the full headers of bodyless messages as
   documented. The terse one-line default is unchanged.
+- TUI: call-list Method column widened so `SUBSCRIBE` never truncates; the
+  multi-leg ladder widens per leg count so arrow method labels don't
+  truncate or collide, and label collisions in dense multi-leg flows are
+  resolved instead of overdrawn.
+- MCP stdio tests no longer race async pcap-replay ingestion on slow
+  runners (`list_dialogs` is polled until the fixture dialog appears) —
+  fixes a macOS CI flake.
+
+### Changed
+- TUI demo GIFs now carry synced keycap overlays showing the keys pressed
+  (`demos/keycast.py` pipeline).
 
 ## [0.5.19] - 2026-07-20
 
