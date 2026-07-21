@@ -14,8 +14,8 @@ use std::collections::HashSet;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use sipnab::tui::help::HELP_TEXT;
 use sipnab::tui::{
-    Keymap, call_flow_action, call_list_action, combined_detail_action, help_action,
-    message_diff_action, raw_message_action, statistics_action, stream_detail_action,
+    Keymap, call_flow_action, call_list_action, combined_detail_action, dashboard_action,
+    help_action, message_diff_action, raw_message_action, statistics_action, stream_detail_action,
     stream_list_action,
 };
 
@@ -172,7 +172,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     let docs = documented_tokens();
     let km = Keymap::default();
     type Probe = (&'static str, fn(&Keymap, KeyEvent) -> bool);
-    let probes: [Probe; 9] = [
+    let probes: [Probe; 10] = [
         ("call_list", |km, k| call_list_action(km, k).is_some()),
         ("stream_list", |km, k| stream_list_action(km, k).is_some()),
         ("stream_detail", |km, k| {
@@ -186,6 +186,7 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
         }),
         ("help", |km, k| help_action(km, k).is_some()),
         ("statistics", |km, k| statistics_action(km, k).is_some()),
+        ("dashboard", |km, k| dashboard_action(km, k).is_some()),
     ];
     let mut undocumented = Vec::new();
     for (view, probe) in probes {
@@ -259,6 +260,9 @@ fn every_documented_view_key_is_handled() {
         }),
         ("RTP STREAMS (Tab):", |km, k| {
             stream_list_action(km, k).is_some()
+        }),
+        ("QUALITY DASHBOARD:", |km, k| {
+            dashboard_action(km, k).is_some()
         }),
         ("STREAM DETAIL:", |km, k| {
             stream_detail_action(km, k).is_some()

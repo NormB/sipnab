@@ -20,6 +20,7 @@ pub enum StreamListAction {
     OpenDetail,
     NameEndpoints,
     BackToCallList,
+    OpenDashboard,
 }
 
 /// Pure key→action mapping for the stream list (keymap-aware); arm order
@@ -41,6 +42,7 @@ pub fn stream_list_action(km: &Keymap, key: KeyEvent) -> Option<StreamListAction
         k if k == km.filter => OpenFilterDialog,
         KeyCode::Enter => OpenDetail,
         KeyCode::Char('N') => NameEndpoints,
+        KeyCode::Char('D') => OpenDashboard,
         KeyCode::Esc => BackToCallList,
         _ => return None,
     })
@@ -105,6 +107,11 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
             }
         }
         StreamListAction::BackToCallList => app.current_view = View::CallList,
+        StreamListAction::OpenDashboard => {
+            app.dashboard_selected = 0;
+            app.dashboard_return_view = Some(View::StreamList);
+            app.current_view = View::QualityDashboard;
+        }
     }
 }
 

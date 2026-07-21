@@ -989,6 +989,8 @@ pub enum View {
     Help,
     /// Statistics summary view.
     Statistics,
+    /// Live call-quality dashboard (aggregate MOS/jitter/loss, worst first).
+    QualityDashboard,
     /// RTP stream detail (by StreamKey).
     StreamDetail(crate::rtp::stream::StreamKey),
 }

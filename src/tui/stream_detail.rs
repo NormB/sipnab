@@ -403,7 +403,7 @@ fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
 }
 
 /// Map a MOS value (1.0–4.5) to a Unicode block character.
-fn mos_to_block(mos: f64) -> char {
+pub(in crate::tui) fn mos_to_block(mos: f64) -> char {
     match mos {
         m if m >= 4.3 => '\u{2588}', // █
         m if m >= 4.0 => '\u{2587}', // ▇
@@ -419,7 +419,7 @@ fn mos_to_block(mos: f64) -> char {
 /// Map a jitter value (ms) to a Unicode block character.
 /// Scale: 0–5ms = ▁, 5–10 = ▂, 10–15 = ▃, 15–20 = ▄,
 ///        20–25 = ▅, 25–30 = ▆, 30–35 = ▇, 35+ = █
-fn jitter_to_block(jitter_ms: f64) -> char {
+pub(in crate::tui) fn jitter_to_block(jitter_ms: f64) -> char {
     match jitter_ms {
         j if j >= 35.0 => '\u{2588}', // █
         j if j >= 30.0 => '\u{2587}', // ▇
