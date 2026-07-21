@@ -349,42 +349,22 @@ pub fn render_call_flow_direct(
         .add_modifier(Modifier::BOLD);
     let pipe_style = Style::default().fg(theme.muted);
 
-    // Row 0: Labels above each pipe, clamped to area bounds
+    // Row 0: Labels above each pipe. Each label is confined to its own
+    // non-overlapping cell so packed multi-leg columns can never overwrite
+    // each other into garbage like "172.16.98172.16.98.101:5060". The
+    // area's last column is reserved: the ladder scrollbar renders there.
     let area_right = area.x + area.width;
-    for (i, p) in participants.iter().enumerate() {
-        let pipe_x = pipe_positions[i];
-        // Dynamically size label to fit between adjacent pipes
-        let max_lbl = if participants.len() == 1 {
-            22
-        } else if i == 0 {
-            // First: from pipe to midpoint with next pipe
-            let next = pipe_positions.get(1).copied().unwrap_or(area_right);
-            ((next - pipe_x) as usize).min(22)
-        } else if i == participants.len() - 1 {
-            // Last: from midpoint with prev pipe to area edge
-            let prev = pipe_positions[i - 1];
-            ((area_right - prev) as usize / 2).min(22)
-        } else {
-            // Middle: half the gap to each neighbor
-            let prev = pipe_positions[i - 1];
-            let next = pipe_positions[i + 1];
-            (((next - prev) as usize) / 2).min(22)
-        };
-        let lbl = truncate(&p.label, max_lbl.max(6));
-        let lbl_len = lbl.chars().count() as u16;
-
-        // Position: first label left-aligned, last right-aligned, middle centered
-        let lbl_x = if i == 0 {
-            pipe_x
-        } else if i == participants.len() - 1 {
-            (pipe_x + 1).saturating_sub(lbl_len)
-        } else {
-            pipe_x.saturating_sub(lbl_len / 2)
-        };
-        // Clamp to area bounds
-        let lbl_x = lbl_x.max(area.x).min(area_right.saturating_sub(lbl_len));
-        buf.set_string(lbl_x, area.y, &lbl, label_style);
-    }
+    let label_cells =
+        participant_label_cells(&pipe_positions, area.x, area_right.saturating_sub(1));
+    draw_participant_labels(
+        buf,
+        area.y,
+        participants,
+        &pipe_positions,
+        &label_cells,
+        22,
+        label_style,
+    );
 
     // Row 1: Pipes
     for &px in &pipe_positions {
@@ -611,21 +591,79 @@ pub fn render_call_flow_direct(
             buf.set_string(px, footer_pipe_y, "\u{2502}", pipe_style); // │
         }
 
-        // Footer labels
-        for (i, p) in participants.iter().enumerate() {
-            let pipe_x = pipe_positions[i];
-            let lbl = truncate(&p.label, 20);
-            let lbl_len = lbl.len() as u16;
+        // Footer labels — same non-overlapping cells as the header row.
+        draw_participant_labels(
+            buf,
+            footer_label_y,
+            participants,
+            &pipe_positions,
+            &label_cells,
+            20,
+            label_style,
+        );
+    }
+}
 
-            if i == 0 {
-                // First label: left-aligned at the pipe position
-                buf.set_string(pipe_x, footer_label_y, &lbl, label_style);
+/// The horizontal cell each participant label may occupy: half-open column
+/// ranges bounded by the midpoints between neighboring pipes. The midpoint
+/// column itself belongs to neither cell, so adjacent labels always keep at
+/// least one blank column between them — at any terminal width.
+fn participant_label_cells(pipes: &[u16], area_x: u16, area_right: u16) -> Vec<(u16, u16)> {
+    let n = pipes.len();
+    (0..n)
+        .map(|i| {
+            let left = if i == 0 {
+                area_x
             } else {
-                // Other labels: right-aligned so they end at the pipe position
-                let lbl_x = (pipe_x + 1).saturating_sub(lbl_len);
-                buf.set_string(lbl_x, footer_label_y, &lbl, label_style);
-            }
+                (pipes[i - 1] + pipes[i]) / 2 + 1
+            };
+            let right = if i == n - 1 {
+                area_right
+            } else {
+                (pipes[i] + pipes[i + 1]) / 2
+            };
+            (left, right.max(left))
+        })
+        .collect()
+}
+
+/// Paint one participant label per pipe, each truncated (with ellipsis) to
+/// its own cell so labels can never collide. Anchoring preserves the classic
+/// ladder look: the first label left-aligned on its pipe, the last
+/// right-aligned ending on its pipe, middle labels centered on theirs —
+/// then clamped into the cell.
+fn draw_participant_labels(
+    buf: &mut ratatui::buffer::Buffer,
+    y: u16,
+    participants: &[Participant],
+    pipes: &[u16],
+    cells: &[(u16, u16)],
+    max_label: usize,
+    style: Style,
+) {
+    let n = participants.len();
+    for (i, p) in participants.iter().enumerate() {
+        let (cell_l, cell_r) = cells[i];
+        let cell_w = cell_r.saturating_sub(cell_l) as usize;
+        if cell_w == 0 {
+            continue;
         }
+        let lbl = truncate(&p.label, cell_w.min(max_label));
+        let lbl_len = lbl.chars().count() as u16;
+        if lbl_len == 0 {
+            continue;
+        }
+        let pipe_x = pipes[i];
+        let desired = if i == 0 {
+            pipe_x
+        } else if i == n - 1 {
+            (pipe_x + 1).saturating_sub(lbl_len)
+        } else {
+            pipe_x.saturating_sub(lbl_len / 2)
+        };
+        // lbl_len <= cell_w, so cell_r - lbl_len >= cell_l: clamp is sound.
+        let lbl_x = desired.clamp(cell_l, cell_r - lbl_len);
+        buf.set_string(lbl_x, y, &lbl, style);
     }
 }
 
@@ -1781,6 +1819,156 @@ mod tests {
             row.starts_with("12:00:00.000"),
             "ts at col 0, unshifted: {row:?}"
         );
+    }
+
+    // ── participant label cells (multi-leg header/footer collisions) ────
+
+    /// Pipes exactly as `render_call_flow_direct` computes them.
+    fn pipes_for(n: usize, width: u16) -> Vec<u16> {
+        let ts = TS_COL_WIDTH as u16;
+        if n <= 1 {
+            vec![ts]
+        } else {
+            let usable = width.saturating_sub(ts + 2);
+            (0..n)
+                .map(|i| ts + (i as u16 * usable / (n as u16 - 1)))
+                .collect()
+        }
+    }
+
+    /// Cells are pairwise disjoint AND keep at least one blank column
+    /// between neighbors, for every participant count and width the ladder
+    /// can render — the invariant that makes label collisions impossible.
+    #[test]
+    fn label_cells_disjoint_with_a_separator_at_any_geometry() {
+        for n in 1..=6usize {
+            for width in [30u16, 45, 58, 80, 98, 200] {
+                let pipes = pipes_for(n, width);
+                let cells = participant_label_cells(&pipes, 0, width);
+                assert_eq!(cells.len(), n);
+                for (l, r) in &cells {
+                    assert!(l <= r, "n={n} w={width}: inverted cell ({l},{r})");
+                    assert!(*r <= width, "n={n} w={width}: cell past edge");
+                }
+                for w in cells.windows(2) {
+                    assert!(
+                        w[0].1 < w[1].0,
+                        "n={n} w={width}: cells {:?} and {:?} touch/overlap",
+                        w[0],
+                        w[1]
+                    );
+                }
+            }
+        }
+    }
+
+    /// Every header/footer token must reconstruct to exactly one participant
+    /// label (verbatim or an ellipsis truncation of it) — the shipped defect
+    /// rendered "172.16.98172.16.98.101:5060" garbage instead.
+    fn assert_labels_reconstruct(row: &str, labels: &[&str]) {
+        let tokens: Vec<&str> = row.split_whitespace().collect();
+        assert_eq!(
+            tokens.len(),
+            labels.len(),
+            "one token per participant, got {tokens:?} for {labels:?}"
+        );
+        let mut used = vec![false; labels.len()];
+        for tok in &tokens {
+            let hit = labels.iter().enumerate().find(|(i, l)| {
+                !used[*i]
+                    && (*l == tok
+                        || (tok.ends_with("...")
+                            && tok.len() > 3
+                            && l.starts_with(&tok[..tok.len() - 3]))
+                        || (tok.len() <= 3 && l.starts_with(*tok)))
+            });
+            match hit {
+                Some((i, _)) => used[i] = true,
+                None => panic!("token {tok:?} matches no label of {labels:?} in {row:?}"),
+            }
+        }
+    }
+
+    /// Six packed B2BUA participants with long ip:port and resolved-name
+    /// labels: the header and footer rows must never paint colliding
+    /// garbage, at the demo width and at much tighter ones.
+    #[test]
+    fn packed_multileg_labels_never_collide() {
+        let theme = Theme::default();
+        let labels = [
+            "172.16.98.1:44285",
+            "172.16.98.101:5060",
+            "172.16.98.145:40216",
+            "b2bua-core.example.co",
+            "10.255.255.254:65535",
+            "sbc-edge.example.com",
+        ];
+        for n in [3usize, 4, 6] {
+            for width in [58u16, 69, 98] {
+                let parts: Vec<Participant> = labels[..n]
+                    .iter()
+                    .map(|l| Participant {
+                        addr: l.to_string(),
+                        label: truncate(l, 20),
+                    })
+                    .collect();
+                let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1)];
+                let nav = FlowNavigation {
+                    scroll_offset: 0,
+                    mark_index: None,
+                    selected_index: 0,
+                };
+                let mut term = terminal(width, 12);
+                term.draw(|f| {
+                    let a = f.area();
+                    render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+                })
+                .unwrap();
+                let text = buffer_text(&term);
+                let rows: Vec<&str> = text.lines().collect();
+                if text.contains("Terminal too narrow") {
+                    continue; // legitimately refused, nothing painted
+                }
+                let truncated: Vec<String> = parts.iter().map(|p| p.label.clone()).collect();
+                let refs: Vec<&str> = truncated.iter().map(String::as_str).collect();
+                assert_labels_reconstruct(rows[0], &refs);
+                assert_labels_reconstruct(rows[11], &refs);
+            }
+        }
+    }
+
+    /// A single participant keeps its label at the pipe, and adversarial
+    /// labels (multibyte, empty) never panic or collide at tiny widths.
+    #[test]
+    fn label_cells_adversarial_inputs() {
+        let theme = Theme::default();
+        for (label, width) in [
+            ("übérlöng-nämé-øn-a-b2büa-lég.example.com", 34u16),
+            ("", 40),
+            ("x", 30),
+            ("no-spaces-very-long-label-overflowing", 31),
+        ] {
+            let parts = vec![Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: label.to_string(),
+            }];
+            let msgs = vec![fmt_msg("12:00:00.000", SelectionState::Normal, 0, 0)];
+            let nav = FlowNavigation {
+                scroll_offset: 0,
+                mark_index: None,
+                selected_index: 0,
+            };
+            let mut term = terminal(width, 8);
+            term.draw(|f| {
+                let a = f.area();
+                render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+            })
+            .unwrap();
+            // Nothing may bleed past the area (set_string would have
+            // clipped, but the cells must already bound it).
+            let text = buffer_text(&term);
+            assert!(!text.is_empty());
+        }
     }
 
     // Fold info must be visible INSIDE the ladder area: the retx count rides

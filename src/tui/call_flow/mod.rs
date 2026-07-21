@@ -114,26 +114,43 @@ pub const TS_COL_WIDTH: usize = 13;
 /// Width reserved for each endpoint column (pipe + padding).
 pub const ENDPOINT_COL_WIDTH: usize = 20;
 
+/// Pipe-to-pipe gap (in columns) an arrow label of `label_len` characters
+/// needs to render untruncated across `span` adjacent-column gaps:
+/// `format_arrow` fits a label only when the inter-pipe width (`gap - 1`)
+/// is at least `label_len + 4` (two pads, at least one dash, the arrowhead).
+pub fn arrow_gap_for_label(label_len: usize, span: usize) -> usize {
+    (label_len + 5).div_ceil(span.max(1))
+}
+
 /// Width to give the ladder pane when the call-flow view is split with the
 /// detail pane (`raw_preview`).
 ///
 /// The ladder spreads `n_participants` columns across its width; the gap
-/// between adjacent columns must fit a SIP method / status label on the arrow
-/// (~14 cols incl. the arrowhead) or `format_arrow` truncates it — the
-/// multi-leg (B2BUA) case, where 4-6 legs packed into the default ~60% split
-/// squeezed methods like `SUBSCRIBE` into `SUBSC...`. When the configured
-/// split would starve the ladder, widen it (shrinking the detail pane down to
-/// a floor). The common 2-participant call is unaffected — it keeps the
-/// configured split exactly.
-pub fn ladder_split_width(n_participants: usize, detail_pct: u16, total: u16) -> u16 {
+/// between adjacent columns must fit the arrow method/status labels or
+/// `format_arrow` truncates them — the multi-leg (B2BUA) case, where legs
+/// packed into the default ~60% split squeezed `INVITE (SDP) (+1 retx)`
+/// into `INVITE (SD...`. `required_gap` is the widest per-gap label demand
+/// actually present (see [`arrow_gap_for_label`]); when the configured
+/// split can't provide it, widen the ladder — shrinking the detail pane
+/// down to a floor, and bounding a pathological label's demand so it can't
+/// eat the whole pane. The common 2-participant call is unaffected — it
+/// keeps the configured split exactly.
+pub fn ladder_split_width(
+    n_participants: usize,
+    required_gap: usize,
+    detail_pct: u16,
+    total: u16,
+) -> u16 {
     let default_ladder = total.saturating_mul(100u16.saturating_sub(detail_pct)) / 100;
     if n_participants <= 2 {
         return default_ladder;
     }
-    const GAP: u16 = 14; // pipe-to-pipe span that fits a ~10-char label + arrow
+    const GAP_FLOOR: u16 = 14; // always fits a ~9-char method + arrowhead
+    const GAP_CAP: u16 = 28; // a longer label truncates rather than starving the detail pane
     const DETAIL_FLOOR: u16 = 24; // never shrink the detail pane below this
+    let gap = (required_gap.min(u16::MAX as usize) as u16).clamp(GAP_FLOOR, GAP_CAP);
     let n = n_participants as u16;
-    let needed = TS_COL_WIDTH as u16 + 2 + n.saturating_sub(1) * GAP;
+    let needed = TS_COL_WIDTH as u16 + 2 + n.saturating_sub(1) * gap;
     let cap = total.saturating_sub(DETAIL_FLOOR).max(default_ladder);
     needed.max(default_ladder).min(cap)
 }
@@ -222,31 +239,70 @@ mod ladder_split_tests {
 
     #[test]
     fn two_party_call_keeps_the_configured_split() {
-        // The common case must be untouched: 60/40 at 100 cols -> 60.
-        assert_eq!(ladder_split_width(2, 40, 100), 60);
-        assert_eq!(ladder_split_width(1, 40, 100), 60);
+        // The common case must be untouched: 60/40 at 100 cols -> 60,
+        // regardless of how demanding the labels are.
+        assert_eq!(ladder_split_width(2, 27, 40, 100), 60);
+        assert_eq!(ladder_split_width(1, 27, 40, 100), 60);
     }
 
     #[test]
     fn multileg_widens_so_methods_do_not_truncate() {
-        // SUBSCRIBE (9) needs a >= 13-col gap. At the 98-col demo width with
-        // 4-5 B2BUA legs, the default 60% split gives gaps < 13 (truncation);
+        // SUBSCRIBE (9) needs a >= 14-col gap. At the 98-col demo width with
+        // 4-5 B2BUA legs, the default 60% split gives gaps < 14 (truncation);
         // the widened ladder must restore a method-fitting gap.
         for n in 3..=5usize {
-            let w = ladder_split_width(n, 40, 98);
+            let w = ladder_split_width(n, arrow_gap_for_label(9, 1), 40, 98);
             assert!(
-                min_gap(w, n) >= 13,
-                "n={n}: ladder {w} gives gap {} (< 13, SUBSCRIBE truncates)",
+                min_gap(w, n) >= 14,
+                "n={n}: ladder {w} gives gap {} (< 14, SUBSCRIBE truncates)",
                 min_gap(w, n)
             );
         }
     }
 
+    /// The shipped 10-multileg demo defect: 3 B2BUA participants whose
+    /// widest adjacent-column arrow label is `INVITE (SDP) (+1 retx)`
+    /// (22 chars -> 27-col gap). The old fixed GAP=14 was a no-op at the
+    /// 98x28 demo geometry (needed 57 <= default 58) and the label
+    /// rendered as "INVITE (SD...". The split must now widen enough.
+    #[test]
+    fn demo_geometry_fits_the_retx_fold_label() {
+        let req = arrow_gap_for_label("INVITE (SDP) (+1 retx)".len(), 1);
+        assert_eq!(req, 27);
+        let w = ladder_split_width(3, req, 40, 98);
+        assert!(
+            min_gap(w, 3) >= 27,
+            "ladder {w} gives gap {} (< 27, the retx fold label truncates)",
+            min_gap(w, 3)
+        );
+        assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
+    }
+
+    #[test]
+    fn pathological_label_demand_is_bounded() {
+        // OpenSIPS' 42-char reason phrase must not eat the detail pane:
+        // the gap demand is capped and the label truncates instead.
+        let req = arrow_gap_for_label(42, 1);
+        let w = ladder_split_width(3, req, 40, 98);
+        assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
+    }
+
+    #[test]
+    fn multi_column_span_divides_the_demand() {
+        // A label on an arrow spanning 3 gaps needs a third per gap.
+        assert_eq!(arrow_gap_for_label(22, 3), 9);
+        assert_eq!(arrow_gap_for_label(22, 1), 27);
+        // Degenerate span never divides by zero.
+        assert_eq!(arrow_gap_for_label(22, 0), 27);
+        assert_eq!(arrow_gap_for_label(0, 1), 5);
+    }
+
     #[test]
     fn detail_pane_keeps_a_floor() {
-        // Even a 6-leg ladder must leave the detail pane usable width.
+        // Even a 6-leg ladder with demanding labels must leave the detail
+        // pane usable width.
         let total = 98;
-        let w = ladder_split_width(6, 40, total);
+        let w = ladder_split_width(6, 28, 40, total);
         assert!(total - w >= 24, "detail pane starved: {} left", total - w);
     }
 }
