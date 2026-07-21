@@ -8,9 +8,12 @@ How fast sipnab is, measured honestly. Every number here is reproducible — the
 host, corpus, tool versions, and exact commands are listed so you can re-run it.
 
 sipnab numbers are measured on the released 0.5.18 artifact,
-checksum-verified, run 2026-07-20. The current release 0.5.19 changes no
-packet-path code versus 0.5.18 (release provenance, website, and docs work
-only), so the numbers carry over unchanged. The comparison
+checksum-verified, run 2026-07-20. The current release 0.5.20 leaves the
+capture/packet path below unchanged (its numbers carry over), but rewrites
+the `-N --json` export sink: buffered batch writes plus direct JSON
+serialization cut wall-clock time ~29% and `write()` syscalls 98.5% on that
+path (same-toolchain A/B on this branch, byte-identical output; not yet
+re-measured on a released artifact). The comparison
 tools' numbers come from the 2026-06-24 session — same host, corpus, and
 method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
 measures faster at every multi-core operating point (+9–16%) and across the
