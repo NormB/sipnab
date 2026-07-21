@@ -397,6 +397,17 @@ impl App {
         &self.dialog_store
     }
 
+    /// Participant labels of the cached call-flow ladder, in column order
+    /// (test helper — ground truth for label-collision assertions).
+    pub fn ladder_participant_labels_for_test(&self) -> Vec<String> {
+        self.flow
+            .ladder
+            .participants
+            .iter()
+            .map(|p| p.label.clone())
+            .collect()
+    }
+
     /// Render one full application tick into the given frame (for snapshot
     /// tests): cache sync, the read-only render pass, and the render
     /// feedback write-back — exactly the event loop's sequence.

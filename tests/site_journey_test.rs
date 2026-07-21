@@ -950,3 +950,173 @@ fn inline_script_edits_require_csp_hash_refresh() {
          this test to the computed list above."
     );
 }
+
+// ---------------------------------------------------------------------------
+// Multi-leg demo journey: 10-multileg.tape opens the b2bua-asterisk.pcapng
+// extended (multi-leg) call flow at the demo terminal geometry. Shipped broken
+// on 2026-07-19: the participant header read "172.16.98172.16.98.101:5060
+// 172.16...." (labels painted independently overwrite each other), the footer
+// read "1172.16.98.101:5060172.16.98.145:40216", and arrow labels rendered as
+// "INVITE (SD...". These guards replay the tape's exact keys against the real
+// fixture at the real VHS cell geometry and fail on both defect classes.
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "tui")]
+mod multileg_demo_ladder {
+    use super::repo;
+    use crossterm::event::KeyCode;
+    use ratatui::{Terminal, backend::TestBackend};
+    use sipnab::tui::App;
+
+    /// Cell geometry of demos/10-multileg.tape: 1200x700 px, Padding 10,
+    /// DejaVu Sans Mono at FontSize 19 -> 96 columns x 30 rows. Measured
+    /// empirically (`stty size` inside a VHS probe tape) — xterm.js rounds
+    /// glyph metrics, so px/font arithmetic over-estimates the grid (the
+    /// common.tape FontSize 20 gives 88x27, NOT the naive 98x28).
+    const DEMO_COLS: u16 = 96;
+    const DEMO_ROWS: u16 = 30;
+
+    fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Replay the 10-multileg tape's key sequence (load pcap, Down x5,
+    /// Enter, `x`) and return the app plus the rendered demo-size screen.
+    fn extended_flow_screen() -> (App, Vec<String>) {
+        let pcap = repo().join("tests/pcap-samples/b2bua-asterisk.pcapng");
+        assert!(pcap.is_file(), "demo fixture missing: {}", pcap.display());
+
+        let mut app = App::new_test();
+        app.handle_key(KeyCode::Char('O'));
+        app.handle_key(KeyCode::Tab);
+        app.open_path_clear_for_test();
+        for c in pcap.to_string_lossy().chars() {
+            app.handle_key(KeyCode::Char(c));
+        }
+        app.handle_key(KeyCode::Enter);
+
+        let mut term = Terminal::new(TestBackend::new(DEMO_COLS, DEMO_ROWS)).unwrap();
+        term.draw(|f| app.render(f)).unwrap();
+        for _ in 0..5 {
+            app.handle_key(KeyCode::Down);
+            term.draw(|f| app.render(f)).unwrap();
+        }
+        app.handle_key(KeyCode::Enter);
+        term.draw(|f| app.render(f)).unwrap();
+        app.handle_key(KeyCode::Char('x'));
+        assert!(app.extended_flow(), "x must enable extended flow");
+        term.draw(|f| app.render(f)).unwrap();
+
+        let rows = buffer_rows(&term);
+        eprintln!("--- extended flow at {DEMO_COLS}x{DEMO_ROWS} ---");
+        for (y, r) in rows.iter().enumerate() {
+            eprintln!("{y:2} |{r}|");
+        }
+        (app, rows)
+    }
+
+    /// The ladder's columns: everything left of the detail pane, whose top
+    /// border corner sits on the first main-area row.
+    fn ladder_split_col(rows: &[String]) -> usize {
+        rows[3]
+            .chars()
+            .position(|c| c == '\u{250C}') // ┌
+            .unwrap_or_else(|| panic!("no detail-pane corner in row 3: {:?}", rows[3]))
+    }
+
+    /// Every whitespace-separated token on the participant header row and
+    /// the footer row must be one participant's label — either verbatim or
+    /// as a `truncate()` prefix ending in "..." — and every participant
+    /// must appear exactly once. Colliding overwrites ("172.16.98172.16...")
+    /// match no label and fail.
+    #[test]
+    fn multileg_demo_participant_labels_never_collide() {
+        let (app, rows) = extended_flow_screen();
+        let labels = app.ladder_participant_labels_for_test();
+        assert!(
+            labels.len() >= 3,
+            "expected a multi-leg (3+ participant) ladder, got {labels:?}"
+        );
+        let split = ladder_split_col(&rows);
+
+        for label_row in [&rows[3], &rows[DEMO_ROWS as usize - 2]] {
+            // The ladder's last column carries its scrollbar (█ thumb /
+            // ║ track), never label text — blank it before tokenizing.
+            let ladder_txt: String = label_row
+                .chars()
+                .take(split)
+                .map(|c| {
+                    if c == '\u{2588}' || c == '\u{2551}' {
+                        ' '
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+            let tokens: Vec<&str> = ladder_txt.split_whitespace().collect();
+            assert_eq!(
+                tokens.len(),
+                labels.len(),
+                "each participant must render exactly one label token, \
+                 got {tokens:?} for participants {labels:?}"
+            );
+            let mut used = vec![false; labels.len()];
+            for tok in &tokens {
+                let matched = labels.iter().enumerate().find(|(i, l)| {
+                    !used[*i]
+                        && (l == tok
+                            || (tok.ends_with("...")
+                                && tok.len() > 3
+                                && l.starts_with(&tok[..tok.len() - 3])))
+                });
+                match matched {
+                    Some((i, _)) => used[i] = true,
+                    None => panic!(
+                        "label token {tok:?} matches no participant of {labels:?} \
+                         — labels collided/overwrote each other in {ladder_txt:?}"
+                    ),
+                }
+            }
+        }
+    }
+
+    /// At the demo geometry the common short arrow labels must render in
+    /// full: a demo GIF showing "INVITE (SD..." demonstrates breakage, not
+    /// the feature. (The ladder must widen at the expense of the detail
+    /// pane until these fit.)
+    #[test]
+    fn multileg_demo_arrow_labels_are_not_truncated() {
+        let (_app, rows) = extended_flow_screen();
+        let split = ladder_split_col(&rows);
+        // Arrow rows only: the participant label rows (header, footer) may
+        // legitimately ellipsis-truncate long ip:port labels within their
+        // own non-overlapping cells; the collision test above covers them.
+        let ladder: Vec<String> = rows[4..DEMO_ROWS as usize - 2]
+            .iter()
+            .map(|r| r.chars().take(split).collect())
+            .collect();
+        let all = ladder.join("\n");
+
+        for full in ["INVITE (SDP)", "100 Trying", "200 OK (SDP)"] {
+            assert!(
+                all.contains(full),
+                "expected the full arrow label {full:?} somewhere in the \
+                 ladder at demo width; ladder:\n{}",
+                ladder.join("\n")
+            );
+        }
+        for row in &ladder {
+            assert!(
+                !row.contains("..."),
+                "truncated label in the ladder at demo width: {row:?}"
+            );
+        }
+    }
+}

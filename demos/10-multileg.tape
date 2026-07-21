@@ -1,6 +1,12 @@
 Output website/static/demos/10-multileg.gif
 Source demos/common.tape
 
+# One size down from common.tape's FontSize 20: at 1200px that renders a
+# 96-column terminal (vs 88), the minimum for a 3-leg B2BUA ladder whose
+# widest arrow labels ("INVITE (SDP) (+1 retx)" = 22 chars -> 27-col pipe
+# gaps) fit untruncated next to a >= 24-col detail pane.
+Set FontSize 19
+
 # Multi-leg / B2BUA: select the INVITE call leg, toggle extended flow (x) to
 # stitch the correlated back-to-back-UA legs into one ladder.
 Hide
