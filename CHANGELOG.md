@@ -4,6 +4,21 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.25] - 2026-07-22
+
+### Performance
+- TUI: the 0.5.24 churn-rebuild floor now covers every store-derived
+  view, not just the call list. Stream-list rows were re-filtered from
+  the whole store on every frame and every keypress (under a blocking
+  read); they now derive once per tick into a keyed cache and keypresses
+  navigate it lock-free. The quality-dashboard snapshot (rebuilt every
+  tick while open), the statistics aggregation (every dialog, every
+  frame), and the call-flow ladder relayout (forced per tick on busy
+  captures, worst in extended/multi-leg flows) all refresh at the floor
+  (~3/s) under data churn, while user actions still refresh immediately.
+  A completed background pcap load clears the floors so every view
+  reflects the file on the very next tick.
+
 ## [0.5.24] - 2026-07-22
 
 ### Performance
