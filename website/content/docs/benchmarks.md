@@ -1,6 +1,6 @@
 +++
 title = "Benchmarks"
-weight = 16
+weight = 17
 description = "Reproducible throughput and memory benchmarks: sipnab multi-core scaling, and honest comparisons against sngrep and voipmonitor."
 +++
 
