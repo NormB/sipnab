@@ -7,6 +7,7 @@
 
 pub mod call_flow;
 pub mod call_list;
+pub mod dashboard;
 pub mod header_form;
 pub mod help;
 pub mod msg_raw;
@@ -54,8 +55,8 @@ use controllers::*;
 pub use controllers::{
     CallFlowAction, CallListAction, CombinedDetailAction, HelpAction, MessageDiffAction,
     RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction, call_flow_action,
-    call_list_action, combined_detail_action, help_action, message_diff_action, raw_message_action,
-    statistics_action, stream_detail_action, stream_list_action,
+    call_list_action, combined_detail_action, dashboard_action, help_action, message_diff_action,
+    raw_message_action, statistics_action, stream_detail_action, stream_list_action,
 };
 use render::*;
 use save::*;
@@ -115,6 +116,14 @@ pub struct App {
     help_scroll: u16,
     /// Scroll offset for the statistics view (clamped to content in render).
     stats_scroll: u16,
+    /// Selected row in the quality dashboard's worst-streams table.
+    dashboard_selected: usize,
+    /// View to return to when closing the quality dashboard.
+    dashboard_return_view: Option<View>,
+    /// Snapshot the quality dashboard renders from; rebuilt in
+    /// `sync_caches` while the dashboard is open so the draw pass stays
+    /// read-only (skip-tick contract).
+    dashboard_snapshot: Option<dashboard::DashboardSnapshot>,
     /// Displayed dialog-row count at the previous render (autoscroll's
     /// sticky-bottom reference point).
     last_rendered_dialog_rows: usize,
@@ -230,6 +239,9 @@ impl App {
             raw_msg_scroll: 0,
             help_scroll: 0,
             stats_scroll: 0,
+            dashboard_selected: 0,
+            dashboard_return_view: None,
+            dashboard_snapshot: None,
             last_rendered_dialog_rows: 0,
             diff_scroll: 0,
             search_query: String::new(),
@@ -391,6 +403,19 @@ impl App {
     /// previous values until the next tick, matching the render pass's
     /// skip-on-contention behavior.
     fn sync_caches(&mut self) {
+        // Quality dashboard: rebuild the snapshot outside the render pass
+        // (render is read-only under the skip-tick contract). try_read so
+        // a write-saturated capture skips the refresh, not the frame.
+        if matches!(self.current_view, View::QualityDashboard)
+            && let Some(ss) = self.stream_store.try_read()
+        {
+            let snap = dashboard::DashboardSnapshot::from_streams(&ss);
+            self.dashboard_selected = self
+                .dashboard_selected
+                .min(snap.rows.len().saturating_sub(1));
+            self.dashboard_snapshot = Some(snap);
+        }
+
         let Some(store) = self.dialog_store.try_read() else {
             return;
         };

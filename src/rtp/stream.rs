@@ -16,6 +16,12 @@ use super::parser::RtpHeader;
 /// How often to snapshot quality metrics into a [`QualityInterval`].
 const QUALITY_INTERVAL_SECS: i64 = 5;
 
+/// Cap on the per-stream quality trend history. One interval per
+/// `QUALITY_INTERVAL_SECS` means 720 entries cover a full hour of call
+/// time; without a cap a day-long stream would hold ~17k entries.
+/// Oldest-out when full.
+const MAX_QUALITY_INTERVALS: usize = 720;
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Unique key for an RTP stream: SSRC combined with the 5-tuple direction.
@@ -247,6 +253,9 @@ impl RtpStream {
             0.0
         };
 
+        if self.quality_intervals.len() >= MAX_QUALITY_INTERVALS {
+            self.quality_intervals.remove(0);
+        }
         self.quality_intervals.push(QualityInterval {
             timestamp,
             jitter_ms: self.jitter,
@@ -364,6 +373,38 @@ mod tests {
             ssrc: 0x12345678,
             payload_offset: 12,
         }
+    }
+
+    #[test]
+    fn quality_intervals_are_bounded_oldest_out() {
+        // A long-lived stream must not grow its trend history without
+        // bound: one interval per 5 s means a day-long call is 17k
+        // entries per stream. The history is a ring capped at
+        // MAX_QUALITY_INTERVALS with the oldest entry evicted first.
+        let mut s = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+        let n = MAX_QUALITY_INTERVALS + 10;
+        for i in 1..=n {
+            // one packet every QUALITY_INTERVAL_SECS closes an interval
+            s.update(
+                &make_header(i as u16, i as u32 * 160, 0),
+                ts(i as i64 * QUALITY_INTERVAL_SECS),
+                160,
+            );
+        }
+        assert_eq!(
+            s.quality_intervals.len(),
+            MAX_QUALITY_INTERVALS,
+            "history must be capped at MAX_QUALITY_INTERVALS"
+        );
+        // oldest evicted: the first surviving interval is the 11th
+        // recorded one, and order stays oldest-first.
+        let first = s.quality_intervals.first().expect("non-empty");
+        let last = s.quality_intervals.last().expect("non-empty");
+        assert!(first.timestamp < last.timestamp, "oldest-first order");
+        assert!(
+            first.timestamp >= ts(10 * QUALITY_INTERVAL_SECS),
+            "the ten oldest intervals were evicted"
+        );
     }
 
     fn ts(secs: i64) -> DateTime<Utc> {

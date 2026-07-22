@@ -42,6 +42,7 @@ pub enum CallListAction {
     OpenFileDialog,
     NameEndpoints,
     OpenStatistics,
+    OpenDashboard,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -90,6 +91,7 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('O') => OpenFileDialog,
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('s') => OpenStatistics,
+        KeyCode::Char('D') => OpenDashboard,
         _ => return None,
     })
 }
@@ -221,6 +223,11 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::OpenStatistics => {
             app.stats_scroll = 0;
             app.current_view = View::Statistics;
+        }
+        CallListAction::OpenDashboard => {
+            app.dashboard_selected = 0;
+            app.dashboard_return_view = Some(View::CallList);
+            app.current_view = View::QualityDashboard;
         }
     }
 }

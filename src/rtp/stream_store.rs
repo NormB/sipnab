@@ -426,6 +426,20 @@ impl StreamStore {
         self.streams.get(key)
     }
 
+    /// Insert a pre-built stream directly (unit tests only) — bypasses
+    /// packet processing but keeps the SSRC index and generation honest.
+    /// Gated on `tui` alongside its only consumer (the dashboard tests),
+    /// so no-`tui` test builds don't see it as dead code.
+    #[cfg(all(test, feature = "tui"))]
+    pub(crate) fn insert_for_test(&mut self, s: RtpStream) {
+        self.ssrc_index
+            .entry(s.key.ssrc)
+            .or_default()
+            .push(s.key.clone());
+        self.streams.insert(s.key.clone(), s);
+        self.generation += 1;
+    }
+
     /// Iterate over all tracked streams.
     pub fn iter(&self) -> impl Iterator<Item = &RtpStream> {
         self.streams.values()

@@ -108,7 +108,10 @@ fn r_to_mos(r: f64) -> f64 {
     } else if r > 100.0 {
         4.5
     } else {
-        1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6
+        // The cubic dips below 1.0 for small positive R (e.g. R≈4.4 at
+        // 100% loss on G.711), so the documented floor must be enforced
+        // inside the branch too, not only at its edges.
+        (1.0 + 0.035 * r + r * (r - 60.0) * (100.0 - r) * 7e-6).clamp(1.0, 4.5)
     }
 }
 
@@ -263,6 +266,27 @@ mod tests {
     use super::*;
 
     // ── MOS estimation tests ─────────────────────────────────────────
+
+    #[test]
+    fn mos_never_dips_below_documented_floor() {
+        // 100% loss on G.711 lands R ≈ 4.4, where the raw G.107 cubic
+        // evaluates to ~0.99 — the [1.0, 4.5] contract must hold anyway.
+        let mos = estimate_mos(0.0, 100.0, Some("PCMU"));
+        assert!(
+            (1.0..=4.5).contains(&mos),
+            "Expected clamped MOS at total loss, got {mos}"
+        );
+        // sweep the small-R region for any other dip
+        for loss in [80.0, 90.0, 95.0, 99.0, 100.0] {
+            for jitter in [0.0, 40.0, 200.0] {
+                let m = estimate_mos(jitter, loss, Some("PCMU"));
+                assert!(
+                    (1.0..=4.5).contains(&m),
+                    "loss={loss} jitter={jitter} mos={m}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn mos_g711_perfect_conditions() {

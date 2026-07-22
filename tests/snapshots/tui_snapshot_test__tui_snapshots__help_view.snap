@@ -37,8 +37,8 @@ expression: output
 │  N                 Name selected address (IP -> host / FQDN)                 │
 │  O                 Open pcap file                                            │
 │  s                 Statistics view                                           │
+│  D                 Quality dashboard (live MOS/jitter/loss)                  │
 │  F9                Clear active filter                                       │
 │  F10               Column selector                                           │
-│  Tab               Switch to RTP Streams                                     │
 └──────────────────────────────────────────────────────────────────────────────┘
 Esc Back
