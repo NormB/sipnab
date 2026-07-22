@@ -957,6 +957,94 @@ fn inline_script_edits_require_csp_hash_refresh() {
 }
 
 // ---------------------------------------------------------------------------
+// Docs nav drift: the docs sidebar (page.html + section.html nav_group
+// lists) and the header dropdown (base.html) are HARDCODED page lists. The
+// MCP walkthrough shipped reachable only from the /docs/ index cards
+// because none of the three was updated. Every docs page must appear in
+// all three, the two sidebar templates must agree, no nav entry may point
+// at a deleted page, and page weights must be unique (prev/next order).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
+    let docs_dir = repo().join("website/content/docs");
+    let mut pages: Vec<String> = std::fs::read_dir(&docs_dir)
+        .expect("docs content dir")
+        .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".md") && n != "_index.md")
+        .collect();
+    pages.sort();
+
+    let nav_paths = |template: &str| -> Vec<String> {
+        let text = std::fs::read_to_string(repo().join("website/templates").join(template))
+            .expect("read template");
+        let group = regex::Regex::new(r#"nav_group\([^)]*paths=\[([^\]]*)\]"#).unwrap();
+        let entry = regex::Regex::new(r#""([^"]+\.md)""#).unwrap();
+        let mut out: Vec<String> = Vec::new();
+        for c in group.captures_iter(&text) {
+            for e in entry.captures_iter(c.get(1).expect("paths list").as_str()) {
+                out.push(e[1].to_string());
+            }
+        }
+        out.sort();
+        out
+    };
+
+    let page_nav = nav_paths("page.html");
+    let section_nav = nav_paths("section.html");
+    assert_eq!(
+        page_nav, section_nav,
+        "page.html and section.html sidebar nav_group lists differ — update both"
+    );
+    assert_eq!(
+        page_nav, pages,
+        "docs sidebar (page.html/section.html nav_group paths) does not match \
+         website/content/docs/*.md — a page is missing from the sidebar or a \
+         nav entry points at a deleted page"
+    );
+
+    let base = std::fs::read_to_string(repo().join("website/templates/base.html"))
+        .expect("read base.html");
+    let dropdown =
+        regex::Regex::new(r#"get_url\(path='@/docs/([a-z0-9-]+\.md)'\)[^>]*role="menuitem""#)
+            .unwrap();
+    let mut dropdown_pages: Vec<String> = dropdown
+        .captures_iter(&base)
+        .map(|c| c[1].to_string())
+        .collect();
+    dropdown_pages.sort();
+    dropdown_pages.dedup();
+    assert_eq!(
+        dropdown_pages, pages,
+        "header dropdown (base.html role=menuitem docs links) does not match \
+         website/content/docs/*.md"
+    );
+
+    // Prev/next is weight-ordered; duplicate weights make the order arbitrary.
+    let weight = regex::Regex::new(r"(?m)^weight = (\d+)$").unwrap();
+    let mut weights: Vec<(u32, String)> = pages
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(docs_dir.join(p)).expect("read page");
+            let w = weight
+                .captures(&text)
+                .unwrap_or_else(|| panic!("{p}: no `weight = N` in front matter"))[1]
+                .parse::<u32>()
+                .expect("weight parses");
+            (w, p.clone())
+        })
+        .collect();
+    weights.sort();
+    for pair in weights.windows(2) {
+        assert_ne!(
+            pair[0].0, pair[1].0,
+            "duplicate docs weight {}: {} and {} — prev/next order is arbitrary",
+            pair[0].0, pair[0].1, pair[1].1
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CSP refresh --site-dir journey: pages.yml's post-deploy `csp` job runs
 // refresh_csp_hashes.py against the BUILT site (the pages artifact) instead
 // of fetching the live CDN, which can serve stale HTML for ~10 minutes after
