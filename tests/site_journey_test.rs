@@ -878,9 +878,10 @@ fn download_page_msrv_matches_cargo() {
 // sha256 hash, NOT 'unsafe-inline'. Editing an inline script without
 // refreshing the rule ships a page whose script the browser silently blocks —
 // the download page's platform tabs were dead in production for a day this
-// way. This pin list makes the refresh step unforgettable: any inline-script
-// edit fails here until the dev (a) deploys, (b) runs
-// `python3 ops/cloudflare/refresh_csp_hashes.py`, and (c) re-pins.
+// way, and the homepage demos/feature tabs for a morning on 2026-07-22.
+// Since then pages.yml's `csp` job refreshes the rule automatically after
+// every deploy (from the deployed artifact, via --site-dir); this pin list
+// remains so an inline-script edit is a conscious, reviewed act.
 //
 // Pins are computed over the RAW TEMPLATE script bodies; where a script has
 // no Tera syntax the pin equals the deployed CSP token exactly (all except
@@ -949,11 +950,118 @@ fn inline_script_edits_require_csp_hash_refresh() {
     assert_eq!(
         found, pinned,
         "an inline <script> in website/templates/ changed. The production CSP \
-         only allows inline scripts by sha256 hash — the edited script will be \
-         SILENTLY BLOCKED in production until the Cloudflare rule is updated. \
-         After this change deploys, run \
-         `python3 ops/cloudflare/refresh_csp_hashes.py`, then update PINNED in \
-         this test to the computed list above."
+         only allows inline scripts by sha256 hash. The pages.yml csp job \
+         refreshes the Cloudflare rule automatically on deploy; update PINNED \
+         in this test to the computed list above to acknowledge the change."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CSP refresh --site-dir journey: pages.yml's post-deploy `csp` job runs
+// refresh_csp_hashes.py against the BUILT site (the pages artifact) instead
+// of fetching the live CDN, which can serve stale HTML for ~10 minutes after
+// a deploy. These guards run the real script in --site-dir --dry-run mode
+// against a fixture tree and pin the extraction semantics: executable inline
+// scripts hashed recursively, src=/data blocks skipped, and an empty tree a
+// hard error — a silently empty hash set would strip every pin from the
+// production CSP.
+// ---------------------------------------------------------------------------
+
+fn csp_token(body: &str) -> String {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+    format!(
+        "'sha256-{}'",
+        base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(body.as_bytes()))
+    )
+}
+
+fn run_csp_refresh(args: &[&str]) -> std::process::Output {
+    std::process::Command::new("python3")
+        .arg(repo().join("ops/cloudflare/refresh_csp_hashes.py"))
+        .args(args)
+        .output()
+        .expect("run refresh_csp_hashes.py")
+}
+
+#[test]
+fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Adversarial bodies: backslashes, quotes, an embedded NUL, multibyte.
+    let root_body = "var s = \"back\\\\slash \\\"quoted\\\" \u{0} caf\u{e9} \u{1F600}\";";
+    let sub_body = "console.log('nested page');";
+    let module_body = "export const x = 1;";
+    let data_body = "{\"@type\": \"SoftwareApplication\"}";
+    std::fs::write(
+        dir.path().join("index.html"),
+        format!(
+            "<html><body>\
+             <script>{root_body}</script>\
+             <script src=\"/app.js\"></script>\
+             <script type=\"application/ld+json\">{data_body}</script>\
+             </body></html>"
+        ),
+    )
+    .expect("write index.html");
+    std::fs::create_dir(dir.path().join("docs")).expect("mkdir docs");
+    std::fs::write(
+        dir.path().join("docs/index.html"),
+        format!(
+            "<html><body>\
+             <script type=\"module\">{module_body}</script>\
+             <script>{sub_body}</script>\
+             </body></html>"
+        ),
+    )
+    .expect("write docs/index.html");
+    std::fs::write(dir.path().join("style.css"), "body {}").expect("write non-html");
+
+    let out = run_csp_refresh(&["--site-dir", dir.path().to_str().unwrap(), "--dry-run"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "--site-dir --dry-run failed\nstdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    for (what, body) in [
+        ("root inline", root_body),
+        ("nested inline", sub_body),
+        ("module", module_body),
+    ] {
+        assert!(
+            stdout.contains(&csp_token(body)),
+            "{what} script hash missing from output:\n{stdout}"
+        );
+    }
+    assert!(
+        !stdout.contains(&csp_token(data_body)),
+        "ld+json data block must not be hashed:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("distinct inline-script hashes: 3"),
+        "expected exactly 3 hashes (src= and ld+json excluded):\n{stdout}"
+    );
+    // Dry run must print the CSP that would ship, with the hashes in place.
+    assert!(
+        stdout.contains("script-src 'self' 'wasm-unsafe-eval'")
+            && stdout.contains(&csp_token(root_body)),
+        "dry run should print the resulting CSP:\n{stdout}"
+    );
+}
+
+#[test]
+fn csp_refresh_site_dir_empty_tree_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_csp_refresh(&["--site-dir", dir.path().to_str().unwrap(), "--dry-run"]);
+    assert!(
+        !out.status.success(),
+        "an html-free --site-dir must fail loudly, not publish an empty CSP"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(".html"),
+        "error should say no .html files were found: {stderr}"
     );
 }
 
