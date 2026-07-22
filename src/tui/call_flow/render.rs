@@ -698,6 +698,12 @@ pub struct MessageDetailView<'a> {
     pub call_id: &'a str,
     /// Index of the message to detail (raw index into the dialog).
     pub selected_msg: usize,
+    /// Active transaction filter, if the ladder is narrowed to one
+    /// transaction. When set, the `[N/M]` header counts the selected
+    /// message's position WITHIN that transaction and the transaction's
+    /// message count — not the whole dialog (which made the counter look
+    /// stuck on a filtered page). `None` = whole-dialog counts.
+    pub transaction_filter: Option<&'a (u32, String)>,
     pub scroll_offset: u16,
     /// Highlights the border when the detail pane holds keyboard focus
     /// (Tab toggles it).
@@ -743,6 +749,7 @@ pub fn render_message_detail(
     let MessageDetailView {
         call_id,
         selected_msg,
+        transaction_filter: _, // read via `view.transaction_filter` below
         scroll_offset,
         focused,
         header_form,
@@ -769,10 +776,31 @@ pub fn render_message_detail(
         }
     };
 
+    // Header counts follow the ladder: a transaction filter narrows the
+    // visible rows, so the counter must count within the transaction, not
+    // the whole dialog (else it starts high and barely moves — looking
+    // stuck). Unfiltered keeps whole-dialog counts.
+    let (pos, count) = match view.transaction_filter {
+        Some(key) => {
+            let filtered: Vec<usize> = dialog
+                .messages
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| crate::tui::call_flow::transaction_key(m).as_ref() == Some(key))
+                .map(|(i, _)| i)
+                .collect();
+            let pos = filtered
+                .iter()
+                .position(|&i| i == selected_msg)
+                .map_or(selected_msg + 1, |p| p + 1);
+            (pos, filtered.len().max(1))
+        }
+        None => (selected_msg + 1, dialog.messages.len()),
+    };
     let title = format!(
         " [{}/{}] {} ",
-        selected_msg + 1,
-        dialog.messages.len(),
+        pos,
+        count,
         if msg.is_request {
             msg.method
                 .as_ref()
@@ -2331,6 +2359,7 @@ mod tests {
                 &MessageDetailView {
                     call_id: "detail@test",
                     selected_msg: 0,
+                    transaction_filter: None,
                     scroll_offset: 0,
                     focused: true,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
@@ -2369,6 +2398,7 @@ mod tests {
                 &MessageDetailView {
                     call_id: "detail@test",
                     selected_msg: 0,
+                    transaction_filter: None,
                     scroll_offset: 0,
                     focused: false,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
@@ -2422,6 +2452,7 @@ mod tests {
         MessageDetailView {
             call_id,
             selected_msg: 0,
+            transaction_filter: None,
             scroll_offset: scroll,
             focused: true,
             header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
@@ -2429,6 +2460,63 @@ mod tests {
             hscroll,
             theme: THEME.get_or_init(Theme::default),
         }
+    }
+
+    /// The `[N/M]` header counts must be RELATIVE TO THE TRANSACTION FILTER
+    /// when one is active. store_full_dialog is INVITE/180/200/ACK (txn 1,
+    /// indices 0-3) then BYE/200 (txn 2, indices 4-5). Filtering to the BYE
+    /// transaction and selecting its 200 (dialog index 5) must read [2/2],
+    /// not [6/6] — the whole-dialog denominator made the counter look stuck
+    /// on a filtered page.
+    #[test]
+    fn detail_header_counts_are_relative_to_the_transaction_filter() {
+        let theme = Theme::default();
+        let store = store_full_dialog("f@test");
+        let bye_key = (2u32, "BYE".to_string());
+
+        let header = |sel: usize, filter: Option<&(u32, String)>| -> String {
+            let mut term = terminal(80, 30);
+            let area = Rect::new(0, 0, 80, 30);
+            term.draw(|f| {
+                render_message_detail(
+                    f,
+                    area,
+                    &store,
+                    &MessageDetailView {
+                        call_id: "f@test",
+                        selected_msg: sel,
+                        transaction_filter: filter,
+                        scroll_offset: 0,
+                        focused: false,
+                        header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
+                        wrap: true,
+                        hscroll: 0,
+                        theme: &theme,
+                    },
+                );
+            })
+            .unwrap();
+            // The title sits on the top border row.
+            buffer_text(&term).lines().next().unwrap_or("").to_string()
+        };
+
+        // Filtered to the BYE transaction: BYE (idx 4) is 1/2, its 200 (idx 5) is 2/2.
+        assert!(
+            header(4, Some(&bye_key)).contains("[1/2]"),
+            "BYE should read [1/2] under the BYE filter, got: {}",
+            header(4, Some(&bye_key))
+        );
+        assert!(
+            header(5, Some(&bye_key)).contains("[2/2]"),
+            "BYE's 200 should read [2/2] under the BYE filter, got: {}",
+            header(5, Some(&bye_key))
+        );
+        // Unfiltered: whole-dialog counts are unchanged.
+        assert!(
+            header(5, None).contains("[6/6]"),
+            "unfiltered, the BYE 200 is message 6/6, got: {}",
+            header(5, None)
+        );
     }
 
     fn draw_detail(
@@ -2720,6 +2808,7 @@ mod tests {
                 &MessageDetailView {
                     call_id: "detail@test",
                     selected_msg: 0,
+                    transaction_filter: None,
                     scroll_offset: 0,
                     focused: true,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
@@ -2738,6 +2827,7 @@ mod tests {
                 &MessageDetailView {
                     call_id: "detail@test",
                     selected_msg: 0,
+                    transaction_filter: None,
                     scroll_offset: 0,
                     focused: false,
                     header_form: crate::tui::header_form::HeaderFormMode::AsCaptured,
