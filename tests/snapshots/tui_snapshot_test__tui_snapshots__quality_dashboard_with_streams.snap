@@ -1,0 +1,28 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ Quality Dashboard ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                                                                                                                │
+│  Streams: 2 (0 active)   Avg MOS: 4.4   Worst: 4.4   With loss: 0                                                              │
+│                                                                                                                                │
+│    MOS     Jitter   Loss%   Packets  Codec    Stream                                                                           │
+│▶ · 4.4      0.0ms   0.00         1  PCMU     call-1@test                                                                       │
+│  · 4.4      0.0ms   0.00         1  PCMA     10.0.0.3:20002 → 10.0.0.4:30002                                                   │
+│                                                                                                                                │
+│  Trend (selected, 5s intervals, oldest → newest)                                                                               │
+│  MOS:    (no completed intervals yet)                                                                                          │
+│  Jitter: (no completed intervals yet)                                                                                          │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+│                                                                                                                                │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc Back

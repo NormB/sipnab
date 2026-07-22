@@ -43,6 +43,7 @@ Keys marked with **(configurable)** can be remapped via the `[keybindings]` conf
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
 | s | Switch to Statistics view |
+| D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | O | Open pcap file (File Open dialog) |
 | F8 | Open Settings popup **(configurable: `settings`)** |
 | Tab | Switch to RTP Streams view |
@@ -161,6 +162,7 @@ message of the selection rendered as one scrollable document.
 | End | Jump to last stream |
 | / | Search streams (SSRC, codec, addresses, dialog) **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list and Enter commits the query and opens the highlighted stream |
 | Enter | Open stream detail |
+| D | Open the Quality Dashboard (live MOS/jitter/loss) |
 | Tab | Switch to Call List |
 | Esc | Back to Call List |
 | N | Name the selected stream's source address (map IP → host/FQDN) |
@@ -180,6 +182,20 @@ message of the selection rendered as one scrollable document.
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
 | Esc | Back to RTP Streams |
+
+## Quality Dashboard
+
+Live call-quality overview: aggregate MOS/jitter/loss with the worst
+streams ranked first and per-stream trend sparklines. Open with `D` from
+the Call List or RTP Streams view.
+
+| Key | Action |
+|-----|--------|
+| Up / k, Down / j | Select stream (worst first) |
+| PgUp / PgDn | Page through streams |
+| Home / End | Jump to best/worst |
+| Enter | Open stream detail for the selection |
+| Esc / q / D | Close (returns to the opening view) |
 
 ## Statistics
 

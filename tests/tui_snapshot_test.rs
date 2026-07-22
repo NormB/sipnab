@@ -322,6 +322,42 @@ mod tui_snapshots {
     }
 
     #[test]
+    fn quality_dashboard_no_streams() {
+        let backend = TestBackend::new(130, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_dialogs();
+        app.handle_key(crossterm::event::KeyCode::Char('D')); // open dashboard
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn quality_dashboard_with_streams() {
+        let backend = TestBackend::new(130, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_streams();
+        app.handle_key(crossterm::event::KeyCode::Char('D')); // open dashboard
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+
+        let output = buffer_to_string(&terminal);
+        insta::assert_snapshot!(output);
+    }
+
+    #[test]
+    fn quality_dashboard_survives_tiny_terminal() {
+        // render-robustness: a 10x3 terminal must not panic or underflow
+        let backend = TestBackend::new(10, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_streams();
+        app.handle_key(crossterm::event::KeyCode::Char('D'));
+        terminal.draw(|frame| app.render(frame)).unwrap();
+    }
+
+    #[test]
     fn stream_list_with_streams() {
         let backend = TestBackend::new(130, 24);
         let mut terminal = Terminal::new(backend).unwrap();

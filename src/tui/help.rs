@@ -40,6 +40,7 @@ CALL LIST:
   N                Name selected address (IP -> host / FQDN)
   O                Open pcap file
   s                Statistics view
+  D                Quality dashboard (live MOS/jitter/loss)
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams
@@ -93,11 +94,19 @@ MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
   Esc              Back
   q, s             Close statistics (Statistics view)
 
+QUALITY DASHBOARD:
+  \u{2191}/\u{2193}, j/k       Select stream (worst quality first)
+  PgUp/PgDn       Page through streams
+  Home/End         Jump to best/worst
+  Enter            Open stream detail
+  Esc, q, D        Close dashboard
+
 RTP STREAMS (Tab):
   \u{2191}/\u{2193}             Navigate streams
   PgUp/PgDn       Page scroll
   /                Search streams (arrows work while typing; Enter opens)
   Enter            Stream detail
+  D                Quality dashboard (live MOS/jitter/loss)
   Tab              Switch to Call List
   F1               Help
   F7               Filter
