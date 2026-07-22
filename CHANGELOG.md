@@ -4,6 +4,18 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.24] - 2026-07-22
+
+### Performance
+- TUI: arrow-key navigation no longer crawls on busy captures. The
+  displayed dialog list (filter + search + sort) was re-derived on every
+  event-loop tick whenever the store changed — on a loaded server that
+  meant a full filter-DSL pass, sort, and per-row clone after every
+  keypress. Generation-driven rebuilds are now floored to one per 300 ms
+  (~3 refreshes/s); explicit user actions (filter, search, sort) still
+  rebuild immediately. Sticky-bottom autoscroll follows at the refresh
+  cadence.
+
 ## [0.5.23] - 2026-07-22
 
 ### Added
