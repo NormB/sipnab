@@ -1032,6 +1032,10 @@ pub(in crate::tui) struct DisplayedCache {
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
+    /// When the list was last derived; generation-driven rebuilds are
+    /// floored to [`DISPLAYED_REBUILD_MIN`] apart (`None` = never derived,
+    /// so the first derivation is immediate).
+    pub(in crate::tui) last_rebuild: Option<std::time::Instant>,
 }
 
 // ── Background work shared with the event loop ─────────────────────
