@@ -4,6 +4,17 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.26] - 2026-07-22
+
+### Fixed
+- TUI: on a call-flow page filtered to one transaction (`f`), the
+  detail-pane header counted position/total over the whole dialog, so a
+  short transaction late in a long dialog rendered a 3-row ladder titled
+  `[12/13]` — a counter that looked stuck and read as broken arrow keys
+  (the arrows worked). The header now counts within the filtered
+  transaction (`[1/3]`..`[3/3]`); unfiltered pages keep whole-dialog
+  counts.
+
 ## [0.5.25] - 2026-07-22
 
 ### Performance
