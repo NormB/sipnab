@@ -329,6 +329,14 @@ pub(in crate::tui) fn render_app(
                         &call_flow::render::MessageDetailView {
                             call_id: detail_cid,
                             selected_msg: detail_sel,
+                            // The transaction filter frames a single dialog;
+                            // a merged/extended row (provenance set) belongs
+                            // to another dialog, so don't apply it there.
+                            transaction_filter: if provenance.is_none() {
+                                app.flow.transaction_filter.as_ref()
+                            } else {
+                                None
+                            },
                             scroll_offset: app.flow.detail_scroll,
                             focused: app.flow.detail_focused,
                             header_form: app.header_form,
