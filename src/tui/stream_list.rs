@@ -141,11 +141,20 @@ impl Default for StreamListState {
 /// Display parameters for the stream list view (mirrors
 /// [`crate::tui::call_list::CallListDisplay`]).
 pub struct StreamListDisplay<'a> {
-    pub filter: Option<&'a FilterExpr>,
-    pub search_query: &'a str,
     pub theme: &'a super::Theme,
     pub resolver: &'a crate::names::NameResolver,
     pub name_mode: crate::names::NameMode,
+    /// Stream keys in display order, derived once per tick by
+    /// `App::sync_caches` — the render must not re-filter the store.
+    pub displayed: &'a [crate::rtp::stream::StreamKey],
+}
+
+// Same "derived once per tick" property as the call list (thread-local so
+// the parallel test runner cannot cross-talk).
+#[cfg(test)]
+thread_local! {
+    pub(crate) static DISPLAYED_STREAMS_CALLS: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
 }
 
 /// Render the RTP stream list table into the given area.
@@ -202,6 +211,8 @@ pub fn displayed_streams<'a>(
     filter: Option<&FilterExpr>,
     search_query: &str,
 ) -> Vec<&'a RtpStream> {
+    #[cfg(test)]
+    DISPLAYED_STREAMS_CALLS.with(|c| c.set(c.get() + 1));
     let q = search_query.to_ascii_lowercase();
     streams
         .into_iter()
@@ -228,15 +239,13 @@ pub fn render_stream_list(
     area: Rect,
     state: &mut StreamListState,
     store: &StreamStore,
-    dialog_store: Option<&DialogStore>,
     display: &StreamListDisplay,
 ) {
     let StreamListDisplay {
-        filter,
-        search_query,
         theme,
         resolver,
         name_mode,
+        displayed,
     } = *display;
     // The entire area is used for the table (no title line)
     let table_area = area;
@@ -261,9 +270,9 @@ pub fn render_stream_list(
     .style(header_style)
     .bottom_margin(0);
 
-    // Same displayed list the navigation and selection resolution use.
-    let streams = displayed_streams(store.iter(), dialog_store, filter, search_query);
-    let total_streams = streams.len();
+    // Same displayed list the navigation and selection resolution use,
+    // derived once per tick in sync_caches — resolve keys, don't re-filter.
+    let total_streams = displayed.len();
 
     // Viewport windowing: only format visible rows to avoid O(N) formatting
     // at 50K streams. Compute scroll offset from table state.
@@ -279,7 +288,11 @@ pub fn render_stream_list(
     }
     .min(total_streams.saturating_sub(1));
     let visible_end = (scroll_offset + visible_height).min(total_streams);
-    let visible_streams = &streams[scroll_offset..visible_end];
+    // Resolve only the visible window's keys (evicted keys drop out).
+    let visible_streams: Vec<&RtpStream> = displayed[scroll_offset..visible_end]
+        .iter()
+        .filter_map(|k| store.get(k))
+        .collect();
 
     // Build placeholder rows for items above the viewport (needed for
     // ratatui's StatefulWidget to keep selection index correct)

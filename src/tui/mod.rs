@@ -143,6 +143,14 @@ pub struct App {
     displayed: DisplayedCache,
     /// Cached displayed dialog count (updated when lock is available).
     cached_displayed_count: usize,
+    /// Displayed stream list cache (search+filter, derived per tick).
+    stream_displayed: StreamDisplayedCache,
+    /// Statistics view aggregate-text cache.
+    stats: StatsCache,
+    /// Stream-store generation the dashboard snapshot was derived from.
+    dashboard_generation: Option<u64>,
+    /// Floors churn-driven dashboard snapshot rebuilds.
+    dashboard_floor: ChurnFloor,
     /// Save dialog popup state (path/format survive reopening).
     save: SaveDialogState,
     /// File-open dialog state (last-browsed directory survives reopening).
@@ -240,6 +248,10 @@ impl App {
             help_scroll: 0,
             stats_scroll: 0,
             dashboard_selected: 0,
+            stream_displayed: StreamDisplayedCache::default(),
+            stats: StatsCache::default(),
+            dashboard_generation: None,
+            dashboard_floor: ChurnFloor::default(),
             dashboard_return_view: None,
             dashboard_snapshot: None,
             last_rendered_dialog_rows: 0,
@@ -409,11 +421,19 @@ impl App {
         if matches!(self.current_view, View::QualityDashboard)
             && let Some(ss) = self.stream_store.try_read()
         {
-            let snap = dashboard::DashboardSnapshot::from_streams(&ss);
-            self.dashboard_selected = self
-                .dashboard_selected
-                .min(snap.rows.len().saturating_sub(1));
-            self.dashboard_snapshot = Some(snap);
+            let g = ss.generation();
+            // First snapshot immediately; churn refreshes at the floor.
+            let force = self.dashboard_snapshot.is_none();
+            let stale = self.dashboard_generation != Some(g);
+            if force || (stale && self.dashboard_floor.ready()) {
+                let snap = dashboard::DashboardSnapshot::from_streams(&ss);
+                self.dashboard_selected = self
+                    .dashboard_selected
+                    .min(snap.rows.len().saturating_sub(1));
+                self.dashboard_snapshot = Some(snap);
+                self.dashboard_generation = Some(g);
+                self.dashboard_floor.mark();
+            }
         }
 
         let Some(store) = self.dialog_store.try_read() else {
@@ -433,14 +453,10 @@ impl App {
             .as_ref()
             .is_some_and(|k| k.generation == store.generation());
         // Generation churn alone (busy capture) refreshes at most once per
-        // DISPLAYED_REBUILD_MIN — between refreshes the cached list serves
+        // CHURN_REBUILD_MIN — between refreshes the cached list serves
         // the frame, so cursor movement never waits on a filter+sort pass.
         // A changed user input (filter/search/sort) always rebuilds now.
-        let churn_floored = inputs_fresh
-            && self
-                .displayed
-                .last_rebuild
-                .is_some_and(|t| t.elapsed() < DISPLAYED_REBUILD_MIN);
+        let churn_floored = inputs_fresh && !self.displayed.floor.ready();
         let fresh = inputs_fresh && data_fresh;
         if !fresh && !churn_floored {
             self.displayed.ids = call_list::displayed_dialogs(
@@ -460,7 +476,7 @@ impl App {
                 sort_column: self.call_list.sort_column(),
                 sort_ascending: self.call_list.sort_ascending(),
             });
-            self.displayed.last_rebuild = Some(Instant::now());
+            self.displayed.floor.mark();
         }
         self.cached_displayed_count = self.displayed.ids.len();
 
@@ -482,6 +498,59 @@ impl App {
             self.last_rendered_dialog_rows = displayed_len;
         }
 
+        // Stream-list rows (search + filter): derived here at most once
+        // per churn floor. The render and every navigation clamp
+        // previously re-filtered the whole stream store — under a
+        // BLOCKING read — on each keypress.
+        if self.current_view == View::StreamList
+            && let Some(ss) = self.stream_store.try_read()
+        {
+            // The display filter matches through the associated dialog,
+            // so dialog churn reshapes the list only when a filter is on.
+            let dialog_generation = self.active_filter.as_ref().map(|_| store.generation());
+            let inputs_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
+                k.filter_text == self.active_filter_text && k.query == self.search_query
+            });
+            let data_fresh = self.stream_displayed.key.as_ref().is_some_and(|k| {
+                k.stream_generation == ss.generation() && k.dialog_generation == dialog_generation
+            });
+            let churn_floored = inputs_fresh && !self.stream_displayed.floor.ready();
+            let fresh = inputs_fresh && data_fresh;
+            if !fresh && !churn_floored {
+                self.stream_displayed.keys = stream_list::displayed_streams(
+                    ss.iter(),
+                    Some(&store),
+                    self.active_filter.as_ref(),
+                    &self.search_query,
+                )
+                .iter()
+                .map(|s| s.key.clone())
+                .collect();
+                self.stream_displayed.key = Some(StreamDisplayedKey {
+                    stream_generation: ss.generation(),
+                    dialog_generation,
+                    filter_text: self.active_filter_text.clone(),
+                    query: self.search_query.clone(),
+                });
+                self.stream_displayed.floor.mark();
+            }
+        }
+
+        // Statistics text: a full-store aggregation, previously recomputed
+        // on every frame while the view was open.
+        if self.current_view == View::Statistics
+            && let Some(ss) = self.stream_store.try_read()
+        {
+            let key = (store.generation(), ss.generation());
+            let force = self.stats.key.is_none();
+            let stale = self.stats.key != Some(key);
+            if force || (stale && self.stats.floor.ready()) {
+                self.stats.text = render::statistics_text(&store, &ss);
+                self.stats.key = Some(key);
+                self.stats.floor.mark();
+            }
+        }
+
         // CallFlow ladder cache (WS4.3c): the theme-free layout half is
         // derived at most once here, keyed on everything that shapes it
         // ([`LadderKey`]); the render pass only re-styles the cached rows.
@@ -495,8 +564,22 @@ impl App {
             if self.flow.show_rtp && !self.flow.extended {
                 if let Some(ss) = self.stream_store.try_read() {
                     let g = ss.generation();
-                    let seg_key = (cid.clone(), g);
-                    if self.flow.ladder.segs_key.as_ref() != Some(&seg_key) {
+                    let same_cid = self
+                        .flow
+                        .ladder
+                        .segs_key
+                        .as_ref()
+                        .is_some_and(|(c, _)| c == &cid);
+                    let same = self
+                        .flow
+                        .ladder
+                        .segs_key
+                        .as_ref()
+                        .is_some_and(|(c, gg)| c == &cid && *gg == g);
+                    // Same dialog + stream churn only: adopt the new
+                    // generation at the churn floor. A different dialog
+                    // (user navigation) refreshes immediately.
+                    if !same && (!same_cid || self.flow.ladder.churn.ready()) {
                         let mut segs: Vec<call_flow::RtpCodecSegment> = ss
                             .streams_for(&cid)
                             .filter_map(|s| {
@@ -509,9 +592,10 @@ impl App {
                             .collect();
                         segs.sort_by_key(|s| s.start);
                         self.flow.ladder.rtp_segs = segs;
-                        self.flow.ladder.segs_key = Some(seg_key);
+                        self.flow.ladder.segs_key = Some((cid.clone(), g));
+                        self.flow.ladder.churn.mark();
                     }
-                    stream_generation = Some(g);
+                    stream_generation = self.flow.ladder.segs_key.as_ref().map(|(_, g)| *g);
                 } else {
                     // Contended: reuse the segments (and their generation)
                     // the cache already holds so the ladder key still hits.
@@ -521,8 +605,24 @@ impl App {
 
             let source = if self.flow.extended || !self.flow.merged_calls.is_empty() {
                 // Extended legs / merged multi-selection can span the whole
-                // store, so any store change must re-derive.
-                LadderSource::ExtendedStore(store.generation())
+                // store, so store changes must re-derive — but a busy store
+                // bumps its generation every tick, which forced a full
+                // multi-leg relayout per tick. Adopt a new generation at
+                // most once per churn floor; between adoptions the held
+                // generation keeps the ladder key (and layout) stable.
+                let g_now = store.generation();
+                let held = match &self.flow.ladder.key {
+                    Some(k) if k.call_id == cid => match &k.source {
+                        LadderSource::ExtendedStore(g) => Some(*g),
+                        LadderSource::Dialog(..) => None,
+                    },
+                    _ => None,
+                };
+                let g = match held {
+                    Some(h) if h != g_now && !self.flow.ladder.churn.ready() => h,
+                    _ => g_now,
+                };
+                LadderSource::ExtendedStore(g)
             } else {
                 match store.get(&cid) {
                     Some(d) => LadderSource::Dialog(d.messages.len(), d.updated_at),
@@ -683,6 +783,7 @@ impl App {
                 self.flow.ladder.participants = participants;
                 self.flow.ladder.rows = rows;
                 self.flow.ladder.key = Some(key);
+                self.flow.ladder.churn.mark();
             }
         }
     }
@@ -750,6 +851,17 @@ impl App {
             .collect();
         segs.sort_by_key(|s| s.start);
         segs
+    }
+
+    /// Reset every UI-cache churn floor: called on discrete completion
+    /// events (background pcap load landing) so the next tick re-derives
+    /// everything immediately instead of up to a floor later.
+    pub(in crate::tui) fn clear_churn_floors(&mut self) {
+        self.displayed.floor.clear();
+        self.stream_displayed.floor.clear();
+        self.stats.floor.clear();
+        self.dashboard_floor.clear();
+        self.flow.ladder.churn.clear();
     }
 
     /// Compute the poll timeout based on how recently data was updated.
@@ -1101,10 +1213,7 @@ mod tests {
         );
 
         // Once the floor elapses the next tick picks up the churned data.
-        app.displayed.last_rebuild = app
-            .displayed
-            .last_rebuild
-            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
+        app.elapse_churn_floors_for_test();
         let before = calls();
         app.sync_caches();
         assert_eq!(calls() - before, 1, "floor elapsed: refresh expected");
@@ -1136,6 +1245,284 @@ mod tests {
             "a changed user input must re-derive immediately, floor or not"
         );
         assert_eq!(app.cached_displayed_count, 1, "search narrowed the list");
+    }
+
+    /// Insert one synthetic RTP stream (unique SSRC/ports per `i`).
+    fn push_rtp_stream(ss: &mut crate::rtp::stream_store::StreamStore, i: u16) {
+        let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let parsed = crate::capture::ParsedPacket {
+            timestamp: ts,
+            src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 20000 + i * 2,
+            dst_port: 30000 + i * 2,
+            transport: crate::capture::parse::TransportProto::Udp,
+            payload: vec![0u8; 172].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+        };
+        let rtp = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0xBBBB_0000 + u32::from(i),
+            payload_offset: 12,
+        };
+        ss.process_rtp(&parsed, &rtp, ts);
+    }
+
+    /// Stream list, same contract as the call list: stream-store churn
+    /// alone must not re-filter the store per tick, keypresses must
+    /// navigate the cached rows (they used to re-filter under a BLOCKING
+    /// read per keypress), and a user input change bypasses the floor.
+    #[test]
+    fn stream_list_churn_and_keypresses_do_not_rederive_displayed() {
+        use crossterm::event::KeyCode;
+        let mut app = App::new_test();
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 0);
+            push_rtp_stream(&mut ss, 1);
+            push_rtp_stream(&mut ss, 2);
+        }
+        app.current_view = View::StreamList;
+        let calls = || stream_list::DISPLAYED_STREAMS_CALLS.with(|c| c.get());
+        app.sync_caches(); // initial derivation
+        assert_eq!(app.stream_displayed.keys.len(), 3);
+
+        let before = calls();
+        for i in 3..6 {
+            app.stream_store.clone().write().process_rtp(
+                &crate::capture::ParsedPacket {
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                    src_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20000 + i * 2,
+                    dst_port: 30000 + i * 2,
+                    transport: crate::capture::parse::TransportProto::Udp,
+                    payload: vec![0u8; 172].into(),
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                },
+                &crate::rtp::parser::RtpHeader {
+                    version: 2,
+                    padding: false,
+                    extension: false,
+                    csrc_count: 0,
+                    marker: false,
+                    payload_type: 0,
+                    sequence: 1,
+                    timestamp: 0,
+                    ssrc: 0xBBBB_0000 + u32::from(i),
+                    payload_offset: 12,
+                },
+                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            );
+            app.handle_key(KeyCode::Down); // navigates + settles a tick
+            app.sync_caches();
+        }
+        assert_eq!(
+            calls() - before,
+            0,
+            "stream churn within the floor (and keypresses) must not \
+             re-filter the store"
+        );
+        assert_eq!(
+            app.stream_list.selected(),
+            2,
+            "keypresses must navigate the cached rows"
+        );
+
+        // Floor elapses: next tick picks up the churned streams.
+        app.elapse_churn_floors_for_test();
+        let before = calls();
+        app.sync_caches();
+        assert_eq!(calls() - before, 1, "floor elapsed: refresh expected");
+        assert_eq!(app.stream_displayed.keys.len(), 6);
+
+        // A user input (search) bypasses the floor immediately.
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 7);
+        }
+        app.search_query = "bbbb0000".into();
+        let before = calls();
+        app.sync_caches();
+        assert_eq!(calls() - before, 1, "changed search must re-derive now");
+        assert_eq!(
+            app.stream_displayed.keys.len(),
+            1,
+            "search narrowed to SSRC BBBB0000"
+        );
+    }
+
+    /// Selection resolution (Enter → stream detail, naming) must resolve
+    /// from the cached display order, lock-free — index into the cache.
+    #[test]
+    fn stream_selection_resolves_from_cached_order() {
+        let mut app = App::new_test();
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 0);
+            push_rtp_stream(&mut ss, 1);
+        }
+        app.current_view = View::StreamList;
+        app.sync_caches();
+        app.stream_list.move_down(app.stream_displayed.keys.len());
+        let key = controllers::get_selected_stream_key(&app).expect("selected stream");
+        assert_eq!(key, app.stream_displayed.keys[1]);
+        // Selection past the cached end (evicted rows): no panic, None.
+        app.stream_list.move_to_bottom(100);
+        assert_eq!(controllers::get_selected_stream_key(&app), None);
+    }
+
+    /// Quality dashboard: stream churn refreshes the snapshot at the
+    /// floor, never per tick; the first snapshot after opening the view
+    /// is immediate.
+    #[test]
+    fn dashboard_snapshot_churn_is_floored() {
+        let mut app = App::new_test();
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 0);
+        }
+        app.current_view = View::QualityDashboard;
+        app.sync_caches(); // first snapshot: immediate
+        let rows = app
+            .dashboard_snapshot
+            .as_ref()
+            .expect("snapshot")
+            .rows
+            .len();
+        assert_eq!(rows, 1);
+
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 1);
+        }
+        app.sync_caches();
+        assert_eq!(
+            app.dashboard_snapshot.as_ref().unwrap().rows.len(),
+            1,
+            "churn within the floor must keep serving the cached snapshot"
+        );
+
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        assert_eq!(
+            app.dashboard_snapshot.as_ref().unwrap().rows.len(),
+            2,
+            "floor elapsed: snapshot must pick up the new stream"
+        );
+    }
+
+    /// Statistics view: the aggregate text is derived at the floor, not
+    /// per tick (it walks every dialog).
+    #[test]
+    fn statistics_text_churn_is_floored() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "stats-1@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        app.current_view = View::Statistics;
+        app.sync_caches();
+        assert!(
+            app.stats.text.contains("Dialogs:           1"),
+            "first derivation is immediate: {}",
+            app.stats.text
+        );
+
+        app.dialog_store
+            .clone()
+            .write()
+            .process_message(make_invite("stats-2@test", "1003", "1004", base_ts()));
+        app.sync_caches();
+        assert!(
+            app.stats.text.contains("Dialogs:           1"),
+            "churn within the floor must keep the cached text"
+        );
+
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        assert!(
+            app.stats.text.contains("Dialogs:           2"),
+            "floor elapsed: text must pick up the new dialog: {}",
+            app.stats.text
+        );
+    }
+
+    /// Extended/merged call-flow: a busy store must not force a full
+    /// multi-leg relayout every tick — the ladder key holds the adopted
+    /// store generation until the churn floor elapses.
+    #[test]
+    fn extended_ladder_holds_store_generation_under_churn() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "ext-1@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        app.current_view = View::CallFlow("ext-1@test".to_string());
+        app.flow.extended = true;
+        app.sync_caches();
+        let g0 = match &app.flow.ladder.key {
+            Some(LadderKey {
+                source: LadderSource::ExtendedStore(g),
+                ..
+            }) => *g,
+            other => panic!("expected extended ladder key, got {other:?}"),
+        };
+
+        app.dialog_store
+            .clone()
+            .write()
+            .process_message(make_invite("ext-2@test", "1003", "1004", base_ts()));
+        app.sync_caches();
+        match &app.flow.ladder.key {
+            Some(LadderKey {
+                source: LadderSource::ExtendedStore(g),
+                ..
+            }) => assert_eq!(
+                *g, g0,
+                "store churn within the floor must hold the adopted generation"
+            ),
+            other => panic!("expected extended ladder key, got {other:?}"),
+        }
+
+        app.elapse_churn_floors_for_test();
+        app.sync_caches();
+        match &app.flow.ladder.key {
+            Some(LadderKey {
+                source: LadderSource::ExtendedStore(g),
+                ..
+            }) => assert!(
+                *g > g0,
+                "floor elapsed: the new store generation must be adopted"
+            ),
+            other => panic!("expected extended ladder key, got {other:?}"),
+        }
     }
 
     // ── Contended-store render ticks (busy-capture flicker) ────────
@@ -1383,10 +1770,7 @@ mod tests {
             let msg = make_invite(cid, "1005", "1006", base_ts());
             app.dialog_store.write().process_message(msg);
         }
-        app.displayed.last_rebuild = app
-            .displayed
-            .last_rebuild
-            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
+        app.elapse_churn_floors_for_test();
         app.sync_caches();
         assert_eq!(app.last_rendered_dialog_rows, 3);
         assert_eq!(

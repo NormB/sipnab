@@ -28,15 +28,16 @@ impl App {
         self.version = version.into();
     }
 
-    /// Elapse the displayed-list churn floor ([`DISPLAYED_REBUILD_MIN`])
-    /// so the next tick re-derives immediately — stands in for real time
-    /// passing between ticks on a busy capture.
+    /// Elapse every UI-cache churn floor ([`CHURN_REBUILD_MIN`]) so the
+    /// next tick re-derives immediately — stands in for real time passing
+    /// between ticks on a busy capture.
     #[doc(hidden)]
-    pub fn elapse_displayed_rebuild_floor_for_test(&mut self) {
-        self.displayed.last_rebuild = self
-            .displayed
-            .last_rebuild
-            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
+    pub fn elapse_churn_floors_for_test(&mut self) {
+        self.displayed.floor.elapse_for_test();
+        self.stream_displayed.floor.elapse_for_test();
+        self.stats.floor.elapse_for_test();
+        self.dashboard_floor.elapse_for_test();
+        self.flow.ladder.churn.elapse_for_test();
     }
 
     /// Create an App whose dialog store already contains the given messages.
@@ -59,6 +60,9 @@ impl App {
     /// real event loop ticks between key events, so tests keep synchronous
     /// load/save semantics.
     pub fn handle_key(&mut self, code: KeyCode) {
+        // The real event loop ticks (sync_caches + render) between key
+        // events; sync first so keys act on current caches, as in prod.
+        self.sync_caches();
         let key = KeyEvent::new(code, KeyModifiers::NONE);
         handle_key_event(self, key);
         self.settle_background_work();
@@ -134,6 +138,7 @@ impl App {
     /// Simulate a keypress with modifiers (settles background work like
     /// [`Self::handle_key`]).
     pub fn handle_key_with_modifiers(&mut self, code: KeyCode, modifiers: KeyModifiers) {
+        self.sync_caches();
         let key = KeyEvent::new(code, modifiers);
         handle_key_event(self, key);
         self.settle_background_work();

@@ -114,19 +114,16 @@ pub(in crate::tui) fn render_app(
         }
         View::StreamList => {
             let store = ss;
-            let dialog_store = Some(ds);
             stream_list::render_stream_list(
                 frame,
                 main_area,
                 &mut app.stream_list,
                 store,
-                dialog_store,
                 &stream_list::StreamListDisplay {
-                    filter: app.active_filter.as_ref(),
-                    search_query: &app.search_query,
                     theme: &app.theme,
                     resolver: app.resolver.as_ref(),
                     name_mode: app.name_mode,
+                    displayed: &app.stream_displayed.keys,
                 },
             );
         }
@@ -623,13 +620,10 @@ pub(in crate::tui) fn render_dashboard(
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub(in crate::tui) fn render_statistics(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    app: &App,
-    ds: &DialogStore,
-    ss: &StreamStore,
-) -> u16 {
+/// Compose the statistics view's aggregate text — a full pass over every
+/// dialog, so it is derived in `App::sync_caches` (churn-floored) and
+/// cached, never recomputed per frame.
+pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> String {
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
 
@@ -695,6 +689,25 @@ pub(in crate::tui) fn render_statistics(
     }
 
     text.push_str("\nPress Esc to return.");
+    text
+}
+
+pub(in crate::tui) fn render_statistics(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    app: &App,
+    ds: &DialogStore,
+    ss: &StreamStore,
+) -> u16 {
+    // Serve the sync_caches-derived text; fall back to a direct pass only
+    // when no cache exists yet (first frame lost the sync try_read race).
+    let fallback;
+    let text: &str = if app.stats.text.is_empty() {
+        fallback = statistics_text(ds, ss);
+        &fallback
+    } else {
+        &app.stats.text
+    };
 
     // Clamp the scroll to the content height (End jumps to the last page).
     let total_rows = text.lines().count() as u16;
