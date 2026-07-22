@@ -10,6 +10,12 @@ the HEP scenario).
 Every command was verified against a real build (`sipnab 0.5.20 features:
 native,tui,audio,tls,hep,api,mcp,mcp-http`).
 
+The client steps use Claude Code; the server side is identical for every
+MCP-capable agent. If you drive Codex CLI, Cursor, VS Code, Gemini CLI, or
+Windsurf instead, do the same scenario and swap the registration step —
+[Registering other MCP clients](#registering-other-mcp-clients-codex-cursor-vs-code-gemini-cli-windsurf)
+has the exact config for each.
+
 ## Choosing a scenario
 
 | You have | You want | Scenario |
@@ -597,6 +603,144 @@ scripts: the Python/TypeScript clients in
 [mcp.md § Client cookbook](mcp.md#client-cookbook) drive the same tools
 directly (e.g. a nightly job calling `find_problems` and opening a ticket
 when the count is nonzero).
+
+---
+
+## Registering other MCP clients (Codex, Cursor, VS Code, Gemini CLI, Windsurf)
+
+Every scenario above is client-agnostic on the server side: stdio wirings
+(1, 2A) hand the client a command to launch, HTTP wirings (2B, 2C, 4) hand
+it a URL plus a bearer token. Only the registration step differs per
+agent. The table maps it; snippets follow.
+
+| Client | Config lives in | stdio | Streamable HTTP |
+|---|---|---|---|
+| Claude Code | `claude mcp add` | ✓ | ✓ `--transport http` + header |
+| Claude Desktop | `claude_desktop_config.json` | ✓ | via Settings → Connectors |
+| Codex CLI | `~/.codex/config.toml` | ✓ `command`/`args` | ✓ `url` + `bearer_token_env_var` |
+| Cursor | `~/.cursor/mcp.json` | ✓ `command`/`args` | ✓ `url` + `headers` |
+| VS Code (Copilot agent mode) | `.vscode/mcp.json` | ✓ `type: stdio` | ✓ `type: http` + `headers` |
+| Gemini CLI | `~/.gemini/settings.json` | ✓ `command` | ✓ `httpUrl` + `headers` |
+| Windsurf (Cascade) | `~/.codeium/windsurf/mcp_config.json` | ✓ `command`/`args` | ✓ `serverUrl` + `headers` |
+
+For the remote-stdio wiring (scenario 2A), every stdio snippet below works
+unchanged with `command` set to `ssh` and the sipnab invocation moved into
+`args` — exactly as in the Claude Code example there.
+
+### Codex CLI
+
+`~/.codex/config.toml` (shared by the ChatGPT desktop app and IDE
+extension), one TOML table per server — `command` means stdio, `url` means
+streamable HTTP, mixing both is rejected:
+
+```toml
+# stdio — scenario 1/2A
+[mcp_servers.sipnab]
+command = "sipnab"
+args = ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
+
+# streamable HTTP — scenario 2B/2C/4; token read from the named env var
+[mcp_servers.sipnab-prod]
+url = "https://capture.example.com/mcp"
+bearer_token_env_var = "SIPNAB_MCP_TOKEN"
+```
+
+```bash
+export SIPNAB_MCP_TOKEN=$(cat ~/.config/sipnab/prod01.token)
+codex   # then e.g.: "which calls had one-way audio?"
+```
+
+Or from the CLI: `codex mcp add sipnab -- sipnab --mcp -N -I capture.pcap --quiet`
+
+### Cursor
+
+`~/.cursor/mcp.json` (or per-project `.cursor/mcp.json`). `${env:VAR}`
+interpolation keeps the token out of the file:
+
+```json
+{
+  "mcpServers": {
+    "sipnab": {
+      "command": "sipnab",
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
+    },
+    "sipnab-prod": {
+      "url": "https://capture.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${env:SIPNAB_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot agent mode)
+
+`.vscode/mcp.json` — note the root key is `servers` and every entry needs
+an explicit `type`. MCP tools appear in **agent mode** only (invisible in
+Ask/Edit):
+
+```json
+{
+  "servers": {
+    "sipnab": {
+      "type": "stdio",
+      "command": "sipnab",
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
+    },
+    "sipnab-prod": {
+      "type": "http",
+      "url": "https://capture.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${env:SIPNAB_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+### Gemini CLI
+
+`~/.gemini/settings.json` — exactly one transport key per server:
+`command` (stdio), `httpUrl` (streamable HTTP), or `url` (legacy SSE).
+Use `httpUrl` for sipnab:
+
+```json
+{
+  "mcpServers": {
+    "sipnab": {
+      "command": "sipnab",
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
+    },
+    "sipnab-prod": {
+      "httpUrl": "https://capture.example.com/mcp",
+      "headers": { "Authorization": "Bearer your-token-here" }
+    }
+  }
+}
+```
+
+### Windsurf (Cascade)
+
+`~/.codeium/windsurf/mcp_config.json` — remote servers use `serverUrl`,
+and `${file:...}` interpolation reads the token straight from the file you
+copied in scenario 2B step 8:
+
+```json
+{
+  "mcpServers": {
+    "sipnab": {
+      "command": "sipnab",
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
+    },
+    "sipnab-prod": {
+      "serverUrl": "https://capture.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${file:/home/you/.config/sipnab/prod01.token}" }
+    }
+  }
+}
+```
+
+Two universal gotchas, regardless of client: the `Host:` your client sends
+must be in sipnab's `--mcp-allowed-host` allowlist (403 otherwise), and
+plaintext-HTTP registrations belong on trusted networks only — the same
+rules as scenarios 2B and 4.
 
 ---
 
