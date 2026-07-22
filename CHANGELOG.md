@@ -4,6 +4,23 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.23] - 2026-07-22
+
+### Added
+- Docs: MCP walkthrough client-registration section — per-client config
+  table and copy-paste snippets for Codex CLI (`config.toml` +
+  `bearer_token_env_var`), Cursor, VS Code Copilot agent mode
+  (`.vscode/mcp.json`), Gemini CLI (`httpUrl`), and Windsurf
+  (`serverUrl` + `${file:...}` token interpolation), covering stdio,
+  remote-SSH, and streamable-HTTP wirings.
+
+### Fixed
+- Site: the MCP Walkthrough page now appears in the docs sidebar and
+  header dropdown (it was reachable only from the /docs index cards); a
+  new drift test pins every docs page into all three hardcoded nav lists,
+  keeps both sidebar templates in agreement, and enforces unique page
+  weights so prev/next order stays deterministic.
+
 ## [0.5.22] - 2026-07-22
 
 ### Added
