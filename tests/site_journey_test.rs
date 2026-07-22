@@ -119,11 +119,12 @@ fn referenced_demo_assets() -> BTreeSet<String> {
         out.insert("sample-call.pcap".to_string());
     }
     // The homepage demo JS derives a `<name>-poster.png` first-frame from each
-    // GIF for prefers-reduced-motion, so those posters are referenced too.
+    // animated demo (`.demo-panel img`, not the hero still) for
+    // prefers-reduced-motion, so those posters are referenced too.
     let posters: Vec<String> = out
         .iter()
-        .filter(|f| f.ends_with(".gif"))
-        .map(|f| f.replace(".gif", "-poster.png"))
+        .filter(|f| f.ends_with(".webp") && *f != "hero-static.webp")
+        .map(|f| f.replace(".webp", "-poster.png"))
         .collect();
     out.extend(posters);
     out
@@ -160,8 +161,12 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
 #[test]
 fn every_tape_output_is_a_referenced_site_asset() {
     // A tape whose Output lands in static/demos must correspond to a
-    // referenced asset; the hero tape's Screenshot produces hero-static.png.
+    // referenced asset. Tapes render GIF (and the hero tape screenshots PNG);
+    // demos/Makefile converts each to the lossless WebP the site actually
+    // ships, so a tape's .gif/.png output counts as referenced when its .webp
+    // counterpart is.
     let re = regex::Regex::new(r"(?m)^(?:Output|Screenshot)\s+(\S+)").unwrap();
+    let to_webp = regex::Regex::new(r"\.(gif|png)$").unwrap();
     let referenced = referenced_demo_assets();
     let mut stale = Vec::new();
     for entry in std::fs::read_dir(repo().join("demos")).expect("demos dir") {
@@ -174,6 +179,7 @@ fn every_tape_output_is_a_referenced_site_asset() {
             let out = &cap[1];
             if let Some(name) = out.strip_prefix("website/static/demos/")
                 && !referenced.contains(name)
+                && !referenced.contains(&to_webp.replace(name, ".webp").into_owned())
             {
                 stale.push(format!(
                     "{}: renders {out} which nothing references",
@@ -897,7 +903,7 @@ fn inline_script_edits_require_csp_hash_refresh() {
         ),
         (
             "index.html",
-            "sha256-HQzT0Db6Er849zDjz/Oh1NAg+q8aPwW+sSXD928L7W4=",
+            "sha256-agjs/cHNZYY0f80LNPmsmDq33ApENbBpIkiotSX7et8=",
         ),
         (
             "page.html",
