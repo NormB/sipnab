@@ -20,7 +20,7 @@
 
   <!-- Hero — static screenshot of the TUI -->
   <div class="terminal-wrap">
-    <img src="{{ get_url(path='demos/hero-static.png') }}?v=7" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
+    <img src="{{ get_url(path='demos/hero-static.webp') }}?v=1" width="1200" height="700" fetchpriority="high" alt="sipnab interactive TUI — call-flow ladder of a complete SIP lifecycle: REGISTER, then INVITE / 180 Ringing / 200 OK / ACK, an in-dialog re-INVITE (hold), and BYE, with the decoded INVITE in the detail pane" class="hero-screenshot">
   </div>
 </section>
 
@@ -43,31 +43,31 @@
     <div class="demo-panels">
       <div class="demo-panel active" data-demo="0" role="tabpanel" id="demo-panel-0" aria-labelledby="demo-tab-0">
         <p class="demo-desc">Browse SIP dialogs, select one, and drill into the call-flow ladder diagram with parsed message detail. Open a different pcap any time with <kbd>o</kbd> — no restart.</p>
-        <img src="{{ get_url(path='demos/01-intro.gif') }}?v=9" alt="sipnab TUI demo: browsing dialogs and the call-flow ladder" loading="lazy">
+        <img src="{{ get_url(path='demos/01-intro.webp') }}?v=9" alt="sipnab TUI demo: browsing dialogs and the call-flow ladder" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="1" role="tabpanel" id="demo-panel-1" aria-labelledby="demo-tab-1">
         <p class="demo-desc">Read the parsed message beside the ladder — cycle SDP display with <kbd>d</kbd> and toggle wrapping with <kbd>w</kbd> for long headers.</p>
-        <img src="{{ get_url(path='demos/09-detail.gif') }}?v=9" alt="sipnab detail pane demo: SDP display modes and wrap toggle" loading="lazy">
+        <img src="{{ get_url(path='demos/09-detail.webp') }}?v=9" alt="sipnab detail pane demo: SDP display modes and wrap toggle" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="2" role="tabpanel" id="demo-panel-2" aria-labelledby="demo-tab-2">
         <p class="demo-desc">Press <kbd>m</kbd> to mark any message, then navigate — the <strong>Δ badge</strong> shows the exact millisecond delta.</p>
-        <img src="{{ get_url(path='demos/02-mark-delta.gif') }}?v=9" alt="sipnab mark and delta demo" loading="lazy">
+        <img src="{{ get_url(path='demos/02-mark-delta.webp') }}?v=9" alt="sipnab mark and delta demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="3" role="tabpanel" id="demo-panel-3" aria-labelledby="demo-tab-3">
         <p class="demo-desc">Press <kbd>/</kbd> to narrow the dialog list as you type, matching method, From, To, and Call-ID in real time.</p>
-        <img src="{{ get_url(path='demos/04-filter.gif') }}?v=9" alt="sipnab live search demo narrowing the dialog list" loading="lazy">
+        <img src="{{ get_url(path='demos/04-filter.webp') }}?v=9" alt="sipnab live search demo narrowing the dialog list" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="4" role="tabpanel" id="demo-panel-4" aria-labelledby="demo-tab-4">
         <p class="demo-desc">Follow a B2BUA call end to end — press <kbd>x</kbd> for extended flow to stitch the correlated back-to-back-UA legs into one ladder.</p>
-        <img src="{{ get_url(path='demos/10-multileg.gif') }}?v=10" alt="sipnab multi-leg B2BUA extended-flow demo" loading="lazy">
+        <img src="{{ get_url(path='demos/10-multileg.webp') }}?v=10" alt="sipnab multi-leg B2BUA extended-flow demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="5" role="tabpanel" id="demo-panel-5" aria-labelledby="demo-tab-5">
         <p class="demo-desc">Press <kbd>Tab</kbd> for <strong>RTP Streams</strong>, then drill into per-stream detail — SSRC, codec, jitter, loss, and MOS with quality over time.</p>
-        <img src="{{ get_url(path='demos/08-rtp-tui.gif') }}?v=9" alt="sipnab RTP streams and per-stream quality demo" loading="lazy">
+        <img src="{{ get_url(path='demos/08-rtp-tui.webp') }}?v=9" alt="sipnab RTP streams and per-stream quality demo" loading="lazy">
       </div>
       <div class="demo-panel" data-demo="6" role="tabpanel" id="demo-panel-6" aria-labelledby="demo-tab-6">
         <p class="demo-desc">Run sipnab headless: emit dialogs as <kbd>--json</kbd>, surface trouble calls with <kbd>--problems</kbd>, and print a full call report with <kbd>--report</kbd>.</p>
-        <img src="{{ get_url(path='demos/07-rtp-cli.gif') }}?v=8" alt="sipnab CLI demo: JSON dialogs, --problems surfacing failed calls, and a call report" loading="lazy">
+        <img src="{{ get_url(path='demos/07-rtp-cli.webp') }}?v=8" alt="sipnab CLI demo: JSON dialogs, --problems surfacing failed calls, and a call report" loading="lazy">
       </div>
     </div>
   </div>
@@ -304,7 +304,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
   document.querySelectorAll('.demo-panel img').forEach(function(img) {
     var gifSrc = img.getAttribute('src');
-    var poster = gifSrc.replace(/\.gif(\?.*)?$/, '-poster.png');
+    var poster = gifSrc.replace(/\.(?:gif|webp)(\?.*)?$/, '-poster.png');
     var base = img.getAttribute('alt') || 'Demo';
 
     if (reduce) {
