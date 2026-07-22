@@ -166,6 +166,7 @@ fn every_tape_output_is_a_referenced_site_asset() {
     // ships, so a tape's .gif/.png output counts as referenced when its .webp
     // counterpart is.
     let re = regex::Regex::new(r"(?m)^(?:Output|Screenshot)\s+(\S+)").unwrap();
+    let to_webp = regex::Regex::new(r"\.(gif|png)$").unwrap();
     let referenced = referenced_demo_assets();
     let mut stale = Vec::new();
     for entry in std::fs::read_dir(repo().join("demos")).expect("demos dir") {
@@ -178,12 +179,7 @@ fn every_tape_output_is_a_referenced_site_asset() {
             let out = &cap[1];
             if let Some(name) = out.strip_prefix("website/static/demos/")
                 && !referenced.contains(name)
-                && !referenced.contains(
-                    &regex::Regex::new(r"\.(gif|png)$")
-                        .unwrap()
-                        .replace(name, ".webp")
-                        .into_owned(),
-                )
+                && !referenced.contains(&to_webp.replace(name, ".webp").into_owned())
             {
                 stale.push(format!(
                     "{}: renders {out} which nothing references",
