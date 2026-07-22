@@ -28,6 +28,17 @@ impl App {
         self.version = version.into();
     }
 
+    /// Elapse the displayed-list churn floor ([`DISPLAYED_REBUILD_MIN`])
+    /// so the next tick re-derives immediately — stands in for real time
+    /// passing between ticks on a busy capture.
+    #[doc(hidden)]
+    pub fn elapse_displayed_rebuild_floor_for_test(&mut self) {
+        self.displayed.last_rebuild = self
+            .displayed
+            .last_rebuild
+            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
+    }
+
     /// Create an App whose dialog store already contains the given messages.
     ///
     /// Each slice of `SipMessage`s is processed in order so that the dialog
