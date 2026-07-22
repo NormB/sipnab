@@ -598,6 +598,10 @@ pub(in crate::tui) struct LadderCache {
     /// dialogs); empty for single-dialog ladders, where the position IS
     /// the index into the anchor dialog.
     pub(in crate::tui) index_map: Vec<(String, usize)>,
+    /// Floors churn-driven relayouts: store/stream generation advances
+    /// are adopted at most once per floor while every other key change
+    /// (user input, dialog's own messages) still relays out immediately.
+    pub(in crate::tui) churn: ChurnFloor,
 }
 
 impl NameDialogState {
@@ -1032,10 +1036,71 @@ pub(in crate::tui) struct DisplayedCache {
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
-    /// When the list was last derived; generation-driven rebuilds are
-    /// floored to [`DISPLAYED_REBUILD_MIN`] apart (`None` = never derived,
-    /// so the first derivation is immediate).
-    pub(in crate::tui) last_rebuild: Option<std::time::Instant>,
+    /// Floors generation-driven rebuilds (user inputs bypass it).
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Rate limiter for generation-driven cache rebuilds: `ready()` is true
+/// when at least [`CHURN_REBUILD_MIN`] has passed since the last `mark()`
+/// (or nothing was ever marked, so first derivations are immediate).
+#[derive(Debug, Clone, Default)]
+pub(in crate::tui) struct ChurnFloor(Option<std::time::Instant>);
+
+impl ChurnFloor {
+    pub(in crate::tui) fn ready(&self) -> bool {
+        self.0.is_none_or(|t| t.elapsed() >= CHURN_REBUILD_MIN)
+    }
+
+    pub(in crate::tui) fn mark(&mut self) {
+        self.0 = Some(std::time::Instant::now());
+    }
+
+    /// Reset the floor so the next `ready()` is immediately true. Used on
+    /// discrete completion events (a background pcap load landing) — the
+    /// UI must reflect those on the very next tick, not a floor later.
+    pub(in crate::tui) fn clear(&mut self) {
+        self.0 = None;
+    }
+
+    /// Backdate the floor so the next `ready()` is true — stands in for
+    /// real time passing between ticks (test helper).
+    pub(in crate::tui) fn elapse_for_test(&mut self) {
+        self.0 = self.0.map(|t| t - 2 * CHURN_REBUILD_MIN);
+    }
+}
+
+/// Everything that shaped the cached stream-list rows.
+#[derive(Debug, PartialEq)]
+pub(in crate::tui) struct StreamDisplayedKey {
+    pub(in crate::tui) stream_generation: u64,
+    /// Dialog-store generation — the display filter matches through the
+    /// associated dialog, so dialog changes reshape the list too. `None`
+    /// when no filter was active (dialogs then don't participate).
+    pub(in crate::tui) dialog_generation: Option<u64>,
+    pub(in crate::tui) filter_text: String,
+    pub(in crate::tui) query: String,
+}
+
+/// Cross-tick cache of the displayed stream list (search + filter):
+/// derived in `App::sync_caches`, consumed by the stream-list render and
+/// the navigation clamps — which previously re-filtered the whole store
+/// under a blocking read lock on every keypress.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct StreamDisplayedCache {
+    pub(in crate::tui) key: Option<StreamDisplayedKey>,
+    /// Stream keys in display order.
+    pub(in crate::tui) keys: Vec<crate::rtp::stream::StreamKey>,
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
+/// Cross-tick cache of the statistics view's aggregate text, previously
+/// recomputed from every dialog on every frame.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct StatsCache {
+    /// (dialog generation, stream generation) the text was derived from.
+    pub(in crate::tui) key: Option<(u64, u64)>,
+    pub(in crate::tui) text: String,
+    pub(in crate::tui) floor: ChurnFloor,
 }
 
 // ── Background work shared with the event loop ─────────────────────

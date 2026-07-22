@@ -541,6 +541,9 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
         if let Some(outcome) = progress.result.lock().take() {
             app.status_error = Some(outcome.message.clone());
             apply_load_outcome(app, outcome);
+            // A completed load is a discrete event, not churn: every view
+            // must reflect the new stores on the next tick, floor or not.
+            app.clear_churn_floors();
         }
     } else {
         let packets = progress.packets.load(std::sync::atomic::Ordering::Relaxed);

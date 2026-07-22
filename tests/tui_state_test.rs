@@ -1401,7 +1401,7 @@ mod tui_state {
         ));
         // Sticky-bottom follows at the churn-floor cadence (≤300 ms), not
         // per tick; elapse the floor as real time would between refreshes.
-        app.elapse_displayed_rebuild_floor_for_test();
+        app.elapse_churn_floors_for_test();
         draw(&mut app, &mut term);
         assert_eq!(
             app.call_list_state().selected(),

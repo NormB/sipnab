@@ -57,18 +57,10 @@ pub(in crate::tui) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
 
 /// Apply one [`StreamListAction`] to the application state.
 fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
-    // Navigate over exactly the rows the table displays (search + filter).
-    let stream_count = {
-        let ss = app.stream_store.read();
-        let ds = app.dialog_store.try_read();
-        crate::tui::stream_list::displayed_streams(
-            ss.iter(),
-            ds.as_deref(),
-            app.active_filter.as_ref(),
-            &app.search_query,
-        )
-        .len()
-    };
+    // Navigate over exactly the rows the table displays (search + filter):
+    // the list is derived once per tick in sync_caches — a keypress must
+    // never re-filter the store (it used to, under a blocking read).
+    let stream_count = app.stream_displayed.keys.len();
 
     match action {
         StreamListAction::Quit => app.should_quit = true,
@@ -219,16 +211,12 @@ pub(in crate::tui) fn handle_stream_detail_play(app: &mut App) {
 
 /// Get the StreamKey for the currently selected row in the stream list.
 pub(in crate::tui) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
-    let store = app.stream_store.read();
-    let ds = app.dialog_store.try_read();
-    let streams = crate::tui::stream_list::displayed_streams(
-        store.iter(),
-        ds.as_deref(),
-        app.active_filter.as_ref(),
-        &app.search_query,
-    );
-    let idx = app.stream_list.selected();
-    streams.get(idx).map(|s| s.key.clone())
+    // The displayed order lives in the sync_caches-derived cache; resolving
+    // the selection is an index lookup, not a store re-filter.
+    app.stream_displayed
+        .keys
+        .get(app.stream_list.selected())
+        .cloned()
 }
 
 #[cfg(test)]

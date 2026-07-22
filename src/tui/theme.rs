@@ -308,14 +308,17 @@ pub(super) const ACTIVE_POLL_MS: u64 = 100;
 pub(super) const IDLE_POLL_MS: u64 = 500;
 /// Duration after the last data update before switching to idle polling.
 pub(super) const IDLE_THRESHOLD: Duration = Duration::from_secs(2);
-/// Floor between generation-driven rebuilds of the displayed dialog list.
-/// On a busy capture the store generation bumps on every ingest, so each
-/// tick — including the one after every arrow keypress — re-derived the
-/// list (full filter-DSL + sort pass over the whole store) and cursor
-/// movement crawled. Data churn alone refreshes at most once per floor;
-/// user inputs (filter/search/sort) bypass it. 300 ms ≈ 3 refreshes/s,
-/// above what a human tracks in a monitoring list.
-pub(super) const DISPLAYED_REBUILD_MIN: Duration = Duration::from_millis(300);
+/// Floor between generation-driven rebuilds of the per-view UI caches
+/// (call-list displayed rows, stream-list displayed rows, statistics
+/// text, dashboard snapshot, call-flow ladder generations). On a busy
+/// capture the store generations bump on every ingest, so each tick —
+/// including the one after every arrow keypress — re-derived these from
+/// scratch (filter-DSL passes, sorts, full-store aggregation) and the UI
+/// crawled. Data churn alone refreshes each cache at most once per
+/// floor; user inputs (filter/search/sort/view changes) bypass it.
+/// 300 ms ≈ 3 refreshes/s, above what a human tracks in a monitoring
+/// view.
+pub(super) const CHURN_REBUILD_MIN: Duration = Duration::from_millis(300);
 /// Consecutive render ticks allowed to skip on store-lock contention
 /// before the next tick takes blocking reads instead. Bounds staleness
 /// to ~FORCED_DRAW_AFTER_SKIPS × ACTIVE_POLL_MS on a write-saturated
