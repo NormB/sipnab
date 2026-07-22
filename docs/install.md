@@ -16,7 +16,7 @@ curl -fsSL https://www.sipnab.com/install.sh | sh
 ```
 
 Prefer to read it first: <https://www.sipnab.com/install.sh>. Pin a version
-with `SIPNAB_VERSION=0.5.22`, change the destination with `SIPNAB_INSTALL_DIR`.
+with `SIPNAB_VERSION=0.5.23`, change the destination with `SIPNAB_INSTALL_DIR`.
 
 ## Pre-built Binaries
 
@@ -27,7 +27,7 @@ you which one you are.
 
 ```bash
 # Linux x86_64 (static musl -- runs on any distro, any glibc, Alpine included)
-# Replace <version> with the latest, e.g. 0.5.22
+# Replace <version> with the latest, e.g. 0.5.23
 curl -LO https://github.com/NormB/sipnab/releases/download/v<version>/sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
 tar xzf sipnab-<version>-x86_64-unknown-linux-musl.tar.gz
 sudo install -m 755 sipnab-<version>-x86_64-unknown-linux-musl/sipnab /usr/local/bin/sipnab
@@ -56,7 +56,7 @@ cargo install sipnab --features full
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install with `apt` (it resolves the `libpcap0.8` runtime dependency). The `.deb` needs glibc >= 2.39, i.e. Debian 13+ / Ubuntu 24.04+ -- on older releases use the static musl tarball above:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.22
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.23
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -96,11 +96,11 @@ standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
 dependency — for headless servers, mirroring the `.deb` variants):
 
 ```bash
-sudo rpm -i sipnab-0.5.22-1.x86_64.rpm
+sudo rpm -i sipnab-0.5.23-1.x86_64.rpm
 # headless / no-ALSA variant:
-sudo rpm -i sipnab-0.5.22-1.x86_64-noaudio.rpm
+sudo rpm -i sipnab-0.5.23-1.x86_64-noaudio.rpm
 # arm64 hosts:
-sudo rpm -i sipnab-0.5.22-1.aarch64.rpm
+sudo rpm -i sipnab-0.5.23-1.aarch64.rpm
 ```
 
 ### Homebrew (macOS)
@@ -282,7 +282,7 @@ sipnab --help
 `--version` lists the Cargo features compiled into the binary, e.g.
 
 ```
-sipnab 0.5.22 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.23 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 ```
 
 This is the fastest way to confirm a build was produced with the feature set
