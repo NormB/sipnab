@@ -4,6 +4,15 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.21] - 2026-07-22
+
+### Added
+- TUI: live call-quality dashboard on `D` — worst-first ranking of active
+  streams by MOS with jitter and packet-loss columns and per-stream trend
+  history, plus Enter drill-down to the stream detail view. Covered by
+  snapshot tests (empty and populated states) and listed in the help view
+  and `docs/keybindings.md`.
+
 ## [0.5.20] - 2026-07-21
 
 ### Performance
