@@ -8,11 +8,13 @@ on:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
-# Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin.
+# Allow the GITHUB_TOKEN to deploy to Pages and verify the deployment origin;
+# actions:read lets the csp job download the deployed pages artifact.
 permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read
 
 # One concurrent deploy; let an in-progress run finish to avoid half-published state.
 concurrency:
@@ -64,3 +66,30 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
+
+  # The production CSP is a Cloudflare transform rule pinning inline-script
+  # hashes (GitHub Pages cannot set response headers). A deploy that changes
+  # an inline <script> without refreshing the rule ships pages whose scripts
+  # browsers silently block — the homepage demos and feature tabs died this
+  # way on 2026-07-22. Hash the exact artifact that was deployed, not the
+  # live CDN, which can serve stale (even version-mixed) pages for ~10
+  # minutes after a deploy.
+  csp:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ops/cloudflare
+
+      - name: Download deployed site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: github-pages
+
+      - name: Refresh Cloudflare CSP hashes from the deployed HTML
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          mkdir site && tar -xf artifact.tar -C site
+          python3 ops/cloudflare/refresh_csp_hashes.py --site-dir site

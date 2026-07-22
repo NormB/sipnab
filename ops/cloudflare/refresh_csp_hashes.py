@@ -6,14 +6,18 @@ The site is served by GitHub Pages (which cannot set response headers), so
 security headers are injected at the Cloudflare edge. The CSP's script-src
 whitelists inline <script> blocks by hash instead of 'unsafe-inline'.
 
-RUN THIS AFTER EVERY DEPLOY THAT CHANGES AN INLINE <script> in
-website/templates/ — otherwise the header CSP blocks the changed script.
+Runs automatically after every Pages deploy (the `csp` job in
+.github/workflows/pages.yml) with --site-dir pointed at the deployed
+artifact — hashing the exact HTML that shipped, not the live CDN, which can
+serve stale (even version-mixed) pages for ~10 minutes after a deploy.
+Without --site-dir it crawls the live sitemap instead; that mode remains for
+manual runs and verification.
 
 Auth: CLOUDFLARE_DNS_TOKEN (or CLOUDFLARE_API_TOKEN) in the environment or
 ~/.env. The token needs Zone->DNS->Edit, Zone->Zone Settings->Edit and
 Zone->Transform Rules->Edit on the zone.
 
-Usage: python3 refresh_csp_hashes.py [--dry-run]
+Usage: python3 refresh_csp_hashes.py [--site-dir DIR] [--dry-run]
 """
 import base64
 import hashlib
@@ -98,6 +102,25 @@ def collect_hashes():
     return tokens
 
 
+def collect_hashes_from_dir(root):
+    """Hash inline scripts of every .html file under root (a built site)."""
+    tokens = {}
+    seen_html = False
+    for dirpath, _dirs, files in sorted(os.walk(root)):
+        for name in sorted(files):
+            if not name.endswith(".html"):
+                continue
+            seen_html = True
+            path = os.path.join(dirpath, name)
+            with open(path, "rb") as f:
+                html = f.read().decode("utf-8", "replace")
+            for body in extract_inline_scripts(html):
+                tokens.setdefault(sha256_token(body), []).append(path)
+    if not seen_html:
+        sys.exit("no .html files under %s — refusing to publish an empty CSP" % root)
+    return tokens
+
+
 def csp(script_hashes):
     return (
         "default-src 'self'; "
@@ -124,8 +147,19 @@ def headers(script_hashes):
 
 
 def main():
-    dry = "--dry-run" in sys.argv
-    tokens = collect_hashes()
+    argv = sys.argv[1:]
+    dry = "--dry-run" in argv
+    site_dir = None
+    if "--site-dir" in argv:
+        i = argv.index("--site-dir")
+        if i + 1 >= len(argv):
+            sys.exit("--site-dir requires a directory argument")
+        site_dir = argv[i + 1]
+        del argv[i : i + 2]
+    unknown = [a for a in argv if a != "--dry-run"]
+    if unknown:
+        sys.exit("unknown arguments: %s" % " ".join(unknown))
+    tokens = collect_hashes_from_dir(site_dir) if site_dir else collect_hashes()
     print("distinct inline-script hashes: %d" % len(tokens))
     for t, pages in sorted(tokens.items()):
         print("  %s  (%d pages)" % (t, len(pages)))
