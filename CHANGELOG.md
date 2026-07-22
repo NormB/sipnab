@@ -4,6 +4,25 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.22] - 2026-07-22
+
+### Added
+- Docs: step-by-step MCP deployment walkthrough (`docs/mcp-walkthrough.md`,
+  website, wiki) — same-box stdio, the three remote wirings (SSH-launched
+  stdio, HTTP + bearer token, SSH tunnel to a loopback bind), a central HEP
+  capture host with OpenSIPS/Kamailio mirror config and Homer coexistence,
+  nginx-TLS exposure, fleets, and headless automation, plus sizing, security,
+  and troubleshooting guidance. Every step tagged by the host it runs on.
+
+### Changed
+- Homepage media ships as lossless animated WebP (4.86 MB → 3.23 MB,
+  pixel-identical); `demos/Makefile` converts each VHS render and drops the
+  intermediate GIF.
+- ops: the Cloudflare CSP transform rule refreshes automatically after every
+  Pages deploy, hashed from the exact deployed artifact
+  (`refresh_csp_hashes.py --site-dir`); stale-rule outages (dead homepage
+  JS after an inline-script change) can no longer recur.
+
 ## [0.5.21] - 2026-07-22
 
 ### Added

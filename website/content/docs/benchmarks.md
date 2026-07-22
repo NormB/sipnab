@@ -13,8 +13,8 @@ capture/packet path below unchanged (its numbers carry over), but rewrote
 the `-N --json` export sink: buffered batch writes plus direct JSON
 serialization cut wall-clock time ~29% and `write()` syscalls 98.5% on that
 path (same-toolchain A/B on this branch, byte-identical output; not yet
-re-measured on a released artifact). The current release 0.5.21 (TUI
-call-quality dashboard) changes neither path. The comparison
+re-measured on a released artifact). The current release 0.5.22 (MCP deployment
+walkthrough docs and site work) changes neither path. The comparison
 tools' numbers come from the 2026-06-24 session — same host, corpus, and
 method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
 measures faster at every multi-core operating point (+9–16%) and across the
