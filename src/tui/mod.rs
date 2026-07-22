@@ -421,14 +421,28 @@ impl App {
         };
         self.cached_dialog_count = store.len();
 
-        let fresh = self.displayed.key.as_ref().is_some_and(|k| {
-            k.generation == store.generation()
-                && k.filter_text == self.active_filter_text
+        let inputs_fresh = self.displayed.key.as_ref().is_some_and(|k| {
+            k.filter_text == self.active_filter_text
                 && k.query == self.search_query
                 && k.sort_column == self.call_list.sort_column()
                 && k.sort_ascending == self.call_list.sort_ascending()
         });
-        if !fresh {
+        let data_fresh = self
+            .displayed
+            .key
+            .as_ref()
+            .is_some_and(|k| k.generation == store.generation());
+        // Generation churn alone (busy capture) refreshes at most once per
+        // DISPLAYED_REBUILD_MIN — between refreshes the cached list serves
+        // the frame, so cursor movement never waits on a filter+sort pass.
+        // A changed user input (filter/search/sort) always rebuilds now.
+        let churn_floored = inputs_fresh
+            && self
+                .displayed
+                .last_rebuild
+                .is_some_and(|t| t.elapsed() < DISPLAYED_REBUILD_MIN);
+        let fresh = inputs_fresh && data_fresh;
+        if !fresh && !churn_floored {
             self.displayed.ids = call_list::displayed_dialogs(
                 &store,
                 self.active_filter.as_ref(),
@@ -446,6 +460,7 @@ impl App {
                 sort_column: self.call_list.sort_column(),
                 sort_ascending: self.call_list.sort_ascending(),
             });
+            self.displayed.last_rebuild = Some(Instant::now());
         }
         self.cached_displayed_count = self.displayed.ids.len();
 
@@ -1048,6 +1063,81 @@ mod tests {
         );
     }
 
+    /// A busy capture bumps the store generation on every ingest, so on a
+    /// loaded server EVERY tick — including the one right after each arrow
+    /// keypress — re-derived the displayed list (full filter-DSL pass +
+    /// sort + call-id clones over the whole store). Cursor movement paid
+    /// tens-to-hundreds of ms per keypress. Contract: data churn alone
+    /// refreshes the list at most once per DISPLAYED_REBUILD_MIN; between
+    /// refreshes the cached list serves the frame.
+    #[test]
+    fn busy_generation_churn_does_not_rederive_displayed_list_per_tick() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![make_invite(
+            "busy-0@test",
+            "1001",
+            "1002",
+            base_ts(),
+        )]);
+        let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
+        app.sync_caches(); // initial derivation
+
+        let ds = app.dialog_store.clone();
+        let before = calls();
+        for i in 1..=5 {
+            ds.write().process_message(make_invite(
+                &format!("busy-{i}@test"),
+                "1001",
+                "1002",
+                base_ts(),
+            ));
+            app.sync_caches(); // the tick that follows a keypress
+        }
+        assert_eq!(
+            calls() - before,
+            0,
+            "generation churn within the rebuild floor must serve the \
+             cached list, not re-derive it every tick"
+        );
+
+        // Once the floor elapses the next tick picks up the churned data.
+        app.displayed.last_rebuild = app
+            .displayed
+            .last_rebuild
+            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
+        let before = calls();
+        app.sync_caches();
+        assert_eq!(calls() - before, 1, "floor elapsed: refresh expected");
+        assert_eq!(
+            app.cached_displayed_count, 6,
+            "the refresh must pick up dialogs ingested while throttled"
+        );
+    }
+
+    /// Explicit user actions must never be throttled: changing the search
+    /// query (or filter/sort — same key) re-derives immediately even when
+    /// the churn floor has not elapsed.
+    #[test]
+    fn user_input_changes_bypass_the_displayed_rebuild_floor() {
+        use controllers::test_support::{base_ts, make_invite};
+        let mut app = App::with_processed_messages(vec![
+            make_invite("bypass-1@test", "1001", "1002", base_ts()),
+            make_invite("bypass-2@test", "2001", "2002", base_ts()),
+        ]);
+        let calls = || call_list::DISPLAYED_DIALOGS_CALLS.with(|c| c.get());
+        app.sync_caches(); // initial derivation — floor starts now
+
+        app.search_query = "1001".into();
+        let before = calls();
+        app.sync_caches();
+        assert_eq!(
+            calls() - before,
+            1,
+            "a changed user input must re-derive immediately, floor or not"
+        );
+        assert_eq!(app.cached_displayed_count, 1, "search narrowed the list");
+    }
+
     // ── Contended-store render ticks (busy-capture flicker) ────────
     //
     // ratatui resets the back buffer after every completed frame, so a
@@ -1287,11 +1377,16 @@ mod tests {
         app.sync_caches(); // selection on row 0 == last row; rows recorded
         assert_eq!(app.last_rendered_dialog_rows, 1);
 
-        // Two more dialogs arrive.
+        // Two more dialogs arrive; the churn floor elapses before the next
+        // tick (sticky-bottom follows at the refresh cadence, ≤300 ms).
         for cid in ["auto-2@test", "auto-3@test"] {
             let msg = make_invite(cid, "1005", "1006", base_ts());
             app.dialog_store.write().process_message(msg);
         }
+        app.displayed.last_rebuild = app
+            .displayed
+            .last_rebuild
+            .map(|t| t - 2 * DISPLAYED_REBUILD_MIN);
         app.sync_caches();
         assert_eq!(app.last_rendered_dialog_rows, 3);
         assert_eq!(
