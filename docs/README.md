@@ -41,6 +41,8 @@ New here? Follow the path below; each step links to the page with the detail.
 - [REST API & Metrics](rest-api.md) — endpoints, Prometheus, client examples.
 - [Bearer-token authentication](auth.md) — signed tokens for the API and MCP.
 - [MCP server](mcp.md) — expose sipnab as tools to an AI assistant.
+- [MCP walkthrough](mcp-walkthrough.md) — step-by-step deployment scenarios,
+  from same-box stdio to remote production servers and HEP capture hosts.
 
 ## Going deeper
 
