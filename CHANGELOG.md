@@ -4,6 +4,13 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+## [0.5.27] - 2026-07-22
+
+### Fixed
+- Build: replace ambiguous TUI controller glob re-exports with explicit
+  imports, eliminating 14 future-incompatible Rust warnings while preserving
+  the public key-action API and narrower internal handler visibility.
+
 ## [0.5.26] - 2026-07-22
 
 ### Fixed

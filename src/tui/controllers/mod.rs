@@ -13,21 +13,28 @@ mod name_dialog;
 mod save_dialog;
 mod stream;
 
-pub(in crate::tui) use call_flow::*;
-pub(in crate::tui) use call_list::*;
 // Re-exported at `tui` scope so keybinding_drift_test can probe the
 // key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
+#[cfg(test)]
+use call_flow::spawn_clipboard_copy;
 pub use call_flow::{
     CallFlowAction, CombinedDetailAction, MessageDiffAction, RawMessageAction, call_flow_action,
     combined_detail_action, message_diff_action, raw_message_action,
 };
+pub(in crate::tui) use call_flow::{
+    handle_call_flow_key, handle_combined_detail_key, handle_message_diff_key,
+    handle_raw_message_key,
+};
+pub(in crate::tui) use call_list::handle_call_list_key;
 pub use call_list::{CallListAction, call_list_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub(in crate::tui) use name_dialog::*;
 pub(in crate::tui) use save_dialog::*;
-pub(in crate::tui) use stream::*;
+#[cfg(test)]
+pub(in crate::tui) use stream::get_selected_stream_key;
 pub use stream::{StreamDetailAction, StreamListAction, stream_detail_action, stream_list_action};
+pub(in crate::tui) use stream::{handle_stream_detail_key, handle_stream_list_key};
 
 /// Dispatch a key event to the handler for the current view.
 pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
