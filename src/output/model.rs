@@ -5,12 +5,12 @@
 //! on the wire: MCP said `message_count` where CLI/API said `msg_count`,
 //! and MCP emitted Debug-formatted methods (`Invite`) where the API emitted
 //! the canonical form (`INVITE`). Every surface now projects dialogs through
-//! [`DialogSummary`] and streams through [`StreamSummary`] — one constructor
+//! `DialogSummary` and streams through `StreamSummary` — one constructor
 //! each — so field names and value formats cannot diverge again
 //! (`tests/summary_consistency_test.rs` pins this).
 //!
 //! These are the *compact* projections. The full-fidelity forms (all
-//! headers, SDP timelines, quality intervals) remain in [`super::json`].
+//! headers, SDP timelines, quality intervals) remain in `super::json`.
 
 use serde::Serialize;
 
@@ -22,7 +22,8 @@ use crate::sip::dialog::SipDialog;
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct TimingSummary {
-    /// Post-dial delay (INVITE → first provisional), milliseconds.
+    /// Post-dial delay (INVITE → first 180/183; a 100 Trying does not
+    /// count), milliseconds.
     pub pdd_ms: Option<i64>,
     /// Call setup time (INVITE → 200 OK), milliseconds.
     pub setup_ms: Option<i64>,
@@ -32,9 +33,9 @@ pub struct TimingSummary {
     pub duration_ms: Option<i64>,
 }
 
-/// Canonical compact projection of a [`SipDialog`].
+/// Canonical compact projection of a `SipDialog`.
 ///
-/// Field names intentionally match [`super::json`]'s full `DialogJson`
+/// Field names intentionally match `super::json`'s full `DialogJson`
 /// (`msg_count`, not `message_count`); `method` and `state` use their
 /// canonical string forms (`SipMethod::as_str`, `DialogState`'s `Display`).
 #[derive(Debug, Clone, Serialize)]
@@ -65,6 +66,11 @@ pub struct DialogSummary {
 }
 
 impl From<&SipDialog> for DialogSummary {
+    /// Project a dialog into its compact summary: durations are derived
+    /// (`duration_sec` spans first→last message, 0 for single-message
+    /// dialogs; `duration_ms` is answered→BYE and `None` for unanswered
+    /// or still-active calls) and timing metrics are copied from
+    /// `d.timing`. Pure — the dialog is not modified.
     fn from(d: &SipDialog) -> Self {
         let duration_sec = if d.messages.len() >= 2 {
             (d.updated_at - d.created_at).num_milliseconds() as f64 / 1000.0
@@ -96,11 +102,11 @@ impl From<&SipDialog> for DialogSummary {
     }
 }
 
-/// Canonical compact projection of an [`RtpStream`].
+/// Canonical compact projection of an `RtpStream`.
 ///
 /// `ssrc` uses the `0x`-prefixed 8-digit hex form every surface renders;
-/// `mos` is the single E-model estimate from [`crate::rtp::quality::estimate_mos`]
-/// (surfaces must not roll their own).
+/// `mos` is the single E-model estimate from
+/// `crate::rtp::quality::estimate_mos` (surfaces must not roll their own).
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
 #[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
@@ -128,6 +134,10 @@ pub struct StreamSummary {
 }
 
 impl From<&RtpStream> for StreamSummary {
+    /// Project a stream into its compact summary: loss percentage is
+    /// derived as `lost / (received + lost)` (0.0 when no packets) and
+    /// `mos` is computed via the canonical E-model estimate. Pure — the
+    /// stream is not modified.
     fn from(s: &RtpStream) -> Self {
         let total = s.packet_count + s.lost_packets;
         let loss_pct = if total > 0 {

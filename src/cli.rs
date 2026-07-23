@@ -26,6 +26,13 @@ pub enum PerPeerLimit {
 impl std::str::FromStr for PerPeerLimit {
     type Err = String;
 
+    /// Parse a `--hep-rate-limit-per-peer` value: `auto`, `off`/`disabled`,
+    /// or a packets-per-second number (`0` normalizes to `Off`).
+    /// Case-insensitive; surrounding whitespace is ignored.
+    ///
+    /// # Errors
+    /// Any other string yields a descriptive message naming the accepted
+    /// forms and echoing the rejected input.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
@@ -81,6 +88,11 @@ pub enum HepAuthMode {
 impl std::str::FromStr for HepAuthMode {
     type Err = String;
 
+    /// Parse a `--hep-auth-mode` value: `plain` or `hmac`.
+    /// Case-insensitive; surrounding whitespace is ignored.
+    ///
+    /// # Errors
+    /// Any other string yields a message naming the two accepted modes.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
             "plain" => Ok(Self::Plain),
@@ -92,6 +104,10 @@ impl std::str::FromStr for HepAuthMode {
 
 /// Build a version string including git commit hash, optional tag,
 /// and the list of compile-time features that were enabled.
+///
+/// Pure: assembled entirely from compile-time `env!` values baked in by
+/// the build script (`SIPNAB_GIT_*`); with no recorded commit it falls
+/// back to the bare crate version plus the feature list.
 ///
 /// Examples:
 /// - `0.3.1 (abc12345) features: native,tui,audio`
@@ -125,7 +141,8 @@ pub fn build_version() -> String {
 /// List of Cargo features compiled into this binary.
 ///
 /// Walked statically via `cfg!(feature = "...")`. Feature names match
-/// the `[features]` block in `Cargo.toml`.
+/// the `[features]` block in `Cargo.toml`. Returns an empty vector when
+/// no listed feature is enabled.
 fn compiled_features() -> Vec<&'static str> {
     let mut out = Vec::new();
     if cfg!(feature = "native") {
@@ -1103,11 +1120,6 @@ pub struct Cli {
     pub bpf_filter: Vec<String>,
 }
 
-/// From/To column display mode selectable on the command line.
-///
-/// clap renders the variants in kebab-case (`default`, `host-port`, `user`,
-/// `user-host-port`), matching the `[display] from_to` config spellings and
-/// `tui::FromToMode::as_config_str`.
 /// Source-address strategy for the scanner-kill response packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum KillSpoof {
@@ -1121,11 +1133,21 @@ pub enum KillSpoof {
     Ephemeral,
 }
 
+/// From/To column display mode selectable on the command line.
+///
+/// clap renders the variants in kebab-case (`default`, `host-port`, `user`,
+/// `user-host-port`), matching the `[display] from_to` config spellings and
+/// `tui::FromToMode::as_config_str`. Variant semantics mirror
+/// `tui::FromToMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum FromToModeArg {
+    /// Username if present, else `host[:port]`.
     Default,
+    /// `host[:port]` only.
     HostPort,
+    /// Username only (the legacy behavior).
     User,
+    /// `user@host:port` when both exist, else whichever exists.
     UserHostPort,
 }
 
@@ -1143,6 +1165,12 @@ impl FromToModeArg {
 
 impl Cli {
     /// Parse CLI arguments from the real process arguments.
+    ///
+    /// # Side effects
+    /// Reads the process argument list and the `env = "..."`-tagged
+    /// environment variables (e.g. `SIPNAB_API_KEY`); on a parse error,
+    /// `--help`, or `--version`, clap prints to stdout/stderr and exits
+    /// the process without returning.
     pub fn parse_args() -> Self {
         Cli::parse()
     }
@@ -1155,6 +1183,14 @@ impl Cli {
     }
 
     /// Parse CLI arguments from an iterator (for testing).
+    ///
+    /// # Arguments
+    /// * `args` - full argument list; the first item must be the binary
+    ///   name, exactly as in a real `argv`.
+    ///
+    /// # Side effects
+    /// Reads the `env = "..."`-tagged environment variables; on a parse
+    /// error clap prints the error and exits the process.
     pub fn parse_from_args<I, T>(args: I) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -1167,7 +1203,14 @@ impl Cli {
     ///
     /// Checks that output-only flags (`--json`, `--report`, `--hexdump`,
     /// `--fail2ban`) require non-interactive mode (`-N`) unless `--call-report`
-    /// is specified (which implies non-interactive output).
+    /// is specified (which implies non-interactive output). Also rejects
+    /// `--mcp` without `-N`, `--mcp` combined with stdout-writing flags
+    /// (MCP owns stdout for the JSON-RPC wire), an unknown
+    /// `--mcp-transport` value, and any malformed `--kill-target` spec.
+    ///
+    /// # Errors
+    /// `crate::Error::CliValidation` with a user-facing message for each
+    /// rejected combination. Pure — no side effects.
     pub fn validate(&self) -> Result<(), crate::Error> {
         let output_flags_used: Vec<&str> = [
             (self.json, "--json"),
@@ -1188,7 +1231,7 @@ impl Cli {
             )));
         }
 
-        // Phase 8.1 — MCP mode owns stdout (JSON-RPC wire); reject any flag
+        // MCP mode owns stdout (JSON-RPC wire); reject any flag
         // combination that would also try to write to stdout.
         if self.mcp {
             if !self.no_tui {
@@ -1217,7 +1260,7 @@ impl Cli {
                 )));
             }
             // Token + bind validation for non-loopback HTTP transport happens
-            // in the http transport module (Phase 8.2); for stdio there is no
+            // in the http transport module; for stdio there is no
             // network surface to validate.
             if self.mcp_transport != "stdio" && self.mcp_transport != "http" {
                 return Err(crate::Error::CliValidation(format!(
@@ -1237,9 +1280,14 @@ impl Cli {
         Ok(())
     }
 
-    /// Print warnings to stderr for CLI flags that are set but not yet
-    /// implemented. Call after parsing and validation so the user knows
-    /// their flag was accepted but has no effect.
+    /// Warn on stderr about CLI flags that are accepted but not yet
+    /// implemented, so the user knows a flag has no effect. Called from
+    /// `main` after parsing and validation.
+    ///
+    /// Currently a no-op: every flag is implemented, and feature-gated
+    /// flags instead produce startup errors in `main.rs` when the
+    /// required feature is not compiled in. The call site is kept for
+    /// flags that may land ahead of their implementation.
     pub fn warn_unimplemented_flags(&self) {
         // All flags are now implemented. Feature-gated flags produce errors
         // at startup in main.rs when the required feature is not compiled in.
@@ -1248,6 +1296,10 @@ impl Cli {
     /// Resolve the metrics Basic-auth credential, preferring
     /// `--metrics-auth-file` over the inline `--metrics-auth` so the secret
     /// can be kept out of the process argument list.
+    ///
+    /// Returns `Ok(None)` when neither source is set; see
+    /// `resolve_file_or_inline_secret` for the error and file-read
+    /// semantics.
     pub fn resolve_metrics_auth(&self) -> Result<Option<String>, String> {
         resolve_file_or_inline_secret(
             self.metrics_auth.as_deref(),
@@ -1260,6 +1312,10 @@ impl Cli {
     /// inline `--hep-auth` / `SIPNAB_HEP_AUTH` value. Used both to stamp
     /// outgoing packets (`--hep-send`) and to authenticate incoming ones
     /// (`--hep-listen`).
+    ///
+    /// Returns `Ok(None)` when neither source is set; see
+    /// `resolve_file_or_inline_secret` for the error and file-read
+    /// semantics.
     pub fn resolve_hep_auth(&self) -> Result<Option<String>, String> {
         resolve_file_or_inline_secret(
             self.hep_auth.as_deref(),
@@ -1273,6 +1329,21 @@ impl Cli {
 /// value. A file's contents are trimmed of surrounding whitespace; an empty
 /// or unreadable file is an error naming `flag`, so a mis-set secret fails
 /// loudly instead of silently disabling authentication.
+///
+/// # Arguments
+/// * `inline` - secret given directly via a flag or environment variable.
+/// * `file` - path whose trimmed contents are the secret; wins over `inline`.
+/// * `flag` - file-flag name used in error messages (e.g. `--hep-auth-file`).
+///
+/// # Returns
+/// `Ok(Some(secret))` from the file when `file` is set, else from `inline`;
+/// `Ok(None)` when neither source is set.
+///
+/// # Errors
+/// The file cannot be read, or its trimmed contents are empty.
+///
+/// # Side effects
+/// Reads `file` from the filesystem when set.
 pub fn resolve_file_or_inline_secret(
     inline: Option<&str>,
     file: Option<&std::path::Path>,
@@ -1290,10 +1361,13 @@ pub fn resolve_file_or_inline_secret(
     Ok(inline.map(str::to_string))
 }
 
+/// Unit tests for CLI parsing, flag defaults, argument validation, and
+/// file-vs-inline secret resolution.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A set secret file wins over the inline value and is whitespace-trimmed.
     #[test]
     fn resolve_secret_prefers_file_over_inline() {
         let dir = tempfile::tempdir().unwrap();
@@ -1307,18 +1381,21 @@ mod tests {
         );
     }
 
+    /// With no file set, the inline secret is returned as-is.
     #[test]
     fn resolve_secret_falls_back_to_inline() {
         let got = resolve_file_or_inline_secret(Some("inline"), None, "--x").unwrap();
         assert_eq!(got.as_deref(), Some("inline"));
     }
 
+    /// Neither source set resolves to `Ok(None)` (no secret configured).
     #[test]
     fn resolve_secret_none_when_neither_set() {
         let got = resolve_file_or_inline_secret(None, None, "--x").unwrap();
         assert_eq!(got, None);
     }
 
+    /// A whitespace-only secret file errors loudly, naming the flag.
     #[test]
     fn resolve_secret_empty_file_is_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -1332,6 +1409,7 @@ mod tests {
         );
     }
 
+    /// A nonexistent secret file errors, naming the flag.
     #[test]
     fn resolve_secret_missing_file_is_error() {
         let path = std::path::Path::new("/nonexistent/sipnab/secret");
@@ -1339,6 +1417,7 @@ mod tests {
         assert!(err.contains("--x"), "error names the flag, got: {err}");
     }
 
+    /// `--cores N` parses into the offline reconstruction core count.
     #[test]
     fn cores_flag_parses() {
         // `--cores N` selects the multi-core offline reconstruction core count.
@@ -1346,6 +1425,8 @@ mod tests {
         assert_eq!(cli.cores, 4);
     }
 
+    /// HEP auth-file, per-peer rate limit, HEP-kill opt-in, and metrics
+    /// auth-file flags all parse together.
     #[test]
     fn security_secret_and_kill_flags_parse() {
         let cli = Cli::parse_from_args([
@@ -1377,6 +1458,7 @@ mod tests {
         );
     }
 
+    /// HEP-origin scanner-kill and the per-peer cap both default off.
     #[test]
     fn hep_allow_kill_defaults_off() {
         let cli = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
@@ -1391,6 +1473,7 @@ mod tests {
         );
     }
 
+    /// `--hep-rate-limit-per-peer auto` parses to `PerPeerLimit::Auto`.
     #[test]
     fn hep_rate_limit_per_peer_accepts_auto() {
         let cli = Cli::parse_from_args([
@@ -1403,6 +1486,7 @@ mod tests {
         assert_eq!(cli.hep_rate_limit_per_peer, PerPeerLimit::Auto);
     }
 
+    /// A non-numeric, non-keyword per-peer value is rejected at parse time.
     #[test]
     fn hep_rate_limit_per_peer_rejects_invalid_value() {
         let err = Cli::try_parse_from([
@@ -1418,6 +1502,8 @@ mod tests {
         );
     }
 
+    /// `PerPeerLimit::from_str` accepts auto/off/numbers (0 = off),
+    /// case-insensitively, and rejects everything else.
     #[test]
     fn per_peer_limit_from_str() {
         use std::str::FromStr;
@@ -1433,6 +1519,8 @@ mod tests {
         assert!(PerPeerLimit::from_str("-1").is_err());
     }
 
+    /// `resolve` maps Off to 0, passes Fixed through, and divides the
+    /// global ceiling for Auto (staying off with an empty allowlist).
     #[test]
     fn per_peer_limit_resolve() {
         assert_eq!(PerPeerLimit::Off.resolve(50000, 4), 0);
@@ -1445,6 +1533,8 @@ mod tests {
         assert_eq!(PerPeerLimit::Auto.resolve(50000, 0), 0);
     }
 
+    /// `HepAuthMode::from_str` accepts plain/hmac case-insensitively,
+    /// rejects other strings, and defaults to `Plain`.
     #[test]
     fn hep_auth_mode_from_str() {
         use std::str::FromStr;
@@ -1454,6 +1544,7 @@ mod tests {
         assert_eq!(HepAuthMode::default(), HepAuthMode::Plain);
     }
 
+    /// `--hep-auth-mode hmac` parses; the flag defaults to `plain`.
     #[test]
     fn hep_auth_mode_flag_parses() {
         let cli =
@@ -1467,6 +1558,8 @@ mod tests {
         );
     }
 
+    /// A bare `sipnab` invocation yields the documented default values
+    /// for every defaulted flag, including rotate-on (SNB-0004).
     #[test]
     fn defaults_are_sane() {
         let cli = Cli::parse_from_args(["sipnab"]);
@@ -1494,6 +1587,8 @@ mod tests {
         assert!(cli.rotate_enabled(), "rotate must default ON");
     }
 
+    /// Rotation defaults on; `--no-rotate` opts out; when both flags are
+    /// given the last one wins.
     #[test]
     fn rotate_defaults_on_and_negation_works() {
         // default: rotate on
@@ -1508,12 +1603,14 @@ mod tests {
         assert!(Cli::parse_from_args(["sipnab", "--no-rotate", "--rotate"]).rotate_enabled());
     }
 
+    /// `--setup-caps` parses into the capability-setup boolean.
     #[test]
     fn setup_caps_flag_parses() {
         let cli = Cli::parse_from_args(["sipnab", "--setup-caps"]);
         assert!(cli.setup_caps);
     }
 
+    /// `--resolve`, `--reverse-dns`, and repeatable `--names` files parse.
     #[test]
     fn name_resolution_flags_parse() {
         let cli = Cli::parse_from_args([
@@ -1533,6 +1630,8 @@ mod tests {
         );
     }
 
+    /// `-B`/`--buffer` and `--buffer-budget` parse numbers and reject
+    /// non-numeric values.
     #[test]
     fn buffer_flags_parse_and_reject_invalid() {
         // Kernel capture buffer (--buffer / -B).
@@ -1553,6 +1652,8 @@ mod tests {
         assert!(Cli::try_parse_from(["sipnab", "--buffer", "huge"]).is_err());
     }
 
+    /// `--from-to-mode` parses the kebab-case modes, is `None` when
+    /// absent, and rejects unknown values.
     #[test]
     fn from_to_mode_flag_parses_and_rejects_invalid() {
         let cli = Cli::parse_from_args(["sipnab", "--from-to-mode", "host-port"]);
@@ -1565,6 +1666,7 @@ mod tests {
         assert!(Cli::try_parse_from(["sipnab", "--from-to-mode", "bogus"]).is_err());
     }
 
+    /// `--strip-secrets OUTPUT` parses alongside `-I`.
     #[test]
     fn strip_secrets_flag_parses() {
         let cli =
@@ -1572,6 +1674,7 @@ mod tests {
         assert_eq!(cli.strip_secrets.as_deref(), Some("out.pcapng"));
     }
 
+    /// Device, input/output pcap, `--no-rtp`, and `--multi-device` parse.
     #[test]
     fn capture_flags_parse() {
         let cli = Cli::parse_from_args([
@@ -1592,6 +1695,8 @@ mod tests {
         assert!(cli.multi_device);
     }
 
+    /// Header filters (`--from`/`--to`/`--ua`) and the `-i`/`-v`/`-w`
+    /// match modifiers parse.
     #[test]
     fn matching_flags_parse() {
         let cli = Cli::parse_from_args([
@@ -1605,6 +1710,7 @@ mod tests {
         assert!(cli.word);
     }
 
+    /// `validate` rejects `--json` without `-N` and accepts it with `-N`.
     #[test]
     fn output_flags_require_no_tui() {
         let cli = Cli::parse_from_args(["sipnab", "--json"]);
@@ -1614,12 +1720,15 @@ mod tests {
         assert!(cli.validate().is_ok());
     }
 
+    /// `--call-report` implies non-interactive output, so output flags
+    /// validate without an explicit `-N`.
     #[test]
     fn call_report_bypasses_no_tui_requirement() {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--call-report", "abc123"]);
         assert!(cli.validate().is_ok());
     }
 
+    /// `--kill-scanner`, `--fraud-detect`, and repeatable `--alert` parse.
     #[test]
     fn security_flags_parse() {
         let cli = Cli::parse_from_args([
@@ -1636,6 +1745,7 @@ mod tests {
         assert_eq!(cli.alert, vec!["syslog", "json"]);
     }
 
+    /// Trailing positional words are collected verbatim as the BPF filter.
     #[test]
     fn bpf_filter_positional() {
         let cli = Cli::parse_from_args(["sipnab", "host", "10.0.0.1", "and", "port", "5060"]);
@@ -1645,6 +1755,7 @@ mod tests {
         );
     }
 
+    /// `-S`/`--limitlen` and `--no-reassembly` parse; both default off.
     #[test]
     fn limitlen_and_no_reassembly_flags_parse() {
         // Short form.
@@ -1659,6 +1770,7 @@ mod tests {
         assert!(!d.no_reassembly);
     }
 
+    /// `--hep-id` and `--hep-auth` parse; both are `None` when absent.
     #[test]
     fn hep_id_and_auth_flags_parse() {
         let cli = Cli::parse_from_args(["sipnab", "--hep-id", "7", "--hep-auth", "secret"]);
@@ -1669,6 +1781,7 @@ mod tests {
         assert_eq!(none.hep_auth, None);
     }
 
+    /// `-p` and `--no-promisc` both set the flag; it defaults off.
     #[test]
     fn no_promisc_short_and_long_flags() {
         assert!(Cli::parse_from_args(["sipnab", "-p"]).no_promisc);
@@ -1676,6 +1789,8 @@ mod tests {
         assert!(!Cli::parse_from_args(["sipnab"]).no_promisc);
     }
 
+    /// `--kill-spoof` defaults to auto, parses raw/ephemeral, and rejects
+    /// unknown modes.
     #[test]
     fn kill_spoof_flag_parses_with_auto_default() {
         assert_eq!(Cli::parse_from_args(["sipnab"]).kill_spoof, KillSpoof::Auto);
@@ -1691,6 +1806,8 @@ mod tests {
         assert!(Cli::try_parse_from(["sipnab", "--kill-spoof", "bogus"]).is_err());
     }
 
+    /// `-K`/`--kill-target` is repeatable and does not steal the trailing
+    /// BPF positional.
     #[test]
     fn kill_target_repeatable_and_coexists() {
         let cli = Cli::parse_from_args([
@@ -1705,6 +1822,7 @@ mod tests {
         assert_eq!(cli.bpf_filter, vec!["host 10.0.0.1"]);
     }
 
+    /// `validate` fails fast on a malformed `--kill-target` spec.
     #[test]
     fn validate_rejects_bad_kill_target() {
         let cli = Cli::parse_from_args(["sipnab", "-K", "not-an-ip"]);
@@ -1712,12 +1830,14 @@ mod tests {
         assert!(err.to_string().contains("--kill-target"));
     }
 
+    /// `validate` accepts well-formed v4 port-range and bracketed v6 targets.
     #[test]
     fn validate_accepts_good_kill_targets() {
         let cli = Cli::parse_from_args(["sipnab", "-K", "10.0.0.1:5060-5090", "-K", "[::1]:5060"]);
         assert!(cli.validate().is_ok());
     }
 
+    /// `-e` and `--match` both set the payload match expression.
     #[test]
     fn match_expr_short_and_long_flags() {
         let short = Cli::parse_from_args(["sipnab", "-e", "INVITE sip:"]);
@@ -1730,6 +1850,7 @@ mod tests {
         assert_eq!(none.match_expr, None);
     }
 
+    /// `--proto-number` (long-only) parses; defaults off.
     #[test]
     fn proto_number_flag_parses() {
         // Long-only: `-N` is already taken by `--no-tui`.
@@ -1737,6 +1858,7 @@ mod tests {
         assert!(!Cli::parse_from_args(["sipnab"]).proto_number);
     }
 
+    /// `--show-empty` and its `--full` alias both set the flag.
     #[test]
     fn show_empty_flag_and_full_alias_parse() {
         assert!(Cli::parse_from_args(["sipnab", "--show-empty"]).show_empty);
@@ -1745,6 +1867,7 @@ mod tests {
         assert!(!Cli::parse_from_args(["sipnab"]).show_empty);
     }
 
+    /// `-x` and `--quiet-bad-parse` both set the flag; defaults off.
     #[test]
     fn quiet_bad_parse_short_and_long_flags() {
         assert!(Cli::parse_from_args(["sipnab", "-x"]).quiet_bad_parse);
@@ -1752,6 +1875,8 @@ mod tests {
         assert!(!Cli::parse_from_args(["sipnab"]).quiet_bad_parse);
     }
 
+    /// The `-e` payload expression and the trailing BPF positional stay
+    /// independent — neither steals the other's tokens.
     #[test]
     fn match_expr_coexists_with_bpf_positional() {
         // The payload match-expression (-e) and the trailing BPF positional
@@ -1761,6 +1886,7 @@ mod tests {
         assert_eq!(cli.bpf_filter, vec!["host", "10.0.0.1"]);
     }
 
+    /// The validation error names every offending output flag at once.
     #[test]
     fn validate_multiple_output_flags() {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--report", "--fail2ban"]);

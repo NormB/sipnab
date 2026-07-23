@@ -38,6 +38,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
+/// HMAC-SHA256 keyed hash used to sign and verify token payloads.
 type HmacSha256 = Hmac<Sha256>;
 
 /// The token version prefix. Only `s1` tokens are accepted.
@@ -45,7 +46,7 @@ const VERSION: &str = "s1";
 
 /// Constant-time byte comparison for API keys and token signatures.
 ///
-/// Re-exported from [`crate::crypto`] (the always-compiled home for this
+/// Re-exported from `crate::crypto` (the always-compiled home for this
 /// primitive) so the API/MCP auth path and the SRTP auth-tag verifier share a
 /// single hardened implementation.
 pub use crate::crypto::constant_time_eq;
@@ -100,20 +101,27 @@ fn hmac_sha256(key: &[u8], msg: &[u8]) -> Vec<u8> {
 /// mtime changes (stat per check, reparse only on change), so revocation takes
 /// effect without restarting the process.
 struct RevocationList {
+    /// Backing denylist file; `None` disables revocation (nothing revoked).
     path: Option<PathBuf>,
+    /// Cached parsed ids plus the mtime they were loaded at, behind a mutex.
     cache: Mutex<RevocationCache>,
 }
 
+/// Cached parse of the revocation file plus the mtime it was read at,
+/// so unchanged files are not re-read on every verification.
 #[derive(Default)]
 struct RevocationCache {
     /// The mtime observed when `ids` was last loaded.
     mtime: Option<SystemTime>,
     /// Whether we have loaded at least once (so a missing/empty file is cached).
     loaded: bool,
+    /// The set of revoked token ids parsed from the file.
     ids: HashSet<String>,
 }
 
 impl RevocationList {
+    /// Create a revocation list backed by `path` (or `None` for no denylist).
+    /// The file is not read until the first `is_revoked` call.
     fn new(path: Option<PathBuf>) -> Self {
         Self {
             path,
@@ -181,13 +189,16 @@ impl VerifierConfig {
 /// Stateless signed-token verifier. `Send + Sync` for use in async axum
 /// handlers.
 pub struct TokenVerifier {
+    /// HMAC signing keys; all are accepted on verify (rotation with overlap).
     signing_keys: Vec<Vec<u8>>,
+    /// Static shared secrets accepted verbatim (no expiry), for compatibility.
     static_keys: Vec<String>,
+    /// Revocation denylist consulted for a token's `id` after signature check.
     revocation: RevocationList,
 }
 
 impl TokenVerifier {
-    /// Build a verifier from a resolved [`VerifierConfig`].
+    /// Build a verifier from a resolved `VerifierConfig`.
     pub fn new(config: VerifierConfig) -> Self {
         Self {
             signing_keys: config.signing_keys,
@@ -293,17 +304,24 @@ impl TokenVerifier {
 
 #[cfg(test)]
 mod tests {
+    //! Token mint/verify, expiry, tampering, rotation, revocation, and
+    //! static-secret backward-compat tests, plus the relocated
+    //! `constant_time_eq` hardening cases.
     use super::*;
 
+    /// First test signing key.
     const KEY_A: &[u8] = b"signing-key-alpha-0123456789";
+    /// Second test signing key (for rotation/wrong-key cases).
     const KEY_B: &[u8] = b"signing-key-beta-9876543210";
 
+    /// Build a `TokenVerifier` from a config (test-readability wrapper).
     fn verifier(cfg: VerifierConfig) -> TokenVerifier {
         TokenVerifier::new(cfg)
     }
 
     // ── constant_time_eq hardening tests (relocated from output::api) ──
 
+    /// Identical byte slices compare equal.
     #[test]
     fn constant_time_eq_equal_slices() {
         assert!(
@@ -312,6 +330,7 @@ mod tests {
         );
     }
 
+    /// Equal-length but differing slices compare unequal.
     #[test]
     fn constant_time_eq_different_slices() {
         assert!(
@@ -320,6 +339,7 @@ mod tests {
         );
     }
 
+    /// Different-length slices compare unequal in both argument orders.
     #[test]
     fn constant_time_eq_different_lengths() {
         assert!(
@@ -332,6 +352,7 @@ mod tests {
         );
     }
 
+    /// Two empty slices compare equal.
     #[test]
     fn constant_time_eq_empty() {
         assert!(
@@ -342,6 +363,8 @@ mod tests {
 
     // ── token format ──────────────────────────────────────────────────
 
+    /// A minted token is `s1.<payload>.<sig>` with the payload decoding to the
+    /// expected compact `{"id":...,"exp":...}` JSON.
     #[test]
     fn minted_token_has_expected_shape() {
         let token = mint(KEY_A, "abc", 9999999999);
@@ -356,6 +379,7 @@ mod tests {
 
     // ── valid / accept ─────────────────────────────────────────────────
 
+    /// An unexpired token signed by a configured key verifies.
     #[test]
     fn valid_token_accepted() {
         let v = verifier(VerifierConfig {
@@ -368,6 +392,7 @@ mod tests {
 
     // ── expired ─────────────────────────────────────────────────────────
 
+    /// A token is rejected once `now >= exp` (expiry is strict `exp > now`).
     #[test]
     fn expired_token_rejected() {
         let v = verifier(VerifierConfig {
@@ -383,6 +408,7 @@ mod tests {
 
     // ── tampered payload ────────────────────────────────────────────────
 
+    /// Flipping a byte in the payload breaks the signature and rejects.
     #[test]
     fn tampered_payload_rejected() {
         let v = verifier(VerifierConfig {
@@ -406,6 +432,7 @@ mod tests {
 
     // ── forged / wrong-key signature ─────────────────────────────────────
 
+    /// A token signed with a non-configured key is rejected.
     #[test]
     fn forged_wrong_key_signature_rejected() {
         let v = verifier(VerifierConfig {
@@ -420,6 +447,7 @@ mod tests {
         );
     }
 
+    /// A range of malformed/garbage inputs all reject without panicking.
     #[test]
     fn garbage_token_rejected_no_panic() {
         let v = verifier(VerifierConfig {
@@ -446,6 +474,7 @@ mod tests {
 
     // ── rotation ─────────────────────────────────────────────────────────
 
+    /// With two signing keys configured, tokens signed by either verify.
     #[test]
     fn rotation_accepts_either_key() {
         let v = verifier(VerifierConfig {
@@ -458,6 +487,7 @@ mod tests {
         assert!(v.verify(&token_b, 1), "token signed by second key accepted");
     }
 
+    /// `mint` signs with the first key, so a verifier lacking it rejects.
     #[test]
     fn mint_uses_first_key() {
         // A verifier that only knows KEY_B should reject a token minted by the
@@ -473,6 +503,8 @@ mod tests {
 
     // ── revocation ───────────────────────────────────────────────────────
 
+    /// A revoked id is rejected despite a valid signature, and removing it from
+    /// the file (mtime change) causes a reload that re-accepts it.
     #[test]
     fn revoked_id_rejected_and_reload_works() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -509,6 +541,7 @@ mod tests {
 
     // ── backward compat (static secrets) ────────────────────────────────
 
+    /// A configured static secret matches verbatim and never expires.
     #[test]
     fn static_secret_backward_compat() {
         let v = verifier(VerifierConfig {
@@ -527,6 +560,8 @@ mod tests {
         );
     }
 
+    /// A static secret shaped like an `s1.` token fails the signed path and so
+    /// is not reached by the static fallback (documented caveat).
     #[test]
     fn static_secret_does_not_collide_with_signed_format() {
         // A static secret that happens to look like "s1.foo.bar" is NOT a valid
@@ -544,6 +579,8 @@ mod tests {
         assert!(!v.verify(secret, 1));
     }
 
+    /// With both signing keys and static secrets configured, each accepts and
+    /// an unknown value rejects.
     #[test]
     fn signing_and_static_both_configured() {
         let v = verifier(VerifierConfig {
@@ -557,6 +594,7 @@ mod tests {
         assert!(!v.verify("nope", 1), "unknown rejects");
     }
 
+    /// An unconfigured verifier reports so and rejects everything.
     #[test]
     fn unconfigured_verifier() {
         let v = verifier(VerifierConfig::default());

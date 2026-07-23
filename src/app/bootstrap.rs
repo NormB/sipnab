@@ -1,11 +1,12 @@
 //! Bootstrap planning (WS2c): the testable seam between argument parsing
 //! and running.
 //!
-//! [`plan`] is a pure `Cli` + `Config` → [`RunPlan`] mapping — every
-//! decision main() used to make inline (capture source, portrange, BPF
+//! `plan` is a `Cli` + `Config` → `RunPlan` mapping — every decision
+//! main() used to make inline (capture source, portrange, BPF
 //! auto-generation, filters, output options, run mode) becomes a value that
-//! unit tests can assert on, with configuration errors returned as
-//! [`PlanError`] instead of process exits buried in helpers. [`launch`]
+//! unit tests can assert on, with most configuration errors returned as
+//! `PlanError` instead of process exits buried in helpers (the filter and
+//! capture-config builders still exit directly on invalid input). `launch`
 //! then performs the side-effectful part: channel creation, capture start,
 //! readiness hand-shake, chroot, and privilege drop.
 
@@ -32,6 +33,7 @@ pub struct PlanError {
 }
 
 impl PlanError {
+    /// Shorthand for an argument-level error (exit code 2).
     fn arg(message: String) -> Self {
         Self {
             exit_code: 2,
@@ -39,7 +41,8 @@ impl PlanError {
         }
     }
 
-    /// Log the message and terminate with the planned exit code.
+    /// Log the message via `tracing::error!` and terminate the process
+    /// with the planned exit code. Never returns.
     pub fn exit(self) -> ! {
         tracing::error!("{}", self.message);
         std::process::exit(self.exit_code);
@@ -50,7 +53,7 @@ impl PlanError {
 pub enum RunMode {
     /// Interactive TUI (the default when compiled in and stdio is free).
     Tui,
-    /// Headless batch capture/replay ([`super::batch::run`]).
+    /// Headless batch capture/replay (`super::batch::run`).
     Batch,
     /// Multi-core offline file reconstruction (`--cores N -I file`),
     /// bypassing the capture thread entirely.
@@ -60,7 +63,7 @@ pub enum RunMode {
 /// Everything main() needs to run, decided up front from CLI + config.
 pub struct RunPlan {
     /// The capture source; `None` defers to device auto-detection in
-    /// [`launch`].
+    /// `launch`.
     pub source: Option<CaptureSource>,
     /// Capture configuration (BPF filter, counts, memory budget, ...).
     pub capture_config: CaptureConfig,
@@ -86,7 +89,25 @@ pub struct RunPlan {
 /// Decide everything: capture source precedence, capture config, portrange
 /// (CLI > config > default), BPF auto-generation for live captures,
 /// autostop/split policy, matcher/filter/output/event-exec construction,
-/// and the run mode. Pure — no capture, no exits, no privilege changes.
+/// and the run mode. No capture is started and no privileges change here;
+/// the only process exits are inside the `build_capture_config` /
+/// `build_filter_expr` helpers, which still exit directly on an unreadable
+/// `--bpf-file`, invalid `--duration`, or invalid filter expression.
+///
+/// # Arguments
+///
+/// * `cli` — parsed command-line flags.
+/// * `config` — loaded configuration supplying fallbacks for most flags.
+///
+/// # Returns
+///
+/// The complete `RunPlan` main() dispatches on.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 2) for an invalid `--hep-allow` CIDR,
+/// HEP auth misconfiguration, invalid `--portrange`, `--autostop`,
+/// `--split`, filter pattern, or `--metrics` address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
@@ -288,6 +309,32 @@ pub struct Launched {
 /// capture thread, wait for the source-open handshake, then chroot, drop
 /// privileges, and apply the remaining runtime hardening. Exits the
 /// process on failure (these are unrecoverable environment errors).
+///
+/// # Arguments
+///
+/// * `cli` / `config` — parsed flags and loaded configuration.
+/// * `source` — the planned capture source; `None` triggers device
+///   auto-detection here.
+/// * `capture_config` — capture parameters (BPF, snaplen, memory budget)
+///   handed to the capture thread.
+///
+/// # Returns
+///
+/// A `Launched` bundle: the capture-thread handle, the packet receiver,
+/// and the optional raw scanner-kill socket.
+///
+/// # Side effects
+///
+/// In order: fails fast on flags whose feature is not compiled in; creates
+/// the bounded packet channel; spawns the capture thread (single- or
+/// multi-device) and blocks on its readiness handshake; chroots when
+/// configured (root only); opens a CAP_NET_RAW raw socket for spoofed
+/// scanner-kill responses while still privileged; drops privileges
+/// (setgroups/setgid/setuid); initializes syslog for `--syslog`; validates
+/// the remaining feature-gated flags and `--pcap-export-mode`; and
+/// disables core dumps when decryption keys are loaded. Every failure path
+/// logs and exits the process (code 1 for environment errors, 2 for
+/// argument/feature errors).
 pub fn launch(
     cli: &Cli,
     config: &Config,
@@ -569,6 +616,13 @@ pub fn launch(
 /// Initialize the tracing/log subscriber from `SIPNAB_LOG` and the CLI's
 /// quiet/TUI flags, writing to stderr (stdout stays reserved for MCP's
 /// JSON-RPC wire and per-message output).
+///
+/// # Side effects
+///
+/// Installs the global tracing subscriber and the `log`-to-`tracing`
+/// bridge for the rest of the process; both installs are best-effort
+/// (errors from double initialization are ignored). Reads the
+/// `SIPNAB_LOG` environment variable.
 pub fn init_logging(cli: &Cli) {
     // TUI mode: suppress log output to avoid corruption of the alternate screen.
     // Logs are only visible in CLI mode (-N) or when SIPNAB_LOG is explicitly set.
@@ -580,8 +634,8 @@ pub fn init_logging(cli: &Cli) {
     } else {
         "info"
     };
-    // Phase 8.0b: tracing-subscriber writes to stderr by default — preserves
-    // the future stdio MCP invariant that stdout is the JSON-RPC wire.
+    // The tracing subscriber writes to stderr — preserves the stdio MCP
+    // invariant that stdout is the JSON-RPC wire.
     // tracing-log routes any remaining `log::*` events from third-party deps
     // through the same subscriber.
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("SIPNAB_LOG")
@@ -597,8 +651,19 @@ pub fn init_logging(cli: &Cli) {
 }
 
 /// Handle the commands that run before config load and exit immediately
-/// (`--completions`, `--setup-caps`, `--strip-secrets`). Returns the process
-/// exit code when one of them ran.
+/// (`--completions`, `--setup-caps`, `--strip-secrets`).
+///
+/// # Returns
+///
+/// The process exit code when one of them ran; `None` when no startup
+/// command was requested and normal startup should continue.
+///
+/// # Side effects
+///
+/// `--completions` prints a shell-completion script to stdout;
+/// `--setup-caps` sets file capabilities on the sipnab binary;
+/// `--strip-secrets` writes a DSB-free copy of the input pcapng
+/// (atomically; the input is never modified).
 pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
     // --completions <shell>: print a completion script and exit. Needs no
     // config, capture, or privileges.
@@ -652,6 +717,12 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
 /// Handle `--mint-token`: mint a signed bearer token, print it, and return
 /// the exit code — or `None` when the flag is absent. The body is
 /// feature-swapped so the caller contains no `cfg`.
+///
+/// # Returns
+///
+/// `Some(0)` after printing the token to stdout, `Some(2)` on
+/// misconfiguration (or when neither the `api` nor `mcp` feature is
+/// compiled in), `None` when `--mint-token` was not given.
 pub fn run_mint_token(cli: &Cli) -> Option<i32> {
     if !cli.mint_token {
         return None;
@@ -678,6 +749,17 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
 
 /// Load the configuration file and apply the `[limits]` section's parser /
 /// dialog caps.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 1) when the config file cannot be
+/// loaded/parsed or its `[limits]` section fails validation.
+///
+/// # Side effects
+///
+/// Reads the config file from disk (logging its path when found) and
+/// mutates process-global parser and dialog-store limits via
+/// `set_parser_limits` / `set_max_messages_per_dialog`.
 pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     let loaded = match Config::load(cli.config.as_deref(), cli.no_config) {
         Ok(loaded) => {
@@ -725,8 +807,9 @@ pub fn load_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
     Ok(loaded)
 }
 
-/// Handle `--dump-config`: print the version and effective config.
-/// Returns the process exit code.
+/// Handle `--dump-config`: print the version and effective config as TOML
+/// to stdout. Returns the process exit code (0 on success, 1 when the
+/// config fails to serialize).
 pub fn dump_config(loaded: &LoadedConfig) -> i32 {
     println!("sipnab v{}", cli::build_version());
     println!();
@@ -749,7 +832,9 @@ pub fn dump_config(loaded: &LoadedConfig) -> i32 {
 
 // ── Portrange parsing ──────────────────────────────────────────────────
 
-/// Parse a port range string like "5060-5061" or "5060-5080" into a `(u16, u16)` tuple.
+/// Parse a port range string like "5060-5061" or "5060-5080" into a
+/// `(u16, u16)` tuple. Errors on a malformed shape, non-numeric or
+/// out-of-range ports, or start > end.
 fn parse_portrange(s: &str) -> Result<(u16, u16), String> {
     let parts: Vec<&str> = s.split('-').collect();
     if parts.len() != 2 {
@@ -803,7 +888,17 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
 
 // ── Filter expression building ──────────────────────────────────────
 
-/// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or config fallback.
+/// Build a `FilterExpr` from CLI `--filter` flag, diagnostic aliases, or
+/// config fallback.
+///
+/// # Returns
+///
+/// The compiled expression, or `None` when no filter source is configured.
+///
+/// # Side effects
+///
+/// Logs and exits the process (code 2) when the `--filter` expression, an
+/// expanded diagnostic alias, or the config-file expression fails to parse.
 fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
     // Explicit --filter takes precedence. Try alias expansion first
     // (so `--filter codec-asym` works the same as MCP find_problems'
@@ -865,7 +960,13 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
 
 // ── Capture config builder ──────────────────────────────────────────
 
-/// Build a [`CaptureConfig`] by merging CLI flags with config file values.
+/// Build a `CaptureConfig` by merging CLI flags with config file values
+/// (CLI wins; hard-coded defaults last).
+///
+/// # Side effects
+///
+/// Reads `--bpf-file` from disk when given; logs and exits the process
+/// (code 2) on an unreadable BPF file or invalid `--duration`.
 fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
     let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
 
@@ -927,12 +1028,22 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
 
 // ── Auth / token helpers ───────────────────────────────────────────
 
-/// Read one signing key from a file (contents trimmed). Logs and exits on
-/// failure (a misconfigured key file is fatal).
 #[cfg(any(feature = "api", feature = "mcp"))]
 /// Mint a signed token from the CLI configuration and return it. Picks the
-/// surface (API vs MCP) based on which signing keys are configured. Returns an
-/// error message string on misconfiguration.
+/// surface (API vs MCP) based on which signing keys are configured
+/// (API keys preferred). Despite the name it does not exit — the caller
+/// (`run_mint_token`) turns the result into an exit code.
+///
+/// # Errors
+///
+/// Returns an error message string when no signing key is configured on
+/// either surface or the token TTL is non-positive.
+///
+/// # Side effects
+///
+/// Resolving the verifier configs may read signing-key files from disk
+/// (and exit the process when one is unreadable — see
+/// `crate::app::servers::read_signing_key_file`).
 #[cfg(any(feature = "api", feature = "mcp"))]
 fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
     // Gather the first signing key + TTL, preferring API config, then MCP.
@@ -980,10 +1091,11 @@ fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
 
 // ── Unit tests for the binary's pure helpers ────────────────────────────
 //
-// These cover the stand-alone logic in `main.rs` that needs no live capture
-// device: argument parsers, filter/capture-config builders, post-capture
-// and the filter/capture-config builders. The batch runner's tests live in
-// `crate::app::batch`; the live-capture / TUI arms stay integration-only.
+// These cover the stand-alone bootstrap logic that needs no live capture
+// device: the argument parsers and the filter/capture-config builders. The
+// batch runner's tests live in `crate::app::batch`; the live-capture / TUI
+// arms stay integration-only.
+/// Unit tests for the pure planning helpers (parsers and builders).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -997,6 +1109,7 @@ mod tests {
 
     // ── parse_portrange ────────────────────────────────────────────────
 
+    /// Well-formed ranges parse, whitespace is trimmed, start==end allowed.
     #[test]
     fn parse_portrange_valid_and_trimmed() {
         assert_eq!(parse_portrange("5060-5061").unwrap(), (5060, 5061));
@@ -1006,6 +1119,8 @@ mod tests {
         assert_eq!(parse_portrange("5060-5060").unwrap(), (5060, 5060));
     }
 
+    /// Malformed shapes, non-numeric or out-of-range ports, and start > end
+    /// all produce errors.
     #[test]
     fn parse_portrange_errors() {
         // wrong number of '-' separated parts
@@ -1023,6 +1138,7 @@ mod tests {
 
     // ── parse_autostop ─────────────────────────────────────────────────
 
+    /// `duration:N` yields a Duration; `filesize:N` yields a megabyte count.
     #[test]
     fn parse_autostop_duration_and_filesize() {
         let (dur, size) = parse_autostop("duration:30").unwrap();
@@ -1034,6 +1150,7 @@ mod tests {
         assert_eq!(size, Some(100));
     }
 
+    /// Missing colon, non-numeric value, and unknown key are rejected.
     #[test]
     fn parse_autostop_errors() {
         assert!(parse_autostop("duration").is_err()); // missing ':'
@@ -1043,6 +1160,7 @@ mod tests {
 
     // ── build_filter_expr ──────────────────────────────────────────────
 
+    /// An explicit `--filter` expression compiles into a filter.
     #[test]
     fn build_filter_expr_explicit_flag_wins() {
         let mut cli = base_cli();
@@ -1051,6 +1169,7 @@ mod tests {
         assert!(build_filter_expr(&cli, &config).is_some());
     }
 
+    /// Each diagnostic alias flag builds a filter; multiple flags OR together.
     #[test]
     fn build_filter_expr_diagnostic_aliases() {
         let config = Config::default();
@@ -1074,6 +1193,7 @@ mod tests {
         assert!(build_filter_expr(&cli, &config).is_some());
     }
 
+    /// No sources → `None`; a config-file expression is the fallback source.
     #[test]
     fn build_filter_expr_config_fallback_and_none() {
         // No flags, no config -> None.
@@ -1087,6 +1207,7 @@ mod tests {
 
     // ── build_capture_config ───────────────────────────────────────────
 
+    /// With no flags or config, the hard-coded capture defaults apply.
     #[test]
     fn build_capture_config_defaults() {
         let cc = build_capture_config(&base_cli(), &Config::default());
@@ -1098,12 +1219,14 @@ mod tests {
         assert!(!cc.replay);
     }
 
+    /// Promiscuous mode defaults to on.
     #[test]
     fn build_capture_config_promisc_default_on() {
         let cc = build_capture_config(&base_cli(), &Config::default());
         assert!(cc.promisc, "promiscuous mode should default to on");
     }
 
+    /// `--no-promisc` disables promiscuous mode.
     #[test]
     fn build_capture_config_no_promisc_flag_disables() {
         let mut cli = base_cli();
@@ -1112,6 +1235,7 @@ mod tests {
         assert!(!cc.promisc, "--no-promisc should disable promiscuous mode");
     }
 
+    /// `[capture] promisc = false` is honored when the CLI flag is unset.
     #[test]
     fn build_capture_config_promisc_config_fallback() {
         let mut config = Config::default();
@@ -1124,6 +1248,7 @@ mod tests {
         );
     }
 
+    /// `--no-promisc` wins over `[capture] promisc = true`.
     #[test]
     fn build_capture_config_no_promisc_flag_overrides_config() {
         let mut config = Config::default();
@@ -1137,6 +1262,7 @@ mod tests {
         );
     }
 
+    /// CLI snaplen/buffer/count/replay/positional-BPF override the defaults.
     #[test]
     fn build_capture_config_cli_overrides() {
         let mut cli = base_cli();
@@ -1153,6 +1279,7 @@ mod tests {
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp port 5060"));
     }
 
+    /// `--bpf-file` contents (trimmed) win over a positional BPF filter.
     #[test]
     fn build_capture_config_bpf_file_takes_precedence() {
         let dir = std::env::temp_dir();
@@ -1167,6 +1294,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Config-file snaplen/buffer values apply when the CLI leaves them unset.
     #[test]
     fn build_capture_config_config_fallback() {
         let mut config = Config::default();

@@ -1,3 +1,7 @@
+//! Fuzz SRTP key extraction from SDES `a=crypto` parameters. The fuzz input
+//! is split on the first newline into the suite and key-params fields (falling
+//! back to a fixed suite when absent); key derivation must never panic on
+//! malformed base64 or wrong-length key material.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use sipnab::rtp::srtp::extract_srtp_keys;

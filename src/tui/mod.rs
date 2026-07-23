@@ -89,11 +89,14 @@ pub struct App {
     version: String,
     /// When data was last updated (for adaptive refresh).
     last_data_update: Instant,
+    /// Dialog count at the last event-loop check; a change marks data as
+    /// freshly updated so the poll rate stays in active mode.
     last_known_dialog_count: usize,
     /// Consecutive render ticks skipped because a store write lock was
     /// contended; at FORCED_DRAW_AFTER_SKIPS the next tick blocks instead
     /// of skipping, so a write-saturated capture can't starve the UI.
     contended_skips: u32,
+    /// Scroll offset (lines) for the stream detail view.
     stream_detail_scroll: usize,
     /// View to return to when pressing Esc from StreamDetail.
     stream_detail_return_view: Option<View>,
@@ -170,7 +173,6 @@ pub struct App {
     /// Header-name display form (as captured / expanded / compact) for
     /// every view that shows full message text.
     header_form: header_form::HeaderFormMode,
-    /// SDP display mode (None / Summary / Full).
     /// Name-resolution display mode (Off / Names / Dns).
     name_mode: NameMode,
     /// Shared IP -> name resolver (manual mappings, hosts, reverse DNS).
@@ -185,6 +187,7 @@ pub struct App {
     column_config_path: Option<PathBuf>,
     /// "Name Address" popup state.
     name_dialog: NameDialogState,
+    /// SDP display mode (None / Summary / Full).
     sdp_display_mode: SdpDisplayMode,
     /// Timestamp display mode (Absolute / Delta-prev / Delta-first).
     timestamp_mode: TimestampMode,
@@ -219,6 +222,20 @@ pub struct App {
 
 impl App {
     /// Create a new application state with shared stores.
+    ///
+    /// # Arguments
+    ///
+    /// * `dialog_store` — shared SIP dialog store, written by the
+    ///   processing thread.
+    /// * `stream_store` — shared RTP stream store, written by the
+    ///   processing thread.
+    /// * `theme` — resolved color theme.
+    /// * `keymap` — resolved key bindings.
+    ///
+    /// # Returns
+    ///
+    /// A fresh `App` on the call-list view with default display modes,
+    /// empty caches, and a private (unshared) pause flag.
     pub fn new(
         dialog_store: Arc<RwLock<DialogStore>>,
         stream_store: Arc<RwLock<StreamStore>>,
@@ -295,23 +312,30 @@ impl App {
         }
     }
 
-    /// Set the capture mode label displayed in the status bar.
+    /// Set the capture mode label (`mode`) displayed in the status bar.
     pub fn set_capture_mode(&mut self, mode: String) {
         self.capture_mode = mode;
     }
 
-    /// Set the BPF filter string displayed in the status bar.
+    /// Set the BPF filter string (`filter`) displayed in the status bar.
     pub fn set_bpf_filter(&mut self, filter: String) {
         self.bpf_filter = filter;
     }
 
-    /// Mark data as freshly updated (resets adaptive refresh timer).
+    /// Mark data as freshly updated: resets the adaptive refresh timer so
+    /// `poll_timeout` returns the active (fast) interval.
     pub fn mark_data_updated(&mut self) {
         self.last_data_update = Instant::now();
     }
 
     /// Drain completion messages pushed by detached workers into the status
     /// line — one per tick, so consecutive results each get a visible frame.
+    ///
+    /// # Side effects
+    ///
+    /// Locks the `async_messages` mutex briefly; when the queue is
+    /// non-empty, removes its first entry and overwrites `status_error`
+    /// with it.
     pub(crate) fn drain_async_messages(&mut self) {
         let mut queue = self.async_messages.lock();
         if !queue.is_empty() {
@@ -322,6 +346,16 @@ impl App {
     /// Execute a playback request deferred by one tick (the "Decoding…"
     /// frame has painted by the time this runs): lazy player init, decode/
     /// resample, and the plugin play call.
+    ///
+    /// No-op unless `pending_audio_play` is set (it is always cleared).
+    ///
+    /// # Side effects
+    ///
+    /// Lazily constructs `audio_player` on first use; on init failure
+    /// caches the message in `audio_init_error` so later presses don't
+    /// retry. Takes a read lock on the stream store, may block on decode/
+    /// resample plus the audio backend, and writes the outcome (played /
+    /// error / "Stream not found") into `status_error`.
     #[cfg(feature = "audio")]
     pub(crate) fn run_pending_audio(&mut self) {
         if !self.pending_audio_play {
@@ -362,6 +396,14 @@ impl App {
 
     /// Execute a save the dialog deferred by one tick (the "Saving…" frame
     /// has painted by the time this runs, right after the draw).
+    ///
+    /// No-op when no save is pending (`pending_save` is always taken).
+    ///
+    /// # Side effects
+    ///
+    /// Dispatches to the format-specific writer, which takes store read
+    /// locks and performs blocking file I/O; the result message (success
+    /// or failure) is written into `status_error`.
     pub(crate) fn run_pending_save(&mut self) {
         let Some(pending) = self.pending_save.take() else {
             return;
@@ -416,6 +458,23 @@ impl App {
     /// Uses `try_read()`: on lock contention the caches simply keep their
     /// previous values until the next tick, matching the render pass's
     /// skip-on-contention behavior.
+    ///
+    /// # Side effects
+    ///
+    /// * Takes non-blocking (`try_read`) read locks on the dialog store
+    ///   and, per view, the stream store — never a write lock, never
+    ///   blocking.
+    /// * Rebuilds, at most once per churn floor: the quality-dashboard
+    ///   snapshot, the displayed dialog-ID cache (`displayed`), the
+    ///   displayed stream-key cache (`stream_displayed`), the statistics
+    ///   text (`stats`), and the call-flow ladder layout
+    ///   (`flow.ladder`) — each keyed on store generations plus the view
+    ///   inputs that shape it; changed user inputs bypass the floor.
+    /// * Updates `cached_dialog_count` / `cached_displayed_count`, clamps
+    ///   the call-list and dashboard selections to the shrunk lists, and
+    ///   applies sticky-bottom autoscroll (updating
+    ///   `last_rendered_dialog_rows`).
+    /// * Marks each rebuilt cache's `ChurnFloor`.
     fn sync_caches(&mut self) {
         // Quality dashboard: rebuild the snapshot outside the render pass
         // (render is read-only under the skip-tick contract). try_read so
@@ -794,6 +853,19 @@ impl App {
     /// computed (clamped scrolls, call-flow row caches). Applied by the
     /// event loop right after `terminal.draw`, which is the same point in
     /// the frame timeline the render pass used to write them directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `fb` — the feedback produced by `render_app`; `None` fields left
+    ///   by views that didn't render are skipped, so unrelated state is
+    ///   never clobbered.
+    ///
+    /// # Side effects
+    ///
+    /// Overwrites the scroll offsets (stream detail, flow ladder/detail,
+    /// raw message, diff, help, statistics) and the call-flow row caches
+    /// (`cached_msg_count`, `cached_rtp_bar_indices`,
+    /// `cached_raw_indices`) for each `Some` field.
     fn apply_render_feedback(&mut self, fb: RenderFeedback) {
         if let Some(v) = fb.stream_detail_scroll {
             self.stream_detail_scroll = v;
@@ -837,6 +909,16 @@ impl App {
     /// it shows the *used* codec (and a re-INVITE codec switch as a later
     /// segment), not the full SDP offer. Empty when no RTP is linked to the
     /// dialog, in which case the bar falls back to the negotiated SDP answer.
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` — Call-ID of the dialog whose linked streams to scan.
+    ///
+    /// # Returns
+    ///
+    /// Codec segments sorted by start time; empty when no linked stream
+    /// carries a resolved codec, or when the stream-store read lock is
+    /// contended (`try_read` failure — callers treat it as "no data").
     fn rtp_codec_segments(&self, call_id: &str) -> Vec<call_flow::RtpCodecSegment> {
         let Some(store) = self.stream_store.try_read() else {
             return Vec::new();
@@ -867,6 +949,11 @@ impl App {
     }
 
     /// Compute the poll timeout based on how recently data was updated.
+    ///
+    /// # Returns
+    ///
+    /// `ACTIVE_POLL_MS` while the last data update is within
+    /// `IDLE_THRESHOLD`, else the slower `IDLE_POLL_MS`.
     fn poll_timeout(&self) -> Duration {
         if self.last_data_update.elapsed() < IDLE_THRESHOLD {
             Duration::from_millis(ACTIVE_POLL_MS)
@@ -894,6 +981,29 @@ impl App {
 /// blocking reads instead, so a write-saturated capture degrades to a
 /// briefly stale frame, never a frozen UI. Acquisition is always
 /// dialog→stream, the same order as every other multi-lock site.
+///
+/// # Arguments
+///
+/// * `terminal` — the ratatui terminal to draw into.
+/// * `app` — application state; read for rendering, mutated for the
+///   skip counter and render feedback.
+///
+/// # Returns
+///
+/// `Ok(true)` when a frame was drawn, `Ok(false)` when the tick was
+/// skipped on lock contention.
+///
+/// # Errors
+///
+/// Propagates the backend's draw error (terminal write failure).
+///
+/// # Side effects
+///
+/// Takes read locks on both stores (non-blocking, or blocking once the
+/// skip threshold is reached); increments `app.contended_skips` on a
+/// skip and resets it on success; flushes a frame to the terminal; and
+/// applies the render feedback (scroll clamps, flow row caches) to
+/// `app`.
 fn draw_frame<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
@@ -922,6 +1032,10 @@ fn draw_frame<B: ratatui::backend::Backend>(
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
+    /// Restore the terminal: disable mouse capture, re-show the cursor,
+    /// leave the alternate screen and drop raw mode (errors ignored —
+    /// there is no recovery path during teardown), then tell the crash
+    /// hook the terminal is sane so it won't restore twice.
     fn drop(&mut self) {
         let _ = execute!(
             io::stdout(),
@@ -937,20 +1051,6 @@ impl Drop for TerminalGuard {
 
 // ── Public entry point ──────────────────────────────────────────────
 
-/// Run the interactive TUI event loop.
-///
-/// This function takes ownership of the main thread. It sets up the
-/// terminal, enters the event loop, and restores the terminal on exit
-/// (including on panic via a Drop guard).
-///
-/// # Arguments
-///
-/// * `dialog_store` — Shared dialog store, updated by the processing thread.
-/// * `stream_store` — Shared stream store, updated by the processing thread.
-///
-/// # Errors
-///
-/// Returns an error if terminal initialization or rendering fails.
 /// Name-resolution wiring passed into the TUI from CLI/config.
 pub struct NameSetup {
     /// Shared resolver (already populated with hosts / manual mappings).
@@ -965,6 +1065,8 @@ pub struct NameSetup {
 }
 
 impl Default for NameSetup {
+    /// Empty wiring: a fresh resolver, name display off, no persistence
+    /// paths.
     fn default() -> Self {
         Self {
             resolver: Arc::new(NameResolver::new()),
@@ -975,6 +1077,21 @@ impl Default for NameSetup {
     }
 }
 
+/// Run the interactive TUI event loop with default options and no shared
+/// pause flag — a thin wrapper over `run_tui_with_pause`.
+///
+/// This function takes ownership of the main thread. It sets up the
+/// terminal, enters the event loop, and restores the terminal on exit
+/// (including on panic via a Drop guard).
+///
+/// # Arguments
+///
+/// * `dialog_store` — Shared dialog store, updated by the processing thread.
+/// * `stream_store` — Shared stream store, updated by the processing thread.
+///
+/// # Errors
+///
+/// Returns an error if terminal initialization or rendering fails.
 pub fn run_tui(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
@@ -986,11 +1103,15 @@ pub fn run_tui(
 /// config/CLI by the caller.
 #[derive(Default)]
 pub struct TuiOptions {
+    /// Resolved color theme.
     pub theme: Theme,
+    /// Resolved key bindings.
     pub keymap: Keymap,
     /// Call-list columns to show (config `[display] visible_columns`).
     pub visible_columns: Option<Vec<String>>,
+    /// Name-resolution wiring (resolver, mode, persistence paths).
     pub name_setup: NameSetup,
+    /// Initial From/To column display mode.
     pub from_to_mode: FromToMode,
 }
 
@@ -998,6 +1119,39 @@ pub struct TuiOptions {
 ///
 /// When `paused_flag` is `Some`, the flag is shared with the processing
 /// thread so that toggling pause in the TUI also pauses packet processing.
+/// Takes ownership of the calling thread until the user quits.
+///
+/// # Arguments
+///
+/// * `dialog_store` — Shared dialog store, updated by the processing thread.
+/// * `stream_store` — Shared stream store, updated by the processing thread.
+/// * `paused_flag` — Pause flag shared with the processing thread; `None`
+///   keeps pause TUI-local.
+/// * `options` — Theme, keymap, visible columns, name wiring and From/To
+///   mode resolved from config/CLI.
+///
+/// # Returns
+///
+/// `Ok(())` after the user quits and the terminal is restored.
+///
+/// # Errors
+///
+/// Returns an error if enabling raw mode, entering the alternate screen,
+/// constructing the terminal, drawing a frame, or polling/reading input
+/// events fails.
+///
+/// # Side effects
+///
+/// * Terminal: enables raw mode, enters the alternate screen, enables
+///   mouse capture, hides the cursor; arms the crash hook
+///   (`crate::crash::set_terminal_raw`) and an RAII guard so all of it is
+///   undone on return or panic.
+/// * Logs keymap collision warnings via `tracing::warn` and surfaces the
+///   first one on the status line.
+/// * Runs the event loop each tick: polls background pcap loads, drains
+///   worker messages, syncs store-derived caches (store read locks),
+///   draws frames, runs deferred saves/audio playback, and drains all
+///   queued key/mouse events before the next redraw.
 pub fn run_tui_with_pause(
     dialog_store: Arc<RwLock<DialogStore>>,
     stream_store: Arc<RwLock<StreamStore>>,
@@ -1119,6 +1273,9 @@ pub fn run_tui_with_pause(
     Ok(())
 }
 
+/// Unit tests for the App event-loop contracts: cache churn floors,
+/// contended-store render ticks, multi-selection flows, filter/search
+/// visibility, and the display-mode enum cycles.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1137,6 +1294,7 @@ mod tests {
         }
     }
 
+    /// A fresh App starts on the call-list view with the quit flag clear.
     #[test]
     fn app_default_view_is_call_list() {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -1539,6 +1697,8 @@ mod tests {
     // flushed, previous frame stays on screen), and sustained contention
     // eventually forces a blocking frame instead of starving the UI.
 
+    /// Concatenate every cell symbol of the test backend's buffer into one
+    /// string, for substring assertions on the rendered frame.
     fn backend_text(terminal: &Terminal<ratatui::backend::TestBackend>) -> String {
         terminal
             .backend()
@@ -1549,6 +1709,8 @@ mod tests {
             .collect()
     }
 
+    /// A tick under a contended dialog-store write lock skips the frame
+    /// and leaves the previous frame on screen (no blank flash).
     #[test]
     fn contended_dialog_write_lock_must_not_blank_the_frame() {
         use controllers::test_support::{base_ts, make_invite};
@@ -1581,6 +1743,8 @@ mod tests {
         );
     }
 
+    /// A contended stream-store write lock also skips the whole frame —
+    /// rendering needs a consistent snapshot of BOTH stores or none.
     #[test]
     fn contended_stream_write_lock_also_skips_the_frame() {
         use controllers::test_support::{base_ts, make_invite};
@@ -1606,6 +1770,8 @@ mod tests {
         assert_eq!(terminal.backend().buffer(), &before);
     }
 
+    /// Contention on the very first tick (nothing drawn yet) skips
+    /// without panicking or flushing anything.
     #[test]
     fn first_tick_under_contention_skips_cleanly() {
         use ratatui::{Terminal, backend::TestBackend};
@@ -1617,6 +1783,9 @@ mod tests {
         assert!(!draw_frame(&mut terminal, &mut app).unwrap());
     }
 
+    /// Once contention clears the next tick draws again, and the
+    /// successful draw resets the skip counter (a stale counter would
+    /// force a blocking read and deadlock on the same-thread guard).
     #[test]
     fn tick_after_contention_clears_redraws_and_resets_the_skip_counter() {
         use controllers::test_support::{base_ts, make_invite};
@@ -1646,6 +1815,9 @@ mod tests {
         assert!(!draw_frame(&mut terminal, &mut app).unwrap());
     }
 
+    /// After FORCED_DRAW_AFTER_SKIPS consecutive skipped ticks, the next
+    /// tick takes blocking reads and draws — contention never starves
+    /// the UI indefinitely.
     #[test]
     fn sustained_contention_forces_a_blocking_frame() {
         use controllers::test_support::{base_ts, make_invite};
@@ -1882,7 +2054,7 @@ mod tests {
         terminal.draw(|f| app.render(f)).unwrap(); // panicked before the fix
     }
 
-    /// Enter with multiple rows checked ([*]) must open a flow showing ALL
+    /// Enter with multiple rows checked (`[*]`) must open a flow showing ALL
     /// checked dialogs' messages merged chronologically — not just the
     /// cursor (>) row's dialog — and drilling into a row must open the raw
     /// view of THAT row's dialog.
@@ -2158,6 +2330,8 @@ mod tests {
         );
     }
 
+    /// Recent data updates yield the fast active poll timeout; an idle
+    /// (backdated) timestamp yields the slow idle timeout.
     #[test]
     fn adaptive_timeout_active_vs_idle() {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
@@ -2172,6 +2346,8 @@ mod tests {
         assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
     }
 
+    /// When config sets both `selected` and its legacy alias `highlight`,
+    /// `selected` wins.
     #[test]
     fn theme_from_config_selected_overrides_highlight() {
         let config = ThemeConfig {
@@ -2183,6 +2359,8 @@ mod tests {
         assert_eq!(theme.selected, Color::Blue); // selected wins over highlight
     }
 
+    /// The legacy `highlight` alias applies to `selected` when no
+    /// explicit `selected` color is configured.
     #[test]
     fn theme_from_config_highlight_fallback() {
         let config = ThemeConfig {
@@ -2193,6 +2371,8 @@ mod tests {
         assert_eq!(theme.selected, Color::Red); // highlight applies when selected is None
     }
 
+    /// A configured rebind replaces the default key while unconfigured
+    /// actions keep their defaults.
     #[test]
     fn keymap_from_config_overrides_default() {
         let config = KeybindingsConfig {
@@ -2204,6 +2384,8 @@ mod tests {
         assert_eq!(keymap.help, KeyCode::F(1)); // unchanged default
     }
 
+    /// `csv_escape` quotes fields containing commas, quotes or newlines
+    /// and doubles embedded quotes; plain text passes through.
     #[test]
     fn csv_escape_quotes_commas() {
         assert_eq!(csv_escape("hello"), "hello");
@@ -2212,6 +2394,7 @@ mod tests {
         assert_eq!(csv_escape("line1\nline2"), "\"line1\nline2\"");
     }
 
+    /// `View` equality compares variants and their payloads (Call-IDs).
     #[test]
     fn view_equality() {
         assert_eq!(View::CallList, View::CallList);
@@ -2228,6 +2411,7 @@ mod tests {
 
     // ── SaveFormat round-trips ──────────────────────────────────────
 
+    /// `SaveFormat::next` cycles through all 11 formats back to the start.
     #[test]
     fn save_format_next_full_cycle() {
         // 11 formats — next() applied 11 times returns to start.
@@ -2238,6 +2422,7 @@ mod tests {
         assert_eq!(f, SaveFormat::Pcap);
     }
 
+    /// `prev` is the exact inverse of `next` for every format.
     #[test]
     fn save_format_prev_is_inverse_of_next() {
         let formats = [
@@ -2259,6 +2444,8 @@ mod tests {
         }
     }
 
+    /// Every format has non-empty extension/label/category/description,
+    /// with a few exact values spot-checked.
     #[test]
     fn save_format_extension_label_category_description_nonempty() {
         let formats = [
@@ -2288,6 +2475,8 @@ mod tests {
 
     // ── Display-mode enum cycles ────────────────────────────────────
 
+    /// SDP display mode cycles None → Summary → Full → None with
+    /// matching status-bar labels.
     #[test]
     fn sdp_display_mode_cycle_and_labels() {
         assert_eq!(SdpDisplayMode::None.next(), SdpDisplayMode::Summary);
@@ -2298,6 +2487,8 @@ mod tests {
         assert!(SdpDisplayMode::Full.label().contains("Full"));
     }
 
+    /// Timestamp mode cycles Absolute → DeltaPrev → DeltaFirst → Scaled
+    /// → Absolute with "Time:" labels.
     #[test]
     fn timestamp_mode_cycle_and_labels() {
         assert_eq!(TimestampMode::Absolute.next(), TimestampMode::DeltaPrev);
@@ -2314,6 +2505,8 @@ mod tests {
         }
     }
 
+    /// Color mode cycles Method → CallId → CSeq → Method with "Color:"
+    /// labels.
     #[test]
     fn color_mode_cycle_and_labels() {
         assert_eq!(ColorMode::Method.next(), ColorMode::CallId);
@@ -2326,6 +2519,8 @@ mod tests {
 
     // ── FilterDialogState navigation & build ────────────────────────
 
+    /// `text_field`/`text_field_mut` map indices 0-4 to the five filter
+    /// fields; out-of-range indices yield ""/None.
     #[test]
     fn filter_dialog_text_field_accessors() {
         let mut st = FilterDialogState {
@@ -2350,6 +2545,7 @@ mod tests {
         assert!(st.text_field_mut(99).is_none());
     }
 
+    /// Tab focus wraps from the first element to the last and back.
     #[test]
     fn filter_dialog_focus_wraps_both_directions() {
         let mut st = FilterDialogState::default();
@@ -2360,6 +2556,8 @@ mod tests {
         assert_eq!(st.focused_field(), 0);
     }
 
+    /// Focus indices classify correctly as text field, "All" master
+    /// checkbox (not a method slot), method checkbox, or button.
     #[test]
     fn filter_dialog_focus_classification() {
         let mut st = FilterDialogState {
@@ -2385,6 +2583,8 @@ mod tests {
         assert!(!st.is_checkbox_focused());
     }
 
+    /// Arrow navigation moves through the 2-column method grid and exits
+    /// upward via the "All" row to the last text field.
     #[test]
     fn filter_dialog_checkbox_grid_navigation() {
         let mut st = FilterDialogState {
@@ -2409,6 +2609,8 @@ mod tests {
         assert_eq!(st.focused_field(), FILTER_TEXT_FIELD_COUNT - 1);
     }
 
+    /// Down walks the left column, continues into the right column, then
+    /// reaches the buttons — vertical navigation covers every checkbox.
     #[test]
     fn filter_dialog_checkbox_down_traverses_both_columns_then_buttons() {
         // Down walks the LEFT column to its bottom, then continues into the
@@ -2448,6 +2650,7 @@ mod tests {
         assert_eq!(st.checkbox_index(), Some(8));
     }
 
+    /// Default state: all methods checked, no narrowing, no expression.
     #[test]
     fn filter_dialog_default_all_methods_checked() {
         // SIP messages must be checked by default → no narrowing → no expression.
@@ -2464,6 +2667,7 @@ mod tests {
         assert!(st.build_filter_expression().is_none());
     }
 
+    /// `clear()` re-checks every method (show all) and empties the state.
     #[test]
     fn filter_dialog_clear_resets_to_all_checked() {
         let mut st = FilterDialogState {
@@ -2479,6 +2683,8 @@ mod tests {
         assert!(st.is_empty());
     }
 
+    /// `any_method_checked` follows the checkbox array (none checked
+    /// means "show nothing").
     #[test]
     fn filter_dialog_any_method_checked_tracks_state() {
         let mut st = FilterDialogState::default();
@@ -2492,6 +2698,8 @@ mod tests {
         assert!(st.any_method_checked());
     }
 
+    /// Unchecking one method builds an OR expression over the other nine
+    /// (excluding it), and text fields AND-join with the method clause.
     #[test]
     fn filter_dialog_uncheck_one_excludes_that_method() {
         // From the all-checked default, unchecking INVITE (index 2) must produce
@@ -2519,6 +2727,7 @@ mod tests {
         assert!(expr.contains("from.user") && expr.contains("src.ip") && expr.contains(" AND "));
     }
 
+    /// All methods checked plus empty text fields builds no expression.
     #[test]
     fn filter_dialog_all_methods_checked_yields_no_method_filter() {
         let st = FilterDialogState {
@@ -2529,6 +2738,7 @@ mod tests {
         assert!(st.build_filter_expression().is_none());
     }
 
+    /// `clear()` also resets focus and cursor position, not just fields.
     #[test]
     fn filter_dialog_clear_resets_everything() {
         let mut st = FilterDialogState {
@@ -2545,6 +2755,7 @@ mod tests {
         assert_eq!(st.cursor_pos, 0);
     }
 
+    /// `sync_cursor` places the cursor at the end of the focused field.
     #[test]
     fn filter_dialog_sync_cursor_to_field_end() {
         let mut st = FilterDialogState {
@@ -2559,6 +2770,7 @@ mod tests {
 
     // ── FromToMode ───────────────────────────────────────────────────
 
+    /// Default mode shows the user, falls back to host, then "-".
     #[test]
     fn from_to_mode_default_prefers_user_then_host() {
         let m = FromToMode::Default;
@@ -2567,6 +2779,7 @@ mod tests {
         assert_eq!(m.format(None, None), "-");
     }
 
+    /// HostPort mode shows only the host and ignores the user entirely.
     #[test]
     fn from_to_mode_host_port_only() {
         let m = FromToMode::HostPort;
@@ -2578,6 +2791,7 @@ mod tests {
         );
     }
 
+    /// User mode shows only the user, with "-" when absent (legacy).
     #[test]
     fn from_to_mode_user_only_is_legacy_behavior() {
         let m = FromToMode::User;
@@ -2589,6 +2803,8 @@ mod tests {
         );
     }
 
+    /// UserHostPort mode combines `user@host`, degrading to whichever
+    /// part exists.
     #[test]
     fn from_to_mode_user_host_combines() {
         let m = FromToMode::UserHostPort;
@@ -2598,6 +2814,7 @@ mod tests {
         assert_eq!(m.format(None, None), "-");
     }
 
+    /// The `u`-key cycle visits all four modes and returns to Default.
     #[test]
     fn from_to_mode_cycle_is_four_states() {
         let m = FromToMode::default();
@@ -2612,6 +2829,8 @@ mod tests {
         );
     }
 
+    /// `parse` round-trips every `as_config_str` value and rejects
+    /// unknown/empty strings with None.
     #[test]
     fn from_to_mode_parse_roundtrip_and_invalid() {
         for m in [
@@ -2628,6 +2847,7 @@ mod tests {
 
     // ── App state setters ───────────────────────────────────────────
 
+    /// The capture-mode and BPF-filter setters store the given strings.
     #[test]
     fn app_set_capture_mode_and_bpf_filter() {
         let mut app = App::new_test();
@@ -2637,6 +2857,7 @@ mod tests {
         assert_eq!(app.bpf_filter, "udp port 5060");
     }
 
+    /// `mark_data_updated` flips an idle App back to active polling.
     #[test]
     fn app_mark_data_updated_resets_to_active() {
         let mut app = App::new_test();
@@ -2646,6 +2867,7 @@ mod tests {
         assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));
     }
 
+    /// `is_paused` mirrors the TUI-local paused flag.
     #[test]
     fn app_is_paused_reflects_flag() {
         let mut app = App::new_test();

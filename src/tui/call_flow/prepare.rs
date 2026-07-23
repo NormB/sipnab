@@ -41,8 +41,19 @@ pub fn delta_style(delta_ms: i64, theme: &Theme) -> Style {
 ///
 /// Applies all display modes (SDP, timestamp, color, RTP) and returns
 /// a list of `Participant`s and `FormattedMessage`s. Composed of the two
-/// split stages: theme-free [`layout`] (the expensive, cacheable part)
-/// followed by [`style`] (cheap per-frame theming + selection).
+/// split stages: theme-free `layout` (the expensive, cacheable part)
+/// followed by `style` (cheap per-frame theming + selection).
+///
+/// # Arguments
+/// * `messages` — the dialog's SIP messages in capture order.
+/// * `first_ts` — reference timestamp for delta-first/delta-prev formatting.
+/// * `pdd_ms` — post-dial delay to annotate on the first 180, if known.
+/// * `opts` — full display options (split internally into layout vs style).
+/// * `fold_expanded` — raw indices of fold headers the user has expanded.
+///
+/// # Returns
+/// `(participants, formatted)`: swimlane endpoints in column order and the
+/// fully styled ladder rows. Both empty when `messages` is empty.
 pub fn prepare_messages(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
@@ -61,20 +72,27 @@ pub fn prepare_messages(
     (participants, styled)
 }
 
-/// Theme-free inputs to [`layout`] — everything that shapes which rows
+/// Theme-free inputs to `layout` — everything that shapes which rows
 /// exist and their text. Anything here changing invalidates a cached
-/// layout; anything in [`StyleOptions`] does not.
+/// layout; anything in `StyleOptions` does not.
 #[derive(Debug, Clone)]
 pub struct LayoutOptions<'a> {
+    /// How SDP bodies are shown below their message row (none/summary/full).
     pub sdp_mode: SdpDisplayMode,
+    /// Timestamp column format; `Scaled` also inserts spacer rows.
     pub ts_mode: TimestampMode,
+    /// Whether to insert RTP-in-flow channel bars for media segments.
     pub show_rtp: bool,
+    /// Resolver mapping endpoint addresses to display names.
     pub resolver: &'a crate::names::NameResolver,
+    /// How endpoint labels are displayed (raw address vs resolved name).
     pub name_mode: crate::names::NameMode,
+    /// Observed RTP codec segments (authoritative "used" codec per phase).
     pub rtp_segments: &'a [RtpCodecSegment],
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
+    /// Project the layout-affecting subset out of full display options.
     fn from(o: &FlowDisplayOptions<'a>) -> Self {
         Self {
             sdp_mode: o.sdp_mode,
@@ -87,17 +105,21 @@ impl<'a> From<&FlowDisplayOptions<'a>> for LayoutOptions<'a> {
     }
 }
 
-/// Presentation-only inputs to [`style`]: theming, arrow color mode and
+/// Presentation-only inputs to `style`: theming, arrow color mode and
 /// the current selection. Varying these re-styles a cached layout without
 /// recomputing it.
 #[derive(Debug, Clone)]
 pub struct StyleOptions<'a> {
+    /// What drives arrow coloring (method class, Call-ID, or CSeq rotation).
     pub color_mode: ColorMode,
+    /// Index of the selected row among visible (non-spacer) rows, if any.
     pub selected_msg: Option<usize>,
+    /// Color theme used for all styling decisions.
     pub theme: &'a Theme,
 }
 
 impl<'a> From<&FlowDisplayOptions<'a>> for StyleOptions<'a> {
+    /// Project the presentation-only subset out of full display options.
     fn from(o: &FlowDisplayOptions<'a>) -> Self {
         Self {
             color_mode: o.color_mode,
@@ -107,8 +129,8 @@ impl<'a> From<&FlowDisplayOptions<'a>> for StyleOptions<'a> {
     }
 }
 
-/// Theme-free semantic class of a SIP message, derived once in [`layout`];
-/// [`class_style`] maps it to concrete colors in [`style`].
+/// Theme-free semantic class of a SIP message, derived once in `layout`;
+/// `class_style` maps it to concrete colors in `style`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageClass {
     /// INVITE / SUBSCRIBE (session-creating).
@@ -135,8 +157,8 @@ pub enum MessageClass {
     Other,
 }
 
-/// What a ladder row is, carrying the theme-free style inputs [`style`]
-/// needs to color its arrow under every [`ColorMode`].
+/// What a ladder row is, carrying the theme-free style inputs `style`
+/// needs to color its arrow under every `ColorMode`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RowKind {
     /// A real SIP message row.
@@ -163,33 +185,48 @@ pub enum TsClass {
     Muted,
     /// Absolute-mode RTP-bar timestamp (accent).
     Accent,
-    /// Delta-mode timestamp; the magnitude drives [`delta_style`].
+    /// Delta-mode timestamp; the magnitude drives `delta_style`.
     Delta(i64),
     /// Spacer row (muted + dim, same as its arrow style).
     SpacerDim,
 }
 
-/// One ladder row as produced by [`layout`]: every string and structural
+/// One ladder row as produced by `layout`: every string and structural
 /// decision made, no colors chosen. The cacheable half of a prepared
-/// ladder — see [`FormattedMessage`] for the field semantics it maps onto.
+/// ladder — see `FormattedMessage` for the field semantics it maps onto.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LayoutRow {
+    /// Formatted timestamp text (padded to the timestamp column width).
     pub timestamp: String,
+    /// Theme-free class of the timestamp; mapped to a style by `style`.
     pub ts_class: TsClass,
+    /// Arrow label text (e.g. `INVITE (SDP)`, `200 OK`, RTP-bar label).
     pub label: String,
+    /// What the row is (message / RTP bar / spacer) plus arrow-color inputs.
     pub kind: RowKind,
+    /// Index into the participants array for the source endpoint.
     pub src_col: usize,
+    /// Index into the participants array for the destination endpoint.
     pub dst_col: usize,
+    /// Optional PDD annotation (e.g. `  PDD: 1234ms`) on the first 180.
     pub pdd_note: Option<String>,
-    /// SDP info line texts; styled muted+italic by [`style`].
+    /// SDP info line texts; styled muted+italic by `style`.
     pub extra_lines: Vec<String>,
+    /// Call-ID of the source message (empty for spacers).
     pub call_id: String,
+    /// Whether the row renders as a response (dashed arrow).
     pub is_response: bool,
+    /// Raw timestamp for mark/delta computation and spacer sizing.
     pub raw_timestamp: chrono::DateTime<chrono::Utc>,
+    /// Number of folded messages (0 = not a fold header).
     pub folded_count: usize,
+    /// Fold annotation (e.g. `(+2 retx) - press e to expand`).
     pub fold_label: Option<String>,
+    /// SDP change badge for re-INVITEs (e.g. `+G722`, `HOLD`).
     pub sdp_badge: Option<String>,
+    /// Whether the underlying message is a retransmission.
     pub is_retransmission: bool,
+    /// Index into the raw message slice (`None` for synthetic rows).
     pub raw_index: Option<usize>,
 }
 
@@ -203,19 +240,39 @@ const CID_COLORS: [Color; 6] = [
     Color::Red,
 ];
 
-// Per-thread call counter for `layout`, test-only: pins the WS4.3c
-// "laid out at most once per tick, cached across ticks" property
-// (thread-local so the parallel test runner cannot cross-talk).
 #[cfg(test)]
 thread_local! {
+    /// Per-thread call counter for `layout`, test-only: pins the WS4.3c
+    /// "laid out at most once per tick, cached across ticks" property
+    /// (thread-local so the parallel test runner cannot cross-talk).
     pub(crate) static LAYOUT_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
 /// Lay out a dialog's ladder: participants, row order (folding, RTP bars,
 /// Scaled-mode spacers), timestamp/label/SDP texts — everything except
-/// colors and selection, which [`style`] applies. Pure and theme-free, so
+/// colors and selection, which `style` applies. Pure and theme-free, so
 /// the result is cacheable across frames.
+///
+/// Endpoints are discovered in first-appearance order and capped at six to
+/// prevent layout overflow; messages referencing a truncated endpoint fall
+/// back to column 0 (source) / column 1 (destination).
+///
+/// # Arguments
+/// * `messages` — the dialog's SIP messages in capture order.
+/// * `first_ts` — reference timestamp for delta-first/delta-prev formatting.
+/// * `pdd_ms` — post-dial delay to annotate on the first 180, if known.
+/// * `opts` — layout-affecting display options (theme-free).
+/// * `fold_expanded` — raw indices of fold headers the user has expanded.
+///
+/// # Returns
+/// `(participants, rows)`: swimlane endpoints in column order and the
+/// laid-out rows (real messages plus synthetic RTP bars and spacers).
+/// Both empty when `messages` is empty.
+///
+/// # Side effects
+/// In test builds only, increments the thread-local `LAYOUT_CALLS` counter
+/// used to pin the ladder-cache property. Otherwise pure.
 pub fn layout(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
@@ -659,10 +716,20 @@ pub fn layout(
     (participants, result)
 }
 
-/// Style a laid-out ladder: map each [`LayoutRow`] to a [`FormattedMessage`]
-/// by choosing concrete colors (theme + [`ColorMode`]) and assigning the
+/// Style a laid-out ladder: map each `LayoutRow` to a `FormattedMessage`
+/// by choosing concrete colors (theme + `ColorMode`) and assigning the
 /// selection highlight. Cheap and pure — safe to re-run every frame over a
 /// cached layout.
+///
+/// # Arguments
+/// * `rows` — laid-out ladder rows from `layout`.
+/// * `opts` — presentation inputs: color mode, selection, theme.
+///
+/// # Returns
+/// One `FormattedMessage` per row, in order. The row at visible (non-spacer)
+/// index `opts.selected_msg` is marked `Selected`; non-bar rows sharing its
+/// endpoint pair are marked `Related`. An out-of-range selection selects
+/// nothing.
 pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessage> {
     let theme = opts.theme;
     let spacer_style = Style::default().fg(theme.muted).add_modifier(Modifier::DIM);
@@ -760,7 +827,11 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
     result
 }
 
-/// Extract a list of codec names from an SDP session.
+/// Extract a list of codec names from an SDP session, across all media
+/// sections. Prefers `a=rtpmap` encoding names; a media section without any
+/// rtpmap falls back to mapping well-known static payload-type numbers
+/// (0/8/9/18/4/3/101), passing unknown formats through verbatim. Returns the
+/// names in appearance order (may be empty).
 fn extract_codec_list(session: &sdp::SdpSession) -> Vec<String> {
     let mut codecs = Vec::new();
     for media in &session.media {
@@ -793,6 +864,21 @@ fn extract_codec_list(session: &sdp::SdpSession) -> Vec<String> {
 ///   is expanded.
 /// - **Auth collapse**: sequences like `request(N) -> 401/407(N) -> ACK(N) -> request(N+1 with Auth)`
 ///   are collapsed into a single row, unless expanded.
+///
+/// Runs before spacer insertion so row visibility is identical in every
+/// timestamp mode; synthetic rows (`raw_index == None`) pass through
+/// untouched and are never fold headers or members.
+///
+/// # Arguments
+/// * `raw_msgs` — the raw SIP messages, indexed by each row's `raw_index`.
+/// * `formatted` — laid-out rows to fold (consumed).
+/// * `fold_expanded` — raw indices of fold headers the user has expanded;
+///   expanded headers keep their members visible and carry a re-collapse
+///   hint in `fold_label`.
+///
+/// # Returns
+/// The folded row list: fold headers gain `folded_count`, `fold_label` and
+/// (for auth) a ` (+auth)` label suffix; folded member rows are dropped.
 fn fold_messages(
     raw_msgs: &[SipMessage],
     formatted: Vec<LayoutRow>,
@@ -995,8 +1081,8 @@ pub fn format_message_label(msg: &SipMessage) -> String {
     }
 }
 
-/// Derive the theme-free [`MessageClass`] of a message — the layout-stage
-/// half of [`message_style`].
+/// Derive the theme-free `MessageClass` of a message — the layout-stage
+/// half of `message_style`.
 pub fn classify_message(msg: &SipMessage) -> MessageClass {
     if msg.is_request {
         let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("");
@@ -1020,8 +1106,8 @@ pub fn classify_message(msg: &SipMessage) -> MessageClass {
     }
 }
 
-/// Map a [`MessageClass`] to its semantic color — the style-stage half of
-/// [`message_style`].
+/// Map a `MessageClass` to its semantic color — the style-stage half of
+/// `message_style`.
 ///
 /// Requests: teal for session-creating (INVITE/SUBSCRIBE), coral for teardown
 /// (BYE/CANCEL), gray for acks, blue for registration/options.
@@ -1043,7 +1129,7 @@ pub fn class_style(class: MessageClass, theme: &Theme) -> Style {
 }
 
 /// Choose a style based on message type with semantic colors — see
-/// [`class_style`] for the palette.
+/// `class_style` for the palette.
 pub fn message_style(msg: &SipMessage, theme: &Theme) -> Style {
     class_style(classify_message(msg), theme)
 }
@@ -1059,6 +1145,11 @@ fn rtp_flow_label(codec: Option<&str>) -> String {
     }
 }
 
+/// Format an SDP session's codecs as a comma-separated display string (e.g.
+/// `PCMU, PCMA, opus`). Same extraction rules as `extract_codec_list`:
+/// rtpmap encoding names preferred, static payload-type numbers mapped as a
+/// fallback, unknown formats passed through. Empty string when the SDP
+/// carries no codec.
 pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
     let mut codecs = Vec::new();
     for media in &session.media {
@@ -1115,6 +1206,8 @@ fn segment_codec_at(
         .map(|s| s.codec.clone())
 }
 
+/// Tests for the data-preparation stage: layout/style split, folding,
+/// RTP bars, SDP badges, selection, and codec extraction.
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -1130,16 +1223,21 @@ mod tests {
 
     // ── Construction helpers ─────────────────────────────────────────
 
+    /// Fixture endpoint A (10.0.0.1), the request originator.
     fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
+    /// Fixture endpoint B (10.0.0.2), the request target.
     fn addr_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
+    /// Fixed base timestamp all fixture dialogs are built from.
     fn t0() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble raw SIP bytes from `first_line`, `headers` and `body`
+    /// (CRLF line endings, blank line before the body).
     fn build_raw(first_line: &str, headers: &[&str], body: &str) -> Vec<u8> {
         let mut m = Vec::new();
         m.extend_from_slice(first_line.as_bytes());
@@ -1153,14 +1251,17 @@ mod tests {
         m
     }
 
+    /// Parse `raw` as an A→B request captured at `ts`.
     fn parse_req(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
         parse_sip(raw, ts, addr_a(), addr_b(), 5060, 5060, TransportProto::Udp).expect("parse req")
     }
 
+    /// Parse `raw` as a B→A response captured at `ts`.
     fn parse_resp(raw: &[u8], ts: DateTime<Utc>) -> SipMessage {
         parse_sip(raw, ts, addr_b(), addr_a(), 5060, 5060, TransportProto::Udp).expect("parse resp")
     }
 
+    /// A→B INVITE with Call-ID `cid` and CSeq `cseq`, no body.
     fn invite(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         parse_req(
             &build_raw(
@@ -1178,6 +1279,8 @@ mod tests {
         )
     }
 
+    /// A→B INVITE carrying an SDP offer built from `codecs_line` (the `m=`
+    /// line) and `rtpmaps` (`a=rtpmap` attribute lines).
     fn invite_with_sdp(
         cid: &str,
         cseq: u32,
@@ -1215,6 +1318,8 @@ mod tests {
         )
     }
 
+    /// A→B REGISTER; `auth` adds an `Authorization` header (the retry leg of
+    /// an auth sequence).
     fn register(cid: &str, cseq: u32, auth: Option<&str>, ts: DateTime<Utc>) -> SipMessage {
         let mut headers = vec![
             "From: <sip:alice@10.0.0.1>;tag=t1".to_string(),
@@ -1233,6 +1338,7 @@ mod tests {
         )
     }
 
+    /// A→B ACK completing an INVITE transaction.
     fn ack(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         parse_req(
             &build_raw(
@@ -1250,6 +1356,8 @@ mod tests {
         )
     }
 
+    /// A→B ACK aimed at the registrar (the ACK leg of a REGISTER auth
+    /// sequence).
     fn ack_register(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         parse_req(
             &build_raw(
@@ -1267,6 +1375,7 @@ mod tests {
         )
     }
 
+    /// B→A response with the given status/reason for CSeq `cseq method`.
     fn response(
         cid: &str,
         status: u16,
@@ -1336,6 +1445,7 @@ mod tests {
         )
     }
 
+    /// A→B BYE ending the dialog.
     fn bye(cid: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         parse_req(
             &build_raw(
@@ -1353,6 +1463,8 @@ mod tests {
         )
     }
 
+    /// Baseline `FlowDisplayOptions`: SDP off, absolute timestamps, method
+    /// coloring, no RTP, no selection — tests override individual fields.
     fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
         // Leak a default resolver so it satisfies the borrow without threading
         // a separate owner through every test caller (test-only).
@@ -1373,6 +1485,8 @@ mod tests {
 
     // ── delta_style ──────────────────────────────────────────────────
 
+    /// Delta magnitudes map to good/warning/bad/bold-bad at the documented
+    /// 100ms/1s/5s boundaries; negative deltas count as good.
     #[test]
     fn delta_style_buckets() {
         let theme = Theme::default();
@@ -1392,6 +1506,7 @@ mod tests {
 
     // ── format_message_label ─────────────────────────────────────────
 
+    /// Requests label as their method, responses as "code reason".
     #[test]
     fn label_request_and_response() {
         assert_eq!(format_message_label(&invite("c1", 1, t0())), "INVITE");
@@ -1401,6 +1516,7 @@ mod tests {
         assert_eq!(format_message_label(&r180), "180 Ringing");
     }
 
+    /// A message carrying an SDP body gets the " (SDP)" label suffix.
     #[test]
     fn label_appends_sdp_suffix() {
         let m = invite_with_sdp(
@@ -1415,6 +1531,7 @@ mod tests {
 
     // ── prepare_messages: empty ──────────────────────────────────────
 
+    /// An empty message slice yields empty participants and rows.
     #[test]
     fn prepare_empty_returns_empty() {
         let theme = Theme::default();
@@ -1426,6 +1543,8 @@ mod tests {
 
     // ── prepare_messages: basic dialog + participants + PDD ───────────
 
+    /// A basic dialog discovers both endpoints and attaches exactly one PDD
+    /// note, on the 180 Ringing row.
     #[test]
     fn prepare_basic_dialog_with_pdd() {
         let theme = Theme::default();
@@ -1457,6 +1576,7 @@ mod tests {
 
     // ── prepare_messages: SDP summary → extract_codec_list path ───────
 
+    /// Summary SDP mode adds a "Codecs:" extra line naming the offer codecs.
     #[test]
     fn prepare_sdp_summary_lists_codecs() {
         let theme = Theme::default();
@@ -1481,6 +1601,7 @@ mod tests {
         assert!(codec_line.contains("PCMA"), "got: {codec_line}");
     }
 
+    /// Full SDP mode emits the raw SDP body as indented extra lines.
     #[test]
     fn prepare_sdp_full_emits_body_lines() {
         let theme = Theme::default();
@@ -1506,6 +1627,8 @@ mod tests {
 
     // ── prepare_messages: SDP delta badge (re-INVITE codec change) ────
 
+    /// A re-INVITE that changes codecs gets a badge with +added and -removed
+    /// names, independent of the SDP display mode.
     #[test]
     fn prepare_sdp_badge_on_codec_change() {
         let theme = Theme::default();
@@ -1538,6 +1661,8 @@ mod tests {
 
     // ── prepare_messages: RTP bar insertion on ACK ────────────────────
 
+    /// With `show_rtp`, exactly one RTP bar appears, directly after the ACK,
+    /// with bare label text (no rail glyphs baked in).
     #[test]
     fn prepare_rtp_bar_inserted_after_ack() {
         let theme = Theme::default();
@@ -1575,6 +1700,8 @@ mod tests {
         );
     }
 
+    /// A 183 with SDP (early media) opens the channel at the provisional —
+    /// one bar after the 183, none duplicated at the ACK, codec from the 183.
     #[test]
     fn prepare_rtp_bar_early_media_after_provisional() {
         // A 183 Session Progress carrying SDP = early media: the channel opens
@@ -1843,10 +1970,11 @@ mod tests {
     }
 
     // ── Arrow direction: response reverses the request's swimlanes ────
-    // The direct-buffer (TUI) renderer draws each arrow from src_col→dst_col, so
-    // direction is decided here. A request is A→B; its response is B→A, so the
-    // response's (src_col, dst_col) must be the request's reversed. This is the
-    // end-to-end guard the UI tests previously lacked.
+
+    /// The direct-buffer (TUI) renderer draws each arrow from src_col→dst_col,
+    /// so direction is decided here. A request is A→B; its response is B→A, so
+    /// the response's (src_col, dst_col) must be the request's reversed. This
+    /// is the end-to-end guard the UI tests previously lacked.
     #[test]
     fn prepare_response_reverses_request_columns() {
         let theme = Theme::default();
@@ -1872,6 +2000,7 @@ mod tests {
 
     // ── prepare_messages: scaled spacer insertion ─────────────────────
 
+    /// Scaled mode inserts spacer rows for large inter-message gaps.
     #[test]
     fn prepare_scaled_inserts_spacers() {
         let theme = Theme::default();
@@ -1902,6 +2031,8 @@ mod tests {
 
     // ── fold_messages: retransmit folding ─────────────────────────────
 
+    /// A retransmission folds into the prior original (count + label) when
+    /// collapsed, and stays visible when the header is expanded.
     #[test]
     fn prepare_folds_retransmissions() {
         let theme = Theme::default();
@@ -1953,6 +2084,7 @@ mod tests {
         ]
     }
 
+    /// Every timestamp mode, for mode-independence sweeps.
     const ALL_TS_MODES: [TimestampMode; 4] = [
         TimestampMode::Absolute,
         TimestampMode::DeltaPrev,
@@ -1960,9 +2092,9 @@ mod tests {
         TimestampMode::Scaled,
     ];
 
-    // Message visibility must never depend on the time-unit display setting:
-    // the fold result (which rows exist) has to be identical in every
-    // TimestampMode, spacers aside.
+    /// Message visibility must never depend on the time-unit display setting:
+    /// the fold result (which rows exist) has to be identical in every
+    /// TimestampMode, spacers aside.
     #[test]
     fn folding_is_identical_across_all_timestamp_modes() {
         let theme = Theme::default();
@@ -1989,7 +2121,7 @@ mod tests {
         }
     }
 
-    // The auth-retry collapse must also be timestamp-mode independent.
+    /// The auth-retry collapse must also be timestamp-mode independent.
     #[test]
     fn auth_collapse_is_identical_across_all_timestamp_modes() {
         let theme = Theme::default();
@@ -2026,9 +2158,10 @@ mod tests {
         }
     }
 
-    // `selected_msg` addresses VISIBLE rows (what the user navigates), not raw
-    // or pre-fold positions. With a fold present, visible row 1 is the 200 OK
-    // that FOLLOWS the folded retransmission.
+    /// `selected_msg` addresses VISIBLE rows (what the user navigates), not
+    /// raw or pre-fold positions. With a fold present, visible row 1 is the
+    /// 200 OK that FOLLOWS the folded retransmission; out-of-range selects
+    /// nothing.
     #[test]
     fn selection_indexes_visible_rows_in_every_mode() {
         let theme = Theme::default();
@@ -2065,9 +2198,9 @@ mod tests {
         assert!(prepared.iter().all(|m| !m.selected));
     }
 
-    // Every non-spacer row must carry the index of the raw message it renders,
-    // so the detail pane / Enter / diff open the message the user actually
-    // selected (RTP bars and spacers carry None).
+    /// Every non-spacer row must carry the index of the raw message it
+    /// renders, so the detail pane / Enter / diff open the message the user
+    /// actually selected (RTP bars and spacers carry None).
     #[test]
     fn visible_rows_carry_raw_indices() {
         let theme = Theme::default();
@@ -2089,9 +2222,9 @@ mod tests {
         }
     }
 
-    // Expanding a fold must reveal ALL of its retransmissions: a retx run
-    // folds into the first non-retransmission ancestor, never into an
-    // already-revealed retransmission.
+    /// Expanding a fold must reveal ALL of its retransmissions: a retx run
+    /// folds into the first non-retransmission ancestor, never into an
+    /// already-revealed retransmission.
     #[test]
     fn expansion_reveals_every_retransmission_in_a_run() {
         let theme = Theme::default();
@@ -2123,8 +2256,9 @@ mod tests {
         );
     }
 
-    // Expansion is keyed by the fold HEADER's raw index and works in every
-    // timestamp mode; the expanded header is labelled so it can be re-collapsed.
+    /// Expansion is keyed by the fold HEADER's raw index and works in every
+    /// timestamp mode; the expanded header is labelled so it can be
+    /// re-collapsed.
     #[test]
     fn expansion_keyed_by_header_raw_index_across_modes() {
         let theme = Theme::default();
@@ -2152,6 +2286,8 @@ mod tests {
 
     // ── detect_auth_sequence + fold (auth collapse) ───────────────────
 
+    /// The REGISTER/401/ACK/REGISTER+Auth pattern is detected as a 4-message
+    /// sequence; missing Authorization or too few messages is no match.
     #[test]
     fn detect_auth_sequence_register_flow() {
         let cid = "cauth";
@@ -2195,6 +2331,8 @@ mod tests {
         assert_eq!(detect_auth_sequence(&msgs[..3], 0), None);
     }
 
+    /// The 4-message auth handshake collapses to one "(+auth)" header row,
+    /// and expanding at the header shows all four rows again.
     #[test]
     fn prepare_collapses_auth_sequence() {
         let theme = Theme::default();
@@ -2249,6 +2387,8 @@ mod tests {
 
     // ── extract_codec_list: rtpmap and static-PT fallback ─────────────
 
+    /// Codec names come from `a=rtpmap` when present, else from the static
+    /// payload-type number table.
     #[test]
     fn extract_codec_list_uses_rtpmap_then_static_fallback() {
         // With rtpmap entries → encoding names taken verbatim.
@@ -2280,6 +2420,8 @@ mod tests {
 
     // ── color modes / selection state ─────────────────────────────────
 
+    /// CallId mode marks the selected row and its same-leg peer Related;
+    /// CSeq mode with DeltaPrev timestamps renders without panicking.
     #[test]
     fn prepare_color_modes_and_selection() {
         let theme = Theme::default();
@@ -2325,6 +2467,8 @@ mod tests {
         Color::Red,
     ];
 
+    /// Absolute-mode timestamps render muted and Method-mode arrows match
+    /// `message_style`.
     #[test]
     fn styles_absolute_timestamps_muted_and_method_arrows() {
         let theme = Theme::default();
@@ -2348,6 +2492,7 @@ mod tests {
         }
     }
 
+    /// DeltaPrev timestamps carry the color of their delta-magnitude bucket.
     #[test]
     fn styles_delta_prev_timestamps_use_delta_buckets() {
         let theme = Theme::default();
@@ -2380,6 +2525,8 @@ mod tests {
         assert_eq!(prepared[3].timestamp_style, delta_style(2000, &theme));
     }
 
+    /// CallId mode colors every row of a dialog identically, indexed by the
+    /// Call-ID byte sum into the rotation palette.
     #[test]
     fn styles_callid_mode_color_is_callid_byte_sum() {
         let theme = Theme::default();
@@ -2401,6 +2548,7 @@ mod tests {
         }
     }
 
+    /// CSeq mode indexes the rotation palette by the CSeq number.
     #[test]
     fn styles_cseq_mode_color_indexes_by_cseq_number() {
         let theme = Theme::default();
@@ -2415,6 +2563,7 @@ mod tests {
         assert_eq!(prepared[1].style.fg, Some(CID_COLORS[2]));
     }
 
+    /// SDP extra lines render muted + italic in both Summary and Full modes.
     #[test]
     fn styles_sdp_lines_muted_italic_in_summary_and_full() {
         let theme = Theme::default();
@@ -2443,6 +2592,8 @@ mod tests {
         }
     }
 
+    /// An RTP bar row and its absolute-mode timestamp both use the accent
+    /// color.
     #[test]
     fn styles_rtp_bar_row_accent() {
         let theme = Theme::default();
@@ -2481,6 +2632,7 @@ mod tests {
         );
     }
 
+    /// Scaled-mode spacer rows render muted + dim, timestamp included.
     #[test]
     fn styles_scaled_spacers_muted_dim() {
         let theme = Theme::default();
@@ -2600,6 +2752,7 @@ mod tests {
 
     // ── format_sdp_codecs ────────────────────────────────────────────
 
+    /// With `a=rtpmap` present, encoding names are used verbatim.
     #[test]
     fn format_sdp_codecs_prefers_rtpmap_encodings() {
         // When a=rtpmap is present, the encoding names are used verbatim.
@@ -2612,6 +2765,8 @@ mod tests {
         assert_eq!(format_sdp_codecs(&session), "PCMU, PCMA, opus");
     }
 
+    /// Without `a=rtpmap`, static payload types map to names and unknown
+    /// dynamic types pass through as numbers.
     #[test]
     fn format_sdp_codecs_maps_bare_payload_types_and_passes_through_unknown() {
         // No a=rtpmap → fall back to static payload-type numbers. This is the

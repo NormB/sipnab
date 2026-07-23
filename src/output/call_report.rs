@@ -31,6 +31,19 @@ pub enum ReportFormat {
 /// - Diagnosed issues
 ///
 /// The output format is selected by `format`.
+///
+/// # Arguments
+///
+/// * `dialog` — The dialog to report on.
+/// * `streams` — RTP streams associated with the dialog.
+/// * `diagnosis` — Pre-computed media diagnosis whose hints populate the
+///   issues section.
+/// * `format` — Text, JSON (delegates to `super::json::dialog_to_json`),
+///   or Markdown.
+///
+/// # Returns
+///
+/// The complete report as a `String`; pure — nothing is printed.
 pub fn generate_call_report(
     dialog: &SipDialog,
     streams: &[&RtpStream],
@@ -46,7 +59,9 @@ pub fn generate_call_report(
 
 // ── Text format ─────────────────────────────────────────────────────
 
-/// Generate the plain-text call report.
+/// Generate the plain-text call report: identification header, timing,
+/// transaction flow, media streams (with burst/gap loss analysis), and
+/// diagnosed issues.
 fn generate_text_report(
     dialog: &SipDialog,
     streams: &[&RtpStream],
@@ -179,7 +194,8 @@ fn generate_text_report(
 
 // ── Markdown format ─────────────────────────────────────────────────
 
-/// Generate the Markdown call report.
+/// Generate the Markdown call report: the same sections as the text report
+/// rendered as `#`/`##` headers and pipe tables.
 fn generate_markdown_report(
     dialog: &SipDialog,
     streams: &[&RtpStream],
@@ -301,7 +317,8 @@ fn generate_markdown_report(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Format an optional millisecond timing value as a string.
+/// Format an optional millisecond timing value as seconds (`"1.23s"`), or
+/// `"-"` for `None`.
 fn format_timing_ms(ms: Option<i64>) -> String {
     match ms {
         Some(ms) => format!("{:.2}s", ms as f64 / 1000.0),
@@ -310,6 +327,11 @@ fn format_timing_ms(ms: Option<i64>) -> String {
 }
 
 /// Write a simplified SIP transaction flow from dialog messages.
+///
+/// Groups messages by CSeq: each request starts a line
+/// (`INVITE -> 180 (1230ms) -> 200 (5790ms)`) and responses matching the
+/// current transaction are appended with the delay since the dialog's
+/// first message. Appends lines to `out`.
 fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
     // Group messages by CSeq to show transaction flows
     let mut current_cseq: Option<String> = None;
@@ -356,6 +378,8 @@ fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests covering all three report formats against a synthetic
+/// INVITE/180/200 dialog.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,16 +392,20 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a dialog holding INVITE -> 180 (+1.23 s) -> 200 (+5.79 s) with
+    /// timing updated at each step.
     fn make_dialog_with_messages() -> SipDialog {
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::milliseconds(1230);
@@ -465,6 +493,7 @@ mod tests {
         d
     }
 
+    /// Build a fresh single-packet PCMU RTP stream with SSRC 0x12345678.
     fn make_stream() -> RtpStream {
         let key = StreamKey {
             ssrc: 0x12345678,
@@ -486,6 +515,7 @@ mod tests {
         RtpStream::new(key, &hdr, base_ts())
     }
 
+    /// The text report renders every section header plus PDD/setup lines.
     #[test]
     fn text_report_contains_all_sections() {
         let dialog = make_dialog_with_messages();
@@ -513,6 +543,8 @@ mod tests {
         assert!(report.contains("Setup:"), "should have setup time");
     }
 
+    /// The JSON report parses as JSON with `schema_version` 1 and a
+    /// `timing` object.
     #[test]
     fn json_report_valid() {
         let dialog = make_dialog_with_messages();
@@ -527,6 +559,7 @@ mod tests {
         assert!(parsed["timing"].is_object());
     }
 
+    /// The Markdown report renders h1/h2 headers and pipe tables.
     #[test]
     fn markdown_report_contains_headers() {
         let dialog = make_dialog_with_messages();
@@ -548,6 +581,7 @@ mod tests {
         assert!(report.contains("---"), "should have table separators");
     }
 
+    /// Diagnosis hints appear in the issues section, replacing "None".
     #[test]
     fn text_report_with_issues() {
         let dialog = make_dialog_with_messages();

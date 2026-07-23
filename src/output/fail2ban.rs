@@ -22,6 +22,17 @@ fn sanitize_log_value(s: &str) -> String {
 ///
 /// The PID is obtained from the current process for log correlation.
 /// Attacker-controlled values (UA, method) are sanitized to prevent CRLF injection.
+///
+/// # Arguments
+///
+/// * `src_ip` — Source IP of the suspected scanner.
+/// * `ua` — Offending User-Agent string.
+/// * `method` — SIP method the scanner used.
+///
+/// # Returns
+///
+/// The formatted log line (local-time timestamp); the caller is
+/// responsible for emitting it — nothing is written here.
 pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
@@ -39,6 +50,16 @@ pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
 /// ```text
 /// YYYY-MM-DD HH:MM:SS sipnab[PID]: reg_flood src=<IP> count=<COUNT>
 /// ```
+///
+/// # Arguments
+///
+/// * `src_ip` — Source IP of the flood (not sanitized; callers pass a
+///   parsed IP's display form).
+/// * `count` — Number of REGISTERs observed in the detection window.
+///
+/// # Returns
+///
+/// The formatted log line (local-time timestamp); nothing is written here.
 pub fn format_reg_flood_event(src_ip: &str, count: u32) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
@@ -47,10 +68,13 @@ pub fn format_reg_flood_event(src_ip: &str, count: u32) -> String {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for the fail2ban log-line formats and CRLF-injection sanitizing.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Scanner lines carry prefix, event type, src/ua/method fields, and a
+    /// `YYYY-MM-DD HH:MM:SS` timestamp.
     #[test]
     fn scanner_event_format() {
         let event = format_scanner_event("10.0.0.5", "friendly-scanner", "OPTIONS");
@@ -73,6 +97,7 @@ mod tests {
         assert_eq!(parts[1].len(), 8, "time should be HH:MM:SS");
     }
 
+    /// Reg-flood lines carry prefix, event type, source IP, and count.
     #[test]
     fn reg_flood_event_format() {
         let event = format_reg_flood_event("192.168.1.100", 42);
@@ -88,6 +113,7 @@ mod tests {
 
     // ── Security regression tests ────────────────────────────────────
 
+    /// CR/LF embedded in every field is stripped — no forged log entries.
     #[test]
     fn scanner_event_sanitizes_all_fields() {
         let event = format_scanner_event("10.0.0.1\r\nfake", "evil\nua", "INVITE\rmethod");
@@ -108,6 +134,7 @@ mod tests {
         );
     }
 
+    /// Benign values pass through unmodified and newline-free.
     #[test]
     fn scanner_event_normal_values() {
         let event = format_scanner_event("192.168.1.50", "Ooma/3.0", "OPTIONS");

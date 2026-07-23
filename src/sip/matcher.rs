@@ -153,6 +153,12 @@ impl SipMatcher {
     }
 
     /// Positive (non-inverted) match evaluation.
+    ///
+    /// Tests `msg` against each configured criterion in order (calls-only,
+    /// payload, From, To, Contact, User-Agent) and returns `false` at the
+    /// first failure; missing headers are treated as empty strings. Returns
+    /// `true` when every active criterion matches (vacuously true with no
+    /// filters). Pure — `invert` is applied by the caller.
     fn matches_positive(&self, msg: &SipMessage) -> bool {
         // calls_only: reject anything that isn't an INVITE request
         if self.calls_only {
@@ -223,6 +229,14 @@ impl SipMatcher {
 ///
 /// Returns an error if the pattern is invalid regex syntax or exceeds the
 /// size limit.
+///
+/// # Arguments
+///
+/// * `pattern` — user-supplied regex source text.
+/// * `case_insensitive` — compile with case-insensitive matching.
+/// * `word` — wrap the pattern in `\b...\b` for whole-word matching.
+/// * `dot_matches_new_line` — let `.` match `\n` so patterns can span
+///   header lines.
 fn compile_pattern(
     pattern: &str,
     case_insensitive: bool,
@@ -245,6 +259,9 @@ fn compile_pattern(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for filter compilation and matching: per-header filters, AND
+/// combination, invert, calls-only, case/word modes, payload regexes, and
+/// the regex safety limits.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,10 +270,12 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed capture timestamp (2024-06-15 12:00:00 UTC) used in tests.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
@@ -328,6 +347,7 @@ mod tests {
 
     // ── No filters → matches everything ──────────────────────────────
 
+    /// With no filters configured, every message matches and is_active is false.
     #[test]
     fn no_filters_matches_everything() {
         let cli = default_cli();
@@ -343,6 +363,7 @@ mod tests {
 
     // ── --from filter ────────────────────────────────────────────────
 
+    /// `--from` matches a message whose From user matches the pattern.
     #[test]
     fn from_filter_matches() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001"]);
@@ -353,6 +374,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `--from` rejects a message with a non-matching From user.
     #[test]
     fn from_filter_rejects() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001"]);
@@ -364,6 +386,7 @@ mod tests {
 
     // ── --to filter ──────────────────────────────────────────────────
 
+    /// `--to` matches a message whose To user matches the pattern.
     #[test]
     fn to_filter_matches() {
         let cli = Cli::parse_from_args(["sipnab", "--to", "1002"]);
@@ -373,6 +396,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `--to` rejects a message with a non-matching To user.
     #[test]
     fn to_filter_rejects() {
         let cli = Cli::parse_from_args(["sipnab", "--to", "9999"]);
@@ -384,6 +408,7 @@ mod tests {
 
     // ── --ua filter ──────────────────────────────────────────────────
 
+    /// `--ua` matches on a User-Agent substring.
     #[test]
     fn ua_filter_matches() {
         let cli = Cli::parse_from_args(["sipnab", "--ua", "Oasis"]);
@@ -393,6 +418,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `--ua` rejects a non-matching User-Agent.
     #[test]
     fn ua_filter_rejects() {
         let cli = Cli::parse_from_args(["sipnab", "--ua", "Oasis"]);
@@ -404,6 +430,7 @@ mod tests {
 
     // ── --contact filter ─────────────────────────────────────────────
 
+    /// `--contact` matches on the Contact header value.
     #[test]
     fn contact_filter_matches() {
         let cli = Cli::parse_from_args(["sipnab", "--contact", "10\\.0\\.0"]);
@@ -413,6 +440,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `--contact` rejects a non-matching Contact header.
     #[test]
     fn contact_filter_rejects() {
         let cli = Cli::parse_from_args(["sipnab", "--contact", "192\\.168"]);
@@ -424,6 +452,7 @@ mod tests {
 
     // ── Combined AND logic ───────────────────────────────────────────
 
+    /// `--from` and `--to` together match when both criteria hold.
     #[test]
     fn combined_from_and_to_both_match() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "--to", "1002"]);
@@ -433,6 +462,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// AND logic fails when only one of two criteria matches.
     #[test]
     fn combined_from_and_to_partial_mismatch() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "--to", "9999"]);
@@ -445,6 +475,7 @@ mod tests {
 
     // ── -v invert ────────────────────────────────────────────────────
 
+    /// `-v` turns a would-be match into a non-match.
     #[test]
     fn invert_flips_match() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "-v"]);
@@ -455,6 +486,7 @@ mod tests {
         assert!(!matcher.matches(&msg));
     }
 
+    /// `-v` turns a would-be non-match into a match.
     #[test]
     fn invert_flips_nonmatch() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "1001", "-v"]);
@@ -467,6 +499,7 @@ mod tests {
 
     // ── -c calls_only ────────────────────────────────────────────────
 
+    /// `-c` accepts an INVITE request.
     #[test]
     fn calls_only_accepts_invite() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
@@ -476,6 +509,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `-c` rejects a REGISTER request.
     #[test]
     fn calls_only_rejects_register() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
@@ -487,6 +521,7 @@ mod tests {
 
     // ── -i case insensitive ──────────────────────────────────────────
 
+    /// `-i` makes `--from` match regardless of case.
     #[test]
     fn case_insensitive_from() {
         let cli = Cli::parse_from_args(["sipnab", "-i", "--from", "ALICE"]);
@@ -516,6 +551,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// Without `-i`, matching is case-sensitive.
     #[test]
     fn case_sensitive_from_by_default() {
         // Without -i, "ALICE" should not match "alice"
@@ -547,6 +583,7 @@ mod tests {
 
     // ── --word whole-word matching ───────────────────────────────────
 
+    /// `-w` matches when the pattern is bounded by word boundaries.
     #[test]
     fn word_boundary_matches_exact() {
         let cli = Cli::parse_from_args(["sipnab", "-w", "--from", "100"]);
@@ -576,6 +613,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// `-w` rejects a substring occurrence without word boundaries.
     #[test]
     fn word_boundary_rejects_partial() {
         let cli = Cli::parse_from_args(["sipnab", "-w", "--from", "100"]);
@@ -588,6 +626,7 @@ mod tests {
 
     // ── Payload regex ────────────────────────────────────────────────
 
+    /// A positional payload pattern matches against the full raw message.
     #[test]
     fn payload_regex_matches_raw() {
         let cli = default_cli();
@@ -598,6 +637,7 @@ mod tests {
         assert!(matcher.matches(&msg));
     }
 
+    /// A payload pattern absent from the raw message rejects it.
     #[test]
     fn payload_regex_rejects_nonmatch() {
         let cli = default_cli();
@@ -609,6 +649,7 @@ mod tests {
 
     // ── -e / --match wiring (sngrep/sipgrep positional match-expression) ──
 
+    /// `-e PATTERN` behaves exactly like a positional payload pattern.
     #[test]
     fn match_expr_flag_feeds_payload_regex() {
         // `-e REGISTER` should match REGISTER but not INVITE, exactly like a
@@ -624,6 +665,7 @@ mod tests {
         assert!(!matcher.matches(&invite));
     }
 
+    /// A malformed `-e` pattern fails matcher construction with an error.
     #[test]
     fn match_expr_invalid_regex_via_flag_errors() {
         // A malformed `-e` pattern must fail to build the matcher (not panic or
@@ -636,6 +678,7 @@ mod tests {
         );
     }
 
+    /// An `-e` pattern over the 1 MB size limit is rejected.
     #[test]
     fn match_expr_oversized_via_flag_errors() {
         // A >1 MB `-e` pattern trips the ReDoS size guard.
@@ -644,6 +687,7 @@ mod tests {
         assert!(SipMatcher::new(&cli, cli.match_expr.as_deref()).is_err());
     }
 
+    /// `-e` composes with `-i` (case-insensitive) and `-v` (invert).
     #[test]
     fn match_expr_honors_ignore_case_and_invert() {
         // -i makes the expression case-insensitive; -v inverts the result.
@@ -661,6 +705,7 @@ mod tests {
 
     // ── Regex size limit ─────────────────────────────────────────────
 
+    /// A positional pattern over the 1 MB size limit is rejected.
     #[test]
     fn oversized_pattern_returns_error() {
         let cli = default_cli();
@@ -672,6 +717,7 @@ mod tests {
 
     // ── Invalid regex returns error ──────────────────────────────────
 
+    /// An invalid `--from` regex fails matcher construction.
     #[test]
     fn invalid_regex_returns_error() {
         let cli = Cli::parse_from_args(["sipnab", "--from", "[invalid"]);
@@ -681,6 +727,7 @@ mod tests {
 
     // ── is_active correctness ────────────────────────────────────────
 
+    /// `-v` alone counts as an active filter.
     #[test]
     fn is_active_with_invert_only() {
         let cli = Cli::parse_from_args(["sipnab", "-v"]);
@@ -688,6 +735,7 @@ mod tests {
         assert!(matcher.is_active());
     }
 
+    /// `-c` alone counts as an active filter.
     #[test]
     fn is_active_with_calls_only() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);
@@ -697,6 +745,7 @@ mod tests {
 
     // ── Response message with calls_only ─────────────────────────────
 
+    /// `-c` rejects responses (even a 200 OK to INVITE).
     #[test]
     fn calls_only_rejects_response() {
         let cli = Cli::parse_from_args(["sipnab", "-c"]);

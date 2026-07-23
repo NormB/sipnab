@@ -4,6 +4,18 @@
 use crate::tui::*;
 
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
+///
+/// The mode is colored good/bad for online/offline; a bold `PAUSED`
+/// indicator and the `[A]` autoscroll marker are appended when active.
+/// Counts come from the cached values on `App` (no store access).
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - The one-row status line 1 area at the top of the screen.
+/// * `app` - Application state (capture mode, cached counts, flags, theme).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let total_count = app.cached_dialog_count;
     let displayed_count = app.cached_displayed_count;
@@ -65,6 +77,14 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
 }
 
 /// Render status line 2 (sngrep-style): `Match Expression: <expr>    BPF Filter: <bpf>`
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - The one-row status line 2 area.
+/// * `app` - Application state (active filter text, BPF filter, theme).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let yellow = Style::default().fg(app.theme.selected);
 
@@ -93,6 +113,20 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
 }
 
 /// Render status line 3 (sngrep-style): `Display Filter: <filter>` or search/error overlay.
+///
+/// Priority order: an active search input (`/query`) wins; then a status
+/// message (error-colored when it contains "error"/"fail", info otherwise);
+/// then, in the call-flow view, the display-mode hints (time/SDP/color
+/// modes, split percentage, focused pane); otherwise the display filter
+/// plus any persisted search query.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - The one-row status line 3 area.
+/// * `app` - Application state (search, status message, view, modes, theme).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let w = area.width as usize;
 
@@ -178,6 +212,14 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
 /// given terminal width. Items near the end are lower priority and
 /// dropped first on narrow terminals. Extracted from the renderer so
 /// the visible key hints are unit-testable.
+///
+/// # Arguments
+/// * `view` - Current view; selects the view-specific item set.
+/// * `popup` - Active popup, if any; a popup's bar takes precedence.
+/// * `width` - Terminal width; narrower widths select shorter sets.
+///
+/// # Returns
+/// `(key, label)` pairs in display order. Pure.
 pub(in crate::tui) fn fkey_bar_items(
     view: &View,
     popup: &Option<Popup>,
@@ -349,6 +391,16 @@ pub(in crate::tui) fn fkey_bar_items(
 /// Key names in bold white, labels in default. Full-width dark background.
 /// The bar is context-sensitive based on the current view. On narrow
 /// terminals, lower-priority items are dropped to avoid truncation.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - The one-row bar area at the bottom of the screen.
+/// * `view` - Current view (selects the item set via `fkey_bar_items`).
+/// * `popup` - Active popup, if any; its bar takes precedence.
+/// * `theme` - Color theme for key/label styling.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_fkey_bar(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -388,11 +440,13 @@ pub(in crate::tui) fn render_fkey_bar(
 
 // ── Popup rendering ────────────────────────────────────────────────
 
+/// Unit tests for the status lines and the context-sensitive f-key bar.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
 
+    /// Outside call flow, status line 3 shows the display filter.
     #[test]
     fn render_status_line3_display_filter_default() {
         let mut app = App::new_test();
@@ -412,6 +466,8 @@ mod tests {
         assert!(row.contains("Display Filter"));
     }
 
+    /// In the call-flow view, status line 3 shows the mode hints
+    /// including the split percentage.
     #[test]
     fn render_status_line3_call_flow_branch() {
         let mut app = app_with_dialog();
@@ -434,6 +490,7 @@ mod tests {
 
     // ── render_fkey_bar across views ───────────────────────────────
 
+    /// Every view's f-key bar includes the Esc hint.
     #[test]
     fn render_fkey_bar_views() {
         let theme = Theme::default();
@@ -471,6 +528,7 @@ mod tests {
         }
     }
 
+    /// An active popup's bar (save dialog) replaces the view's bar.
     #[test]
     fn render_fkey_bar_popup_overrides_view() {
         let theme = Theme::default();

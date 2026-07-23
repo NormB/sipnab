@@ -5,6 +5,8 @@
 
 use sipnab::Error;
 
+/// Loading a nonexistent explicit config path yields `Error::ConfigNotFound`
+/// whose Display names the path.
 #[test]
 fn config_missing_file_is_matchable() {
     let err = sipnab::config::Config::load(Some("/nonexistent/sipnab-test.toml"), false)
@@ -19,6 +21,7 @@ fn config_missing_file_is_matchable() {
     );
 }
 
+/// Invalid TOML in a config file yields the matchable `Error::ConfigParse`.
 #[test]
 fn config_parse_error_is_matchable_and_names_path() {
     let tmp = tempfile::NamedTempFile::new().expect("tempfile");
@@ -31,6 +34,8 @@ fn config_parse_error_is_matchable_and_names_path() {
     );
 }
 
+/// A garbage CIDR string yields `Error::InvalidCidr` whose message echoes
+/// the input.
 #[cfg(feature = "hep")]
 #[test]
 fn invalid_cidr_is_matchable() {
@@ -46,6 +51,7 @@ fn invalid_cidr_is_matchable() {
     );
 }
 
+/// An unknown alert sink name yields `Error::InvalidAlertRule`.
 #[test]
 fn invalid_alert_rule_is_matchable() {
     let err = sipnab::security::alerting::AlertRule::parse("bogus-sink")
@@ -56,6 +62,7 @@ fn invalid_alert_rule_is_matchable() {
     );
 }
 
+/// A garbage bind address yields `Error::InvalidBindAddr` from `parse_bind_addr`.
 #[cfg(feature = "api")]
 #[test]
 fn invalid_bind_addr_is_matchable() {
@@ -74,10 +81,12 @@ fn invalid_bind_addr_is_matchable() {
 
 use sipnab::error::{CaptureError, ParseError};
 
+/// Fixed source/destination address (10.0.0.1) for `parse_sip` calls.
 fn test_addr() -> std::net::IpAddr {
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1))
 }
 
+/// A 2-byte RTP buffer yields `ParseError::TooShort { need: 12, got: 2 }`.
 #[test]
 fn truncated_rtp_is_matchable() {
     let err = sipnab::rtp::parser::parse_rtp_header(&[0x80, 0x00])
@@ -95,6 +104,7 @@ fn truncated_rtp_is_matchable() {
     );
 }
 
+/// An RTP header with version 1 yields `ParseError::BadRtpVersion { version: 1 }`.
 #[test]
 fn rtp_bad_version_is_matchable() {
     let mut pkt = [0u8; 12];
@@ -107,6 +117,7 @@ fn rtp_bad_version_is_matchable() {
     );
 }
 
+/// `parse_sip` on an empty buffer yields `ParseError::Empty`.
 #[test]
 fn empty_sip_data_is_matchable() {
     let err = sipnab::sip::parser::parse_sip(
@@ -125,6 +136,8 @@ fn empty_sip_data_is_matchable() {
     );
 }
 
+/// An HTTP request line yields `ParseError::NotSip` and the Display still
+/// names the offending line.
 #[test]
 fn non_sip_first_line_is_matchable() {
     let err = sipnab::sip::parser::parse_sip(
@@ -145,6 +158,7 @@ fn non_sip_first_line_is_matchable() {
     assert!(err.to_string().contains("GET / HTTP/1.1"), "got: {err}");
 }
 
+/// Data with no line ending yields `ParseError::MissingCrlf`.
 #[test]
 fn sip_without_crlf_is_matchable() {
     let err = sipnab::sip::parser::parse_sip(
@@ -163,6 +177,7 @@ fn sip_without_crlf_is_matchable() {
     );
 }
 
+/// `parse_sdp` on an empty buffer yields `ParseError::Empty`.
 #[test]
 fn empty_sdp_is_matchable() {
     let err = sipnab::sip::sdp::parse_sdp(b"").expect_err("empty SDP must error");
@@ -172,6 +187,7 @@ fn empty_sdp_is_matchable() {
     );
 }
 
+/// An SDP body with `v=1` yields `ParseError::BadSdpVersion`.
 #[test]
 fn bad_sdp_version_is_matchable() {
     let err = sipnab::sip::sdp::parse_sdp(b"v=1\r\no=- 1 1 IN IP4 10.0.0.1\r\n")
@@ -182,6 +198,8 @@ fn bad_sdp_version_is_matchable() {
     );
 }
 
+/// A packet with link type 147 (DLT_USER0) yields
+/// `CaptureError::UnsupportedLinkType(147)`.
 #[test]
 fn unsupported_link_type_is_matchable() {
     let pkt = sipnab::capture::packet::Packet {
@@ -201,6 +219,7 @@ fn unsupported_link_type_is_matchable() {
     );
 }
 
+/// A 4-byte buffer yields `CaptureError::TooShort { got: 4 }` from `PcapReader::new`.
 #[test]
 fn pcap_file_too_short_is_matchable() {
     let err = sipnab::PcapReader::new(&[0u8; 4]).expect_err("4 bytes is not a capture file");
@@ -210,6 +229,7 @@ fn pcap_file_too_short_is_matchable() {
     );
 }
 
+/// A file starting with an unknown magic number yields `CaptureError::UnknownFormat`.
 #[test]
 fn unknown_capture_magic_is_matchable() {
     let mut data = [0u8; 32];
@@ -221,6 +241,8 @@ fn unknown_capture_magic_is_matchable() {
     );
 }
 
+/// `ConfigParse`/`ConfigRead` chain the underlying toml/io error via
+/// `source()` (API guideline C-GOOD-ERR) rather than flattening it to text.
 #[test]
 fn config_errors_chain_their_sources() {
     // C-GOOD-ERR: ConfigRead/ConfigParse carry the underlying io/toml

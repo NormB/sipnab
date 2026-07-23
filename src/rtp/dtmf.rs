@@ -116,10 +116,12 @@ fn event_to_digit(event: u8) -> Option<char> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for RFC 4733 telephone-event (DTMF) extraction.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A fixed capture timestamp for the extracted events.
     fn ts() -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).expect("valid timestamp")
     }
@@ -130,6 +132,7 @@ mod tests {
         vec![event, byte1, (duration >> 8) as u8, (duration & 0xFF) as u8]
     }
 
+    /// Digit 1 with the End bit is extracted with its duration in ms.
     #[test]
     fn extract_digit_1_end() {
         let payload = build_event(1, true, 10, 1600); // 200ms at 8kHz
@@ -139,6 +142,7 @@ mod tests {
         assert_eq!(event.duration_ms, 200);
     }
 
+    /// Digit 0 is extracted with the correct duration.
     #[test]
     fn extract_digit_0() {
         let payload = build_event(0, true, 10, 800);
@@ -147,6 +151,7 @@ mod tests {
         assert_eq!(event.duration_ms, 100);
     }
 
+    /// Event code 10 maps to the `*` digit.
     #[test]
     fn extract_star() {
         let payload = build_event(10, true, 10, 1600);
@@ -154,6 +159,7 @@ mod tests {
         assert_eq!(event.digit, '*');
     }
 
+    /// Event code 11 maps to the `#` digit.
     #[test]
     fn extract_hash() {
         let payload = build_event(11, true, 10, 1600);
@@ -161,6 +167,7 @@ mod tests {
         assert_eq!(event.digit, '#');
     }
 
+    /// Event code 12 maps to the `A` digit.
     #[test]
     fn extract_letter_a() {
         let payload = build_event(12, true, 10, 1600);
@@ -168,6 +175,7 @@ mod tests {
         assert_eq!(event.digit, 'A');
     }
 
+    /// Event code 15 maps to the `D` digit.
     #[test]
     fn extract_letter_d() {
         let payload = build_event(15, true, 10, 1600);
@@ -175,6 +183,7 @@ mod tests {
         assert_eq!(event.digit, 'D');
     }
 
+    /// Intermediate packets (End bit clear) return `None`.
     #[test]
     fn intermediate_packet_not_returned() {
         // E bit = 0 (intermediate)
@@ -183,6 +192,7 @@ mod tests {
         assert!(event.is_none(), "Intermediate packets should return None");
     }
 
+    /// A payload type not matching the negotiated PT returns `None`.
     #[test]
     fn wrong_payload_type_not_returned() {
         let payload = build_event(1, true, 10, 1600);
@@ -191,18 +201,21 @@ mod tests {
         assert!(event.is_none(), "Wrong PT should return None");
     }
 
+    /// A payload under 4 bytes is too short to decode and returns `None`.
     #[test]
     fn payload_too_short() {
         let event = extract_dtmf(&[0x01, 0x80], 101, 101, ts());
         assert!(event.is_none(), "Payload < 4 bytes should return None");
     }
 
+    /// An empty payload returns `None`.
     #[test]
     fn empty_payload() {
         let event = extract_dtmf(&[], 101, 101, ts());
         assert!(event.is_none(), "Empty payload should return None");
     }
 
+    /// An event code outside the DTMF range (16) returns `None`.
     #[test]
     fn invalid_event_code() {
         // Event 16 is outside DTMF range
@@ -211,6 +224,7 @@ mod tests {
         assert!(event.is_none(), "Event code 16 should return None");
     }
 
+    /// Every valid event code (0-15) maps to its expected DTMF character.
     #[test]
     fn all_digits_roundtrip() {
         let expected = [
@@ -242,6 +256,7 @@ mod tests {
         }
     }
 
+    /// Duration in timestamp units is converted to ms assuming an 8 kHz clock.
     #[test]
     fn duration_calculation() {
         // 3200 timestamp units at 8kHz = 400ms

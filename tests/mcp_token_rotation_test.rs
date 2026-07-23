@@ -21,6 +21,10 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Absolute path to a file under `tests/fixtures/`.
+///
+/// # Arguments
+/// * `path` — filename relative to the fixtures directory.
 fn fixture(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -34,6 +38,15 @@ fn rotate_script() -> std::path::PathBuf {
 
 /// Run `rotate-token.sh <key_file> <token_file> <ttl> <sipnab-bin>` and return
 /// its exit success plus captured stderr (for diagnostics on failure).
+///
+/// # Arguments
+/// * `key_file` — path to the HMAC signing-key file.
+/// * `token_file` — path the script publishes the minted token to.
+/// * `ttl` — token lifetime in seconds.
+///
+/// # Side effects
+/// Spawns `sh` running the rotation script, which invokes the sipnab binary
+/// and writes/overwrites `token_file`.
 fn rotate(key_file: &std::path::Path, token_file: &std::path::Path, ttl: i64) -> (bool, String) {
     let out = Command::new("sh")
         .arg(rotate_script())
@@ -50,6 +63,14 @@ fn rotate(key_file: &std::path::Path, token_file: &std::path::Path, ttl: i64) ->
 }
 
 /// Spawn sipnab with HTTP MCP + the given args; return child + bind address.
+///
+/// # Returns
+/// `Some((child, addr))` once the "listening on" line appears; `None` if the
+/// server refuses to start or times out after 5s (child is reaped).
+///
+/// # Side effects
+/// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
+/// reader thread.
 fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
@@ -111,6 +132,10 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     None
 }
 
+/// SIGTERMs a spawned sipnab child and waits for it to exit.
+///
+/// # Side effects
+/// Sends SIGTERM to the child process and reaps it.
 fn shutdown(mut child: std::process::Child) {
     // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
@@ -119,6 +144,8 @@ fn shutdown(mut child: std::process::Child) {
     let _ = child.wait();
 }
 
+/// POSTs a JSON-RPC `initialize` to `http://addr/mcp` with an optional bearer
+/// token and returns the HTTP status code.
 fn initialize_status(addr: &str, bearer: Option<&str>) -> u16 {
     let payload = serde_json::json!({
         "jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -128,6 +155,16 @@ fn initialize_status(addr: &str, bearer: Option<&str>) -> u16 {
     post_status(&format!("http://{addr}/mcp"), bearer, &payload)
 }
 
+/// Issues a raw-TCP HTTP POST of `body` as JSON and returns the status code
+/// (0 if the status line is unparsable).
+///
+/// # Arguments
+/// * `url` — plain `http://host:port/path` URL.
+/// * `bearer` — optional bearer token for the Authorization header.
+/// * `body` — JSON payload to serialize and send.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout.
 fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16 {
     let parsed = url.strip_prefix("http://").expect("http url");
     let (authority, path) = parsed.split_once('/').unwrap_or((parsed, ""));
@@ -167,6 +204,13 @@ fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16
 }
 
 /// Write a signing-key file and return (tempdir, key_path, token_path).
+///
+/// # Returns
+/// The owning tempdir plus paths to the written signing-key file (with a
+/// trailing newline the reader must trim) and the not-yet-written token file.
+///
+/// # Side effects
+/// Creates a tempdir and writes the signing-key file into it.
 fn rotation_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
     let dir = tempfile::tempdir().expect("tempdir");
     let key = dir.path().join("mcp.signing-key");
@@ -176,6 +220,8 @@ fn rotation_dir() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf)
     (dir, key, token)
 }
 
+/// A token freshly minted by `rotate-token.sh` (s1. shape) gets 200 against a
+/// `--mcp-signing-key-file` server; wrong and missing tokens get 401.
 #[test]
 fn rotated_token_authenticates_against_signing_key_server() {
     let (_dir, key, token_path) = rotation_dir();
@@ -209,6 +255,8 @@ fn rotated_token_authenticates_against_signing_key_server() {
     shutdown(child);
 }
 
+/// Two consecutive rotations publish distinct tokens, leave no `.tmp` files
+/// behind, and both tokens verify against the same signing key.
 #[test]
 fn each_rotation_publishes_a_fresh_token_atomically() {
     let (dir, key, token_path) = rotation_dir();
@@ -260,6 +308,8 @@ fn each_rotation_publishes_a_fresh_token_atomically() {
     shutdown(child);
 }
 
+/// Rotation with an empty or missing signing key fails closed: the previously
+/// published good token is untouched and no half-written temp files remain.
 #[test]
 fn rotation_fails_loudly_without_clobbering_the_published_token() {
     let (dir, key, token_path) = rotation_dir();
@@ -307,6 +357,9 @@ fn rotation_fails_loudly_without_clobbering_the_published_token() {
     );
 }
 
+/// A short-TTL (5s) rotated token is valid immediately (200), rejected after
+/// its TTL elapses (401), and a fresh rotation restores access without a
+/// server restart.
 #[test]
 fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
     let (_dir, key, token_path) = rotation_dir();

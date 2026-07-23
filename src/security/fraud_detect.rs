@@ -40,7 +40,7 @@ const SEQUENTIAL_THRESHOLD: usize = 3;
 struct CallPattern {
     /// Recent calls: (timestamp, destination number).
     calls: Vec<(Instant, String)>,
-    /// Number of calls shorter than [`SHORT_CALL_SECS`].
+    /// Number of calls shorter than `SHORT_CALL_SECS`.
     short_calls: u32,
     /// Baseline rate (calls per minute, rolling average).
     baseline_rate: f64,
@@ -303,6 +303,7 @@ fn check_sequential(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert>
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for the toll-fraud detection heuristics.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,14 +313,17 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The loopback address used as the destination in test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// The source IP used to simulate an attacker.
     fn attacker_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50))
     }
 
+    /// A fixed timestamp inside default business hours (14:00 UTC).
     fn ts() -> DateTime<Utc> {
         // Use a time that's within default business hours (14:00 UTC)
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0).unwrap()
@@ -327,6 +331,7 @@ mod tests {
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build an INVITE to `to_user` from `src` with the given Call-ID.
     fn make_invite(to_user: &str, src: IpAddr, call_id: &str) -> SipMessage {
         let raw = build_sip(
             &format!("INVITE sip:{to_user}@example.com SIP/2.0"),
@@ -351,10 +356,12 @@ mod tests {
         .expect("should parse")
     }
 
+    /// Create a dialog from a SIP message.
     fn make_dialog_from_msg(msg: &SipMessage) -> SipDialog {
         SipDialog::new(msg).expect("should create dialog")
     }
 
+    /// Multiple short calls to the same number prefix trigger a wangiri alert.
     #[test]
     fn wangiri_pattern_detected() {
         let mut detector = FraudDetector::new(None);
@@ -378,6 +385,7 @@ mod tests {
         assert!(alert.detail.contains("short calls to prefix"));
     }
 
+    /// Calls to consecutive numbers trigger a sequential-scanning alert.
     #[test]
     fn sequential_scanning_detected() {
         let mut detector = FraudDetector::new(None);
@@ -401,6 +409,7 @@ mod tests {
         assert!(alert.detail.contains("sequential dialing"));
     }
 
+    /// Normal calls of realistic duration to distinct numbers raise no alert.
     #[test]
     fn normal_call_pattern_not_detected() {
         let mut detector = FraudDetector::new(None);
@@ -421,6 +430,8 @@ mod tests {
         );
     }
 
+    /// A call placed outside configured business hours triggers an off-hours
+    /// alert.
     #[test]
     fn off_hours_detection() {
         let mut detector = FraudDetector::new(Some((8, 18)));
@@ -457,6 +468,7 @@ mod tests {
         assert!(alert.detail.contains("outside business hours"));
     }
 
+    /// Non-INVITE requests (e.g. REGISTER) are ignored by the detector.
     #[test]
     fn non_invite_ignored() {
         let mut detector = FraudDetector::new(None);

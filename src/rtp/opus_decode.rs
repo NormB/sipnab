@@ -17,8 +17,11 @@ use anyhow::{Result, bail};
 /// decoding quality depends on inter-frame state (SILK LSF interpolation,
 /// CELT overlap, PLC context).
 pub struct OpusStreamDecoder {
+    /// Underlying stateful Opus decoder instance.
     inner: opus_decoder::OpusDecoder,
+    /// Output sample rate in Hz negotiated at construction.
     sample_rate: u32,
+    /// Number of output channels (1 or 2).
     channels: usize,
 }
 
@@ -48,7 +51,7 @@ impl OpusStreamDecoder {
     /// for 20ms frames).
     ///
     /// The decoder maintains inter-frame state, so frames should be fed in
-    /// RTP sequence order. For lost frames, call [`Self::decode_lost`] instead.
+    /// RTP sequence order. For lost frames, call `decode_lost` instead.
     pub fn decode_frame(&mut self, opus_data: &[u8]) -> Result<Vec<i16>> {
         if opus_data.is_empty() {
             bail!("Empty Opus payload");
@@ -95,10 +98,12 @@ impl OpusStreamDecoder {
     }
 }
 
+/// Unit tests for the stateful Opus RTP decoder wrapper.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A decoder created with valid params reports its rate and channel count.
     #[test]
     fn new_decoder_valid_params() {
         let dec = OpusStreamDecoder::new(48000, 1);
@@ -108,6 +113,7 @@ mod tests {
         assert_eq!(dec.channels(), 1);
     }
 
+    /// A stereo (2-channel) decoder is created successfully.
     #[test]
     fn new_decoder_stereo() {
         let dec = OpusStreamDecoder::new(48000, 2);
@@ -115,18 +121,21 @@ mod tests {
         assert_eq!(dec.unwrap().channels(), 2);
     }
 
+    /// An unsupported sample rate (44100) fails decoder creation.
     #[test]
     fn new_decoder_invalid_rate() {
         let dec = OpusStreamDecoder::new(44100, 1);
         assert!(dec.is_err());
     }
 
+    /// An invalid channel count (3) fails decoder creation.
     #[test]
     fn new_decoder_invalid_channels() {
         let dec = OpusStreamDecoder::new(48000, 3);
         assert!(dec.is_err());
     }
 
+    /// Decoding an empty payload returns an error.
     #[test]
     fn decode_empty_payload_errors() {
         let mut dec = OpusStreamDecoder::new(48000, 1).unwrap();
@@ -134,6 +143,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// PLC on a fresh decoder succeeds (producing zero samples with no state).
     #[test]
     fn decode_lost_produces_samples() {
         // First feed a valid-ish frame, then test PLC.

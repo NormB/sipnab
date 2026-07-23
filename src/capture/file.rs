@@ -25,6 +25,21 @@ use crate::signals;
 /// Returns the open capture together with an optional temp-file guard. The
 /// guard owns the decompressed file and deletes it on drop, so the caller MUST
 /// keep it alive for as long as it reads from the capture.
+///
+/// # Arguments
+///
+/// * `path` - path to the pcap/pcapng file (optionally gzip-compressed).
+///
+/// # Errors
+///
+/// Fails when the file cannot be opened by libpcap, when the temp file for
+/// decompression cannot be created, or when the gzip stream is corrupt.
+///
+/// # Side effects
+///
+/// Reads `path` (twice for gzip input: magic peek, then decompression) and,
+/// for gzip input, writes a decompressed copy to a temporary file that is
+/// deleted when the returned guard drops.
 pub fn open_offline(
     path: &Path,
 ) -> Result<(pcap::Capture<pcap::Offline>, Option<tempfile::TempPath>)> {
@@ -77,6 +92,30 @@ pub fn open_offline(
 /// duration limit.
 ///
 /// This function blocks and is intended to be called from a dedicated thread.
+///
+/// # Arguments
+///
+/// * `path` - the capture file to read.
+/// * `config` - BPF filter, count/duration limits, and the `replay` flag
+///   (replay sleeps for each inter-packet delta to reproduce original timing).
+/// * `tx` - channel the decoded `Packet`s are sent into.
+/// * `ready_tx` - optional one-shot channel: receives `Ok(())` once the file
+///   is open and filtered, or `Err(msg)` if opening/filtering fails.
+///
+/// # Returns
+///
+/// `Ok(())` on EOF, shutdown, count limit, or duration limit.
+///
+/// # Errors
+///
+/// Fails when the file cannot be opened, the BPF filter does not compile, or
+/// libpcap reports a read error mid-file.
+///
+/// # Side effects
+///
+/// Reads the file, sends packets on `tx`, signals `ready_tx`, sleeps between
+/// packets in replay mode, checks the global shutdown flag, and logs progress
+/// via tracing.
 pub fn capture_file(
     path: &Path,
     config: &CaptureConfig,
@@ -195,6 +234,11 @@ pub fn capture_file(
 }
 
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
+///
+/// `tv_usec` is clamped to `[0, 999_999]` before the microsecond→nanosecond
+/// multiply (a crafted capture can carry out-of-range values that would
+/// otherwise overflow). An unrepresentable `tv_sec` falls back to the current
+/// wall clock.
 pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
     // tv_usec is attacker-controllable in a crafted capture; clamp to a valid
     // microsecond before the µs→ns multiply so it can overflow neither u64 (the
@@ -205,6 +249,8 @@ pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
         .unwrap_or_else(Utc::now)
 }
 
+/// Tests for file reading: timestamp hardening, fixture reads, and
+/// transparent gzip decompression.
 #[cfg(test)]
 mod tests {
     use super::super::channel::packet_channel;
@@ -214,6 +260,8 @@ mod tests {
     /// before the test drains) never blocks on the cap.
     const TEST_CAP: usize = 1 << 20;
 
+    /// Out-of-range/negative `tv_usec` values from a hostile capture must
+    /// clamp rather than overflow the u32 nanosecond conversion.
     #[test]
     fn pcap_ts_to_chrono_out_of_range_usec_does_not_panic() {
         // A corrupt/hostile pcap can carry tv_usec outside [0, 1_000_000).
@@ -293,6 +341,8 @@ mod tests {
         );
     }
 
+    /// Reading the UDP fixture yields non-empty packets with no interface
+    /// name (file captures carry none).
     #[test]
     fn read_fixture_pcap() {
         let path = fixture_path();

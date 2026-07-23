@@ -24,7 +24,7 @@
 //! Bearer values may be self-describing signed `s1.` tokens (with expiry,
 //! signing-key rotation, and revocation via `--api-revoked-file`) or the
 //! static API key. Missing or invalid credentials return 401. See
-//! [`crate::auth`].
+//! `crate::auth`.
 //!
 //! # Rate Limiting
 //!
@@ -97,6 +97,17 @@ impl RateLimiter {
     ///
     /// Periodically cleans up stale entries (every 100th call) to prevent
     /// unbounded memory growth from unique source IPs.
+    ///
+    /// # Arguments
+    ///
+    /// * `ip` — Source IP whose one-second window is checked.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the limiter: bumps the monotonic call counter, resets the
+    /// per-IP window when >1 s has elapsed, increments the per-IP request
+    /// count (even when the request ends up rejected), and every 100th call
+    /// evicts buckets older than 2 s.
     pub fn check(&mut self, ip: IpAddr) -> bool {
         let now = Instant::now();
         self.call_count += 1;
@@ -155,8 +166,18 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Max request body accepted (defense in depth; the API is GET-only today).
 const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024; // 1 MiB
 
-/// Middleware: fail a request exceeding [`REQUEST_TIMEOUT`] with 408 rather than
+/// Middleware: fail a request exceeding `REQUEST_TIMEOUT` with 408 rather than
 /// letting it hold a connection slot indefinitely.
+///
+/// # Arguments
+///
+/// * `req` — The incoming request, forwarded unchanged to `next`.
+/// * `next` — The rest of the middleware/handler chain.
+///
+/// # Returns
+///
+/// The inner handler's response, or `408 Request Timeout` if the handler
+/// does not complete within `REQUEST_TIMEOUT`.
 async fn request_timeout_mw(
     req: axum::extract::Request,
     next: axum::middleware::Next,
@@ -167,9 +188,15 @@ async fn request_timeout_mw(
     }
 }
 
-/// Build the axum [`Router`] with all API endpoints.
+/// Build the axum `Router` with all API endpoints.
 ///
-/// The returned router expects an [`ApiState`] to be supplied as shared state.
+/// The returned router expects an `ApiState` to be supplied as shared state.
+/// Every route is wrapped in the request-timeout middleware and a 1 MiB
+/// body-size limit.
+///
+/// # Arguments
+///
+/// * `state` — Shared stores, verifier, and rate limiter for all handlers.
 pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/health", get(health_check))
@@ -186,14 +213,22 @@ pub fn build_router(state: ApiState) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(MAX_REQUEST_BODY_BYTES))
 }
 
-/// Parse a bind address string into a [`SocketAddr`].
+/// Parse a bind address string into a `SocketAddr`.
 ///
 /// Accepts:
 /// - `":8080"` or `"8080"` — binds to `127.0.0.1:8080` (D18 default)
 /// - `"0.0.0.0:8080"` — binds to all interfaces
 /// - Any valid `addr:port` pair
 ///
-/// Returns an error string if parsing fails.
+/// # Arguments
+///
+/// * `addr` — The bind address string from the CLI.
+///
+/// # Errors
+///
+/// Returns `crate::Error::InvalidBindAddr` (carrying the input and a
+/// reason string) when the input is neither a bare port, a `:port`
+/// shorthand, nor a valid `addr:port` pair.
 pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
     parse_bind_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
         input: addr.to_string(),
@@ -201,6 +236,9 @@ pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
     })
 }
 
+/// Inner parser for `parse_bind_addr`: tries bare-port, `:port` shorthand,
+/// then full `addr:port`, returning a plain reason string on failure so the
+/// public wrapper can attach the original input.
 fn parse_bind_addr_inner(addr: &str) -> Result<SocketAddr, String> {
     // Just a port number
     if let Ok(port) = addr.parse::<u16>() {
@@ -241,7 +279,21 @@ pub struct ApiServerConfig {
 /// This function blocks the current tokio runtime until the server is
 /// shut down. It should be spawned in a dedicated thread or task.
 ///
-/// Logs a warning if the bind address is non-loopback without TLS.
+/// # Arguments
+///
+/// * `bind_addr` — Address to bind the TCP listener on.
+/// * `state` — Shared stores, verifier, and rate limiter.
+/// * `server_config` — Connection cap and (unsupported) TLS paths.
+///
+/// # Errors
+///
+/// Propagates every failure from `prepare_listener` (TLS flags supplied,
+/// unauthenticated non-loopback bind, bind failure) and `serve_on`.
+///
+/// # Side effects
+///
+/// Binds a TCP listener and serves HTTP until shutdown; logs a warning if
+/// the bind address is non-loopback without TLS.
 pub async fn run_server(
     bind_addr: SocketAddr,
     state: ApiState,
@@ -256,6 +308,27 @@ pub async fn run_server(
 /// bind, unsupported TLS flags) surface on the caller's thread BEFORE the TUI
 /// takes over the terminal — logged from the detached servers thread they are
 /// invisible.
+///
+/// # Arguments
+///
+/// * `bind_addr` — Requested listen address.
+/// * `verifier` — Used to decide whether the bind-auth policy is satisfied.
+/// * `server_config` — Checked for the (unsupported) TLS flags.
+///
+/// # Returns
+///
+/// The bound, non-blocking `std::net::TcpListener` ready for `serve_on`.
+///
+/// # Errors
+///
+/// Returns `crate::Error::Server` when TLS flags are supplied (not yet
+/// integrated), when the bind is non-loopback with no authentication
+/// configured, or when binding/configuring the listener fails.
+///
+/// # Side effects
+///
+/// Binds the OS socket and logs a warning for a non-loopback bind without
+/// TLS.
 pub fn prepare_listener(
     bind_addr: SocketAddr,
     verifier: &crate::auth::TokenVerifier,
@@ -289,7 +362,24 @@ pub fn prepare_listener(
     Ok(listener)
 }
 
-/// Serve the REST API on an already-bound listener from [`prepare_listener`].
+/// Serve the REST API on an already-bound listener from `prepare_listener`.
+///
+/// # Arguments
+///
+/// * `listener` — Bound, non-blocking listener to serve on.
+/// * `state` — Shared stores, verifier, and rate limiter.
+/// * `server_config` — `max_conn > 0` adds a semaphore middleware that
+///   answers 503 once that many requests are in flight.
+///
+/// # Errors
+///
+/// Returns `crate::Error::Server` if the listener cannot be registered with
+/// tokio or the axum server itself fails.
+///
+/// # Side effects
+///
+/// Runs the HTTP accept loop until shutdown (never returns `Ok` before
+/// then) and logs the actual bound address at startup.
 pub async fn serve_on(
     listener: std::net::TcpListener,
     state: ApiState,
@@ -346,6 +436,16 @@ pub async fn serve_on(
 /// Refuse to start a non-loopback bind when no authentication is configured,
 /// matching the MCP HTTP transport's rule. A public, unauthenticated REST API
 /// would expose all captured SIP/RTP metadata to anyone who can reach the port.
+///
+/// # Arguments
+///
+/// * `bind_addr` — Requested listen address.
+/// * `verifier` — Consulted for whether any credential is configured.
+///
+/// # Errors
+///
+/// Returns `crate::Error::Server` with remediation guidance when the bind
+/// is non-loopback and the verifier has no keys configured.
 fn enforce_bind_auth_policy(
     bind_addr: &SocketAddr,
     verifier: &crate::auth::TokenVerifier,
@@ -361,6 +461,17 @@ fn enforce_bind_auth_policy(
 }
 
 /// Check authentication. Returns `Err(StatusCode)` if auth fails.
+///
+/// # Arguments
+///
+/// * `state` — Holds the token verifier.
+/// * `headers` — Request headers; the `Authorization` header is inspected.
+///
+/// # Returns
+///
+/// `Ok(())` when auth is unconfigured (disabled) or a valid
+/// `Bearer <token>` credential is presented; `Err(401 UNAUTHORIZED)` for a
+/// missing, non-ASCII, non-Bearer, or unverifiable credential.
 fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
     // No signing keys and no static secret configured ⇒ auth disabled
     // (loopback-allowed behavior unchanged from before this feature).
@@ -384,6 +495,20 @@ fn check_auth(state: &ApiState, headers: &HeaderMap) -> Result<(), StatusCode> {
 }
 
 /// Check rate limit. Returns `Err(StatusCode)` if over limit.
+///
+/// # Arguments
+///
+/// * `state` — Holds the shared per-IP rate limiter.
+/// * `ip` — Client IP charged for this request.
+///
+/// # Returns
+///
+/// `Ok(())` under the limit; `Err(503 SERVICE_UNAVAILABLE)` when over.
+///
+/// # Side effects
+///
+/// Takes the rate-limiter mutex and mutates its per-IP counters (see
+/// `RateLimiter::check`).
 fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
     let mut limiter = state.rate_limiter.lock();
     if limiter.check(ip) {
@@ -398,6 +523,16 @@ fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
 /// Uses the real client IP from `ConnectInfo<SocketAddr>` (provided by
 /// `into_make_service_with_connect_info`) for rate limiting. X-Forwarded-For
 /// and X-Real-IP headers are NOT trusted, as they are attacker-controlled.
+///
+/// # Returns
+///
+/// `Ok(())` when both checks pass; `Err(401)` on auth failure (checked
+/// first, so unauthenticated requests never consume rate-limit budget) or
+/// `Err(503)` when the client IP is over its request budget.
+///
+/// # Side effects
+///
+/// Mutates the shared rate limiter via `check_rate_limit`.
 fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), StatusCode> {
     check_auth(state, headers)?;
     check_rate_limit(state, client_ip)
@@ -405,12 +540,32 @@ fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(),
 
 // ── Handlers ────────────────────────────────────────────────────────
 
-/// `GET /health` — always returns "ok", no auth required.
+/// `GET /health` — always returns "ok" (200), no auth or rate limit.
 async fn health_check() -> &'static str {
     "ok"
 }
 
 /// `GET /v1/dialogs` — list dialogs with optional filtering and pagination.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — Offset/limit pagination plus `state` (case-insensitive
+///   exact match) and `from` (regex, invalid patterns silently ignored)
+///   filters.
+///
+/// # Returns
+///
+/// 200 with `{schema_version, total, offset, limit, dialogs}` where
+/// `total` counts ALL dialogs in the store (unfiltered); 401/503 from the
+/// guard. `limit` is clamped to 1000.
+///
+/// # Side effects
+///
+/// Holds the dialog-store read lock while filtering; mutates the rate
+/// limiter.
 async fn list_dialogs(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -468,6 +623,25 @@ async fn list_dialogs(
 }
 
 /// `GET /v1/dialogs/:call_id` — get a single dialog with full detail.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID path segment identifying the dialog.
+///
+/// # Returns
+///
+/// 200 with the full `dialog_to_json` object (including associated
+/// streams and a freshly computed media/asymmetry diagnosis); 404 when the
+/// Call-ID is unknown; 500 if the JSON round-trip fails; 401/503 from the
+/// guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while building the
+/// response; mutates the rate limiter.
 async fn get_dialog(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -499,6 +673,24 @@ async fn get_dialog(
 }
 
 /// `GET /v1/dialogs/:call_id/report` — get a call report in JSON format.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `call_id` — Call-ID path segment identifying the dialog.
+///
+/// # Returns
+///
+/// 200 with the JSON-format `generate_call_report` output; 404 when the
+/// Call-ID is unknown; 500 if the report is not valid JSON; 401/503 from
+/// the guard.
+///
+/// # Side effects
+///
+/// Holds the dialog- and stream-store read locks while building the
+/// report; mutates the rate limiter.
 async fn get_dialog_report(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -531,6 +723,26 @@ async fn get_dialog_report(
 }
 
 /// `GET /v1/streams` — list RTP streams with optional filtering and pagination.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — Offset/limit pagination plus `orphaned` (exact match) and
+///   `mos_below` (streams whose estimated MOS is strictly below the
+///   threshold) filters.
+///
+/// # Returns
+///
+/// 200 with `{schema_version, total, offset, limit, streams}` where
+/// `total` counts ALL streams in the store (unfiltered); 401/503 from the
+/// guard. `limit` is clamped to 1000.
+///
+/// # Side effects
+///
+/// Holds the stream-store read lock while filtering; mutates the rate
+/// limiter.
 async fn list_streams(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -579,6 +791,24 @@ async fn list_streams(
 }
 
 /// `GET /v1/streams/:id` — get a single RTP stream by SSRC hex string.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `id` — SSRC as hex, with or without a `0x` prefix.
+///
+/// # Returns
+///
+/// 200 with the `stream_to_json` object; 400 for a non-hex id; 404 when no
+/// stream has that SSRC; 500 if the JSON round-trip fails; 401/503 from
+/// the guard.
+///
+/// # Side effects
+///
+/// Holds the stream-store read lock during lookup; mutates the rate
+/// limiter.
 async fn get_stream(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -606,6 +836,24 @@ async fn get_stream(
 }
 
 /// `GET /v1/stats` — aggregate statistics across dialogs and streams.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with `{schema_version, dialogs{total,active,completed,failed,
+/// cancelled}, streams{total,orphaned}, timing{pdd_p50_ms,pdd_p95_ms,
+/// pdd_p99_ms}}`; the percentiles are `null` when no dialog has a PDD.
+/// 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Takes the dialog- then stream-store read locks (sequentially, not
+/// overlapping); mutates the rate limiter.
 async fn get_stats(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -669,6 +917,22 @@ async fn get_stats(
 ///
 /// Populates a `PrometheusMetrics` from the shared stores and formats
 /// via `prometheus::format_metrics` for full metric coverage.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state.
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with a `text/plain; version=0.0.4; charset=utf-8` body in
+/// Prometheus text exposition format; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Takes the dialog- then stream-store read locks (sequentially) while
+/// aggregating; mutates the rate limiter.
 async fn get_metrics(
     State(state): State<ApiState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -738,17 +1002,19 @@ async fn get_metrics(
 
 /// Build a JSON summary of a dialog (lighter than the full dialog_to_json).
 ///
-/// Projects through the canonical [`crate::output::model::DialogSummary`]
+/// Projects through the canonical `crate::output::model::DialogSummary`
 /// so this endpoint cannot drift from the CLI/MCP surfaces. WS3 wire
 /// change: the `from`/`to` keys became `from_user`/`to_user` (they always
-/// carried the URI user parts).
+/// carried the URI user parts). Returns an `{"error": ...}` object if
+/// serialization fails.
 fn dialog_summary(d: &crate::sip::dialog::SipDialog) -> Value {
     serde_json::to_value(crate::output::model::DialogSummary::from(d))
         .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
 }
 
 /// Build a JSON summary of an RTP stream via the canonical
-/// [`crate::output::model::StreamSummary`] projection.
+/// `crate::output::model::StreamSummary` projection. Returns an
+/// `{"error": ...}` object if serialization fails.
 fn stream_summary(s: &crate::rtp::stream::RtpStream) -> Value {
     serde_json::to_value(crate::output::model::StreamSummary::from(s))
         .unwrap_or_else(|e| json!({"error": format!("serialization failed: {e}")}))
@@ -756,7 +1022,9 @@ fn stream_summary(s: &crate::rtp::stream::RtpStream) -> Value {
 
 /// Approximate MOS score from jitter and loss using the canonical E-model.
 ///
-/// Delegates to `rtp::quality::estimate_mos` for a single MOS implementation.
+/// Delegates to `rtp::quality::estimate_mos` for a single MOS
+/// implementation; loss is computed as `lost / (received + lost)` (0.0 for
+/// an empty stream).
 fn approximate_mos(stream: &crate::rtp::stream::RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
@@ -768,7 +1036,8 @@ fn approximate_mos(stream: &crate::rtp::stream::RtpStream) -> f64 {
     quality::estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref())
 }
 
-/// Compute the p-th percentile of a sorted slice.
+/// Compute the p-th percentile of a sorted slice (nearest-rank by rounded
+/// index).
 ///
 /// Returns `None` if the slice is empty.
 fn percentile(sorted: &[i64], p: u8) -> Option<i64> {
@@ -781,6 +1050,9 @@ fn percentile(sorted: &[i64], p: u8) -> Option<i64> {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Router-level tests: each spins up the axum router with `oneshot`
+/// requests against in-memory stores, plus unit tests for the auth guard,
+/// rate limiter, bind-address parsing, and summary helpers.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -790,6 +1062,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    /// Build an `ApiState` with empty stores and no auth configured.
     fn make_state() -> ApiState {
         ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
@@ -801,6 +1074,7 @@ mod tests {
         }
     }
 
+    /// Build an `ApiState` whose verifier accepts only the given static key.
     fn make_state_with_key(key: &str) -> ApiState {
         ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
@@ -815,6 +1089,8 @@ mod tests {
         }
     }
 
+    /// Bind-auth policy: public bind without auth refused, loopback and
+    /// authenticated public binds allowed.
     #[test]
     fn refuses_non_loopback_bind_without_auth() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -833,6 +1109,8 @@ mod tests {
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Insert three INVITE dialogs (`call-0..2@test`, users `user0..2`)
+    /// into the state's dialog store.
     fn populate_dialogs(state: &ApiState) {
         let mut ds = state.dialog_store.write();
         let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
@@ -891,11 +1169,13 @@ mod tests {
         req
     }
 
+    /// Collect a response `Body` into a UTF-8 `String`.
     async fn body_to_string(body: Body) -> String {
         let bytes = body.collect().await.expect("collect body").to_bytes();
         String::from_utf8(bytes.to_vec()).expect("utf8")
     }
 
+    /// `GET /health` returns 200 with the literal body "ok".
     #[tokio::test]
     async fn health_check_returns_ok() {
         let state = make_state();
@@ -910,6 +1190,8 @@ mod tests {
         assert_eq!(body, "ok");
     }
 
+    /// `GET /v1/dialogs` returns 200 with all three seeded dialogs and the
+    /// pagination envelope.
     #[tokio::test]
     async fn list_dialogs_returns_json_array() {
         let state = make_state();
@@ -929,6 +1211,8 @@ mod tests {
         assert_eq!(parsed["total"], 3);
     }
 
+    /// `GET /v1/dialogs/:call_id` returns 200 with the matching dialog's
+    /// full JSON.
     #[tokio::test]
     async fn get_dialog_by_call_id() {
         let state = make_state();
@@ -946,6 +1230,7 @@ mod tests {
         assert_eq!(parsed["call_id"], "call-1@test");
     }
 
+    /// An unknown Call-ID yields 404 Not Found.
     #[tokio::test]
     async fn get_nonexistent_dialog_returns_404() {
         let state = make_state();
@@ -957,6 +1242,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    /// `GET /v1/stats` returns 200 with dialogs/streams/timing objects and
+    /// correct dialog totals.
     #[tokio::test]
     async fn stats_endpoint_returns_expected_fields() {
         let state = make_state();
@@ -979,6 +1266,7 @@ mod tests {
         assert!(parsed["streams"]["orphaned"].is_number());
     }
 
+    /// With a static key configured, a request without credentials gets 401.
     #[tokio::test]
     async fn auth_missing_key_returns_401() {
         let state = make_state_with_key("secret-key");
@@ -990,6 +1278,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// The correct static Bearer key authenticates and gets 200.
     #[tokio::test]
     async fn auth_correct_key_returns_200() {
         let state = make_state_with_key("secret-key");
@@ -1002,6 +1291,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// Build an `ApiState` whose verifier accepts tokens signed with `key`.
     fn make_state_with_signing_key(key: &[u8]) -> ApiState {
         ApiState {
             dialog_store: Arc::new(RwLock::new(DialogStore::new(1000, false))),
@@ -1016,6 +1306,7 @@ mod tests {
         }
     }
 
+    /// A signed token with a future expiry authenticates and gets 200.
     #[tokio::test]
     async fn auth_valid_signed_token_returns_200() {
         let key = b"router-signing-key";
@@ -1030,6 +1321,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// A signed token whose expiry is in the past is rejected with 401.
     #[tokio::test]
     async fn auth_expired_signed_token_returns_401() {
         let key = b"router-signing-key";
@@ -1043,6 +1335,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// A token signed with the wrong key is rejected with 401.
     #[tokio::test]
     async fn auth_forged_signed_token_returns_401() {
         let key = b"router-signing-key";
@@ -1056,6 +1349,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// `offset`/`limit` query params page the dialog list (1 of 3 returned).
     #[tokio::test]
     async fn pagination_offset_and_limit() {
         let state = make_state();
@@ -1074,6 +1368,7 @@ mod tests {
         assert_eq!(parsed["limit"], 1);
     }
 
+    /// A bare port string binds to `127.0.0.1:<port>`.
     #[test]
     fn parse_bind_addr_port_only() {
         let addr = parse_bind_addr("8080").expect("parse");
@@ -1083,6 +1378,7 @@ mod tests {
         );
     }
 
+    /// The `:port` shorthand binds to `127.0.0.1:<port>`.
     #[test]
     fn parse_bind_addr_colon_port() {
         let addr = parse_bind_addr(":9090").expect("parse");
@@ -1092,6 +1388,7 @@ mod tests {
         );
     }
 
+    /// A full `addr:port` pair parses verbatim.
     #[test]
     fn parse_bind_addr_full() {
         let addr = parse_bind_addr("0.0.0.0:8080").expect("parse");
@@ -1101,11 +1398,13 @@ mod tests {
         );
     }
 
+    /// A non-address string is rejected.
     #[test]
     fn parse_bind_addr_invalid() {
         assert!(parse_bind_addr("not-an-address").is_err());
     }
 
+    /// A limiter with max 5 allows exactly 5 requests, then rejects the 6th.
     #[test]
     fn rate_limiter_allows_under_limit() {
         let mut limiter = RateLimiter::new(5);
@@ -1118,6 +1417,8 @@ mod tests {
         assert!(!limiter.check(ip));
     }
 
+    /// `GET /v1/dialogs/:call_id/report` returns 200 with a JSON report
+    /// object referencing the call.
     #[tokio::test]
     async fn get_dialog_report_returns_report() {
         let state = make_state();
@@ -1138,6 +1439,8 @@ mod tests {
         assert!(parsed.is_object(), "report should be a JSON object");
     }
 
+    /// `GET /v1/streams` on an empty store returns 200 with an empty array
+    /// and total 0.
     #[tokio::test]
     async fn list_streams_returns_empty() {
         let state = make_state();
@@ -1155,6 +1458,7 @@ mod tests {
         assert_eq!(parsed["total"], 0);
     }
 
+    /// A valid-hex but unknown SSRC yields 404 Not Found.
     #[tokio::test]
     async fn get_stream_not_found() {
         let state = make_state();
@@ -1166,6 +1470,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
+    /// `GET /metrics` returns 200 with `sipnab_`-prefixed exposition text.
     #[tokio::test]
     async fn get_metrics_returns_prometheus_format() {
         let state = make_state();
@@ -1184,6 +1489,7 @@ mod tests {
         );
     }
 
+    /// A wrong static Bearer key is rejected with 401.
     #[tokio::test]
     async fn auth_wrong_key_returns_401() {
         let state = make_state_with_key("correct-key");
@@ -1195,6 +1501,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// With max 1 request/second, the second request from the same IP gets
+    /// 503 Service Unavailable.
     #[tokio::test]
     async fn rate_limit_exceeded_returns_503() {
         // Create state with rate_limiter max_rps = 1
@@ -1221,6 +1529,8 @@ mod tests {
         assert_eq!(resp2.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
+    /// Percentile picks the rounded nearest-rank index for even- and
+    /// odd-length inputs, and `None` for empty.
     #[test]
     fn percentile_computation() {
         let values = vec![10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -1280,6 +1590,8 @@ mod tests {
 
     // ── list_streams branches ─────────────────────────────────────────
 
+    /// `GET /v1/streams` returns both inserted streams with summary fields
+    /// (`ssrc`, `mos`, `loss_pct`).
     #[tokio::test]
     async fn list_streams_returns_populated() {
         let state = make_state();
@@ -1304,6 +1616,8 @@ mod tests {
         assert!(first["loss_pct"].is_number());
     }
 
+    /// `orphaned=true` filters out non-orphaned streams while `total` stays
+    /// unfiltered.
     #[tokio::test]
     async fn list_streams_orphaned_filter_excludes_active() {
         let state = make_state();
@@ -1324,6 +1638,8 @@ mod tests {
         assert_eq!(parsed["total"], 1);
     }
 
+    /// `mos_below` excludes a clean high-MOS stream at 1.0 and includes it
+    /// at 5.0.
     #[tokio::test]
     async fn list_streams_mos_below_filter() {
         let state = make_state();
@@ -1354,6 +1670,7 @@ mod tests {
 
     // ── get_stream branches ───────────────────────────────────────────
 
+    /// A `0x`-prefixed SSRC hex id resolves to its stream (200).
     #[tokio::test]
     async fn get_stream_found_by_hex() {
         let state = make_state();
@@ -1371,6 +1688,7 @@ mod tests {
         assert!(parsed.is_object());
     }
 
+    /// A bare hex SSRC (no `0x` prefix) also resolves (200).
     #[tokio::test]
     async fn get_stream_found_without_0x_prefix() {
         let state = make_state();
@@ -1384,6 +1702,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// A non-hex stream id yields 400 Bad Request.
     #[tokio::test]
     async fn get_stream_invalid_hex_returns_400() {
         let state = make_state();
@@ -1398,6 +1717,8 @@ mod tests {
 
     // ── get_dialog with associated streams (full detail path) ─────────
 
+    /// `GET /v1/dialogs/:call_id` still returns 200 when a linked RTP
+    /// stream exercises the full-detail (streams + diagnosis) path.
     #[tokio::test]
     async fn get_dialog_includes_associated_streams() {
         let state = make_state();
@@ -1427,6 +1748,7 @@ mod tests {
 
     // ── list_dialogs filters ──────────────────────────────────────────
 
+    /// A case-insensitive `state` filter matching all dialogs returns all 3.
     #[tokio::test]
     async fn list_dialogs_state_filter_matches() {
         let state = make_state();
@@ -1443,6 +1765,8 @@ mod tests {
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
     }
 
+    /// A `state` filter matching nothing returns an empty page but the
+    /// unfiltered total.
     #[tokio::test]
     async fn list_dialogs_state_filter_excludes() {
         let state = make_state();
@@ -1460,6 +1784,8 @@ mod tests {
         assert_eq!(parsed["total"], 3);
     }
 
+    /// A `from` regex filter selects the single matching dialog and the
+    /// canonical `from_user` key carries the user part.
     #[tokio::test]
     async fn list_dialogs_from_regex_filter() {
         let state = make_state();
@@ -1477,6 +1803,7 @@ mod tests {
         assert_eq!(parsed["dialogs"][0]["from_user"], "user1");
     }
 
+    /// An uncompilable `from` regex is ignored (no filtering, still 200).
     #[tokio::test]
     async fn list_dialogs_invalid_from_regex_is_ignored() {
         let state = make_state();
@@ -1496,6 +1823,8 @@ mod tests {
 
     // ── metrics with stream data ──────────────────────────────────────
 
+    /// `/metrics` with stream data returns 200, the Prometheus content
+    /// type, and `sipnab_` metrics.
     #[tokio::test]
     async fn get_metrics_with_streams_populates_rtp() {
         let state = make_state();
@@ -1522,6 +1851,8 @@ mod tests {
 
     // ── stats with empty stores ───────────────────────────────────────
 
+    /// `/v1/stats` on empty stores reports total 0 and `null` PDD
+    /// percentiles.
     #[tokio::test]
     async fn stats_empty_store_has_null_percentiles() {
         let state = make_state();
@@ -1541,6 +1872,7 @@ mod tests {
 
     // ── auth guard arms ───────────────────────────────────────────────
 
+    /// With no credential configured, auth is disabled and requests pass.
     #[tokio::test]
     async fn auth_no_key_configured_allows_request() {
         // make_state has api_key = None -> check_auth short-circuits to Ok.
@@ -1555,6 +1887,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
+    /// A non-Bearer scheme (`Basic ...`) is rejected with 401.
     #[tokio::test]
     async fn auth_non_bearer_scheme_returns_401() {
         let state = make_state_with_key("secret-key");
@@ -1566,6 +1899,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// An Authorization value that fails `to_str()` (non-visible-ASCII) is
+    /// rejected with 401.
     #[tokio::test]
     async fn auth_non_ascii_header_returns_401() {
         let state = make_state_with_key("secret-key");
@@ -1577,6 +1912,7 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// `/health` bypasses the guard: 200 "ok" even with a key configured.
     #[tokio::test]
     async fn health_check_ignores_rate_limit_and_auth() {
         // /health is not guarded; works even with a key configured.
@@ -1590,6 +1926,7 @@ mod tests {
 
     // ── helper unit tests ─────────────────────────────────────────────
 
+    /// Any percentile of a single-element slice is that element.
     #[test]
     fn percentile_single_element() {
         let one = vec![42];
@@ -1598,12 +1935,14 @@ mod tests {
         assert_eq!(percentile(&one, 100), Some(42));
     }
 
+    /// Percentiles of an empty slice are `None`.
     #[test]
     fn percentile_empty_is_none() {
         assert_eq!(percentile(&[], 50), None);
         assert_eq!(percentile(&[], 99), None);
     }
 
+    /// A loss-free, jitter-free PCMU stream scores between 3.0 and 5.0.
     #[test]
     fn approximate_mos_clean_stream_is_high() {
         let state = make_state();
@@ -1616,6 +1955,8 @@ mod tests {
         assert!(mos <= 5.0, "MOS should not exceed ceiling, got {mos}");
     }
 
+    /// `dialog_summary` emits the canonical projection keys (`call_id`,
+    /// `method`, `timing`, `created_at`).
     #[test]
     fn dialog_summary_shape() {
         let state = make_state();
@@ -1629,6 +1970,8 @@ mod tests {
         assert!(summary["created_at"].is_string());
     }
 
+    /// `stream_summary` emits `0x`-prefixed SSRC, numeric MOS, and
+    /// `orphaned`.
     #[test]
     fn stream_summary_shape() {
         let state = make_state();
@@ -1641,6 +1984,7 @@ mod tests {
         assert_eq!(summary["orphaned"], false);
     }
 
+    /// Port 0 (OS-assigned ephemeral) parses to loopback:0.
     #[test]
     fn parse_bind_addr_port_zero() {
         let addr = parse_bind_addr("0").expect("parse");
@@ -1648,18 +1992,21 @@ mod tests {
         assert!(addr.ip().is_loopback());
     }
 
+    /// A bare ":" is rejected (empty port).
     #[test]
     fn parse_bind_addr_colon_only_is_invalid() {
         // ":" strips to empty, which is not a valid u16 and not a SocketAddr.
         assert!(parse_bind_addr(":").is_err());
     }
 
+    /// A port above `u16::MAX` is rejected on every parse branch.
     #[test]
     fn parse_bind_addr_out_of_range_port_is_invalid() {
         // 70000 > u16::MAX so the bare-port branch fails, then SocketAddr parse fails.
         assert!(parse_bind_addr("70000").is_err());
     }
 
+    /// A bracketed IPv6 `[::1]:port` address parses.
     #[test]
     fn parse_bind_addr_ipv6_full() {
         let addr = parse_bind_addr("[::1]:8080").expect("parse");
@@ -1667,6 +2014,7 @@ mod tests {
         assert!(addr.ip().is_loopback());
     }
 
+    /// Each source IP gets its own rate-limit bucket.
     #[test]
     fn rate_limiter_separate_ips_independent() {
         let mut limiter = RateLimiter::new(1);

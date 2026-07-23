@@ -4,6 +4,14 @@
 //! Regression context: README once listed `--codec-asym`, `--ptime-asym`,
 //! `--payload-asym`, `--duration-asym`, and `--late-media` as standalone
 //! flags, but they are `--filter` DSL aliases only.
+//!
+//! Beyond flag drift, this crate also pins other doc-vs-reality contracts:
+//! `--mcp` examples must pass `-N`/`--no-tui`, the Code of Conduct must keep
+//! a working enforcement contact, the man page must match the crate version
+//! and license, "current version" markers in install/benchmark docs must
+//! match Cargo.toml, and the benchmark tables must stay identical between
+//! the wiki source and the website copy. Gated on the `native` feature
+//! because it introspects the real clap `Cli`.
 #![cfg(feature = "native")]
 
 use clap::CommandFactory;
@@ -35,6 +43,9 @@ const FOREIGN_FLAGS: &[&str] = &[
 ];
 
 /// All long flag names (including aliases) the real CLI accepts.
+///
+/// # Returns
+/// The set of long option names, plus the implicit `help`/`version`.
 fn cli_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = BTreeSet::new();
@@ -56,11 +67,16 @@ fn cli_long_flags() -> BTreeSet<String> {
 
 /// Extract `--flag-name` tokens from markdown. Requires a letter after the
 /// dashes so table rules (`|----|`) and `--` used as an em-dash don't match.
+///
+/// # Returns
+/// The distinct flag names found, without the leading dashes.
 fn extract_long_flags(text: &str) -> BTreeSet<String> {
     let re = regex::Regex::new(r"--([A-Za-z][A-Za-z0-9-]*)").unwrap();
     re.captures_iter(text).map(|c| c[1].to_string()).collect()
 }
 
+/// Every `--flag` mentioned across the user-facing docs exists in the clap
+/// CLI (or is a whitelisted foreign-tool flag); extraction is self-checked.
 #[test]
 fn readme_long_flags_exist_in_cli() {
     // Every user-facing markdown file that shows commands. include_str!
@@ -198,6 +214,7 @@ fn readme_long_flags_exist_in_cli() {
     );
 }
 
+/// README keeps the libasound runtime note and a --no-default-features headless recipe.
 #[test]
 fn readme_documents_audio_runtime_dependency_and_headless_recipe() {
     // The `audio` default feature needs libasound at runtime; README must
@@ -214,6 +231,7 @@ fn readme_documents_audio_runtime_dependency_and_headless_recipe() {
     );
 }
 
+/// The flag extractor skips table rules and spaced dashes but still flags `---triple` typos.
 #[test]
 fn extraction_ignores_table_rules_and_em_dashes() {
     let md = "| a |\n|----|\n**Bold** -- prose with -- dashes\n`--real-flag` and ---triple";
@@ -228,6 +246,9 @@ fn extraction_ignores_table_rules_and_em_dashes() {
 }
 
 /// Split a markdown document into its fenced code blocks (``` ... ```).
+///
+/// # Returns
+/// The body text of each fenced block, in document order.
 fn fenced_blocks(md: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut current: Option<String> = None;
@@ -424,8 +445,11 @@ fn docs_current_version_markers_match_cargo() {
 // differ; the tables may not.
 // ---------------------------------------------------------------------------
 
+/// The markdown table rows of docs/benchmarks.md and the website benchmarks page are identical.
 #[test]
 fn benchmark_tables_match_between_docs_and_website() {
+    /// The markdown table rows (lines starting with `|`) of a document,
+    /// trailing whitespace trimmed.
     fn rows(text: &str) -> Vec<&str> {
         text.lines()
             .filter(|l| l.starts_with('|'))

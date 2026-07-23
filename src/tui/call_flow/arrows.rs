@@ -3,10 +3,29 @@
 //! Provides the unified `format_arrow` function that draws arrows between
 //! arbitrary column positions, as well as the legacy `format_arrow_right`
 //! and `format_arrow_left` wrappers for the Paragraph-based rendering path.
+//! Also home of the UTF-8-safe `truncate` helper used for labels throughout
+//! the call-flow view.
 
 /// Format an arrow between two column positions.
 ///
-/// Returns the arrow string and the x-position to start drawing.
+/// The arrow occupies the columns strictly between the two pipes: it starts
+/// one column after the leftmost pipe and its head lands on the column of
+/// the rightmost pipe. Requests use a solid shaft (`─`), responses a dashed
+/// one (`╌`). The label is centered on the shaft when it fits; a label wider
+/// than the gap is truncated (with ellipsis) rather than dropped, and only a
+/// gap too narrow for any meaningful text (< 8 usable columns) falls back to
+/// a bare line. A gap under 4 columns yields a minimal 2-character arrow.
+///
+/// # Arguments
+/// * `label` — method/status text to center on the shaft.
+/// * `src_x` — buffer column of the source participant's pipe.
+/// * `dst_x` — buffer column of the destination participant's pipe;
+///   `dst_x > src_x` points the arrowhead right, otherwise left.
+/// * `is_response` — dashed shaft when true, solid when false.
+///
+/// # Returns
+/// `(arrow, start_x)`: the rendered arrow string and the buffer column to
+/// start drawing it at (`min(src_x, dst_x) + 1`).
 pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (String, u16) {
     let goes_right = dst_x > src_x;
     let start = src_x.min(dst_x) + 1; // after the source pipe
@@ -67,7 +86,10 @@ pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (
 /// Format a right-pointing arrow with the label centered: `─────── LABEL ────────▶`
 ///
 /// Uses dashed lines (`╌`) for responses, solid lines (`─`) for requests.
-/// Used by the Paragraph-based rendering path.
+/// Used by the Paragraph-based rendering path. `width` is the target column
+/// span of the arrow; a label too wide for it degrades to a fixed short
+/// two-dash form rather than truncating. Returns the arrow string ending in
+/// the `▶` head.
 pub fn format_arrow_right(label: &str, width: usize, is_response: bool) -> String {
     let line_char = if is_response { '\u{254C}' } else { '\u{2500}' }; // ╌ or ─
     let arrow_head = '\u{25B6}'; // ▶
@@ -91,7 +113,10 @@ pub fn format_arrow_right(label: &str, width: usize, is_response: bool) -> Strin
 /// Format a left-pointing arrow with the label centered: `◀────── LABEL ─────────`
 ///
 /// Uses dashed lines (`╌`) for responses, solid lines (`─`) for requests.
-/// Used by the Paragraph-based rendering path.
+/// Used by the Paragraph-based rendering path. `width` is the target column
+/// span of the arrow; a label too wide for it degrades to a fixed short
+/// two-dash form rather than truncating. Returns the arrow string starting
+/// with the `◀` head.
 pub fn format_arrow_left(label: &str, width: usize, is_response: bool) -> String {
     let line_char = if is_response { '\u{254C}' } else { '\u{2500}' }; // ╌ or ─
     let arrow_head = '\u{25C0}'; // ◀
@@ -112,8 +137,11 @@ pub fn format_arrow_left(label: &str, width: usize, is_response: bool) -> String
     format!("{arrow_head}{left_str} {label} {right_str}")
 }
 
-/// Truncate a string to a maximum display length, appending "..." if truncated.
-/// Uses char boundaries to avoid panics on multi-byte UTF-8 input.
+/// Truncate a string to at most `max_len` bytes, appending "..." if truncated
+/// (for ASCII input this equals a character count). A `max_len` of 3 or less
+/// keeps the first `max_len` chars with no ellipsis. Walks back to a char
+/// boundary so multi-byte UTF-8 input never panics; the result may therefore
+/// come in under the limit. Returns the (possibly shortened) owned string.
 pub fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
@@ -131,6 +159,7 @@ pub fn truncate(s: &str, max_len: usize) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Tests for arrow formatting and UTF-8-safe label truncation.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +204,7 @@ mod tests {
         }
     }
 
+    /// A right arrow keeps its label and ends in the `▶` head.
     #[test]
     fn format_arrow_right_contains_label() {
         let arrow = format_arrow_right("INVITE", 24, false);
@@ -182,6 +212,7 @@ mod tests {
         assert!(arrow.ends_with('\u{25B6}')); // ▶
     }
 
+    /// A left arrow keeps its label and starts with the `◀` head.
     #[test]
     fn format_arrow_left_contains_label() {
         let arrow = format_arrow_left("200 OK", 24, true);
@@ -189,17 +220,20 @@ mod tests {
         assert!(arrow.starts_with('\u{25C0}')); // ◀
     }
 
+    /// Short input passes through; long input truncates to `max_len` with "...".
     #[test]
     fn truncate_long_string() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello world foo", 10), "hello w...");
     }
 
+    /// `max_len <= 3` keeps the first chars without an ellipsis.
     #[test]
     fn truncate_short_max() {
         assert_eq!(truncate("hello", 3), "hel");
     }
 
+    /// `dst_x > src_x` renders a rightward arrow starting at `src_x + 1`.
     #[test]
     fn format_arrow_right_goes_right() {
         // src_x=10, dst_x=50 => goes right
@@ -209,6 +243,7 @@ mod tests {
         assert_eq!(start, 11); // src_x + 1
     }
 
+    /// `dst_x < src_x` renders a leftward arrow starting after the lower pipe.
     #[test]
     fn format_arrow_left_goes_left() {
         // src_x=50, dst_x=10 => goes left
@@ -218,6 +253,7 @@ mod tests {
         assert_eq!(start, 11); // min(50,10) + 1
     }
 
+    /// A sub-4-column gap still yields a minimal arrow with a head.
     #[test]
     fn format_arrow_narrow() {
         // Very narrow: width = 3
@@ -227,16 +263,19 @@ mod tests {
 
     // ── UTF-8 safe truncation ──────────────────────────────────────────
 
+    /// Input shorter than the limit is returned unchanged.
     #[test]
     fn truncate_short_string_unchanged() {
         assert_eq!(truncate("hello", 10), "hello");
     }
 
+    /// The ellipsis is counted inside the limit: 11 chars into 8 keeps 5 + "...".
     #[test]
     fn truncate_exact_fit() {
         assert_eq!(truncate("hello world", 8), "hello...");
     }
 
+    /// 2-byte Latin chars near the cut point truncate without panicking.
     #[test]
     fn truncate_multibyte_latin_no_panic() {
         // "héllo wörld" contains 2-byte UTF-8 chars (é = 0xC3 0xA9, ö = 0xC3 0xB6)
@@ -245,6 +284,7 @@ mod tests {
         assert!(result.ends_with("..."));
     }
 
+    /// 3-byte CJK chars truncate on a char boundary without panicking.
     #[test]
     fn truncate_cjk_no_panic() {
         // "日本語テスト" — each char is 3 bytes in UTF-8

@@ -4,6 +4,19 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Documentation
+- Crate-wide documentation pass: every module, function (public, private,
+  and test), type, field, and constant — across `src/`, all integration
+  test crates, and the fuzz targets — now carries rustdoc describing
+  purpose, arguments, returns, errors, and explicit side effects (I/O,
+  locks, subprocess execution, privilege drops, raw-socket sends,
+  detector/cache state). Enforced going forward by
+  `clippy::missing_docs_in_private_items` alongside the existing
+  `missing_docs` gate (CI clippy runs `-D warnings`). Around twenty
+  stale or misattached doc blocks were corrected to match the code, and
+  ~250 code-improvement observations recorded during the audit are
+  filed in `tasks/todo.md`.
+
 ### Added
 - Capture: SIP over SCTP. `parse_packet` now decodes the SCTP common
   header and chunk stream, extracting the SIP payload from the first

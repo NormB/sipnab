@@ -10,6 +10,7 @@ use std::process::Command;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
+/// Absolute path to `tests/fixtures/sip_call.pcap` (7-message complete call).
 fn sip_call_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -18,6 +19,9 @@ fn sip_call_fixture() -> PathBuf {
 }
 
 /// Run sipnab with the given arguments and return (stdout, stderr, exit_code).
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess with `SIPNAB_LOG=warn`.
 fn run(args: &[&str]) -> (String, String, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
@@ -32,6 +36,16 @@ fn run(args: &[&str]) -> (String, String, i32) {
 }
 
 /// Write a temporary config file and return its path (kept alive by the tempdir).
+///
+/// # Arguments
+/// * `dir` — tempdir that owns the file's lifetime.
+/// * `content` — TOML text to write.
+///
+/// # Returns
+/// Path to the written `sipnab.toml`.
+///
+/// # Side effects
+/// Creates `sipnab.toml` inside `dir`.
 fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
     let path = dir.path().join("sipnab.toml");
     let mut f = std::fs::File::create(&path).unwrap();
@@ -43,6 +57,8 @@ fn write_config(dir: &tempfile::TempDir, content: &str) -> PathBuf {
 //  Test 1: json_output_schema_is_complete
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// The first JSON output line carries every required field (src/dst/ports/
+/// transport/is_request/call_id/schema_version) with the correct JSON types.
 #[test]
 fn json_output_schema_is_complete() {
     let fixture = sip_call_fixture();
@@ -111,6 +127,8 @@ fn json_output_schema_is_complete() {
 //  Test 2: dialog_state_display_matches_debug
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// For all 12 `DialogState` variants, `Display` output equals `Debug` output —
+/// CSV export depends on this equivalence.
 #[test]
 fn dialog_state_display_matches_debug() {
     use sipnab::sip::dialog::DialogState;
@@ -145,6 +163,8 @@ fn dialog_state_display_matches_debug() {
 //  Test 3: config_filter_expression_applied
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A `[filter] expression` from the config file is applied: a REGISTER-only
+/// filter drops all 7 INVITE-flow messages, while `--no-config` emits them.
 #[test]
 fn config_filter_expression_applied() {
     let dir = tempfile::tempdir().unwrap();
@@ -236,6 +256,8 @@ fn stir_shaken_without_tls_is_gated() {
 //  Test 5: config_visible_columns_round_trip
 // ═══════════════════════════════════════════════════════════════════════════
 
+/// A `[display] visible_columns` list in the config survives a load +
+/// `--dump-config` round trip: the key and every column name appear in the dump.
 #[test]
 fn config_visible_columns_round_trip() {
     let dir = tempfile::tempdir().unwrap();

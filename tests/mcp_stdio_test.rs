@@ -14,6 +14,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Absolute path to a file under `tests/fixtures/`.
+///
+/// # Arguments
+/// * `path` — filename relative to the fixtures directory.
 fn fixture(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -21,6 +25,13 @@ fn fixture(path: &str) -> std::path::PathBuf {
 }
 
 /// Send a single JSON-RPC line to the child's stdin.
+///
+/// # Arguments
+/// * `child` — the spawned `sipnab --mcp` process.
+/// * `msg` — the JSON-RPC message; serialized onto one line and flushed.
+///
+/// # Side effects
+/// Writes to the child process's stdin.
 fn send(child: &mut std::process::Child, msg: &serde_json::Value) {
     let stdin = child.stdin.as_mut().expect("stdin");
     let line = serde_json::to_string(msg).expect("serialize");
@@ -32,6 +43,11 @@ fn send(child: &mut std::process::Child, msg: &serde_json::Value) {
 /// must parse as JSON; if any line fails to parse, the test fails (that's
 /// the Gotcha 1 regression signal). Returns the response with the matching
 /// `id`, or `None` on timeout.
+///
+/// # Arguments
+/// * `reader` — buffered reader over the child's stdout.
+/// * `target_id` — JSON-RPC id whose response is awaited.
+/// * `timeout` — overall deadline for finding the matching response.
 fn read_response_with_id(
     reader: &mut BufReader<&mut std::process::ChildStdout>,
     target_id: i64,
@@ -70,6 +86,13 @@ fn read_response_with_id(
 /// ingestion runs asynchronously to the MCP server loop, so the first
 /// call after `initialize` can legitimately observe zero dialogs on a
 /// slow runner; every reply must still be well-formed.
+///
+/// # Returns
+/// The parsed dialog-summaries JSON array (non-empty); panics on timeout or
+/// a malformed reply.
+///
+/// # Side effects
+/// Sends repeated `tools/call` requests on the child's stdin.
 fn list_dialogs_until_nonempty(
     child: &mut std::process::Child,
     reader: &mut BufReader<&mut std::process::ChildStdout>,

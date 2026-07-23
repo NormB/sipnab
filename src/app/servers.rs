@@ -2,7 +2,7 @@
 //!
 //! Every enabled async server runs on ONE background thread driving ONE
 //! current-thread tokio runtime (pre-WS2, each server bootstrapped its own
-//! thread + runtime in main.rs). The entry point [`start_servers`] is
+//! thread + runtime in main.rs). The entry point `start_servers` is
 //! unconditional — its *body* is feature-swapped, so callers contain zero
 //! `#[cfg(feature = ...)]`, following the `pipeline::MediaDecrypt` pattern.
 
@@ -47,24 +47,36 @@ pub struct ServerHandles {
 /// resolution happen synchronously, so configuration errors surface before
 /// capture starts), ready to be awaited on the shared runtime.
 enum Prepared {
+    /// REST API server, listener already bound.
     #[cfg(feature = "api")]
     Api {
         /// Pre-bound on the caller's thread so a busy port (or any other
         /// bind failure) is fatal before the TUI hides stderr.
         listener: std::net::TcpListener,
+        /// Shared stores + verifier + rate limiter the handlers read.
         state: crate::output::api::ApiState,
+        /// Connection cap and optional TLS certificate/key paths.
         config: crate::output::api::ApiServerConfig,
     },
+    /// MCP server speaking JSON-RPC over the process's stdin/stdout.
     #[cfg(feature = "mcp")]
     McpStdio {
+        /// The tool server to expose (boxed to keep the variant small).
         server: Box<crate::mcp::SipnabMcp>,
+        /// Flipped to `true` when the stdio task finishes (client closed
+        /// stdin); surfaced to callers via `ServerHandles::mcp_stdio_done`.
         done: Arc<std::sync::atomic::AtomicBool>,
     },
+    /// MCP server speaking Streamable HTTP on a TCP bind.
     #[cfg(feature = "mcp-http")]
     McpHttp {
+        /// The tool server to expose (boxed to keep the variant small).
         server: Box<crate::mcp::SipnabMcp>,
+        /// Parsed `--mcp-bind` address (default `127.0.0.1:8731`).
         bind: std::net::SocketAddr,
+        /// Bearer-token verifier configuration for the HTTP guard.
         auth: crate::auth::VerifierConfig,
+        /// `--mcp-allowed-host` additions to the Host-header allowlist.
         extra_allowed_hosts: Vec<String>,
     },
 }
@@ -73,6 +85,12 @@ enum Prepared {
 impl Prepared {
     /// Run this server to completion, logging (not propagating) runtime
     /// errors — one failed server must not tear down the others.
+    ///
+    /// # Side effects
+    ///
+    /// Serves network/stdio traffic until the transport finishes; the
+    /// stdio variant additionally stores `true` into its `done` flag so
+    /// the batch keep-alive loop can exit when the client disconnects.
     async fn run(self) {
         match self {
             #[cfg(feature = "api")]
@@ -122,6 +140,23 @@ impl Prepared {
 ///
 /// `alerts` feeds the MCP `security_findings` tool; a caller without a
 /// detection pipeline passes `None` and MCP runs without findings history.
+///
+/// # Arguments
+///
+/// * `cli` — parsed flags supplying `--api`, `--mcp`, transports, and auth.
+/// * `dialog_store` / `stream_store` — the LIVE stores the packet loop
+///   writes to; servers read the same instances (no mirroring).
+/// * `alerts` — optional shared alert engine for MCP findings queries.
+/// * `selection` — which servers this run mode permits.
+///
+/// # Side effects
+///
+/// Binds the API TCP listener synchronously on the caller's thread, then
+/// spawns one detached OS thread named "servers" that builds a
+/// current-thread tokio runtime and drives every prepared server as a task
+/// until each finishes. Auth resolution may read signing-key/token files
+/// from disk (and exits the process on unreadable files — see
+/// `read_signing_key_file`).
 pub fn start_servers(
     cli: &Cli,
     dialog_store: &Arc<RwLock<DialogStore>>,
@@ -261,6 +296,12 @@ pub fn start_servers(
 }
 
 /// Read a signing-key file for `flag`, trimming surrounding whitespace.
+///
+/// # Side effects
+///
+/// Reads `path` from disk; on failure logs the error (naming the offending
+/// `flag`) and exits the process with code 2 — a misconfigured key file is
+/// always fatal.
 #[cfg(any(feature = "api", feature = "mcp"))]
 fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
     match std::fs::read_to_string(path) {
@@ -273,7 +314,14 @@ fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
 }
 
 /// Resolve the REST API auth config (signing keys + static secret +
-/// revocation file) from the CLI into an [`crate::auth::VerifierConfig`].
+/// revocation file) from the CLI into a `crate::auth::VerifierConfig`.
+/// The `--api-signing-key-file` key is loaded first so it becomes the
+/// minting key.
+///
+/// # Side effects
+///
+/// May read the signing-key file from disk and exit the process (code 2)
+/// when it is unreadable.
 #[cfg(feature = "api")]
 pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     let mut signing_keys: Vec<Vec<u8>> = Vec::new();
@@ -302,6 +350,11 @@ pub fn resolve_api_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
 /// Resolve the HTTP MCP auth config from the CLI. The MCP token resolution
 /// order (`--mcp-token` > `--mcp-token-file` > env) is preserved for the
 /// static-secret fallback.
+///
+/// # Side effects
+///
+/// May read the signing-key and token files from disk and exit the process
+/// (code 2) when either is unreadable.
 #[cfg(feature = "mcp")]
 pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
     let mut signing_keys: Vec<Vec<u8>> = Vec::new();

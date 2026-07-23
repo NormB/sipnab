@@ -45,6 +45,11 @@ const WAIVED: &[(&str, &str)] = &[
 
 /// Every markdown doc that carries user-facing command examples. Read at
 /// runtime from CARGO_MANIFEST_DIR so new docs are covered automatically.
+///
+/// # Returns
+/// `(relative_path, file_text)` for each `.md` file in `docs/`,
+/// `website/content/docs/`, and the top-level `README.md`; panics if the
+/// corpus is suspiciously small (path resolution broken).
 fn doc_corpus() -> Vec<(String, String)> {
     let root = env!("CARGO_MANIFEST_DIR");
     let mut docs = Vec::new();
@@ -78,6 +83,12 @@ fn doc_corpus() -> Vec<(String, String)> {
 }
 
 /// Concatenated text of every ```bash fenced block in the corpus.
+///
+/// # Arguments
+/// * `corpus` — `(path, text)` pairs from `doc_corpus`.
+///
+/// # Returns
+/// All bash-fence bodies joined with newlines.
 fn all_bash_blocks(corpus: &[(String, String)]) -> String {
     let re = regex::Regex::new(r"(?s)```bash\n(.*?)```").unwrap();
     let mut out = String::new();
@@ -92,6 +103,9 @@ fn all_bash_blocks(corpus: &[(String, String)]) -> String {
 
 /// Primary long name of every user-facing flag (aliases and auto
 /// help/version excluded — we count the canonical spelling only).
+///
+/// # Returns
+/// The long flag names extracted from the clap `Cli` command definition.
 fn user_facing_long_flags() -> Vec<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = Vec::new();
@@ -106,6 +120,8 @@ fn user_facing_long_flags() -> Vec<String> {
     flags
 }
 
+/// Every non-waived user-facing flag appears at least `MIN_EXAMPLES` (2) times
+/// in the corpus's bash example blocks; under-demonstrated flags fail with a list.
 #[test]
 fn every_flag_has_at_least_two_examples() {
     let corpus = doc_corpus();
@@ -147,6 +163,8 @@ fn every_flag_has_at_least_two_examples() {
     );
 }
 
+/// Every entry in `WAIVED` still names a real flag — a waiver for a removed
+/// flag fails so it gets cleaned up.
 #[test]
 fn waived_flags_still_exist() {
     // A waiver for a removed flag is dead weight — fail so it gets cleaned up.

@@ -1,5 +1,5 @@
-//! Phase 8.1 — `SipnabMcp` server: three v0.4.0 read-only tools backed
-//! by the existing dialog/stream stores.
+//! `SipnabMcp` server: the read-only MCP tools backed by the existing
+//! dialog/stream stores (plus the optional alert engine).
 //!
 //! # Tool descriptions and prompt-injection defense (D22)
 //!
@@ -49,6 +49,7 @@ pub struct SipnabMcp {
     /// `source_exhausted` so pollers know no more updates will come. When
     /// None (no capture owner attached), it reads as not exhausted.
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// rmcp router mapping tool names to the handler methods below.
     tool_router: ToolRouter<Self>,
 }
 
@@ -117,7 +118,7 @@ pub struct FindProblemsParams {
     pub limit: Option<u32>,
 }
 
-// ── Phase 8.3 parameter structs ─────────────────────────────────────
+// ── Dialog-inspection parameter structs ─────────────────────────────
 
 /// Parameters for `get_dialog`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -254,7 +255,7 @@ pub struct FindingJson {
 
 // ── Compact summary returned by list_dialogs / find_problems ────────
 
-/// The canonical compact per-dialog row (see [`crate::output::model`]):
+/// The canonical compact per-dialog row (see `crate::output::model`):
 /// field names and value formats are shared with the CLI/NDJSON and REST
 /// surfaces, so MCP cannot drift on the wire again (`message_count` vs
 /// `msg_count`, Debug-formatted methods).
@@ -268,6 +269,15 @@ impl SipnabMcp {
     /// named aliases (problems, slow-setup, short-calls, one-way, nat-issues,
     /// codec-asym, ptime-asym, payload-asym, duration-asym, late-media) or a
     /// raw DSL expression. Output is bounded by `limit` (default 50, max 1000).
+    ///
+    /// # Returns
+    ///
+    /// A JSON array of `DialogSummary` rows (empty when nothing matches).
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `filter` is neither a known alias nor a
+    /// parseable DSL expression.
     #[tool(
         name = "list_dialogs",
         description = "Returns dialog summaries from the live capture store. \
@@ -329,6 +339,11 @@ impl SipnabMcp {
     /// diagnosis hints) for one Call-ID. Format defaults to JSON; "markdown"
     /// and "text" produce human-readable variants identical to
     /// `--call-report --markdown` and `--call-report` respectively.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `format` or an unknown
+    /// `call_id`.
     #[tool(
         name = "get_dialog_report",
         description = "Returns a structured per-call report (timing, parties, \
@@ -399,6 +414,16 @@ impl SipnabMcp {
     /// Convenience wrapper over `list_dialogs` — runs each named alias from
     /// `kinds` (default `["problems"]`) and ORs the matches together. Useful
     /// when you want "anything that looks problematic" in one call.
+    ///
+    /// # Returns
+    ///
+    /// A JSON array of `DialogSummary` rows matching any alias (empty when
+    /// nothing matches).
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown alias name or an alias whose
+    /// expansion fails to parse.
     #[tool(
         name = "find_problems",
         description = "Returns dialogs that match any of the named diagnostic \
@@ -454,9 +479,19 @@ impl SipnabMcp {
         )?]))
     }
 
-    // ── Phase 8.3 tools ─────────────────────────────────────────────
+    // ── Dialog-inspection and monitoring tools ──────────────────────
 
     /// Returns a paginated dialog including its SIP messages.
+    ///
+    /// # Returns
+    ///
+    /// A JSON object with the dialog summary, the requested message page,
+    /// `total_messages`, a `next_cursor` (null on the last page), and a
+    /// `complete` flag. A cursor past the end yields an empty page.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `call_id` is not found.
     #[tool(
         name = "get_dialog",
         description = "Returns a paginated dialog including SIP messages. \
@@ -510,7 +545,13 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// Returns a single SIP message at the given index.
+    /// Returns a single SIP message at the given index, serialized as the
+    /// same JSON object the NDJSON output emits.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `call_id` is unknown or `index` is out
+    /// of range for the dialog.
     #[tool(
         name = "get_message",
         description = "Returns a single SIP message at the given zero-based \
@@ -544,7 +585,13 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(parsed)?]))
     }
 
-    /// Renders a SIP call-flow ladder as markdown or text.
+    /// Renders a SIP call-flow ladder as markdown (default) or text for one
+    /// Call-ID, returned as a text content block.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for an unknown `format` or an unknown
+    /// `call_id`.
     #[tool(
         name = "render_ladder",
         description = "Renders a SIP call-flow ladder for one Call-ID. \
@@ -592,6 +639,15 @@ impl SipnabMcp {
     }
 
     /// Returns RTP quality stats for all streams associated with the dialog.
+    ///
+    /// # Returns
+    ///
+    /// A JSON object with the `call_id`, a `streams` array (empty when the
+    /// dialog has no media), and the media `diagnosis`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `call_id` is not found.
     #[tool(
         name = "rtp_stats",
         description = "Returns per-stream RTP quality (codec, MOS, jitter, \
@@ -639,7 +695,17 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(payload)?]))
     }
 
-    /// Substring-search SIP messages across all dialogs.
+    /// Substring-search SIP messages across all dialogs (case-insensitive
+    /// over method, status, From, To, User-Agent, and body).
+    ///
+    /// # Returns
+    ///
+    /// A JSON array of `SearchHit` rows, empty when nothing matches;
+    /// snippets are truncated to `MAX_BODY_BYTES`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `query` is empty.
     #[tool(
         name = "search_messages",
         description = "Case-insensitive substring search over SIP method, \
@@ -699,6 +765,16 @@ impl SipnabMcp {
 
     /// Incremental dialog fetch — returns dialogs updated strictly after the
     /// supplied cursor.
+    ///
+    /// # Returns
+    ///
+    /// A `TailDialogsResponse`: matching dialogs sorted oldest-first, a
+    /// `next_cursor` (the newest `updated_at` returned; null when no dialogs
+    /// matched), and the `source_exhausted` flag.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `cursor` is not RFC 3339.
     #[tool(
         name = "tail_dialogs",
         description = "Returns dialogs whose updated_at is strictly after \
@@ -762,6 +838,15 @@ impl SipnabMcp {
     /// from the in-memory ring buffer. When the AlertEngine isn't attached
     /// (e.g. running in a query-only mode without active detection rules),
     /// returns an empty list rather than erroring.
+    ///
+    /// # Returns
+    ///
+    /// A JSON array of `FindingJson` rows with details truncated to
+    /// `MAX_BODY_BYTES`.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) when `since` is not RFC 3339.
     #[tool(
         name = "security_findings",
         description = "Returns recent security findings recorded by the \
@@ -810,7 +895,9 @@ impl SipnabMcp {
         Ok(CallToolResult::success(vec![ContentBlock::json(findings)?]))
     }
 
-    /// Aggregate counters across the active stores.
+    /// Aggregate counters across the active stores, returned as a
+    /// `StatsResponse` JSON object. Takes no parameters and never fails
+    /// beyond JSON serialization.
     #[tool(
         name = "stats",
         description = "Returns aggregate counters: total dialogs, total \
@@ -837,6 +924,8 @@ impl SipnabMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
+    /// Advertise server capabilities (tools only) and the human-readable
+    /// instructions string shown to MCP clients.
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
         info.instructions = Some(
@@ -848,6 +937,8 @@ impl ServerHandler for SipnabMcp {
     }
 }
 
+/// Unit tests for every MCP tool handler: success paths, error codes, and
+/// pagination/cursor semantics, driven directly (no transport).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,20 +947,24 @@ mod tests {
     use crate::test_utils::build_sip_message as build_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// A server over fresh, empty dialog/stream stores.
     fn empty_server() -> SipnabMcp {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
         SipnabMcp::new(ds, ss)
     }
 
+    /// 127.0.0.1 as an `IpAddr`.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// A fixed timestamp so dialog `updated_at` values are deterministic.
     fn base_ts() -> chrono::DateTime<chrono::Utc> {
         chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Parse `raw` as SIP between localhost:5060 endpoints at time `ts`.
     fn parse_at(raw: &[u8], ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
         parse_sip(
             raw,
@@ -883,6 +978,7 @@ mod tests {
         .expect("should parse SIP")
     }
 
+    /// A minimal well-formed INVITE for `call_id`, parsed at `ts`.
     fn invite(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -900,6 +996,7 @@ mod tests {
         parse_at(&raw, ts)
     }
 
+    /// The matching 200 OK response for `call_id`, parsed at `ts`.
     fn ok200(call_id: &str, ts: chrono::DateTime<chrono::Utc>) -> crate::sip::SipMessage {
         let raw = build_sip(
             "SIP/2.0 200 OK",
@@ -936,6 +1033,8 @@ mod tests {
             .clone()
     }
 
+    /// The shared exhausted flag flows through to `source_exhausted`:
+    /// false while unset, true after the capture owner stores it.
     #[tokio::test]
     async fn tail_dialogs_reports_source_exhausted_from_shared_flag() {
         // The tool description promises source_exhausted=true once the pcap
@@ -968,6 +1067,7 @@ mod tests {
         );
     }
 
+    /// With no capture owner attached, `source_exhausted` stays false.
     #[tokio::test]
     async fn tail_dialogs_without_flag_reports_not_exhausted() {
         // No capture owner attached (e.g. unit contexts): stay false rather
@@ -982,6 +1082,7 @@ mod tests {
         assert_eq!(json["source_exhausted"], false);
     }
 
+    /// An empty store yields an empty JSON array, not an error.
     #[tokio::test]
     async fn list_dialogs_empty_store_returns_empty() {
         let server = empty_server();
@@ -999,6 +1100,7 @@ mod tests {
         );
     }
 
+    /// An unparseable filter expression errors with invalid_params (-32602).
     #[tokio::test]
     async fn list_dialogs_with_invalid_filter_returns_invalid_params() {
         let server = empty_server();
@@ -1014,6 +1116,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
     async fn get_dialog_report_unknown_call_id_errors() {
         let server = empty_server();
@@ -1028,6 +1131,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// An unsupported format string errors with invalid_params (-32602).
     #[tokio::test]
     async fn get_dialog_report_unknown_format_errors() {
         let server = empty_server();
@@ -1042,6 +1146,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// An unknown diagnostic alias errors with invalid_params (-32602).
     #[tokio::test]
     async fn find_problems_unknown_alias_errors() {
         let server = empty_server();
@@ -1056,6 +1161,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// The default "problems" kind on an empty store yields an empty list.
     #[tokio::test]
     async fn find_problems_default_kind_returns_empty_list_on_empty_store() {
         let server = empty_server();
@@ -1070,6 +1176,7 @@ mod tests {
 
     // ── list_dialogs success path with populated store ───────────────
 
+    /// A populated store returns a summary naming the dialog and its party.
     #[tokio::test]
     async fn list_dialogs_returns_summary_for_populated_store() {
         let server = server_with_dialog("call-list@x");
@@ -1087,6 +1194,8 @@ mod tests {
 
     // ── get_dialog_report success paths ──────────────────────────────
 
+    /// The default JSON format re-parses into a structured object, not a
+    /// stringified blob.
     #[tokio::test]
     async fn get_dialog_report_json_returns_structured_object() {
         let server = server_with_dialog("rep@x");
@@ -1103,6 +1212,7 @@ mod tests {
         assert!(v.is_object(), "json report should be an object, got: {raw}");
     }
 
+    /// Markdown format yields non-empty text that is not standalone JSON.
     #[tokio::test]
     async fn get_dialog_report_markdown_returns_text() {
         let server = server_with_dialog("repmd@x");
@@ -1121,6 +1231,7 @@ mod tests {
 
     // ── get_dialog ───────────────────────────────────────────────────
 
+    /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
     async fn get_dialog_unknown_call_id_errors() {
         let server = empty_server();
@@ -1136,6 +1247,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// A full fetch returns all messages, complete=true, and a null cursor.
     #[tokio::test]
     async fn get_dialog_returns_messages_and_completion() {
         let server = server_with_dialog("dlg@x");
@@ -1154,6 +1266,7 @@ mod tests {
         assert_eq!(v["messages"].as_array().unwrap().len(), 2);
     }
 
+    /// A page smaller than the dialog yields complete=false and next_cursor.
     #[tokio::test]
     async fn get_dialog_pagination_yields_next_cursor() {
         let server = server_with_dialog("page@x");
@@ -1172,6 +1285,7 @@ mod tests {
         assert_eq!(v["messages"].as_array().unwrap().len(), 1);
     }
 
+    /// A cursor past the last message yields an empty page, complete=true.
     #[tokio::test]
     async fn get_dialog_cursor_past_end_returns_empty_slice() {
         let server = server_with_dialog("end@x");
@@ -1191,6 +1305,7 @@ mod tests {
 
     // ── get_message ──────────────────────────────────────────────────
 
+    /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
     async fn get_message_unknown_call_id_errors() {
         let server = empty_server();
@@ -1205,6 +1320,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// An out-of-range index errors (-32602) and the message names the range.
     #[tokio::test]
     async fn get_message_index_out_of_range_errors() {
         let server = server_with_dialog("msgoob@x");
@@ -1223,6 +1339,7 @@ mod tests {
         );
     }
 
+    /// A valid index returns the message as a structured JSON object.
     #[tokio::test]
     async fn get_message_returns_structured_message() {
         let server = server_with_dialog("msg@x");
@@ -1239,6 +1356,7 @@ mod tests {
 
     // ── render_ladder ────────────────────────────────────────────────
 
+    /// An unsupported ladder format errors with invalid_params (-32602).
     #[tokio::test]
     async fn render_ladder_unknown_format_errors() {
         let server = server_with_dialog("ladfmt@x");
@@ -1253,6 +1371,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
     async fn render_ladder_unknown_call_id_errors() {
         let server = empty_server();
@@ -1267,6 +1386,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// Text format renders a non-empty ladder for a tracked dialog.
     #[tokio::test]
     async fn render_ladder_text_format_returns_non_empty() {
         let server = server_with_dialog("lad@x");
@@ -1285,6 +1405,7 @@ mod tests {
 
     // ── rtp_stats ────────────────────────────────────────────────────
 
+    /// An unknown Call-ID errors with invalid_params (-32602).
     #[tokio::test]
     async fn rtp_stats_unknown_call_id_errors() {
         let server = empty_server();
@@ -1298,6 +1419,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// A media-less dialog yields an empty streams array plus a diagnosis.
     #[tokio::test]
     async fn rtp_stats_no_streams_returns_empty_streams_array() {
         let server = server_with_dialog("rtp@x");
@@ -1315,6 +1437,7 @@ mod tests {
 
     // ── search_messages ──────────────────────────────────────────────
 
+    /// An empty query errors with invalid_params (-32602).
     #[tokio::test]
     async fn search_messages_empty_query_errors() {
         let server = empty_server();
@@ -1329,6 +1452,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// A query matching nothing returns an empty hits array.
     #[tokio::test]
     async fn search_messages_no_match_returns_empty() {
         let server = server_with_dialog("srch@x");
@@ -1342,6 +1466,7 @@ mod tests {
         assert!(text_of(&result).contains("[]"));
     }
 
+    /// An upper-cased query still matches the lower-cased From header.
     #[tokio::test]
     async fn search_messages_case_insensitive_hit() {
         let server = server_with_dialog("srch2@x");
@@ -1368,6 +1493,7 @@ mod tests {
 
     // ── tail_dialogs ─────────────────────────────────────────────────
 
+    /// A non-RFC-3339 cursor errors with invalid_params (-32602).
     #[tokio::test]
     async fn tail_dialogs_invalid_cursor_errors() {
         let server = empty_server();
@@ -1382,6 +1508,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// Omitting the cursor returns every dialog and sets next_cursor.
     #[tokio::test]
     async fn tail_dialogs_no_cursor_returns_all_with_next_cursor() {
         let server = server_with_dialog("tail@x");
@@ -1398,6 +1525,7 @@ mod tests {
         assert_eq!(v["source_exhausted"], false);
     }
 
+    /// A cursor after every update filters all dialogs; next_cursor is null.
     #[tokio::test]
     async fn tail_dialogs_future_cursor_filters_everything() {
         let server = server_with_dialog("tailf@x");
@@ -1417,6 +1545,7 @@ mod tests {
 
     // ── security_findings ────────────────────────────────────────────
 
+    /// Without an attached AlertEngine the tool returns an empty list.
     #[tokio::test]
     async fn security_findings_no_engine_returns_empty() {
         let server = empty_server();
@@ -1427,6 +1556,7 @@ mod tests {
         assert!(text_of(&result).contains("[]"));
     }
 
+    /// A non-RFC-3339 `since` errors with invalid_params (-32602).
     #[tokio::test]
     async fn security_findings_invalid_since_errors() {
         let server = empty_server();
@@ -1442,6 +1572,7 @@ mod tests {
         assert_eq!(json["code"], -32602);
     }
 
+    /// A fired finding comes back with its rule name and source IP.
     #[tokio::test]
     async fn security_findings_with_engine_returns_recorded_finding() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -1463,6 +1594,7 @@ mod tests {
         assert_eq!(arr[0]["src_ip"], "127.0.0.1");
     }
 
+    /// The kinds filter excludes findings from other rule names.
     #[tokio::test]
     async fn security_findings_kinds_filter_excludes_other_rules() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -1487,6 +1619,7 @@ mod tests {
 
     // ── stats ────────────────────────────────────────────────────────
 
+    /// Empty stores report schema_version 1 and all-zero counters.
     #[tokio::test]
     async fn stats_empty_store_all_zero() {
         let server = empty_server();
@@ -1499,6 +1632,7 @@ mod tests {
         assert_eq!(v["active_call_count"], 0);
     }
 
+    /// A store with one dialog and no streams reports counts 1 and 0.
     #[tokio::test]
     async fn stats_counts_dialogs() {
         let server = server_with_dialog("stat@x");

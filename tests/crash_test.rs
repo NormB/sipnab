@@ -6,6 +6,19 @@ use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
 
+/// Spawns `sipnab --panic-selftest` under a `[crash]` config built from
+/// `crash_toml`, with `ulimit -c 0` so no real core file is ever written.
+///
+/// # Arguments
+/// * `crash_toml` — extra lines appended to the `[crash]` config section
+///   (e.g. `core = true`); empty string for the default policy.
+///
+/// # Returns
+/// `(exit_status, stderr, tempdir)` — the tempdir holds `reports/` and must
+/// stay alive while report files are inspected.
+///
+/// # Side effects
+/// Writes a temp config file and spawns the sipnab binary via `sh -c`.
 fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let report_dir = dir.path().join("reports");
@@ -34,6 +47,13 @@ fn run_selftest(crash_toml: &str) -> (std::process::ExitStatus, String, tempfile
     (output.status, stderr, dir)
 }
 
+/// Lists crash-report files under the tempdir's `reports/` directory.
+///
+/// # Arguments
+/// * `dir` — the tempdir returned by `run_selftest`.
+///
+/// # Returns
+/// Paths of all report files; empty if the directory does not exist.
 fn report_files(dir: &tempfile::TempDir) -> Vec<std::path::PathBuf> {
     let reports = dir.path().join("reports");
     match std::fs::read_dir(&reports) {
@@ -42,6 +62,8 @@ fn report_files(dir: &tempfile::TempDir) -> Vec<std::path::PathBuf> {
     }
 }
 
+/// Default crash policy: the process exits 101 (no signal), writes exactly one
+/// report containing the panic message and a backtrace, and stderr names the file.
 #[test]
 fn default_policy_writes_report_with_backtrace_and_exits_101() {
     let (status, stderr, dir) = run_selftest("");
@@ -73,6 +95,8 @@ fn default_policy_writes_report_with_backtrace_and_exits_101() {
     );
 }
 
+/// With `core = true` the process dies by SIGABRT (so the OS can dump core)
+/// but still writes the crash report first.
 #[test]
 fn core_true_dies_by_sigabrt_for_core_dump() {
     let (status, stderr, dir) = run_selftest("core = true");
@@ -85,6 +109,8 @@ fn core_true_dies_by_sigabrt_for_core_dump() {
     assert_eq!(report_files(&dir).len(), 1, "stderr:\n{stderr}");
 }
 
+/// With `reports = false` no report file is written, but the backtrace still
+/// reaches stderr and the exit code stays 101.
 #[test]
 fn reports_false_writes_nothing_but_backtrace_goes_to_stderr() {
     let (status, stderr, dir) = run_selftest("reports = false");
@@ -96,6 +122,8 @@ fn reports_false_writes_nothing_but_backtrace_goes_to_stderr() {
     );
 }
 
+/// With `backtrace = false` the report is written without a `Backtrace:`
+/// section and instead notes that backtraces are disabled.
 #[test]
 fn backtrace_false_report_says_disabled() {
     let (status, _stderr, dir) = run_selftest("backtrace = false");

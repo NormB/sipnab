@@ -97,6 +97,22 @@ impl DialogTiming {
 /// to determine which timing field to populate. Only the first occurrence
 /// of each milestone is recorded (subsequent duplicates are ignored to
 /// avoid overwriting with retransmissions).
+///
+/// # Arguments
+///
+/// * `timing` — the dialog's timing record to update.
+/// * `msg` — the newly observed SIP message.
+/// * `dialog_method` — the method that created the dialog; INVITE
+///   timestamps are only recorded for INVITE-initiated dialogs.
+///
+/// # Side effects
+///
+/// Sets at most one milestone timestamp on `timing`: requests populate
+/// `invite_sent`, `bye_sent`, `refer_sent_at`, or `transfer_completed_at`
+/// (NOTIFY with `Subscription-State: terminated`); responses are matched to
+/// their transaction via the CSeq method and populate `trying_at` (100),
+/// `ringing_at` (180/183), `answered_at` (200 to INVITE), or `bye_answered`
+/// (200 to BYE). Messages matching no milestone leave `timing` unchanged.
 pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method: &SipMethod) {
     if msg.is_request {
         match msg.method.as_ref() {
@@ -145,6 +161,8 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for milestone recording and the derived timing metrics (PDD,
+/// setup, ring, trying delay, teardown, transfer, retransmit totals).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,16 +171,19 @@ mod tests {
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) tests offset from.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build an INVITE request captured at `ts`.
     fn make_invite(ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -187,6 +208,8 @@ mod tests {
         .expect("should parse INVITE")
     }
 
+    /// Build a response with the given status, reason, and CSeq method,
+    /// captured at `ts`.
     fn make_response(
         status: u16,
         reason: &str,
@@ -216,6 +239,7 @@ mod tests {
         .expect("should parse response")
     }
 
+    /// Build a BYE request captured at `ts`.
     fn make_bye(ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "BYE sip:bob@example.com SIP/2.0",
@@ -240,6 +264,7 @@ mod tests {
         .expect("should parse BYE")
     }
 
+    /// PDD equals the INVITE→180 interval.
     #[test]
     fn pdd_calculation() {
         let mut timing = DialogTiming::default();
@@ -255,6 +280,7 @@ mod tests {
         assert_eq!(timing.pdd_ms(), Some(1500));
     }
 
+    /// Setup time equals the INVITE→200 interval.
     #[test]
     fn setup_time_calculation() {
         let mut timing = DialogTiming::default();
@@ -270,6 +296,7 @@ mod tests {
         assert_eq!(timing.setup_ms(), Some(3000));
     }
 
+    /// Ring duration equals the 180→200 interval.
     #[test]
     fn ring_duration_calculation() {
         let mut timing = DialogTiming::default();
@@ -288,6 +315,7 @@ mod tests {
         assert_eq!(timing.ring_ms(), Some(3000));
     }
 
+    /// Trying delay equals the INVITE→100 interval.
     #[test]
     fn trying_delay_calculation() {
         let mut timing = DialogTiming::default();
@@ -303,6 +331,7 @@ mod tests {
         assert_eq!(timing.trying_delay_ms(), Some(50));
     }
 
+    /// Teardown time equals the BYE→200 interval.
     #[test]
     fn teardown_time_calculation() {
         let mut timing = DialogTiming::default();
@@ -318,6 +347,7 @@ mod tests {
         assert_eq!(timing.teardown_ms(), Some(200));
     }
 
+    /// `total_retransmits` sums counts across all transactions.
     #[test]
     fn retransmit_counting() {
         let mut timing = DialogTiming::default();
@@ -327,6 +357,7 @@ mod tests {
         assert_eq!(timing.total_retransmits(), 3);
     }
 
+    /// Every derived metric is `None` on a default (empty) timing record.
     #[test]
     fn missing_timestamps_return_none() {
         let timing = DialogTiming::default();
@@ -337,6 +368,7 @@ mod tests {
         assert_eq!(timing.teardown_ms(), None);
     }
 
+    /// A duplicate 180 does not overwrite the first ringing timestamp.
     #[test]
     fn first_milestone_wins() {
         // Sending a second 180 Ringing should not overwrite the first one
@@ -356,6 +388,7 @@ mod tests {
         assert_eq!(timing.pdd_ms(), Some(1000)); // First ringing, not second
     }
 
+    /// REFER sets refer_sent_at; a terminated-NOTIFY sets transfer_completed_at.
     #[test]
     fn transfer_timing_fields_set() {
         let mut timing = DialogTiming::default();

@@ -12,6 +12,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 /// Known valid keys per config section.
+///
+/// Returns a map from section name (`""` for the root level, listing the
+/// section names themselves) to that section's accepted key names. Built
+/// fresh on every call; used only by unknown-key detection.
 fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
     let mut m = HashMap::new();
     m.insert(
@@ -137,6 +141,10 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
 
 /// Walk a parsed TOML value and collect every key not in the known set
 /// (`key` for root-level, `section.key` within a section).
+///
+/// Returns an empty vector when `value` is not a table or every key is
+/// known. Keys inside an unknown section are not walked (the section
+/// itself is already reported). Pure — no logging.
 fn collect_unknown_keys(value: &toml::Value) -> Vec<String> {
     let known = known_keys();
     let mut unknown = Vec::new();
@@ -170,6 +178,9 @@ fn collect_unknown_keys(value: &toml::Value) -> Vec<String> {
 }
 
 /// Walk a parsed TOML value and warn about any keys not in the known set.
+///
+/// # Side effects
+/// Emits one `tracing::warn!` line per unknown key; returns nothing.
 fn warn_unknown_keys(value: &toml::Value) {
     for key in collect_unknown_keys(value) {
         tracing::warn!("Unknown config key: {key}");
@@ -317,6 +328,7 @@ impl CrashConfig {
 
     /// Effective report directory: the configured one, else
     /// `~/.local/state/sipnab`, else a `sipnab` dir under the system tmp.
+    /// Reads `$HOME` for the fallback; does not touch the filesystem.
     pub fn effective_report_dir(&self) -> PathBuf {
         if let Some(ref dir) = self.report_dir {
             return dir.clone();
@@ -368,6 +380,13 @@ pub struct LimitsConfig {
 
 impl LimitsConfig {
     /// Validate limit values are within sane ranges.
+    ///
+    /// Unset (`None`) fields are always valid — they fall back to the
+    /// built-in defaults.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigInvalid` when any count limit is 0 or
+    /// `max_header_line` is below 256, naming the offending key.
     pub fn validate(&self) -> Result<(), crate::Error> {
         if let Some(0) = self.dialog_limit {
             return Err(crate::Error::ConfigInvalid(
@@ -517,6 +536,9 @@ pub struct KeybindingsConfig {
 ///
 /// Accepts: `"black"`, `"white"`, `"red"`, `"green"`, `"yellow"`, `"blue"`,
 /// `"magenta"`, `"cyan"`, `"gray"`, `"dark_gray"`, `"reset"`, or `"#RRGGBB"`.
+/// Names are case-insensitive. Returns `None` for anything unrecognized
+/// (the caller keeps its built-in default), logging a `tracing` warning
+/// for unknown names.
 #[cfg(feature = "tui")]
 pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
     use ratatui::style::Color;
@@ -549,6 +571,8 @@ pub fn parse_color(s: &str) -> Option<ratatui::style::Color> {
 ///
 /// Accepts: single characters (`"q"`, `"/"`), function keys (`"F1"`–`"F12"`),
 /// or special names (`"Esc"`, `"Space"`, `"Enter"`, `"Tab"`).
+/// Returns `None` for anything unrecognized (the caller keeps its built-in
+/// default), logging a `tracing` warning in that case.
 #[cfg(feature = "tui")]
 pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
     use crossterm::event::KeyCode;
@@ -592,6 +616,23 @@ impl Config {
     ///
     /// If `skip_default` is true (from `--no-config`), returns defaults
     /// without searching any files.
+    ///
+    /// # Arguments
+    /// * `explicit_path` - path from `--config`; when set it must exist.
+    /// * `skip_default` - `--no-config`: skip all file searching.
+    ///
+    /// # Returns
+    /// The parsed `Config` plus the path it came from (`source: None`
+    /// when defaults were used).
+    ///
+    /// # Errors
+    /// The explicit path does not exist, or whichever file was found
+    /// cannot be read or parsed as TOML.
+    ///
+    /// # Side effects
+    /// Reads `$SIPNAB_CONFIG` and `$HOME`, probes candidate paths on the
+    /// filesystem, reads the chosen file, and emits `tracing` debug lines
+    /// about the search; unknown keys in the file are warned about.
     pub fn load(
         explicit_path: Option<&str>,
         skip_default: bool,
@@ -659,6 +700,14 @@ impl Config {
     /// Parses TOML into a generic `toml::Value` first, walks the keys against
     /// the known valid set (warning on unknowns), then deserializes leniently
     /// into `Config`.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigRead` when the file cannot be read;
+    /// `crate::Error::ConfigParse` when it is not valid TOML.
+    ///
+    /// # Side effects
+    /// Reads `path` from the filesystem; unknown keys are logged as
+    /// warnings via `parse_toml`.
     fn load_file(path: &Path) -> Result<Config, crate::Error> {
         let content = std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
             path: path.display().to_string(),
@@ -670,7 +719,16 @@ impl Config {
 
     /// Parse TOML content, warn about unknown keys, and deserialize leniently.
     ///
-    /// Separated from `load_file` so unit tests can call it without a real file.
+    /// Separated from `load_file` so unit tests can call it without a real
+    /// file. `path` is used only for error/annotation display (`<inline>`
+    /// when `None`).
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigParse` when `content` is not valid TOML or does
+    /// not deserialize into `Config`.
+    ///
+    /// # Side effects
+    /// Emits a `tracing` warning per unknown key.
     fn parse_toml(content: &str, path: Option<&Path>) -> Result<Config, crate::Error> {
         let display = path
             .map(|p| p.display().to_string())
@@ -697,6 +755,9 @@ impl Config {
     /// Dump the effective configuration as TOML.
     ///
     /// Used by `--dump-config` to show what sipnab would use.
+    ///
+    /// # Errors
+    /// `crate::Error::ConfigSerialize` when TOML serialization fails.
     pub fn dump(&self) -> Result<String, crate::Error> {
         toml::to_string_pretty(self).map_err(|e| crate::Error::ConfigSerialize(e.to_string()))
     }
@@ -712,6 +773,10 @@ impl Config {
 ///
 /// IP keys are emitted as quoted strings because they contain `.`/`:`, which
 /// would otherwise be parsed as dotted (nested) keys.
+///
+/// # Errors
+/// `crate::Error::ConfigInvalid` when `existing` is not valid TOML or
+/// `[names]` exists but is not a table. Pure — no filesystem access.
 pub fn upsert_manual_mappings(
     existing: &str,
     entries: &[(String, String)],
@@ -746,6 +811,10 @@ pub fn upsert_manual_mappings(
 /// as `[display] visible_columns`, and returns the new document text with all
 /// comments, key ordering, and other sections preserved. The previous value is
 /// fully replaced.
+///
+/// # Errors
+/// `crate::Error::ConfigInvalid` when `existing` is not valid TOML or
+/// `[display]` exists but is not a table. Pure — no filesystem access.
 pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<String, crate::Error> {
     use toml_edit::{Array, DocumentMut, Item, Table, value};
 
@@ -772,6 +841,14 @@ pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<Stri
 /// Write the current visible column layout into `[display] visible_columns` of
 /// the sipnabrc at `path`, preserving the rest of the file (see
 /// [`upsert_display_columns`]). Creates the file and parent directory if needed.
+///
+/// # Errors
+/// The existing file is invalid TOML, the parent directory cannot be
+/// created, or the write fails.
+///
+/// # Side effects
+/// Reads `path` (missing file treated as empty), creates its parent
+/// directory, and rewrites the file in place (non-atomic).
 pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(), crate::Error> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let updated = upsert_display_columns(&existing, columns)?;
@@ -785,7 +862,10 @@ pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(),
     Ok(())
 }
 
-/// Return the default config file search paths (items 3-5).
+/// Return the default config file search paths (items 3-5 of the search
+/// order): the two `$HOME`-relative locations (omitted when `$HOME` is
+/// unset), then `/etc/sipnab/sipnab.toml`. Reads `$HOME`; does not probe
+/// the filesystem.
 fn default_config_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
@@ -798,13 +878,14 @@ fn default_config_paths() -> Vec<PathBuf> {
     paths
 }
 
-/// Get the user's home directory.
+/// Get the user's home directory from `$HOME`, or `None` when unset.
 fn home_dir() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
 /// The user's preferred sipnabrc path (`~/.config/sipnab/sipnab.toml`), used as
 /// the write target when persisting name mappings into the config.
+/// `None` when `$HOME` is unset.
 pub fn default_user_config_path() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".config").join("sipnab").join("sipnab.toml"))
 }
@@ -812,6 +893,14 @@ pub fn default_user_config_path() -> Option<PathBuf> {
 /// Write the current manual name mappings into the `[names.manual]` table of the
 /// sipnabrc at `path`, preserving the rest of the file (see
 /// [`upsert_manual_mappings`]). Creates the file and parent directory if needed.
+///
+/// # Errors
+/// The existing file is invalid TOML, the parent directory cannot be
+/// created, or the write fails.
+///
+/// # Side effects
+/// Reads `path` (missing file treated as empty), creates its parent
+/// directory, and rewrites the file in place (non-atomic).
 pub fn write_manual_mappings_file(
     path: &Path,
     entries: &[(String, String)],
@@ -828,11 +917,14 @@ pub fn write_manual_mappings_file(
     Ok(())
 }
 
+/// Unit tests for config loading, TOML parsing, surgical sipnabrc
+/// updates, unknown-key detection, and limits validation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
 
+    /// `Config::default()` leaves every optional field unset.
     #[test]
     fn default_config_is_valid() {
         let config = Config::default();
@@ -841,6 +933,7 @@ mod tests {
         assert!(config.security.kill_scanner.is_none());
     }
 
+    /// A single-key TOML file parses; every other field stays default.
     #[test]
     fn parse_minimal_toml() {
         let toml_str = r#"
@@ -853,6 +946,8 @@ device = "eth0"
         assert!(config.display.from_to.is_none());
     }
 
+    /// `upsert_manual_mappings` keeps comments and unrelated sections,
+    /// quotes IP keys, and round-trips through the typed config.
     #[test]
     fn upsert_manual_preserves_comments_and_other_sections() {
         let existing = r#"# my sipnab config
@@ -882,6 +977,8 @@ enabled = true
         assert_eq!(manual.get("2001:db8::1").map(String::as_str), Some("core6"));
     }
 
+    /// An empty document gains `[names.manual]`; existing entries are
+    /// fully replaced so deletions propagate.
     #[test]
     fn upsert_manual_into_empty_and_replaces_existing() {
         // Empty input → creates [names.manual] from scratch.
@@ -901,6 +998,7 @@ enabled = true
         );
     }
 
+    /// Malformed existing TOML is rejected rather than clobbered.
     #[test]
     fn upsert_manual_rejects_invalid_toml() {
         assert!(upsert_manual_mappings("this is = = not toml", &[]).is_err());
@@ -908,6 +1006,8 @@ enabled = true
 
     // ── display column persistence (F10 save) ────────────────────────
 
+    /// `upsert_display_columns` keeps comments and unrelated sections and
+    /// round-trips through the typed config.
     #[test]
     fn upsert_display_columns_preserves_other_sections() {
         let existing = "# my config\n[capture]\nsnaplen = 1500\n";
@@ -925,6 +1025,7 @@ enabled = true
         assert_eq!(cfg.capture.snaplen, Some(1500));
     }
 
+    /// An existing `visible_columns` value is fully replaced, not merged.
     #[test]
     fn upsert_display_columns_replaces_existing() {
         let existing = "[display]\nvisible_columns = [\"#\", \"State\"]\n";
@@ -941,11 +1042,13 @@ enabled = true
         );
     }
 
+    /// Malformed existing TOML is rejected rather than clobbered.
     #[test]
     fn upsert_display_columns_rejects_invalid_toml() {
         assert!(upsert_display_columns("this is = = not toml", &[]).is_err());
     }
 
+    /// Hiding every column persists as an empty list, not a missing key.
     #[test]
     fn upsert_display_columns_empty_writes_empty_array() {
         // Hiding every column persists as an empty list, not a missing key.
@@ -954,6 +1057,8 @@ enabled = true
         assert_eq!(cfg.display.visible_columns.as_deref(), Some([].as_slice()));
     }
 
+    /// `write_display_columns_file` creates nested parent dirs, persists
+    /// the columns, and a second write replaces the set.
     #[test]
     fn write_display_columns_file_creates_dirs_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -984,6 +1089,9 @@ enabled = true
         );
     }
 
+    /// `write_manual_mappings_file` creates nested parent dirs, persists
+    /// the mappings, and a second write replaces the set (deletions
+    /// propagate).
     #[test]
     fn write_manual_mappings_file_creates_dirs_and_round_trips() {
         let dir = tempfile::tempdir().unwrap();
@@ -1013,6 +1121,7 @@ enabled = true
         assert!(!m.contains_key("10.0.0.1"));
     }
 
+    /// A quoted-IP `[names.manual]` table deserializes into the map.
     #[test]
     fn parse_names_manual_table() {
         let toml_str = r#"
@@ -1024,6 +1133,7 @@ enabled = true
         assert_eq!(manual.get("10.0.0.1").map(String::as_str), Some("sbc"));
     }
 
+    /// `[capture] buffer_budget_mb` deserializes.
     #[test]
     fn parse_capture_buffer_budget() {
         let toml_str = r#"
@@ -1034,6 +1144,7 @@ buffer_budget_mb = 128
         assert_eq!(config.capture.buffer_budget_mb, Some(128));
     }
 
+    /// `[display] from_to` deserializes as the raw mode string.
     #[test]
     fn parse_display_from_to() {
         let toml_str = r#"
@@ -1044,6 +1155,8 @@ from_to = "user-host-port"
         assert_eq!(config.display.from_to.as_deref(), Some("user-host-port"));
     }
 
+    /// A config exercising every section deserializes with all values
+    /// landing in the right fields.
     #[test]
     fn parse_full_toml() {
         let toml_str = r##"
@@ -1108,6 +1221,7 @@ filter = "/"
         assert_eq!(config.keybindings.help.as_deref(), Some("?"));
     }
 
+    /// `--no-config` (skip_default) returns pure defaults with no source.
     #[test]
     fn skip_default_returns_empty() {
         let loaded = Config::load(None, true).unwrap();
@@ -1115,6 +1229,7 @@ filter = "/"
         assert_eq!(loaded.config, Config::default());
     }
 
+    /// An explicit `--config` path that does not exist is a hard error.
     #[test]
     fn missing_explicit_file_errors() {
         let result = Config::load(Some("/nonexistent/sipnab.toml"), false);
@@ -1122,6 +1237,7 @@ filter = "/"
         assert!(result.unwrap_err().to_string().contains("not found"));
     }
 
+    /// An explicit existing path loads and is reported as the source.
     #[test]
     fn explicit_path_loads() {
         let dir = tempfile::tempdir().unwrap();
@@ -1193,6 +1309,8 @@ filter = "/"
         assert_eq!(collect_unknown_keys(&value), vec!["sip.bogus".to_string()]);
     }
 
+    /// An unknown key still parses successfully (lenient loading), via
+    /// both string and file-based paths.
     #[test]
     fn unknown_keys_warn_but_succeed() {
         // Unknown key within a section should parse successfully (lenient)
@@ -1211,6 +1329,8 @@ filter = "/"
         assert_eq!(loaded.config.capture.device.as_deref(), Some("lo"));
     }
 
+    /// `parse_color` maps names, grey/gray variants, reset, and hex RGB;
+    /// unknown names yield `None`.
     #[cfg(feature = "tui")]
     #[test]
     fn parse_color_names() {
@@ -1224,6 +1344,8 @@ filter = "/"
         assert_eq!(parse_color("bogus"), None);
     }
 
+    /// `parse_keycode` maps chars, function keys, and special names;
+    /// unknown names yield `None`.
     #[cfg(feature = "tui")]
     #[test]
     fn parse_keycode_values() {
@@ -1237,6 +1359,7 @@ filter = "/"
         assert_eq!(parse_keycode("bogus_key"), None);
     }
 
+    /// `[display] visible_columns` deserializes as an ordered list.
     #[test]
     fn parse_visible_columns() {
         let toml_str = r##"
@@ -1251,6 +1374,7 @@ visible_columns = ["#", "Method", "From", "To", "State"]
         assert_eq!(cols[4], "State");
     }
 
+    /// An absent `visible_columns` stays `None` (all columns visible).
     #[test]
     fn visible_columns_absent_is_none() {
         let toml_str = "[display]\ncolor = \"auto\"\n";
@@ -1258,6 +1382,7 @@ visible_columns = ["#", "Method", "From", "To", "State"]
         assert!(config.display.visible_columns.is_none());
     }
 
+    /// `[sip] xcid_headers` deserializes as an ordered list.
     #[test]
     fn sip_xcid_headers_parse() {
         let toml_str = "[sip]\nxcid_headers = [\"X-Call-ID\", \"X-CID\"]\n";
@@ -1268,12 +1393,14 @@ visible_columns = ["#", "Method", "From", "To", "State"]
         );
     }
 
+    /// An absent `[sip] xcid_headers` stays `None` (built-in default).
     #[test]
     fn sip_xcid_headers_absent_is_none() {
         let config: Config = toml::from_str("[capture]\nsnaplen = 1500\n").unwrap();
         assert!(config.sip.xcid_headers.is_none());
     }
 
+    /// The semantic theme slots (header/selected/accent/...) deserialize.
     #[test]
     fn parse_theme_with_new_fields() {
         let toml_str = r##"
@@ -1293,6 +1420,7 @@ border = "white"
         assert_eq!(config.theme.muted.as_deref(), Some("dark_gray"));
     }
 
+    /// The full keybinding override set deserializes.
     #[test]
     fn parse_keybindings_with_new_fields() {
         let toml_str = r#"
@@ -1315,12 +1443,14 @@ column_selector = "F10"
 
     // ── LimitsConfig validation tests ──────────────────────────────────
 
+    /// All-unset limits (defaults) pass validation.
     #[test]
     fn limits_default_validates() {
         let limits = LimitsConfig::default();
         assert!(limits.validate().is_ok());
     }
 
+    /// A fully populated set of sane limit values passes validation.
     #[test]
     fn limits_valid_values() {
         let limits = LimitsConfig {
@@ -1336,6 +1466,7 @@ column_selector = "F10"
         assert!(limits.validate().is_ok());
     }
 
+    /// `dialog_limit = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_dialog_limit_rejected() {
         let limits = LimitsConfig {
@@ -1346,6 +1477,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("dialog_limit"));
     }
 
+    /// `max_streams = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_max_streams_rejected() {
         let limits = LimitsConfig {
@@ -1356,6 +1488,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("max_streams"));
     }
 
+    /// `max_reassembly = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_max_reassembly_rejected() {
         let limits = LimitsConfig {
@@ -1366,6 +1499,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("max_reassembly"));
     }
 
+    /// `max_header_line` below the 256-byte floor is rejected.
     #[test]
     fn limits_small_max_header_line_rejected() {
         let limits = LimitsConfig {
@@ -1376,6 +1510,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("max_header_line"));
     }
 
+    /// `max_header_line = 256` (the boundary) is accepted.
     #[test]
     fn limits_min_max_header_line_accepted() {
         let limits = LimitsConfig {
@@ -1385,6 +1520,7 @@ column_selector = "F10"
         assert!(limits.validate().is_ok());
     }
 
+    /// `max_headers_per_message = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_max_headers_per_message_rejected() {
         let limits = LimitsConfig {
@@ -1395,6 +1531,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("max_headers_per_message"));
     }
 
+    /// `max_messages_per_dialog = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_max_messages_per_dialog_rejected() {
         let limits = LimitsConfig {
@@ -1405,6 +1542,7 @@ column_selector = "F10"
         assert!(err.to_string().contains("max_messages_per_dialog"));
     }
 
+    /// `max_audio_frames = 0` is rejected, naming the key.
     #[test]
     fn limits_zero_max_audio_frames_rejected() {
         let limits = LimitsConfig {

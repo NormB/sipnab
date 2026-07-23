@@ -3,8 +3,10 @@
 //! Pure data layer: ranks every tracked RTP stream by current MOS and
 //! precomputes the per-stream trend series the dashboard view draws.
 //! No locking and no rendering here — the renderer receives an
-//! already-built [`DashboardSnapshot`] so the draw pass stays read-only
-//! (skip-tick contract).
+//! already-built `DashboardSnapshot` so the draw pass stays read-only
+//! (skip-tick contract). Also home to `render_dashboard`, which draws
+//! the summary strip, worst-first stream table, per-stream trend rows,
+//! and legend from that cached snapshot.
 
 use crate::rtp::quality::estimate_mos;
 use crate::rtp::stream::{RtpStream, StreamKey};
@@ -78,6 +80,16 @@ impl DashboardSnapshot {
     ///
     /// Runs under the store read guard on the render path — O(streams)
     /// with no allocation beyond the output itself.
+    ///
+    /// # Arguments
+    ///
+    /// * `store` — stream store to aggregate; not mutated.
+    ///
+    /// # Returns
+    ///
+    /// A snapshot with one `StreamHealth` row per stream, sorted worst
+    /// MOS first (ties: higher loss, then stream key), plus the derived
+    /// totals; `avg_mos`/`worst_mos` are `None` when the store is empty.
     pub fn from_streams(store: &StreamStore) -> Self {
         let mut rows: Vec<StreamHealth> = store
             .iter()
@@ -162,6 +174,23 @@ fn loss_to_block(loss_pct: f64) -> char {
 
 /// Render the live call-quality dashboard from the snapshot cached by
 /// `sync_caches` (read-only pass — no store access, no locking).
+///
+/// Draws the summary strip, the worst-first stream table scrolled to
+/// keep `app.dashboard_selected` visible, and — when a row is selected —
+/// its MOS/jitter/loss trend sparklines plus a color legend. Before the
+/// first snapshot exists, a "Gathering stream quality data" placeholder
+/// is shown instead.
+///
+/// # Arguments
+///
+/// * `frame` — ratatui frame to draw into.
+/// * `area` — screen rectangle for the bordered dashboard block.
+/// * `app` — application state supplying `dashboard_snapshot`,
+///   `dashboard_selected`, and the theme; not mutated.
+///
+/// # Side effects
+///
+/// Draws widgets into `frame` only.
 pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
     use crate::tui::stream_detail::{jitter_to_block, mos_to_block};
     use ratatui::style::{Modifier, Style};
@@ -336,6 +365,8 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// Tests for snapshot aggregation (ranking, totals, trend building),
+/// the loss-glyph mapping, and rendering against a test backend.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +374,7 @@ mod tests {
     use chrono::{Duration, Utc};
     use std::net::SocketAddr;
 
+    /// Minimal PCMU RTP header with the given sequence and RTP timestamp.
     fn header(seq: u16, ts: u32) -> RtpHeader {
         RtpHeader {
             version: 2,
@@ -358,6 +390,7 @@ mod tests {
         }
     }
 
+    /// Test socket address 192.0.2.10 with the given port.
     fn addr(port: u16) -> SocketAddr {
         format!("192.0.2.10:{port}").parse().unwrap()
     }
@@ -381,6 +414,7 @@ mod tests {
         s
     }
 
+    /// Stream store preloaded with the given streams.
     fn store_with(streams: Vec<RtpStream>) -> StreamStore {
         let mut store = StreamStore::new(64);
         for s in streams {
@@ -389,6 +423,8 @@ mod tests {
         store
     }
 
+    /// An empty store yields zeroed totals, `None` MOS aggregates, and
+    /// no rows.
     #[test]
     fn empty_store_yields_empty_snapshot() {
         let snap = DashboardSnapshot::from_streams(&StreamStore::new(64));
@@ -400,6 +436,8 @@ mod tests {
         assert!(snap.rows.is_empty());
     }
 
+    /// One clean PCMU stream scores MOS > 4.0 and its row equals both
+    /// the average and worst aggregates.
     #[test]
     fn single_clean_stream_scores_high_and_matches_aggregates() {
         let snap = DashboardSnapshot::from_streams(&store_with(vec![clean_stream(1, 50)]));
@@ -420,6 +458,8 @@ mod tests {
         assert_eq!(row.call_id, None);
     }
 
+    /// A ~33%-loss stream ranks ahead of a clean one, is counted in
+    /// streams_with_loss, and drives worst_mos and the average.
     #[test]
     fn lossy_stream_ranks_first_and_is_counted() {
         let clean = clean_stream(1, 50);
@@ -440,6 +480,8 @@ mod tests {
         assert!((snap.avg_mos.unwrap() - avg).abs() < 1e-9);
     }
 
+    /// A stream where everything was lost reports 100% loss with MOS
+    /// still clamped at >= 1.0, without panicking.
     #[test]
     fn all_lost_stream_reports_full_loss_without_panicking() {
         // adversarial: every packet after the first was lost
@@ -451,6 +493,8 @@ mod tests {
         assert!(snap.rows[0].mos >= 1.0, "MOS stays clamped at >=1.0");
     }
 
+    /// A stream object with no traffic at all yields 0% loss (no
+    /// divide-by-zero).
     #[test]
     fn zero_packet_stream_is_handled() {
         // adversarial: a stream object with no traffic at all
@@ -462,6 +506,8 @@ mod tests {
         assert_eq!(snap.rows[0].loss_pct, 0.0);
     }
 
+    /// A dialog-linked stream carries its Call-ID into the row; an
+    /// orphaned stream carries `None`.
     #[test]
     fn associated_dialog_and_orphan_flow_through() {
         let mut linked = clean_stream(5, 10);
@@ -475,6 +521,8 @@ mod tests {
         assert_eq!(orphan_row.call_id, None);
     }
 
+    /// A stream idle for two minutes is still totaled but not counted
+    /// (or flagged) as active.
     #[test]
     fn inactive_stream_is_counted_but_not_active() {
         let mut old = clean_stream(7, 10);
@@ -485,6 +533,8 @@ mod tests {
         assert!(!snap.rows[0].active);
     }
 
+    /// Trend points mirror the quality intervals oldest-first, and their
+    /// MOS agrees with the canonical estimator.
     #[test]
     fn trend_is_built_from_quality_intervals_oldest_first() {
         let start = Utc::now();
@@ -522,6 +572,8 @@ mod tests {
 
     // ── loss_to_block glyph mapping ─────────────────────────────────
 
+    /// Ascending loss climbs the eight-glyph block ramp; values just
+    /// below a boundary stay in the lower band.
     #[test]
     fn loss_to_block_across_range() {
         // Ascending loss climbs the eight-glyph block ramp; the lowest
@@ -540,6 +592,8 @@ mod tests {
         assert_eq!(loss_to_block(49.9), '\u{2587}'); // ▇
     }
 
+    /// NaN and negatives clamp to the baseline glyph; values above 100
+    /// (including infinity) clamp to the full block.
     #[test]
     fn loss_to_block_clamps_invalid_input() {
         // NaN, negatives and sub-zero all clamp to the baseline glyph.
@@ -606,6 +660,8 @@ mod tests {
             .expect("loss trend row must be rendered")
     }
 
+    /// A 100%-loss interval renders a full-block glyph on the loss row,
+    /// and the legend names every metric with units.
     #[test]
     fn render_shows_loss_spike_and_legend() {
         let s = stream_with_intervals(1, &[(1.0, 0.0), (2.0, 100.0)]);
@@ -623,6 +679,8 @@ mod tests {
         );
     }
 
+    /// All-lost intervals render only full blocks on the loss row — no
+    /// baseline glyph.
     #[test]
     fn render_full_loss_is_max_glyph() {
         let s = stream_with_intervals(1, &[(1.0, 100.0), (1.0, 100.0)]);
@@ -636,6 +694,8 @@ mod tests {
         );
     }
 
+    /// Loss-free intervals render the flat baseline glyph — never a
+    /// full block.
     #[test]
     fn render_zero_loss_is_flat_baseline() {
         let s = stream_with_intervals(1, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)]);
@@ -649,6 +709,8 @@ mod tests {
         );
     }
 
+    /// With no completed intervals, the loss row, legend, and an
+    /// empty-history placeholder still render without panicking.
     #[test]
     fn render_empty_history_degrades_gracefully() {
         // A stream with no completed intervals must still render the loss
@@ -665,6 +727,7 @@ mod tests {
         );
     }
 
+    /// An 8x4 terminal clips the dashboard instead of panicking.
     #[test]
     fn render_narrow_terminal_does_not_panic() {
         // Robustness: a very narrow, short terminal must clip, not overflow.

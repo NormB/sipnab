@@ -1,7 +1,7 @@
 //! RTP stream state tracking.
 //!
-//! An [`RtpStream`] represents a single media flow identified by its
-//! [`StreamKey`] (SSRC + source/destination socket addresses). It tracks
+//! An `RtpStream` represents a single media flow identified by its
+//! `StreamKey` (SSRC + source/destination socket addresses). It tracks
 //! packet counts, jitter (RFC 3550 algorithm), sequence-gap loss detection,
 //! and periodic quality intervals for trend analysis.
 
@@ -13,7 +13,7 @@ use super::parser::RtpHeader;
 
 // ── Quality interval period ──────────────────────────────────────────
 
-/// How often to snapshot quality metrics into a [`QualityInterval`].
+/// How often to snapshot quality metrics into a `QualityInterval`.
 const QUALITY_INTERVAL_SECS: i64 = 5;
 
 /// Cap on the per-stream quality trend history. One interval per
@@ -89,7 +89,11 @@ pub struct RtpStream {
     pub last_seq: u16,
     /// Last observed RTP timestamp.
     pub last_timestamp: u32,
-    /// Running interarrival jitter estimate (RFC 3550, in timestamp units).
+    /// Running interarrival jitter estimate (RFC 3550 algorithm) in
+    /// milliseconds: `update` converts the RTP timestamp delta to ms via
+    /// `clock_rate` before folding it in. Note `process_rtcp` may
+    /// overwrite this with a report's jitter value, which is in RTP
+    /// timestamp units.
     pub jitter: f64,
     /// Estimated lost packets from sequence number gaps.
     pub lost_packets: u64,
@@ -133,6 +137,21 @@ impl RtpStream {
     }
 
     /// Create a new stream from its first observed RTP packet.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — the SSRC + 5-tuple identity of the new stream.
+    /// * `header` — parsed header of the first packet; supplies the payload
+    ///   type (used to seed codec and clock rate from the static PT table,
+    ///   defaulting to 8000 Hz for dynamic types) and the initial
+    ///   sequence/timestamp state.
+    /// * `timestamp` — wall-clock arrival time of the first packet.
+    ///
+    /// # Returns
+    ///
+    /// A stream with `packet_count == 1`, zeroed jitter/loss counters, and
+    /// the jitter/interval trackers primed with this packet so the next
+    /// `update` produces the first jitter sample.
     pub fn new(key: StreamKey, header: &RtpHeader, timestamp: DateTime<Utc>) -> Self {
         let codec = codec_from_pt(header.payload_type).map(String::from);
         let clock_rate = clock_rate_from_pt(header.payload_type).unwrap_or(8000);
@@ -169,6 +188,28 @@ impl RtpStream {
     ///
     /// Calculates RFC 3550 interarrival jitter, detects sequence gaps for
     /// loss estimation, and records quality intervals at fixed periods.
+    ///
+    /// # Arguments
+    ///
+    /// * `header` — parsed header of the arriving packet.
+    /// * `timestamp` — wall-clock arrival time of the packet.
+    /// * `payload_len` — media payload length in bytes (added to
+    ///   `octet_count`).
+    ///
+    /// # Side effects
+    ///
+    /// * Increments `packet_count`/`octet_count` and refreshes `last_seen`,
+    ///   `last_seq`, and `last_timestamp`.
+    /// * On a forward sequence gap smaller than 32768 (larger gaps are
+    ///   treated as reordering), adds the gap to `lost_packets` and
+    ///   `interval_lost` and appends the missing sequence numbers to
+    ///   `lost_sequences` (oldest-out, capped at 1000).
+    /// * For Comfort Noise packets (PT 13), increments `cn_frames` and
+    ///   extends or opens a `SilencePeriod` (list capped at 100).
+    /// * Folds the new interarrival delta into `jitter` using the RFC 3550
+    ///   Section 6.4.1 estimator `J += (|D| - J) / 16`, in milliseconds.
+    /// * Once `QUALITY_INTERVAL_SECS` have elapsed, snapshots and resets
+    ///   the current interval via `record_quality_interval`.
     pub fn update(&mut self, header: &RtpHeader, timestamp: DateTime<Utc>, payload_len: usize) {
         self.packet_count += 1;
         self.octet_count += payload_len as u64;
@@ -245,6 +286,18 @@ impl RtpStream {
     }
 
     /// Force-record a quality interval snapshot.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` — wall-clock time stamped onto the snapshot and used
+    ///   as the start of the next interval.
+    ///
+    /// # Side effects
+    ///
+    /// Appends a `QualityInterval` (current jitter, interval loss
+    /// percentage, interval packet count) to `quality_intervals`, evicting
+    /// the oldest entry when at `MAX_QUALITY_INTERVALS`, then resets
+    /// `interval_start`, `interval_packets`, and `interval_lost`.
     fn record_quality_interval(&mut self, timestamp: DateTime<Utc>) {
         let total_in_interval = self.interval_packets + self.interval_lost;
         let loss_pct = if total_in_interval > 0 {
@@ -272,7 +325,8 @@ impl RtpStream {
     ///
     /// Reconstructs a received/lost sequence from the first seen sequence
     /// number through `last_seq` using the `lost_sequences` log, then
-    /// delegates to [`super::quality::analyze_burst_gap`].
+    /// delegates to `super::quality::analyze_burst_gap` (assuming a 20 ms
+    /// packet interval, the window capped at 10000 packets).
     ///
     /// Returns `None` if there are no lost packets to analyze.
     pub fn burst_gap_analysis(&self) -> Option<super::quality::BurstGapAnalysis> {
@@ -345,6 +399,8 @@ pub fn clock_rate_from_pt(pt: u8) -> Option<u32> {
     }
 }
 
+/// Unit tests for stream state tracking: initialization, jitter and loss
+/// accounting, payload-type tables, sequence wraparound, and history caps.
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -352,6 +408,8 @@ mod tests {
     use super::*;
     use crate::rtp::parser::RtpHeader;
 
+    /// Build a fixed test StreamKey (SSRC 0x12345678, 10.0.0.1:20000 →
+    /// 10.0.0.2:30000).
     fn make_key() -> StreamKey {
         StreamKey {
             ssrc: 0x12345678,
@@ -360,6 +418,8 @@ mod tests {
         }
     }
 
+    /// Build a minimal RtpHeader with the given sequence, RTP timestamp,
+    /// and payload type.
     fn make_header(seq: u16, ts: u32, pt: u8) -> RtpHeader {
         RtpHeader {
             version: 2,
@@ -375,6 +435,8 @@ mod tests {
         }
     }
 
+    /// Recording more than MAX_QUALITY_INTERVALS snapshots caps the trend
+    /// history and evicts the oldest entries first.
     #[test]
     fn quality_intervals_are_bounded_oldest_out() {
         // A long-lived stream must not grow its trend history without
@@ -407,10 +469,13 @@ mod tests {
         );
     }
 
+    /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
     }
 
+    /// A fresh stream starts with packet_count 1, resolved PCMU codec, and
+    /// zeroed jitter/loss/orphan state.
     #[test]
     fn new_stream_initial_values() {
         let key = make_key();
@@ -430,6 +495,8 @@ mod tests {
         assert!(stream.associated_dialog.is_none());
     }
 
+    /// Nine sequential updates accumulate packet, octet, and sequence
+    /// state correctly.
     #[test]
     fn update_ten_packets() {
         let key = make_key();
@@ -446,6 +513,7 @@ mod tests {
         assert_eq!(stream.last_seq, 109);
     }
 
+    /// Skipping sequence numbers 101-103 registers exactly 3 lost packets.
     #[test]
     fn sequence_gap_increments_lost() {
         let key = make_key();
@@ -460,6 +528,7 @@ mod tests {
         assert_eq!(stream.packet_count, 2);
     }
 
+    /// The jitter estimator runs on every update and stays finite.
     #[test]
     fn jitter_calculated_on_update() {
         let key = make_key();
@@ -479,6 +548,7 @@ mod tests {
         assert!(stream.jitter.is_finite());
     }
 
+    /// Well-known static payload types map to their RFC 3551 codec names.
     #[test]
     fn codec_from_pt_static_types() {
         assert_eq!(codec_from_pt(0), Some("PCMU"));
@@ -489,6 +559,7 @@ mod tests {
         assert_eq!(codec_from_pt(13), Some("CN"));
     }
 
+    /// Dynamic payload types (96-127) have no static codec mapping.
     #[test]
     fn codec_from_pt_dynamic_returns_none() {
         assert_eq!(codec_from_pt(96), None);
@@ -496,6 +567,8 @@ mod tests {
         assert_eq!(codec_from_pt(127), None);
     }
 
+    /// Packets spanning more than 5 seconds produce at least one quality
+    /// interval snapshot.
     #[test]
     fn quality_interval_recorded() {
         let key = make_key();
@@ -515,6 +588,8 @@ mod tests {
         );
     }
 
+    /// Static audio payload types report 8000 Hz; H263 video reports
+    /// 90000 Hz.
     #[test]
     fn clock_rate_from_pt_static_types() {
         // PCMU and other narrowband audio codecs use 8000 Hz
@@ -529,6 +604,7 @@ mod tests {
         assert_eq!(clock_rate_from_pt(34), Some(90000));
     }
 
+    /// Dynamic payload types have no static clock rate.
     #[test]
     fn clock_rate_from_pt_dynamic_returns_none() {
         assert_eq!(clock_rate_from_pt(96), None);
@@ -536,6 +612,7 @@ mod tests {
         assert_eq!(clock_rate_from_pt(127), None);
     }
 
+    /// A new PCMU (PT 0) stream resolves its clock rate to 8000 Hz.
     #[test]
     fn new_stream_clock_rate_pcmu() {
         let key = make_key();
@@ -544,6 +621,7 @@ mod tests {
         assert_eq!(stream.clock_rate, 8000);
     }
 
+    /// A new H263 (PT 34) stream resolves its clock rate to 90000 Hz.
     #[test]
     fn new_stream_clock_rate_h263() {
         let key = make_key();
@@ -552,6 +630,7 @@ mod tests {
         assert_eq!(stream.clock_rate, 90000);
     }
 
+    /// A new stream on a dynamic PT falls back to the 8000 Hz default.
     #[test]
     fn new_stream_clock_rate_dynamic_defaults_to_8000() {
         let key = make_key();
@@ -562,6 +641,8 @@ mod tests {
         assert_eq!(stream.clock_rate, 8000);
     }
 
+    /// The jitter calculation scales RTP timestamp deltas by the stream's
+    /// own clock rate (90 kHz for H263).
     #[test]
     fn jitter_uses_correct_clock_rate() {
         // Verify jitter calculation uses the stream's clock_rate.
@@ -578,6 +659,7 @@ mod tests {
         assert!(stream.jitter.is_finite());
     }
 
+    /// A 65535 → 0 sequence wrap registers no false packet loss.
     #[test]
     fn sequence_wraparound_no_false_loss() {
         let key = make_key();
@@ -600,6 +682,8 @@ mod tests {
         assert_eq!(stream.lost_packets, 0);
     }
 
+    /// The lost-sequence log caps at 1000 entries with correct oldest-out
+    /// eviction across successive gaps.
     #[test]
     fn lost_sequences_vecdeque_pop_front_over_1000() {
         // Fill lost_sequences beyond the 1000-entry cap and verify

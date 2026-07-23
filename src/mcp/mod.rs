@@ -1,4 +1,4 @@
-//! Model Context Protocol (MCP) server mode for sipnab — Phase 8.1.
+//! Model Context Protocol (MCP) server mode for sipnab.
 //!
 //! This module exposes sipnab's read-only analysis surface (dialogs, streams,
 //! diagnostics, security findings, call reports) as MCP tools so a local AI

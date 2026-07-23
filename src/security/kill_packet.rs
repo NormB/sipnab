@@ -155,11 +155,13 @@ fn checksum16(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
+/// Unit tests for the IPv4/IPv6 UDP datagram builders and internet checksum.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Construct an IPv4 socket address from octets and a port.
     fn addr(a: [u8; 4], p: u16) -> SocketAddrV4 {
         SocketAddrV4::new(Ipv4Addr::from(a), p)
     }
@@ -182,6 +184,8 @@ mod tests {
         !(sum as u16)
     }
 
+    /// The IPv4 datagram carries the expected version, protocol, length,
+    /// spoofed addresses, and ports.
     #[test]
     fn builds_expected_header_fields() {
         let src = addr([10, 0, 0, 1], 5060);
@@ -209,6 +213,8 @@ mod tests {
         );
     }
 
+    /// The IPv4 header checksum re-sums to zero and matches an independent
+    /// computation.
     #[test]
     fn ip_header_checksum_is_valid() {
         let pkt = build_ipv4_udp(addr([10, 0, 0, 1], 5060), addr([10, 0, 0, 2], 5060), b"x")
@@ -224,6 +230,8 @@ mod tests {
         assert_eq!(u16::from_be_bytes([pkt[10], pkt[11]]), ref_checksum(&hdr));
     }
 
+    /// The IPv4 UDP checksum validates to zero over the pseudo-header and is
+    /// non-zero on the wire.
     #[test]
     fn udp_checksum_is_valid() {
         let src = addr([10, 0, 0, 1], 5060);
@@ -245,6 +253,7 @@ mod tests {
         assert_ne!(&pkt[26..28], &[0, 0], "checksum must be present, not zero");
     }
 
+    /// An empty payload still builds a valid header-only datagram.
     #[test]
     fn empty_payload_still_builds_valid_headers() {
         // The worker guards against empty responses, but the builder must not
@@ -256,6 +265,8 @@ mod tests {
         assert_eq!(ref_checksum(&pkt[..20]), 0);
     }
 
+    /// Binary/adversarial payload bytes are carried verbatim with valid
+    /// checksums.
     #[test]
     fn adversarial_payload_bytes_are_carried_verbatim() {
         // Embedded NUL, high bytes, backslash, CR/LF must appear untouched
@@ -285,6 +296,7 @@ mod tests {
         );
     }
 
+    /// A payload one byte over the IPv4 maximum is rejected; the maximum builds.
     #[test]
     fn oversize_payload_rejected() {
         let too_big = vec![0u8; MAX_UDP_PAYLOAD_V4 + 1];
@@ -305,6 +317,7 @@ mod tests {
 
     // ── IPv6 ──
 
+    /// Construct an IPv6 socket address from hextets and a port.
     fn addr6(a: [u16; 8], p: u16) -> SocketAddrV6 {
         SocketAddrV6::new(std::net::Ipv6Addr::from(a), p, 0, 0)
     }
@@ -331,6 +344,8 @@ mod tests {
         );
     }
 
+    /// The IPv6 datagram carries the expected header fields and a mandatory,
+    /// valid UDP checksum.
     #[test]
     fn builds_ipv6_expected_header_and_checksum() {
         let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];
@@ -370,6 +385,8 @@ mod tests {
         ipv6_udp_check(&pkt, src, dst);
     }
 
+    /// IPv6 empty and binary/adversarial payloads build valid checksummed
+    /// datagrams.
     #[test]
     fn ipv6_empty_and_adversarial_payloads() {
         let src = [0xfe80, 0, 0, 0, 0, 0, 0, 1];
@@ -389,6 +406,7 @@ mod tests {
         ipv6_udp_check(&pkt, src, dst);
     }
 
+    /// A payload one byte over the IPv6 maximum is rejected; the maximum builds.
     #[test]
     fn ipv6_oversize_payload_rejected() {
         let src = [0x2001, 0xdb8, 0, 0, 0, 0, 0, 1];

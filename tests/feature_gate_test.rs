@@ -7,11 +7,19 @@
 #[cfg(any(not(feature = "mcp"), not(feature = "hep")))]
 use std::process::Command;
 
+/// Crate-root-relative path to the standard SIP call fixture.
 #[cfg(not(feature = "mcp"))]
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
 /// Run the binary and assert it exits with code 2 and an stderr message
 /// containing `needle`.
+///
+/// # Arguments
+/// * `args` — CLI arguments expected to trip a feature gate.
+/// * `needle` — substring the gate error must mention (usually the feature name).
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 #[cfg(any(not(feature = "mcp"), not(feature = "hep")))]
 fn assert_gate_failure(args: &[&str], needle: &str) {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))

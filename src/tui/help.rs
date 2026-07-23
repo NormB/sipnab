@@ -125,6 +125,19 @@ Mouse wheel scrolls every view.
 Press Esc or F1 to close this help.";
 
 /// Render the help view.
+///
+/// # Arguments
+///
+/// * `frame` — frame to draw into.
+/// * `area` — screen rectangle the help box fills.
+/// * `theme` — colors for the title, headers, keys and muted text.
+/// * `version` — version string shown under the title (truncated to the
+///   box width).
+/// * `scroll` — vertical scroll offset in lines.
+///
+/// # Side effects
+///
+/// Draws a bordered, wrapped paragraph widget into `frame`.
 pub fn render_help(
     frame: &mut Frame,
     area: Rect,
@@ -158,6 +171,19 @@ pub fn help_line_count() -> usize {
 }
 
 /// Build styled help lines from the help text.
+///
+/// # Arguments
+///
+/// * `theme` — colors applied per line class (title, section, key, muted).
+/// * `version` — version string inserted under the title line.
+/// * `inner_width` — box inner width the version line is truncated to.
+///
+/// # Returns
+///
+/// One styled `Line` per `HELP_TEXT` line plus the inserted version line:
+/// the title bold in the header color, section headers bold in the
+/// selected color, keybinding lines split into a padded key column and
+/// description, everything else muted.
 fn build_help_lines(theme: &super::Theme, version: &str, inner_width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -216,6 +242,11 @@ fn build_help_lines(theme: &super::Theme, version: &str, inner_width: usize) -> 
 /// Find the position where the description starts in a key binding line.
 ///
 /// Looks for two or more consecutive spaces after the key name.
+///
+/// # Returns
+///
+/// Byte offset in `line` of the first space of that gap, or `None` when
+/// no such multi-space boundary follows a non-space character.
 fn find_description_start(line: &str) -> Option<usize> {
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -255,55 +286,67 @@ fn truncate_to_width(s: &str, max: usize) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Tests pinning the help text's section/key coverage, the styled-line
+/// builder, and the width-truncation helper.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The help text documents the CALL LIST section.
     #[test]
     fn help_text_contains_call_list() {
         assert!(HELP_TEXT.contains("CALL LIST:"));
     }
 
+    /// The help text documents how to quit.
     #[test]
     fn help_text_contains_quit() {
         assert!(HELP_TEXT.contains("Quit"));
     }
 
+    /// The help text documents the CALL FLOW section.
     #[test]
     fn help_text_contains_call_flow() {
         assert!(HELP_TEXT.contains("CALL FLOW:"));
     }
 
+    /// The help text documents the RAW MESSAGE section.
     #[test]
     fn help_text_contains_raw_message() {
         assert!(HELP_TEXT.contains("RAW MESSAGE:"));
     }
 
+    /// The help text documents the RTP STREAMS section.
     #[test]
     fn help_text_contains_rtp_streams() {
         assert!(HELP_TEXT.contains("RTP STREAMS"));
     }
 
+    /// The help text mentions the F1 help key.
     #[test]
     fn help_text_contains_f1() {
         assert!(HELP_TEXT.contains("F1"));
     }
 
+    /// The help text mentions the F7 filter key.
     #[test]
     fn help_text_contains_f7() {
         assert!(HELP_TEXT.contains("F7"));
     }
 
+    /// The help text mentions the Enter key.
     #[test]
     fn help_text_contains_enter() {
         assert!(HELP_TEXT.contains("Enter"));
     }
 
+    /// The help text mentions the Esc key.
     #[test]
     fn help_text_contains_esc() {
         assert!(HELP_TEXT.contains("Esc"));
     }
 
+    /// The styled-line builder produces a substantial number of lines.
     #[test]
     fn build_help_lines_non_empty() {
         let theme = crate::tui::Theme::default();
@@ -312,11 +355,14 @@ mod tests {
         assert!(lines.len() > 10);
     }
 
+    /// The help text documents the `v` show-version key.
     #[test]
     fn help_text_documents_version_key() {
         assert!(HELP_TEXT.contains("Show version"));
     }
 
+    /// The injected version string appears in the rendered lines (just
+    /// under the title).
     #[test]
     fn build_help_lines_includes_version() {
         let theme = crate::tui::Theme::default();
@@ -333,6 +379,7 @@ mod tests {
         );
     }
 
+    /// Strings at or under the width limit pass through unchanged.
     #[test]
     fn truncate_to_width_passes_short_strings_through() {
         assert_eq!(truncate_to_width("v1.2.3", 78), "v1.2.3");
@@ -340,6 +387,7 @@ mod tests {
         assert_eq!(truncate_to_width("abcd", 4), "abcd");
     }
 
+    /// Overflowing strings are cut to width-1 chars plus an ellipsis.
     #[test]
     fn truncate_to_width_elides_overflow() {
         // 5 chars into width 4 -> 3 kept + ellipsis, total 4 columns.
@@ -348,11 +396,13 @@ mod tests {
         assert_eq!(out.chars().count(), 4);
     }
 
+    /// A zero-column width yields an empty string (no panic).
     #[test]
     fn truncate_to_width_zero_width_is_empty() {
         assert_eq!(truncate_to_width("anything", 0), "");
     }
 
+    /// A realistic long version string is elided to fit the 78-column box.
     #[test]
     fn truncate_to_width_long_version_fits_in_box() {
         let v =
@@ -362,6 +412,8 @@ mod tests {
         assert!(out.ends_with('\u{2026}'));
     }
 
+    /// Multibyte and control characters truncate on char boundaries
+    /// without panicking.
     #[test]
     fn truncate_to_width_handles_multibyte_and_control_chars() {
         // Backslashes / embedded control chars must not panic or split a char.

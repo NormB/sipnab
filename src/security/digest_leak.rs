@@ -161,6 +161,7 @@ impl DigestLeakDetector {
 }
 
 impl Default for DigestLeakDetector {
+    /// Equivalent to `DigestLeakDetector::new` — an empty detector.
     fn default() -> Self {
         Self::new()
     }
@@ -192,6 +193,7 @@ fn extract_param<'a>(header: &'a str, param_name: &str) -> Option<&'a str> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for digest authentication vulnerability detection.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,16 +202,19 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The loopback address used as source/destination in the test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// A fixed capture timestamp for the parsed SIP messages.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a 401 challenge whose digest declares the weak MD5 algorithm.
     fn make_401_md5() -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
@@ -235,6 +240,7 @@ mod tests {
         .expect("parse 401")
     }
 
+    /// Build a 401 challenge using SHA-256 but omitting the `qop` parameter.
     fn make_401_no_qop() -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
@@ -260,6 +266,7 @@ mod tests {
         .expect("parse 401")
     }
 
+    /// Build a strong 401 challenge (SHA-256, unique nonce, `qop=auth`).
     fn make_401_good() -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 401 Unauthorized",
@@ -285,6 +292,7 @@ mod tests {
         .expect("parse 401")
     }
 
+    /// An MD5 challenge is flagged as a weak algorithm.
     #[test]
     fn detect_weak_algorithm() {
         let mut detector = DigestLeakDetector::new();
@@ -299,6 +307,7 @@ mod tests {
         );
     }
 
+    /// A challenge without `qop` is flagged as missing qop.
     #[test]
     fn detect_missing_qop() {
         let mut detector = DigestLeakDetector::new();
@@ -313,6 +322,7 @@ mod tests {
         );
     }
 
+    /// A strong 401 (SHA-256 + qop) produces no alerts.
     #[test]
     fn good_401_no_alerts() {
         let mut detector = DigestLeakDetector::new();
@@ -325,6 +335,7 @@ mod tests {
         );
     }
 
+    /// The same nonce across two challenges is flagged as nonce reuse.
     #[test]
     fn detect_nonce_reuse() {
         let mut detector = DigestLeakDetector::new();
@@ -345,6 +356,7 @@ mod tests {
         );
     }
 
+    /// An Authorization with `qop` but no `cnonce` is flagged.
     #[test]
     fn detect_missing_cnonce() {
         let mut detector = DigestLeakDetector::new();
@@ -381,6 +393,7 @@ mod tests {
         );
     }
 
+    /// Quoted parameter values are extracted without their surrounding quotes.
     #[test]
     fn extract_param_quoted() {
         let header = r#"Digest realm="example.com", nonce="abc123", algorithm=MD5"#;
@@ -389,6 +402,7 @@ mod tests {
         assert_eq!(extract_param(header, "algorithm"), Some("MD5"));
     }
 
+    /// Parameter name matching is case-insensitive.
     #[test]
     fn extract_param_case_insensitive() {
         let header = r#"Digest Realm="test.com", Algorithm=SHA-256"#;
@@ -396,6 +410,7 @@ mod tests {
         assert_eq!(extract_param(header, "algorithm"), Some("SHA-256"));
     }
 
+    /// A parameter absent from the header extracts as `None`.
     #[test]
     fn extract_param_missing() {
         let header = r#"Digest realm="example.com""#;

@@ -1,10 +1,13 @@
 //! Standalone Prometheus metrics HTTP server.
 //!
 //! Provides a minimal HTTP/1.1 server that serves the `/metrics` endpoint
-//! using a raw TCP listener. This avoids requiring the `api` feature (axum/tokio)
-//! for standalone metrics export.
+//! using a raw TCP listener and plain threads — no axum/tokio runtime is
+//! involved (note the module itself is still compiled under the `api`
+//! feature gate in `super`).
 //!
 //! Started when `--metrics <addr:port>` is specified without `--api`.
+//! Concurrency is capped at `MAX_CONCURRENT_CONNECTIONS`; optional HTTP
+//! Basic auth protects non-loopback binds.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
@@ -25,26 +28,31 @@ use crate::sip::dialog_store::DialogStore;
 const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
 /// Bounds the number of in-flight metrics connections. A permit is taken per
-/// accepted connection and released (via [`ConnPermit`]'s `Drop`) when its
+/// accepted connection and released (via `ConnPermit`'s `Drop`) when its
 /// handler finishes.
 struct ConnGate {
+    /// Current in-flight connection count, shared with issued permits.
     active: Arc<AtomicUsize>,
+    /// Maximum simultaneous connections before refusals.
     max: usize,
 }
 
-/// RAII permit from [`ConnGate::try_acquire`]; decrements the in-flight count
+/// RAII permit from `ConnGate::try_acquire`; decrements the in-flight count
 /// when dropped.
 struct ConnPermit {
+    /// Shared in-flight counter to decrement on drop.
     active: Arc<AtomicUsize>,
 }
 
 impl Drop for ConnPermit {
+    /// Release the slot by decrementing the shared in-flight counter.
     fn drop(&mut self) {
         self.active.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
 impl ConnGate {
+    /// Create a gate allowing at most `max` simultaneous connections.
     fn new(max: usize) -> Self {
         Self {
             active: Arc::new(AtomicUsize::new(0)),
@@ -53,6 +61,7 @@ impl ConnGate {
     }
 
     /// Reserve a slot, or `None` if the concurrency cap is already reached.
+    /// Increments the shared counter optimistically and backs out on refusal.
     fn try_acquire(&self) -> Option<ConnPermit> {
         let prev = self.active.fetch_add(1, Ordering::SeqCst);
         if prev >= self.max {
@@ -72,9 +81,34 @@ impl ConnGate {
 /// returns 404. Optionally requires HTTP Basic authentication when
 /// `basic_auth` is `Some("user:pass")`.
 ///
+/// # Arguments
+///
+/// * `bind_addr` — Address to listen on.
+/// * `dialog_store` — Shared dialog store snapshotted per scrape.
+/// * `stream_store` — Shared stream store snapshotted per scrape.
+/// * `basic_auth` — Expected `user:pass` credential, or `None` to disable
+///   auth (loopback binds only).
+/// * `capture_meter` — Optional capture-queue meter for queue-depth and
+///   backpressure gauges.
+///
+/// # Returns
+///
+/// The `JoinHandle` of the detached `metrics-server` accept-loop thread.
+///
 /// # Errors
 ///
-/// Returns an error if the TCP listener cannot be bound.
+/// Fails when the bind is non-loopback with no `basic_auth` configured
+/// (fail-closed policy, SN-02), when the TCP listener cannot be bound, or
+/// when the server thread cannot be spawned.
+///
+/// # Side effects
+///
+/// Binds a TCP listener, spawns a long-lived accept-loop thread that in
+/// turn spawns one short-lived `metrics-conn` thread per accepted
+/// connection (bounded by the connection gate; excess connections get an
+/// immediate 503), logs the bound address, and warns when Basic auth is
+/// used on a non-loopback bind without TLS. The loop exits on shutdown
+/// request.
 pub fn start_metrics_server(
     bind_addr: SocketAddr,
     dialog_store: Arc<RwLock<DialogStore>>,
@@ -163,6 +197,7 @@ pub fn start_metrics_server(
 }
 
 /// Write a minimal `Connection: close` HTTP response with a plain-text body.
+/// Best-effort: write errors are swallowed.
 fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
     let response = format!(
         "HTTP/1.1 {status_line}\r\n\
@@ -178,6 +213,21 @@ fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
 /// Handle one metrics connection: parse the request line and headers, enforce
 /// Basic auth when configured, and serve `/metrics` (or 404). Owns `stream`
 /// for the connection's lifetime.
+///
+/// # Arguments
+///
+/// * `stream` — The accepted TCP connection.
+/// * `dialog_store` / `stream_store` — Stores snapshotted by
+///   `collect_metrics` on a `/metrics` hit.
+/// * `basic_auth` — Expected `user:pass`, or `None` for no auth.
+/// * `capture_meter` — Optional capture-queue meter.
+///
+/// # Side effects
+///
+/// Sets 5 s read/write timeouts (slowloris defense), reads the request
+/// from the socket, takes store read locks while collecting metrics, and
+/// writes a 200/401/404 response. All I/O is best-effort; malformed
+/// requests simply end the connection.
 fn handle_metrics_connection(
     mut stream: TcpStream,
     dialog_store: &Arc<RwLock<DialogStore>>,
@@ -266,6 +316,12 @@ fn handle_metrics_connection(
 ///
 /// `auth_value` is the value of the Authorization header (e.g., "Basic dXNlcjpwYXNz").
 /// `expected_creds` is the expected "user:pass" string.
+///
+/// # Returns
+///
+/// `true` only when the base64 payload decodes to valid UTF-8 equal to
+/// `expected_creds` (compared in constant time); `false` for a missing
+/// `Basic ` prefix, bad base64, or non-UTF-8.
 fn check_basic_auth(auth_value: &str, expected_creds: &str) -> bool {
     let Some(encoded) = auth_value.strip_prefix("Basic ") else {
         return false;
@@ -285,6 +341,8 @@ fn check_basic_auth(auth_value: &str, expected_creds: &str) -> bool {
 }
 
 /// Constant-time byte comparison to prevent timing side-channel attacks.
+/// Returns `true` iff `a` and `b` have equal length and contents; always
+/// scans `max(len)` bytes regardless of where they differ.
 ///
 /// `#[inline(never)]` prevents the optimizer from rewriting the loop into
 /// a short-circuiting form. `black_box` on the accumulator forces the
@@ -302,9 +360,15 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     len_match && std::hint::black_box(byte_diff) == 0
 }
 
-/// Parse a bind address string into a [`SocketAddr`].
+/// Parse a bind address string into a `SocketAddr`.
 ///
-/// Same logic as the API bind address parser: accepts `:port`, `port`, or `addr:port`.
+/// Same logic as the API bind address parser: accepts `:port`, `port`, or
+/// `addr:port` (bare/`:port` forms bind loopback).
+///
+/// # Errors
+///
+/// Returns `crate::Error::InvalidBindAddr` (carrying the input and a
+/// reason string) when no form parses.
 pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
     parse_metrics_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
         input: addr.to_string(),
@@ -312,6 +376,9 @@ pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
     })
 }
 
+/// Inner parser for `parse_metrics_addr`: tries bare-port, `:port`
+/// shorthand, then full `addr:port`, returning a plain reason string on
+/// failure so the public wrapper can attach the original input.
 fn parse_metrics_addr_inner(addr: &str) -> Result<SocketAddr, String> {
     // Just a port number
     if let Ok(port) = addr.parse::<u16>() {
@@ -331,6 +398,15 @@ fn parse_metrics_addr_inner(addr: &str) -> Result<SocketAddr, String> {
 }
 
 /// Collect current metrics from the dialog and stream stores.
+///
+/// Populates per-state dialog counts, per-method message counts, the
+/// active-stream gauge, and (when a meter is supplied) capture queue
+/// depth and backpressure counters.
+///
+/// # Side effects
+///
+/// Takes the dialog- then stream-store read locks (sequentially, dropped
+/// before returning).
 fn collect_metrics(
     dialog_store: &Arc<RwLock<DialogStore>>,
     stream_store: &Arc<RwLock<StreamStore>>,
@@ -373,22 +449,27 @@ fn collect_metrics(
     metrics
 }
 
+/// Tests for address parsing, Basic-auth checking, the connection gate,
+/// bind policy, and end-to-end HTTP behavior on ephemeral ports.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A bare port string binds to `127.0.0.1:<port>`.
     #[test]
     fn parse_metrics_addr_port_only() {
         let addr = parse_metrics_addr("9100").unwrap();
         assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9100));
     }
 
+    /// The `:port` shorthand binds to `127.0.0.1:<port>`.
     #[test]
     fn parse_metrics_addr_colon_port() {
         let addr = parse_metrics_addr(":9100").unwrap();
         assert_eq!(addr, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 9100));
     }
 
+    /// A full `addr:port` pair parses verbatim.
     #[test]
     fn parse_metrics_addr_full() {
         let addr = parse_metrics_addr("0.0.0.0:9100").unwrap();
@@ -398,22 +479,26 @@ mod tests {
         );
     }
 
+    /// A non-address string is rejected.
     #[test]
     fn parse_metrics_addr_invalid() {
         assert!(parse_metrics_addr("not-an-address").is_err());
     }
 
+    /// Correct base64 credentials pass the Basic auth check.
     #[test]
     fn basic_auth_valid() {
         // base64("user:pass") = "dXNlcjpwYXNz"
         assert!(check_basic_auth("Basic dXNlcjpwYXNz", "user:pass"));
     }
 
+    /// Wrong-password credentials fail the Basic auth check.
     #[test]
     fn basic_auth_invalid() {
         assert!(!check_basic_auth("Basic dXNlcjp3cm9uZw==", "user:pass"));
     }
 
+    /// A non-`Basic` scheme fails the Basic auth check.
     #[test]
     fn basic_auth_missing_prefix() {
         assert!(!check_basic_auth("Bearer token", "user:pass"));
@@ -513,6 +598,8 @@ mod tests {
         Arc::new(RwLock::new(ss))
     }
 
+    /// `GET /metrics` returns 200 with the Prometheus content type and a
+    /// `sipnab_` body.
     #[test]
     fn metrics_endpoint_returns_200_with_body() {
         let addr = free_addr();
@@ -535,6 +622,7 @@ mod tests {
         assert!(resp.contains("sipnab_"), "metrics body missing: {resp:?}");
     }
 
+    /// Any path other than `/metrics` returns 404.
     #[test]
     fn unknown_path_returns_404() {
         let addr = free_addr();
@@ -551,6 +639,8 @@ mod tests {
         assert!(resp.starts_with("HTTP/1.1 404 Not Found"), "got: {resp:?}");
     }
 
+    /// With auth configured: no/wrong credentials get 401 (with a
+    /// challenge), correct credentials get 200.
     #[test]
     fn basic_auth_enforced() {
         let addr = free_addr();
@@ -656,6 +746,7 @@ mod tests {
         assert!(handle.is_ok(), "loopback without auth should start");
     }
 
+    /// Collected metrics count the seeded dialog and the one active stream.
     #[test]
     fn collect_metrics_counts_dialogs_and_active_streams() {
         let metrics = collect_metrics(&populated_dialog_store(), &populated_stream_store(), None);
@@ -666,6 +757,8 @@ mod tests {
         assert_eq!(metrics.rtp_streams_active, 1);
     }
 
+    /// A supplied capture meter reports queue depth; without one the gauge
+    /// stays 0.
     #[test]
     fn collect_metrics_reports_capture_queue_depth() {
         use crate::capture::channel::packet_channel;

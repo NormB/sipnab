@@ -42,6 +42,10 @@ pub enum StreamHealth {
 }
 
 /// Classify stream health based on jitter and loss metrics.
+///
+/// Orphaned streams win outright; otherwise the loss percentage (lost over
+/// received plus lost) and the jitter are compared against the module's
+/// warning/bad thresholds, the worse classification winning. Pure.
 pub fn classify_stream(stream: &RtpStream) -> StreamHealth {
     if stream.orphaned {
         return StreamHealth::Orphaned;
@@ -131,6 +135,7 @@ impl StreamListState {
 }
 
 impl Default for StreamListState {
+    /// Equivalent to `StreamListState::new()`: first row selected.
     fn default() -> Self {
         Self::new()
     }
@@ -139,10 +144,13 @@ impl Default for StreamListState {
 // ── Rendering ───────────────────────────────────────────────────────
 
 /// Display parameters for the stream list view (mirrors
-/// [`crate::tui::call_list::CallListDisplay`]).
+/// `crate::tui::call_list::CallListDisplay`).
 pub struct StreamListDisplay<'a> {
+    /// Color theme used for all styling.
     pub theme: &'a super::Theme,
+    /// Resolver mapping endpoint addresses to user-assigned names.
     pub resolver: &'a crate::names::NameResolver,
+    /// How endpoint names are displayed (off / name only / name+address).
     pub name_mode: crate::names::NameMode,
     /// Stream keys in display order, derived once per tick by
     /// `App::sync_caches` — the render must not re-filter the store.
@@ -153,15 +161,23 @@ pub struct StreamListDisplay<'a> {
 // the parallel test runner cannot cross-talk).
 #[cfg(test)]
 thread_local! {
+    /// Test-only invocation counter for `displayed_streams`, used to assert
+    /// the list is derived once per tick rather than once per render.
     pub(crate) static DISPLAYED_STREAMS_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
 
-/// Render the RTP stream list table into the given area.
-///
 /// Case-insensitive substring match over the fields the stream table shows:
 /// SSRC (hex, as displayed), codec, source/destination `ip:port`, and the
 /// associated dialog Call-ID.
+///
+/// # Arguments
+/// * `stream` - Stream whose displayed fields are tested.
+/// * `query_lower` - Search query, already lowercased by the caller.
+///
+/// # Returns
+/// `true` when any displayed field contains the query (or the query is
+/// empty). Pure.
 pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
     if query_lower.is_empty() {
         return true;
@@ -205,6 +221,19 @@ pub fn stream_matches_search(stream: &RtpStream, query_lower: &str) -> bool {
 ///
 /// Single source of truth for rendering, navigation clamping and selection
 /// resolution, mirroring `call_list::displayed_dialogs`.
+///
+/// # Arguments
+/// * `streams` - Candidate streams in store iteration order.
+/// * `dialog_store` - Dialog store for filter evaluation, if available.
+/// * `filter` - Active SIP display filter, if any.
+/// * `search_query` - Raw (not yet lowercased) search text.
+///
+/// # Returns
+/// References to the streams that pass both the search and the filter, in
+/// input order.
+///
+/// # Side effects
+/// In test builds, increments the `DISPLAYED_STREAMS_CALLS` counter.
 pub fn displayed_streams<'a>(
     streams: impl IntoIterator<Item = &'a RtpStream>,
     dialog_store: Option<&DialogStore>,
@@ -232,8 +261,24 @@ pub fn displayed_streams<'a>(
         .collect()
 }
 
+/// Render the RTP stream list table into the given area.
+///
 /// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video highlight.
 /// No title line -- status is rendered separately at the top of the screen.
+/// Only the visible viewport window is formatted (placeholder rows keep the
+/// stateful selection index correct); keys whose streams were evicted from
+/// the store drop out silently.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the table.
+/// * `state` - Stream list state; the table's inner offset is updated.
+/// * `store` - Stream store snapshot the displayed keys resolve against.
+/// * `display` - Theme, name resolution and the pre-derived key order.
+///
+/// # Side effects
+/// Draws to `frame` and mutates `state.table_state` (stateful widget
+/// offset/selection bookkeeping) during rendering.
 pub fn render_stream_list(
     frame: &mut Frame,
     area: Rect,
@@ -377,7 +422,8 @@ pub fn render_stream_list(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Return a style for the health status label.
+/// Return a style for the health status label: good/warning/bad/muted per
+/// health, with warning and bad additionally bold. Pure.
 fn health_style(health: StreamHealth, theme: &super::Theme) -> Style {
     match health {
         StreamHealth::Good => Style::default().fg(theme.good),
@@ -389,7 +435,8 @@ fn health_style(health: StreamHealth, theme: &super::Theme) -> Style {
     }
 }
 
-/// Return a row style for the given stream health.
+/// Return a whole-row style for the given stream health (same colors as
+/// `health_style` but never bold). Pure.
 fn health_row_style(health: StreamHealth, theme: &super::Theme) -> Style {
     match health {
         StreamHealth::Good => Style::default().fg(theme.good),
@@ -399,10 +446,13 @@ fn health_row_style(health: StreamHealth, theme: &super::Theme) -> Style {
     }
 }
 
+/// Unit tests for stream-list navigation, display derivation and health
+/// classification.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Up/down/top/bottom navigation moves and clamps the selection.
     #[test]
     fn stream_list_state_navigation() {
         let mut state = StreamListState::new();
@@ -421,6 +471,8 @@ mod tests {
         assert_eq!(state.selected(), 0);
     }
 
+    /// Page up/down move by 20 rows, clamp to the last row, and no-op on
+    /// an empty list.
     #[test]
     fn stream_list_paging_clamps() {
         let mut state = StreamListState::new();
@@ -434,6 +486,7 @@ mod tests {
         assert_eq!(state.selected(), 4);
     }
 
+    /// Moving down on an empty list keeps the selection at 0.
     #[test]
     fn stream_list_state_empty() {
         let mut state = StreamListState::new();
@@ -441,6 +494,8 @@ mod tests {
         assert_eq!(state.selected(), 0);
     }
 
+    /// Build a fixture stream 10.0.0.1:`sport` → 10.0.0.2:30000 with the
+    /// given SSRC and optional codec / associated-dialog Call-ID.
     fn mk_stream(ssrc: u32, sport: u16, codec: Option<&str>, dialog: Option<&str>) -> RtpStream {
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream::StreamKey;
@@ -468,8 +523,9 @@ mod tests {
         st
     }
 
-    // Search narrows by the fields the table shows; adversarial input must
-    // not panic and simply matches nothing.
+    /// Search narrows by the fields the table shows (codec, SSRC hex,
+    /// dialog); adversarial input must not panic and simply matches
+    /// nothing.
     #[test]
     fn displayed_streams_honors_search() {
         let a = mk_stream(0xAABBCCDD, 20000, Some("PCMU"), None);
@@ -496,8 +552,9 @@ mod tests {
         assert_eq!(displayed_streams(all, None, None, "").len(), 2);
     }
 
-    // A SIP display filter restricts streams via their associated dialog;
-    // unassociated streams are kept (a SIP filter cannot judge them).
+    /// A SIP display filter restricts streams via their associated dialog;
+    /// unassociated streams and streams whose dialog vanished are kept (a
+    /// SIP filter cannot judge them).
     #[test]
     fn displayed_streams_honors_sip_filter() {
         use crate::capture::parse::TransportProto;
@@ -553,6 +610,7 @@ mod tests {
         assert!(ssrcs.contains(&3), "unassociated stream still shown");
     }
 
+    /// A fresh stream with no jitter or loss classifies as Good.
     #[test]
     fn classify_stream_good() {
         use crate::rtp::parser::RtpHeader;

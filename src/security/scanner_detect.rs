@@ -47,12 +47,17 @@ const BEHAVIORAL_WINDOW_SECS: u64 = 5;
 
 /// Tracks per-source behavioral state for probe detection.
 struct BehavioralState {
+    /// REGISTER requests seen from this source in the current window.
     register_count: u32,
+    /// OPTIONS requests seen from this source in the current window.
     options_count: u32,
+    /// INVITE requests seen from this source in the current window.
     invite_count: u32,
     /// Distinct target extensions (To/R-URI user-part) seen this window.
     targets: HashSet<String>,
+    /// Start of the current behavioral window.
     first_seen: Instant,
+    /// Most recent activity from this source (used for sweeping).
     last_seen: Instant,
 }
 
@@ -125,7 +130,7 @@ impl ScannerDetector {
 
     /// Check a SIP message for scanner activity.
     ///
-    /// Returns a [`ScannerAlert`] if the message matches a known scanner
+    /// Returns a `ScannerAlert` if the message matches a known scanner
     /// pattern or if the source IP's behavioral profile exceeds the
     /// probing threshold.
     #[must_use]
@@ -247,6 +252,7 @@ impl ScannerDetector {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for scanner UA-signature and behavioral/enumeration detection.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,20 +261,24 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The loopback address used as a benign source/destination.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// The source IP used to simulate a scanner.
     fn scanner_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99))
     }
 
+    /// A fixed capture timestamp for the parsed messages.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a request of `method` carrying the given User-Agent from `src`.
     fn make_request_with_ua(method: &str, ua: &str, src: IpAddr) -> SipMessage {
         let raw = build_sip(
             &format!("{method} sip:target@example.com SIP/2.0"),
@@ -294,6 +304,7 @@ mod tests {
         .expect("should parse")
     }
 
+    /// Build a request of `method` with no User-Agent header from `src`.
     fn make_request_no_ua(method: &str, src: IpAddr, call_id: &str) -> SipMessage {
         let raw = build_sip(
             &format!("{method} sip:target@example.com SIP/2.0"),
@@ -318,6 +329,7 @@ mod tests {
         .expect("should parse")
     }
 
+    /// A friendly-scanner User-Agent is detected via signature match.
     #[test]
     fn detect_friendly_scanner_ua() {
         let mut detector = ScannerDetector::new(&[]);
@@ -330,6 +342,7 @@ mod tests {
         assert_eq!(alert.ua, "friendly-scanner");
     }
 
+    /// A sipvicious User-Agent is detected via signature match.
     #[test]
     fn detect_sipvicious_ua() {
         let mut detector = ScannerDetector::new(&[]);
@@ -341,6 +354,7 @@ mod tests {
         assert_eq!(alert.detection_method, "ua_pattern");
     }
 
+    /// A benign User-Agent does not trigger a signature alert.
     #[test]
     fn normal_ua_not_detected() {
         let mut detector = ScannerDetector::new(&[]);
@@ -350,6 +364,7 @@ mod tests {
         assert!(alert.is_none(), "normal UA should not trigger alert");
     }
 
+    /// A high REGISTER rate from one source triggers a behavioral alert.
     #[test]
     fn behavioral_detection_high_rate() {
         let mut detector = ScannerDetector::new(&[]);
@@ -374,6 +389,8 @@ mod tests {
     /// Build a request that enumerates a specific target extension, with an
     /// arbitrary (attacker-chosen, here randomized-looking) User-Agent — the
     /// evasion: no known scanner UA, so ua_pattern can never fire.
+    /// Build a request probing extension `target` with an arbitrary UA (the
+    /// evasion: no known scanner signature) from `src`.
     fn enum_request(method: &str, target: &str, ua: &str, src: IpAddr, n: usize) -> SipMessage {
         let raw = build_sip(
             &format!("{method} sip:{target}@example.com SIP/2.0"),
@@ -399,6 +416,8 @@ mod tests {
         .expect("should parse")
     }
 
+    /// INVITE-based extension enumeration with a randomized UA is caught by the
+    /// distinct-target signal.
     #[test]
     fn detect_invite_extension_enumeration_with_randomized_ua() {
         // EVASION: attacker enumerates extensions over INVITE with a different,
@@ -428,6 +447,7 @@ mod tests {
         assert_eq!(a.detection_method, "enumeration");
     }
 
+    /// Six distinct targets under the rate threshold still trigger enumeration.
     #[test]
     fn detect_low_and_slow_enumeration_under_rate_threshold() {
         // EVASION: stay UNDER the rate threshold (only 6 probes), but hit 6
@@ -449,6 +469,8 @@ mod tests {
         assert_eq!(fired.unwrap().detection_method, "enumeration");
     }
 
+    /// Repeated requests to only one or two targets are not flagged as
+    /// enumeration.
     #[test]
     fn normal_call_to_few_targets_not_flagged_as_enumeration() {
         // FALSE-POSITIVE guard: a normal client placing several requests to the
@@ -468,6 +490,7 @@ mod tests {
         }
     }
 
+    /// A user-supplied `--kill-ua` pattern is matched like a built-in signature.
     #[test]
     fn custom_kill_ua_detected() {
         let custom = vec!["my-scanner".to_string()];
@@ -480,6 +503,7 @@ mod tests {
         assert_eq!(alert.detection_method, "ua_pattern");
     }
 
+    /// SIP responses are ignored (only requests are checked).
     #[test]
     fn response_messages_ignored() {
         let mut detector = ScannerDetector::new(&[]);

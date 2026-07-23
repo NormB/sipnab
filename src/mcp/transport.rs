@@ -1,16 +1,16 @@
-//! Phase 8.1/8.2 — transports for the MCP server.
+//! Transports for the MCP server.
 //!
-//! Stdio mode (8.1) wires the JSON-RPC stream over `stdin`/`stdout`. HTTP
-//! mode (8.2) mounts an axum service at `/mcp` and accepts Streamable-HTTP
-//! requests; both modes share the same `SipnabMcp` server.
+//! Stdio mode wires the JSON-RPC stream over `stdin`/`stdout`. HTTP mode
+//! mounts an axum service at `/mcp` and accepts Streamable-HTTP requests;
+//! both modes share the same `SipnabMcp` server.
 //!
 //! # Stdio invariant (Gotcha 1)
 //!
 //! `stdout` is the protocol wire. Any `println!`/`eprintln!` or stray
 //! non-tracing logging in this process would corrupt the protocol stream.
-//! Phase 8.0b's tracing-subscriber initializer (`with_writer(stderr)`) is
-//! the project-wide guarantee; the `tests/parse_path_test.rs` JSON
-//! determinism check picks up regressions.
+//! The tracing-subscriber initializer in `app::bootstrap::init_logging`
+//! (`with_writer(stderr)`) is the project-wide guarantee; the
+//! `tests/parse_path_test.rs` JSON determinism check picks up regressions.
 //!
 //! # HTTP transport security (Gotcha 2)
 //!
@@ -24,6 +24,21 @@ use super::server::SipnabMcp;
 use rmcp::ServiceExt;
 
 /// Run an MCP server over stdio. Returns when the client disconnects.
+///
+/// # Arguments
+///
+/// * `server` — the fully-configured tool server to expose.
+///
+/// # Errors
+///
+/// Propagates rmcp transport errors from the initial handshake
+/// (`serve`) or from the serving task (`waiting`).
+///
+/// # Side effects
+///
+/// Takes over the process's `stdin`/`stdout` as the JSON-RPC wire and
+/// reads/writes them until the client closes stdin — nothing else in the
+/// process may print to stdout while this runs.
 pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
     let transport = (tokio::io::stdin(), tokio::io::stdout());
     let service = server.serve(transport).await?;
@@ -31,6 +46,8 @@ pub async fn serve_stdio(server: SipnabMcp) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Streamable-HTTP transport: axum router, bearer-token guard middleware,
+/// and the `serve_http` entry point re-exported at the module root.
 #[cfg(feature = "mcp-http")]
 mod http {
     use std::net::SocketAddr;
@@ -61,6 +78,20 @@ mod http {
     /// Bearer-token guard. On loopback with no auth configured the request
     /// passes; otherwise the `Authorization: Bearer` header is required and
     /// verified (signed token or static secret, constant-time).
+    ///
+    /// # Arguments
+    ///
+    /// * `state` — shared verifier state installed on the router.
+    /// * `_addr` — peer address (unused; the loopback/auth policy is
+    ///   enforced once at startup in `serve_http`, not per connection).
+    /// * `headers` — request headers searched for `Authorization: Bearer`.
+    /// * `request` / `next` — the guarded request and the rest of the
+    ///   middleware chain.
+    ///
+    /// # Returns
+    ///
+    /// The downstream response on success; `401 UNAUTHORIZED` when a token
+    /// is required but missing, malformed, expired, or revoked.
     async fn auth_layer(
         axum::extract::State(state): axum::extract::State<McpHttpState>,
         ConnectInfo(_addr): ConnectInfo<SocketAddr>,
@@ -88,6 +119,27 @@ mod http {
     /// caller's tokio runtime, mounts `/mcp` plus `/health`, applies the
     /// bearer-token guard middleware, and serves until SIGINT/SIGTERM trips
     /// the shutdown flag.
+    ///
+    /// # Arguments
+    ///
+    /// * `server` — the tool server; cloned per HTTP session.
+    /// * `bind` — socket address to listen on (default `127.0.0.1:8731`).
+    /// * `auth_config` — signing keys / static secrets for the bearer guard;
+    ///   unconfigured auth is only accepted on a loopback bind.
+    /// * `extra_allowed_hosts` — `--mcp-allowed-host` additions to rmcp's
+    ///   default Host-header allowlist; a literal `*` disables the check.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the bind is non-loopback with no auth configured, when the
+    /// TCP listener cannot bind, or when axum's serve loop errors.
+    ///
+    /// # Side effects
+    ///
+    /// Binds and owns a TCP listener, serves HTTP until shutdown, logs the
+    /// effective bind address and Host allowlist, caps request bodies at
+    /// 2 MiB, and polls the process-wide shutdown flag every 200 ms for
+    /// graceful termination.
     pub async fn serve_http(
         server: SipnabMcp,
         bind: SocketAddr,

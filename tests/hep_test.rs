@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use sipnab::capture::hep::{HepEndpoint, HepProtocol, build_hep_v3};
 
+/// Call-ID embedded in the synthetic INVITE; tests grep stdout for it.
 const CALL_ID: &str = "hep-test-call-1@127.0.0.1";
 
 /// A minimal but parseable SIP INVITE used as the HEP payload.
@@ -37,7 +38,14 @@ fn invite_bytes() -> Vec<u8> {
     msg.into_bytes()
 }
 
-/// A HEP3 datagram wrapping `payload` as a loopback SIP/UDP message.
+/// A HEP3 datagram wrapping `payload` as a loopback SIP/UDP message, built
+/// with the production `build_hep_v3` encoder.
+///
+/// # Arguments
+/// * `payload` — the SIP message bytes to encapsulate.
+///
+/// # Returns
+/// The encoded HEP3 datagram.
 fn hep3_sip(payload: &[u8]) -> Vec<u8> {
     let ep = HepEndpoint {
         src_addr: "127.0.0.1".parse().unwrap(),
@@ -59,6 +67,10 @@ struct HepListener {
 impl HepListener {
     /// Spawn `sipnab -N --hep-listen 127.0.0.1:0 --json` plus `extra_args`,
     /// scraping the actual bound UDP port from the startup log.
+    ///
+    /// # Side effects
+    /// Spawns the sipnab binary (killed on drop), which binds an ephemeral
+    /// loopback UDP port; panics if no port is reported within 10s.
     fn spawn(extra_args: &[&str]) -> HepListener {
         Self::spawn_with_log("info", extra_args)
     }
@@ -118,6 +130,9 @@ impl HepListener {
     }
 
     /// Send a datagram to the listener from a fresh loopback UDP socket.
+    ///
+    /// # Side effects
+    /// Binds an ephemeral UDP socket for the send.
     fn send(&self, datagram: &[u8]) {
         let sock = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
         sock.send_to(datagram, ("127.0.0.1", self.port))
@@ -125,6 +140,9 @@ impl HepListener {
     }
 
     /// Wait up to `wait` for a stdout JSON line containing `needle`.
+    ///
+    /// # Returns
+    /// The matching line, or `None` on timeout.
     fn wait_for_stdout(&self, needle: &str, wait: Duration) -> Option<String> {
         let deadline = Instant::now() + wait;
         while Instant::now() < deadline {
@@ -138,6 +156,9 @@ impl HepListener {
     }
 
     /// Wait up to `wait` for a stderr line containing `needle`.
+    ///
+    /// # Returns
+    /// True if a matching line arrived before the deadline.
     fn wait_for_stderr(&self, needle: &str, wait: Duration) -> bool {
         let deadline = Instant::now() + wait;
         while Instant::now() < deadline {
@@ -159,6 +180,15 @@ impl Drop for HepListener {
 }
 
 /// Drain a child stream into a channel of lines on a background thread.
+///
+/// # Arguments
+/// * `r` — readable stream (child stdout/stderr) to drain.
+///
+/// # Returns
+/// Receiver yielding each line as it arrives.
+///
+/// # Side effects
+/// Spawns a detached reader thread that runs until the stream closes.
 fn line_reader<R: std::io::Read + Send + 'static>(r: R) -> mpsc::Receiver<String> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -171,6 +201,8 @@ fn line_reader<R: std::io::Read + Send + 'static>(r: R) -> mpsc::Receiver<String
     rx
 }
 
+/// A synthetic HEP3-wrapped INVITE sent to `--hep-listen` surfaces on `--json`
+/// stdout with the right method and Call-ID.
 #[test]
 fn hep_listener_ingests_synthetic_hep3() {
     let srv = HepListener::spawn(&["--hep-allow", "127.0.0.1/32"]);
@@ -184,6 +216,8 @@ fn hep_listener_ingests_synthetic_hep3() {
     assert_eq!(msg["call_id"], CALL_ID);
 }
 
+/// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is dropped and
+/// never surfaces on stdout.
 #[test]
 fn hep_allowlist_rejects_source_outside_cidr() {
     // Loopback packets come from 127.0.0.1, which is NOT in 10.0.0.0/8, so the
@@ -197,6 +231,8 @@ fn hep_allowlist_rejects_source_outside_cidr() {
     );
 }
 
+/// A 20-datagram burst against `--hep-rate-limit 1` logs a
+/// "rate limit exceeded" drop (visible at debug log level).
 #[test]
 fn hep_rate_limit_drops_burst() {
     // rate-limit 1/s, then fire a burst well above it within the same second.
@@ -214,6 +250,8 @@ fn hep_rate_limit_drops_burst() {
     );
 }
 
+/// `--hep-send` forwards fixture SIP to a collector UDP socket, and the first
+/// received datagram starts with the `HEP3` magic.
 #[test]
 fn hep_send_forwards_captured_sip_as_hep3() {
     // Bind a collector UDP socket; have sipnab forward a fixture's SIP to it.

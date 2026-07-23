@@ -8,6 +8,13 @@
 //! - `prepare` — data preparation (formatting, timestamp modes, SDP)
 //! - `render` — buffer painting and Paragraph-based rendering
 //! - `arrows` — arrow formatting between column positions
+//! - `export` — Mermaid sequence-diagram export (raw source + HTML page)
+//!
+//! The module root also owns the shared display types (`FlowDisplayOptions`,
+//! `FormattedMessage`, `Participant`, `SelectionState`), the ladder layout
+//! constants, SIP transaction grouping (`transaction_key` /
+//! `transaction_indices`), and the split-view width math
+//! (`ladder_split_width`).
 
 pub mod arrows;
 pub mod export;
@@ -44,13 +51,21 @@ pub struct RtpCodecSegment {
 /// `build_*` / `render_*` call flow functions.
 #[derive(Debug, Clone)]
 pub struct FlowDisplayOptions<'a> {
+    /// How SDP bodies are shown below their message row (none/summary/full).
     pub sdp_mode: SdpDisplayMode,
+    /// Timestamp column format (absolute, delta-prev, delta-first, scaled).
     pub ts_mode: TimestampMode,
+    /// What drives arrow coloring (method class, Call-ID, or CSeq rotation).
     pub color_mode: ColorMode,
+    /// Whether to insert RTP-in-flow channel bars for media segments.
     pub show_rtp: bool,
+    /// Index of the selected row among visible (non-spacer) rows, if any.
     pub selected_msg: Option<usize>,
+    /// Color theme used for all styling decisions.
     pub theme: &'a Theme,
+    /// Resolver mapping endpoint addresses to display names.
     pub resolver: &'a crate::names::NameResolver,
+    /// How endpoint labels are displayed (raw address vs resolved name).
     pub name_mode: crate::names::NameMode,
     /// Observed RTP codec segments for this dialog (authoritative "used"
     /// codec). Empty ⇒ fall back to the negotiated SDP answer codec.
@@ -118,6 +133,14 @@ pub const ENDPOINT_COL_WIDTH: usize = 20;
 /// needs to render untruncated across `span` adjacent-column gaps:
 /// `format_arrow` fits a label only when the inter-pipe width (`gap - 1`)
 /// is at least `label_len + 4` (two pads, at least one dash, the arrowhead).
+///
+/// # Arguments
+/// * `label_len` — arrow label length in characters.
+/// * `span` — number of adjacent-column gaps the arrow crosses (clamped to
+///   at least 1, so a degenerate `0` never divides by zero).
+///
+/// # Returns
+/// The minimum per-gap column count, rounded up.
 pub fn arrow_gap_for_label(label_len: usize, span: usize) -> usize {
     (label_len + 5).div_ceil(span.max(1))
 }
@@ -130,11 +153,20 @@ pub fn arrow_gap_for_label(label_len: usize, span: usize) -> usize {
 /// `format_arrow` truncates them — the multi-leg (B2BUA) case, where legs
 /// packed into the default ~60% split squeezed `INVITE (SDP) (+1 retx)`
 /// into `INVITE (SD...`. `required_gap` is the widest per-gap label demand
-/// actually present (see [`arrow_gap_for_label`]); when the configured
+/// actually present (see `arrow_gap_for_label`); when the configured
 /// split can't provide it, widen the ladder — shrinking the detail pane
 /// down to a floor, and bounding a pathological label's demand so it can't
 /// eat the whole pane. The common 2-participant call is unaffected — it
 /// keeps the configured split exactly.
+///
+/// # Arguments
+/// * `n_participants` — number of ladder swimlane columns.
+/// * `required_gap` — widest per-gap label demand (from `arrow_gap_for_label`).
+/// * `detail_pct` — configured detail-pane share of the width, in percent.
+/// * `total` — total available width in columns.
+///
+/// # Returns
+/// The ladder pane width in columns; the detail pane gets the remainder.
 pub fn ladder_split_width(
     n_participants: usize,
     required_gap: usize,
@@ -213,7 +245,7 @@ pub struct FormattedMessage {
     pub folded_count: usize,
     /// Annotation for folded messages (e.g., "3 msgs folded - press e to expand").
     pub fold_label: Option<String>,
-    /// Whether this is a spacer row (for time-proportional scaling, Phase C).
+    /// Whether this is a spacer row (time-proportional scaling, Scaled mode).
     pub is_spacer: bool,
     /// SDP change badge for re-INVITEs (e.g., "+G.722", "HOLD").
     pub sdp_badge: Option<String>,
@@ -227,16 +259,20 @@ pub struct FormattedMessage {
     pub raw_index: Option<usize>,
 }
 
+/// Tests for `ladder_split_width` / `arrow_gap_for_label`: the split-view
+/// width math that keeps multi-leg arrow labels from truncating.
 #[cfg(test)]
 mod ladder_split_tests {
     use super::*;
 
-    /// The gap between adjacent participant pipes for a given ladder width.
+    /// The gap between adjacent participant pipes for a ladder of width
+    /// `ladder_w` with `n` participants, mirroring the renderer's math.
     fn min_gap(ladder_w: u16, n: usize) -> u16 {
         let usable = ladder_w.saturating_sub(TS_COL_WIDTH as u16 + 2);
         usable / (n as u16 - 1)
     }
 
+    /// A 1- or 2-participant ladder keeps the configured split untouched.
     #[test]
     fn two_party_call_keeps_the_configured_split() {
         // The common case must be untouched: 60/40 at 100 cols -> 60,
@@ -245,6 +281,7 @@ mod ladder_split_tests {
         assert_eq!(ladder_split_width(1, 27, 40, 100), 60);
     }
 
+    /// 3-5 leg ladders widen so a 9-char method still fits every gap.
     #[test]
     fn multileg_widens_so_methods_do_not_truncate() {
         // SUBSCRIBE (9) needs a >= 14-col gap. At the 98-col demo width with
@@ -278,6 +315,7 @@ mod ladder_split_tests {
         assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
     }
 
+    /// An oversized label demand is capped so the detail pane keeps its floor.
     #[test]
     fn pathological_label_demand_is_bounded() {
         // OpenSIPS' 42-char reason phrase must not eat the detail pane:
@@ -287,6 +325,8 @@ mod ladder_split_tests {
         assert!(98 - w >= 24, "detail pane starved: {} left", 98 - w);
     }
 
+    /// A label spanning several gaps needs only its share per gap; span 0
+    /// and empty labels stay well-defined.
     #[test]
     fn multi_column_span_divides_the_demand() {
         // A label on an arrow spanning 3 gaps needs a third per gap.
@@ -297,6 +337,7 @@ mod ladder_split_tests {
         assert_eq!(arrow_gap_for_label(0, 1), 5);
     }
 
+    /// Even a demanding 6-leg ladder leaves the detail pane its minimum width.
     #[test]
     fn detail_pane_keeps_a_floor() {
         // Even a 6-leg ladder with demanding labels must leave the detail
@@ -307,6 +348,8 @@ mod ladder_split_tests {
     }
 }
 
+/// Tests for `transaction_key` / `transaction_indices`: SIP transaction
+/// grouping with ACK folded into its INVITE.
 #[cfg(test)]
 mod txn_tests {
     use super::*;
@@ -314,6 +357,8 @@ mod txn_tests {
     use chrono::Utc;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Parse a minimal SIP message from `start_line` and `cseq` (loopback
+    /// addresses, fixed Call-ID) for transaction-grouping tests.
     fn msg(start_line: &str, cseq: &str) -> SipMessage {
         let raw = format!(
             "{start_line}\r\nVia: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKx\r\n\
@@ -333,6 +378,8 @@ mod txn_tests {
         .expect("parse")
     }
 
+    /// A 6-message INVITE dialog: INVITE/180/200/ACK (transaction 1) then
+    /// BYE/200 (transaction 2).
     fn sample_dialog() -> Vec<SipMessage> {
         vec![
             msg("INVITE sip:b@x SIP/2.0", "1 INVITE"), // 0
@@ -344,6 +391,8 @@ mod txn_tests {
         ]
     }
 
+    /// Selecting any message of the INVITE transaction yields all of
+    /// INVITE/1xx/2xx/ACK.
     #[test]
     fn ack_and_responses_group_with_invite() {
         let d = sample_dialog();
@@ -353,6 +402,7 @@ mod txn_tests {
         }
     }
 
+    /// The BYE and its 200 form their own transaction, distinct from INVITE.
     #[test]
     fn bye_transaction_is_separate() {
         let d = sample_dialog();
@@ -360,6 +410,7 @@ mod txn_tests {
         assert_eq!(transaction_indices(&d, 5), vec![4, 5]);
     }
 
+    /// `transaction_key` maps ACK to its INVITE's key while BYE keeps its own.
     #[test]
     fn key_folds_ack_into_invite_but_keeps_bye_distinct() {
         let d = sample_dialog();
@@ -368,6 +419,8 @@ mod txn_tests {
         assert_eq!(transaction_key(&d[4]), Some((2, "BYE".to_string())));
     }
 
+    /// A selection with no usable CSeq (or out of range) falls back to all
+    /// indices rather than an empty set.
     #[test]
     fn missing_cseq_falls_back_to_all() {
         // A selected message with no CSeq must not yield an empty set.

@@ -9,6 +9,10 @@
 
 use std::process::Command;
 
+/// True when passwordless sudo (`sudo -n true`) works in this environment.
+///
+/// # Side effects
+/// Spawns `sudo -n true` as a probe.
 fn sudo_available() -> bool {
     Command::new("sudo")
         .args(["-n", "true"])
@@ -19,6 +23,12 @@ fn sudo_available() -> bool {
 
 /// Copy the fixture somewhere a dropped-privilege process can read it
 /// (the repo may live under a 0700 home directory).
+///
+/// # Returns
+/// Path to the copied fixture in the system temp directory.
+///
+/// # Side effects
+/// Writes `sipnab-priv-guard.pcap` into the system temp directory.
 fn world_readable_fixture() -> std::path::PathBuf {
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
     let dst = std::env::temp_dir().join("sipnab-priv-guard.pcap");
@@ -26,6 +36,8 @@ fn world_readable_fixture() -> std::path::PathBuf {
     dst
 }
 
+/// Running as root with `--user` naming a nonexistent account exits non-zero
+/// with "Failed to drop privileges" — never continues capturing as root.
 #[test]
 fn failed_privilege_drop_aborts_instead_of_running_as_root() {
     if !sudo_available() {
@@ -56,6 +68,7 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() {
     );
 }
 
+/// Root dropping to `nobody` still reads and processes the fixture, exiting 0.
 #[test]
 fn successful_privilege_drop_still_processes_capture() {
     if !sudo_available() {

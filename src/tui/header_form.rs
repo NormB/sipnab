@@ -17,6 +17,8 @@ pub enum HeaderFormMode {
 }
 
 impl HeaderFormMode {
+    /// Cycle to the next mode: as-captured → expanded → compact →
+    /// as-captured. Pure; used by the key handler that toggles the form.
     pub(in crate::tui) fn next(self) -> Self {
         match self {
             Self::AsCaptured => Self::Expanded,
@@ -25,6 +27,7 @@ impl HeaderFormMode {
         }
     }
 
+    /// Status-line label for this mode (e.g. `"Headers: expanded"`).
     pub(in crate::tui) fn label(self) -> &'static str {
         match self {
             Self::AsCaptured => "Headers: as captured",
@@ -66,6 +69,15 @@ const COMPACT_FORMS: &[(char, &str)] = &[
 /// (leading whitespace) and the body are passed through untouched. Header
 /// names match ASCII-case-insensitively; everything after the colon is
 /// preserved byte-for-byte, as are the line endings.
+///
+/// # Arguments
+/// * `raw` - Full SIP message text (start-line, headers, body).
+/// * `mode` - Target display form for the header names.
+///
+/// # Returns
+/// `Cow::Borrowed(raw)` when nothing changed (`AsCaptured` mode, empty
+/// input, or no rewritable names found); otherwise an owned copy with the
+/// header names rewritten. Pure — no side effects.
 pub fn reformat_headers(raw: &str, mode: HeaderFormMode) -> Cow<'_, str> {
     if mode == HeaderFormMode::AsCaptured || raw.is_empty() {
         return Cow::Borrowed(raw);
@@ -141,10 +153,13 @@ pub fn reformat_headers(raw: &str, mode: HeaderFormMode) -> Cow<'_, str> {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for header-name reformatting: mode identities, round trips,
+/// case handling, and adversarial inputs.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An INVITE captured with compact header names on the wire.
     const WIRE_COMPACT: &str = "INVITE sip:bob@example.com SIP/2.0\r\n\
         v: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1\r\n\
         f: \"Alice\" <sip:alice@example.com>;tag=t1\r\n\
@@ -157,6 +172,7 @@ mod tests {
         \r\n\
         v=0\r\n";
 
+    /// The same INVITE captured with full (expanded) header names.
     const WIRE_FULL: &str = "INVITE sip:bob@example.com SIP/2.0\r\n\
         Via: SIP/2.0/UDP 10.0.0.1;branch=z9hG4bK1\r\n\
         From: \"Alice\" <sip:alice@example.com>;tag=t1\r\n\
@@ -169,6 +185,7 @@ mod tests {
         \r\n\
         v=0\r\n";
 
+    /// `AsCaptured` mode returns both wire forms byte-for-byte unchanged.
     #[test]
     fn as_captured_is_identity() {
         assert_eq!(
@@ -181,18 +198,24 @@ mod tests {
         );
     }
 
+    /// `Expanded` mode rewrites the compact wire form into the exact full
+    /// form, leaving non-compact names (CSeq) untouched.
     #[test]
     fn expand_rewrites_compact_names_only() {
         let out = reformat_headers(WIRE_COMPACT, HeaderFormMode::Expanded);
         assert_eq!(out, WIRE_FULL, "compact wire form expands to full form");
     }
 
+    /// `Compact` mode rewrites the full wire form into the exact compact
+    /// form, leaving names without a compact equivalent untouched.
     #[test]
     fn compress_rewrites_full_names_only() {
         let out = reformat_headers(WIRE_FULL, HeaderFormMode::Compact);
         assert_eq!(out, WIRE_COMPACT, "full wire form compresses to compact");
     }
 
+    /// Expand-then-compact restores the original text, and re-applying a
+    /// mode to already-converted text changes nothing.
     #[test]
     fn round_trip_and_idempotence() {
         let expanded = reformat_headers(WIRE_COMPACT, HeaderFormMode::Expanded).into_owned();
@@ -210,6 +233,8 @@ mod tests {
         );
     }
 
+    /// Header names match ASCII-case-insensitively (`FROM:`, `call-id:`)
+    /// and are rewritten to the registered canonical spelling.
     #[test]
     fn matching_is_case_insensitive_and_canonicalizes() {
         let raw = "OPTIONS sip:a@b SIP/2.0\r\nFROM: <sip:x@y>\r\ncall-id: z\r\n\r\n";
@@ -223,6 +248,8 @@ mod tests {
         assert!(out2.contains("\r\nCall-ID: z\r\n"), "got: {out2}");
     }
 
+    /// The request/status start-line and body lines that merely look like
+    /// headers must never be rewritten.
     #[test]
     fn start_line_and_body_are_never_touched() {
         // The request-line contains "sip:" (a colon) and the body contains
@@ -247,6 +274,8 @@ mod tests {
         assert!(out.contains("\r\nt: <sip:x@y>\r\n"));
     }
 
+    /// Folded continuation lines and unknown/extension header names pass
+    /// through unmodified while known names still rewrite.
     #[test]
     fn folded_continuations_and_unknown_headers_pass_through() {
         let raw = "INVITE sip:a@b SIP/2.0\r\n\
@@ -265,6 +294,8 @@ mod tests {
         assert!(out.contains("\r\nP-Asserted-Identity: <sip:p@q>\r\n"));
     }
 
+    /// Empty input, missing blank line, LF-only endings, colon-free lines,
+    /// lossy-UTF-8 replacement chars and escapes neither panic nor mangle.
     #[test]
     fn adversarial_inputs_do_not_panic_or_mangle() {
         // Empty, no blank line, LF-only endings, colon-free header line,
@@ -286,6 +317,8 @@ mod tests {
         );
     }
 
+    /// Every entry in `COMPACT_FORMS` expands to its full name and
+    /// compresses back to the identical original message.
     #[test]
     fn every_registered_compact_form_round_trips() {
         for (short, full) in COMPACT_FORMS {
@@ -300,6 +333,8 @@ mod tests {
         }
     }
 
+    /// `next()` cycles through all three modes back to the start, and every
+    /// mode's label carries the "Headers: " prefix.
     #[test]
     fn mode_cycle_and_labels() {
         let m = HeaderFormMode::AsCaptured;

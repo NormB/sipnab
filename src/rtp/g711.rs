@@ -132,22 +132,26 @@ static ALAW_TABLE: [i16; 256] = [
       -944,   -912,  -1008,   -976,   -816,   -784,   -880,   -848, // 0xf8..0xff
 ];
 
+/// Unit tests for the G.711 mu-law and A-law decode tables.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// mu-law byte 0xFF decodes to exactly zero (digital silence).
     #[test]
     fn ulaw_silence() {
         // mu-law 0xFF is digital silence (decodes to exactly 0)
         assert_eq!(ulaw_to_pcm(0xFF), 0);
     }
 
+    /// mu-law byte 0x80 decodes to the maximum positive PCM value.
     #[test]
     fn ulaw_max_positive() {
         // mu-law 0x80 decodes to the largest positive value
         assert_eq!(ulaw_to_pcm(0x80), 32124);
     }
 
+    /// A-law byte 0xD5 decodes near zero (digital silence).
     #[test]
     fn alaw_silence() {
         // A-law 0xD5 is digital silence (decodes near zero)
@@ -158,6 +162,7 @@ mod tests {
         );
     }
 
+    /// Decoding a mu-law frame yields the expected per-byte PCM samples.
     #[test]
     fn decode_frame_ulaw() {
         let input = [0xFF, 0x80, 0x00, 0x7F];
@@ -169,6 +174,7 @@ mod tests {
         assert_eq!(pcm[3], 0); // near-silence
     }
 
+    /// Decoding an A-law frame yields the expected per-byte PCM samples.
     #[test]
     fn decode_frame_alaw() {
         let input = [0xD5, 0x55, 0x80, 0x00];
@@ -180,6 +186,7 @@ mod tests {
         assert_eq!(pcm[3], 5504); // positive value
     }
 
+    /// The mu-law positive and negative halves are exact mirror images.
     #[test]
     fn ulaw_positive_negative_symmetry() {
         // The positive half (0x80..0xFF) and negative half (0x00..0x7F)
@@ -194,12 +201,14 @@ mod tests {
         }
     }
 
+    /// Decoding an empty input frame yields an empty PCM vector.
     #[test]
     fn decode_frame_empty() {
         let pcm = decode_frame(G711Codec::Ulaw, &[]);
         assert!(pcm.is_empty());
     }
 
+    /// The mu-law positive half decreases monotonically toward silence.
     #[test]
     fn ulaw_monotonic_positive() {
         // Within the positive half, values should decrease monotonically

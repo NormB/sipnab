@@ -41,10 +41,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+/// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Read a repo-relative file to a `String`, panicking with the full path
+/// on failure.
 fn read(rel: impl AsRef<Path>) -> String {
     let p = repo().join(rel.as_ref());
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))
@@ -164,6 +167,14 @@ fn anchor_candidates(rel: impl AsRef<Path>) -> BTreeSet<String> {
     out
 }
 
+/// Record a problem if `anchor` matches no anchor any renderer would emit
+/// for `target_rel`.
+///
+/// # Arguments
+/// * `target_rel` - Repo-relative markdown file the link points at.
+/// * `anchor` - The `#anchor` fragment, without the `#`.
+/// * `from` / `raw` - Linking file and raw link text, for the message.
+/// * `problems` - Accumulator the failure message is pushed onto.
 fn check_anchor(
     target_rel: &Path,
     anchor: &str,
@@ -224,6 +235,7 @@ fn wiki_source_files() -> Vec<PathBuf> {
         .collect()
 }
 
+/// All markdown files under `website/content/docs`, recursively.
 fn website_docs_files() -> Vec<PathBuf> {
     md_files_recursive("website/content/docs")
 }
@@ -232,6 +244,8 @@ fn website_docs_files() -> Vec<PathBuf> {
 // 1. WEBSITE: every @/docs link (file + anchor) resolves
 // ---------------------------------------------------------------------------
 
+/// Every `@/docs` link, same-page anchor, and anchor suffix in the website
+/// docs resolves; plain relative `.md` links are flagged as dead-URL bugs.
 #[test]
 fn website_intra_docs_links_resolve() {
     // Matches the bare form, the [text](@/docs/x.md#a) form, and the
@@ -303,6 +317,7 @@ fn website_intra_docs_links_resolve() {
 // 2. WIKI SOURCE: every relative link (file + anchor) resolves
 // ---------------------------------------------------------------------------
 
+/// Every relative .md link and anchor across the wiki-source pages resolves to a real file and heading.
 #[test]
 fn wiki_intra_docs_links_resolve() {
     let link_re = regex::Regex::new(r"\[[^\]]*\]\(([^)\s]+)\)").unwrap();
@@ -408,6 +423,7 @@ fn index_task_cards_point_at_existing_pages() {
 // 4. Templates: @/docs links resolve, including any `}}#anchor` suffix
 // ---------------------------------------------------------------------------
 
+/// Every get_url `@/docs` link in every template resolves, including `}}#anchor` suffixes.
 #[test]
 fn template_docs_links_and_anchors_resolve() {
     // site_journey_test covers bare existence in base/index; this covers ALL
@@ -499,6 +515,7 @@ fn no_references_to_merged_away_mcp_pages() {
 // diverges from GitHub/Zola behavior fails loudly, not silently).
 // ---------------------------------------------------------------------------
 
+/// The three slug styles reproduce anchors verified against real GitHub/Zola output, including -1 dedup suffixes.
 #[test]
 fn slugify_matches_known_rendered_anchors() {
     // Backticked code heading -> backticks stripped, underscore kept.

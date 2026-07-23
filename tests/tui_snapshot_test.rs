@@ -2,6 +2,14 @@
 //!
 //! Each test renders a specific view into an in-memory terminal buffer, then
 //! snapshots the textual content via `insta::assert_snapshot!`.
+//!
+//! Determinism: fixtures use a fixed base timestamp, fixed addresses, and a
+//! pinned test version string, so a buffer renders identically on every run;
+//! save/file dialogs override their time-derived default paths. Snapshots
+//! live in `tests/snapshots/` — review intended visual changes with
+//! `cargo insta review`. The whole module is gated on the `tui` feature, and
+//! one view (`stream_detail_view`) snapshots under per-feature names because
+//! the `audio` build renders an extra footer hint.
 
 #[cfg(feature = "tui")]
 mod tui_snapshots {
@@ -24,6 +32,14 @@ mod tui_snapshots {
 
     // ── Helper: extract buffer as a plain string ───────────────────────
 
+    /// Flatten the terminal buffer into one string, one line per row, with
+    /// trailing spaces trimmed so snapshots stay stable across widths.
+    ///
+    /// # Arguments
+    /// * `terminal` - The in-memory terminal whose buffer is read.
+    ///
+    /// # Returns
+    /// The newline-joined visible text of the buffer.
     fn buffer_to_string(terminal: &Terminal<TestBackend>) -> String {
         let buf = terminal.backend().buffer();
         let area = buf.area;
@@ -43,18 +59,38 @@ mod tui_snapshots {
 
     // ── Helper: SIP message constructors ───────────────────────────────
 
+    /// A-side test endpoint address used as the source of requests.
+    ///
+    /// # Returns
+    /// `10.0.0.1` (note: not actually a loopback address despite the name).
     fn localhost_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
 
+    /// B-side test endpoint address used as the destination of requests.
+    ///
+    /// # Returns
+    /// `10.0.0.2` (note: not actually a loopback address despite the name).
     fn localhost_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
 
+    /// Fixed reference timestamp all fixture messages are offset from.
+    ///
+    /// # Returns
+    /// 2024-06-15 12:00:00 UTC, so snapshots are independent of wall-clock time.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble raw SIP wire bytes from a first line and header lines.
+    ///
+    /// # Arguments
+    /// * `first_line` - Request or status line, without CRLF.
+    /// * `headers` - Header lines, each without CRLF.
+    ///
+    /// # Returns
+    /// CRLF-terminated bytes ending in the blank header/body separator (no body).
     fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -67,6 +103,15 @@ mod tui_snapshots {
         msg
     }
 
+    /// Parse a minimal INVITE (A-side to B-side, UDP 5060/5060).
+    ///
+    /// # Arguments
+    /// * `call_id` - Call-ID header value.
+    /// * `from` / `to` - Users placed in the From/To display names and URIs.
+    /// * `ts` - Capture timestamp.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
@@ -90,6 +135,16 @@ mod tui_snapshots {
         .expect("parse INVITE")
     }
 
+    /// Parse a SIP response (B-side to A-side) for Alice/Bob's dialog.
+    ///
+    /// # Arguments
+    /// * `call_id` - Call-ID header value.
+    /// * `status` / `reason` - Status line, e.g. 200 "OK".
+    /// * `cseq_method` - Method echoed in the CSeq header.
+    /// * `ts` - Capture timestamp.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_response(
         call_id: &str,
         status: u16,
@@ -119,6 +174,10 @@ mod tui_snapshots {
         .expect("parse response")
     }
 
+    /// Parse a BYE (A-side to B-side, CSeq 2) that completes a dialog.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
@@ -144,9 +203,15 @@ mod tui_snapshots {
 
     // ── Helper: create App with 3 test dialogs ─────────────────────────
 
+    /// Build an `App` preloaded with three fixture dialogs:
+    ///
     /// Dialog 1: Completed INVITE 1001 -> 1002
     /// Dialog 2: Failed INVITE 1003 -> 1004
     /// Dialog 3: Active (InCall) INVITE 1005 -> 1006
+    ///
+    /// # Returns
+    /// The `App` with all eight messages (including 180 and BYE for dialog 1)
+    /// already processed into its dialog store.
     fn test_app_with_dialogs() -> App {
         let t0 = base_ts();
         let messages = vec![
@@ -190,6 +255,12 @@ mod tui_snapshots {
     }
 
     /// Create an App with streams for stream list tests.
+    ///
+    /// Stream 1 (SSRC `0xAAAABBBB`, PCMU) is linked to dialog `call-1@test`;
+    /// stream 2 (SSRC `0xCCCCDDDD`, PCMA) is marked orphaned.
+    ///
+    /// # Returns
+    /// An `App` built over the populated dialog and stream stores.
     fn test_app_with_streams() -> App {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
@@ -274,6 +345,7 @@ mod tui_snapshots {
 
     // ── Snapshot tests ────────────────────────────────────────────────
 
+    /// Snapshot: empty call list at 80x24.
     #[test]
     fn call_list_empty() {
         let backend = TestBackend::new(80, 24);
@@ -286,6 +358,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list with the three fixture dialogs at 80x24.
     #[test]
     fn call_list_with_dialogs() {
         let backend = TestBackend::new(80, 24);
@@ -298,6 +371,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the same call list at 130x40, where the wide layout fits more columns.
     #[test]
     fn call_list_with_dialogs_wide() {
         let backend = TestBackend::new(130, 40);
@@ -310,6 +384,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: empty stream list.
     #[test]
     fn stream_list_empty() {
         let backend = TestBackend::new(80, 24);
@@ -323,6 +398,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: quality dashboard (`D`) with dialogs but no RTP streams.
     #[test]
     fn quality_dashboard_no_streams() {
         let backend = TestBackend::new(130, 24);
@@ -336,6 +412,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: quality dashboard with the two fixture RTP streams.
     #[test]
     fn quality_dashboard_with_streams() {
         let backend = TestBackend::new(130, 24);
@@ -349,6 +426,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Rendering the dashboard on a 10x3 terminal must not panic or underflow (no snapshot taken).
     #[test]
     fn quality_dashboard_survives_tiny_terminal() {
         // render-robustness: a 10x3 terminal must not panic or underflow
@@ -359,6 +437,7 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
     }
 
+    /// Snapshot: stream list showing a dialog-linked stream and an orphaned one.
     #[test]
     fn stream_list_with_streams() {
         let backend = TestBackend::new(130, 24);
@@ -373,6 +452,7 @@ mod tui_snapshots {
     }
 
     // M4/T4.2: the StreamDetail view was the one view with no snapshot.
+    /// Snapshot: `StreamDetail` view, under per-feature names because the audio build adds a "P Play" footer entry.
     #[test]
     fn stream_detail_view() {
         let backend = TestBackend::new(130, 40);
@@ -393,6 +473,7 @@ mod tui_snapshots {
         insta::assert_snapshot!("stream_detail_view_noaudio", output);
     }
 
+    /// Snapshot: call flow ladder of the first fixture dialog.
     #[test]
     fn call_flow_basic() {
         let backend = TestBackend::new(100, 30);
@@ -472,6 +553,7 @@ mod tui_snapshots {
         );
     }
 
+    /// Snapshot: Tab moves focus to the detail pane; asserts the "Focus: Detail" indicator first.
     #[test]
     fn call_flow_split_focus_detail() {
         // Open the call flow split, then Tab to focus the detail pane. The
@@ -493,6 +575,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: on a 100x10 terminal the detail pane overflows, so the scrollbar thumb must appear.
     #[test]
     fn call_flow_detail_scrollbar_on_overflow() {
         // A short terminal forces the detail pane to overflow, so the vertical
@@ -512,6 +595,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: raw message view reached via call list, call flow, Enter.
     #[test]
     fn raw_message_view() {
         let backend = TestBackend::new(90, 30);
@@ -527,6 +611,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: Help view (version pinned to "0.0.0-test" keeps it deterministic).
     #[test]
     fn help_view() {
         let backend = TestBackend::new(80, 40);
@@ -606,6 +691,7 @@ mod tui_snapshots {
         );
     }
 
+    /// Snapshot: call list narrowed by an applied From filter of "1003".
     #[test]
     fn call_list_with_filter_active() {
         let backend = TestBackend::new(100, 24);
@@ -626,6 +712,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: a list containing only a failed (503) dialog, locking in the failure styling.
     #[test]
     fn call_list_failed_dialog_styling() {
         // Render with only failed dialogs to verify the styling appears
@@ -651,6 +738,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: statistics view over the three fixture dialogs at 60x20.
     #[test]
     fn statistics_view() {
         let backend = TestBackend::new(60, 20);
@@ -664,6 +752,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the F7 filter popup over an empty call list.
     #[test]
     fn filter_dialog_popup() {
         let backend = TestBackend::new(80, 24);
@@ -677,6 +766,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the F2 save popup, with the path overridden for determinism.
     #[test]
     fn save_dialog_popup() {
         let backend = TestBackend::new(80, 24);
@@ -695,6 +785,10 @@ mod tui_snapshots {
     // ── Helper: SDP-containing message constructors ───────────────────
 
     /// Build an INVITE with SDP body.
+    ///
+    /// # Returns
+    /// The parsed INVITE offering PCMU/PCMA audio on port 20000; panics on
+    /// parse failure.
     fn make_invite_with_sdp(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
         let sdp = "v=0\r\n\
                    o=- 123456 654321 IN IP4 10.0.0.1\r\n\
@@ -737,6 +831,9 @@ mod tui_snapshots {
     }
 
     /// Create an app with SDP-containing dialogs.
+    ///
+    /// # Returns
+    /// An `App` with one dialog: an SDP-bearing INVITE plus its 200 OK.
     fn test_app_with_sdp_dialogs() -> App {
         let t0 = base_ts();
         let messages = vec![
@@ -754,6 +851,7 @@ mod tui_snapshots {
 
     // ── Call List Rendering ───────────────────────────────────────────
 
+    /// Snapshot: call list after hiding the first (#) column via the column selector.
     #[test]
     fn call_list_column_hidden() {
         let backend = TestBackend::new(80, 24);
@@ -768,29 +866,34 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list after one `t` press. This lands on Delta-first
+    /// (Delta-prev is the default), so the name understates the cycle by one.
     #[test]
     fn call_list_timestamp_delta_prev() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
-        app.handle_key(KeyCode::Char('t')); // cycle to DeltaPrev
+        app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst
         terminal.draw(|frame| app.render(frame)).unwrap();
         let output = buffer_to_string(&terminal);
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list after two `t` presses. This lands on Scaled
+    /// (Delta-prev is the default), so the name understates the cycle by one.
     #[test]
     fn call_list_timestamp_delta_first() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
-        app.handle_key(KeyCode::Char('t')); // DeltaPrev
-        app.handle_key(KeyCode::Char('t')); // DeltaFirst
+        app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst
+        app.handle_key(KeyCode::Char('t')); // DeltaFirst -> Scaled
         terminal.draw(|frame| app.render(frame)).unwrap();
         let output = buffer_to_string(&terminal);
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list sorted by the Method column via `>`.
     #[test]
     fn call_list_sort_by_method() {
         let backend = TestBackend::new(80, 24);
@@ -802,6 +905,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: two rows check-selected with Space.
     #[test]
     fn call_list_multi_selected() {
         let backend = TestBackend::new(80, 24);
@@ -817,6 +921,7 @@ mod tui_snapshots {
 
     // sngrep parity: every call-list row shows a [ ]/[*] selection checkbox
     // so users can see and pick which dialogs to act on (e.g. save).
+    /// Every row renders a selection checkbox: the checked row shows [*], others [ ] (sngrep parity).
     #[test]
     fn call_list_selection_checkbox_visible() {
         let backend = TestBackend::new(80, 24);
@@ -836,6 +941,7 @@ mod tui_snapshots {
         );
     }
 
+    /// Snapshot: call list with autoscroll toggled off via `A`.
     #[test]
     fn call_list_autoscroll_off() {
         let backend = TestBackend::new(80, 24);
@@ -847,6 +953,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list while capture is paused via `p`.
     #[test]
     fn call_list_paused() {
         let backend = TestBackend::new(80, 24);
@@ -858,6 +965,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the status line reports the new timestamp mode after `t`.
     #[test]
     fn call_list_status_error() {
         let backend = TestBackend::new(80, 24);
@@ -869,6 +977,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: search prompt active with "test" typed.
     #[test]
     fn call_list_search_active() {
         let backend = TestBackend::new(80, 24);
@@ -883,6 +992,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the F10 column selector popup.
     #[test]
     fn call_list_column_selector_popup() {
         let backend = TestBackend::new(80, 24);
@@ -896,18 +1006,21 @@ mod tui_snapshots {
 
     // ── Call Flow Rendering ───────────────────────────────────────────
 
+    /// Snapshot: call flow after one `t` press. This lands on Delta-first
+    /// (Delta-prev is the default), so the name understates the cycle by one.
     #[test]
     fn call_flow_timestamp_delta_prev() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
         app.handle_key(KeyCode::Enter); // open call flow
-        app.handle_key(KeyCode::Char('t')); // DeltaPrev timestamps
+        app.handle_key(KeyCode::Char('t')); // DeltaPrev (default) -> DeltaFirst timestamps
         terminal.draw(|frame| app.render(frame)).unwrap();
         let output = buffer_to_string(&terminal);
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call flow in CallId color mode via `c`.
     #[test]
     fn call_flow_color_callid() {
         let backend = TestBackend::new(100, 30);
@@ -920,6 +1033,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call flow with the raw-preview split toggled off via `R`.
     #[test]
     fn call_flow_raw_preview_off() {
         let backend = TestBackend::new(100, 30);
@@ -932,6 +1046,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call flow in extended mode via `x`.
     #[test]
     fn call_flow_extended_flow() {
         let backend = TestBackend::new(100, 30);
@@ -944,6 +1059,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: SDP-bearing call flow in SDP Summary mode (`d`).
     #[test]
     fn call_flow_sdp_summary() {
         let backend = TestBackend::new(100, 30);
@@ -956,6 +1072,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: SDP-bearing call flow in SDP Full mode (`d` twice).
     #[test]
     fn call_flow_sdp_full() {
         let backend = TestBackend::new(100, 30);
@@ -971,6 +1088,7 @@ mod tui_snapshots {
 
     // ── Other Views ───────────────────────────────────────────────────
 
+    /// Snapshot: statistics view with no dialogs.
     #[test]
     fn statistics_view_empty() {
         let backend = TestBackend::new(60, 20);
@@ -982,6 +1100,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: diff of messages 0 and 1 of the first dialog.
     #[test]
     fn message_diff_view() {
         let backend = TestBackend::new(100, 30);
@@ -996,6 +1115,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: call list at 60x15, exercising the narrow layout.
     #[test]
     fn narrow_terminal_layout() {
         let backend = TestBackend::new(60, 15);
@@ -1006,6 +1126,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: save popup after cycling to the PCAP-NG format.
     #[test]
     fn save_dialog_pcapng_format() {
         let backend = TestBackend::new(80, 24);
@@ -1019,6 +1140,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: save popup after cycling to the TXT format.
     #[test]
     fn save_dialog_txt_format() {
         let backend = TestBackend::new(80, 24);
@@ -1033,6 +1155,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: the F8 settings popup at 120x40.
     #[test]
     fn settings_popup() {
         let backend = TestBackend::new(120, 40);
@@ -1044,6 +1167,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: file-open dialog in manual-path mode with a typed path (browser mode would list the cwd).
     #[test]
     fn file_open_popup() {
         let backend = TestBackend::new(120, 40);
@@ -1065,6 +1189,7 @@ mod tui_snapshots {
 
     // ── Save dialog new format snapshots ─────────────────────────────
 
+    /// Snapshot: save popup on the JSON format.
     #[test]
     fn save_dialog_json_format() {
         let backend = TestBackend::new(80, 24);
@@ -1081,6 +1206,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: save popup on the CSV format.
     #[test]
     fn save_dialog_csv_format() {
         let backend = TestBackend::new(80, 24);
@@ -1097,6 +1223,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: save popup on the HTML format.
     #[test]
     fn save_dialog_html_format() {
         let backend = TestBackend::new(80, 24);
@@ -1113,6 +1240,7 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
+    /// Snapshot: save popup on the SIPp XML format.
     #[test]
     fn save_dialog_sipp_xml_format() {
         let backend = TestBackend::new(80, 24);
@@ -1131,6 +1259,7 @@ mod tui_snapshots {
 
     // ── Call flow timestamp Scaled mode snapshot ─────────────────────
 
+    /// Snapshot: call flow in Scaled timestamp mode (two `t` presses from the Delta-prev default).
     #[test]
     fn call_flow_timestamp_scaled() {
         let backend = TestBackend::new(100, 30);
@@ -1146,6 +1275,7 @@ mod tui_snapshots {
 
     // ── Call flow with mark set ──────────────────────────────────────
 
+    /// Snapshot: call flow with a mark set at message 0 and the selection moved to message 1.
     #[test]
     fn call_flow_with_mark() {
         let backend = TestBackend::new(100, 30);
@@ -1161,6 +1291,7 @@ mod tui_snapshots {
 
     // ── Call flow with fold expanded ─────────────────────────────────
 
+    /// Snapshot: call flow with the fold at index 0 expanded via `e`.
     #[test]
     fn call_flow_fold_expanded() {
         let backend = TestBackend::new(100, 30);

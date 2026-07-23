@@ -19,9 +19,11 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 /// across runs so a failure is always replayable from the seed.
 struct Rng(u64);
 impl Rng {
+    /// Seeds the PRNG; forces the low bit so the state is never zero.
     fn new(seed: u64) -> Self {
         Rng(seed | 1)
     }
+    /// Advances the xorshift state and returns the next 64-bit value.
     fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
@@ -30,9 +32,11 @@ impl Rng {
         self.0 = x;
         x
     }
+    /// Returns the low byte of the next PRNG value.
     fn byte(&mut self) -> u8 {
         (self.next_u64() & 0xff) as u8
     }
+    /// Returns a value in `0..n` (0 when `n` is 0).
     fn below(&mut self, n: usize) -> usize {
         if n == 0 {
             0
@@ -106,6 +110,12 @@ fn mutate(rng: &mut Rng, seed: &[u8]) -> Vec<u8> {
 
 /// Run `f` over `iters` random + mutated inputs; panic = test failure
 /// with the input hex-dumped.
+///
+/// # Arguments
+/// * `name` — label baked into the PRNG seed and any failure message.
+/// * `seeds` — structural seeds; ~half the inputs are mutations of these.
+/// * `iters` — number of inputs to drive through `f`.
+/// * `f` — closure invoking one parser on the input bytes.
 fn pound<F: Fn(&[u8])>(name: &str, seeds: &[&[u8]], iters: usize, f: F) {
     let mut rng = Rng::new(0x5113_5ab0_d00d_1234u64 ^ name.bytes().map(|b| b as u64).sum::<u64>());
     for i in 0..iters {
@@ -128,12 +138,14 @@ fn pound<F: Fn(&[u8])>(name: &str, seeds: &[&[u8]], iters: usize, f: F) {
     }
 }
 
+/// Lowercase hex dump of `b`, used to print a replayable failure seed.
 fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect::<String>()
 }
 
 // ---- realistic seeds so mutation starts near valid structure -------
 
+/// A well-formed long-form SIP INVITE seed for structural mutation.
 fn sip_seed() -> Vec<u8> {
     b"INVITE sip:bob@example.com SIP/2.0\r\n\
       Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK1\r\n\
@@ -146,6 +158,7 @@ fn sip_seed() -> Vec<u8> {
         .to_vec()
 }
 
+/// A well-formed single-media SDP body seed for structural mutation.
 fn sdp_seed() -> Vec<u8> {
     b"v=0\r\no=alice 1 1 IN IP4 10.0.0.1\r\ns=call\r\n\
       c=IN IP4 10.0.0.1\r\nt=0 0\r\nm=audio 4000 RTP/AVP 0 8\r\n\
@@ -179,6 +192,7 @@ fn sdp_multi_media_seed() -> Vec<u8> {
         .to_vec()
 }
 
+/// A minimal valid RTP header seed (V=2, PT=0) plus a few payload bytes.
 fn rtp_seed() -> Vec<u8> {
     // V=2, PT=0, has CSRC + extension bits exercised by mutation
     vec![
@@ -187,6 +201,7 @@ fn rtp_seed() -> Vec<u8> {
     ]
 }
 
+/// A minimal RTCP Sender Report seed (V=2, PT=200) with its length field.
 fn rtcp_seed() -> Vec<u8> {
     // SR header: V=2, PT=200, length field present for mutation
     vec![
@@ -195,6 +210,8 @@ fn rtcp_seed() -> Vec<u8> {
     ]
 }
 
+/// An Ethernet+IPv4+UDP+SIP frame seed so decap mutation walks the whole
+/// link → ip → udp → payload chain.
 fn eth_ipv4_udp_sip() -> Vec<u8> {
     // Ethernet + IPv4 + UDP + a SIP body, so decap mutation walks the
     // whole link->ip->udp->payload chain.
@@ -216,8 +233,10 @@ fn eth_ipv4_udp_sip() -> Vec<u8> {
 
 // ---- the parser surface --------------------------------------------
 
+/// Inputs driven through each parser entry point per test.
 const ITERS: usize = 40_000;
 
+/// 40k random/mutated inputs (long-form + compact seeds) through `parse_sip` never panic.
 #[test]
 fn fuzz_sip_parser_no_panic() {
     use chrono::Utc;
@@ -238,6 +257,7 @@ fn fuzz_sip_parser_no_panic() {
     });
 }
 
+/// 40k random/mutated inputs (single- and multi-media seeds) through `parse_sdp` never panic.
 #[test]
 fn fuzz_sdp_parser_no_panic() {
     let seed = sdp_seed();
@@ -248,6 +268,7 @@ fn fuzz_sdp_parser_no_panic() {
     });
 }
 
+/// 40k random/mutated inputs through `parse_rtp_header` never panic.
 #[test]
 fn fuzz_rtp_parser_no_panic() {
     let seed = rtp_seed();
@@ -257,6 +278,7 @@ fn fuzz_rtp_parser_no_panic() {
     });
 }
 
+/// 40k random/mutated inputs through `parse_rtcp` never panic.
 #[test]
 fn fuzz_rtcp_parser_no_panic() {
     let seed = rtcp_seed();
@@ -266,6 +288,7 @@ fn fuzz_rtcp_parser_no_panic() {
     });
 }
 
+/// 40k purely random inputs through `parse_hep` never panic.
 #[cfg(feature = "hep")]
 #[test]
 fn fuzz_hep_parser_no_panic() {
@@ -274,6 +297,7 @@ fn fuzz_hep_parser_no_panic() {
     });
 }
 
+/// 40k purely random inputs through `unwrap_websocket_frame` never panic.
 #[test]
 fn fuzz_websocket_frame_no_panic() {
     pound("websocket_frame", &[], ITERS, |d| {
@@ -281,6 +305,7 @@ fn fuzz_websocket_frame_no_panic() {
     });
 }
 
+/// Raw link-layer bytes through `parse_packet` never panic across five link types (EN10MB/RAW/LINUX_SLL/…).
 #[test]
 fn fuzz_full_decap_chain_no_panic() {
     // The real attacker surface: raw link-layer bytes through
@@ -304,6 +329,7 @@ fn fuzz_full_decap_chain_no_panic() {
     }
 }
 
+/// The filter-DSL `FilterExpr::parse` never panics on 40k mutated text inputs; also compile-pins the fuzz surface signatures.
 #[test]
 fn fuzz_text_entry_points_no_panic() {
     // The remaining fuzz/ entry points take &str or a small struct.
@@ -320,6 +346,7 @@ fn fuzz_text_entry_points_no_panic() {
     });
 }
 
+/// STIR/SHAKEN Identity parsing, TLS record parsing, keylog-line parsing, and SRTP key extraction never panic on mutated inputs.
 #[cfg(feature = "tls")]
 #[test]
 fn fuzz_tls_text_entry_points_no_panic() {
@@ -364,6 +391,7 @@ fn fuzz_tls_text_entry_points_no_panic() {
     });
 }
 
+/// Malformed pcap/pcapng file bytes never panic `PcapReader`, including draining up to 100k claimed packets.
 #[test]
 fn fuzz_pcap_reader_no_panic() {
     // Malformed pcap/pcapng FILE input — same trust level as a packet

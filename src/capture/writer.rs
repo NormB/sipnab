@@ -89,6 +89,7 @@ const RAW_PCAP_SNAPLEN: u32 = 0xFFFF;
 /// a large `BufWriter` turns the per-packet cost into a bounds-checked
 /// memcpy — and write failures surface as errors.
 struct RawPcapWriter {
+    /// Buffered handle to the destination capture file.
     out: BufWriter<std::fs::File>,
 }
 
@@ -291,6 +292,21 @@ impl PcapWriter {
     /// Checks rotation conditions (size, duration, SIGUSR1) before writing.
     /// If rotation is needed, the current file is closed and a new one opened
     /// with an incremented sequence number.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - the captured packet; its timestamp, captured bytes, and
+    ///   original length become the pcap record / EPB.
+    ///
+    /// # Errors
+    ///
+    /// Fails when rotation cannot open the new file or the backend write
+    /// fails (e.g. disk full).
+    ///
+    /// # Side effects
+    ///
+    /// Appends to the (buffered) output file, may rotate to a new file, and
+    /// advances the `bytes_written` counter by the packet's captured length.
     pub fn write(&mut self, packet: &Packet) -> Result<()> {
         // Check if rotation is needed before writing
         if self.should_rotate() {
@@ -399,6 +415,11 @@ impl PcapWriter {
     /// - A DSB has already been written to the current file
     /// - The keylog file cannot be read (logs a warning)
     /// - The backend is standard pcap (DSBs require PCAP-NG)
+    ///
+    /// # Side effects
+    ///
+    /// Reads `keylog_path` from disk, appends a DSB to the output on success,
+    /// sets the per-file `dsb_written` latch, and logs the outcome.
     pub fn maybe_write_keylog_dsb(&mut self, keylog_path: &Path) -> Result<()> {
         if !self.export_mode.include_dsb() {
             return Ok(());
@@ -501,6 +522,16 @@ impl PcapWriter {
     ///
     /// Closes the current file and opens a new one with an incremented
     /// sequence number appended to the base filename.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the new sequenced file cannot be created.
+    ///
+    /// # Side effects
+    ///
+    /// Drops the old backend (flushing and closing its file), creates the new
+    /// file, resets `bytes_written`/`dsb_written`/`file_opened_at`, and logs
+    /// the rotation at info level.
     pub fn rotate(&mut self) -> Result<()> {
         self.sequence += 1;
         let new_path = rotated_path(&self.base_path, self.sequence);
@@ -530,7 +561,14 @@ impl PcapWriter {
         Ok(())
     }
 
-    /// Check whether any rotation condition is met.
+    /// Check whether any rotation condition is met: a pending SIGUSR1
+    /// request, the size cap, or the duration cap. Returns `true` if the next
+    /// write should go to a fresh file.
+    ///
+    /// # Side effects
+    ///
+    /// Reading the SIGUSR1 flag consumes the pending rotation request (the
+    /// signal module's check-and-clear); logs the trigger at debug level.
     fn should_rotate(&self) -> bool {
         // SIGUSR1-triggered rotation
         if signals::rotation_requested() {
@@ -561,7 +599,6 @@ impl PcapWriter {
     }
 }
 
-/// Create a PCAP-NG writer backend at the given path.
 /// Producer string embedded in exported pcapng metadata (SHB UserApplication,
 /// IDB description), e.g. `"sipnab 0.4.4"`.
 fn app_version() -> String {
@@ -662,6 +699,8 @@ pub fn parse_split(split: &str) -> Result<(Option<u64>, Option<std::time::Durati
     }
 }
 
+/// Tests for the pcap/pcapng writer: NRB/DSB blocks, rotation, split parsing,
+/// timestamp fidelity, and write-failure surfacing.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +765,7 @@ mod tests {
         use super::*;
         use crate::capture::packet::Packet;
 
+        /// Build a 64-byte zero-filled Ethernet packet stamped "now".
         fn small_packet() -> Packet {
             Packet::new(
                 chrono::Utc::now(),
@@ -833,6 +873,7 @@ mod tests {
         }
     }
 
+    /// `output.pcap` + sequence N yields `output_0000N.pcap`.
     #[test]
     fn rotated_path_with_extension() {
         let base = PathBuf::from("/tmp/output.pcap");
@@ -846,6 +887,7 @@ mod tests {
         );
     }
 
+    /// A base path without an extension gets the default `.pcap` appended.
     #[test]
     fn rotated_path_no_extension() {
         let base = PathBuf::from("/tmp/capture");
@@ -856,6 +898,7 @@ mod tests {
         );
     }
 
+    /// `filesize:50` parses as a 50 MB size cap and no duration cap.
     #[test]
     fn parse_split_filesize() {
         let (bytes, dur) = parse_split("filesize:50").unwrap();
@@ -863,6 +906,7 @@ mod tests {
         assert!(dur.is_none());
     }
 
+    /// `duration:300` parses as a 300-second cap and no size cap.
     #[test]
     fn parse_split_duration() {
         let (bytes, dur) = parse_split("duration:300").unwrap();
@@ -870,6 +914,7 @@ mod tests {
         assert_eq!(dur, Some(std::time::Duration::from_secs(300)));
     }
 
+    /// Unknown keys, missing values, and non-numeric values are errors.
     #[test]
     fn parse_split_invalid() {
         assert!(parse_split("bogus:5").is_err());
@@ -877,6 +922,7 @@ mod tests {
         assert!(parse_split("filesize:abc").is_err());
     }
 
+    /// The DSB body layout is `TLSK` type, LE length, data, zero padding.
     #[test]
     fn dsb_body_format() {
         let keylog = b"CLIENT_RANDOM abcd1234 deadbeef\n";
@@ -895,6 +941,8 @@ mod tests {
         assert_eq!(&body[8..8 + keylog.len()], keylog);
     }
 
+    /// The nanosecond conversion in the pcapng write path falls back to 0
+    /// for far-future (i64 overflow) and pre-epoch timestamps, no panic.
     #[test]
     fn pcapng_timestamp_nanos_overflow_no_panic() {
         // Verify the nanos conversion used in PcapNg write path handles
@@ -941,6 +989,7 @@ mod tests {
         );
     }
 
+    /// `parse_mode` maps the three CLI strings; anything else yields `None`.
     #[test]
     fn pcap_export_mode_parse() {
         assert_eq!(
@@ -964,6 +1013,7 @@ mod tests {
         );
     }
 
+    /// Only `Raw` mode excludes DSB blocks from the output.
     #[test]
     fn pcap_export_mode_include_dsb() {
         assert!(
@@ -981,14 +1031,19 @@ mod tests {
     }
 
     // ── End-to-end write / read-back / rotate / DSB ─────────────────────
+    /// End-to-end tests: write files, read them back, rotate, and embed
+    /// metadata/DSB blocks.
     mod roundtrip {
         use super::*;
         use crate::capture::packet::Packet;
 
+        /// Build a `len`-byte packet filled with `byte`, stamped "now".
         fn pkt(byte: u8, len: usize) -> Packet {
             Packet::new(chrono::Utc::now(), vec![byte; len], len, len, None, 1)
         }
 
+        /// Three packets written as plain pcap read back via libpcap, and the
+        /// byte counter matches.
         #[test]
         fn pcap_write_and_read_back() {
             let dir = tempfile::tempdir().unwrap();
@@ -1014,6 +1069,8 @@ mod tests {
             assert_eq!(count, 3, "all three packets should round-trip");
         }
 
+        /// Writing a DSB (once — the second call is a no-op) plus packets
+        /// produces a file opening with the pcapng SHB magic.
         #[test]
         fn pcapng_write_with_dsb_produces_valid_file() {
             let dir = tempfile::tempdir().unwrap();
@@ -1046,6 +1103,8 @@ mod tests {
             assert_eq!(&bytes[0..4], &0x0A0D0D0Au32.to_le_bytes());
         }
 
+        /// IPv4 and IPv6 NRB records (with multiple names) survive a write
+        /// and read back through the `pcap-file` reader.
         #[test]
         fn name_resolution_block_round_trips() {
             use pcap_file::pcapng::PcapNgReader;
@@ -1133,6 +1192,8 @@ mod tests {
             ((app, os), (if_name, if_desc, if_os))
         }
 
+        /// SNB-0001: the SHB carries app+OS and the IDB carries OS plus a
+        /// description, so a headless export is self-describing.
         #[test]
         fn pcapng_export_embeds_app_and_os_metadata() {
             // SNB-0001: a headless pcapng export must be self-describing — the SHB
@@ -1160,6 +1221,7 @@ mod tests {
             assert!(desc.contains("sipnab"), "desc = {desc:?}");
         }
 
+        /// `with_interface(..., Some("eth0"))` records IfName in the IDB.
         #[test]
         fn pcapng_export_records_interface_name() {
             let dir = tempfile::tempdir().unwrap();
@@ -1182,6 +1244,8 @@ mod tests {
             assert_eq!(if_name.as_deref(), Some("eth0"), "IDB IfName");
         }
 
+        /// An interface name with unicode, spaces, backslash, and tab
+        /// round-trips verbatim through the IDB IfName option.
         #[test]
         fn pcapng_export_interface_name_special_chars_round_trip() {
             // Adversarial: a device/source name with unicode, spaces, a
@@ -1207,6 +1271,8 @@ mod tests {
             assert_eq!(if_name.as_deref(), Some(weird));
         }
 
+        /// An empty interface name records no IfName option while keeping the
+        /// description and OS options.
         #[test]
         fn pcapng_export_empty_interface_records_no_name() {
             // Boundary: an empty interface name records no IfName (avoids an
@@ -1235,6 +1301,7 @@ mod tests {
             assert!(if_desc.is_some(), "description still present");
         }
 
+        /// An empty NRB entry list writes nothing and returns `Ok`.
         #[test]
         fn name_resolution_block_empty_is_noop() {
             let dir = tempfile::tempdir().unwrap();
@@ -1247,6 +1314,8 @@ mod tests {
             assert!(path.exists());
         }
 
+        /// Exceeding a tiny size cap mid-run creates the `_00001` sequenced
+        /// rotation file.
         #[test]
         fn size_based_rotation_creates_sequenced_file() {
             let dir = tempfile::tempdir().unwrap();
@@ -1265,6 +1334,8 @@ mod tests {
             );
         }
 
+        /// A manual `rotate()` zeroes the byte counter and opens the
+        /// sequenced file.
         #[test]
         fn explicit_rotate_resets_counters() {
             let dir = tempfile::tempdir().unwrap();
@@ -1277,6 +1348,7 @@ mod tests {
             assert!(dir.path().join("man_00001.pcap").exists());
         }
 
+        /// `write_dsb` on a plain-pcap backend is a benign no-op.
         #[test]
         fn write_dsb_on_plain_pcap_is_skipped() {
             let dir = tempfile::tempdir().unwrap();
@@ -1286,6 +1358,8 @@ mod tests {
             assert!(w.write_dsb(b"CLIENT_RANDOM a b\n").is_ok());
         }
 
+        /// `maybe_write_keylog_dsb` no-ops cleanly for Raw mode, an empty
+        /// keylog, and a missing keylog path.
         #[test]
         fn maybe_write_dsb_handles_raw_empty_and_missing() {
             let dir = tempfile::tempdir().unwrap();
@@ -1315,12 +1389,16 @@ mod tests {
     }
 }
 
+/// Tests for the hand-rolled `RawPcapWriter`: canonical header bytes,
+/// round-trip fidelity, and non-silent write errors.
 #[cfg(test)]
 mod raw_pcap_writer_tests {
     use super::*;
     use crate::capture::packet::Packet;
     use crate::capture::pcap_reader::PcapReader;
 
+    /// Build an Ethernet packet with the given timestamp (`secs`/`usecs`),
+    /// payload `data`, and original length `origlen`.
     fn pkt_at(secs: i64, usecs: u32, data: Vec<u8>, origlen: usize) -> Packet {
         let caplen = data.len();
         let ts = chrono::DateTime::from_timestamp(secs, usecs * 1000).unwrap();

@@ -173,8 +173,11 @@ fn ip_protocol_to_transport(p: u8) -> TransportProto {
 /// passed to [`parse_sctp_data_chunk`]; `src_port`/`dst_port` come from the
 /// SCTP common header.
 struct SctpDataRef {
+    /// Source port from the SCTP common header.
     src_port: u16,
+    /// Destination port from the SCTP common header.
     dst_port: u16,
+    /// Byte range of the SIP payload within the SCTP packet slice.
     payload: std::ops::Range<usize>,
 }
 
@@ -200,10 +203,10 @@ struct SctpDataRef {
 /// E-only chunk) that span multiple packets by TSN/stream is not handled yet
 /// and is a follow-up; such fragments are currently dropped.
 fn parse_sctp_data_chunk(sctp: &[u8]) -> Option<SctpDataRef> {
-    const COMMON_HEADER_LEN: usize = 12;
-    const CHUNK_HEADER_LEN: usize = 4;
-    const DATA_HEADER_LEN: usize = 12;
-    const DATA_CHUNK_TYPE: u8 = 0;
+    const COMMON_HEADER_LEN: usize = 12; // src+dst ports, verification tag, checksum
+    const CHUNK_HEADER_LEN: usize = 4; // type(1) + flags(1) + length(2)
+    const DATA_HEADER_LEN: usize = 12; // TSN, stream id, stream seq, PPID
+    const DATA_CHUNK_TYPE: u8 = 0; // chunk type carrying application data
     const FLAG_E: u8 = 0x01; // ending fragment
     const FLAG_B: u8 = 0x02; // beginning fragment
 
@@ -475,6 +478,24 @@ const MAX_ENCAP_DEPTH: u8 = 5;
 ///
 /// The `depth` parameter tracks recursion depth to prevent stack exhaustion
 /// from maliciously crafted packets with deeply nested encapsulation.
+///
+/// # Arguments
+///
+/// * `timestamp` — capture time carried through from the outer packet.
+/// * `data` — the original packet's refcounted buffer, used so the payload
+///   can be sliced zero-copy.
+/// * `ip_data` — the inner bytes starting at the inner IP header.
+/// * `depth` — current encapsulation depth (0 for the first inner layer).
+///
+/// # Returns
+///
+/// The `ParsedPacket` for the innermost packet after stripping any further
+/// IP-in-IP / GRE layers.
+///
+/// # Errors
+///
+/// Returns `EncapTooDeep` past `MAX_ENCAP_DEPTH`, or the decode/extraction
+/// errors of the nested parse.
 fn parse_inner_ip(
     timestamp: DateTime<Utc>,
     data: &bytes::Bytes,
@@ -516,6 +537,24 @@ fn parse_inner_ip(
 ///
 /// Strips the GRE header (variable length based on flags) and re-parses
 /// the inner IP packet.
+///
+/// # Arguments
+///
+/// * `timestamp` — capture time carried through from the outer packet.
+/// * `data` — the original packet's refcounted buffer for zero-copy slicing.
+/// * `gre_data` — bytes starting at the GRE header.
+/// * `depth` — current encapsulation depth (passed through unchanged to the
+///   inner IP parse).
+///
+/// # Returns
+///
+/// The `ParsedPacket` for the packet carried inside the GRE tunnel.
+///
+/// # Errors
+///
+/// Returns `EncapTooDeep` past `MAX_ENCAP_DEPTH`, `TooShort` for a
+/// truncated GRE header or optional fields, `UnsupportedGreProtocol` for a
+/// non-IPv4/IPv6 payload type, or the nested parse's errors.
 fn parse_gre(
     timestamp: DateTime<Utc>,
     data: &bytes::Bytes,
@@ -570,6 +609,17 @@ fn parse_gre(
 // ── Field extraction ──────────────────────────────────────────────────
 
 /// Extract a [`ParsedPacket`] from already-parsed network and transport slices.
+///
+/// Pulls addresses, fragmentation fields, and the IP protocol from `net`,
+/// then extracts ports/payload from `transport` — with special handling for
+/// IP fragments (no transport header; ports 0) and SCTP (parsed manually,
+/// failing closed to an empty payload on malformed chunks). `data` is the
+/// original packet's refcounted buffer so payloads are zero-copy slices.
+///
+/// # Errors
+///
+/// Returns `NotIp` for ARP, `NoTransport` when a non-fragment packet lacks
+/// a transport slice, and `Icmp` for ICMPv4/v6 traffic.
 fn extract_parsed_packet(
     timestamp: DateTime<Utc>,
     data: &bytes::Bytes,
@@ -737,6 +787,9 @@ fn extract_parsed_packet(
 
 // ── Tests ─────────────────────────────────────────────────────────────
 
+/// Tests for header parsing across link types, encapsulation stripping,
+/// SCTP DATA-chunk extraction, the pre-parsed (HEP) short-circuit, and the
+/// cheap host-pair peek used for multi-core sharding.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,6 +799,8 @@ mod tests {
     // outer src/dst IPs from the link+IP headers — for plain Ethernet, VLAN-tagged
     // frames, and gracefully return None for non-IP / truncated input (those
     // shard to worker 0). The peek must agree with the full parse on the IPs.
+    /// `peek_host_pair` matches the full parse for plain and VLAN-tagged
+    /// Ethernet, and returns `None` for non-IP or truncated frames.
     #[test]
     fn peek_host_pair_extracts_endpoints() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -780,6 +835,8 @@ mod tests {
         assert_eq!(peek_host_pair(&make_packet(vec![], DLT_EN10MB)), None);
     }
 
+    /// After reassembly, a UDP buffer yields its ports and the 8-byte
+    /// header offset.
     #[test]
     fn reparse_transport_udp_recovers_ports_and_strips_header() {
         // After IP reassembly the buffer is the IP payload = UDP header + body.
@@ -796,6 +853,7 @@ mod tests {
         assert_eq!(&buf[hdr..hdr + 7], b"OPTIONS");
     }
 
+    /// A TCP buffer's header length comes from the data-offset nibble.
     #[test]
     fn reparse_transport_tcp_uses_data_offset() {
         let mut buf = vec![0u8; 20];
@@ -809,6 +867,8 @@ mod tests {
         assert_eq!(hdr, 20);
     }
 
+    /// Truncated UDP/TCP buffers and unhandled protocols (SCTP) yield
+    /// `None`.
     #[test]
     fn reparse_transport_rejects_truncated_and_unknown() {
         assert!(reparse_transport(17, &[0, 0, 0]).is_none()); // < 8 bytes
@@ -1023,6 +1083,8 @@ mod tests {
         )
     }
 
+    /// A plain Ethernet/IPv4/UDP packet parses with addresses, ports, and
+    /// payload intact and no TCP fields.
     #[test]
     fn parse_ethernet_ipv4_udp() {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
@@ -1041,6 +1103,8 @@ mod tests {
         assert_eq!(parsed.ip_id, Some(1));
     }
 
+    /// An Ethernet/IPv4/TCP packet surfaces its sequence number and the
+    /// exact flag set (PSH+ACK here).
     #[test]
     fn parse_ethernet_ipv4_tcp() {
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
@@ -1072,6 +1136,8 @@ mod tests {
         assert!(!flags.rst);
     }
 
+    /// An Ethernet/IPv6/UDP packet parses; IPv6 has no identification
+    /// field so `ip_id` is `None`.
     #[test]
     fn parse_ipv6_udp() {
         let payload = b"RTP data here";
@@ -1094,6 +1160,8 @@ mod tests {
         assert!(parsed.ip_id.is_none()); // IPv6 has no identification
     }
 
+    /// A complete (B|E) SCTP DATA chunk yields its ports and the SIP
+    /// payload with SCTP headers stripped.
     #[test]
     fn parse_ethernet_ipv4_sctp_data_chunk_sip() {
         let sip = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\n\r\n";
@@ -1109,6 +1177,8 @@ mod tests {
         assert_eq!(parsed.payload[..], sip[..]);
     }
 
+    /// The SCTP extractor is payload-agnostic: non-SIP bytes pass through
+    /// unmodified (SIP detection is downstream).
     #[test]
     fn parse_sctp_data_chunk_is_payload_agnostic() {
         // The transport parser only extracts bytes; SIP detection is downstream.
@@ -1123,6 +1193,8 @@ mod tests {
         assert_eq!(parsed.payload[..], raw[..]);
     }
 
+    /// An SCTP packet shorter than the 12-byte common header fails closed:
+    /// ports 0 and an empty payload, no panic.
     #[test]
     fn parse_sctp_common_header_truncated_yields_empty_payload() {
         // Fewer than the 12-byte common header — must not panic, empty payload.
@@ -1137,6 +1209,8 @@ mod tests {
         assert!(parsed.payload.is_empty());
     }
 
+    /// An SCTP packet containing only a SACK chunk (no DATA) yields an
+    /// empty payload.
     #[test]
     fn parse_sctp_non_data_chunk_yields_empty_payload() {
         // A single SACK chunk (type 3), no DATA chunk present.
@@ -1157,6 +1231,8 @@ mod tests {
         assert!(parsed.payload.is_empty());
     }
 
+    /// A DATA chunk whose declared length overruns the buffer fails closed
+    /// to an empty payload.
     #[test]
     fn parse_sctp_data_chunk_length_past_buffer_yields_empty_payload() {
         // DATA chunk header claims a length that runs past the buffer end.
@@ -1175,6 +1251,8 @@ mod tests {
         assert!(parsed.payload.is_empty());
     }
 
+    /// A fragmented DATA chunk (B without E) is skipped — no SCTP fragment
+    /// reassembly — leaving an empty payload.
     #[test]
     fn parse_sctp_fragmented_data_chunk_yields_empty_payload() {
         // B set, E clear → a fragment; must be skipped (no reassembly here).
@@ -1190,6 +1268,8 @@ mod tests {
         assert!(parsed.payload.is_empty());
     }
 
+    /// A GRE-encapsulated IPv4/UDP packet is stripped to its inner
+    /// addresses, ports, and payload (outer addresses discarded).
     #[test]
     fn parse_gre_encapsulated() {
         let payload = b"inner payload";
@@ -1257,6 +1337,8 @@ mod tests {
         assert_eq!(parsed.payload[..], payload[..]);
     }
 
+    /// An IP-in-IP (protocol 4) packet is stripped to the inner IPv4/UDP
+    /// flow.
     #[test]
     fn parse_ip_in_ip() {
         let payload = b"tunneled SIP";
@@ -1314,6 +1396,7 @@ mod tests {
         assert_eq!(parsed.payload[..], payload[..]);
     }
 
+    /// An ARP frame returns an error rather than panicking.
     #[test]
     fn parse_non_ip_returns_error() {
         // ARP packet: EtherType 0x0806
@@ -1328,6 +1411,7 @@ mod tests {
         assert!(result.is_err(), "ARP should return error, not panic");
     }
 
+    /// A DLT_RAW packet (IP header first, no Ethernet) parses correctly.
     #[test]
     fn parse_raw_ip_link_type() {
         let payload = b"raw ip payload";
@@ -1436,6 +1520,8 @@ mod tests {
         );
     }
 
+    /// The pre-parsed short-circuit maps `ip_protocol = 6` to
+    /// `TransportProto::Tcp` and passes the payload through untouched.
     #[test]
     fn parse_packet_short_circuits_when_pre_parsed_present_tcp() {
         let payload = b"REGISTER sip:carol@example.com SIP/2.0\r\n\r\n".to_vec();

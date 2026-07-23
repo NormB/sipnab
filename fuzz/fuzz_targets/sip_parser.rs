@@ -1,3 +1,6 @@
+//! Fuzz the top-level SIP message parser — the primary network-facing
+//! decoder. Arbitrary bytes (parsed as a UDP datagram from loopback) must
+//! parse into a message or error cleanly, never panic or over-read.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use sipnab::capture::parse::TransportProto;

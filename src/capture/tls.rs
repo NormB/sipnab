@@ -188,6 +188,14 @@ pub struct KeyLogEntry {
 
 /// Zeroize key material on drop to prevent secrets lingering in freed heap.
 impl Drop for KeyLogEntry {
+    /// Overwrite the `secret` and `client_random` byte buffers with zeros before
+    /// the allocation is freed.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates `self.secret` and `self.client_random` in place, zeroing every
+    /// byte. Note this is a plain loop, not a `zeroize`-crate write, so the
+    /// compiler could in principle elide it; the label buffer is not cleared.
     fn drop(&mut self) {
         // Zero out secret material byte-by-byte
         for b in self.secret.iter_mut() {
@@ -270,6 +278,8 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
         anyhow::bail!("Odd-length hex string: {hex}");
     }
 
+    /// Convert one hex ASCII digit `b` to its 0..=15 value, or error naming its
+    /// byte offset `pos` if `b` is not `[0-9a-fA-F]`.
     fn nibble(b: u8, pos: usize) -> Result<u8> {
         match b {
             b'0'..=b'9' => Ok(b - b'0'),
@@ -290,6 +300,9 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
+/// Unit tests for TLS record parsing, TLS detection, and SSLKEYLOGFILE parsing,
+/// including the multibyte-UTF-8 hex-decode DoS regression and key-material
+/// zeroization on drop.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +322,8 @@ mod tests {
         buf
     }
 
+    /// A well-formed TLS 1.2 Handshake record parses into one record with the
+    /// expected content type, version, length, and payload.
     #[test]
     fn parse_valid_handshake_record() {
         let payload = vec![0x01, 0x00, 0x00, 0x05, 0x03, 0x03, 0x00, 0x00, 0x00];
@@ -322,6 +337,7 @@ mod tests {
         assert_eq!(records[0].payload, payload);
     }
 
+    /// An ApplicationData record (type 23) parses with the correct content type.
     #[test]
     fn parse_application_data_record() {
         let payload = vec![0xDE, 0xAD, 0xBE, 0xEF];
@@ -332,6 +348,7 @@ mod tests {
         assert_eq!(records[0].content_type, TlsContentType::ApplicationData);
     }
 
+    /// Two concatenated records in one segment both parse, in order.
     #[test]
     fn parse_multiple_records_in_segment() {
         let handshake_payload = vec![0x01, 0x00];
@@ -346,12 +363,15 @@ mod tests {
         assert_eq!(records[1].content_type, TlsContentType::ApplicationData);
     }
 
+    /// `is_tls` returns true for a genuine TLS record.
     #[test]
     fn is_tls_on_tls_data() {
         let data = make_tls_record(22, 0x0303, &[0x01, 0x00]);
         assert!(is_tls(&data));
     }
 
+    /// `is_tls` returns false for SIP text, too-short input, bad content type,
+    /// and an implausible version.
     #[test]
     fn is_tls_on_non_tls_data() {
         // SIP message start
@@ -364,6 +384,8 @@ mod tests {
         assert!(!is_tls(&[0x16, 0x05, 0x00, 0x00, 0x05]));
     }
 
+    /// A record whose declared length exceeds available data is dropped, not
+    /// emitted partially.
     #[test]
     fn truncated_record_stops_cleanly() {
         // Valid header but payload is cut short
@@ -378,6 +400,7 @@ mod tests {
     // SSLKEYLOGFILE parsing
     // -----------------------------------------------------------------------
 
+    /// A `CLIENT_RANDOM` line parses into a 32-byte random and 48-byte secret.
     #[test]
     fn parse_keylog_client_random_entry() {
         let line = "CLIENT_RANDOM \
@@ -392,6 +415,7 @@ mod tests {
         assert_eq!(entry.secret[0], 0x00);
     }
 
+    /// A TLS 1.3 traffic-secret label parses with a 32-byte secret.
     #[test]
     fn parse_keylog_tls13_labels() {
         let line = "CLIENT_HANDSHAKE_TRAFFIC_SECRET \
@@ -404,6 +428,8 @@ mod tests {
         assert_eq!(entry.secret.len(), 32);
     }
 
+    /// Parsing a keylog file skips comment and blank lines and returns only the
+    /// two real entries.
     #[test]
     fn parse_keylog_file_with_comments_and_blanks() {
         let mut tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -432,12 +458,15 @@ mod tests {
         assert_eq!(entries[1].label, "SERVER_HANDSHAKE_TRAFFIC_SECRET");
     }
 
+    /// A line with non-hex characters in a field fails to parse.
     #[test]
     fn parse_keylog_invalid_hex() {
         let line = "CLIENT_RANDOM ZZZZ 0011";
         assert!(parse_keylog_line(line).is_err());
     }
 
+    /// Regression: hex decoding of multibyte-UTF-8 input returns an error
+    /// instead of panicking on a non-char-boundary slice (a remote DoS).
     #[test]
     fn decode_hex_multibyte_utf8_does_not_panic() {
         // Regression: decode_hex checked BYTE-length parity then sliced
@@ -457,6 +486,8 @@ mod tests {
 
     // ── Security regression tests ────────────────────────────────────
 
+    /// Constructing and dropping a `KeyLogEntry` with known secret bytes runs
+    /// the zeroizing `Drop` impl without panicking.
     #[test]
     fn keylog_entry_zeroizes_on_drop() {
         // Verify the Drop impl for KeyLogEntry executes without panic.

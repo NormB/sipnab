@@ -2,9 +2,10 @@
 //!
 //! Collects and formats sipnab operational metrics in the
 //! [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/).
-//! The HTTP endpoint that serves these metrics will be wired in a future
-//! phase (behind the `api` feature gate with axum/tokio). This module
-//! provides the data model and formatting only.
+//! This module provides the data model and formatting only; the metrics
+//! are served over HTTP by the REST API's `/metrics` endpoint
+//! (`super::api`, feature `api`) and by the standalone
+//! `super::prometheus_server`.
 
 use std::collections::HashMap;
 use std::fmt::Write;
@@ -57,7 +58,12 @@ pub struct PrometheusMetrics {
 /// lines. All metric names are prefixed with `sipnab_`.
 ///
 /// Histogram metrics use cumulative bucket format with `_bucket`,
-/// `_count`, and `_sum` suffixes.
+/// `_count`, and `_sum` suffixes. Labeled counter families with no
+/// entries are omitted entirely; scalar counters/gauges and histogram
+/// sections are always emitted (with zero values). On native builds the
+/// `sipnab_kill_responses_sent_total{mode=...}` counters are read from
+/// the process-isolation module as a side input. Pure otherwise —
+/// nothing is served or written here.
 pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
     let mut out = String::with_capacity(4096);
 
@@ -239,13 +245,18 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
 
 // ── Internal helpers ─────────────────────────────────────────────────
 
-/// Write `# HELP` and `# TYPE` lines.
+/// Append `# HELP <name> <help>` and `# TYPE <name> <metric_type>` lines
+/// to `out`.
 fn write_help_type(out: &mut String, name: &str, help: &str, metric_type: &str) {
     let _ = writeln!(out, "# HELP {name} {help}");
     let _ = writeln!(out, "# TYPE {name} {metric_type}");
 }
 
 /// Format a labeled counter family (e.g., `sipnab_dialogs_total{state="completed"} 150`).
+///
+/// Appends nothing when `values` is empty; otherwise writes HELP/TYPE,
+/// one line per key in sorted order (label values escaped), and a blank
+/// separator line.
 fn format_labeled_counter(
     out: &mut String,
     name: &str,
@@ -289,6 +300,11 @@ fn escape_label_value(s: &str) -> String {
 }
 
 /// Format a histogram with cumulative buckets, `_count`, and `_sum`.
+///
+/// Each `le` bucket counts observations `<= le` (cumulative); the `+Inf`
+/// bucket always equals the total count. Bucket boundaries render via
+/// Rust float `Display`, so `1.0` appears as `le="1"`. Appends the
+/// section to `out` followed by a blank line.
 fn format_histogram(
     out: &mut String,
     name: &str,
@@ -315,10 +331,13 @@ fn format_histogram(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for exposition-format output: prefixes, HELP/TYPE lines,
+/// counter/gauge values, cumulative buckets, and label sorting/escaping.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Build a metrics struct with every field populated.
     fn sample_metrics() -> PrometheusMetrics {
         let mut m = PrometheusMetrics::default();
         m.dialogs_total.insert("completed".to_string(), 150);
@@ -341,6 +360,7 @@ mod tests {
         m
     }
 
+    /// Every non-empty line is a comment or a `sipnab_` metric line.
     #[test]
     fn format_produces_valid_output() {
         let metrics = sample_metrics();
@@ -361,6 +381,7 @@ mod tests {
         }
     }
 
+    /// Every metric line starts with the `sipnab_` prefix.
     #[test]
     fn all_metric_names_prefixed() {
         let metrics = sample_metrics();
@@ -377,6 +398,7 @@ mod tests {
         }
     }
 
+    /// HELP/TYPE pairs exist for counter, gauge, and histogram families.
     #[test]
     fn help_and_type_lines_present() {
         let metrics = sample_metrics();
@@ -390,6 +412,7 @@ mod tests {
         assert!(output.contains("# TYPE sipnab_pdd_seconds histogram"));
     }
 
+    /// Labeled and scalar counters carry the exact sample values.
     #[test]
     fn counter_values_correct() {
         let metrics = sample_metrics();
@@ -401,6 +424,7 @@ mod tests {
         assert!(output.contains("sipnab_reassembly_timeouts_total 7"));
     }
 
+    /// The active-streams gauge carries its sample value.
     #[test]
     fn gauge_value_correct() {
         let metrics = sample_metrics();
@@ -409,6 +433,7 @@ mod tests {
         assert!(output.contains("sipnab_rtp_streams_active 12"));
     }
 
+    /// PDD buckets count cumulatively up through `+Inf` == total count.
     #[test]
     fn histogram_buckets_are_cumulative() {
         // 5 observations: 0.3, 0.8, 1.5, 2.5, 4.0
@@ -435,6 +460,7 @@ mod tests {
         assert!(output.contains("sipnab_pdd_seconds_count 5"));
     }
 
+    /// The `_sum` line equals the sum of all observations.
     #[test]
     fn histogram_sum_correct() {
         let metrics = PrometheusMetrics {
@@ -447,6 +473,8 @@ mod tests {
         assert!(output.contains("sipnab_pdd_seconds_sum 6"));
     }
 
+    /// Default metrics still emit scalar counters and zero-count
+    /// histograms.
     #[test]
     fn empty_metrics_produce_valid_output() {
         let metrics = PrometheusMetrics::default();
@@ -459,6 +487,7 @@ mod tests {
         assert!(output.contains("sipnab_rtp_streams_active 0"));
     }
 
+    /// Label values render in sorted key order for deterministic output.
     #[test]
     fn labeled_counters_sorted_by_key() {
         let mut metrics = PrometheusMetrics::default();
@@ -481,6 +510,7 @@ mod tests {
         );
     }
 
+    /// The MOS histogram section is present with the sample count.
     #[test]
     fn mos_histogram_present() {
         let metrics = sample_metrics();
@@ -491,6 +521,7 @@ mod tests {
         assert!(output.contains("sipnab_mos_count 10"));
     }
 
+    /// Jitter and loss histogram sections are present with sample counts.
     #[test]
     fn jitter_and_loss_histograms_present() {
         let metrics = sample_metrics();
@@ -502,6 +533,7 @@ mod tests {
         assert!(output.contains("sipnab_loss_percent_count 8"));
     }
 
+    /// Security-alert and diagnosis counters carry their typed labels.
     #[test]
     fn diagnosis_and_security_counters() {
         let metrics = sample_metrics();
@@ -511,6 +543,7 @@ mod tests {
         assert!(output.contains(r#"sipnab_diagnosis_total{type="one_way_audio"} 4"#));
     }
 
+    /// Empty labeled-counter families emit no HELP/TYPE lines at all.
     #[test]
     fn empty_counter_maps_omitted() {
         let metrics = PrometheusMetrics::default();

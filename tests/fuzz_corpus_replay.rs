@@ -24,6 +24,16 @@ use sipnab::sip::sdp::parse_sdp;
 
 /// Run `f` and return Err(label) if it panicked (panic output is suppressed so
 /// a deliberate self-test panic doesn't spam the log).
+///
+/// # Arguments
+/// * `label` — identifier returned in the `Err` when `f` panics.
+/// * `f` — closure driving one parser call.
+///
+/// # Returns
+/// `Ok(())` if `f` completed; `Err(label)` if it unwound.
+///
+/// # Side effects
+/// Temporarily replaces the global panic hook (restored before returning).
 fn ran_without_panic<F: FnOnce()>(label: &str, f: F) -> Result<(), String> {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
@@ -32,6 +42,8 @@ fn ran_without_panic<F: FnOnce()>(label: &str, f: F) -> Result<(), String> {
     res.map_err(|_| label.to_string())
 }
 
+/// Feeds `data` to `parse_sip` with fixed localhost endpoints, discarding the
+/// result — only panic-vs-no-panic matters here.
 fn drive_sip(data: &[u8]) {
     let _ = parse_sip(
         data,
@@ -46,6 +58,9 @@ fn drive_sip(data: &[u8]) {
 
 /// A spread of nasty raw inputs that hit boundary/special-char paths the CLAUDE
 /// directive calls out (backslash, NUL, empty, lying lengths, huge counts).
+///
+/// # Returns
+/// The fixed SIP-oriented adversarial seed set, identical every run.
 fn adversarial_seeds() -> Vec<Vec<u8>> {
     let mut v: Vec<Vec<u8>> = vec![
         vec![],                   // empty
@@ -86,7 +101,11 @@ fn adversarial_seeds() -> Vec<Vec<u8>> {
     v
 }
 
-/// SDP-specific adversarial bodies.
+/// SDP-specific adversarial bodies (overflowing ports, NULs in codec names,
+/// tens of thousands of rtpmap lines).
+///
+/// # Returns
+/// The fixed SDP adversarial seed set, identical every run.
 fn sdp_seeds() -> Vec<Vec<u8>> {
     vec![
         vec![],
@@ -111,6 +130,7 @@ fn sdp_seeds() -> Vec<Vec<u8>> {
 /// (no Math.random / wall-clock seeding — same bytes every CI run).
 struct Rng(u64);
 impl Rng {
+    /// Advances the xorshift state and returns the next 64-bit value.
     fn next(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x << 13;
@@ -119,12 +139,20 @@ impl Rng {
         self.0 = x;
         x
     }
+    /// Returns the low byte of the next PRNG value.
     fn byte(&mut self) -> u8 {
         (self.next() & 0xff) as u8
     }
 }
 
 /// Mutate a seed by flipping/overwriting/truncating bytes — deterministic.
+///
+/// # Arguments
+/// * `seed` — base input to mutate.
+/// * `rng` — deterministic PRNG driving 1-6 mutation ops.
+///
+/// # Returns
+/// The mutated byte vector.
 fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
     let mut out = seed.to_vec();
     if out.is_empty() {
@@ -148,6 +176,8 @@ fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
     out
 }
 
+/// Validates the validator: `ran_without_panic` reports a deliberately
+/// panicking closure as `Err` and a clean closure as `Ok`.
 #[test]
 fn harness_actually_catches_a_panic() {
     // validate the validator: a panicking closure MUST be reported as a failure.
@@ -156,6 +186,8 @@ fn harness_actually_catches_a_panic() {
     assert!(ran_without_panic("ok", || {}).is_ok());
 }
 
+/// None of the four parsers (SIP/RTP/RTCP on every SIP seed, SDP on the SDP
+/// seeds) panics on the fixed adversarial seed set.
 #[test]
 fn parsers_never_panic_on_adversarial_seeds() {
     let mut failures = Vec::new();
@@ -188,6 +220,8 @@ fn parsers_never_panic_on_adversarial_seeds() {
     assert!(failures.is_empty(), "parsers panicked on: {failures:?}");
 }
 
+/// ~20k deterministic xorshift mutations (5000 rounds × 4 parsers) of the seed
+/// set never panic; fails fast on the first crashing input class.
 #[test]
 fn parsers_never_panic_on_mutation_sweep() {
     // ~20k deterministic mutations across all four parsers from the seed set.

@@ -40,6 +40,25 @@ pub struct PcapngMetadata {
 }
 
 /// Read NRB names and DSB TLS secrets from the pcapng file at `path`.
+///
+/// # Arguments
+///
+/// * `path` - the capture file (plain or gzip-compressed pcapng).
+///
+/// # Returns
+///
+/// The extracted metadata. Non-pcapng input, a corrupt gzip stream, or a
+/// capture with no NRB/DSB blocks all yield empty metadata, not an error;
+/// malformed blocks mid-file are skipped.
+///
+/// # Errors
+///
+/// Only filesystem failures (missing file, unreadable metadata) and a file
+/// exceeding the in-memory size cap are errors.
+///
+/// # Side effects
+///
+/// Reads the whole file into memory (bounded by `MAX_METADATA_FILE_BYTES`).
 pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
     use pcap_file::pcapng::Block;
     use pcap_file::pcapng::blocks::name_resolution::Record;
@@ -133,8 +152,20 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
 /// corrupts `dst`, and `src` is never modified. Returns the number of DSBs
 /// stripped. Gzip-compressed input (`.pcapng.gz`) is inflated first, like every
 /// other read path; the sanitized output is always written uncompressed.
+///
+/// # Arguments
+///
+/// * `src` - the pcapng (or `.pcapng.gz`) file to sanitize; never modified.
+/// * `dst` - where the DSB-free copy is written (atomic temp+rename).
+///
+/// # Errors
+///
+/// Fails when `src` cannot be read, exceeds the size cap (on disk or after
+/// inflation), is not pcapng (missing/invalid SHB), contains a truncated or
+/// invalid block length, or when writing `dst` fails.
 pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     use std::io::{Error, ErrorKind};
+    // Decryption Secrets Block type code.
     const DSB_TYPE: u32 = 0x0000_000A;
     // The Section Header Block type 0x0A0D0D0A is byte-symmetric, so it reads
     // the same regardless of section byte order.
@@ -207,11 +238,14 @@ fn byte_order_from_shb(magic: &[u8]) -> Option<bool> {
     }
 }
 
+/// Tests for pcapng metadata extraction (NRB/DSB) and secret stripping,
+/// including the gzip-compressed input paths.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capture::{PcapExportMode, PcapWriter};
 
+    /// Sizes at/under the cap pass; one byte over is `InvalidData`.
     #[test]
     fn size_cap_rejects_oversized_and_allows_normal() {
         // At/under the cap is fine; over it is rejected as invalid data so a
@@ -230,6 +264,8 @@ mod tests {
         w.finish().unwrap();
     }
 
+    /// NRB names embedded in a gzip-compressed pcapng still read back (the
+    /// file-open path hands over the original compressed file).
     #[test]
     fn reads_nrb_names_from_gzip_compressed_pcapng() {
         // The TUI file-open path hands this reader the ORIGINAL (possibly
@@ -256,6 +292,8 @@ mod tests {
         );
     }
 
+    /// IPv4 and IPv6 NRB records (with multiple names) read back from a
+    /// written pcapng.
     #[test]
     fn reads_nrb_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -280,6 +318,7 @@ mod tests {
         assert!(meta.names.contains(&(v6, "v6.example.com".to_string())));
     }
 
+    /// A DSB written from a keylog surfaces its TLS Key Log lines.
     #[test]
     fn reads_dsb_tls_secret() {
         // A pcapng carrying a Decryption Secrets Block (TLS Key Log) should
@@ -311,6 +350,7 @@ mod tests {
         );
     }
 
+    /// A non-pcapng file yields empty metadata, not an error.
     #[test]
     fn non_pcapng_yields_empty_metadata() {
         // Failure/negative case: a file that isn't pcapng must not error.
@@ -321,6 +361,7 @@ mod tests {
         assert_eq!(meta, PcapngMetadata::default());
     }
 
+    /// A nonexistent path is a filesystem error.
     #[test]
     fn missing_file_errors() {
         let meta = read_pcapng_metadata(Path::new("/no/such/file.pcapng"));
@@ -345,6 +386,8 @@ mod tests {
         path
     }
 
+    /// Stripping removes the DSB from the copy, keeps NRB names, and leaves
+    /// the source file intact.
     #[test]
     fn strip_secrets_removes_dsb_keeps_names_and_source() {
         let dir = tempfile::tempdir().unwrap();
@@ -371,6 +414,7 @@ mod tests {
         );
     }
 
+    /// A DSB-free input strips zero blocks and produces a faithful copy.
     #[test]
     fn strip_secrets_no_dsb_returns_zero_and_copies() {
         let dir = tempfile::tempdir().unwrap();
@@ -382,6 +426,7 @@ mod tests {
         assert!(after.names.iter().any(|(_, name)| name == "sbc-edge"));
     }
 
+    /// Stripping a non-pcapng file is an error (unlike metadata reading).
     #[test]
     fn strip_secrets_non_pcapng_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -404,6 +449,8 @@ mod tests {
         gz
     }
 
+    /// A `.pcapng.gz` strips transparently; the sanitized output is plain
+    /// (uncompressed) pcapng.
     #[test]
     fn strip_secrets_reads_gzip_compressed_input() {
         // Every other read path gunzips transparently; the sanitizer must
@@ -426,6 +473,7 @@ mod tests {
         );
     }
 
+    /// Gzip wrapping non-pcapng bytes still errors after inflation.
     #[test]
     fn strip_secrets_gzip_wrapping_non_pcapng_errors() {
         use std::io::Write;
@@ -441,6 +489,7 @@ mod tests {
         assert!(strip_secrets(&src, &dst).is_err());
     }
 
+    /// A truncated gzip stream errors cleanly, never panics.
     #[test]
     fn strip_secrets_truncated_gzip_errors_cleanly() {
         let dir = tempfile::tempdir().unwrap();

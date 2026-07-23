@@ -1,11 +1,45 @@
 //! Save/export: pcap, txt, mermaid, json, ndjson, csv, markdown,
 //! wav, sipp scenario, rtp-json.
+//!
+//! Each `save_to_*_path` function takes the shared `App`, resolves which
+//! dialogs or streams to export (multi-select checkboxes, the current call
+//! flow, or everything), writes one output file at the given path, and
+//! returns a human-readable status string for the TUI status line —
+//! `"Saved ..."` on success, or a `"No ... to save"` / `"Save failed ..."`
+//! style message otherwise. None of these functions return `Result`; all
+//! error conditions are folded into the returned status text. Existing
+//! files at the target path are overwritten without prompting.
 
 use super::*;
 
 // ── Save functionality ─────────────────────────────────────────────
 
 /// Save all dialogs to a pcap or pcap-ng file.
+///
+/// Re-synthesizes an Ethernet/IP/UDP-or-TCP packet for every SIP message
+/// of every exported dialog (checked rows, or all when none are checked).
+/// In pcapng mode, when name resolution is active, a Name Resolution
+/// Block with the resolver's validated names is written before the
+/// packets (DNS-derived names only in DNS mode).
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, resolver, selection).
+/// * `path_str` — destination file path.
+/// * `pcapng` — `true` writes pcap-ng, `false` writes classic pcap.
+///
+/// # Returns
+///
+/// `"Saved N packets (fmt) to path"` on success; `"No messages to
+/// save"` when nothing is exportable; `"Save failed ..."` when the
+/// writer cannot be created or the NRB write fails; `"Write error after
+/// N packets ..."` when a packet write fails partway.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store` for the whole export.
+/// Creates or truncates the file at `path_str`; on a mid-stream write
+/// error the partially written file is left on disk.
 pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -59,6 +93,26 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
 }
 
 /// Save all dialogs as plain text SIP messages.
+///
+/// Each exported message is preceded by a `# Message N | timestamp |
+/// transport src -> dst` header line and separated by `---` dividers;
+/// non-UTF-8 bodies are replaced with a `(binary: N bytes)` note.
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N messages (txt) to path"` on success; `"No messages to
+/// save"` when nothing is exportable; `"Save failed ..."` when the
+/// single `std::fs::write` fails.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -110,6 +164,28 @@ pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
 }
 
 /// Save current call flow as a Mermaid sequence diagram.
+///
+/// In the call-flow view, exports that dialog (plus correlated legs when
+/// extended mode is on, merged in timestamp order); in the call list,
+/// exports the checked dialogs (or all when none are checked). The
+/// output is a self-contained HTML page embedding the Mermaid diagram.
+///
+/// # Arguments
+///
+/// * `app` — application state (current view, dialog store, flow options).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved Mermaid diagram (N messages) to path"` on success (N counts
+/// real messages, not spacers); `"No messages to export"` when nothing
+/// is exportable; `"Save failed ..."` when the write fails.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Clones the exported
+/// messages out of the store, then creates or truncates the file at
+/// `path_str` in one write.
 pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     let path = std::path::PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -179,7 +255,9 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     }
 }
 
-/// Format a [`DialogState`] as a display string for export.
+/// Format a `DialogState` as a display string for export (pure mapping
+/// to a `&'static str`; unlike the call list it renders Failed as
+/// `"Failed"`, not `"FAILED"`).
 pub(super) fn format_dialog_state(state: &crate::sip::dialog::DialogState) -> &'static str {
     use crate::sip::dialog::DialogState;
     match state {
@@ -209,6 +287,27 @@ pub(super) fn csv_escape(field: &str) -> String {
 }
 
 /// Export all dialogs as pretty-printed JSON with parsed headers, timing, and state.
+///
+/// Each dialog serializes as the canonical `DialogSummary` object
+/// extended with `src_addr`, `dst_addr`, and a `messages` array of
+/// per-message metadata (timestamp, direction, method/status,
+/// endpoints, retransmission flag); the file holds one JSON array.
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N dialogs (JSON) to path"` on success; `"No dialogs to
+/// save"` when nothing is exportable; `"JSON serialization failed ..."`
+/// or `"Save failed ..."` on serialization or write errors.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -265,6 +364,27 @@ pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
 }
 
 /// Export all dialogs as newline-delimited JSON (one JSON object per line).
+///
+/// Each line carries the dialog identity, endpoints, state, a `timing`
+/// object (`pdd_ms`, `setup_ms`, `duration_ms` where `duration_ms` is
+/// answered-to-BYE), and a compact `messages` array.
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N dialogs (NDJSON) to path"` on success; `"No dialogs to
+/// save"` when nothing is exportable; `"JSON serialization failed ..."`
+/// (aborting before any file is created) or `"Save failed ..."` on a
+/// write error.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write after all lines serialize cleanly.
 pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -336,6 +456,26 @@ pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
 }
 
 /// Export dialog summaries as CSV (one row per dialog).
+///
+/// Columns: `call_id,method,state,from,to,src_ip,dst_ip,messages,
+/// pdd_ms,setup_ms,created_at`. Text fields go through `csv_escape`;
+/// missing PDD/setup values render as empty cells.
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N dialogs (CSV) to path"` on success; `"No dialogs to
+/// save"` when nothing is exportable; `"Save failed ..."` when the
+/// write fails.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -379,6 +519,27 @@ pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
 }
 
 /// Export a Markdown call summary suitable for tickets and incident docs.
+///
+/// Writes one `## Dialog:` section per exported dialog: a field/value
+/// table (state, From/To, endpoints from the first message, counts,
+/// PDD/setup when known, creation time) followed by a numbered
+/// message-flow table with direction arrows.
+///
+/// # Arguments
+///
+/// * `app` — application state (dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N dialogs (Markdown) to path"` on success; `"No dialogs to
+/// save"` when nothing is exportable; `"Save failed ..."` when the
+/// write fails.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -484,7 +645,26 @@ pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
 /// Export captured RTP audio to a WAV file.
 ///
 /// Finds G.711 streams associated with the current dialog (or all streams
-/// if no dialog is in focus) and exports them via [`crate::rtp::audio_export`].
+/// if no dialog is in focus) and exports them via `crate::rtp::audio_export`.
+/// Outside the call-flow view, the dialog is picked by the call list's
+/// selected index over the store's raw iteration order.
+///
+/// # Arguments
+///
+/// * `app` — application state (current view, dialog and stream stores).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// The status message from the audio exporter on success; `"No RTP
+/// streams associated with this dialog"` / `"No RTP streams captured"`
+/// when there is nothing to export; `"WAV export failed ..."` on error.
+///
+/// # Side effects
+///
+/// May take a read lock on `app.dialog_store` (call-list path) and
+/// always takes a read lock on `app.stream_store`. The audio exporter
+/// creates or truncates the file at `path_str`.
 pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
 
@@ -524,6 +704,30 @@ pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
 }
 
 /// Export a SIPp scenario XML from the current dialog's call flow.
+///
+/// Exports exactly one dialog: the current call-flow dialog, else the
+/// first checked (or first overall) call-list dialog. The caller side is
+/// inferred from the first message's source; caller messages become
+/// `<send>` blocks with SIPp placeholder substitution (`[remote_ip]`,
+/// `[call_id]`, `[branch]`, ...), remote messages become `<recv>` blocks
+/// (provisional responses marked optional), and inter-message gaps over
+/// 500 ms become `<pause>` elements.
+///
+/// # Arguments
+///
+/// * `app` — application state (current view, dialog store, selection).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved SIPp scenario (N messages) to path"` on success; `"No dialog
+/// to export"` / `"No messages in dialog"` when there is nothing usable;
+/// `"Save failed ..."` when the write fails.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.dialog_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -643,6 +847,27 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
 }
 
 /// Export RTP/RTCP stream quality data as JSON.
+///
+/// Serializes every tracked stream (no dialog filtering) as the
+/// canonical `StreamSummary` object extended with `duration_secs`
+/// (rounded to one decimal), `cn_frames`, and `silence_periods`; the
+/// file holds one JSON array.
+///
+/// # Arguments
+///
+/// * `app` — application state (stream store).
+/// * `path_str` — destination file path.
+///
+/// # Returns
+///
+/// `"Saved N RTP streams (JSON) to path"` on success; `"No RTP streams
+/// to save"` when the store is empty; `"JSON serialization failed ..."`
+/// or `"Save failed ..."` on serialization or write errors.
+///
+/// # Side effects
+///
+/// Takes a read lock on `app.stream_store`. Creates or truncates the
+/// file at `path_str` in one write.
 pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let stream_store = app.stream_store.read();
@@ -694,6 +919,8 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Tests for every export format: happy paths that verify file content,
+/// empty-store status messages, and write failures on unwritable paths.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -703,16 +930,21 @@ mod tests {
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed caller-side test address 10.0.0.1.
     fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
+    /// Fixed callee-side test address 10.0.0.2.
     fn addr_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
+    /// Fixed deterministic base timestamp shared by all fixtures.
     fn base_ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble a raw SIP message from a first line and header lines,
+    /// CRLF-terminated with an empty body.
     fn raw_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -725,6 +957,7 @@ mod tests {
         msg
     }
 
+    /// Build a parsed INVITE from `from` to `to` at `ts`, sent A→B.
     fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = raw_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
@@ -748,6 +981,7 @@ mod tests {
         .expect("parse INVITE")
     }
 
+    /// Build a parsed 200 OK to the INVITE at `ts`, sent B→A.
     fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = raw_sip(
             "SIP/2.0 200 OK",
@@ -771,6 +1005,7 @@ mod tests {
         .expect("parse 200")
     }
 
+    /// App fixture holding two answered dialogs (call-1, call-2).
     fn app_with_dialogs() -> App {
         let t0 = base_ts();
         App::with_processed_messages(vec![
@@ -802,6 +1037,8 @@ mod tests {
         names
     }
 
+    /// Name resolution on + a manual mapping: the saved pcapng carries an
+    /// NRB mapping the source IP to the operator name.
     #[test]
     fn pcapng_save_includes_name_resolution_block() {
         // SUCCESS case: name resolution on + a mapping → the saved pcapng
@@ -821,6 +1058,7 @@ mod tests {
         );
     }
 
+    /// Name resolution Off: no NRB is written even when a mapping exists.
     #[test]
     fn pcapng_save_without_resolution_writes_no_nrb() {
         // FAILURE/negative case: name resolution Off (default) → no NRB at all,
@@ -871,6 +1109,8 @@ mod tests {
             .process_rtp(&parsed, &rtp, base_ts());
     }
 
+    /// Path to `name` inside a fresh (leaked) temp directory, so the
+    /// destination stays valid for the whole test.
     fn tmp_path(name: &str) -> std::path::PathBuf {
         let dir = tempfile::tempdir().expect("tempdir");
         // leak the dir so the path stays valid for the test duration
@@ -880,6 +1120,7 @@ mod tests {
 
     // ── Happy-path: each format writes a file ────────────────────────
 
+    /// pcap export reports success and creates the file.
     #[test]
     fn pcap_saves_packets() {
         let app = app_with_dialogs();
@@ -889,6 +1130,7 @@ mod tests {
         assert!(p.exists());
     }
 
+    /// pcapng export reports the pcapng format label and creates the file.
     #[test]
     fn pcapng_saves_packets() {
         let app = app_with_dialogs();
@@ -898,6 +1140,7 @@ mod tests {
         assert!(p.exists());
     }
 
+    /// txt export writes per-message headers and the raw INVITE text.
     #[test]
     fn txt_saves_and_content_has_message_header() {
         let app = app_with_dialogs();
@@ -909,6 +1152,7 @@ mod tests {
         assert!(content.contains("INVITE"));
     }
 
+    /// JSON export round-trips: the file parses back as a 2-dialog array.
     #[test]
     fn json_saves_and_parses_back() {
         let app = app_with_dialogs();
@@ -921,6 +1165,7 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 2);
     }
 
+    /// Checking one row limits the JSON export to that dialog only.
     #[test]
     fn json_save_honors_selection() {
         // sngrep parity: checking rows limits the export to the selected
@@ -945,6 +1190,7 @@ mod tests {
         );
     }
 
+    /// With no checkboxes set, the export includes every dialog.
     #[test]
     fn save_with_no_selection_exports_all() {
         // No checkboxes set -> export everything (current default behavior).
@@ -956,6 +1202,7 @@ mod tests {
         assert_eq!(v.as_array().unwrap().len(), 2, "all dialogs exported");
     }
 
+    /// NDJSON export writes exactly one valid JSON object per line.
     #[test]
     fn ndjson_saves_one_object_per_line() {
         let app = app_with_dialogs();
@@ -970,6 +1217,7 @@ mod tests {
         }
     }
 
+    /// CSV export pins the exact header column set plus one row per dialog.
     #[test]
     fn csv_saves_with_header() {
         let app = app_with_dialogs();
@@ -987,6 +1235,7 @@ mod tests {
         assert_eq!(content.lines().count(), 3);
     }
 
+    /// Markdown export writes the summary title and per-dialog sections.
     #[test]
     fn markdown_saves_with_summary() {
         let app = app_with_dialogs();
@@ -998,6 +1247,8 @@ mod tests {
         assert!(content.contains("## Dialog:"));
     }
 
+    /// Mermaid export produces a real sequenceDiagram with participants
+    /// and the embedded renderer, not just any file.
     #[test]
     fn mermaid_saves_diagram() {
         let app = app_with_dialogs();
@@ -1023,6 +1274,7 @@ mod tests {
         );
     }
 
+    /// SIPp export writes a well-formed scenario element pair.
     #[test]
     fn sipp_saves_scenario_xml() {
         let app = app_with_dialogs();
@@ -1034,6 +1286,7 @@ mod tests {
         assert!(content.contains("</scenario>"));
     }
 
+    /// RTP JSON export serializes the injected stream with its codec.
     #[test]
     fn rtp_json_saves_streams() {
         let app = app_with_dialogs();
@@ -1049,6 +1302,7 @@ mod tests {
 
     // ── Empty-store paths ────────────────────────────────────────────
 
+    /// Message-based exports on an empty store report "No messages".
     #[test]
     fn empty_store_messages() {
         let app = App::new_test();
@@ -1063,6 +1317,7 @@ mod tests {
         );
     }
 
+    /// Dialog-based exports on an empty store report "No dialogs".
     #[test]
     fn empty_store_dialogs() {
         let app = App::new_test();
@@ -1079,6 +1334,7 @@ mod tests {
         assert_eq!(save_to_sipp_path(&app, "/tmp/x.xml"), "No dialog to export");
     }
 
+    /// RTP/WAV exports with no captured streams report "No RTP streams".
     #[test]
     fn empty_store_rtp_and_wav() {
         let app = App::new_test();
@@ -1097,6 +1353,7 @@ mod tests {
     /// (and the pcap writer) to fail.
     const BAD_PATH: &str = "/nonexistent_dir_xyz/sub/out";
 
+    /// txt save into a missing directory surfaces "Save failed".
     #[test]
     fn txt_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1104,6 +1361,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// JSON save into a missing directory surfaces "Save failed".
     #[test]
     fn json_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1111,6 +1369,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// NDJSON save into a missing directory surfaces "Save failed".
     #[test]
     fn ndjson_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1118,6 +1377,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// CSV save into a missing directory surfaces "Save failed".
     #[test]
     fn csv_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1125,6 +1385,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// Markdown save into a missing directory surfaces "Save failed".
     #[test]
     fn markdown_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1132,6 +1393,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// Mermaid save into a missing directory surfaces "Save failed".
     #[test]
     fn mermaid_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1139,6 +1401,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// SIPp save into a missing directory surfaces "Save failed".
     #[test]
     fn sipp_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1146,6 +1409,7 @@ mod tests {
         assert!(msg.starts_with("Save failed"), "got: {msg}");
     }
 
+    /// pcap save into a missing directory surfaces a save or write error.
     #[test]
     fn pcap_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1156,6 +1420,7 @@ mod tests {
         );
     }
 
+    /// RTP JSON save into a missing directory surfaces "Save failed".
     #[test]
     fn rtp_json_write_failure_surfaces_error() {
         let app = app_with_dialogs();
@@ -1166,6 +1431,8 @@ mod tests {
 
     // ── Pure helpers ─────────────────────────────────────────────────
 
+    /// csv_escape leaves plain text alone and quote-wraps commas,
+    /// embedded quotes (doubled), and newlines.
     #[test]
     fn csv_escape_quotes_special_chars() {
         assert_eq!(csv_escape("plain"), "plain");
@@ -1174,6 +1441,7 @@ mod tests {
         assert_eq!(csv_escape("line\nbreak"), "\"line\nbreak\"");
     }
 
+    /// Dialog states map to their expected export display strings.
     #[test]
     fn format_dialog_state_maps_variants() {
         use crate::sip::dialog::DialogState;

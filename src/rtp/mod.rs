@@ -6,20 +6,17 @@
 //! peer with SIP dialogs via cross-references rather than being children
 //! of dialogs.
 //!
-//! Core types: [`RtpStream`](stream::RtpStream),
-//! [`StreamKey`](stream::StreamKey),
-//! [`StreamStore`](stream_store::StreamStore).
-//! Functions: [`estimate_mos`](quality::estimate_mos),
-//! [`parse_rtp_header`](parser::parse_rtp_header).
+//! Core types: `RtpStream`, `StreamKey`, `StreamStore`.
+//! Functions: `estimate_mos`, `parse_rtp_header`.
 //!
 //! # Architecture
 //!
-//! - [`parser`] — RTP header parsing (RFC 3550)
-//! - [`rtcp`] — RTCP compound packet parsing (SR, RR, BYE)
-//! - [`stream`] — Individual stream state and quality tracking
-//! - [`stream_store`] — Indexed collection of streams with lifecycle management
-//! - [`heuristic`] — RTP detection without SDP signaling
-//! - [`diagnosis`] — Media path issue detection (one-way audio, NAT, no media)
+//! - `parser` — RTP header parsing (RFC 3550)
+//! - `rtcp` — RTCP compound packet parsing (SR, RR, BYE)
+//! - `stream` — Individual stream state and quality tracking
+//! - `stream_store` — Indexed collection of streams with lifecycle management
+//! - `heuristic` — RTP detection without SDP signaling
+//! - `diagnosis` — Media path issue detection (one-way audio, NAT, no media)
 
 pub mod audio_export;
 pub mod diagnosis;
@@ -42,7 +39,7 @@ pub mod wav;
 ///
 /// Validates the minimum length (12 bytes), RTP version (2), and
 /// payload type range (0-127, which is always true for the 7-bit field).
-/// This is a fast pre-filter before the full [`parser::parse_rtp_header`]
+/// This is a fast pre-filter before the full `parser::parse_rtp_header`
 /// call — it avoids allocating error context for non-RTP traffic.
 pub fn is_rtp_packet(data: &[u8]) -> bool {
     if data.len() < 12 {
@@ -62,10 +59,12 @@ pub fn is_rtp_packet(data: &[u8]) -> bool {
     !(72..=76).contains(&pt)
 }
 
+/// Unit tests for the `is_rtp_packet` pre-filter.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A well-formed 12-byte header (V=2, PT=0) is accepted as RTP.
     #[test]
     fn is_rtp_valid_packet() {
         let mut data = vec![0x80, 0x00]; // V=2, PT=0
@@ -73,11 +72,13 @@ mod tests {
         assert!(is_rtp_packet(&data));
     }
 
+    /// A buffer shorter than the 12-byte minimum is rejected.
     #[test]
     fn is_rtp_too_short() {
         assert!(!is_rtp_packet(&[0x80, 0x00, 0x00]));
     }
 
+    /// A packet with RTP version != 2 is rejected.
     #[test]
     fn is_rtp_wrong_version() {
         let mut data = vec![0x00, 0x00]; // V=0
@@ -85,6 +86,7 @@ mod tests {
         assert!(!is_rtp_packet(&data));
     }
 
+    /// A payload type in the RTCP range (72) is rejected as non-RTP.
     #[test]
     fn is_rtp_rtcp_pt_rejected() {
         // PT=72 (maps to RTCP SR type 200)
@@ -93,6 +95,7 @@ mod tests {
         assert!(!is_rtp_packet(&data));
     }
 
+    /// A dynamic payload type (96) is accepted.
     #[test]
     fn is_rtp_dynamic_pt_accepted() {
         // PT=96 (dynamic range)
@@ -101,6 +104,7 @@ mod tests {
         assert!(is_rtp_packet(&data));
     }
 
+    /// The marker bit (M=1) in byte 1 does not affect RTP classification.
     #[test]
     fn is_rtp_with_marker_bit() {
         // M=1, PT=0 → byte1 = 0x80

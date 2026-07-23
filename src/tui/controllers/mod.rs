@@ -41,6 +41,19 @@ pub(in crate::tui) use stream::{handle_stream_detail_key, handle_stream_list_key
 pub use timeline::{TimelineAction, timeline_action};
 
 /// Dispatch a key event to the handler for the current view.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the raw key event from the terminal.
+///
+/// # Side effects
+/// Priority order: Ctrl-C sets `should_quit`; an open popup receives the
+/// key via `handle_popup_key`; active search input goes to
+/// `handle_search_input`. The global fallbacks then apply for keys not
+/// claimed by the keymap: `v`/`V` show the version on the status line,
+/// `n` cycles the name-resolution mode (except during raw-view match
+/// navigation), and `?` re-dispatches as the configured help key. All
+/// remaining keys route to the current view's handler.
 pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
     // Global shortcuts (Ctrl-C always quits)
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -108,6 +121,10 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
 }
 
 /// Route a key to the handler of the current view.
+///
+/// # Side effects
+/// Whatever the per-view handler does; this function only dispatches on
+/// `app.current_view`.
 fn dispatch_view_key(app: &mut App, key: KeyEvent) {
     match &app.current_view {
         View::CallList => handle_call_list_key(app, key),
@@ -132,6 +149,18 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
 /// the selection in one press. Space stays a query character everywhere
 /// except the call list (message-content search legitimately contains
 /// spaces, and the stream list has no row starring for it to trigger).
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (search input has no keymap
+///   bindings).
+///
+/// # Side effects
+/// Esc leaves search mode and clears `app.search_query`; Enter leaves
+/// search mode, keeps the query for highlighting, and in the list views
+/// re-dispatches Enter to open the selection; Backspace/characters edit
+/// the query; the pass-through navigation keys go to the current view's
+/// handler.
 pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
     let pass_through = matches!(
         key.code,
@@ -174,16 +203,32 @@ pub(in crate::tui) fn handle_search_input(app: &mut App, key: KeyEvent) {
 /// Everything the help view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpAction {
+    /// Esc, the help key, or the quit key — close help and return to the
+    /// call list (resetting the scroll for next time).
     Close,
+    /// Scroll the help text down one line.
     ScrollDown,
+    /// Scroll the help text up one line.
     ScrollUp,
+    /// Scroll the help text down ten lines.
     PageDown,
+    /// Scroll the help text up ten lines.
     PageUp,
+    /// Jump to the top of the help text.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
 }
 
 /// Pure key→action mapping for the help view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable help/quit keys are honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `HelpAction`, or `None` when the key is not bound in this
+/// view.
 pub fn help_action(km: &Keymap, key: KeyEvent) -> Option<HelpAction> {
     use HelpAction::*;
     Some(match key.code {
@@ -199,6 +244,14 @@ pub fn help_action(km: &Keymap, key: KeyEvent) -> Option<HelpAction> {
 }
 
 /// Handle keys in the help view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `help_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.help_scroll`; `Close` returns to the call
+/// list and resets the scroll. Unbound keys are ignored.
 pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
     let Some(action) = help_action(&app.keymap, key) else {
         return;
@@ -220,6 +273,10 @@ pub(in crate::tui) fn handle_help_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle keys for any active popup dialog.
+///
+/// # Side effects
+/// Routes the key to the handler of `app.active_popup` (save, filter,
+/// settings, file-open, or name-address); a no-op when no popup is open.
 pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
     let popup = match &app.active_popup {
         Some(p) => p.clone(),
@@ -236,6 +293,16 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
 }
 
 /// Handle keys in the settings popup.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (no keymap bindings).
+///
+/// # Side effects
+/// Esc closes the popup. Up/Down (or k/j) move `focused_item` within
+/// `SETTINGS_ITEM_COUNT`. Enter/Space activates the focused item: color
+/// mode, timestamp mode, call-list autoscroll, raw preview, SDP display
+/// mode, or syntax highlighting (in that order).
 pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -267,16 +334,32 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
 /// Everything the statistics view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatisticsAction {
+    /// Esc, the quit key, or `s` — close statistics and return to the
+    /// call list.
     Close,
+    /// Scroll the statistics text up one line.
     ScrollUp,
+    /// Scroll the statistics text down one line.
     ScrollDown,
+    /// Scroll the statistics text up 20 lines.
     PageUp,
+    /// Scroll the statistics text down 20 lines.
     PageDown,
+    /// Jump to the top of the statistics text.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
 }
 
 /// Pure key→action mapping for the statistics view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `StatisticsAction`, or `None` when the key is not bound in
+/// this view.
 pub fn statistics_action(km: &Keymap, key: KeyEvent) -> Option<StatisticsAction> {
     use StatisticsAction::*;
     Some(match key.code {
@@ -292,6 +375,14 @@ pub fn statistics_action(km: &Keymap, key: KeyEvent) -> Option<StatisticsAction>
 }
 
 /// Handle keys in the statistics view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `statistics_action`.
+///
+/// # Side effects
+/// Scroll actions move `app.stats_scroll`; `Close` returns to the call
+/// list. Unbound keys are ignored.
 pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
     let Some(action) = statistics_action(&app.keymap, key) else {
         return;
@@ -318,6 +409,17 @@ pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
 ///
 /// Wheel steps: one row in the list/ladder views (selection follows, like
 /// Up/Down), three rows in the free-scrolling text views.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `kind` - the mouse event kind; only ScrollUp/ScrollDown are handled.
+///
+/// # Side effects
+/// Ignored while a popup is open. Otherwise moves the current view's
+/// selection (call list, dashboard, stream list, call flow — briefly
+/// taking store read locks where the displayed count must be computed)
+/// or its scroll offset (raw/diff/stream-detail/help/statistics views).
+/// The timeline view is currently a no-op.
 pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::MouseEventKind) {
     use crossterm::event::MouseEventKind as MK;
     let down = match kind {
@@ -424,6 +526,11 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
 /// Resolves against the DISPLAYED list — filter + search + sort, the same
 /// `displayed_dialogs` the renderer draws — so the selection always opens
 /// exactly the row the user sees highlighted.
+///
+/// # Returns
+/// The highlighted row's Call-ID, or `None` when the displayed list is
+/// empty or the selection is out of range. Briefly holds the
+/// dialog-store read lock.
 pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
     let store = app.dialog_store.read();
     let dialogs = crate::tui::call_list::displayed_dialogs(
@@ -437,7 +544,7 @@ pub(in crate::tui) fn get_selected_call_id(app: &App) -> Option<String> {
     dialogs.get(idx).map(|d| d.call_id.clone())
 }
 
-/// Checkbox-selected ([*]) dialogs that are currently displayed, in
+/// Checkbox-selected (`[*]`) dialogs that are currently displayed, in
 /// display order. Checkmarks are keyed by Call-ID and survive re-filtering,
 /// so this intersects them with what is actually on screen — an action on
 /// "the selected rows" must match the asterisks the user sees.
@@ -459,7 +566,9 @@ pub(in crate::tui) fn checked_displayed_call_ids(app: &App) -> Vec<String> {
     .collect()
 }
 
-/// Count dialogs visible after applying the active filter.
+/// Count dialogs visible after applying the active filter and search
+/// query — exactly the rows the renderer displays, so navigation clamps
+/// to what is on screen. Briefly holds the dialog-store read lock.
 pub(in crate::tui) fn filtered_dialog_count(app: &App) -> usize {
     let store = app.dialog_store.read();
     // Count exactly the rows the renderer displays (filter + search), so
@@ -487,18 +596,23 @@ pub(crate) mod test_support {
     use chrono::{DateTime, TimeDelta, TimeZone, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixture "caller" endpoint address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
 
+    /// Fixture "callee" endpoint address (10.0.0.2).
     pub(crate) fn addr_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
 
+    /// Fixed base timestamp all fixture messages are offset from.
     pub(crate) fn base_ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble a raw SIP message (CRLF line endings, empty body) from a
+    /// first line and header lines.
     pub(crate) fn raw_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -511,6 +625,8 @@ pub(crate) mod test_support {
         msg
     }
 
+    /// Parsed INVITE from `from` to `to` for `call_id` at `ts`, sent
+    /// A→B over UDP 5060.
     pub(crate) fn make_invite(
         call_id: &str,
         from: &str,
@@ -600,6 +716,7 @@ pub(crate) mod test_support {
         .expect("parse response")
     }
 
+    /// Parsed 200 OK answering `call_id`'s INVITE at `ts`, sent B→A.
     pub(crate) fn make_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = raw_sip(
             "SIP/2.0 200 OK",
@@ -623,6 +740,7 @@ pub(crate) mod test_support {
         .expect("parse 200")
     }
 
+    /// App pre-populated with three answered dialogs (call-1..call-3).
     pub(crate) fn app_with_dialogs() -> App {
         let t0 = base_ts();
         App::with_processed_messages(vec![
@@ -635,25 +753,32 @@ pub(crate) mod test_support {
         ])
     }
 
+    /// Build an unmodified `KeyEvent` for `code`.
     pub(crate) fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Build a `KeyEvent` for `code` with the modifiers `m`.
     pub(crate) fn key_mod(code: KeyCode, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, m)
     }
 
+    /// Press Enter in the call list and assert the flow view opened.
     pub(crate) fn open_call_flow(app: &mut App) {
         handle_call_list_key(app, key(KeyCode::Enter));
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 }
 
+/// Unit tests for the top-level dispatchers, search input, and the small
+/// views (help, statistics, settings).
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// Rebound quit/help keys map to `Close` in the help view; the old
+    /// quit key unbinds and Esc always closes.
     #[test]
     fn help_action_honors_remapped_quit_and_help() {
         let km = Keymap {
@@ -673,6 +798,8 @@ mod tests {
         assert_eq!(help_action(&km, key(KeyCode::Esc)), Some(HelpAction::Close));
     }
 
+    /// A rebound quit key maps to `Close` in statistics; `s` still closes
+    /// and the old quit key unbinds.
     #[test]
     fn statistics_action_honors_remapped_quit() {
         let km = Keymap {
@@ -690,6 +817,7 @@ mod tests {
         assert_eq!(statistics_action(&km, key(KeyCode::Char('q'))), None);
     }
 
+    /// Ctrl-C quits from anywhere.
     #[test]
     fn key_event_ctrl_c_quits() {
         let mut app = App::new_test();
@@ -738,6 +866,7 @@ mod tests {
         assert_eq!(app.save.path, "/tmp/custom.bin");
     }
 
+    /// With a popup open, keys go to the popup handler before the view.
     #[test]
     fn key_event_routes_to_popup_first() {
         let mut app = app_with_dialogs();
@@ -747,6 +876,8 @@ mod tests {
         assert_eq!(app.active_popup, None);
     }
 
+    /// With search active, characters extend the query instead of acting
+    /// as view commands.
     #[test]
     fn key_event_routes_to_search_when_active() {
         let mut app = App::new_test();
@@ -756,6 +887,7 @@ mod tests {
         assert!(app.search_active);
     }
 
+    /// Keys reach the current view's handler (Tab switches to streams).
     #[test]
     fn key_event_dispatches_by_view() {
         let mut app = App::new_test();
@@ -763,6 +895,8 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// The global `n` fallback cycles the name-resolution mode
+    /// Off → Names → DNS → Off.
     #[test]
     fn key_event_n_cycles_name_mode() {
         let mut app = App::new_test();
@@ -775,6 +909,8 @@ mod tests {
         assert_eq!(app.name_mode(), crate::names::NameMode::Off);
     }
 
+    /// The global `v` fallback shows the version on the status line
+    /// without changing the view.
     #[test]
     fn key_event_v_shows_version_globally() {
         let mut app = App::new_test();
@@ -786,6 +922,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// `V` shows the version from any view, view unchanged.
     #[test]
     fn key_event_shift_v_shows_version_in_any_view() {
         let mut app = App::new_test();
@@ -796,6 +933,7 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// While searching, `v` is a query character, not the version command.
     #[test]
     fn key_event_v_typed_into_search_not_version() {
         let mut app = App::new_test();
@@ -808,6 +946,7 @@ mod tests {
 
     // ── handle_search_input ──────────────────────────────────────────
 
+    /// Characters append to the query and Backspace removes the last one.
     #[test]
     fn search_input_char_and_backspace() {
         let mut app = App::new_test();
@@ -819,6 +958,7 @@ mod tests {
         assert_eq!(app.search_query, "a");
     }
 
+    /// Esc leaves search mode and clears the query.
     #[test]
     fn search_input_esc_clears() {
         let mut app = App::new_test();
@@ -829,6 +969,7 @@ mod tests {
         assert_eq!(app.search_query, "");
     }
 
+    /// Enter leaves search mode but retains the query for highlighting.
     #[test]
     fn search_input_enter_commits() {
         let mut app = App::new_test();
@@ -839,6 +980,7 @@ mod tests {
         assert_eq!(app.search_query, "bar"); // retained
     }
 
+    /// An unhandled key neither edits the query nor leaves search mode.
     #[test]
     fn search_input_unhandled_key_noop() {
         let mut app = App::new_test();
@@ -871,6 +1013,8 @@ mod tests {
         ])
     }
 
+    /// Arrow keys walk the narrowed list (clamping at both ends) without
+    /// leaving search mode or editing the query.
     #[test]
     fn search_input_arrows_navigate_narrowed_list() {
         let mut app = app_with_5595_dialogs();
@@ -916,6 +1060,7 @@ mod tests {
         );
     }
 
+    /// Home/End jump within the narrowed list while search stays active.
     #[test]
     fn search_input_home_end_jump_in_narrowed_list() {
         let mut app = app_with_5595_dialogs();
@@ -936,6 +1081,8 @@ mod tests {
         assert!(app.search_active);
     }
 
+    /// In the call list, Space stars the highlighted narrowed row and one
+    /// Enter commits the query and opens the merged flow of both stars.
     #[test]
     fn search_input_space_stars_highlighted_row() {
         let mut app = app_with_5595_dialogs();
@@ -991,6 +1138,7 @@ mod tests {
         assert_eq!(app.search_query, "pcmu");
     }
 
+    /// Space and navigation on an empty narrowed list are safe no-ops.
     #[test]
     fn search_input_space_on_empty_narrowed_list_is_noop() {
         let mut app = app_with_5595_dialogs();
@@ -1004,6 +1152,7 @@ mod tests {
         assert!(app.search_active, "no panic, still searching");
     }
 
+    /// In the call-flow search, Space stays a query character.
     #[test]
     fn search_input_space_still_types_in_call_flow_search() {
         let mut app = app_with_5595_dialogs();
@@ -1016,6 +1165,8 @@ mod tests {
         assert_eq!(app.search_query, "180 ");
     }
 
+    /// In the stream-list search, Space stays a query character (no row
+    /// starring exists there).
     #[test]
     fn search_input_space_types_in_stream_list() {
         // The stream list has no row starring, so Space must stay a query
@@ -1031,6 +1182,7 @@ mod tests {
 
     // ── small views: help / statistics / settings ────────────────────
 
+    /// Esc and the help key both close the help view.
     #[test]
     fn help_key_closes() {
         let mut app = App::new_test();
@@ -1043,6 +1195,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// An unbound key leaves the help view open.
     #[test]
     fn help_key_unhandled_noop() {
         let mut app = App::new_test();
@@ -1051,6 +1204,7 @@ mod tests {
         assert_eq!(app.current_view, View::Help);
     }
 
+    /// Esc and `s` both close the statistics view.
     #[test]
     fn statistics_key_closes() {
         let mut app = App::new_test();
@@ -1063,6 +1217,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// An unbound key leaves the statistics view open.
     #[test]
     fn statistics_key_unhandled_noop() {
         let mut app = App::new_test();
@@ -1073,6 +1228,8 @@ mod tests {
 
     // ── handle_settings_popup_key ────────────────────────────────────
 
+    /// Up/Down move the settings focus and Enter activates the focused
+    /// item (item 0 cycles the color mode).
     #[test]
     fn settings_popup_nav_and_toggle() {
         let mut app = App::new_test();
@@ -1089,6 +1246,7 @@ mod tests {
         assert_ne!(app.color_mode, cm);
     }
 
+    /// Esc closes the settings popup.
     #[test]
     fn settings_popup_esc_closes() {
         let mut app = App::new_test();
@@ -1099,12 +1257,14 @@ mod tests {
 
     // ── helpers ──────────────────────────────────────────────────────
 
+    /// Without a filter, the displayed count equals the store size.
     #[test]
     fn filtered_dialog_count_no_filter() {
         let app = app_with_dialogs();
         assert_eq!(filtered_dialog_count(&app), 3);
     }
 
+    /// With dialogs present, the initial selection resolves to a Call-ID.
     #[test]
     fn get_selected_call_id_returns_first() {
         let app = app_with_dialogs();
@@ -1112,6 +1272,8 @@ mod tests {
     }
 }
 
+/// Tests for the async-worker feedback channel (status-line drain and the
+/// detached clipboard copy).
 #[cfg(test)]
 mod async_feedback_tests {
     use super::*;
@@ -1153,6 +1315,7 @@ mod async_feedback_tests {
     }
 }
 
+/// Tests for the global '?' help fallback and its rebind precedence.
 #[cfg(test)]
 mod question_mark_help_tests {
     use super::*;
@@ -1199,11 +1362,14 @@ mod question_mark_help_tests {
     }
 }
 
+/// Tests for n/N search-match navigation in the raw-message pager and its
+/// interplay with the global name-mode cycle.
 #[cfg(test)]
 mod search_match_nav_tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// App on the RawMessage view of call-1's first message.
     fn raw_view_app() -> App {
         let mut app = app_with_dialogs();
         app.current_view = View::RawMessage {

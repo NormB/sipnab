@@ -63,10 +63,13 @@ pub fn hexdump(data: &[u8]) -> String {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for hex/ASCII layout, padding, and the byte-8 column gap.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// 32 sequential bytes render two correctly offset hex lines with an
+    /// ASCII column.
     #[test]
     fn known_bytes_correct_output() {
         let data: Vec<u8> = (0..32).collect();
@@ -91,11 +94,13 @@ mod tests {
         assert!(result.contains('|'), "should have ASCII column delimiters");
     }
 
+    /// Empty input produces an empty string.
     #[test]
     fn empty_input_empty_output() {
         assert_eq!(hexdump(&[]), "");
     }
 
+    /// A 5-byte input renders one padded line with hex and ASCII intact.
     #[test]
     fn partial_line() {
         let data = b"Hello";
@@ -114,6 +119,7 @@ mod tests {
         assert_eq!(lines.len(), 1, "short data should be one line");
     }
 
+    /// Non-printable bytes render as '.' in the ASCII column.
     #[test]
     fn non_printable_shown_as_dot() {
         let data = [0x00, 0x01, 0x41, 0x42, 0xFF, 0x7F];
@@ -126,6 +132,7 @@ mod tests {
         );
     }
 
+    /// Exactly 16 bytes fit one line with no spurious second line.
     #[test]
     fn exactly_16_bytes() {
         let data: Vec<u8> = (0x30..0x40).collect();
@@ -136,6 +143,7 @@ mod tests {
         assert!(result.contains("00000000"), "starts at offset 0");
     }
 
+    /// A double-space gap separates bytes 7 and 8 in the hex column.
     #[test]
     fn gap_at_byte_8() {
         let data: Vec<u8> = (0..16).collect();

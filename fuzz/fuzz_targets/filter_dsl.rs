@@ -1,3 +1,5 @@
+//! Fuzz the filter-DSL parser (`sipnab -F 'expr'`): arbitrary UTF-8 filter
+//! strings must parse to an expression or a clean error, never panic.
 #![no_main]
 use libfuzzer_sys::fuzz_target;
 use sipnab::sip::dsl::FilterExpr;

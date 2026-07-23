@@ -55,6 +55,10 @@ fn emit_git_rerun_triggers() {
     }
 }
 
+/// Run `git` with the given arguments and return trimmed stdout.
+///
+/// Returns `None` when git is unavailable, exits non-zero, or emits
+/// non-UTF-8 output, so the build falls back to placeholder values.
 fn git(args: &[&str]) -> Option<String> {
     Command::new("git")
         .args(args)

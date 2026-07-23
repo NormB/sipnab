@@ -6,10 +6,11 @@ use crate::tui::*;
 
 // ── Test helpers (public for integration tests) ────────────────────
 
-/// Test helper methods for App, available in test builds.
+/// Test helper methods for App, exposed publicly for integration tests.
 ///
-/// These are feature-gated behind `#[cfg(test)]` or `#[cfg(feature = "tui")]`
-/// and exposed publicly for integration tests.
+/// These carry no `#[cfg]` of their own: they compile whenever the parent
+/// `tui` module does (gated by `#[cfg(feature = "tui")]` in lib.rs), so
+/// out-of-crate integration suites can call them.
 impl App {
     /// Create an App with empty stores for testing.
     pub fn new_test() -> Self {
@@ -42,8 +43,8 @@ impl App {
 
     /// Create an App whose dialog store already contains the given messages.
     ///
-    /// Each slice of `SipMessage`s is processed in order so that the dialog
-    /// store builds dialogs and runs the state machine.
+    /// Each `SipMessage` is processed in order so that the dialog store
+    /// builds dialogs and runs the state machine.
     pub fn with_processed_messages(messages: Vec<crate::sip::SipMessage>) -> Self {
         let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
         let ss = Arc::new(RwLock::new(StreamStore::new(100)));
@@ -90,6 +91,8 @@ impl App {
         }
     }
 
+    /// Clear the file-open dialog's manual path and reset its cursor
+    /// (test helper).
     #[doc(hidden)]
     pub fn open_path_clear_for_test(&mut self) {
         self.file_open.path.clear();
@@ -111,16 +114,20 @@ impl App {
         (self.filter_dialog.focused_field, self.filter_dialog.methods)
     }
 
+    /// Point the file-open browser at `dir` (test helper).
     #[doc(hidden)]
     pub fn set_open_dir_for_test(&mut self, dir: PathBuf) {
         self.file_open.dir = dir;
     }
 
+    /// Directory the file-open browser is currently in (test helper).
     #[doc(hidden)]
     pub fn open_dir_for_test(&self) -> &std::path::Path {
         &self.file_open.dir
     }
 
+    /// Entry names listed in the file-open browser, in display order
+    /// (test helper).
     #[doc(hidden)]
     pub fn open_entry_names_for_test(&self) -> Vec<String> {
         self.file_open

@@ -28,7 +28,9 @@ pub struct CrashPolicy {
 }
 
 impl CrashPolicy {
-    /// Resolve the effective policy from the config section.
+    /// Resolve the effective policy from the config section, applying the
+    /// documented defaults for unset fields (reports on, backtrace on,
+    /// core off, `~/.local/state/sipnab` report dir).
     pub fn from_config(cfg: &CrashConfig) -> Self {
         Self {
             reports: cfg.reports_enabled(),
@@ -49,7 +51,8 @@ pub enum PostAction {
     Exit(i32),
 }
 
-/// Decide the post-report action from the `core` policy.
+/// Decide the post-report action from the `core` policy: `Abort`
+/// (core-dumpable) when `core` is true, else a clean `Exit(101)`. Pure.
 pub fn post_report_action(core: bool) -> PostAction {
     if core {
         PostAction::Abort
@@ -60,6 +63,16 @@ pub fn post_report_action(core: bool) -> PostAction {
 
 /// Render the crash-report text: panic message, location, thread,
 /// version, and (when captured) a full backtrace.
+///
+/// # Arguments
+/// * `message` - the panic payload text.
+/// * `location` - `file:line:col` where the panic originated.
+/// * `thread` - name of the panicking thread.
+/// * `backtrace` - captured backtrace text; `None` renders a line
+///   explaining that capture was disabled by config.
+///
+/// # Returns
+/// The complete report as a string; nothing is written anywhere. Pure.
 pub fn build_crash_report(
     message: &str,
     location: &str,
@@ -149,6 +162,7 @@ enum UnsafeReportDir {
 
 #[cfg(unix)]
 impl UnsafeReportDir {
+    /// Human-readable clause for the refusal message ("it is ...").
     fn describe(self) -> &'static str {
         match self {
             Self::Symlink => "it is a symlink",
@@ -226,6 +240,8 @@ fn ensure_safe_report_dir(dir: &Path) -> std::io::Result<()> {
     )
 }
 
+/// No-op on non-Unix targets: the Unix ownership/mode checks do not
+/// apply, so every directory is accepted.
 #[cfg(not(unix))]
 fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
     Ok(())
@@ -240,6 +256,15 @@ fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
 /// (see `open_new_report_file`). On a name collision — a planted
 /// file/symlink, or two threads crashing in the same second — the write
 /// retries with a fresh sequence suffix.
+///
+/// # Errors
+/// The directory is classified unsafe (see `ensure_safe_report_dir`),
+/// cannot be created, the file cannot be created after all retry
+/// attempts, or the write itself fails.
+///
+/// # Side effects
+/// Creates `dir` (0700 when fresh, on Unix), creates the report file
+/// (0600 on Unix), and advances the process-wide report sequence counter.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
     ensure_safe_report_dir(dir)?;
@@ -282,13 +307,20 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
 static TERMINAL_RAW: AtomicBool = AtomicBool::new(false);
 
 /// Record whether the TUI owns the terminal, so the panic hook knows
-/// to restore it before printing the crash report.
+/// to restore it before printing the crash report. Writes the
+/// process-wide `TERMINAL_RAW` flag.
 pub fn set_terminal_raw(raw: bool) {
     TERMINAL_RAW.store(raw, Ordering::SeqCst);
 }
 
 /// Restore the terminal if the TUI flagged it raw — used by both the
 /// panic hook and the TUI's own exit path.
+///
+/// # Side effects
+/// Atomically clears the `TERMINAL_RAW` flag (so a second caller is a
+/// no-op) and, when it was set, disables mouse capture, re-shows the
+/// cursor, leaves the alternate screen, and exits raw mode on stdout;
+/// terminal errors are deliberately ignored.
 #[cfg(feature = "tui")]
 pub fn restore_terminal_if_raw() {
     if TERMINAL_RAW.swap(false, Ordering::SeqCst) {
@@ -310,6 +342,12 @@ pub fn restore_terminal_if_raw() {}
 // ── Hook installation ───────────────────────────────────────────────
 
 /// Install the process-wide panic hook for the given policy.
+///
+/// # Side effects
+/// Replaces any previously installed panic hook for the whole process.
+/// When a panic later fires, the hook restores the terminal, writes the
+/// crash report per `policy`, and terminates the process (abort or
+/// exit 101) — it never returns to the unwinding machinery.
 pub fn install_panic_hook(policy: CrashPolicy) {
     install_panic_hook_with(policy, |action| match action {
         PostAction::Abort => std::process::abort(),
@@ -319,7 +357,7 @@ pub fn install_panic_hook(policy: CrashPolicy) {
 
 /// Test seam: like [`install_panic_hook`] but with an injectable
 /// terminator so tests can observe the decided [`PostAction`] without
-/// killing the test process.
+/// killing the test process. Replaces the process-wide panic hook.
 pub fn install_panic_hook_with<F>(policy: CrashPolicy, terminator: F)
 where
     F: Fn(PostAction) + Send + Sync + 'static,
@@ -331,6 +369,17 @@ where
 
 /// The hook body: restore terminal, report to stderr and file, decide
 /// the post action and hand it to the terminator.
+///
+/// # Arguments
+/// * `policy` - resolved crash policy controlling report/backtrace/core.
+/// * `info` - the panic payload and location from the runtime.
+/// * `terminator` - receives the decided `PostAction`; in production it
+///   aborts or exits and never returns.
+///
+/// # Side effects
+/// Restores the terminal, prints the panic (and any fallback backtrace)
+/// to stderr, captures a backtrace when enabled, and writes the report
+/// file per `policy`.
 fn hook_body(
     policy: &CrashPolicy,
     info: &std::panic::PanicHookInfo<'_>,
@@ -383,6 +432,8 @@ fn hook_body(
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for crash-policy resolution, report rendering, safe report
+/// file/directory creation, and end-to-end panic-hook behavior.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +442,8 @@ mod tests {
     /// must not run concurrently with each other.
     static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// An empty `[crash]` config resolves to reports+backtrace on, core
+    /// off, and a sipnab-owned default report directory.
     #[test]
     fn policy_defaults_are_report_with_backtrace_no_core() {
         let policy = CrashPolicy::from_config(&CrashConfig::default());
@@ -404,6 +457,7 @@ mod tests {
         );
     }
 
+    /// Explicitly set `[crash]` values override every default.
     #[test]
     fn policy_honors_explicit_config() {
         let cfg = CrashConfig {
@@ -419,16 +473,20 @@ mod tests {
         assert_eq!(policy.report_dir, PathBuf::from("/tmp/xyz"));
     }
 
+    /// core=false decides a clean `Exit(101)` (no core dump).
     #[test]
     fn post_action_no_core_is_clean_exit_101() {
         assert_eq!(post_report_action(false), PostAction::Exit(101));
     }
 
+    /// core=true decides `Abort` so the OS can produce a core dump.
     #[test]
     fn post_action_core_is_abort() {
         assert_eq!(post_report_action(true), PostAction::Abort);
     }
 
+    /// The rendered report carries message, location, thread, version,
+    /// and the backtrace section.
     #[test]
     fn report_contains_all_sections() {
         let r = build_crash_report(
@@ -445,6 +503,8 @@ mod tests {
         assert!(r.contains("render_call_list"));
     }
 
+    /// With backtrace capture off, the report says so instead of
+    /// silently omitting the section.
     #[test]
     fn report_without_backtrace_says_disabled() {
         let r = build_crash_report("boom", "here.rs:1:1", "main", None);
@@ -455,6 +515,8 @@ mod tests {
         );
     }
 
+    /// `write_crash_report` creates the (nested) directory and a
+    /// timestamped `sipnab-crash-*.log` file holding the contents.
     #[test]
     fn write_report_creates_timestamped_file_in_dir() {
         let dir = tempfile::tempdir().unwrap();
@@ -540,6 +602,7 @@ mod tests {
 
     // ── Report-directory safety classification (SN-03 follow-up) ──────
 
+    /// An owner-private (0700) directory owned by us is accepted.
     #[test]
     #[cfg(unix)]
     fn classify_accepts_owned_private_dir() {
@@ -547,6 +610,7 @@ mod tests {
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40700), Ok(()));
     }
 
+    /// A /tmp-like sticky world-writable directory owned by us is accepted.
     #[test]
     #[cfg(unix)]
     fn classify_accepts_owned_sticky_world_writable_dir() {
@@ -555,6 +619,7 @@ mod tests {
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o41777), Ok(()));
     }
 
+    /// A symlinked report directory is rejected (repointable by a co-tenant).
     #[test]
     #[cfg(unix)]
     fn classify_rejects_symlink() {
@@ -564,6 +629,7 @@ mod tests {
         );
     }
 
+    /// A directory owned by a different UID is rejected.
     #[test]
     #[cfg(unix)]
     fn classify_rejects_dir_owned_by_another_user() {
@@ -574,6 +640,7 @@ mod tests {
         );
     }
 
+    /// World-writable without the sticky bit is rejected.
     #[test]
     #[cfg(unix)]
     fn classify_rejects_world_writable_without_sticky() {
@@ -584,6 +651,8 @@ mod tests {
         );
     }
 
+    /// Group-writable directories are accepted (user-private-group
+    /// convention; group membership is the operator's responsibility).
     #[test]
     #[cfg(unix)]
     fn classify_accepts_group_writable_dir() {
@@ -594,6 +663,8 @@ mod tests {
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40770), Ok(()));
     }
 
+    /// A symlinked report directory is refused end to end — nothing is
+    /// written through the link.
     #[test]
     #[cfg(unix)]
     fn write_crash_report_refuses_symlinked_dir() {
@@ -614,6 +685,7 @@ mod tests {
         );
     }
 
+    /// A non-sticky world-writable report directory is refused end to end.
     #[test]
     #[cfg(unix)]
     fn write_crash_report_refuses_world_writable_dir() {
@@ -626,6 +698,7 @@ mod tests {
         assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
+    /// The safe (owned, private) directory path still works end to end.
     #[test]
     #[cfg(unix)]
     fn write_crash_report_accepts_owned_private_dir() {

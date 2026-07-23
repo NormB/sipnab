@@ -66,7 +66,7 @@ pub const ALL_COLUMNS: [SortColumn; 11] = [
     SortColumn::Duration,
 ];
 
-/// Column display labels matching [`ALL_COLUMNS`] order.
+/// Column display labels matching `ALL_COLUMNS` order.
 pub const COLUMN_LABELS: [&str; 11] = [
     "#",
     "Method",
@@ -93,7 +93,7 @@ pub struct CallListState {
     sort_ascending: bool,
     /// Set of selected (multi-select) row indices.
     selected_rows: HashSet<String>,
-    /// Per-column visibility (indexed by [`ALL_COLUMNS`] order).
+    /// Per-column visibility (indexed by `ALL_COLUMNS` order).
     pub visible_columns: [bool; 11],
     /// Whether the column selector popup is open.
     pub column_selector_open: bool,
@@ -250,7 +250,7 @@ impl CallListState {
         self.sort_ascending = true;
     }
 
-    /// Return the index of the current sort column in [`ALL_COLUMNS`].
+    /// Return the index of the current sort column in `ALL_COLUMNS`.
     pub fn sort_column_index(&self) -> usize {
         ALL_COLUMNS
             .iter()
@@ -294,9 +294,13 @@ impl CallListState {
         }
     }
 
-    /// The labels of the currently-visible columns, in [`COLUMN_LABELS`] order.
-    /// Inverse of [`apply_visible_columns`](Self::apply_visible_columns); used to
-    /// persist the column layout to `[display] visible_columns`.
+    /// The labels of the currently-visible columns, in `COLUMN_LABELS` order.
+    /// Inverse of `apply_visible_columns`; used to persist the column
+    /// layout to `[display] visible_columns`.
+    ///
+    /// # Returns
+    ///
+    /// One label per visible column; empty when every column is hidden.
     pub fn visible_column_names(&self) -> Vec<String> {
         COLUMN_LABELS
             .iter()
@@ -318,6 +322,7 @@ impl CallListState {
 }
 
 impl Default for CallListState {
+    /// Equivalent to `CallListState::new()`.
     fn default() -> Self {
         Self::new()
     }
@@ -330,24 +335,34 @@ pub struct CallListDisplay<'a> {
     /// Call-IDs in display order — the tick's cached filter+search+sort
     /// result (`App::sync_caches`), so the render pass derives nothing.
     pub rows: &'a [String],
+    /// How the Date column renders timestamps (absolute or delta modes).
     pub timestamp_mode: TimestampMode,
+    /// How the From/To columns combine user and host.
     pub from_to_mode: super::FromToMode,
+    /// Active color theme.
     pub theme: &'a super::Theme,
+    /// IP-to-name resolver for address and host labels.
     pub resolver: &'a crate::names::NameResolver,
+    /// Whether/how names are substituted for IPs.
     pub name_mode: crate::names::NameMode,
     /// Reading a pcap file (vs live capture) — selects the empty-state hint.
     pub offline: bool,
 }
 
-/// Render the call list table into the given area.
-///
-/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
-/// selected row, full-width layout. No title line -- status is rendered
-/// separately at the top of the screen.
-/// Returns true if `dialog` matches the case-insensitive search query,
+/// Return true if `dialog` matches the case-insensitive search query,
 /// scanning the same fields the call list displays plus raw message bodies
-/// (the sngrep/Wireshark-style full-text fallback). `query_lower` must
-/// already be lowercased by the caller.
+/// (the sngrep/Wireshark-style full-text fallback).
+///
+/// # Arguments
+///
+/// * `dialog` — the dialog whose fields and raw messages are scanned.
+/// * `query_lower` — the search query, already lowercased by the caller.
+///
+/// # Returns
+///
+/// `true` when any of Call-ID, method, From/To user, source/destination
+/// address, state label, or any raw message body contains the query
+/// (ASCII case folding only); an empty query matches everything.
 pub fn dialog_matches_search(dialog: &crate::sip::dialog::SipDialog, query_lower: &str) -> bool {
     let q = query_lower;
     contains_ignore_ascii_case(dialog.call_id.as_bytes(), q)
@@ -396,6 +411,8 @@ fn contains_ignore_ascii_case(haystack: &[u8], needle: &str) -> bool {
 // test runner cannot cross-talk).
 #[cfg(test)]
 thread_local! {
+    /// Test-only per-thread counter of `displayed_dialogs` invocations,
+    /// incremented on every call; asserted by frame-derivation tests.
     pub(crate) static DISPLAYED_DIALOGS_CALLS: std::cell::Cell<usize> =
         const { std::cell::Cell::new(0) };
 }
@@ -407,6 +424,24 @@ thread_local! {
 /// This is the single source of truth shared by the renderer and by the
 /// save/clear actions, so that multi-select row indices always map to the
 /// same dialogs the user sees on screen.
+///
+/// # Arguments
+///
+/// * `store` — dialog store to draw candidates from, in insertion order.
+/// * `filter` — optional display-filter expression; `None` keeps all.
+/// * `search_query` — full-text search narrowing; empty means no narrowing.
+/// * `sort_column` — column driving the final ordering.
+/// * `sort_ascending` — sort direction.
+///
+/// # Returns
+///
+/// Borrowed dialog references in exact display order; empty when nothing
+/// passes the filter and search.
+///
+/// # Side effects
+///
+/// In test builds only, increments the thread-local
+/// `DISPLAYED_DIALOGS_CALLS` counter.
 pub fn displayed_dialogs<'a>(
     store: &'a DialogStore,
     filter: Option<&FilterExpr>,
@@ -428,6 +463,32 @@ pub fn displayed_dialogs<'a>(
     dialogs
 }
 
+/// Render the call list table into the given area.
+///
+/// Uses sngrep-style: borderless, bold-on-cyan header, reverse-video
+/// selected row, full-width layout. No title line -- status is rendered
+/// separately at the top of the screen. When the displayed list is
+/// empty, an empty header plus an offline/live-specific hint is drawn
+/// instead.
+///
+/// # Arguments
+///
+/// * `frame` — ratatui frame to draw into.
+/// * `area` — screen rectangle the table occupies.
+/// * `state` — mutable list state (selection, scroll offset, sort,
+///   multi-select, column visibility).
+/// * `store` — dialog store used to resolve the cached row ids to
+///   dialogs for the visible window only.
+/// * `display` — per-frame display parameters, including the tick's
+///   cached display-ordered row ids.
+///
+/// # Side effects
+///
+/// Draws widgets into `frame`. Mutates `state.table_state`: the
+/// selection is clamped onto the current row count and the scroll
+/// offset is recomputed to keep the selection visible (both are
+/// temporarily rebased to the visible slice during the stateful render
+/// and then restored to absolute values).
 pub fn render_call_list(
     frame: &mut Frame,
     area: Rect,
@@ -718,6 +779,16 @@ pub fn render_call_list(
 /// Fixed-width columns (index, method, state, msgs, date, pdd) keep their
 /// minimum sizes. From/To and Source/Destination share the remaining space
 /// proportionally.
+///
+/// # Arguments
+///
+/// * `total_width` — full width of the table area in terminal cells.
+///
+/// # Returns
+///
+/// One `Constraint::Length` per column in `ALL_COLUMNS` order (always 11
+/// entries, regardless of visibility); wider layouts kick in at >= 120
+/// columns.
 fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
     // Compute explicit column widths to guarantee no truncation of key fields.
     //
@@ -796,7 +867,7 @@ fn format_duration_ms(ms: i64) -> String {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Format a [`DialogState`] as a short display string (&'static str, zero-alloc).
+/// Format a `DialogState` as a short display string (&'static str, zero-alloc).
 pub fn state_display_str(state: &DialogState) -> &'static str {
     match state {
         DialogState::Trying => "Trying",
@@ -815,6 +886,18 @@ pub fn state_display_str(state: &DialogState) -> &'static str {
 }
 
 /// Sort a list of dialog references by the given column and direction.
+///
+/// # Arguments
+///
+/// * `dialogs` — slice sorted in place; expected in insertion order on
+///   entry (the `Index` fast path relies on it).
+/// * `column` — which column's key to compare.
+/// * `ascending` — `true` for ascending, `false` reverses the ordering.
+///
+/// # Side effects
+///
+/// Reorders `dialogs` in place; no allocation for the `Index` column
+/// (identity or plain reversal).
 fn sort_dialogs(
     dialogs: &mut [&crate::sip::dialog::SipDialog],
     column: SortColumn,
@@ -863,6 +946,20 @@ fn sort_dialogs(
 }
 
 /// Render the column selector popup as a centered overlay.
+///
+/// # Arguments
+///
+/// * `frame` — ratatui frame to draw into.
+/// * `area` — full screen area the popup is centered within.
+/// * `state` — call list state supplying visibility flags and the
+///   selector cursor position.
+/// * `theme` — active color theme.
+///
+/// # Side effects
+///
+/// Clears the popup rectangle and draws the checkbox list plus a
+/// two-line key hint footer into `frame`; lines that do not fit the
+/// popup height are dropped.
 pub fn render_column_selector(
     frame: &mut Frame,
     area: Rect,
@@ -943,6 +1040,18 @@ fn state_style(state: &DialogState, theme: &super::Theme) -> Style {
 /// Resolve an IP-literal host (with optional `:port`) through the name resolver
 /// so the From/To columns stay consistent with the Source/Dest columns. FQDN
 /// hosts, and IP hosts with no mapping, are returned unchanged.
+///
+/// # Arguments
+///
+/// * `host` — host part of a SIP URI: bare IPv4/hostname, bracketed
+///   IPv6, either optionally followed by a numeric `:port`.
+/// * `resolver` — IP-to-name resolver consulted for a mapping.
+/// * `name_mode` — resolution mode; `Off` bypasses resolution entirely.
+///
+/// # Returns
+///
+/// The resolved `name[:port]` when the host parses as an IP with a
+/// known name; otherwise the input unchanged.
 fn resolve_host_label(
     host: &str,
     resolver: &crate::names::NameResolver,
@@ -980,8 +1089,20 @@ fn resolve_host_label(
     host.to_string()
 }
 
-/// Format a From/To column cell for the given [`FromToMode`](super::FromToMode),
-/// resolving IP-literal hosts through the name resolver.
+/// Format a From/To column cell for the given `FromToMode`, resolving
+/// IP-literal hosts through the name resolver.
+///
+/// # Arguments
+///
+/// * `mode` — user/host combination mode driving the final layout.
+/// * `user` — SIP user part, when present.
+/// * `host` — SIP host part, when present; resolved via `resolve_host_label`.
+/// * `resolver` — IP-to-name resolver.
+/// * `name_mode` — resolution mode.
+///
+/// # Returns
+///
+/// The formatted cell text; `"-"` when the mode has neither part to show.
 fn format_from_to(
     mode: super::FromToMode,
     user: Option<&str>,
@@ -995,6 +1116,8 @@ fn format_from_to(
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for column layout, search matching, display ordering,
+/// list-state navigation, and column-visibility round-trips.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1076,6 +1199,8 @@ mod tests {
         crate::sip::dialog::SipDialog::new(&msg).expect("dialog")
     }
 
+    /// Each field the call list displays (plus the raw body) is reachable
+    /// by search: one positive assertion per field.
     #[test]
     fn search_matches_every_displayed_field() {
         let d = searchable_dialog("OPTIONS", "cid-xyz@host", "alice", "bob");
@@ -1092,6 +1217,8 @@ mod tests {
         assert!(dialog_matches_search(&d, &state));
     }
 
+    /// Absent needles never match, the empty query matches everything, and
+    /// an over-long query returns false without panicking.
     #[test]
     fn search_no_match_and_empty_query() {
         let d = searchable_dialog("OPTIONS", "cid-1@host", "alice", "bob");
@@ -1103,6 +1230,8 @@ mod tests {
         assert!(!dialog_matches_search(&d, &long));
     }
 
+    /// Mixed-case fields match lower- and upper-case queries alike (ASCII
+    /// folding in both directions).
     #[test]
     fn search_is_ascii_case_insensitive_both_directions() {
         let d = searchable_dialog("INVITE", "MiXeD-CaSe@Host", "Alice", "BOB");
@@ -1113,6 +1242,8 @@ mod tests {
         assert!(dialog_matches_search(&d, "bob"));
     }
 
+    /// Regex metacharacters, control bytes, and RTL/NUL sequences are
+    /// treated as literal substrings — never interpreted, never panicking.
     #[test]
     fn search_adversarial_inputs_never_panic() {
         let d = searchable_dialog("INVITE", "adv@host", "a", "b");
@@ -1131,6 +1262,8 @@ mod tests {
         assert!(dialog_matches_search(&d2, "back\\slash"));
     }
 
+    /// Raw bodies are scanned as bytes: needles surrounded by NUL and
+    /// invalid UTF-8 are still found, absent ones are not.
     #[test]
     fn search_scans_raw_bytes_with_embedded_nul_and_invalid_utf8() {
         let mut d = searchable_dialog("INVITE", "nul@host", "a", "b");
@@ -1184,6 +1317,9 @@ mod tests {
         store
     }
 
+    /// Filter and search narrow independently and intersect: filter-only,
+    /// search-only, both, and disjoint combinations all yield the expected
+    /// row counts.
     #[test]
     fn displayed_dialogs_filter_and_search_intersect() {
         let store = mixed_store();
@@ -1225,6 +1361,8 @@ mod tests {
         );
     }
 
+    /// Adversarial search queries (escapes, quotes, NUL, unbalanced
+    /// parens) run through the full display pipeline without panicking.
     #[test]
     fn displayed_dialogs_search_never_errors_on_adversarial_queries() {
         let store = mixed_store();
@@ -1234,6 +1372,8 @@ mod tests {
         }
     }
 
+    /// Duration formatting switches units at 1 s and 60 s boundaries
+    /// (ms → decimal seconds → minutes+seconds).
     #[test]
     fn format_duration_ms_scales_units() {
         assert_eq!(format_duration_ms(0), "0ms");
@@ -1246,6 +1386,8 @@ mod tests {
         assert_eq!(format_duration_ms(3_298_856), "54m58s");
     }
 
+    /// Default From/To mode prefers the user, falls back to host[:port]
+    /// when the user is missing, and shows a dash when both are absent.
     #[test]
     fn format_from_to_shows_host_when_user_missing() {
         let r = NameResolver::new();
@@ -1284,6 +1426,8 @@ mod tests {
         );
     }
 
+    /// UserHostPort mode joins user and a bracketed IPv6 host into one
+    /// long string without panicking (truncation is left to ratatui).
     #[test]
     fn format_from_to_user_host_combines_long_value() {
         let r = NameResolver::new();
@@ -1299,6 +1443,8 @@ mod tests {
         assert_eq!(out, "1001@[2001:db8::1]:5060");
     }
 
+    /// IPv4 literals resolve to names with the port suffix preserved;
+    /// Off mode, unmapped IPs, and FQDNs pass through unchanged.
     #[test]
     fn resolve_host_label_maps_ip_literals_preserving_port() {
         let r = NameResolver::new();
@@ -1333,6 +1479,7 @@ mod tests {
         );
     }
 
+    /// Bracketed IPv6 hosts resolve to names, with and without a port.
     #[test]
     fn resolve_host_label_maps_bracketed_ipv6() {
         let r = NameResolver::new();
@@ -1350,6 +1497,7 @@ mod tests {
         );
     }
 
+    /// Moving up from row 0 stays at row 0 (no underflow).
     #[test]
     fn call_list_state_move_up_from_zero_stays() {
         let mut state = CallListState::new();
@@ -1357,6 +1505,7 @@ mod tests {
         assert_eq!(state.selected(), 0);
     }
 
+    /// Moving down with room advances the selection by one.
     #[test]
     fn call_list_state_move_down_increments() {
         let mut state = CallListState::new();
@@ -1364,6 +1513,7 @@ mod tests {
         assert_eq!(state.selected(), 1);
     }
 
+    /// Moving down at the last row of a one-item list stays put.
     #[test]
     fn call_list_state_move_down_clamps() {
         let mut state = CallListState::new();
@@ -1371,6 +1521,7 @@ mod tests {
         assert_eq!(state.selected(), 0);
     }
 
+    /// `move_to_bottom` selects the last row of the list.
     #[test]
     fn call_list_state_move_to_bottom() {
         let mut state = CallListState::new();
@@ -1378,6 +1529,7 @@ mod tests {
         assert_eq!(state.selected(), 49);
     }
 
+    /// Page-down advances the selection by 20 rows.
     #[test]
     fn call_list_state_page_down() {
         let mut state = CallListState::new();
@@ -1385,6 +1537,7 @@ mod tests {
         assert_eq!(state.selected(), 20);
     }
 
+    /// Page-up moves the selection back by 20 rows from the bottom.
     #[test]
     fn call_list_state_page_up() {
         let mut state = CallListState::new();
@@ -1393,6 +1546,7 @@ mod tests {
         assert_eq!(state.selected(), 79);
     }
 
+    /// Toggling the same Call-ID twice checks then unchecks it.
     #[test]
     fn call_list_state_toggle_selection() {
         let mut state = CallListState::new();
@@ -1404,6 +1558,8 @@ mod tests {
         assert!(state.selected_rows.is_empty());
     }
 
+    /// Setting a new sort column starts ascending; setting the same
+    /// column again flips the direction.
     #[test]
     fn sort_column_toggle() {
         let mut state = CallListState::new();
@@ -1419,6 +1575,7 @@ mod tests {
         assert!(!state.sort_ascending());
     }
 
+    /// State labels map to their expected short display strings.
     #[test]
     fn format_state_strings() {
         assert_eq!(state_display_str(&DialogState::Trying), "Trying");
@@ -1427,12 +1584,15 @@ mod tests {
         assert_eq!(state_display_str(&DialogState::Completed), "Completed");
     }
 
+    /// A fresh state reports every column label as visible.
     #[test]
     fn visible_column_names_default_is_all() {
         let state = CallListState::new();
         assert_eq!(state.visible_column_names(), COLUMN_LABELS.to_vec());
     }
 
+    /// Hiding columns removes exactly their labels while preserving
+    /// display order for the rest.
     #[test]
     fn visible_column_names_subset_in_order() {
         let mut state = CallListState::new();
@@ -1447,6 +1607,7 @@ mod tests {
         assert_eq!(names.len(), 9);
     }
 
+    /// With every column hidden the visible-name list is empty.
     #[test]
     fn visible_column_names_none_visible_is_empty() {
         let mut state = CallListState::new();
@@ -1454,6 +1615,8 @@ mod tests {
         assert!(state.visible_column_names().is_empty());
     }
 
+    /// Getter output re-applies to an identical visibility set — the
+    /// contract the save-then-reload config path relies on.
     #[test]
     fn visible_column_names_round_trips_through_apply() {
         // Names produced by the getter re-apply to the same visibility set —

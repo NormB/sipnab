@@ -17,29 +17,44 @@ use crate::sip::dialog::SipDialog;
 /// JSON representation of a SIP message (NDJSON line).
 #[derive(Serialize)]
 struct MessageJson<'a> {
+    /// Always 1 under the current schema.
     schema_version: u32,
+    /// Capture timestamp, RFC 3339.
     timestamp: String,
+    /// Source IP address.
     src: String,
+    /// Source transport port.
     src_port: u16,
+    /// Destination IP address.
     dst: String,
+    /// Destination transport port.
     dst_port: u16,
+    /// Transport tag (`UDP`/`TCP`/...).
     transport: &'a str,
+    /// `true` for a request, `false` for a response.
     is_request: bool,
+    /// Request method (requests only).
     #[serde(skip_serializing_if = "Option::is_none")]
     method: Option<&'a str>,
+    /// Status code (responses only).
     #[serde(skip_serializing_if = "Option::is_none")]
     status_code: Option<u16>,
+    /// Reason phrase (responses only).
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
+    /// `Call-ID` header value, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     call_id: Option<&'a str>,
+    /// Full `From` header value, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<&'a str>,
+    /// Full `To` header value, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<&'a str>,
     /// `Contact` header (routing-critical, cross-checked by the field digest).
     #[serde(skip_serializing_if = "Option::is_none")]
     contact: Option<&'a str>,
+    /// `User-Agent` header value, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     ua: Option<&'a str>,
     /// Raw SDP body, emitted only when `Content-Type` is `application/sdp` and
@@ -66,37 +81,52 @@ struct MessageJson<'a> {
 /// JSON representation of a parsed `CSeq` header.
 #[derive(Serialize)]
 struct CSeqJson<'a> {
+    /// CSeq sequence number.
     number: u32,
+    /// CSeq method name.
     method: &'a str,
 }
 
 /// JSON representation of dialog timing.
 #[derive(Serialize)]
 struct TimingJson {
+    /// Post-dial delay (INVITE → first 180/183), milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pdd_ms: Option<i64>,
+    /// Call setup time (INVITE → 200 OK), milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     setup_ms: Option<i64>,
+    /// Ringing duration (180 → 200 OK), milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     ring_ms: Option<i64>,
+    /// Delay from INVITE to 100 Trying, milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     trying_delay_ms: Option<i64>,
+    /// Teardown time (BYE → its 200 OK), milliseconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     teardown_ms: Option<i64>,
+    /// Total retransmissions observed in the dialog.
     retransmits: u32,
 }
 
 /// JSON representation of an SDP exchange.
 #[derive(Serialize)]
 struct SdpExchangeJson {
+    /// Time the SDP was seen, RFC 3339.
     timestamp: String,
+    /// `"offer"` or `"answer"`.
     direction: String,
+    /// Codec names advertised in the media description.
     codecs: Vec<String>,
+    /// Connection (`c=`) address, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     media_addr: Option<String>,
+    /// Media (`m=`) port, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     media_port: Option<u16>,
+    /// Media direction mode (e.g. `sendrecv`, `sendonly`).
     mode: String,
+    /// Detected timeline event (Debug-formatted), e.g. hold/resume.
     #[serde(skip_serializing_if = "Option::is_none")]
     event: Option<String>,
 }
@@ -104,32 +134,52 @@ struct SdpExchangeJson {
 /// JSON representation of a media diagnosis.
 #[derive(Serialize)]
 struct DiagnosisJson {
+    /// RTP flows in only one direction.
     one_way_audio: bool,
+    /// SDP media address differs from the observed RTP address.
     nat_mismatch: bool,
+    /// No RTP observed for an answered call.
     no_media: bool,
+    /// Human-readable findings.
     hints: Vec<String>,
 }
 
 /// JSON representation of an RTP stream (embedded in dialog or standalone).
 #[derive(Serialize)]
 struct StreamJson {
+    /// Always 1 under the current schema.
     schema_version: u32,
+    /// SSRC as `0x`-prefixed 8-digit hex.
     ssrc: String,
+    /// Codec name from SDP or heuristics, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     codec: Option<String>,
+    /// RTP payload type number.
     payload_type: u8,
+    /// Source `ip:port`.
     src: String,
+    /// Destination `ip:port`.
     dst: String,
+    /// RTP packets received.
     packets: u64,
+    /// Payload octets received.
     octets: u64,
+    /// Interarrival jitter, milliseconds.
     jitter_ms: f64,
+    /// Packet loss percentage (0-100).
     loss_pct: f64,
+    /// True when no SIP dialog explains this stream.
     orphaned: bool,
+    /// Call-ID of the owning dialog, when linked.
     #[serde(skip_serializing_if = "Option::is_none")]
     associated_dialog: Option<String>,
+    /// First packet timestamp, RFC 3339.
     first_seen: String,
+    /// Most recent packet timestamp, RFC 3339.
     last_seen: String,
+    /// Per-interval quality history.
     quality_intervals: Vec<QualityIntervalJson>,
+    /// Burst/gap loss-pattern analysis, when computable.
     #[serde(skip_serializing_if = "Option::is_none")]
     burst_gap: Option<crate::rtp::quality::BurstGapAnalysis>,
 }
@@ -137,40 +187,60 @@ struct StreamJson {
 /// JSON representation of a quality interval.
 #[derive(Serialize)]
 struct QualityIntervalJson {
+    /// Interval start, RFC 3339.
     timestamp: String,
+    /// Jitter during the interval, milliseconds.
     jitter_ms: f64,
+    /// Loss percentage during the interval.
     loss_pct: f64,
+    /// Packets received during the interval.
     packets: u64,
 }
 
 /// JSON representation of a complete dialog.
 #[derive(Serialize)]
 struct DialogJson {
+    /// Always 1 under the current schema.
     schema_version: u32,
+    /// Call-ID identifying the dialog.
     call_id: String,
+    /// User portion of the From URI, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     from: Option<String>,
+    /// User portion of the To URI, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     to: Option<String>,
+    /// From display name, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     from_display: Option<String>,
+    /// To display name, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     to_display: Option<String>,
+    /// Current dialog state (Display form, e.g. "InCall").
     state: String,
+    /// SIP method that initiated the dialog.
     method: String,
+    /// Number of SIP messages in the dialog.
     msg_count: usize,
+    /// Wall-clock span from first to last message, seconds (0 for
+    /// single-message dialogs).
     duration_sec: f64,
+    /// User-defined classification tags; omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    /// Transaction timing metrics.
     timing: TimingJson,
+    /// Chronological SDP offer/answer exchanges.
     sdp_timeline: Vec<SdpExchangeJson>,
+    /// Media diagnosis findings.
     diagnosis: DiagnosisJson,
+    /// Associated RTP streams.
     streams: Vec<StreamJson>,
 }
 
 // ── Public API ──────────────────────────────────────────────────────
 
-/// Build the borrowed [`MessageJson`] projection of a SIP message — the
+/// Build the borrowed `MessageJson` projection of a SIP message — the
 /// single source of truth for the NDJSON, writer, and `Value` variants.
 fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
     let cseq = msg
@@ -234,9 +304,14 @@ pub fn message_to_json(msg: &SipMessage) -> String {
 
 /// Serialize a SIP message as one NDJSON line (trailing newline included)
 /// directly into `w` — the batch `-N --json` hot path, which avoids the
-/// per-message intermediate `String` of [`message_to_json`].
+/// per-message intermediate `String` of `message_to_json`.
 ///
-/// Output is byte-identical to [`message_to_json`].
+/// Output is byte-identical to `message_to_json`.
+///
+/// # Errors
+///
+/// Propagates only I/O errors from the writer; a pure serialization error
+/// is converted into an `{"error": ...}` line instead.
 pub fn write_message_json<W: std::io::Write>(msg: &SipMessage, w: &mut W) -> std::io::Result<()> {
     let json = build_message_json(msg);
     // serde_json::to_writer should not fail on these well-typed fields; an
@@ -250,18 +325,21 @@ pub fn write_message_json<W: std::io::Write>(msg: &SipMessage, w: &mut W) -> std
     w.write_all(b"\n")
 }
 
-/// Serialize a SIP message directly to a [`serde_json::Value`] — for
+/// Serialize a SIP message directly to a `serde_json::Value` — for
 /// callers that need a structured object (MCP tool responses). Equal to
-/// parsing the [`message_to_json`] line, without the print→re-parse
-/// round-trip.
+/// parsing the `message_to_json` line, without the print→re-parse
+/// round-trip. Falls back to an `{"error": ...}` object on serialization
+/// failure.
 pub fn message_to_json_value(msg: &SipMessage) -> serde_json::Value {
     serde_json::to_value(build_message_json(msg))
         .unwrap_or_else(|e| serde_json::json!({"error": format!("serialization failed: {e}")}))
 }
 
-/// Pretty-printed variant of [`message_to_json`] for `--json-pretty`:
+/// Pretty-printed variant of `message_to_json` for `--json-pretty`:
 /// multi-line, human-readable objects instead of NDJSON. Still a valid
-/// concatenated-JSON stream for tolerant parsers.
+/// concatenated-JSON stream for tolerant parsers. Falls back to the
+/// compact line if the pretty round-trip fails; always
+/// newline-terminated.
 pub fn message_to_json_pretty(msg: &SipMessage) -> String {
     let compact = message_to_json(msg);
     let mut pretty = serde_json::from_str::<serde_json::Value>(compact.trim_end())
@@ -277,6 +355,17 @@ pub fn message_to_json_pretty(msg: &SipMessage) -> String {
 ///
 /// Produces a complete JSON object with timing, SDP timeline, diagnosis,
 /// and linked RTP stream details.
+///
+/// # Arguments
+///
+/// * `dialog` — The dialog to serialize.
+/// * `streams` — RTP streams associated with the dialog.
+/// * `diagnosis` — Pre-computed media diagnosis to embed.
+///
+/// # Returns
+///
+/// A pretty-printed JSON object string (an `{"error": ...}` object on
+/// serialization failure).
 pub fn dialog_to_json(
     dialog: &SipDialog,
     streams: &[&RtpStream],
@@ -353,15 +442,17 @@ pub fn dialog_to_json(
 
 /// Serialize an RTP stream as JSON.
 ///
-/// Produces a complete JSON object with stream metadata, quality metrics,
-/// and quality interval history.
+/// Produces a complete pretty-printed JSON object with stream metadata,
+/// quality metrics, and quality interval history (an `{"error": ...}`
+/// object on serialization failure).
 pub fn stream_to_json(stream: &RtpStream) -> String {
     let json = build_stream_json(stream);
     serde_json::to_string_pretty(&json)
         .unwrap_or_else(|e| format!("{{\"error\":\"serialization failed: {e}\"}}"))
 }
 
-/// Build the internal StreamJson struct from an RtpStream.
+/// Build the internal `StreamJson` struct from an `RtpStream`, deriving
+/// loss percentage and mapping quality intervals.
 fn build_stream_json(stream: &RtpStream) -> StreamJson {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
@@ -403,6 +494,8 @@ fn build_stream_json(stream: &RtpStream) -> StreamJson {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for the NDJSON message projection (CSeq/SDP/malformed handling),
+/// the writer/Value equivalence guarantees, and dialog/stream JSON shape.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,16 +506,19 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Parse a minimal bodyless INVITE with a User-Agent header.
     fn make_invite() -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -448,6 +544,7 @@ mod tests {
         .expect("should parse")
     }
 
+    /// Build a fresh single-packet PCMU RTP stream with SSRC 0x12345678.
     fn make_stream() -> RtpStream {
         let key = StreamKey {
             ssrc: 0x12345678,
@@ -472,6 +569,8 @@ mod tests {
     // Perf path (batch `-N --json`): the writer variant must produce bytes
     // identical to `message_to_json` — same NDJSON line, same trailing
     // newline — so switching the batch loop to it cannot change output.
+    /// The writer variant is byte-identical to `message_to_json` for
+    /// plain, SDP-carrying, and malformed messages.
     #[test]
     fn write_message_json_matches_message_to_json() {
         let body = b"v=0\r\nc=IN IP4 127.0.0.1\r\nm=audio 6000 RTP/AVP 8\r\na=label:a\\b\"c\r\n";
@@ -514,6 +613,8 @@ mod tests {
     // Perf path (MCP get_dialog/get_message): the Value variant must equal
     // parse(message_to_json) so replacing the to_string→from_str round-trip
     // cannot change any MCP response.
+    /// The `Value` variant equals the parsed NDJSON line for request and
+    /// response messages.
     #[test]
     fn message_to_json_value_matches_parsed_string() {
         let resp = parse_sip(
@@ -547,6 +648,8 @@ mod tests {
         }
     }
 
+    /// An INVITE serializes to valid JSON with schema, method, call_id,
+    /// and UA fields.
     #[test]
     fn message_to_json_valid() {
         let msg = make_invite();
@@ -564,6 +667,8 @@ mod tests {
         assert!(parsed["ua"].is_string());
     }
 
+    /// A 200 OK serializes with status_code, is_request=false, and
+    /// response_context.
     #[test]
     fn message_to_json_response() {
         let raw = build_sip(
@@ -597,6 +702,8 @@ mod tests {
         assert!(parsed["response_context"].is_string());
     }
 
+    /// Contact and the raw SDP body (incl. rtpmap lines) are emitted for
+    /// cross-checking.
     #[test]
     fn message_to_json_includes_contact_and_sdp() {
         // Field-digest cross-check (item 1): sipnab must EMIT Contact + the SDP
@@ -640,6 +747,7 @@ mod tests {
         );
     }
 
+    /// Without a Contact header or SDP body, both keys are omitted.
     #[test]
     fn message_to_json_omits_contact_and_sdp_when_absent() {
         let parsed = parsed_json(&make_invite()); // no Contact, empty body
@@ -647,6 +755,7 @@ mod tests {
         assert!(parsed.get("sdp").is_none(), "no SDP body => omit");
     }
 
+    /// A text/plain body is not surfaced as `sdp`.
     #[test]
     fn message_to_json_sdp_omitted_for_non_sdp_body() {
         let body = b"plain text body";
@@ -679,6 +788,7 @@ mod tests {
         );
     }
 
+    /// Backslash and embedded quote in the SDP survive JSON escaping.
     #[test]
     fn message_to_json_sdp_preserves_adversarial_bytes() {
         // backslash + embedded quote in the SDP must round-trip through JSON
@@ -730,10 +840,12 @@ mod tests {
         .expect("should parse")
     }
 
+    /// Serialize `msg` via `message_to_json` and parse it back to a Value.
     fn parsed_json(msg: &SipMessage) -> serde_json::Value {
         serde_json::from_str(message_to_json(msg).trim()).expect("valid JSON")
     }
 
+    /// Requests carry the structured `cseq` object (SNB-0002).
     #[test]
     fn message_to_json_request_includes_cseq() {
         // SNB-0002: requests MUST carry CSeq so re-requests within a dialog are
@@ -744,6 +856,7 @@ mod tests {
         assert_eq!(parsed["cseq"]["method"], "INVITE");
     }
 
+    /// Responses carry both `cseq` and the legacy `response_context`.
     #[test]
     fn message_to_json_response_includes_cseq() {
         let raw = build_sip(
@@ -773,6 +886,7 @@ mod tests {
         assert_eq!(parsed["response_context"], "7 INVITE");
     }
 
+    /// Two REGISTERs differing only by CSeq number stay distinguishable.
     #[test]
     fn message_to_json_re_requests_are_distinguishable() {
         // The exact SNB-0002 regression: two REGISTERs in one dialog differ only
@@ -792,6 +906,7 @@ mod tests {
         assert_eq!(a["cseq"]["method"], "REGISTER");
     }
 
+    /// `cseq` is omitted entirely when the CSeq header is absent.
     #[test]
     fn message_to_json_cseq_absent_when_header_missing() {
         let msg = req_with_headers(&["Call-ID: no-cseq@example.com", "Content-Length: 0"]);
@@ -803,6 +918,8 @@ mod tests {
         );
     }
 
+    /// Malformed/boundary CSeq values (garbage, missing method, empty,
+    /// overflow) omit `cseq` instead of emitting garbage.
     #[test]
     fn message_to_json_cseq_omitted_when_malformed_or_boundary() {
         // Adversarial / boundary: non-numeric seq, number-without-method, empty,
@@ -825,6 +942,7 @@ mod tests {
         }
     }
 
+    /// A `u32::MAX` CSeq sequence round-trips intact.
     #[test]
     fn message_to_json_cseq_max_u32_boundary() {
         // u32::MAX is a valid CSeq sequence and must round-trip.
@@ -838,6 +956,8 @@ mod tests {
         assert_eq!(parsed["cseq"]["method"], "OPTIONS");
     }
 
+    /// A message missing Call-ID carries a `malformed` array naming it
+    /// (SNB-0003).
     #[test]
     fn message_to_json_flags_malformed() {
         // SNB-0003: a malformed message (missing mandatory Call-ID) carries a
@@ -860,6 +980,7 @@ mod tests {
         );
     }
 
+    /// A well-formed message omits the `malformed` key.
     #[test]
     fn message_to_json_well_formed_omits_malformed() {
         let msg = req_with_headers(&[
@@ -878,6 +999,8 @@ mod tests {
         );
     }
 
+    /// Dialog JSON carries schema, timing, sdp_timeline, diagnosis,
+    /// streams, call_id, and state.
     #[test]
     fn dialog_to_json_contains_required_fields() {
         let msg = make_invite();
@@ -905,6 +1028,7 @@ mod tests {
         assert!(parsed["state"].is_string());
     }
 
+    /// Stream JSON carries schema, hex SSRC, and numeric quality fields.
     #[test]
     fn stream_to_json_contains_required_fields() {
         let stream = make_stream();

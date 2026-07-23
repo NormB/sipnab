@@ -83,12 +83,14 @@ pub struct StirShakenInfo {
 /// Intermediate struct for the `orig` claim which contains `tn`.
 #[derive(Deserialize)]
 struct OrigClaim {
+    /// Originating telephone number.
     tn: Option<String>,
 }
 
 /// Intermediate struct for the `dest` claim which contains an array of `tn`.
 #[derive(Deserialize)]
 struct DestClaim {
+    /// Destination telephone numbers (empty when absent).
     #[serde(default)]
     tn: Vec<String>,
 }
@@ -96,10 +98,15 @@ struct DestClaim {
 /// The JWT payload claims relevant to STIR/SHAKEN.
 #[derive(Deserialize)]
 struct ShakenPayload {
+    /// Attestation level string (`"A"`, `"B"`, or `"C"`).
     attest: Option<String>,
+    /// Originating-number claim.
     orig: Option<OrigClaim>,
+    /// Destination-number claim.
     dest: Option<DestClaim>,
+    /// Origination identifier (UUID).
     origid: Option<String>,
+    /// Issued-at timestamp (Unix epoch seconds).
     iat: Option<i64>,
 }
 
@@ -114,6 +121,18 @@ struct ShakenPayload {
 ///
 /// Only the `header.payload` portions of the JWT are decoded (base64url).
 /// Signature verification is **not** performed.
+///
+/// # Arguments
+///
+/// * `header_value` — the raw `Identity` header value (JWT plus optional
+///   `;`-separated parameters).
+///
+/// # Returns
+///
+/// The decoded claims. `verified` is `Expired` when the `iat` claim is more
+/// than 60 seconds from the current system time (read via
+/// `chrono::Utc::now`, so results are time-dependent), otherwise
+/// `NotChecked`.
 ///
 /// # Errors
 ///
@@ -192,6 +211,8 @@ impl SipMessage {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for Identity header parsing: attestation levels, malformed JWTs,
+/// iat freshness, and SipMessage integration (including the compact form).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,6 +233,8 @@ mod tests {
         )
     }
 
+    /// A full attestation-A payload yields every claim (and a stale iat
+    /// marks it Expired).
     #[test]
     fn parse_attest_a_full() {
         let payload = r#"{
@@ -236,6 +259,7 @@ mod tests {
         assert_eq!(info.verified, VerificationStatus::Expired);
     }
 
+    /// `"attest": "B"` maps to Attestation::B.
     #[test]
     fn parse_attest_b() {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000001}"#;
@@ -245,6 +269,7 @@ mod tests {
         assert_eq!(info.attestation, Attestation::B);
     }
 
+    /// `"attest": "C"` maps to Attestation::C.
     #[test]
     fn parse_attest_c() {
         let payload = r#"{"attest": "C", "orig": {"tn": "1001"}, "dest": {"tn": ["2002"]}, "iat": 1700000002}"#;
@@ -254,6 +279,7 @@ mod tests {
         assert_eq!(info.attestation, Attestation::C);
     }
 
+    /// An unrecognized attestation letter maps to Attestation::Unknown.
     #[test]
     fn parse_unknown_attestation() {
         let payload = r#"{"attest": "X", "orig": {"tn": "1001"}}"#;
@@ -263,6 +289,7 @@ mod tests {
         assert_eq!(info.attestation, Attestation::Unknown);
     }
 
+    /// A payload without an `attest` claim maps to Attestation::Unknown.
     #[test]
     fn parse_missing_attestation() {
         let payload = r#"{"orig": {"tn": "1001"}}"#;
@@ -272,6 +299,7 @@ mod tests {
         assert_eq!(info.attestation, Attestation::Unknown);
     }
 
+    /// A token with more than 3 dot-separated parts is rejected.
     #[test]
     fn malformed_jwt_too_few_parts() {
         let result = parse_identity_header("not.a.valid.jwt.with.too.many.parts");
@@ -280,18 +308,21 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A single-segment token (no dots) is rejected.
     #[test]
     fn malformed_jwt_single_segment() {
         let result = parse_identity_header("justatoken");
         assert!(result.is_err());
     }
 
+    /// A payload segment that is not valid base64url is rejected.
     #[test]
     fn malformed_jwt_bad_base64() {
         let result = parse_identity_header("aaa.!!!invalid_base64!!!.ccc");
         assert!(result.is_err());
     }
 
+    /// A payload that decodes but is not JSON is rejected.
     #[test]
     fn malformed_jwt_bad_json() {
         let payload_b64 = URL_SAFE_NO_PAD.encode(b"not json at all");
@@ -300,6 +331,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// An empty JSON payload parses with all claims absent.
     #[test]
     fn parse_minimal_payload() {
         let payload = r#"{}"#;
@@ -313,6 +345,7 @@ mod tests {
         assert!(info.iat.is_none());
     }
 
+    /// An iat within the 60-second window stays NotChecked.
     #[test]
     fn iat_fresh_within_window() {
         let now = chrono::Utc::now().timestamp();
@@ -325,6 +358,7 @@ mod tests {
         assert_eq!(info.verified, VerificationStatus::NotChecked);
     }
 
+    /// An iat two minutes in the past is marked Expired.
     #[test]
     fn iat_stale_past() {
         // 2 minutes ago — well outside the 60s window
@@ -336,6 +370,7 @@ mod tests {
         assert_eq!(info.verified, VerificationStatus::Expired);
     }
 
+    /// An iat two minutes in the future is also marked Expired.
     #[test]
     fn iat_stale_future() {
         // 2 minutes in the future — also outside the 60s window
@@ -347,6 +382,7 @@ mod tests {
         assert_eq!(info.verified, VerificationStatus::Expired);
     }
 
+    /// A missing iat leaves the status NotChecked, not Expired.
     #[test]
     fn iat_missing_not_expired() {
         let payload = r#"{"attest": "B", "orig": {"tn": "1001"}}"#;
@@ -357,6 +393,7 @@ mod tests {
         assert_eq!(info.verified, VerificationStatus::NotChecked);
     }
 
+    /// `stir_shaken()` returns `None` when no Identity header is present.
     #[test]
     fn sip_message_stir_shaken_missing_header() {
         use std::net::{IpAddr, Ipv4Addr};
@@ -382,6 +419,8 @@ mod tests {
         assert!(msg.stir_shaken().is_none());
     }
 
+    /// The RFC 8224 compact `y:` form is expanded and analyzed identically
+    /// to a long-form Identity header.
     #[test]
     fn compact_identity_header_cannot_evade_extraction() {
         // RFC 8224 registers `y` as the compact form of Identity. A caller
@@ -424,6 +463,7 @@ mod tests {
         assert_eq!(info.orig_tn.as_deref(), Some("5551234"));
     }
 
+    /// `stir_shaken()` parses a present Identity header into claims.
     #[test]
     fn sip_message_stir_shaken_with_identity() {
         use crate::sip::message::SipHeader;

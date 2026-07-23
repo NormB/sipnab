@@ -26,11 +26,24 @@ fn udp_5060_fixture() -> PathBuf {
 /// Run sipnab with the given arguments and return (stdout, stderr, exit_code).
 /// Log level defaults to "warn" to suppress noise; use `run_sipnab_with_log`
 /// for explicit control.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_sipnab(args: &[&str]) -> (String, String, i32) {
     run_sipnab_with_log(args, "warn")
 }
 
 /// Run sipnab with explicit log level control.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+/// * `log_level` — value for the `SIPNAB_LOG` env var.
+///
+/// # Returns
+/// `(stdout, stderr, exit_code)`; exit code is -1 if killed by a signal.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_sipnab_with_log(args: &[&str], log_level: &str) -> (String, String, i32) {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let output = Command::new(binary)
@@ -48,6 +61,7 @@ fn run_sipnab_with_log(args: &[&str], log_level: &str) -> (String, String, i32) 
 
 // ── SIP detection and JSON output ───────────────────────────────────
 
+/// All 7 fixture messages emit as JSON with schema_version 1 and a call_id; the first is the INVITE request and the fourth is a 200 OK response.
 #[test]
 fn sip_messages_detected_and_output_as_json() {
     let fixture = sip_call_fixture();
@@ -86,6 +100,7 @@ fn sip_messages_detected_and_output_as_json() {
 
 // ── Dialog report ───────────────────────────────────────────────────
 
+/// `--report` shows the Call-ID, both users, the Completed state, and the 0.5s PDD.
 #[test]
 fn report_contains_dialog_info() {
     let fixture = sip_call_fixture();
@@ -115,6 +130,7 @@ fn report_contains_dialog_info() {
 
 // ── Count limit ─────────────────────────────────────────────────────
 
+/// `-n 3` emits exactly 3 JSON messages.
 #[test]
 fn count_limit_stops_after_n_packets() {
     let fixture = sip_call_fixture();
@@ -129,6 +145,7 @@ fn count_limit_stops_after_n_packets() {
 
 // ── From filter ─────────────────────────────────────────────────────
 
+/// `--from 1001` matches all 7 messages (shared From user).
 #[test]
 fn from_filter_selects_matching_messages() {
     let fixture = sip_call_fixture();
@@ -148,6 +165,7 @@ fn from_filter_selects_matching_messages() {
     assert_eq!(json_lines.len(), 7, "all messages match --from 1001");
 }
 
+/// A non-matching `--from 9999` emits zero messages.
 #[test]
 fn from_filter_rejects_nonmatching_messages() {
     let fixture = sip_call_fixture();
@@ -169,6 +187,7 @@ fn from_filter_rejects_nonmatching_messages() {
 
 // ── Calls-only filter ───────────────────────────────────────────────
 
+/// `-c` (calls-only) emits exactly one message and it is the INVITE.
 #[test]
 fn calls_only_shows_invite_only() {
     let fixture = sip_call_fixture();
@@ -185,6 +204,7 @@ fn calls_only_shows_invite_only() {
 
 // ── Summary line ────────────────────────────────────────────────────
 
+/// The info-level summary reports `7 packets captured` and `7 SIP messages`.
 #[test]
 fn summary_reports_packet_counts() {
     let fixture = sip_call_fixture();
@@ -207,6 +227,7 @@ fn summary_reports_packet_counts() {
 
 // ── Hexdump ─────────────────────────────────────────────────────────
 
+/// `--hexdump` output has hex offset markers and the ASCII column delimiter.
 #[test]
 fn hexdump_shows_hex_output() {
     let fixture = sip_call_fixture();
@@ -231,6 +252,7 @@ fn hexdump_shows_hex_output() {
 
 // ── Auto-detect device (no explicit source) ─────────────────────────
 
+/// With no source, sipnab auto-detects a device instead of printing the old "no capture source" error; exit 0 or 1 (permission denied) accepted.
 #[test]
 fn no_source_auto_detects_device() {
     let (_stdout, stderr, code) = run_sipnab(&["-N", "-F"]);
@@ -250,6 +272,7 @@ fn no_source_auto_detects_device() {
 
 // ── Original fixture backward compat ────────────────────────────────
 
+/// The udp_5060 fixture still yields `10 packets captured` and `10 SIP messages` (Call-ID-less 200 OKs count as SIP).
 #[test]
 fn original_fixture_still_works() {
     let fixture = udp_5060_fixture();
@@ -271,6 +294,7 @@ fn original_fixture_still_works() {
 
 // ── Text dump mode ──────────────────────────────────────────────────
 
+/// `-T` shows the raw INVITE request line and the Call-ID header.
 #[test]
 fn text_dump_shows_raw_sip() {
     let fixture = sip_call_fixture();
@@ -290,6 +314,7 @@ fn text_dump_shows_raw_sip() {
 
 // ── Self-describing pcapng export (SNB-0001) ────────────────────────
 
+/// SNB-0001 regression pin: headless `-O --pcapng --names --resolve` writes the NRB (with resolved record), the SHB application string, and the IDB interface name.
 #[test]
 fn headless_pcapng_export_is_self_describing() {
     // SNB-0001: a headless `-O --pcapng` export must be self-describing —

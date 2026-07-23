@@ -20,6 +20,18 @@ use super::batch::CapturePolicy;
 /// Build the TUI name-resolution setup from CLI flags and config:
 /// construct the resolver (with a reverse-DNS worker when requested), load the
 /// system hosts file plus any operator mapping files, and pick the initial mode.
+///
+/// # Returns
+///
+/// A `NameSetup` bundling the resolver, the initial name mode, the default
+/// persistence path for in-TUI `N`-dialog edits, and (when
+/// `[names] persist_to_config` is set) the user's sipnabrc path.
+///
+/// # Side effects
+///
+/// Delegates to `crate::app::build_resolver` (reads `/etc/hosts` and mapping
+/// files) and additionally preloads the default persistence file when it
+/// exists; load failures are ignored.
 fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
     let cfg = &config.names;
     let (resolver, mode) = crate::app::build_resolver(cli, config);
@@ -46,6 +58,7 @@ fn build_name_setup(cli: &Cli, config: &Config) -> crate::tui::NameSetup {
 
 /// Default file where in-TUI manual name mappings persist:
 /// `$XDG_CONFIG_HOME/sipnab/hosts`, falling back to `~/.config/sipnab/hosts`.
+/// Returns `None` when neither `XDG_CONFIG_HOME` nor `HOME` is set.
 fn default_names_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
@@ -59,6 +72,33 @@ fn default_names_path() -> Option<std::path::PathBuf> {
 /// packet-processing thread that drives the shared pipeline, starts the
 /// API/metrics companions when configured, and runs the terminal main loop
 /// until quit.
+///
+/// # Arguments
+///
+/// * `cli` / `config` — parsed flags and loaded configuration (owned; this
+///   function is the mode's terminal consumer).
+/// * `capture_config` — capture limits (`--count`, `--duration`) the
+///   processing thread enforces.
+/// * `handle` — the running capture thread's handle; dropped (not joined)
+///   on exit.
+/// * `rx` — receiving side of the packet channel the processing thread
+///   drains.
+/// * `policy` — output split policy applied to the optional `-O` writer.
+/// * `metrics_bind_addr` — parsed `--metrics` bind address (`api` feature
+///   builds only).
+///
+/// # Side effects
+///
+/// Heavy wiring, in order: optionally starts the standalone Prometheus
+/// metrics server; spawns the "tui-processor" thread that drains the packet
+/// channel, drives the shared pipeline into the stores, lazily opens and
+/// writes the `-O` pcap/pcapng file, decrypts SRTP/DTLS-SRTP media when
+/// configured, and sweeps reassembly/idle state every 5 s; starts the REST
+/// API companion via `start_servers` (never MCP stdio — the TUI owns
+/// stdio); takes over the terminal for the TUI main loop; and on TUI exit
+/// requests process-wide shutdown, joins the processing thread, and drops
+/// the capture handle. Exits the process on thread-spawn or server-start
+/// failure.
 pub fn run_tui_mode(
     cli: Cli,
     config: Config,

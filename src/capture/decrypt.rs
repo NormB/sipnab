@@ -114,6 +114,11 @@ impl CipherSuite {
 }
 
 impl std::fmt::Display for CipherSuite {
+    /// Write the IANA cipher-suite name (e.g. `TLS_AES_128_GCM_SHA256`) for logs.
+    ///
+    /// # Side effects
+    ///
+    /// Writes to the formatter `f`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Aes128Gcm => write!(f, "TLS_AES_128_GCM_SHA256"),
@@ -131,6 +136,7 @@ impl std::fmt::Display for CipherSuite {
 /// Lookup key for a TLS session: the 32-byte client_random from the ClientHello.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TlsSessionKey {
+    /// The 32-byte ClientHello `client_random` identifying the session.
     client_random: [u8; 32],
 }
 
@@ -143,7 +149,10 @@ struct TlsSessionKey {
 /// content-type byte appended to the plaintext.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SessionVersion {
+    /// TLS 1.2 AEAD framing: 4-byte fixed IV + 8-byte explicit nonce, 13-byte AAD.
     Tls12,
+    /// TLS 1.3 AEAD framing: 12-byte `write_iv XOR seq` nonce, 5-byte AAD, inner
+    /// content-type byte.
     Tls13,
 }
 
@@ -170,6 +179,13 @@ struct TlsSession {
 }
 
 impl Drop for TlsSession {
+    /// Zeroize the four key/IV buffers when the session is dropped.
+    ///
+    /// # Side effects
+    ///
+    /// Overwrites `client_write_key`, `server_write_key`, `client_write_iv`, and
+    /// `server_write_iv` with zeros via the `zeroize` crate (compiler cannot
+    /// elide the write).
     fn drop(&mut self) {
         // Zeroize key material on drop to prevent key leakage via memory.
         use zeroize::Zeroize;
@@ -440,10 +456,11 @@ pub struct TlsDecryptor {
     keylog_path: Option<std::path::PathBuf>,
     /// Last known size of the keylog file (for change detection).
     last_keylog_size: u64,
-    /// Handshake info extracted from observed ServerHello records, keyed by
-    /// client_random (we correlate via the record stream; here we key by
-    /// the server_random's first 8 bytes + cipher code as a quick hash,
-    /// but in practice we just store all observed ServerHellos).
+    /// All ServerHello infos (server_random + cipher) observed on the wire, in
+    /// arrival order. This is an unkeyed list: because there is no wire-level
+    /// correlation between a ClientHello's `client_random` and a later
+    /// ServerHello at this layer, TLS 1.2 `CLIENT_RANDOM` key derivation tries
+    /// each stored handshake until one yields a usable session.
     observed_handshakes: Vec<HandshakeInfo>,
     /// Number of keylog entries already processed into sessions.
     /// Avoids rebuilding the group map on every ApplicationData record.
@@ -1144,6 +1161,10 @@ pub fn feed_embedded_secrets(path: &Path, decryptor: &mut TlsDecryptor) -> usize
     }
 }
 
+/// Unit tests for the TLS decryption engine: cipher-suite tables, ServerHello /
+/// ClientHello / ClientKeyExchange parsing, TLS 1.3 and TLS 1.2 (GCM + refused
+/// CBC) session derivation, the `--tls-key` RSA-kx round trip, keylog ingestion
+/// / polling, and pcapng embedded-secret feeding.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1156,6 +1177,7 @@ mod tests {
     }
 
     impl CryptoBackend for MockCrypto {
+        /// Return the preset `decrypt_result` plaintext, or error if none is set.
         fn aes_gcm_decrypt(
             &self,
             _key: &[u8],
@@ -1169,20 +1191,25 @@ mod tests {
             }
         }
 
+        /// Unsupported in this mock; always errors.
         fn aes_cbc_decrypt(&self, _key: &[u8], _iv: &[u8], _ciphertext: &[u8]) -> Result<Vec<u8>> {
             anyhow::bail!("not implemented")
         }
 
+        /// Unsupported in this mock; always errors.
         fn hmac_sha1(&self, _key: &[u8], _data: &[u8]) -> Result<Vec<u8>> {
             anyhow::bail!("not implemented")
         }
 
+        /// Return `len` deterministic `0x42` bytes so key derivation is stable.
         fn hkdf_expand(&self, _prk: &[u8], _info: &[u8], len: usize) -> Result<Vec<u8>> {
             // Return deterministic bytes for testing
             Ok(vec![0x42u8; len])
         }
     }
 
+    /// Build a TLS 1.3 client/server traffic-secret keylog pair (both 32-byte
+    /// secrets → AES-128-GCM) sharing one `client_random`.
     fn make_keylog_entries() -> Vec<KeyLogEntry> {
         let cr = [0xAAu8; 32];
         vec![
@@ -1199,6 +1226,7 @@ mod tests {
         ]
     }
 
+    /// Constructing a decryptor with no keylog path succeeds with zero entries.
     #[test]
     fn new_without_keylog() {
         let decryptor = TlsDecryptor::new(
@@ -1212,6 +1240,7 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 0);
     }
 
+    /// A keylog file with two traffic-secret lines loads two entries.
     #[test]
     fn load_keylog_file() {
         use std::io::Write;
@@ -1242,6 +1271,8 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 2);
     }
 
+    /// A client/server traffic-secret pair populates exactly one AES-128-GCM
+    /// session.
     #[test]
     fn sessions_populated_from_entries() {
         let mut d = TlsDecryptor {
@@ -1268,6 +1299,8 @@ mod tests {
         assert_eq!(session.cipher_suite, CipherSuite::Aes128Gcm);
     }
 
+    /// With no sessions loaded, decrypting an ApplicationData record yields
+    /// `None`.
     #[test]
     fn try_decrypt_no_matching_session() {
         let mut d = TlsDecryptor {
@@ -1299,6 +1332,8 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// A matching session decrypts an ApplicationData record (mock plaintext),
+    /// strips the TLS 1.3 inner type, and increments `decrypted_count`.
     #[test]
     fn try_decrypt_with_matching_session() {
         // The mock returns a fixed plaintext with TLS 1.3 content type appended
@@ -1337,6 +1372,7 @@ mod tests {
         assert_eq!(d.decrypted_count, 1);
     }
 
+    /// A non-ApplicationData (Handshake) record is never decrypted.
     #[test]
     fn non_application_data_returns_none() {
         let mut d = TlsDecryptor {
@@ -1368,6 +1404,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// Stripping removes the trailing content-type byte and zero padding.
     #[test]
     fn strip_padding_removes_content_type() {
         let mut data = b"hello".to_vec();
@@ -1378,6 +1415,7 @@ mod tests {
         assert_eq!(data, b"hello");
     }
 
+    /// Stripping removes just the content-type byte when there is no padding.
     #[test]
     fn strip_padding_no_padding() {
         let mut data = b"hello".to_vec();
@@ -1388,10 +1426,13 @@ mod tests {
 
     // ── --tls-key RSA key exchange end-to-end ──────────────────────────
 
+    /// PEM PKCS#8 RSA private key fixture for the `--tls-key` round-trip test.
     #[cfg(feature = "tls")]
     const RSA_KEY_PEM: &str = include_str!("../../tests/fixtures/tls_rsa/key.pem");
+    /// PKCS#1 v1.5 ciphertext of the fixture pre-master (the ClientKeyExchange).
     #[cfg(feature = "tls")]
     const RSA_PREMASTER_CT: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster_ct.bin");
+    /// The 48-byte plaintext pre-master matching `RSA_PREMASTER_CT`.
     #[cfg(feature = "tls")]
     const RSA_PREMASTER: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster.bin");
 
@@ -1427,6 +1468,9 @@ mod tests {
         }
     }
 
+    /// End-to-end `--tls-key`: feeding ClientHello, ServerHello, and
+    /// ClientKeyExchange lets the RSA key derive a TLS 1.2 GCM session that
+    /// decrypts a sealed SIP ApplicationData record back to plaintext.
     #[cfg(feature = "tls")]
     #[test]
     fn tls_key_rsa_handshake_decrypts_tls12_gcm_appdata() {
@@ -1508,6 +1552,7 @@ mod tests {
         }
     }
 
+    /// `build_record_aad` yields the content type, 0x0303 version, and length.
     #[test]
     fn build_aad_correct() {
         let record = TlsRecord {
@@ -1522,6 +1567,8 @@ mod tests {
         assert_eq!(u16::from_be_bytes([aad[3], aad[4]]), 256);
     }
 
+    /// The HKDF-Expand-Label info matches the RFC 8446 wire layout
+    /// (length prefix, `tls13 `-prefixed label, empty context).
     #[test]
     fn hkdf_expand_label_info_format() {
         let info = hkdf_expand_label_info(b"key", &[], 16);
@@ -1535,6 +1582,8 @@ mod tests {
         assert_eq!(info[12], 0);
     }
 
+    /// The first populate creates sessions; a second call with no new entries
+    /// is a no-op.
     #[test]
     fn ensure_sessions_populated_idempotent() {
         // First call should process all entries; second call should be a no-op.
@@ -1578,6 +1627,8 @@ mod tests {
         );
     }
 
+    /// Entries added after the first populate are picked up on the next call,
+    /// producing an additional session.
     #[test]
     fn ensure_sessions_populated_processes_incremental_entries() {
         // Verify that adding new keylog entries after the first populate
@@ -1640,10 +1691,13 @@ mod tests {
         }
     }
 
+    /// A syntactically valid TLS 1.2 `CLIENT_RANDOM` keylog line (32-byte
+    /// random, 48-byte master secret) reused across ingestion tests.
     const CLIENT_RANDOM_LINE: &str = "CLIENT_RANDOM \
         aabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccddaabbccdd \
         00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 
+    /// `add_keylog_text` adds the one valid line and skips comment/blank/junk.
     #[test]
     fn add_keylog_text_ingests_valid_lines_skips_junk() {
         let mut d = decryptor_with(Box::new(MockCrypto {
@@ -1656,6 +1710,7 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 1);
     }
 
+    /// `add_keylog_text` adds nothing for empty or all-junk input.
     #[test]
     fn add_keylog_text_empty_or_all_junk_adds_nothing() {
         let mut d = decryptor_with(Box::new(MockCrypto {
@@ -1666,6 +1721,8 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 0);
     }
 
+    /// A pcapng carrying a keylog Decryption Secrets Block feeds its secret
+    /// into the decryptor.
     #[cfg(feature = "native")]
     #[test]
     fn feed_embedded_secrets_loads_dsb_into_decryptor() {
@@ -1698,6 +1755,7 @@ mod tests {
         assert_eq!(d.keylog_entry_count(), 1);
     }
 
+    /// A pcapng with no DSB feeds nothing (returns 0).
     #[cfg(feature = "native")]
     #[test]
     fn feed_embedded_secrets_no_dsb_is_noop() {
@@ -1730,6 +1788,8 @@ mod tests {
 
     // ── CipherSuite table ──────────────────────────────────────────────
 
+    /// Every `CipherSuite` reports the expected key/IV/MAC lengths, CBC flag,
+    /// and display name.
     #[test]
     fn cipher_suite_properties() {
         use CipherSuite::*;
@@ -1763,6 +1823,7 @@ mod tests {
         }
     }
 
+    /// Known code points map to their suites; unknown code points map to `None`.
     #[test]
     fn cipher_suite_from_code_point_all_known_and_unknown() {
         use CipherSuite::*;
@@ -1786,6 +1847,8 @@ mod tests {
 
     // ── parse_server_hello ─────────────────────────────────────────────
 
+    /// A valid ServerHello yields its server_random and cipher, including when a
+    /// non-empty session id shifts the cipher offset.
     #[test]
     fn parse_server_hello_valid() {
         let info = parse_server_hello(&server_hello(0x009C, 0)).unwrap();
@@ -1797,6 +1860,8 @@ mod tests {
         assert_eq!(info.cipher_suite_code, Some(0x1302));
     }
 
+    /// Malformed ServerHellos (too short, wrong type, truncated random,
+    /// overlong session id) return `None`.
     #[test]
     fn parse_server_hello_rejects_malformed() {
         assert!(parse_server_hello(&[]).is_none()); // < 4 bytes
@@ -1811,6 +1876,8 @@ mod tests {
 
     // ── process_record ─────────────────────────────────────────────────
 
+    /// A Handshake ServerHello is recorded in `observed_handshakes`; a
+    /// non-Handshake record is ignored.
     #[test]
     fn process_record_observes_serverhello_and_ignores_others() {
         let mut d = decryptor_with(Box::new(MockCrypto {
@@ -1840,6 +1907,8 @@ mod tests {
 
     // ── TLS 1.2 CLIENT_RANDOM key derivation ───────────────────────────
 
+    /// A TLS 1.2 `CLIENT_RANDOM` master secret plus an observed AES-128-GCM
+    /// ServerHello derives a session with a 16-byte key and 4-byte fixed IV.
     #[test]
     fn tls12_client_random_derives_session() {
         let cr = [0x77u8; 32];
@@ -1869,6 +1938,7 @@ mod tests {
         assert_eq!(session.client_write_iv.len(), 4);
     }
 
+    /// A CBC ServerHello derives a session whose IV is the full 16-byte block.
     #[test]
     fn tls12_client_random_derives_cbc_session() {
         let cr = [0x88u8; 32];
@@ -1896,6 +1966,7 @@ mod tests {
         assert_eq!(session.client_write_iv.len(), 16);
     }
 
+    /// An unsupported negotiated cipher (0x0000) derives no session.
     #[test]
     fn tls12_unsupported_cipher_yields_no_session() {
         let cr = [0x99u8; 32];
@@ -1923,20 +1994,25 @@ mod tests {
     /// Crypto backend that succeeds for CBC and fails for GCM.
     struct CbcMock;
     impl CryptoBackend for CbcMock {
+        /// Always errors, so the GCM path never succeeds for this backend.
         fn aes_gcm_decrypt(&self, _: &[u8], _: &[u8], _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
             anyhow::bail!("no gcm")
         }
+        /// Returns fixed SIP plaintext, simulating a successful CBC decrypt.
         fn aes_cbc_decrypt(&self, _: &[u8], _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
             Ok(b"MESSAGE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec())
         }
+        /// Unsupported in this mock; always errors.
         fn hmac_sha1(&self, _: &[u8], _: &[u8]) -> Result<Vec<u8>> {
             anyhow::bail!("n/a")
         }
+        /// Returns `len` zero bytes for deterministic key derivation.
         fn hkdf_expand(&self, _: &[u8], _: &[u8], len: usize) -> Result<Vec<u8>> {
             Ok(vec![0u8; len])
         }
     }
 
+    /// Insert a ready-made TLS 1.2 AES-128-CBC session into `d` under `key`.
     fn insert_cbc_session(d: &mut TlsDecryptor, key: &TlsSessionKey) {
         d.sessions.insert(
             key.clone(),
@@ -1954,6 +2030,8 @@ mod tests {
         );
     }
 
+    /// A CBC record is refused (no plaintext emitted, count unchanged) even when
+    /// the CBC primitive would return bytes, since the MAC is not verified.
     #[test]
     fn cbc_record_refused_not_emitted_unauthenticated() {
         // TLS 1.2 CBC is MAC-then-encrypt; without verifying the record MAC we
@@ -1983,6 +2061,8 @@ mod tests {
         assert_eq!(d.decrypted_count, 0, "no record counted as decrypted");
     }
 
+    /// A CBC record shorter than the 16-byte IV returns `None` on both
+    /// directions.
     #[test]
     fn cbc_record_too_short_for_iv_returns_none() {
         let key = TlsSessionKey {
@@ -2010,6 +2090,7 @@ mod tests {
 
     // ── poll_keylog_file ───────────────────────────────────────────────
 
+    /// Polling with no keylog path configured returns 0.
     #[test]
     fn poll_keylog_without_path_is_noop() {
         let mut d = decryptor_with(Box::new(MockCrypto {
@@ -2018,6 +2099,8 @@ mod tests {
         assert_eq!(d.poll_keylog_file().unwrap(), 0);
     }
 
+    /// Polling loads newly appended valid lines (skipping junk) once the file
+    /// grows, and is a no-op when it has not.
     #[test]
     fn poll_keylog_loads_appended_entries() {
         use std::io::Write;
@@ -2060,6 +2143,7 @@ mod tests {
 
     // ── load_dtls_keylog ───────────────────────────────────────────────
 
+    /// `load_dtls_keylog` counts 0 for an empty file and 1 for a one-entry file.
     #[test]
     fn load_dtls_keylog_empty_and_populated() {
         use std::io::Write;
@@ -2076,6 +2160,7 @@ mod tests {
 
     // ── strip_tls13_padding edge ───────────────────────────────────────
 
+    /// An all-zero record strips to empty, and empty input is a no-op.
     #[test]
     fn strip_padding_all_zeros_and_empty() {
         // All-zero record collapses to empty (content type popped, rest stripped).
@@ -2091,6 +2176,8 @@ mod tests {
 
     // ── build_record_aad for other content types/versions ──────────────
 
+    /// `build_record_aad` maps each content type and version, including the
+    /// `Unknown` passthrough cases, to the right AAD bytes.
     #[test]
     fn build_aad_covers_content_types_and_versions() {
         let cases = [

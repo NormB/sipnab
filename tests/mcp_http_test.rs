@@ -12,6 +12,10 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Absolute path to a file under `tests/fixtures/`.
+///
+/// # Arguments
+/// * `path` — filename relative to the fixtures directory.
 fn fixture(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -21,6 +25,17 @@ fn fixture(path: &str) -> std::path::PathBuf {
 /// Spawn sipnab with HTTP MCP and return the child + the bind address it
 /// actually started on (since we use port 0). Reads stderr for the
 /// "MCP HTTP server listening on" log line.
+///
+/// # Arguments
+/// * `extra_args` — additional CLI args (e.g. `--mcp-bind`, `--mcp-token`).
+///
+/// # Returns
+/// `Some((child, addr))` on a successful start; `None` if the server refused
+/// to start or never reported a bind address within 5s (child is reaped).
+///
+/// # Side effects
+/// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
+/// reader thread; on failure paths the child is SIGTERMed and waited.
 fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
@@ -84,6 +99,10 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     None
 }
 
+/// SIGTERMs a spawned sipnab child and waits for it to exit.
+///
+/// # Side effects
+/// Sends SIGTERM to the child process and reaps it.
 fn shutdown(mut child: std::process::Child) {
     // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
@@ -92,6 +111,8 @@ fn shutdown(mut child: std::process::Child) {
     let _ = child.wait();
 }
 
+/// Binding `0.0.0.0` without `--mcp-token` refuses to start (decision D18) —
+/// `spawn_http` observes the refusal and returns `None`.
 #[test]
 fn http_mcp_non_loopback_without_token_refuses_to_start() {
     let result = spawn_http(&["--mcp-bind", "0.0.0.0:0"]);
@@ -101,6 +122,8 @@ fn http_mcp_non_loopback_without_token_refuses_to_start() {
     );
 }
 
+/// On loopback with no token configured, an unauthenticated JSON-RPC
+/// `initialize` POST returns 200.
 #[test]
 fn http_mcp_loopback_no_auth_initialize_succeeds() {
     let (child, addr) = match spawn_http(&["--mcp-bind", "127.0.0.1:0"]) {
@@ -126,6 +149,8 @@ fn http_mcp_loopback_no_auth_initialize_succeeds() {
     shutdown(child);
 }
 
+/// With `--mcp-token` set: missing and wrong bearer tokens get 401, the
+/// correct token gets 200 on `initialize`.
 #[test]
 fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
     let token = "supersecret-test-token";
@@ -162,11 +187,25 @@ fn http_mcp_with_token_rejects_missing_and_wrong_tokens() {
 
 // ── Minimal HTTP client (no extra dep) ───────────────────────────────
 
+/// Status code and body of one HTTP response from the hand-rolled client.
 struct HttpResponse {
     status: u16,
     body: String,
 }
 
+/// Issues a `POST` of `body` as JSON over a raw `TcpStream` (no HTTP client
+/// dependency), optionally with a bearer Authorization header.
+///
+/// # Arguments
+/// * `url` — plain `http://host:port/path` URL.
+/// * `bearer` — optional bearer token for the Authorization header.
+/// * `body` — JSON payload to serialize and send.
+///
+/// # Returns
+/// The parsed status code and response body (status 0 if unparsable).
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout.
 fn ureq_post(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> HttpResponse {
     use std::io::{Read, Write};
     use std::net::TcpStream;
@@ -214,13 +253,17 @@ fn ureq_post(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> HttpR
     HttpResponse { status, body }
 }
 
+/// Minimal in-test URL parsing (avoids pulling in a url crate).
 mod url {
+    /// Host, port, and path components of an `http://` URL.
     pub struct ParsedUrl {
         pub host: String,
         pub port: u16,
         pub path: String,
     }
     impl ParsedUrl {
+        /// Parses `http://host:port/path`; returns `None` if the scheme,
+        /// port, or authority is missing or malformed.
         pub fn parse(s: &str) -> Option<Self> {
             let s = s.strip_prefix("http://")?;
             let (authority, path) = s.split_once('/').unwrap_or((s, ""));

@@ -10,7 +10,7 @@ use crate::error::ParseError;
 ///
 /// Fields map directly to RFC 3550 Section 5.1. The `payload_offset`
 /// indicates where the media payload begins relative to the start of
-/// the RTP data passed to [`parse_rtp_header`].
+/// the RTP data passed to `parse_rtp_header`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RtpHeader {
     /// RTP version (must be 2).
@@ -43,10 +43,20 @@ const RTP_FIXED_HEADER_LEN: usize = 12;
 /// Validates the minimum length and version field, then walks past the
 /// CSRC list and any header extension to compute `payload_offset`.
 ///
+/// # Arguments
+///
+/// * `data` — raw RTP packet bytes in network (big-endian) byte order,
+///   starting at the first byte of the fixed header.
+///
+/// # Returns
+///
+/// The parsed `RtpHeader`, with `payload_offset` pointing at the first
+/// media payload byte within `data`.
+///
 /// # Errors
 ///
-/// [`ParseError::TooShort`] when the data is too short for the declared
-/// header fields; [`ParseError::BadRtpVersion`] when the version is not 2.
+/// `ParseError::TooShort` when the data is too short for the declared
+/// header fields; `ParseError::BadRtpVersion` when the version is not 2.
 ///
 /// # Examples
 ///
@@ -140,6 +150,8 @@ pub fn parse_rtp_header(data: &[u8]) -> Result<RtpHeader, ParseError> {
     })
 }
 
+/// Unit tests for RTP header parsing: happy path, CSRC lists, header
+/// extensions, marker bit, and truncation/version error handling.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +170,8 @@ mod tests {
         pkt
     }
 
+    /// A plain 12-byte header parses with every field decoded and
+    /// `payload_offset` at 12.
     #[test]
     fn parse_valid_rtp_header() {
         let data = build_rtp(0xDEADBEEF, 1234, 160000, 0, &[0xFF; 160]);
@@ -175,6 +189,8 @@ mod tests {
         assert_eq!(hdr.payload_offset, 12);
     }
 
+    /// Two CSRC entries advance `payload_offset` by 8 bytes past the
+    /// fixed header.
     #[test]
     fn parse_rtp_with_csrc() {
         let mut data = Vec::new();
@@ -195,6 +211,8 @@ mod tests {
         assert_eq!(hdr.payload_offset, 12 + 8); // 12 fixed + 2*4 CSRC
     }
 
+    /// A header extension (2-word body) moves `payload_offset` past the
+    /// 4-byte extension header plus its data.
     #[test]
     fn parse_rtp_with_extension() {
         let mut data = Vec::new();
@@ -219,6 +237,8 @@ mod tests {
         assert_eq!(hdr.payload_offset, 24);
     }
 
+    /// Setting the high bit of byte 1 yields `marker == true` without
+    /// disturbing the payload type.
     #[test]
     fn parse_rtp_with_marker() {
         let mut data = build_rtp(0x12345678, 999, 80000, 0, &[0x00; 20]);
@@ -230,6 +250,7 @@ mod tests {
         assert_eq!(hdr.payload_type, 0);
     }
 
+    /// A 3-byte input (shorter than the fixed header) is rejected.
     #[test]
     fn too_short_returns_error() {
         let data = [0x80, 0x00, 0x00]; // Only 3 bytes
@@ -237,6 +258,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Version 3 in the V bits is rejected with an error.
     #[test]
     fn wrong_version_returns_error() {
         // Version 3 instead of 2
@@ -246,6 +268,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Version 0 (e.g. STUN or garbage traffic) is rejected with an error.
     #[test]
     fn version_0_returns_error() {
         let mut data = build_rtp(1, 1, 1, 0, &[0; 10]);
@@ -254,6 +277,8 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// CC=15 with no CSRC data present errors instead of reading past the
+    /// buffer.
     #[test]
     fn csrc_count_exceeds_data_returns_error() {
         let mut data = Vec::new();

@@ -81,10 +81,10 @@ pub enum Error {
 }
 
 /// Errors from the protocol parsers re-exported at the crate root:
-/// [`parse_sip`](crate::sip::parser::parse_sip),
-/// [`parse_sip_bytes`](crate::sip::parser::parse_sip_bytes),
-/// [`parse_rtp_header`](crate::rtp::parser::parse_rtp_header) and
-/// [`parse_sdp`](crate::sip::sdp::parse_sdp).
+/// `parse_sip`,
+/// `parse_sip_bytes`,
+/// `parse_rtp_header` and
+/// `parse_sdp`.
 ///
 /// Variants are matchable (the point of the type); `Display` carries the
 /// human-readable message. The `what` fields say which structure the
@@ -175,8 +175,8 @@ pub enum ParseError {
 }
 
 /// Errors from the capture-file and packet-decoding surface re-exported
-/// at the crate root: [`PcapReader`](crate::PcapReader) and
-/// [`parse_packet`](crate::capture::parse::parse_packet).
+/// at the crate root: `PcapReader` and
+/// `parse_packet`.
 ///
 /// # Examples
 ///
@@ -272,10 +272,10 @@ pub enum CaptureError {
 
     /// The bytes are a gzip stream, not a raw capture; decompress first.
     ///
-    /// [`crate::capture::pcap_reader::decompress_capture`] (and sipnab's file
+    /// `crate::capture::pcap_reader::decompress_capture` (and sipnab's file
     /// loaders, which call it) handle this transparently — this error is only
     /// seen by callers that hand a still-compressed buffer straight to
-    /// [`crate::PcapReader::new`].
+    /// `crate::PcapReader::new`.
     #[error(
         "gzip-compressed capture; decompress it first \
          (sipnab's file loaders and decompress_capture do this automatically)"

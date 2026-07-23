@@ -14,13 +14,14 @@ use crate::sip::SipMessage;
 /// matches is killed regardless of UA/behavioral scanner detection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KillTarget {
+    /// The IP address that must match the SIP request source.
     ip: IpAddr,
     /// Inclusive `(lo, hi)` source-port range; `None` matches any port.
     ports: Option<(u16, u16)>,
 }
 
 impl KillTarget {
-    /// Parse a `-K` / `--kill-target` spec into a [`KillTarget`].
+    /// Parse a `-K` / `--kill-target` spec into a `KillTarget`.
     ///
     /// Accepted forms:
     /// - `ADDR` — bare IPv4/IPv6, matches any source port (`10.0.0.1`, `::1`).
@@ -221,6 +222,7 @@ fn simple_hash(data: &[u8]) -> u32 {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for scanner-kill response building and kill-target parsing.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,10 +231,13 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The source IP used to simulate a scanner.
     fn scanner_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99))
     }
 
+    /// HEP-origin traffic is kill-ineligible by default and eligible only on
+    /// opt-in; live/pcap traffic is always eligible.
     #[test]
     fn kill_eligibility_blocks_unauthed_hep_by_default() {
         // Live/pcap traffic is always eligible.
@@ -249,20 +254,24 @@ mod tests {
         );
     }
 
+    /// The local address used as the packet destination.
     fn local_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))
     }
 
+    /// A fixed capture timestamp for the parsed messages.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message;
 
+    /// Build raw SIP request bytes with an empty body.
     fn build_sip_bytes(first_line: &str, headers: &[&str]) -> Vec<u8> {
         build_sip_message(first_line, headers, b"")
     }
 
+    /// Build an INVITE request with a single Via and no To-tag.
     fn make_invite() -> SipMessage {
         let raw = build_sip_bytes(
             "INVITE sip:target@example.com SIP/2.0",
@@ -288,6 +297,7 @@ mod tests {
         .expect("parse")
     }
 
+    /// Build an OPTIONS request with two Via headers and an existing To-tag.
     fn make_options() -> SipMessage {
         let raw = build_sip_bytes(
             "OPTIONS sip:target@example.com SIP/2.0",
@@ -313,6 +323,8 @@ mod tests {
         .expect("parse")
     }
 
+    /// A 200 OK response copies the request's Via/From/Call-ID/CSeq and adds a
+    /// To-tag.
     #[test]
     fn build_200_ok_for_invite() {
         let msg = make_invite();
@@ -330,6 +342,7 @@ mod tests {
         assert!(text.ends_with("\r\n\r\n"));
     }
 
+    /// A 404 response uses the "Not Found" reason phrase.
     #[test]
     fn build_404_response() {
         let msg = make_invite();
@@ -339,6 +352,7 @@ mod tests {
         assert!(text.starts_with("SIP/2.0 404 Not Found\r\n"));
     }
 
+    /// A 403 response uses the "Forbidden" reason phrase.
     #[test]
     fn build_403_response() {
         let msg = make_invite();
@@ -348,6 +362,7 @@ mod tests {
         assert!(text.starts_with("SIP/2.0 403 Forbidden\r\n"));
     }
 
+    /// An existing To-tag is preserved and no synthetic tag is added.
     #[test]
     fn preserves_existing_to_tag() {
         let msg = make_options();
@@ -359,6 +374,7 @@ mod tests {
         assert!(!text.contains("tag=sn-"));
     }
 
+    /// All Via headers from the request are copied in order.
     #[test]
     fn preserves_multiple_via_headers() {
         let msg = make_options();
@@ -369,6 +385,7 @@ mod tests {
         assert!(text.contains("Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-proxy\r\n"));
     }
 
+    /// The response echoes the request's CSeq verbatim.
     #[test]
     fn response_contains_correct_cseq() {
         let msg = make_options();
@@ -378,6 +395,7 @@ mod tests {
         assert!(text.contains("CSeq: 42 OPTIONS\r\n"));
     }
 
+    /// Building a response for a SIP response message returns `None`.
     #[test]
     fn returns_none_for_response_message() {
         let raw = build_sip_bytes(
@@ -404,6 +422,7 @@ mod tests {
         assert!(build_scanner_response(&msg, 200).is_none());
     }
 
+    /// An unrecognized response code uses the "Unknown" reason phrase.
     #[test]
     fn unknown_response_code_uses_unknown_reason() {
         let msg = make_invite();
@@ -415,10 +434,12 @@ mod tests {
 
     // ── KillTarget (sipgrep -K targeted kill) ────────────────────────
 
+    /// Construct an IPv4 `IpAddr` from four octets.
     fn ip4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
 
+    /// A bare IPv4 target matches that address on any source port.
     #[test]
     fn parse_bare_ipv4_matches_any_port() {
         let t = KillTarget::parse("10.0.0.1").expect("valid");
@@ -428,6 +449,7 @@ mod tests {
         assert!(!t.matches(ip4(10, 0, 0, 2), 5060));
     }
 
+    /// An `ADDR:PORT` target matches only that single source port.
     #[test]
     fn parse_ipv4_single_port() {
         let t = KillTarget::parse("10.0.0.1:5060").expect("valid");
@@ -435,6 +457,7 @@ mod tests {
         assert!(!t.matches(ip4(10, 0, 0, 1), 5061));
     }
 
+    /// An `ADDR:LO-HI` target matches ports inclusive of both boundaries.
     #[test]
     fn parse_ipv4_port_range_inclusive() {
         let t = KillTarget::parse("10.0.0.1:5060-5090").expect("valid");
@@ -446,6 +469,8 @@ mod tests {
         assert!(!t.matches(ip4(10, 0, 0, 2), 5075)); // wrong ip
     }
 
+    /// A bare IPv6 target matches any port; a bracketed IPv6 range honors its
+    /// bounds.
     #[test]
     fn parse_bare_ipv6_and_bracketed_with_port() {
         let bare = KillTarget::parse("::1").expect("valid bare v6");
@@ -458,6 +483,8 @@ mod tests {
         assert!(!bracketed.matches(v6, 5062));
     }
 
+    /// Malformed kill-target specs are hard parse errors, not permissive
+    /// matches.
     #[test]
     fn parse_rejects_invalid_specs() {
         // Each of these must be a hard error, not a silently-permissive target.

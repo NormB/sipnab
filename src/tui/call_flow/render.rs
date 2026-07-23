@@ -35,8 +35,17 @@ const SELECTION_BG: Color = Color::Rgb(40, 40, 60);
 
 /// Build the formatted lines for a call flow ladder diagram.
 ///
-/// Returns `None` if the dialog is not found or has no messages.
-/// Returns `Some((msg_count, lines))` on success, where `msg_count` can be
+/// Convenience wrapper over `build_call_flow_lines_with_width` at a fixed
+/// 120-column terminal width.
+///
+/// # Arguments
+/// * `store` — dialog store to look `call_id` up in.
+/// * `call_id` — Call-ID of the dialog to render.
+/// * `theme` — color theme for the ladder styling.
+///
+/// # Returns
+/// `None` if the dialog is not found or has no messages.
+/// `Some((msg_count, lines))` on success, where `msg_count` can be
 /// used as a cache invalidation key.
 pub fn build_call_flow_lines(
     store: &DialogStore,
@@ -47,6 +56,20 @@ pub fn build_call_flow_lines(
 }
 
 /// Build call flow lines with a specific terminal width for arrow sizing.
+///
+/// The arrow span is `term_width` minus the timestamp and endpoint columns,
+/// floored at `MIN_ARROW_WIDTH`. Appends a "Correlated Legs" section when
+/// the store knows other dialogs correlated with this one.
+///
+/// # Arguments
+/// * `store` — dialog store to look `call_id` up in.
+/// * `call_id` — Call-ID of the dialog to render.
+/// * `term_width` — terminal width in columns, used to size the arrows.
+/// * `theme` — color theme for the ladder styling.
+///
+/// # Returns
+/// `None` if the dialog is not found or has no messages; otherwise
+/// `Some((msg_count, lines))` with `msg_count` usable as a cache key.
 pub fn build_call_flow_lines_with_width(
     store: &DialogStore,
     call_id: &str,
@@ -100,6 +123,20 @@ pub fn build_call_flow_lines_with_width(
 }
 
 /// Build call flow lines with display options (SDP mode, timestamp mode, color mode, etc.).
+///
+/// Same shape as `build_call_flow_lines_with_width` but rendering through
+/// `format_ladder_with_options`, so all `FlowDisplayOptions` display modes
+/// apply. Appends the "Correlated Legs" section when present.
+///
+/// # Arguments
+/// * `store` — dialog store to look `call_id` up in.
+/// * `call_id` — Call-ID of the dialog to render.
+/// * `term_width` — terminal width in columns, used to size the arrows.
+/// * `opts` — full display options (SDP/timestamp/color modes, theme, ...).
+///
+/// # Returns
+/// `None` if the dialog is not found or has no messages; otherwise
+/// `Some((msg_count, lines))` with `msg_count` usable as a cache key.
 pub fn build_call_flow_lines_with_options(
     store: &DialogStore,
     call_id: &str,
@@ -142,6 +179,21 @@ pub fn build_call_flow_lines_with_options(
 }
 
 /// Build extended (multi-leg) flow lines merging correlated dialogs.
+///
+/// Collects the dialog's messages plus every correlated leg's, sorts them by
+/// timestamp, and renders one merged ladder under an "Extended Flow" header.
+/// RTP bars and selection are disabled in this merged view (the row indices
+/// would not match the single-dialog selection).
+///
+/// # Arguments
+/// * `store` — dialog store; supplies the dialog and its correlated legs.
+/// * `call_id` — Call-ID of the primary dialog.
+/// * `term_width` — terminal width in columns, used to size the arrows.
+/// * `opts` — display options; cloned with `show_rtp`/`selected_msg` off.
+///
+/// # Returns
+/// `None` if the dialog is not found or has no messages; otherwise
+/// `Some((merged_msg_count, lines))`.
 pub fn build_extended_flow_lines(
     store: &DialogStore,
     call_id: &str,
@@ -191,6 +243,20 @@ pub fn build_extended_flow_lines(
 }
 
 /// Render the call flow ladder diagram for a dialog identified by Call-ID.
+///
+/// Thin wrapper: builds the lines via `build_call_flow_lines_with_width` at
+/// the area's width and hands them to `render_call_flow_lines`.
+///
+/// # Arguments
+/// * `frame` — frame to draw into.
+/// * `area` — target region; its width sizes the arrows.
+/// * `store` — dialog store to look `call_id` up in.
+/// * `call_id` — Call-ID of the dialog to render.
+/// * `scroll_offset` — number of lines scrolled off the top.
+/// * `theme` — color theme for the ladder styling.
+///
+/// # Side effects
+/// Draws the ladder (or a fallback message) into `frame` over `area`.
 pub fn render_call_flow(
     frame: &mut Frame,
     area: Rect,
@@ -206,6 +272,19 @@ pub fn render_call_flow(
 }
 
 /// Render call flow from pre-built lines or a builder closure.
+///
+/// # Arguments
+/// * `frame` — frame to draw into.
+/// * `area` — target region for the paragraph.
+/// * `_call_id` — unused; kept for signature compatibility with callers.
+/// * `scroll_offset` — vertical paragraph scroll in lines.
+/// * `theme` — theme for the fallback message styling.
+/// * `build` — closure producing `(msg_count, lines)`; `None` means the
+///   dialog is missing or empty.
+///
+/// # Side effects
+/// Draws a wrapping, scrolled `Paragraph` of the built lines into `frame`;
+/// when `build` returns `None`, draws "Dialog not found or empty." instead.
 pub fn render_call_flow_lines(
     frame: &mut Frame,
     area: Rect,
@@ -267,8 +346,11 @@ pub(crate) fn rtp_channel_bar(label: &str, width: usize) -> String {
 
 /// Navigation state for the call flow direct renderer.
 pub struct FlowNavigation {
+    /// Logical ladder rows scrolled off the top of the viewport.
     pub scroll_offset: usize,
+    /// Marked row for the mark/delta badge (Δ to the selected row), if any.
     pub mark_index: Option<usize>,
+    /// Index of the currently selected row in the messages slice.
     pub selected_index: usize,
 }
 
@@ -277,6 +359,29 @@ pub struct FlowNavigation {
 /// Instead of building `Line`/`Span` objects and rendering via `Paragraph`,
 /// this writes characters at exact `(x, y)` coordinates in the buffer,
 /// guaranteeing perfect column alignment regardless of character widths.
+///
+/// Geometry: row 0 holds participant labels, row 1 the pipe tops; rows 2
+/// through `height - 3` are the scrollable message window; the last two
+/// rows are the pinned footer (pipes + labels). Participant pipes are
+/// spread evenly across the width after the timestamp column, and the
+/// area's last column is reserved for the ladder scrollbar. Annotations
+/// (PDD, SDP badge, fold label) are clipped at the area's right edge so
+/// nothing bleeds under a split detail pane.
+///
+/// # Arguments
+/// * `frame` — frame whose buffer is painted directly.
+/// * `area` — target region; also the clip bounds for annotations.
+/// * `participants` — swimlane endpoints, one pipe per entry.
+/// * `messages` — prepared rows to draw (arrows, RTP bars, spacers).
+/// * `nav` — scroll offset, selection index and optional mark.
+/// * `theme` — color theme for pipes, labels and fallback text.
+///
+/// # Side effects
+/// Writes directly into the frame's buffer: labels, pipes, arrows, RTP
+/// bars, annotations, the mark/delta badge, and a full-row background
+/// highlight on the selected row. Degenerate geometry (< 30x5, no
+/// participants, or a sub-10-column pipe gap) paints a short notice and
+/// returns without drawing the ladder.
 pub fn render_call_flow_direct(
     frame: &mut Frame,
     area: Rect,
@@ -632,6 +737,20 @@ fn participant_label_cells(pipes: &[u16], area_x: u16, area_right: u16) -> Vec<(
 /// ladder look: the first label left-aligned on its pipe, the last
 /// right-aligned ending on its pipe, middle labels centered on theirs —
 /// then clamped into the cell.
+///
+/// # Arguments
+/// * `buf` — buffer to paint into.
+/// * `y` — buffer row for the labels (header or footer).
+/// * `participants` — one label per pipe.
+/// * `pipes` — pipe column per participant, parallel to `participants`.
+/// * `cells` — allowed column range per label (from
+///   `participant_label_cells`).
+/// * `max_label` — additional per-label truncation cap in characters.
+/// * `style` — style applied to every label.
+///
+/// # Side effects
+/// Writes the truncated labels into `buf` at row `y`; zero-width cells and
+/// empty labels are skipped.
 fn draw_participant_labels(
     buf: &mut ratatui::buffer::Buffer,
     y: u16,
@@ -669,7 +788,10 @@ fn draw_participant_labels(
 
 /// Render call flow with a fallback "not found" message using direct buffer painting.
 ///
-/// This is the TUI entry point that replaces the Paragraph-based `render_call_flow_lines`.
+/// This is the TUI entry point that replaces the Paragraph-based
+/// `render_call_flow_lines`. `prepared` is the cached
+/// (participants, messages) pair from `prepare_messages`; `None` paints
+/// "Dialog not found or empty." into the frame instead of a ladder.
 pub fn render_call_flow_direct_or_empty(
     frame: &mut Frame,
     area: Rect,
@@ -695,6 +817,7 @@ pub fn render_call_flow_direct_or_empty(
 
 /// Parameters for the message detail panel (right side of the split view).
 pub struct MessageDetailView<'a> {
+    /// Call-ID of the dialog holding the message to detail.
     pub call_id: &'a str,
     /// Index of the message to detail (raw index into the dialog).
     pub selected_msg: usize,
@@ -704,6 +827,7 @@ pub struct MessageDetailView<'a> {
     /// message count — not the whole dialog (which made the counter look
     /// stuck on a filtered page). `None` = whole-dialog counts.
     pub transaction_filter: Option<&'a (u32, String)>,
+    /// Vertical scroll offset in display rows (clamped during render).
     pub scroll_offset: u16,
     /// Highlights the border when the detail pane holds keyboard focus
     /// (Tab toggles it).
@@ -716,6 +840,7 @@ pub struct MessageDetailView<'a> {
     /// Horizontal scroll offset (display columns); ignored while `wrap`
     /// is on.
     pub hscroll: u16,
+    /// Color theme for the border, title, and SIP highlighting.
     pub theme: &'a Theme,
 }
 
@@ -738,8 +863,25 @@ pub struct DetailMetrics {
 
 /// Render the message detail panel (right side of the split view).
 ///
-/// Returns the number of content lines so the caller can clamp the scroll
-/// offset to the message length.
+/// Draws a bordered pane titled `[pos/count] <method-or-status>` holding the
+/// syntax-highlighted raw SIP message, wrapped or h-scrollable per
+/// `view.wrap`, with vertical/horizontal scrollbars when content overflows.
+///
+/// # Arguments
+/// * `frame` — frame to draw into.
+/// * `area` — target region including the border.
+/// * `store` — dialog store to look the message up in.
+/// * `view` — all panel parameters (selection, scrolls, wrap, focus, theme).
+///
+/// # Returns
+/// The `DetailMetrics` this render actually used — total display rows,
+/// widest line, and both scroll offsets after clamping — so the caller can
+/// persist the clamps and drive scroll keys. Zeroed (`default`) when the
+/// dialog or message is missing or the inner area is empty.
+///
+/// # Side effects
+/// Draws the block, content paragraph and any scrollbars into `frame`;
+/// paints a fallback notice when the dialog or message is missing.
 pub fn render_message_detail(
     frame: &mut Frame,
     area: Rect,
@@ -947,7 +1089,7 @@ fn wrap_styled_lines(lines: Vec<Line<'static>>, width: u16) -> Vec<Line<'static>
 }
 
 /// Total logical rows the ladder occupies. Each message paints `1 + extra_lines`
-/// rows; this matches the row accounting in [`render_call_flow_direct`] and so
+/// rows; this matches the row accounting in `render_call_flow_direct` and so
 /// is the correct content length for the ladder scrollbar.
 pub fn ladder_total_rows(messages: &[FormattedMessage]) -> usize {
     messages.iter().map(|m| 1 + m.extra_lines.len()).sum()
@@ -979,7 +1121,18 @@ pub fn ladder_visible_rows(height: u16) -> usize {
 }
 
 /// Render a vertical scrollbar on the right edge of the ladder pane when the
-/// flow is taller than the pane. No-op when everything already fits.
+/// flow is taller than the pane. No-op when everything already fits (or the
+/// pane is under 5 rows).
+///
+/// # Arguments
+/// * `frame` — frame to draw into.
+/// * `area` — the ladder pane; the scrollbar rides its right edge.
+/// * `total_rows` — ladder content length (from `ladder_total_rows`).
+/// * `position` — current scroll position in ladder rows.
+/// * `theme` — colors for the thumb and track.
+///
+/// # Side effects
+/// Draws the stateful scrollbar widget into `frame` when overflowing.
 pub fn render_ladder_scrollbar(
     frame: &mut Frame,
     area: Rect,
@@ -1003,6 +1156,12 @@ pub fn render_ladder_scrollbar(
 }
 
 /// Highlight a raw SIP message for the detail panel.
+///
+/// Styles `raw_text` line by line: the first line (request/status line)
+/// bold, header lines split at the first `:` into a colored name and plain
+/// value, and everything after the first blank line (the body) muted +
+/// italic. Returns the styled lines; an empty input yields a single
+/// "(empty message)" placeholder line.
 fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_body = false;
@@ -1058,6 +1217,23 @@ fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
 // ── Ladder formatting (Paragraph path) ─────────────────────────────
 
 /// Format all messages in a dialog as ladder diagram lines.
+///
+/// Two-column Paragraph-path ladder: the left pipe is the first message's
+/// source, the right pipe its destination, and every arrow points by
+/// whether a message's source matches the left address. Emits a header
+/// row with both endpoint labels, pipe rows top and bottom, and one arrow
+/// line per message (with a PDD annotation on the first 180).
+///
+/// # Arguments
+/// * `messages` — the dialog's messages in capture order.
+/// * `_first_ts` — unused; kept for signature parity with the options path.
+/// * `pdd_ms` — post-dial delay to annotate on the first 180, if known.
+/// * `arrow_width` — column span available for each arrow.
+/// * `theme` — color theme for timestamps, pipes and arrows.
+///
+/// # Returns
+/// The styled lines; a single "(no messages)" line when `messages` is
+/// empty.
 pub fn format_ladder(
     messages: &[SipMessage],
     _first_ts: chrono::DateTime<chrono::Utc>,
@@ -1162,6 +1338,24 @@ pub fn format_ladder(
 }
 
 /// Format ladder with full display options (SDP mode, timestamp mode, color, etc.).
+///
+/// The options-aware variant of `format_ladder` for the Paragraph path:
+/// timestamps follow `opts.ts_mode` (Scaled falls back to delta-prev — no
+/// spacer rows here), arrows are colored per `opts.color_mode`, SDP info
+/// lines follow `opts.sdp_mode`, the selected message gains a
+/// `[SELECTED]` marker, and `show_rtp` draws an "RTP stream active" line
+/// when a BYE ends an established call.
+///
+/// # Arguments
+/// * `messages` — the dialog's messages in capture order.
+/// * `first_ts` — reference timestamp for the delta timestamp modes.
+/// * `pdd_ms` — post-dial delay to annotate on the first 180, if known.
+/// * `arrow_width` — column span available for each arrow.
+/// * `opts` — full display options.
+///
+/// # Returns
+/// The styled lines; a single "(no messages)" line when `messages` is
+/// empty.
 fn format_ladder_with_options(
     messages: &[SipMessage],
     first_ts: chrono::DateTime<chrono::Utc>,
@@ -1403,6 +1597,8 @@ fn format_ladder_with_options(
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Tests for both render paths: RTP channel bars, ladder building, direct
+/// buffer painting, label cells, and the detail-pane scroll geometry.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1410,8 +1606,11 @@ mod tests {
 
     // ── rtp_channel_bar: double-rail centered media channel ───────────
 
+    /// The `═` double-rail glyph the RTP channel bar is built from.
     const RAIL: char = '\u{2550}'; // ═
 
+    /// The bar fills exactly `width` columns, rails on both ends, label
+    /// centered, using `═` — never the SIP arrows' single line.
     #[test]
     fn rtp_bar_centers_with_double_rail() {
         let bar = rtp_channel_bar(" RTP \u{00B7} PCMU ", 40);
@@ -1434,6 +1633,7 @@ mod tests {
         );
     }
 
+    /// A label wider than the gap clamps to `width` instead of overflowing.
     #[test]
     fn rtp_bar_truncates_instead_of_overflowing() {
         // Label wider than the gap → truncated to width, never left-aligned
@@ -1442,6 +1642,7 @@ mod tests {
         assert_eq!(bar.chars().count(), 8, "must clamp to width");
     }
 
+    /// A label exactly as wide as the bar gets no rails.
     #[test]
     fn rtp_bar_exact_width_is_label_only() {
         let label = "RTP active"; // 10 chars
@@ -1449,6 +1650,8 @@ mod tests {
         assert_eq!(bar, label, "exact fit should not add rails");
     }
 
+    /// Empty labels, zero width, special/NUL chars and width 1 all render
+    /// without panic or overflow.
     #[test]
     fn rtp_bar_adversarial_inputs() {
         // Empty label → pure rail.
@@ -1468,6 +1671,7 @@ mod tests {
         assert_eq!(rtp_channel_bar("xyz", 1).chars().count(), 1);
     }
 
+    /// An empty dialog formats to the single "(no messages)" line.
     #[test]
     fn format_ladder_empty_messages() {
         let theme = crate::tui::Theme::default();
@@ -1476,11 +1680,12 @@ mod tests {
     }
 
     // ── Arrow DIRECTION: requests and responses point opposite ways ────
-    // A request travels A→B (arrowhead ▶ on the right); its response travels
-    // B→A (arrowhead ◀ on the left). Regression guard for the gap where the
-    // ladder direction was never asserted end to end — only the request/response
-    // *src↔dst* swap makes the arrow flip, so this exercises real A→B / B→A
-    // messages, not the glyph helper in isolation.
+
+    /// A request travels A→B (arrowhead ▶ on the right); its response
+    /// travels B→A (arrowhead ◀ on the left). Regression guard for the gap
+    /// where the ladder direction was never asserted end to end — only the
+    /// request/response *src↔dst* swap makes the arrow flip, so this
+    /// exercises real A→B / B→A messages, not the glyph helper in isolation.
     #[test]
     fn ladder_request_points_right_response_points_left() {
         let theme = crate::tui::Theme::default();
@@ -1511,10 +1716,11 @@ mod tests {
         );
     }
 
-    // Faithful rendering: when a (malformed/synthetic) response carries the SAME
-    // src→dst as the request — e.g. a one-directional load corpus — the arrow
-    // follows the actual packet addresses (forward), it is NOT force-flipped by
-    // status code. This documents that arrow direction is wire-driven.
+    /// Faithful rendering: when a (malformed/synthetic) response carries the
+    /// SAME src→dst as the request — e.g. a one-directional load corpus —
+    /// the arrow follows the actual packet addresses (forward), it is NOT
+    /// force-flipped by status code. This documents that arrow direction is
+    /// wire-driven.
     #[test]
     fn ladder_arrow_follows_actual_src_dst_not_status() {
         let theme = crate::tui::Theme::default();
@@ -1552,6 +1758,7 @@ mod tests {
         );
     }
 
+    /// A parsed single-message dialog yields header + bars + message lines.
     #[test]
     fn format_ladder_produces_lines() {
         use crate::sip::parser::parse_sip;
@@ -1591,16 +1798,21 @@ mod tests {
     use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixture endpoint A (10.0.0.1), the request originator.
     fn ip_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
+    /// Fixture endpoint B (10.0.0.2), the request target.
     fn ip_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
+    /// Fixed base timestamp all fixture dialogs are built from.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble raw SIP bytes from `first_line`, `headers` and `body`,
+    /// appending a computed Content-Length header.
     fn build_raw(first_line: &str, headers: &[&str], body: &str) -> Vec<u8> {
         let mut s = String::new();
         s.push_str(first_line);
@@ -1674,6 +1886,8 @@ mod tests {
             .expect("parse INVITE+SDP")
     }
 
+    /// Baseline `FlowDisplayOptions`: SDP off, absolute timestamps, method
+    /// coloring, no RTP, no selection — tests override individual fields.
     fn opts<'a>(theme: &'a Theme) -> FlowDisplayOptions<'a> {
         let resolver: &'static crate::names::NameResolver =
             Box::leak(Box::new(crate::names::NameResolver::new()));
@@ -1690,10 +1904,12 @@ mod tests {
         }
     }
 
+    /// Flatten a styled line to its plain text.
     fn line_to_string(line: &Line<'_>) -> String {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Flatten styled lines to newline-joined plain text.
     fn lines_to_string(lines: &[Line<'_>]) -> String {
         lines
             .iter()
@@ -1738,10 +1954,12 @@ mod tests {
         store
     }
 
+    /// A `TestBackend` terminal of the given size.
     fn terminal(w: u16, h: u16) -> Terminal<TestBackend> {
         Terminal::new(TestBackend::new(w, h)).unwrap()
     }
 
+    /// Dump the terminal buffer as newline-separated rows of symbols.
     fn buffer_text(term: &Terminal<TestBackend>) -> String {
         let buf = term.backend().buffer();
         let area = buf.area;
@@ -1757,6 +1975,8 @@ mod tests {
 
     // ── direct-path selection highlight (R2: no shifting marker) ────────
 
+    /// A minimal INVITE `FormattedMessage` with the given timestamp text,
+    /// selection state and columns; all other fields defaulted.
     fn fmt_msg(
         ts: &str,
         state: SelectionState,
@@ -1787,9 +2007,10 @@ mod tests {
         }
     }
 
-    // The current row is marked by a full-width background highlight, never a
-    // leading glyph: no '▎'/'>' anywhere, and content is NOT shifted right —
-    // the selected row's timestamp still begins in column 0 (SNB UX fix R2).
+    /// The current row is marked by a full-width background highlight, never
+    /// a leading glyph: no '▎'/'>' anywhere, and content is NOT shifted
+    /// right — the selected row's timestamp still begins in column 0 (SNB UX
+    /// fix R2).
     #[test]
     fn direct_render_selection_highlights_row_without_shifting() {
         let theme = Theme::default();
@@ -1999,10 +2220,11 @@ mod tests {
         }
     }
 
-    // Fold info must be visible INSIDE the ladder area: the retx count rides
-    // on the arrow label itself, and no annotation may bleed past the area's
-    // right edge — the split detail pane renders there and covers anything
-    // written into that region (which made folds look like silent data loss).
+    /// Fold info must be visible INSIDE the ladder area: the retx count
+    /// rides on the arrow label itself, and no annotation may bleed past the
+    /// area's right edge — the split detail pane renders there and covers
+    /// anything written into that region (which made folds look like silent
+    /// data loss).
     #[test]
     fn fold_count_visible_in_ladder_and_no_bleed_past_area() {
         let theme = Theme::default();
@@ -2056,6 +2278,8 @@ mod tests {
 
     // ── build_call_flow_lines / _with_width ────────────────────────────
 
+    /// A full dialog builds one line per message plus header and bars, and
+    /// names every method/status.
     #[test]
     fn build_lines_full_dialog_has_methods_and_status() {
         let theme = Theme::default();
@@ -2071,6 +2295,7 @@ mod tests {
         }
     }
 
+    /// An unknown Call-ID yields `None`.
     #[test]
     fn build_lines_missing_dialog_returns_none() {
         let theme = Theme::default();
@@ -2078,6 +2303,7 @@ mod tests {
         assert!(build_call_flow_lines(&store, "nope@test", &theme).is_none());
     }
 
+    /// The PDD annotation lands on the 180 Ringing line.
     #[test]
     fn build_lines_pdd_annotation_on_180() {
         let theme = Theme::default();
@@ -2088,6 +2314,8 @@ mod tests {
         assert!(text.contains("PDD:"), "expected PDD annotation in:\n{text}");
     }
 
+    /// A too-narrow width clamps to `MIN_ARROW_WIDTH` without changing the
+    /// logical line count.
     #[test]
     fn build_lines_narrow_width_clamps_arrow() {
         let theme = Theme::default();
@@ -2107,6 +2335,7 @@ mod tests {
         assert!(nh < wh, "narrow header {nh} should be < wide {wh}");
     }
 
+    /// A one-message dialog builds header + bar + message + bar.
     #[test]
     fn build_lines_single_message_dialog() {
         let theme = Theme::default();
@@ -2119,6 +2348,7 @@ mod tests {
         assert!(lines_to_string(&lines).contains("INVITE"));
     }
 
+    /// Provisional (100) and error-final (480) responses both render.
     #[test]
     fn build_lines_provisional_then_error_final() {
         let theme = Theme::default();
@@ -2148,6 +2378,7 @@ mod tests {
 
     // ── build_call_flow_lines_with_options ─────────────────────────────
 
+    /// A selected message gains the `[SELECTED]` marker in the options path.
     #[test]
     fn build_lines_with_options_selected_marker() {
         let theme = Theme::default();
@@ -2159,6 +2390,8 @@ mod tests {
         assert!(lines_to_string(&lines).contains("[SELECTED]"));
     }
 
+    /// Summary SDP mode lists codecs and `show_rtp` draws the legacy
+    /// "RTP stream active" line at the BYE.
     #[test]
     fn build_lines_with_options_sdp_summary_and_rtp() {
         let theme = Theme::default();
@@ -2196,6 +2429,7 @@ mod tests {
         );
     }
 
+    /// Full SDP mode emits the raw SDP body lines.
     #[test]
     fn build_lines_with_options_sdp_full_emits_body_lines() {
         let theme = Theme::default();
@@ -2213,6 +2447,7 @@ mod tests {
         assert!(text.contains("a=rtpmap:0 PCMU/8000"));
     }
 
+    /// DeltaPrev mode renders relative "+n.nnns" timestamps.
     #[test]
     fn build_lines_with_options_delta_prev_timestamps() {
         let theme = Theme::default();
@@ -2225,6 +2460,7 @@ mod tests {
         assert!(lines_to_string(&lines).contains("+"));
     }
 
+    /// The options path also yields `None` for an unknown Call-ID.
     #[test]
     fn build_lines_with_options_missing_dialog_none() {
         let theme = Theme::default();
@@ -2235,6 +2471,8 @@ mod tests {
 
     // ── build_extended_flow_lines ──────────────────────────────────────
 
+    /// The extended view carries the "Extended Flow" header even without
+    /// correlated legs.
     #[test]
     fn extended_flow_single_leg_header() {
         let theme = Theme::default();
@@ -2251,6 +2489,7 @@ mod tests {
         assert!(text.contains("INVITE"));
     }
 
+    /// The extended view yields `None` for an unknown Call-ID.
     #[test]
     fn extended_flow_missing_dialog_none() {
         let theme = Theme::default();
@@ -2261,6 +2500,7 @@ mod tests {
 
     // ── render_call_flow / render_call_flow_lines ──────────────────────
 
+    /// `render_call_flow` paints the dialog's methods into the buffer.
     #[test]
     fn render_call_flow_paints_buffer() {
         let theme = Theme::default();
@@ -2275,6 +2515,7 @@ mod tests {
         assert!(!text.contains("Dialog not found"));
     }
 
+    /// A missing dialog paints the "Dialog not found or empty" fallback.
     #[test]
     fn render_call_flow_missing_shows_fallback() {
         let theme = Theme::default();
@@ -2286,6 +2527,7 @@ mod tests {
         assert!(buffer_text(&term).contains("Dialog not found or empty"));
     }
 
+    /// A 40-column terminal still renders (wrapped) without panicking.
     #[test]
     fn render_call_flow_narrow_width() {
         let theme = Theme::default();
@@ -2302,6 +2544,7 @@ mod tests {
         );
     }
 
+    /// Scrolling past the header rows brings later messages into view.
     #[test]
     fn render_call_flow_lines_scroll_offset() {
         let theme = Theme::default();
@@ -2323,6 +2566,7 @@ mod tests {
         );
     }
 
+    /// A builder returning `None` paints the fallback message.
     #[test]
     fn render_call_flow_lines_builder_returns_none() {
         let theme = Theme::default();
@@ -2335,6 +2579,8 @@ mod tests {
 
     // ── scrollbar / focus helpers ──────────────────────────────────────
 
+    /// The viewport is the pane height minus the 4 header/footer rows,
+    /// saturating at 0.
     #[test]
     fn ladder_visible_rows_reserves_header_footer() {
         // 2 rows for participant labels + pipes, 2 for footer.
@@ -2343,6 +2589,8 @@ mod tests {
         assert_eq!(ladder_visible_rows(0), 0);
     }
 
+    /// An overflowing message reports its row count and paints the vertical
+    /// scrollbar thumb.
     #[test]
     fn message_detail_reports_lines_and_renders_scrollbar() {
         let theme = Theme::default();
@@ -2383,6 +2631,7 @@ mod tests {
         );
     }
 
+    /// No scrollbar is painted when the whole message fits the pane.
     #[test]
     fn message_detail_no_scrollbar_when_it_fits() {
         let theme = Theme::default();
@@ -2447,7 +2696,10 @@ mod tests {
         store
     }
 
+    /// A `MessageDetailView` for message 0 of `call_id` with the given
+    /// scroll/wrap/hscroll and a shared default theme.
     fn detail_view(call_id: &str, scroll: u16, wrap: bool, hscroll: u16) -> MessageDetailView<'_> {
+        // Shared default theme so the returned view can borrow it 'static.
         static THEME: std::sync::OnceLock<Theme> = std::sync::OnceLock::new();
         MessageDetailView {
             call_id,
@@ -2519,6 +2771,8 @@ mod tests {
         );
     }
 
+    /// Render the detail pane at `w`x`h` and return the metrics plus the
+    /// buffer text.
     fn draw_detail(
         w: u16,
         h: u16,
@@ -2546,6 +2800,8 @@ mod tests {
         m.total_rows
     }
 
+    /// Content exactly filling the pane clamps a stale scroll to 0 and
+    /// paints no scrollbar.
     #[test]
     fn detail_exact_fit_has_no_scrollbar_and_clamps_stale_scroll_to_zero() {
         let store = store_with_message("fit@test", &[], "LASTBODY");
@@ -2565,6 +2821,8 @@ mod tests {
         );
     }
 
+    /// One row of overflow shows a scrollbar and End clamps to exactly one
+    /// row of scroll, revealing the last line.
     #[test]
     fn detail_single_row_overflow_scrolls_exactly_one() {
         let store = store_with_message("plus1@test", &[], "LASTBODY");
@@ -2589,6 +2847,7 @@ mod tests {
         assert_eq!(m0.total_rows, m1.total_rows);
     }
 
+    /// Wrapped row accounting counts continuation rows, not logical lines.
     #[test]
     fn wrapped_long_header_counts_visual_rows_not_logical_lines() {
         let long = format!("X-A: {}", "a".repeat(95)); // 100 cols
@@ -2604,6 +2863,8 @@ mod tests {
         );
     }
 
+    /// Wrap-induced overflow shows the scrollbar and keeps a nonzero scroll
+    /// even when the logical line count fits the viewport.
     #[test]
     fn wrapped_overflow_shows_scrollbar_even_when_logical_lines_fit() {
         let long = format!("X-A: {}", "a".repeat(60));
@@ -2623,6 +2884,8 @@ mod tests {
         );
     }
 
+    /// Under wrapping, End clamps to wrapped-rows-minus-viewport and the
+    /// last row is reachable.
     #[test]
     fn wrapped_scroll_reaches_the_last_row() {
         let long = format!("X-A: {}", "a".repeat(60));
@@ -2646,6 +2909,8 @@ mod tests {
         );
     }
 
+    /// Unwrapped mode truncates long lines (no continuation rows) and
+    /// reports the widest line in display columns.
     #[test]
     fn unwrapped_lines_truncate_and_report_max_width() {
         let long = format!("X-A: {}", "a".repeat(60)); // 65 cols
@@ -2667,6 +2932,8 @@ mod tests {
         );
     }
 
+    /// H-scroll shifts unwrapped content and clamps so the widest line's
+    /// tail lands on the last column.
     #[test]
     fn unwrapped_hscroll_shifts_content_and_clamps_at_the_widest_line() {
         let long = format!("X-A: {}", "a".repeat(60)); // 65 cols, inner width 24
@@ -2695,6 +2962,8 @@ mod tests {
         assert!(t0.contains("X-A:"), "unscrolled shows line starts:\n{t0}");
     }
 
+    /// The bottom h-scrollbar appears only for unwrapped horizontal
+    /// overflow — never while wrapping or when lines fit.
     #[test]
     fn horizontal_scrollbar_only_for_unwrapped_overflow() {
         let long = format!("X-A: {}", "a".repeat(60));
@@ -2720,6 +2989,7 @@ mod tests {
         );
     }
 
+    /// Wide (CJK) glyphs wrap and h-scroll by display columns, not chars.
     #[test]
     fn multibyte_wide_chars_wrap_and_hscroll_by_display_width() {
         // "X-U: " (5 cols) + 30 CJK chars (60 cols) = 65 display columns
@@ -2743,6 +3013,8 @@ mod tests {
         assert!(th.contains('好'), "CJK tail renders at max h-scroll:\n{th}");
     }
 
+    /// Degenerate pane sizes (down to 1x1) render without panicking and keep
+    /// the clamped scroll within the content.
     #[test]
     fn detail_tiny_panes_never_panic() {
         let long = format!("X-A: {}", "a".repeat(60));
@@ -2763,6 +3035,7 @@ mod tests {
         }
     }
 
+    /// The ladder scrollbar thumb paints when rows exceed the viewport.
     #[test]
     fn ladder_scrollbar_paints_when_overflowing() {
         let theme = Theme::default();
@@ -2778,6 +3051,7 @@ mod tests {
         );
     }
 
+    /// No ladder scrollbar is painted when the flow fits the pane.
     #[test]
     fn ladder_scrollbar_absent_when_fits() {
         let theme = Theme::default();
@@ -2790,6 +3064,8 @@ mod tests {
         assert!(text.trim().is_empty(), "no scrollbar expected:\n{text}");
     }
 
+    /// Focus only changes border styling: focused and unfocused renders
+    /// report identical metrics.
     #[test]
     fn message_detail_focus_highlights_border() {
         let theme = Theme::default();

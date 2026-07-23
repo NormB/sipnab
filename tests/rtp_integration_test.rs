@@ -32,17 +32,24 @@ use sipnab::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
+/// Absolute path to the `tests/pcap-samples` directory of real capture files.
 fn pcap_samples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("pcap-samples")
 }
 
+/// Deterministic timestamp `secs` seconds after the fixed base 1_700_000_000.
 fn ts(secs: i64) -> DateTime<Utc> {
     DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
 }
 
 /// Build a synthetic ParsedPacket with a valid RTP payload embedded.
+///
+/// # Arguments
+/// * `src_ip` / `dst_ip` / `src_port` / `dst_port` — the UDP 4-tuple.
+/// * `ssrc` / `seq` / `rtp_ts` / `pt` — RTP header fields; payload is 160
+///   bytes (20ms of G.711).
 #[allow(clippy::too_many_arguments)]
 fn make_rtp_parsed(
     src_ip: [u8; 4],
@@ -83,6 +90,8 @@ fn make_rtp_parsed(
     }
 }
 
+/// Builds an `RtpHeader` struct directly (V=2, no padding/extension/marker)
+/// with the given SSRC, sequence, timestamp, and payload type.
 fn make_rtp_header(ssrc: u32, seq: u16, rtp_ts: u32, pt: u8) -> RtpHeader {
     RtpHeader {
         version: 2,
@@ -110,6 +119,8 @@ fn build_rtp_bytes(ssrc: u32, seq: u16, rtp_ts: u32, pt: u8, payload: &[u8]) -> 
     pkt
 }
 
+/// Builds a one-media (audio, RTP/AVP 0, sendrecv) `SdpSession` whose
+/// session-level connection points at `addr:port`.
 fn make_sdp(addr: &str, port: u16) -> SdpSession {
     SdpSession {
         origin: None,
@@ -134,6 +145,10 @@ fn make_sdp(addr: &str, port: u16) -> SdpSession {
 }
 
 /// Convert a PcapReader packet into a Packet suitable for parse_packet().
+///
+/// # Arguments
+/// * `pkt` — the raw record read from the capture file.
+/// * `link_type` — the file's data-link type, stamped onto the packet.
 fn pcap_packet_to_packet(pkt: &sipnab::capture::pcap_reader::PcapPacket, link_type: u32) -> Packet {
     let ts_secs = pkt.timestamp_secs as i64;
     let ts_usecs = pkt.timestamp_usecs;
@@ -157,6 +172,7 @@ fn pcap_packet_to_packet(pkt: &sipnab::capture::pcap_reader::PcapPacket, link_ty
 // is_rtp_packet + parse_rtp_header find actual RTP packets.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Real sip-rtp-g711.pcap packets yield >50 detected RTP packets via `is_rtp_packet` + `parse_rtp_header` — the guard that would have caught the port-filter-drops-all-RTP bug.
 #[test]
 fn rtp_packets_detected_in_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
@@ -210,6 +226,7 @@ fn rtp_packets_detected_in_pcap() {
 // TEST 2: StreamStore tracks streams correctly
 // ═══════════════════════════════════════════════════════════════════════
 
+/// 50 synthetic PCMU packets create one stream with correct packet count, PT/codec/clock rate, zero loss, and finite jitter.
 #[test]
 fn stream_store_tracks_streams_from_parsed_rtp() {
     let mut store = StreamStore::new(100);
@@ -255,6 +272,7 @@ fn stream_store_tracks_streams_from_parsed_rtp() {
     );
 }
 
+/// Two SSRCs on opposite directions create two separate streams.
 #[test]
 fn stream_store_multiple_ssrcs_create_separate_streams() {
     let mut store = StreamStore::new(100);
@@ -298,6 +316,7 @@ fn stream_store_multiple_ssrcs_create_separate_streams() {
 // TEST 3: MOS estimation produces valid scores
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Zero jitter and zero loss on G.711 give a MOS above 4.0 (never above 4.5).
 #[test]
 fn mos_good_quality_is_high() {
     // Perfect conditions: minimal jitter, zero loss, G.711
@@ -309,6 +328,7 @@ fn mos_good_quality_is_high() {
     assert!(mos <= 4.5, "MOS should never exceed 4.5, got {mos}");
 }
 
+/// 100ms jitter with 10% loss gives a MOS below 2.5 (never below 1.0).
 #[test]
 fn mos_bad_quality_is_low() {
     // Terrible conditions: 100ms jitter, 10% loss
@@ -320,6 +340,7 @@ fn mos_bad_quality_is_low() {
     assert!(mos >= 1.0, "MOS should never go below 1.0, got {mos}");
 }
 
+/// Sweeping jitter/loss/codec combinations keeps MOS finite and within 0.95-4.5 (0.95 floor allows the known E-model polynomial dip).
 #[test]
 fn mos_always_in_valid_range() {
     // Sweep across conditions and verify MOS is in a sane range.
@@ -346,6 +367,7 @@ fn mos_always_in_valid_range() {
     }
 }
 
+/// Low jitter and no loss produce MOS above 4.0 for PCMU, PCMA, and opus.
 #[test]
 fn mos_good_conditions_above_four() {
     // Under good conditions (low jitter, no loss), MOS should be solidly above 4.0
@@ -358,6 +380,7 @@ fn mos_good_conditions_above_four() {
     }
 }
 
+/// MOS is monotonically non-increasing as loss rises from 0% to 50%.
 #[test]
 fn mos_degrades_monotonically_with_loss() {
     // As loss increases, MOS should decrease (or stay same)
@@ -376,6 +399,7 @@ fn mos_degrades_monotonically_with_loss() {
 // TEST 4: Jitter calculation uses correct clock rate
 // ═══════════════════════════════════════════════════════════════════════
 
+/// A PT=0 stream adopts the 8kHz PCMU clock rate and computes positive finite jitter from jittery arrival times.
 #[test]
 fn jitter_uses_pcmu_clock_rate() {
     let key = StreamKey {
@@ -413,6 +437,7 @@ fn jitter_uses_pcmu_clock_rate() {
     );
 }
 
+/// A PT=34 stream adopts the 90kHz H263 clock rate and computes positive finite jitter from varying frame arrivals.
 #[test]
 fn jitter_uses_h263_clock_rate() {
     let key = StreamKey {
@@ -455,6 +480,7 @@ fn jitter_uses_h263_clock_rate() {
 // TEST 5: Packet loss detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// A seq gap 100→105 records exactly 4 lost packets against 3 received.
 #[test]
 fn packet_loss_detected_from_sequence_gaps() {
     let mut store = StreamStore::new(100);
@@ -506,6 +532,7 @@ fn packet_loss_detected_from_sequence_gaps() {
     assert_eq!(stream.packet_count, 3, "Should count 3 received packets");
 }
 
+/// 100 perfectly sequential packets report zero loss.
 #[test]
 fn no_false_loss_on_sequential_packets() {
     let mut store = StreamStore::new(100);
@@ -542,6 +569,7 @@ fn no_false_loss_on_sequential_packets() {
 // TEST 6: Quality intervals recorded
 // ═══════════════════════════════════════════════════════════════════════
 
+/// 15 seconds of packets produce at least 2 quality intervals, each with finite jitter, nonzero packets, and loss_pct within 0-100.
 #[test]
 fn quality_intervals_recorded_after_five_seconds() {
     let key = StreamKey {
@@ -597,6 +625,7 @@ fn quality_intervals_recorded_after_five_seconds() {
 // TEST 7: Comfort noise / silence detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// PT=13 packets are counted as CN frames (8 total) and grouped into at least 2 silence periods, the first exactly 100ms.
 #[test]
 fn comfort_noise_counted_and_silence_tracked() {
     let key = StreamKey {
@@ -655,6 +684,7 @@ fn comfort_noise_counted_and_silence_tracked() {
 // TEST 8: Stream association with dialog
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `link_to_dialog` by destination endpoint sets `associated_dialog` and clears the orphan flag.
 #[test]
 fn stream_linked_to_dialog() {
     let mut store = StreamStore::new(100);
@@ -694,6 +724,7 @@ fn stream_linked_to_dialog() {
     assert!(!stream.orphaned, "Linked stream should not be orphaned");
 }
 
+/// `link_to_dialog` also matches when the stream's SOURCE endpoint equals the SDP endpoint.
 #[test]
 fn link_by_source_endpoint() {
     let mut store = StreamStore::new(100);
@@ -726,6 +757,7 @@ fn link_by_source_endpoint() {
 // TEST 9: Orphan detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// An unlinked stream older than the timeout is flagged orphaned by `mark_orphaned`.
 #[test]
 fn unlinked_stream_marked_orphaned() {
     let mut store = StreamStore::new(100);
@@ -760,6 +792,7 @@ fn unlinked_stream_marked_orphaned() {
     );
 }
 
+/// A dialog-linked stream is never orphaned, even with a zero timeout.
 #[test]
 fn linked_stream_not_orphaned() {
     let mut store = StreamStore::new(100);
@@ -792,6 +825,7 @@ fn linked_stream_not_orphaned() {
 // TEST 10: RTCP parsing
 // ═══════════════════════════════════════════════════════════════════════
 
+/// A crafted RTCP SR parses to a `SenderReport` with exact SSRC, NTP/RTP timestamps, and packet/octet counts.
 #[test]
 fn rtcp_sender_report_parsed() {
     // Build a Sender Report: V=2, P=0, RC=0, PT=200
@@ -822,6 +856,7 @@ fn rtcp_sender_report_parsed() {
     }
 }
 
+/// A crafted RTCP RR parses one report block with exact fraction lost, cumulative lost, and jitter.
 #[test]
 fn rtcp_receiver_report_with_jitter() {
     // Build an RR with one report block containing jitter data
@@ -855,6 +890,7 @@ fn rtcp_receiver_report_with_jitter() {
     }
 }
 
+/// A compound SR+BYE datagram parses to exactly two packets with the BYE's SSRC list intact.
 #[test]
 fn rtcp_compound_packet_parsed() {
     // Compound: SR + BYE
@@ -883,6 +919,7 @@ fn rtcp_compound_packet_parsed() {
 // TEST 11: diagnose_media detects one-way audio
 // ═══════════════════════════════════════════════════════════════════════
 
+/// A single-direction stream set flags `one_way_audio` with a hint naming the unidirectional flow.
 #[test]
 fn diagnose_one_way_audio() {
     // Create streams in only one direction
@@ -913,6 +950,7 @@ fn diagnose_one_way_audio() {
     );
 }
 
+/// Streams in both directions do not flag `one_way_audio`.
 #[test]
 fn diagnose_bidirectional_no_one_way() {
     // Forward stream
@@ -954,6 +992,7 @@ fn diagnose_bidirectional_no_one_way() {
 // TEST 12: diagnose_media detects no media
 // ═══════════════════════════════════════════════════════════════════════
 
+/// An empty stream list with an SDP offer flags `no_media` and hints at zero RTP packets.
 #[test]
 fn diagnose_no_media_with_sdp() {
     let streams: Vec<&RtpStream> = vec![];
@@ -972,6 +1011,7 @@ fn diagnose_no_media_with_sdp() {
     );
 }
 
+/// No streams and no SDP flags nothing (no_media/one_way/nat all false).
 #[test]
 fn diagnose_no_streams_no_sdp_is_clean() {
     let streams: Vec<&RtpStream> = vec![];
@@ -992,6 +1032,7 @@ fn diagnose_no_streams_no_sdp_is_clean() {
 // StreamStore. Verify streams exist with sane metrics.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// SIP_CALL_RTP_G711 end-to-end: >100 RTP packets, >=2 streams, finite jitter (some nonzero), identifiable static-PT codecs, and per-stream counts summing to the processed total.
 #[test]
 fn end_to_end_pcap_to_streams_g711() {
     let path = pcap_samples_dir().join("SIP_CALL_RTP_G711");
@@ -1082,6 +1123,7 @@ fn end_to_end_pcap_to_streams_g711() {
 // Additional end-to-end: sip-rtp-g711.pcap
 // ═══════════════════════════════════════════════════════════════════════
 
+/// sip-rtp-g711.pcap yields >50 RTP packets, >=2 streams, and at least one PCMU/PCMA stream.
 #[test]
 fn end_to_end_g711_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g711.pcap");
@@ -1134,6 +1176,7 @@ fn end_to_end_g711_pcap() {
 // Additional: RTCP updates stream store
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Processing an RTCP RR overwrites the matching stream's jitter (128.0) and lost_packets (15).
 #[test]
 fn rtcp_updates_stream_jitter_and_loss() {
     let mut store = StreamStore::new(100);
@@ -1189,6 +1232,7 @@ fn rtcp_updates_stream_jitter_and_loss() {
 // Additional: is_rtp_packet rejects non-RTP and RTCP
 // ═══════════════════════════════════════════════════════════════════════
 
+/// A SIP INVITE payload is not detected as RTP.
 #[test]
 fn is_rtp_packet_rejects_sip() {
     // A SIP INVITE is NOT RTP
@@ -1199,6 +1243,7 @@ fn is_rtp_packet_rejects_sip() {
     );
 }
 
+/// Empty and 2-byte payloads are not detected as RTP.
 #[test]
 fn is_rtp_packet_rejects_too_short() {
     assert!(
@@ -1211,6 +1256,7 @@ fn is_rtp_packet_rejects_too_short() {
     );
 }
 
+/// A well-formed 160-byte-payload RTP packet is detected.
 #[test]
 fn is_rtp_packet_accepts_valid_rtp() {
     let rtp = build_rtp_bytes(0xABCD, 1000, 160000, 0, &[0x7F; 160]);
@@ -1220,6 +1266,7 @@ fn is_rtp_packet_accepts_valid_rtp() {
     );
 }
 
+/// A payload type in the RTCP collision range (72-76) is rejected.
 #[test]
 fn is_rtp_packet_rejects_rtcp_pt_range() {
     // PT=72 maps to RTCP SR (200) when high bit considered
@@ -1235,6 +1282,7 @@ fn is_rtp_packet_rejects_rtcp_pt_range() {
 // Additional: G.722 pcap detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// sip-rtp-g722.pcap yields at least one detected RTP packet.
 #[test]
 fn rtp_detected_in_g722_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g722.pcap");
@@ -1266,6 +1314,7 @@ fn rtp_detected_in_g722_pcap() {
 // Additional: G.729a pcap detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// sip-rtp-g729a.pcap yields at least one detected RTP packet.
 #[test]
 fn rtp_detected_in_g729a_pcap() {
     let path = pcap_samples_dir().join("sip-rtp-g729a.pcap");
@@ -1297,6 +1346,7 @@ fn rtp_detected_in_g729a_pcap() {
 // Additional: NAT mismatch detection
 // ═══════════════════════════════════════════════════════════════════════
 
+/// An SDP media address differing from the actual RTP source flags `nat_mismatch` with both addresses and a NAT hint.
 #[test]
 fn diagnose_nat_mismatch() {
     let key = StreamKey {
@@ -1336,6 +1386,7 @@ fn diagnose_nat_mismatch() {
 // Additional: Stream eviction under capacity limit
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Inserting 5 unique streams into a max_streams=3 store leaves exactly 3.
 #[test]
 fn stream_store_evicts_at_capacity() {
     let mut store = StreamStore::new(3);
@@ -1366,6 +1417,7 @@ fn stream_store_evicts_at_capacity() {
 // Additional: Sequence wraparound does not cause false loss
 // ═══════════════════════════════════════════════════════════════════════
 
+/// The seq wraparound 65534→65535→0→1 records zero loss and 4 packets.
 #[test]
 fn sequence_wraparound_no_false_loss_in_store() {
     let mut store = StreamStore::new(100);
@@ -1448,6 +1500,8 @@ fn sequence_wraparound_no_false_loss_in_store() {
 // output without panicking and contains expected text.
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Rendering the TUI stream-detail view to a TestBackend does not panic and
+/// shows MOS, Jitter, Quality, PCMU, and SSRC.
 #[cfg(feature = "tui")]
 #[test]
 fn stream_detail_render_does_not_panic() {

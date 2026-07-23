@@ -56,8 +56,11 @@ impl std::fmt::Display for TransportProto {
 
 #[cfg(test)]
 mod tests {
+    //! Transport-proto string and IANA-number mapping tests.
     use super::*;
 
+    /// `as_str` and the `Display` impl must yield the same canonical tag for
+    /// every transport variant.
     #[test]
     fn as_str_and_display_agree() {
         for (proto, s) in [
@@ -72,6 +75,8 @@ mod tests {
         }
     }
 
+    /// Each transport reports its IANA IP protocol number, with TLS and WS
+    /// (TCP framings) reporting TCP's 6 rather than a tag of their own.
     #[test]
     fn ip_proto_number_maps_to_iana_transport() {
         // sipgrep -N prints the IP sub-protocol number. TLS and WS both ride

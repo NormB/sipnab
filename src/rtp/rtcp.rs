@@ -2,7 +2,7 @@
 //!
 //! Parses compound RTCP packets from a single UDP payload. Handles
 //! Sender Reports (SR, PT=200), Receiver Reports (RR, PT=201), and
-//! BYE (PT=203). Unknown packet types are preserved as [`RtcpPacket::Unknown`]
+//! BYE (PT=203). Unknown packet types are preserved as `RtcpPacket::Unknown`
 //! so the parser never silently drops data.
 
 use anyhow::{Result, ensure};
@@ -189,7 +189,17 @@ const RTCP_HEADER_LEN: usize = 4;
 /// the payload, parsing each sub-packet. Malformed trailing bytes are
 /// silently skipped (real-world RTCP sometimes has padding).
 ///
-/// Returns an empty `Vec` if no valid RTCP packets are found.
+/// # Arguments
+///
+/// * `data` — the full UDP payload, network (big-endian) byte order.
+///
+/// # Returns
+///
+/// The successfully parsed packets in wire order. Unrecognized packet
+/// types become `RtcpPacket::Unknown`; a sub-packet of a known type whose
+/// body fails to parse is skipped. Iteration stops at the first non-v2 or
+/// truncated packet. Returns an empty `Vec` if no valid RTCP packets are
+/// found. Pure function — no side effects.
 pub fn parse_rtcp(data: &[u8]) -> Vec<RtcpPacket> {
     let mut packets = Vec::new();
     let mut offset = 0;
@@ -244,6 +254,20 @@ pub fn parse_rtcp(data: &[u8]) -> Vec<RtcpPacket> {
 }
 
 /// Parse reception report blocks starting at the given offset.
+///
+/// # Arguments
+///
+/// * `data` — the full RTCP sub-packet bytes (big-endian fields).
+/// * `offset` — byte offset of the first 24-byte report block.
+/// * `count` — number of blocks to read (the header RC field).
+///
+/// # Returns
+///
+/// The parsed blocks in wire order (empty when `count` is 0).
+///
+/// # Errors
+///
+/// Fails if `data` ends before `count` full 24-byte blocks.
 fn parse_report_blocks(data: &[u8], offset: usize, count: usize) -> Result<Vec<ReceptionReport>> {
     let mut reports = Vec::with_capacity(count);
     let mut pos = offset;
@@ -296,6 +320,22 @@ fn parse_report_blocks(data: &[u8], offset: usize, count: usize) -> Result<Vec<R
 }
 
 /// Parse Sender Report body (after the 4-byte RTCP header).
+///
+/// # Arguments
+///
+/// * `data` — the full SR packet including its 4-byte header.
+/// * `report_count` — reception report block count from the header RC
+///   field.
+///
+/// # Returns
+///
+/// The parsed `SenderReport` with the 64-bit NTP timestamp reassembled
+/// from its two big-endian words.
+///
+/// # Errors
+///
+/// Fails if `data` is shorter than the 28-byte sender info plus
+/// `report_count` 24-byte blocks.
 fn parse_sender_report(data: &[u8], report_count: usize) -> Result<SenderReport> {
     // SR: 4 header + 4 SSRC + 20 sender info + N*24 report blocks
     let min_len = 4 + 4 + 20 + report_count * 24;
@@ -326,6 +366,21 @@ fn parse_sender_report(data: &[u8], report_count: usize) -> Result<SenderReport>
 }
 
 /// Parse Receiver Report body (after the 4-byte RTCP header).
+///
+/// # Arguments
+///
+/// * `data` — the full RR packet including its 4-byte header.
+/// * `report_count` — reception report block count from the header RC
+///   field.
+///
+/// # Returns
+///
+/// The parsed `ReceiverReport` (reporter SSRC plus its blocks).
+///
+/// # Errors
+///
+/// Fails if `data` is shorter than the 8-byte prefix plus `report_count`
+/// 24-byte blocks.
 fn parse_receiver_report(data: &[u8], report_count: usize) -> Result<ReceiverReport> {
     // RR: 4 header + 4 SSRC + N*24 report blocks
     let min_len = 4 + 4 + report_count * 24;
@@ -342,6 +397,20 @@ fn parse_receiver_report(data: &[u8], report_count: usize) -> Result<ReceiverRep
 }
 
 /// Parse BYE packet body (after the 4-byte RTCP header).
+///
+/// # Arguments
+///
+/// * `data` — the full BYE packet including its 4-byte header.
+/// * `ssrc_count` — number of departing SSRCs (the header SC field).
+///
+/// # Returns
+///
+/// The parsed `RtcpBye`. Any optional trailing reason text is ignored.
+///
+/// # Errors
+///
+/// Fails if `data` is shorter than the header plus `ssrc_count` 4-byte
+/// SSRC entries.
 fn parse_bye(data: &[u8], ssrc_count: usize) -> Result<RtcpBye> {
     let min_len = 4 + ssrc_count * 4;
     ensure!(
@@ -361,6 +430,26 @@ fn parse_bye(data: &[u8], ssrc_count: usize) -> Result<RtcpBye> {
 }
 
 /// Parse Extended Report body (RFC 3611).
+///
+/// Walks the XR report blocks after the 8-byte header, decoding VoIP
+/// Metrics (BT=7), Receiver Reference Time (BT=4), and Loss/Duplicate RLE
+/// (BT=1/2); anything else — including a block whose body fails its own
+/// parse — is preserved as `XrBlock::Unknown`. Iteration stops at the
+/// first truncated block.
+///
+/// # Arguments
+///
+/// * `data` — the full XR packet including its 4-byte header (big-endian
+///   fields).
+///
+/// # Returns
+///
+/// The originator SSRC and the decoded blocks in wire order.
+///
+/// # Errors
+///
+/// Fails only if `data` is shorter than the 8 bytes needed for the header
+/// and originator SSRC.
 fn parse_extended_report(data: &[u8]) -> Result<ExtendedReport> {
     ensure!(data.len() >= 8, "XR too short: {} bytes", data.len());
 
@@ -431,6 +520,19 @@ fn parse_extended_report(data: &[u8]) -> Result<ExtendedReport> {
 }
 
 /// Parse VoIP Metrics report block data (RFC 3611 Section 4.7).
+///
+/// # Arguments
+///
+/// * `data` — the block body (after the 4-byte block header), big-endian
+///   multi-byte fields.
+///
+/// # Returns
+///
+/// The fully decoded `VoipMetrics` block.
+///
+/// # Errors
+///
+/// Fails if `data` is shorter than the 32-byte block body.
 fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
     ensure!(
         data.len() >= 32,
@@ -461,6 +563,8 @@ fn parse_voip_metrics(data: &[u8]) -> Result<VoipMetrics> {
     })
 }
 
+/// Unit tests for compound RTCP parsing: SR/RR/BYE/XR decoding, unknown
+/// packet-type preservation, and truncation handling.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -521,6 +625,8 @@ mod tests {
         data
     }
 
+    /// A minimal SR decodes SSRC, NTP/RTP timestamps, and counters with no
+    /// report blocks.
     #[test]
     fn parse_sender_report_basic() {
         let data = build_sr(0xAABBCCDD, 0x1122334455667788, 160000, 100, 16000);
@@ -540,6 +646,7 @@ mod tests {
         }
     }
 
+    /// An RR with one reception report block decodes every block field.
     #[test]
     fn parse_receiver_report_with_block() {
         let data = build_rr_with_report(0x11111111, 0x22222222, 25, 320);
@@ -561,6 +668,7 @@ mod tests {
         }
     }
 
+    /// A BYE listing two SSRCs yields both in order.
     #[test]
     fn parse_bye_multiple_ssrcs() {
         let data = build_bye(&[0xAAAAAAAA, 0xBBBBBBBB]);
@@ -575,6 +683,8 @@ mod tests {
         }
     }
 
+    /// A compound datagram (SR followed by RR) parses into two packets in
+    /// wire order.
     #[test]
     fn parse_compound_sr_plus_rr() {
         let mut data = build_sr(0x10, 0, 0, 50, 8000);
@@ -586,12 +696,15 @@ mod tests {
         assert!(matches!(&packets[1], RtcpPacket::ReceiverReport(_)));
     }
 
+    /// An empty payload yields an empty packet list.
     #[test]
     fn empty_data_returns_empty() {
         let packets = parse_rtcp(&[]);
         assert!(packets.is_empty());
     }
 
+    /// A header whose declared length exceeds the data stops parsing
+    /// without panicking or emitting a packet.
     #[test]
     fn truncated_packet_stops_cleanly() {
         // Valid SR header but truncated body
@@ -600,6 +713,8 @@ mod tests {
         assert!(packets.is_empty());
     }
 
+    /// An unrecognized packet type (210) is preserved as
+    /// `RtcpPacket::Unknown`, not dropped.
     #[test]
     fn unknown_packet_type_preserved() {
         let mut data = Vec::new();
@@ -614,6 +729,8 @@ mod tests {
         ));
     }
 
+    /// An XR carrying a VoIP Metrics block (BT=7) decodes its SSRC and
+    /// quality fields.
     #[test]
     fn parse_xr_voip_metrics() {
         // Build a minimal XR packet with VoIP Metrics block
@@ -673,6 +790,8 @@ mod tests {
         }
     }
 
+    /// An XR truncated before its originator SSRC produces no
+    /// ExtendedReport.
     #[test]
     fn parse_xr_truncated() {
         // XR with header but SSRC field would be at bytes 4..8, which is missing

@@ -5,6 +5,16 @@ use crate::tui::*;
 /// Open the save popup, pre-populating path and counts.
 ///
 /// From a stream view, defaults to WAV export; otherwise defaults to PCAP.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+///
+/// # Side effects
+/// Sets `app.save.format` from the current view, seeds `app.save.path`
+/// with a timestamped `/tmp/sipnab_*.<ext>` default (cursor at the end),
+/// caches the dialog/selected/message counts for display (briefly holding
+/// the dialog-store read lock), and sets `app.active_popup` to the save
+/// dialog.
 pub(in crate::tui) fn open_save_popup(app: &mut App) {
     app.save.format = match app.current_view {
         View::StreamList | View::StreamDetail(_) => SaveFormat::Wav,
@@ -27,6 +37,20 @@ pub(in crate::tui) fn open_save_popup(app: &mut App) {
 }
 
 /// Handle keys in the save dialog popup.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (this popup has no keymap
+///   bindings): Esc cancels, Enter saves, Tab/BackTab/Up/Down cycle the
+///   format, and the rest edit the path field.
+///
+/// # Side effects
+/// Esc closes the popup. Enter queues `app.pending_save` (the write runs
+/// on the next event-loop tick so the "Saving…" status paints first),
+/// sets the status line, and closes the popup. The format-cycling keys
+/// change `app.save.format` and rewrite the path's extension when it
+/// still matches the previous format. The editing keys mutate
+/// `app.save.path` and `app.save.cursor` on char boundaries.
 pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -113,11 +137,13 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Unit tests for the save dialog's deferred-write behavior.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
 
+    /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }

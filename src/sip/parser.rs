@@ -51,6 +51,20 @@ const COMPACT_HEADERS: &[(u8, &str)] = &[
 /// If parsing fails partway through, the returned message will have
 /// `parse_error: true` with whatever fields could be extracted.
 ///
+/// # Arguments
+///
+/// * `data` — raw message bytes; copied once into a fresh `bytes::Bytes`.
+/// * `timestamp` — capture time recorded on the returned message.
+/// * `src_addr` / `dst_addr` — source and destination IP addresses from
+///   the network layer.
+/// * `src_port` / `dst_port` — source and destination transport ports.
+/// * `transport` — transport protocol the message arrived on.
+///
+/// # Returns
+///
+/// A fully populated `SipMessage` (possibly with `parse_error` set for
+/// partial input).
+///
 /// # Errors
 ///
 /// Returns `Err` only when the data is clearly not a SIP message (e.g.,
@@ -109,6 +123,10 @@ pub fn parse_sip(
 /// zero-copy views of `data`'s buffer (refcount bumps, no allocation).
 /// Use this on the capture hot path where the payload is already a
 /// [`bytes::Bytes`]; `parse_sip` copies once and delegates here.
+///
+/// Arguments, return value, and error conditions are identical to
+/// `parse_sip` except that `data` is a refcounted buffer rather than a
+/// plain slice.
 #[must_use = "parsing result must be handled"]
 pub fn parse_sip_bytes(
     data: &bytes::Bytes,
@@ -163,14 +181,36 @@ pub fn parse_sip_bytes(
 
 /// Parsed components of a SIP first line.
 struct FirstLine {
+    /// `true` for a request-line, `false` for a status-line.
     is_request: bool,
+    /// Request method. `None` for responses.
     method: Option<SipMethod>,
+    /// Response status code. `None` for requests.
     status_code: Option<u16>,
+    /// Response reason phrase. `None` for requests.
     reason: Option<String>,
+    /// Request-URI. `None` for responses.
     request_uri: Option<String>,
 }
 
 /// Parse the SIP first line (request-line or status-line).
+///
+/// # Arguments
+///
+/// * `line` — the first line of the message, already decoded as UTF-8 and
+///   without its trailing CRLF.
+///
+/// # Returns
+///
+/// A `FirstLine` with either the response fields (`status_code`, `reason`)
+/// or the request fields (`method`, `request_uri`) populated.
+///
+/// # Errors
+///
+/// `ParseError::InvalidFirstLine` when a status-line lacks a space after the
+/// code or a request-line lacks the expected spaces,
+/// `ParseError::InvalidStatusCode` when the status code is not a `u16`, and
+/// `ParseError::NotSip` when the line is neither form.
 fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
     let line = line.trim();
 
@@ -234,13 +274,29 @@ pub const DEFAULT_MAX_HEADER_LINE_LEN: usize = 8 * 1024;
 /// Default maximum number of headers per SIP message (D17 defense-in-depth).
 pub const DEFAULT_MAX_HEADERS_PER_MESSAGE: usize = 200;
 
-/// Runtime-configurable limits (set once at startup from config).
+/// Runtime-configurable cap on the byte length of a single unfolded header
+/// line (set once at startup from config; defaults to
+/// `DEFAULT_MAX_HEADER_LINE_LEN`).
 static MAX_HEADER_LINE_LEN: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_HEADER_LINE_LEN);
+/// Runtime-configurable cap on the number of headers retained per message
+/// (set once at startup from config; defaults to
+/// `DEFAULT_MAX_HEADERS_PER_MESSAGE`).
 static MAX_HEADERS_PER_MESSAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_HEADERS_PER_MESSAGE);
 
 /// Set parser limits from configuration. Call once at startup.
+///
+/// # Arguments
+///
+/// * `max_header_line` — maximum bytes allowed in one unfolded header line.
+/// * `max_headers` — maximum number of headers retained per message.
+///
+/// # Side effects
+///
+/// Stores both values into the process-global `MAX_HEADER_LINE_LEN` and
+/// `MAX_HEADERS_PER_MESSAGE` atomics (relaxed ordering), affecting every
+/// subsequent parse on any thread.
 pub fn set_parser_limits(max_header_line: usize, max_headers: usize) {
     MAX_HEADER_LINE_LEN.store(max_header_line, std::sync::atomic::Ordering::Relaxed);
     MAX_HEADERS_PER_MESSAGE.store(max_headers, std::sync::atomic::Ordering::Relaxed);
@@ -248,7 +304,20 @@ pub fn set_parser_limits(max_header_line: usize, max_headers: usize) {
 
 /// Parse SIP headers (with folding and compact form expansion) and extract body.
 ///
-/// Returns `(headers, body byte-range within `data`, parse_error)`.
+/// # Arguments
+///
+/// * `data` — the full raw message bytes.
+/// * `start` — byte offset of the first header line (just past the
+///   first-line CRLF).
+///
+/// # Returns
+///
+/// Returns `(headers, body byte-range within `data`, parse_error)`. The
+/// header list is capped at the configured per-message maximum; the body
+/// range is `None` when no blank-line separator was found, and is truncated
+/// to the declared `Content-Length` when one is present. `parse_error` is
+/// `true` for non-UTF-8 header lines, over-long folded lines, a missing
+/// body separator, or a body shorter than the declared `Content-Length`.
 fn parse_headers_and_body(
     data: &[u8],
     start: usize,
@@ -386,7 +455,8 @@ fn parse_headers_and_body(
 
 /// Parse a single unfolded header line into a [`SipHeader`].
 ///
-/// Handles `Name: Value` and compact single-character forms.
+/// Handles `Name: Value` and compact single-character forms. Returns `None`
+/// when the line has no colon or an empty header name.
 fn parse_header_line(line: &str) -> Option<SipHeader> {
     let colon_pos = line.find(':')?;
     let raw_name = line[..colon_pos].trim();
@@ -478,7 +548,7 @@ fn canonical_header_name(name: &str) -> Option<&'static str> {
     })
 }
 
-/// Find the position of the first `\r\n` in `data`.
+/// Find the position of the first `\r\n` in `data`, or `None` if absent.
 fn find_crlf(data: &[u8]) -> Option<usize> {
     // SIMD \r search, then verify the following \n — byte-identical to the old
     // windows(2) scan (bare \r is skipped; a trailing \r returns None).
@@ -493,14 +563,17 @@ fn find_crlf(data: &[u8]) -> Option<usize> {
     None
 }
 
+/// Parity tests pinning the memchr-based `find_crlf` to a scalar reference.
 #[cfg(test)]
 mod find_crlf_tests {
     use super::find_crlf;
     // The memchr-based find_crlf must be byte-identical to a scalar windows(2)
     // scan across the adversarial boundary cases.
+    /// Reference implementation: naive `windows(2)` scan for `\r\n` in `data`.
     fn scalar(data: &[u8]) -> Option<usize> {
         data.windows(2).position(|w| w == b"\r\n")
     }
+    /// `find_crlf` matches the scalar reference on adversarial boundary cases.
     #[test]
     fn parity_with_scalar() {
         let cases: &[&[u8]] = &[
@@ -524,21 +597,27 @@ mod find_crlf_tests {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests covering first-line parsing, header handling (folding, compact
+/// forms, duplicates, casing), body extraction, malformed input, and the
+/// security caps on header size/count.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost_v4() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed capture timestamp (2024-06-15 12:00:00 UTC) used in tests.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// A full RFC 3261 example INVITE parses with all fields extracted.
     #[test]
     fn parse_invite_request() {
         let msg = build_sip(
@@ -591,6 +670,7 @@ mod tests {
         assert!(!sip.parse_error);
     }
 
+    /// A 200 OK status-line parses with code/reason and no request fields.
     #[test]
     fn parse_200_ok_response() {
         let msg = build_sip(
@@ -625,6 +705,7 @@ mod tests {
         assert!(!sip.parse_error);
     }
 
+    /// Core RFC 3261 compact forms (v/f/t/i/m/l) expand to long names.
     #[test]
     fn compact_headers() {
         let msg = build_sip(
@@ -668,6 +749,7 @@ mod tests {
         assert!(sip.headers.iter().any(|h| h.name == "Content-Length"));
     }
 
+    /// All nine IANA extension compact forms expand, case-insensitively.
     #[test]
     fn extension_compact_headers_expand() {
         // All nine IANA-registered extension compact forms (beyond the RFC
@@ -731,6 +813,7 @@ mod tests {
         assert_eq!(sip.header("Refer-To"), Some("<sip:target@example.com>"));
     }
 
+    /// Single-letter headers with no registered compact form pass through.
     #[test]
     fn unknown_single_letter_headers_keep_their_name() {
         // Letters with no registered compact form must pass through as-is.
@@ -758,6 +841,7 @@ mod tests {
         assert!(sip.headers.iter().any(|h| h.name == "q"));
     }
 
+    /// Mixed long-form and compact duplicates both survive under one name.
     #[test]
     fn mixed_long_and_compact_duplicates_are_both_kept() {
         // RFC 3261 §7.3.3: forms may be mixed freely in one message; both
@@ -788,6 +872,7 @@ mod tests {
         assert!(vias[1].value.contains("proxy2"));
     }
 
+    /// Non-canonical header-name casing (e.g. "VIA") is preserved verbatim.
     #[test]
     fn non_canonical_case_header_name_is_preserved() {
         // Pins WS4.1's canonical-name table to exact-match only: "VIA" must
@@ -819,6 +904,7 @@ mod tests {
         assert_eq!(sip.call_id(), Some("weird-case@example.com"));
     }
 
+    /// An orphan continuation line before any header is dropped.
     #[test]
     fn leading_continuation_line_produces_no_header() {
         // A continuation (SP-prefixed) line with no header before it must be
@@ -846,6 +932,7 @@ Content-Length: 0\r\n\
         );
     }
 
+    /// A truncated trailing continuation still folds, with parse_error set.
     #[test]
     fn trailing_continuation_without_crlf_still_folds() {
         // Message truncated mid-fold: the SP-prefixed remainder (no trailing
@@ -872,6 +959,7 @@ Subject: first-part\r\n continued-tail";
         assert_eq!(subject.value, "first-part continued-tail");
     }
 
+    /// A SP-folded Via header (RFC 3261 §7.3.1) is unfolded into one value.
     #[test]
     fn header_folding() {
         // RFC 3261 SS7.3.1: continuation line starts with SP
@@ -902,6 +990,7 @@ Content-Length: 0\r\n\
         );
     }
 
+    /// Three Via headers are all kept, in message order.
     #[test]
     fn multiple_via_headers() {
         let msg = build_sip(
@@ -934,6 +1023,7 @@ Content-Length: 0\r\n\
         assert!(vias[2].contains("client"));
     }
 
+    /// `CSeq: 1 INVITE` splits into sequence number and method.
     #[test]
     fn cseq_parsing() {
         let msg = build_sip(
@@ -958,6 +1048,7 @@ Content-Length: 0\r\n\
         assert_eq!(method, "INVITE");
     }
 
+    /// A body exactly matching Content-Length parses cleanly.
     #[test]
     fn body_matches_content_length() {
         let body = b"v=0\r\no=- 0 0 IN IP4 0.0.0.0\r\n";
@@ -982,6 +1073,7 @@ Content-Length: 0\r\n\
         assert!(!sip.parse_error);
     }
 
+    /// The user part is extracted from the From URI.
     #[test]
     fn from_user_extraction() {
         let msg = build_sip(
@@ -1003,6 +1095,7 @@ Content-Length: 0\r\n\
         assert_eq!(sip.from_user(), Some("1001".to_string()));
     }
 
+    /// The user part is extracted from the To URI.
     #[test]
     fn to_user_extraction() {
         let msg = build_sip(
@@ -1024,6 +1117,8 @@ Content-Length: 0\r\n\
         assert_eq!(sip.to_user(), Some("1002".to_string()));
     }
 
+    /// A message with no blank-line separator still yields a partial parse
+    /// with parse_error set.
     #[test]
     fn malformed_truncated_message() {
         // Has a first line and one header but no \r\n\r\n separator
@@ -1046,6 +1141,7 @@ Content-Length: 0\r\n\
         assert!(sip.body.is_empty());
     }
 
+    /// Binary garbage with no SIP first line returns an error.
     #[test]
     fn malformed_binary_garbage() {
         let garbage: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x01, 0x80, 0x90, 0xA0, 0xB0];
@@ -1061,6 +1157,8 @@ Content-Length: 0\r\n\
         assert!(result.is_err(), "Binary garbage should return an error");
     }
 
+    /// Headers ending without a blank line parse with an empty body and
+    /// parse_error set.
     #[test]
     fn malformed_missing_body_separator() {
         // Headers end with \r\n but no blank line separator
@@ -1083,6 +1181,7 @@ Content-Length: 0\r\n\
         assert!(sip.parse_error);
     }
 
+    /// An HTTP request is rejected as not SIP.
     #[test]
     fn non_sip_data() {
         let msg = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
@@ -1098,6 +1197,7 @@ Content-Length: 0\r\n\
         assert!(result.is_err());
     }
 
+    /// `header()` lookups match regardless of the queried name's casing.
     #[test]
     fn case_insensitive_header_lookup() {
         let msg = build_sip(
@@ -1122,6 +1222,7 @@ Content-Length: 0\r\n\
         assert_eq!(sip.header("Call-Id"), Some("test-case@example.com"));
     }
 
+    /// Empty input returns an error rather than a message.
     #[test]
     fn empty_data_returns_error() {
         let result = parse_sip(
@@ -1136,6 +1237,7 @@ Content-Length: 0\r\n\
         assert!(result.is_err());
     }
 
+    /// From and To `tag` parameters are extracted.
     #[test]
     fn from_tag_extraction() {
         let msg = build_sip(
@@ -1163,6 +1265,7 @@ Content-Length: 0\r\n\
         assert_eq!(sip.to_tag(), Some("to-tag-456"));
     }
 
+    /// `user_agent()` falls back to the Server header on responses.
     #[test]
     fn user_agent_fallback_to_server() {
         let msg = build_sip(
@@ -1185,6 +1288,7 @@ Content-Length: 0\r\n\
         assert_eq!(sip.user_agent(), Some("sipnab/0.1"));
     }
 
+    /// An HTAB-folded header (RFC 3261 §7.3.1) is unfolded like SP.
     #[test]
     fn header_folding_with_tab() {
         // RFC 3261 SS7.3.1: continuation line starts with HTAB
@@ -1210,6 +1314,8 @@ Content-Length: 0\r\n\
         assert!(via[0].contains(";branch=z9hG4bKtab"));
     }
 
+    /// A body shorter than the declared Content-Length sets parse_error but
+    /// keeps the bytes that are present.
     #[test]
     fn body_shorter_than_content_length_sets_parse_error() {
         let msg = build_sip(
@@ -1235,6 +1341,8 @@ Content-Length: 0\r\n\
 
     // ── Security regression tests ────────────────────────────────────
 
+    /// ~50KB of folded continuation lines is capped at the 8KB line limit
+    /// with parse_error set (no unbounded allocation).
     #[test]
     fn header_folding_capped_at_8kb() {
         // Construct a Via header followed by 500 continuation lines of ~100
@@ -1280,6 +1388,7 @@ Content-Length: 0\r\n\
         }
     }
 
+    /// 300 headers are truncated to the 200-per-message cap.
     #[test]
     fn header_count_capped_at_200() {
         // Send 300 headers; the parser must stop at MAX_HEADERS_PER_MESSAGE (200).
@@ -1309,6 +1418,8 @@ Content-Length: 0\r\n\
         );
     }
 
+    /// CRLF embedded in a header value splits into a separate header instead
+    /// of surviving inside the value (log-injection defense).
     #[test]
     fn crlf_injection_in_header_value_no_log_injection() {
         // A malicious User-Agent embeds \r\n to try to inject a fake header.

@@ -1,15 +1,26 @@
 //! Output formatting for SIP/RTP analysis results.
 //!
 //! This module provides multiple output backends:
-//! - [`cli_print`] — sipgrep-style colored terminal output
-//! - [`mod@hexdump`] — Raw hex+ASCII packet dump
-//! - [`json`] — JSON/NDJSON structured output
-//! - [`model`] — canonical compact dialog/stream projections (all surfaces)
-//! - [`dialog_report`] — Tabular dialog summary report
-//! - [`call_report`] — Comprehensive single-call diagnosis report
-//! - [`fail2ban`] — Fail2ban-compatible log format
-//! - [`event_exec`] — External command hooks for events
-//! - [`api`] — REST API daemon mode (feature-gated: `api`)
+//! - `cli_print` — sipgrep-style colored terminal output
+//! - `hexdump` — Raw hex+ASCII packet dump
+//! - `json` — JSON/NDJSON structured output
+//! - `model` — canonical compact dialog/stream projections (all surfaces)
+//! - `dialog_report` — Tabular dialog summary report
+//! - `call_report` — Comprehensive single-call diagnosis report
+//! - `fail2ban` — Fail2ban-compatible log format
+//! - `event_exec` — External command hooks for events
+//! - `api` — REST API daemon mode (feature-gated: `api`)
+//! - `prometheus` — Prometheus exposition-format metric data model/formatting
+//! - `prometheus_server` — standalone `/metrics` HTTP server (feature-gated:
+//!   `api`)
+//! - `sink` — buffered stdout sink for batch-mode per-message output
+//! - `synthetic` — synthetic Ethernet/IPv4/UDP packet construction for pcap
+//!   export
+//! - `wireshark` — filter-DSL → Wireshark display-filter translation and
+//!   tshark command generation
+//!
+//! The `pub use` re-exports below form the module's stable convenience
+//! surface for the rest of the crate.
 
 #[cfg(feature = "api")]
 pub mod api;

@@ -3,6 +3,15 @@
 use crate::tui::*;
 
 /// Apply the filter dialog state: build a DSL expression, parse it, and set the active filter.
+///
+/// # Arguments
+/// * `app` - the application state; the expression is built from
+///   `app.filter_dialog` and applied via `apply_filter_expression`.
+///
+/// # Side effects
+/// Everything `apply_filter_expression` does: sets or clears
+/// `app.active_filter`/`active_filter_text`, and closes or keeps the
+/// popup depending on parse success.
 pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
     let expr_text = app.filter_dialog.build_filter_expression();
     apply_filter_expression(app, expr_text);
@@ -11,6 +20,18 @@ pub(in crate::tui) fn apply_filter_dialog(app: &mut App) {
 /// Parse and apply `expr_text`. On a parse error the dialog STAYS OPEN with
 /// the error shown inline (mirroring the file-open dialog), so the typed
 /// values can be corrected instead of being discarded with the popup.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `expr_text` - the DSL expression to parse; `None` means every field
+///   was empty and clears any active filter.
+///
+/// # Side effects
+/// With no method checked, installs the match-nothing filter and closes
+/// the popup. On a successful parse, sets `app.active_filter` and
+/// `active_filter_text` and closes the popup; on a parse error, sets
+/// `app.filter_dialog.error` and leaves the popup open. Clears
+/// `app.status_error` on every path that applies.
 pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<String>) {
     // No SIP methods selected => show nothing. This is the explicit "mute
     // everything" state (distinct from all-checked, which shows everything).
@@ -47,6 +68,21 @@ pub(in crate::tui) fn apply_filter_expression(app: &mut App, expr_text: Option<S
 }
 
 /// Handle keys in the filter dialog popup.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (this popup has no keymap
+///   bindings); Shift-Tab and arrow keys move focus, Space toggles
+///   checkboxes or presses the focused button, and text-editing keys
+///   apply only while a text field is focused.
+///
+/// # Side effects
+/// Esc (or Enter/Space on Cancel) closes the popup without applying.
+/// Enter elsewhere (or Space on Filter) applies the dialog via
+/// `apply_filter_dialog`. F9 clears the dialog fields, the active filter,
+/// and the status line, then closes. Focus and checkbox keys mutate
+/// `app.filter_dialog` focus/checkbox state; editing keys mutate the
+/// focused text field and `cursor_pos`.
 pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
     let is_shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
@@ -160,6 +196,7 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Unit tests for filter application and its inline error handling.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,15 +239,19 @@ mod tests {
     }
 }
 
+/// Tests for the dialog's focus order after the "All" checkbox was moved
+/// above the method grid.
 #[cfg(test)]
 mod all_checkbox_order_tests {
     use super::*;
     use crossterm::event::KeyModifiers;
 
+    /// Build an unmodified `KeyEvent` for `code`.
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
+    /// Reset the filter dialog to defaults and open it as the active popup.
     fn open_filter(app: &mut App) {
         app.filter_dialog = FilterDialogState::default();
         app.active_popup = Some(Popup::FilterDialog);

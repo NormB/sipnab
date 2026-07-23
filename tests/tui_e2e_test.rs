@@ -23,10 +23,13 @@ mod tui_e2e {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
 
+    /// Per-process counter giving each test's tmux session a unique name
+    /// (tests in one binary run concurrently and must not share sessions).
     static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 
     /// A tmux session running sipnab; killed automatically on drop.
     struct TuiSession {
+        /// tmux session name, unique per process and per test.
         name: String,
     }
 
@@ -34,6 +37,15 @@ mod tui_e2e {
         /// Launch sipnab in a detached tmux session of the given size, with the
         /// working directory set to `cwd` (so the file-open browser lists files
         /// there) and the given extra CLI args.
+        ///
+        /// # Arguments
+        /// * `cols` / `rows` - Terminal size of the tmux session.
+        /// * `cwd` - Working directory the binary starts in.
+        /// * `args` - Extra CLI arguments appended after the binary path.
+        ///
+        /// # Side effects
+        /// Spawns a detached tmux session running the real sipnab binary; the
+        /// session is killed when the returned `TuiSession` is dropped.
         fn launch(cols: u16, rows: u16, cwd: &str, args: &[&str]) -> Self {
             let bin = env!("CARGO_BIN_EXE_sipnab");
             let seq = SESSION_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -71,11 +83,17 @@ mod tui_e2e {
         }
 
         /// Default-size launch loading the bundled SIP call fixture.
+        ///
+        /// # Returns
+        /// A 150x40 session started in `tests/fixtures` with `-I sip_call.pcap`.
         fn launch_sip_call() -> Self {
             Self::launch(150, 40, fixtures_dir(), &["-I", "sip_call.pcap"])
         }
 
         /// Capture the visible pane contents as text.
+        ///
+        /// # Returns
+        /// The pane text from `tmux capture-pane -p` (lossy UTF-8).
         fn screen(&self) -> String {
             let out = Command::new("tmux")
                 .args(["capture-pane", "-t", &self.name, "-p"])
@@ -86,6 +104,9 @@ mod tui_e2e {
 
         /// Poll the screen until `needle` appears, returning the screen. Panics
         /// with the last captured screen on timeout.
+        ///
+        /// # Arguments
+        /// * `needle` - Substring polled for (50 ms interval, 5 s deadline).
         fn wait_for(&self, needle: &str) -> String {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
@@ -113,6 +134,11 @@ mod tui_e2e {
             self.send(&["-l", chars]);
         }
 
+        /// Run `tmux send-keys` for this session with the given trailing args.
+        ///
+        /// # Side effects
+        /// Spawns tmux, then sleeps 120 ms so the app's render loop can process
+        /// the key before the next capture.
         fn send(&self, tail: &[&str]) {
             let mut args = vec!["send-keys", "-t", &self.name];
             args.extend_from_slice(tail);
@@ -134,6 +160,7 @@ mod tui_e2e {
                 .unwrap_or(false)
         }
 
+        /// Poll until the session process has exited; panics if it is still alive after 5 s.
         fn wait_until_ended(&self) {
             let deadline = Instant::now() + Duration::from_secs(5);
             while Instant::now() < deadline {
@@ -147,6 +174,8 @@ mod tui_e2e {
     }
 
     impl Drop for TuiSession {
+        /// Best-effort `tmux kill-session` so a failed test never leaks a
+        /// running sipnab process.
         fn drop(&mut self) {
             let _ = Command::new("tmux")
                 .args(["kill-session", "-t", &self.name])
@@ -154,6 +183,8 @@ mod tui_e2e {
         }
     }
 
+    /// Absolute path to `tests/fixtures` (bundled demo pcaps such as
+    /// `sip_call.pcap` and `udp_5060.pcap`).
     fn fixtures_dir() -> &'static str {
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures")
     }
@@ -165,6 +196,7 @@ mod tui_e2e {
 
     // ── Tests ───────────────────────────────────────────────────────────
 
+    /// The real binary starts under tmux, loads the pcap, and shows INVITE in the call list.
     #[test]
     #[ignore] // needs tmux; slower than unit tests
     fn tui_launches_with_pcap_and_shows_call_list() {
@@ -173,6 +205,7 @@ mod tui_e2e {
         s.wait_for("INVITE");
     }
 
+    /// Tab in the real TUI switches to the stream list (the SSRC column header appears).
     #[test]
     #[ignore]
     fn tui_tab_switches_to_stream_list() {
@@ -182,6 +215,7 @@ mod tui_e2e {
         s.wait_for("SSRC"); // stream-list column header
     }
 
+    /// F1 in the real TUI opens the Help screen.
     #[test]
     #[ignore]
     fn tui_f1_shows_help() {
@@ -191,6 +225,7 @@ mod tui_e2e {
         s.wait_for("Help");
     }
 
+    /// Enter in the real TUI opens the call-flow ladder.
     #[test]
     #[ignore]
     fn tui_enter_opens_call_flow() {
@@ -200,6 +235,7 @@ mod tui_e2e {
         s.wait_for("INVITE"); // ladder
     }
 
+    /// `q` exits the process: the tmux session ends within the timeout.
     #[test]
     #[ignore]
     fn tui_quit_exits_cleanly() {
@@ -211,6 +247,7 @@ mod tui_e2e {
 
     // ── New-feature coverage ─────────────────────────────────────────────
 
+    /// Tab in the call flow toggles the focus indicator Ladder, Detail, and back to Ladder.
     #[test]
     #[ignore]
     fn tui_tab_switches_call_flow_pane_focus() {
@@ -225,6 +262,7 @@ mod tui_e2e {
         s.wait_for("Focus: Ladder");
     }
 
+    /// `v` shows a version line that includes the git commit in parentheses.
     #[test]
     #[ignore]
     fn tui_v_shows_version_with_commit() {
@@ -239,6 +277,7 @@ mod tui_e2e {
         );
     }
 
+    /// On a 14-row terminal the detail pane overflows, so the scrollbar thumb glyph must render.
     #[test]
     #[ignore]
     fn tui_call_flow_detail_scrollbar_appears_when_overflowing() {
@@ -255,6 +294,7 @@ mod tui_e2e {
         );
     }
 
+    /// `O` opens the file browser listing the pcaps in the working directory.
     #[test]
     #[ignore]
     fn tui_file_open_lists_pcaps_in_cwd() {
@@ -265,6 +305,7 @@ mod tui_e2e {
         s.wait_for("sip_call.pcap");
     }
 
+    /// `N` names an address: the name shows in the Source column until name mode is cycled back to Off.
     #[test]
     #[ignore]
     fn tui_name_address_resolves_in_columns() {

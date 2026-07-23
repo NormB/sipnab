@@ -22,10 +22,15 @@ use crate::sip::{self, parser::parse_sip};
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct SipnabSession {
+    /// Reconstructed SIP dialogs for the loaded capture.
     dialog_store: DialogStore,
+    /// Reconstructed RTP streams for the loaded capture.
     stream_store: StreamStore,
+    /// Total packets read from the loaded capture.
     packet_count: u64,
+    /// SIP messages successfully parsed.
     sip_count: u64,
+    /// RTP packets recorded.
     rtp_count: u64,
 }
 

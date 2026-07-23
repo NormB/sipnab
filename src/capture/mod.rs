@@ -67,13 +67,17 @@ use reassembly::{FragmentReassembler, TcpReassembler};
 /// reassembly into a single processing step. Feed raw [`Packet`]s in and
 /// get back zero or more [`ParsedPacket`]s ready for upper-layer parsing.
 pub struct PacketProcessor {
+    /// IPv4/IPv6 fragment reassembler (bounded, oldest-out eviction).
     fragment_reassembler: FragmentReassembler,
+    /// TCP stream reassembler that reorders segments before SIP framing.
     tcp_reassembler: TcpReassembler,
     /// Per-direction leftover bytes of an incomplete trailing SIP message held
     /// across TCP flushes (SNB-0008). Keyed by (src, dst); bounded by
     /// `max_sessions`.
     tcp_sip_leftover:
         std::collections::HashMap<(std::net::SocketAddr, std::net::SocketAddr), Vec<u8>>,
+    /// Cap on tracked `tcp_sip_leftover` sessions; when full, an arbitrary
+    /// entry is evicted to keep memory bounded.
     max_sessions: usize,
     /// When `false` (`--no-reassembly`), IP fragments and TCP segments pass
     /// through as individual packets instead of being reassembled/reframed.
@@ -147,6 +151,15 @@ impl PacketProcessor {
     /// - **Multiple:** TCP reassembly may flush several accumulated segments.
     ///
     /// Applies the `-S`/`--limitlen` parse cap to every emitted packet.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - the raw captured packet (link-layer frame plus metadata).
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the fragment/TCP reassembler state and the held-partial map
+    /// via `process_inner`.
     pub fn process(&mut self, packet: &Packet) -> ParsedPackets {
         let mut out = self.process_inner(packet);
         if let Some(limit) = self.parse_limit {
@@ -159,6 +172,25 @@ impl PacketProcessor {
         out
     }
 
+    /// Core dispatch behind `process`: parse the packet, then route it through
+    /// IP-fragment reassembly, TCP reassembly plus SIP framing, or (for UDP and
+    /// other transports) pass it through directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` - the raw captured packet to parse and reassemble.
+    ///
+    /// # Returns
+    ///
+    /// Zero or more parsed packets, before the `-S`/`--limitlen` cap is
+    /// applied (that happens in `process`). Empty when the packet is
+    /// unparseable, a buffered IP fragment, or a buffered TCP segment.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates both reassemblers and the `tcp_sip_leftover` map (inserting,
+    /// removing, and — at the `max_sessions` cap — evicting an arbitrary held
+    /// partial); logs unparseable packets at debug level.
     fn process_inner(&mut self, packet: &Packet) -> ParsedPackets {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
@@ -289,6 +321,11 @@ impl PacketProcessor {
     ///
     /// Should be called periodically (e.g., every 5 seconds) to evict
     /// incomplete fragments and idle TCP streams.
+    ///
+    /// # Side effects
+    ///
+    /// Removes timed-out entries from both reassemblers and drops any held
+    /// SIP partial whose TCP stream is no longer tracked.
     pub fn sweep(&mut self) {
         self.fragment_reassembler.sweep();
         self.tcp_reassembler.sweep();
@@ -300,6 +337,7 @@ impl PacketProcessor {
 }
 
 impl Default for PacketProcessor {
+    /// Equivalent to `PacketProcessor::new()` (default limits, reassembly on).
     fn default() -> Self {
         Self::new()
     }
@@ -403,26 +441,32 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
     Ok(Duration::from_secs(value * multiplier))
 }
 
+/// Unit tests for duration parsing, TCP SIP framing, and the
+/// `PacketProcessor` pipeline (fragment/TCP reassembly dispatch).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// "30s" and a bare "30" both parse as 30 seconds.
     #[test]
     fn parse_duration_seconds() {
         assert_eq!(parse_duration("30s").unwrap(), Duration::from_secs(30));
         assert_eq!(parse_duration("30").unwrap(), Duration::from_secs(30));
     }
 
+    /// "5m" parses as 300 seconds.
     #[test]
     fn parse_duration_minutes() {
         assert_eq!(parse_duration("5m").unwrap(), Duration::from_secs(300));
     }
 
+    /// "2h" parses as 7200 seconds.
     #[test]
     fn parse_duration_hours() {
         assert_eq!(parse_duration("2h").unwrap(), Duration::from_secs(7200));
     }
 
+    /// Empty strings, non-numeric values, and unknown suffixes are errors.
     #[test]
     fn parse_duration_invalid() {
         assert!(parse_duration("").is_err());
@@ -435,6 +479,8 @@ mod tests {
     // split them all (not just the first), hold an incomplete tail, and never
     // split on a blank line inside a body.
 
+    /// Build a complete bodyless OPTIONS message whose Via branch and Call-ID
+    /// are `cid`, as raw bytes.
     fn opts(cid: &str) -> Vec<u8> {
         format!(
             "OPTIONS sip:h SIP/2.0\r\nVia: SIP/2.0/TCP h;branch={cid}\r\n\
@@ -443,6 +489,8 @@ mod tests {
         .into_bytes()
     }
 
+    /// Run `frame_tcp_sip` over `data` and return the framed messages as
+    /// lossy strings plus the consumed byte count.
     fn frame_strs(data: &[u8]) -> (Vec<String>, usize) {
         let (ranges, consumed) = frame_tcp_sip(data);
         (
@@ -454,6 +502,8 @@ mod tests {
         )
     }
 
+    /// Three complete messages in one buffer are all framed, in order, with
+    /// the whole buffer consumed.
     #[test]
     fn frame_three_complete_messages_in_one_buffer() {
         let mut buf = opts("a");
@@ -468,6 +518,8 @@ mod tests {
         assert_eq!(consumed, total, "fully consumed, nothing held");
     }
 
+    /// A trailing message whose headers lack the blank-line terminator is
+    /// held (not framed); `consumed` stops at its start.
     #[test]
     fn frame_holds_incomplete_trailing_headers() {
         let mut buf = opts("a");
@@ -479,6 +531,8 @@ mod tests {
         assert_eq!(consumed, consumed_expected, "held bytes start after msg 2");
     }
 
+    /// A message with complete headers but fewer body bytes than
+    /// Content-Length declares is held until the body arrives.
     #[test]
     fn frame_holds_message_with_unfinished_body() {
         // Headers complete, Content-Length declares 10 but no body bytes yet.
@@ -493,6 +547,8 @@ mod tests {
         );
     }
 
+    /// A body containing its own blank line is taken whole by Content-Length,
+    /// never split at the embedded separator.
     #[test]
     fn frame_body_with_embedded_blank_line_not_split() {
         // A body that itself contains \r\n\r\n must be taken by Content-Length,
@@ -518,6 +574,7 @@ mod tests {
         assert_eq!(consumed, buf.len());
     }
 
+    /// The compact `l:` form of Content-Length is honored when framing.
     #[test]
     fn frame_compact_content_length_header() {
         let body = "abcd";
@@ -528,6 +585,7 @@ mod tests {
         assert_eq!(consumed, msg.len());
     }
 
+    /// A message using bare-LF line endings (LFLF header terminator) frames.
     #[test]
     fn frame_lenient_lf_only_separator() {
         let msg = b"OPTIONS sip:h SIP/2.0\nCall-ID: x\nContent-Length: 0\n\n";
@@ -536,6 +594,7 @@ mod tests {
         assert_eq!(consumed, msg.len());
     }
 
+    /// The earliest of CRLFCRLF/LFLF wins and the index lands just past it.
     #[test]
     fn find_header_end_takes_earliest_terminator() {
         // Pins the CRLFCRLF-vs-LFLF precedence: the earliest blank-line
@@ -550,6 +609,7 @@ mod tests {
         assert_eq!(find_header_end(b"A: b\r\nCall-ID: x\r\n"), None);
     }
 
+    /// Bodies with NULs, backslashes, and CRLFs are framed strictly by length.
     #[test]
     fn frame_adversarial_bodies() {
         // Body with backslashes, embedded NUL, and special chars — taken whole.
@@ -568,6 +628,7 @@ mod tests {
         assert_eq!(consumed, msg.len());
     }
 
+    /// Empty input frames nothing; terminator-less garbage is held entirely.
     #[test]
     fn frame_empty_and_garbage() {
         // Empty input: nothing framed, nothing consumed.
@@ -614,6 +675,8 @@ mod tests {
         )
     }
 
+    /// SNB-0008 regression: three SIP messages packed into one TCP segment
+    /// all emerge from `process`, not just the first.
     #[test]
     fn process_splits_multiple_sip_messages_in_one_tcp_segment() {
         // SNB-0008 regression: three SIP messages packed into one TCP segment
@@ -639,6 +702,8 @@ mod tests {
         );
     }
 
+    /// A partial message held while the stream is open is emitted truncated
+    /// on FIN so a downstream parser can flag it, never silently dropped.
     #[test]
     fn process_surfaces_truncated_tail_on_fin() {
         // A message whose body never completes before the connection closes is
@@ -658,6 +723,8 @@ mod tests {
         assert!(String::from_utf8_lossy(&out2[0].payload).contains("Call-ID: trunc"));
     }
 
+    /// With `--no-reassembly` a multi-message TCP segment passes through as
+    /// one raw packet, byte-for-byte, instead of being reframed.
     #[test]
     fn no_reassembly_passes_tcp_segment_through_unframed() {
         // Two SIP messages packed in one TCP segment: with reassembly OFF
@@ -681,6 +748,8 @@ mod tests {
         );
     }
 
+    /// The default processor (reassembly on) reframes the same two-message
+    /// segment into two separate parsed packets.
     #[test]
     fn reassembly_on_by_default_reframes_tcp() {
         // Contrast: the default processor DOES reframe the same segment.
@@ -695,6 +764,8 @@ mod tests {
         );
     }
 
+    /// Binary TCP payloads (e.g. TLS records) are never SIP-framed, even when
+    /// they contain a CRLFCRLF — they pass through whole for TLS decryption.
     #[test]
     fn process_passes_non_sip_tcp_through_unframed() {
         // TLS-over-TCP (and other binary payloads) must NOT be SIP-framed — they
@@ -712,6 +783,8 @@ mod tests {
         assert_eq!(&out[0].payload[..], &tls[..], "bytes pass through intact");
     }
 
+    /// A body split across two TCP segments is held silently, then emitted
+    /// complete once the rest of the body arrives.
     #[test]
     fn process_holds_partial_across_segments_then_completes() {
         // A message body split across two TCP segments must be held, not
@@ -733,6 +806,8 @@ mod tests {
         assert!(String::from_utf8_lossy(&out2[0].payload).ends_with("abcde"));
     }
 
+    /// Leading zeros and surrounding whitespace in a Content-Length value
+    /// still parse to the correct body length.
     #[test]
     fn frame_content_length_whitespace_and_zeros() {
         // Leading zeros and surrounding spaces in the CL value parse fine.
@@ -744,6 +819,8 @@ mod tests {
     }
 
     // ── PacketProcessor::process dispatch (device-free) ─────────────────
+    /// Tests of `PacketProcessor::process` dispatch that need no capture
+    /// device: UDP pass-through, parse limits, and non-IP/garbage inputs.
     #[cfg(feature = "native")]
     mod processor {
         use super::*;
@@ -776,11 +853,15 @@ mod tests {
             p
         }
 
+        /// Wrap raw frame bytes `data` in a `Packet` stamped "now" with
+        /// Ethernet link type.
         fn packet(data: Vec<u8>) -> Packet {
             let n = data.len();
             Packet::new(Utc::now(), data, n, n, None, 1) // linktype 1 = Ethernet
         }
 
+        /// A plain UDP SIP packet yields exactly one parsed packet with the
+        /// right transport and ports.
         #[test]
         fn udp_packet_yields_one_parsed() {
             let mut proc = PacketProcessor::new();
@@ -791,6 +872,8 @@ mod tests {
             assert_eq!(out[0].dst_port, 5060);
         }
 
+        /// A parse limit (`-S`/`--limitlen`) caps the emitted payload at N
+        /// bytes.
         #[test]
         fn parse_limit_truncates_payload() {
             // `-S`/`--limitlen`: only the first N bytes of each message are
@@ -807,6 +890,7 @@ mod tests {
             assert_eq!(&out[0].payload[..], &sip[..10]);
         }
 
+        /// Without a parse limit the full payload is preserved.
         #[test]
         fn parse_limit_none_keeps_full_payload() {
             let mut proc = PacketProcessor::new();
@@ -815,6 +899,7 @@ mod tests {
             assert_eq!(out[0].payload.len(), sip.len(), "no limit → full payload");
         }
 
+        /// A parse limit larger than the payload leaves it untouched.
         #[test]
         fn parse_limit_larger_than_payload_is_noop() {
             let mut proc = PacketProcessor::new().with_parse_limit(Some(100_000));
@@ -827,6 +912,7 @@ mod tests {
             );
         }
 
+        /// A non-IP frame (ARP EtherType) yields no parsed packets.
         #[test]
         fn non_ip_frame_yields_nothing() {
             let mut proc = PacketProcessor::with_max_sessions(16);
@@ -838,6 +924,8 @@ mod tests {
             assert!(proc.process(&packet(frame)).is_empty());
         }
 
+        /// Bytes too short to be a valid frame hit the parse-error path and
+        /// yield nothing.
         #[test]
         fn truncated_garbage_yields_nothing() {
             let mut proc = PacketProcessor::new();
@@ -845,6 +933,7 @@ mod tests {
             assert!(proc.process(&packet(vec![0x01, 0x02, 0x03])).is_empty());
         }
 
+        /// `sweep` on a processor with no tracked state is a safe no-op.
         #[test]
         fn sweep_is_safe_on_empty_state() {
             let mut proc = PacketProcessor::default();
