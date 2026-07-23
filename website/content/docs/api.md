@@ -754,7 +754,7 @@ Metric names emitted by `src/output/prometheus.rs`:
 | `sipnab_jitter_ms` | histogram | RTP jitter distribution (buckets at 5/10/20/50/100/200ms). |
 | `sipnab_loss_percent` | histogram | RTP packet-loss distribution (buckets at 0.1/0.5/1/2/5/10%). |
 
-The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.26 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
+The following metric *names* are declared in source (and will be formatted when the underlying maps have entries) but are not yet wired to the data plane as of 0.5.27 — they will appear empty in Prometheus until the upstream counters get populated: `sipnab_responses_total{code}`, `sipnab_security_alerts_total{type}`, `sipnab_diagnosis_total{kind}`, `sipnab_capture_packets_total`, `sipnab_reassembly_timeouts_total`. Track-via PR / dashboard authors: don't depend on these in alerts yet.
 
 ## Security Model
 
