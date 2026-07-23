@@ -3861,6 +3861,7 @@ mod tui_state {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    from_hep: false,
                 };
                 let rtp = parse_rtp_header(&parsed.payload).unwrap();
                 store.process_rtp(&parsed, &rtp, parsed.timestamp);
@@ -3929,6 +3930,7 @@ mod tui_state {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    from_hep: false,
                 };
                 let rtp = parse_rtp_header(&parsed.payload).unwrap();
                 store.process_rtp(&parsed, &rtp, parsed.timestamp);
@@ -3993,6 +3995,7 @@ mod tui_state {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    from_hep: false,
                 };
                 let rtp = parse_rtp_header(&parsed.payload).unwrap();
                 store.process_rtp(&parsed, &rtp, parsed.timestamp);

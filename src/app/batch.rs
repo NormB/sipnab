@@ -281,29 +281,35 @@ impl BatchRunner {
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]
-        let hep_sender: Option<crate::capture::hep::HepSender> =
-            if let Some(ref addr) = cli.hep_send {
-                let capture_id = cli.hep_id.unwrap_or(1);
-                match crate::capture::hep::HepSender::new(addr, capture_id, cli.hep_auth.clone()) {
-                    Ok(sender) => {
-                        tracing::info!(
-                            "HEP sender targeting {addr} (capture id {capture_id}{})",
-                            if cli.hep_auth.is_some() {
-                                ", authenticated"
-                            } else {
-                                ""
-                            }
-                        );
-                        Some(sender)
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create HEP sender: {e}");
-                        None
-                    }
+        let hep_sender: Option<crate::capture::hep::HepSender> = if let Some(ref addr) =
+            cli.hep_send
+        {
+            let capture_id = cli.hep_id.unwrap_or(1);
+            let hep_auth = match cli.resolve_hep_auth() {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::error!("HEP auth: {e}");
+                    None
                 }
-            } else {
-                None
             };
+            let authenticated = hep_auth.is_some();
+            match crate::capture::hep::HepSender::new(addr, capture_id, hep_auth, cli.hep_auth_mode)
+            {
+                Ok(sender) => {
+                    tracing::info!(
+                        "HEP sender targeting {addr} (capture id {capture_id}{})",
+                        if authenticated { ", authenticated" } else { "" }
+                    );
+                    Some(sender)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to create HEP sender: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // 17. Initialize processing state
         //
@@ -1260,8 +1266,12 @@ fn process_parsed_packet<W: std::io::Write>(
                     sink.write_str("\n");
                 }
 
-                // D16: Send kill response via isolated worker thread
+                // D16: Send kill response via isolated worker thread.
+                // SN-01: HEP-origin packets are ineligible unless the operator
+                // opted in (--hep-allow-kill), since their src/dst are
+                // sender-asserted and unauthenticated absent --hep-auth.
                 if let Some(handle) = &scanner_kill_handle
+                    && sec::scanner_kill::kill_response_eligible(pp.from_hep, cli.hep_allow_kill)
                     && let Some(response_bytes) =
                         sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
                 {
@@ -1296,7 +1306,9 @@ fn process_parsed_packet<W: std::io::Write>(
                     sink.write_str(&event);
                     sink.write_str("\n");
                 }
+                // SN-01: same HEP-origin ineligibility as behavioral kill above.
                 if let Some(handle) = &scanner_kill_handle
+                    && sec::scanner_kill::kill_response_eligible(pp.from_hep, cli.hep_allow_kill)
                     && let Some(response_bytes) =
                         sec::scanner_kill::build_scanner_response(&sip_msg, kill_response_code)
                 {
@@ -1686,6 +1698,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            from_hep: false,
         }
     }
 

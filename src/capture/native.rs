@@ -35,8 +35,17 @@ pub enum CaptureSource {
         /// CIDR allowlist for source IP filtering.
         #[cfg(feature = "hep")]
         allowlist: Vec<hep::CidrRange>,
-        /// Maximum HEP packets per second (0 = unlimited).
+        /// Maximum HEP packets per second across all peers (0 = unlimited).
         rate_limit: u64,
+        /// Maximum HEP packets per second from any single source IP
+        /// (0 = disabled; global ceiling still applies).
+        per_peer_rate_limit: u64,
+        /// Receiver-side shared secret. When set, incoming HEP packets must
+        /// carry a matching 0x000e auth-key chunk or they are dropped.
+        auth_key: Option<String>,
+        /// How the 0x000e chunk is interpreted (verbatim secret vs HMAC token).
+        #[cfg(feature = "hep")]
+        auth_mode: crate::cli::HepAuthMode,
     },
 }
 
@@ -156,13 +165,28 @@ pub fn start_capture(
             bind_addr,
             allowlist,
             rate_limit,
+            per_peer_rate_limit,
+            auth_key,
+            auth_mode,
         } => {
             let addr = bind_addr.clone();
             let allow = allowlist.clone();
             let rate = *rate_limit;
+            let per_peer = *per_peer_rate_limit;
+            let auth = auth_key.clone();
+            let mode = *auth_mode;
             thread::Builder::new()
                 .name("capture-hep".to_string())
-                .spawn(move || hep::capture_hep(&addr, &config, tx, &allow, rate, ready_tx))
+                .spawn(move || {
+                    let opts = hep::HepListenerOpts {
+                        allowlist: &allow,
+                        rate_limit: rate,
+                        per_peer_rate_limit: per_peer,
+                        auth_key: auth.as_deref(),
+                        auth_mode: mode,
+                    };
+                    hep::capture_hep(&addr, &config, tx, &opts, ready_tx)
+                })
                 .context("Failed to spawn HEP capture thread")?
         }
         #[cfg(not(feature = "hep"))]

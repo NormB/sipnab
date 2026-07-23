@@ -91,19 +91,187 @@ pub fn build_crash_report(
 /// and the second report would silently overwrite the first.
 static REPORT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// How many times [`write_crash_report`] retries with a fresh name when
+/// the exclusive create loses a race (another thread/process, or a
+/// planted file/symlink at the predicted name).
+const REPORT_CREATE_ATTEMPTS: u32 = 8;
+
+/// Exclusively create the report file at `path` without following a
+/// symlink and without truncating an existing file.
+///
+/// On Unix this is `O_CREAT | O_EXCL | O_NOFOLLOW` with mode `0600`. The
+/// `O_EXCL`/`create_new` guarantees we never overwrite a pre-existing
+/// file, and `O_NOFOLLOW` guarantees a pre-planted symlink at the target
+/// is refused rather than followed onto a victim file a hostile
+/// co-tenant chose (CWE-59, CWE-377). On non-Unix the exclusive create
+/// alone is used.
+fn open_new_report_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    opts.open(path)
+}
+
+/// Create `dir` (and parents) if missing, restricting a freshly created
+/// leaf to owner-only (`0700`) on Unix so a crash report written into it
+/// is not exposed to other users on the host.
+fn create_report_dir(dir: &Path) -> std::io::Result<()> {
+    let existed = dir.exists();
+    std::fs::create_dir_all(dir)?;
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        // Best-effort: tightening our own new directory. A pre-existing
+        // directory's mode is the operator's responsibility (documented).
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    let _ = existed;
+    Ok(())
+}
+
+/// Reason a crash-report directory is rejected as unsafe to write into.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnsafeReportDir {
+    /// The path is a symlink; a hostile co-tenant could repoint it.
+    Symlink,
+    /// The directory is not owned by this process's effective UID.
+    NotOwned,
+    /// World-writable without the sticky bit, so any user on the host can
+    /// plant entries in it.
+    WorldWritable,
+}
+
+#[cfg(unix)]
+impl UnsafeReportDir {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Symlink => "it is a symlink",
+            Self::NotOwned => "it is not owned by this process's user",
+            Self::WorldWritable => "it is world-writable without the sticky bit",
+        }
+    }
+}
+
+/// Decide whether a report directory is safe to write crash reports into,
+/// from its `lstat` facts. Pure, so the owner-mismatch and permission-mode
+/// cases are unit-testable without having to actually create directories
+/// owned by another user.
+///
+/// A directory is unsafe if it is a symlink (repointable), not owned by
+/// the effective UID, or world-writable without the sticky bit. Group
+/// writability is *not* rejected: under the ubiquitous user-private-group
+/// scheme (umask 0002) directories are group-writable by default, so the
+/// group's membership is the operator's responsibility — matching how
+/// [`create_report_dir`] treats a pre-existing directory's mode. A sticky
+/// world-writable directory (e.g. `/tmp`) is accepted: only the owner can
+/// rename/replace their own entries there, and the exclusive `O_NOFOLLOW`
+/// create already blocks the plant-and-follow attack.
+#[cfg(unix)]
+fn classify_report_dir(
+    is_symlink: bool,
+    dir_uid: u32,
+    euid: u32,
+    mode: u32,
+) -> Result<(), UnsafeReportDir> {
+    if is_symlink {
+        return Err(UnsafeReportDir::Symlink);
+    }
+    if dir_uid != euid {
+        return Err(UnsafeReportDir::NotOwned);
+    }
+    let world_writable = mode & 0o002 != 0;
+    let sticky = mode & 0o1000 != 0;
+    if world_writable && !sticky {
+        return Err(UnsafeReportDir::WorldWritable);
+    }
+    Ok(())
+}
+
+/// Refuse to write into an existing report directory that a co-tenant
+/// could subvert (symlink, foreign owner, or others-writable without
+/// sticky). A directory that does not yet exist is allowed: it is created
+/// fresh and owned by us at `0700` in [`create_report_dir`].
+///
+/// This is `lstat`-based so a symlinked directory is caught, not followed.
+/// It is a no-op on non-Unix targets.
+#[cfg(unix)]
+fn ensure_safe_report_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = match std::fs::symlink_metadata(dir) {
+        Ok(m) => m,
+        // Not yet created — create_report_dir will make it ours at 0700.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    // SAFETY: geteuid() takes no arguments, never fails, and only reads
+    // the caller's effective UID — it has no preconditions.
+    let euid = unsafe { libc::geteuid() };
+    classify_report_dir(meta.file_type().is_symlink(), meta.uid(), euid, meta.mode()).map_err(
+        |reason| {
+            std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "refusing to write crash reports into {}: {}",
+                    dir.display(),
+                    reason.describe()
+                ),
+            )
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Write `contents` to a new timestamped `sipnab-crash-*.log` file in
 /// `dir` (created if missing) and return its path.
+///
+/// The file is created exclusively and without following symlinks, so a
+/// crash in a privileged process cannot be redirected to overwrite an
+/// attacker-chosen file even when `dir` is shared or attacker-writable
+/// (see [`open_new_report_file`]). On a name collision — a planted
+/// file/symlink, or two threads crashing in the same second — the write
+/// retries with a fresh sequence suffix.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let name = format!(
-        "sipnab-crash-{}-{}-{}.log",
-        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
-        std::process::id(),
-        REPORT_SEQ.fetch_add(1, Ordering::Relaxed)
-    );
-    let path = dir.join(name);
-    std::fs::write(&path, contents)?;
-    Ok(path)
+    use std::io::Write as _;
+    ensure_safe_report_dir(dir)?;
+    create_report_dir(dir)?;
+
+    let mut last_err = None;
+    for _ in 0..REPORT_CREATE_ATTEMPTS {
+        let name = format!(
+            "sipnab-crash-{}-{}-{}.log",
+            chrono::Utc::now().format("%Y%m%d-%H%M%S"),
+            std::process::id(),
+            REPORT_SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = dir.join(name);
+        match open_new_report_file(&path) {
+            Ok(mut file) => {
+                file.write_all(contents.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "exhausted crash-report name attempts",
+        )
+    }))
 }
 
 // ── Terminal state flag ─────────────────────────────────────────────
@@ -314,6 +482,157 @@ mod tests {
         assert_ne!(a, b, "distinct paths for back-to-back reports");
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "first-crash");
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "second-crash");
+    }
+
+    /// A pre-existing symlink at the exact target path must NOT be
+    /// followed: a hostile co-tenant who can write the report directory
+    /// could otherwise redirect a privileged crash write onto a file of
+    /// their choosing (CWE-59). `create_new` + `O_NOFOLLOW` makes the
+    /// open fail instead, leaving the link target untouched.
+    #[test]
+    #[cfg(unix)]
+    fn open_new_report_refuses_to_follow_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, "original").unwrap();
+        let link = dir.path().join("sipnab-crash-planted.log");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let err = open_new_report_file(&link).expect_err("must refuse a symlink target");
+        assert!(
+            matches!(
+                err.kind(),
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::Other
+            ) || err.raw_os_error() == Some(libc::ELOOP),
+            "expected refusal, got {err:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "original",
+            "the symlink target must be untouched"
+        );
+    }
+
+    /// The open must be exclusive: an existing regular file at the target
+    /// is never truncated/overwritten (`create_new` semantics).
+    #[test]
+    fn open_new_report_refuses_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sipnab-crash-existing.log");
+        std::fs::write(&path, "keep-me").unwrap();
+        let err = open_new_report_file(&path).expect_err("must refuse an existing file");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "keep-me");
+    }
+
+    /// Reports are created owner-read/write only (0600): a crash report can
+    /// contain a backtrace with local paths and argument values that other
+    /// users on the host should not read.
+    #[test]
+    #[cfg(unix)]
+    fn crash_report_created_mode_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_crash_report(dir.path(), "secret-backtrace").unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "report must be owner-only, got {mode:o}");
+    }
+
+    // ── Report-directory safety classification (SN-03 follow-up) ──────
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_accepts_owned_private_dir() {
+        // drwx------ owned by us: the safe, expected case.
+        assert_eq!(classify_report_dir(false, 1000, 1000, 0o40700), Ok(()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_accepts_owned_sticky_world_writable_dir() {
+        // /tmp-like: world-writable but sticky and owned by us — accepted,
+        // because O_EXCL|O_NOFOLLOW already defeats plant-and-follow there.
+        assert_eq!(classify_report_dir(false, 1000, 1000, 0o41777), Ok(()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_rejects_symlink() {
+        assert_eq!(
+            classify_report_dir(true, 1000, 1000, 0o40700),
+            Err(UnsafeReportDir::Symlink)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_rejects_dir_owned_by_another_user() {
+        // Owned by root while we run as uid 1000: a privileged/foreign dir.
+        assert_eq!(
+            classify_report_dir(false, 0, 1000, 0o40700),
+            Err(UnsafeReportDir::NotOwned)
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_rejects_world_writable_without_sticky() {
+        assert_eq!(
+            classify_report_dir(false, 1000, 1000, 0o40777),
+            Err(UnsafeReportDir::WorldWritable),
+            "world-writable, no sticky"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn classify_accepts_group_writable_dir() {
+        // umask 0002 (user-private-group) makes new dirs group-writable by
+        // default; rejecting that would reject the common case. Group
+        // membership is the operator's responsibility.
+        assert_eq!(classify_report_dir(false, 1000, 1000, 0o40775), Ok(()));
+        assert_eq!(classify_report_dir(false, 1000, 1000, 0o40770), Ok(()));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_crash_report_refuses_symlinked_dir() {
+        // A hostile co-tenant symlinks the report dir at a victim location.
+        // The write must refuse rather than create reports through the link.
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim_dir");
+        std::fs::create_dir(&victim).unwrap();
+        let link = root.path().join("reports");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let err = write_crash_report(&link, "boom").expect_err("must refuse a symlinked dir");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read_dir(&victim).unwrap().count(),
+            0,
+            "nothing may be written through the link"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_crash_report_refuses_world_writable_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+
+        let err =
+            write_crash_report(dir.path(), "boom").expect_err("must refuse a world-writable dir");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_crash_report_accepts_owned_private_dir() {
+        // The safe path still works end to end (regression guard).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_crash_report(dir.path(), "ok-contents").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok-contents");
     }
 
     /// End-to-end hook behavior in-process: a panicking thread triggers

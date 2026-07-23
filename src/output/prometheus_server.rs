@@ -7,14 +7,64 @@
 //! Started when `--metrics <addr:port>` is specified without `--api`.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::RwLock;
 
 use crate::output::prometheus::{PrometheusMetrics, format_metrics};
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
+
+/// Maximum number of metrics connections handled concurrently. Beyond this,
+/// new connections are answered `503` and closed immediately, so a burst of
+/// slow clients cannot exhaust threads and make monitoring unavailable
+/// (SN-02, CWE-770). Prometheus scrapes are infrequent and cheap, so a small
+/// ceiling is ample for legitimate use.
+const MAX_CONCURRENT_CONNECTIONS: usize = 16;
+
+/// Bounds the number of in-flight metrics connections. A permit is taken per
+/// accepted connection and released (via [`ConnPermit`]'s `Drop`) when its
+/// handler finishes.
+struct ConnGate {
+    active: Arc<AtomicUsize>,
+    max: usize,
+}
+
+/// RAII permit from [`ConnGate::try_acquire`]; decrements the in-flight count
+/// when dropped.
+struct ConnPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+impl ConnGate {
+    fn new(max: usize) -> Self {
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            max,
+        }
+    }
+
+    /// Reserve a slot, or `None` if the concurrency cap is already reached.
+    fn try_acquire(&self) -> Option<ConnPermit> {
+        let prev = self.active.fetch_add(1, Ordering::SeqCst);
+        if prev >= self.max {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            None
+        } else {
+            Some(ConnPermit {
+                active: Arc::clone(&self.active),
+            })
+        }
+    }
+}
 
 /// Start a standalone Prometheus metrics HTTP server in a background thread.
 ///
@@ -32,6 +82,24 @@ pub fn start_metrics_server(
     basic_auth: Option<String>,
     capture_meter: Option<crate::capture::channel::CaptureMeter>,
 ) -> anyhow::Result<std::thread::JoinHandle<()>> {
+    // Fail closed on a non-loopback bind without authentication, matching
+    // the REST API and MCP HTTP transports (SN-02). An unauthenticated
+    // metrics endpoint on a routable address publishes dialog/message/
+    // stream counts and security-event counters to anyone who can reach it.
+    if !bind_addr.ip().is_loopback() && basic_auth.is_none() {
+        anyhow::bail!(
+            "metrics server refuses to start: --metrics {bind_addr} is non-loopback \
+             but no --metrics-auth / --metrics-auth-file was supplied. Bind to \
+             127.0.0.1, or set credentials to publish on a routable address."
+        );
+    }
+    if !bind_addr.ip().is_loopback() {
+        tracing::warn!(
+            "metrics server bound non-loopback ({bind_addr}) with Basic auth only — \
+             credentials are base64-encoded, not encrypted; terminate TLS upstream."
+        );
+    }
+
     let listener = TcpListener::bind(bind_addr)
         .map_err(|e| anyhow::anyhow!("Failed to bind metrics server on {bind_addr}: {e}"))?;
 
@@ -43,6 +111,7 @@ pub fn start_metrics_server(
     let handle = std::thread::Builder::new()
         .name("metrics-server".to_string())
         .spawn(move || {
+            let gate = ConnGate::new(MAX_CONCURRENT_CONNECTIONS);
             for stream in listener.incoming() {
                 if crate::signals::shutdown_requested() {
                     break;
@@ -56,101 +125,141 @@ pub fn start_metrics_server(
                     }
                 };
 
-                // Set a reasonable timeout to prevent slowloris
-                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
-                let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
-
-                // Read the HTTP request (just enough to get the path and headers)
-                let mut reader = BufReader::new(&stream);
-                let mut request_line = String::new();
-                if reader.read_line(&mut request_line).is_err() {
+                // Refuse when at the concurrency cap so one slow client cannot
+                // monopolize the server and starve legitimate scrapes.
+                let Some(permit) = gate.try_acquire() else {
+                    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+                    write_simple(&mut stream, "503 Service Unavailable", "503 Busy\n");
                     continue;
-                }
+                };
 
-                // Parse request path
-                let path = request_line
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_string();
-
-                // Read headers (looking for Authorization)
-                let mut auth_header = None;
-                loop {
-                    let mut line = String::new();
-                    match reader.read_line(&mut line) {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            let trimmed = line.trim();
-                            if trimmed.is_empty() {
-                                break; // End of headers
-                            }
-                            if let Some(value) = trimmed.strip_prefix("Authorization: ") {
-                                auth_header = Some(value.to_string());
-                            } else if let Some(value) = trimmed.strip_prefix("authorization: ") {
-                                auth_header = Some(value.to_string());
-                            }
-                        }
-                    }
-                }
-
-                // Check Basic auth if configured
-                if let Some(ref expected_creds) = basic_auth {
-                    let authenticated = if let Some(ref auth) = auth_header {
-                        check_basic_auth(auth, expected_creds)
-                    } else {
-                        false
-                    };
-
-                    if !authenticated {
-                        let body = "401 Unauthorized\n";
-                        let response = format!(
-                            "HTTP/1.1 401 Unauthorized\r\n\
-                             WWW-Authenticate: Basic realm=\"sipnab metrics\"\r\n\
-                             Content-Type: text/plain\r\n\
-                             Content-Length: {}\r\n\
-                             Connection: close\r\n\r\n\
-                             {}",
-                            body.len(),
-                            body
+                // Hand off to a short-lived worker so a slow request only
+                // occupies one of the bounded slots, not the accept loop.
+                let dialog_store = Arc::clone(&dialog_store);
+                let stream_store = Arc::clone(&stream_store);
+                let basic_auth = basic_auth.clone();
+                let capture_meter = capture_meter.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("metrics-conn".to_string())
+                    .spawn(move || {
+                        // permit is moved in and dropped when the handler ends.
+                        let _permit = permit;
+                        handle_metrics_connection(
+                            stream,
+                            &dialog_store,
+                            &stream_store,
+                            basic_auth.as_deref(),
+                            capture_meter.as_ref(),
                         );
-                        let _ = stream.write_all(response.as_bytes());
-                        continue;
-                    }
-                }
-
-                if path == "/metrics" {
-                    let metrics =
-                        collect_metrics(&dialog_store, &stream_store, capture_meter.as_ref());
-                    let body = format_metrics(&metrics);
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\n\
-                         Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n\
-                         Content-Length: {}\r\n\
-                         Connection: close\r\n\r\n\
-                         {}",
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
-                } else {
-                    let body = "404 Not Found\n";
-                    let response = format!(
-                        "HTTP/1.1 404 Not Found\r\n\
-                         Content-Type: text/plain\r\n\
-                         Content-Length: {}\r\n\
-                         Connection: close\r\n\r\n\
-                         {}",
-                        body.len(),
-                        body
-                    );
-                    let _ = stream.write_all(response.as_bytes());
+                    });
+                if spawned.is_err() {
+                    tracing::debug!("Metrics server: failed to spawn connection handler");
                 }
             }
         })
         .map_err(|e| anyhow::anyhow!("Failed to spawn metrics server thread: {e}"))?;
 
     Ok(handle)
+}
+
+/// Write a minimal `Connection: close` HTTP response with a plain-text body.
+fn write_simple(stream: &mut TcpStream, status_line: &str, body: &str) {
+    let response = format!(
+        "HTTP/1.1 {status_line}\r\n\
+         Content-Type: text/plain\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n\
+         {body}",
+        body.len(),
+    );
+    let _ = stream.write_all(response.as_bytes());
+}
+
+/// Handle one metrics connection: parse the request line and headers, enforce
+/// Basic auth when configured, and serve `/metrics` (or 404). Owns `stream`
+/// for the connection's lifetime.
+fn handle_metrics_connection(
+    mut stream: TcpStream,
+    dialog_store: &Arc<RwLock<DialogStore>>,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    basic_auth: Option<&str>,
+    capture_meter: Option<&crate::capture::channel::CaptureMeter>,
+) {
+    // Set a reasonable timeout to prevent slowloris.
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(5)));
+
+    // Read the HTTP request (just enough to get the path and headers).
+    let mut reader = BufReader::new(&stream);
+    let mut request_line = String::new();
+    if reader.read_line(&mut request_line).is_err() {
+        return;
+    }
+
+    let path = request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .to_string();
+
+    // Read headers (looking for Authorization).
+    let mut auth_header = None;
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    break; // End of headers
+                }
+                if let Some(value) = trimmed.strip_prefix("Authorization: ") {
+                    auth_header = Some(value.to_string());
+                } else if let Some(value) = trimmed.strip_prefix("authorization: ") {
+                    auth_header = Some(value.to_string());
+                }
+            }
+        }
+    }
+
+    // Check Basic auth if configured.
+    if let Some(expected_creds) = basic_auth {
+        let authenticated = auth_header
+            .as_deref()
+            .is_some_and(|auth| check_basic_auth(auth, expected_creds));
+        if !authenticated {
+            let body = "401 Unauthorized\n";
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\n\
+                 WWW-Authenticate: Basic realm=\"sipnab metrics\"\r\n\
+                 Content-Type: text/plain\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n\
+                 {}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            return;
+        }
+    }
+
+    if path == "/metrics" {
+        let metrics = collect_metrics(dialog_store, stream_store, capture_meter);
+        let body = format_metrics(&metrics);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n\
+             {}",
+            body.len(),
+            body
+        );
+        let _ = stream.write_all(response.as_bytes());
+    } else {
+        write_simple(&mut stream, "404 Not Found", "404 Not Found\n");
+    }
 }
 
 /// Check HTTP Basic authentication.
@@ -385,6 +494,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            from_hep: false,
         };
         let rtp = RtpHeader {
             version: 2,
@@ -477,6 +587,73 @@ mod tests {
             "GET /metrics HTTP/1.1\r\nHost: x\r\nAuthorization: Basic dXNlcjpwYXNz\r\n\r\n",
         );
         assert!(resp.starts_with("HTTP/1.1 200 OK"), "got: {resp:?}");
+    }
+
+    /// The connection gate caps concurrent handlers: acquisitions beyond the
+    /// limit are refused (returning `None`) so a burst of slow clients cannot
+    /// exhaust threads, and a slot frees when its permit is dropped (SN-02).
+    #[test]
+    fn conn_gate_caps_and_releases() {
+        let gate = ConnGate::new(2);
+        let p1 = gate.try_acquire().expect("first permit");
+        let _p2 = gate.try_acquire().expect("second permit");
+        assert!(
+            gate.try_acquire().is_none(),
+            "third over the cap is refused"
+        );
+        drop(p1);
+        assert!(gate.try_acquire().is_some(), "a freed slot is reusable");
+    }
+
+    /// The standalone metrics server must fail closed on a non-loopback
+    /// bind when no Basic-auth credential is configured, matching the
+    /// REST API and MCP HTTP transports (SN-02). Otherwise operational
+    /// telemetry is published to the network unauthenticated.
+    #[test]
+    fn refuses_non_loopback_bind_without_auth() {
+        let bind: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let err = start_metrics_server(
+            bind,
+            Arc::new(RwLock::new(DialogStore::new(10, false))),
+            Arc::new(RwLock::new(StreamStore::new(10))),
+            None,
+            None,
+        )
+        .expect_err("non-loopback without auth must be refused");
+        assert!(
+            err.to_string().contains("non-loopback"),
+            "error should explain the bind policy, got: {err}"
+        );
+    }
+
+    /// A non-loopback bind is allowed once a credential is configured.
+    #[test]
+    fn allows_non_loopback_bind_with_auth() {
+        let bind: SocketAddr = "0.0.0.0:0".parse().unwrap();
+        let handle = start_metrics_server(
+            bind,
+            Arc::new(RwLock::new(DialogStore::new(10, false))),
+            Arc::new(RwLock::new(StreamStore::new(10))),
+            Some("user:pass".to_string()),
+            None,
+        );
+        assert!(
+            handle.is_ok(),
+            "auth-configured non-loopback bind should start"
+        );
+    }
+
+    /// Loopback binds never require auth (the common local-scrape case).
+    #[test]
+    fn allows_loopback_bind_without_auth() {
+        let handle = start_metrics_server(
+            free_addr(),
+            Arc::new(RwLock::new(DialogStore::new(10, false))),
+            Arc::new(RwLock::new(StreamStore::new(10))),
+            None,
+            None,
+        );
+        assert!(handle.is_ok(), "loopback without auth should start");
     }
 
     #[test]

@@ -398,8 +398,9 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 
 | Flag | Value | Default | Description |
 |------|-------|---------|-------------|
-| `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `0.0.0.0:9090`). Feature: `api` |
-| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>` Feature: `api` |
+| `--metrics` | `<ADDR>` | -- | Prometheus metrics endpoint (e.g., `127.0.0.1:9090`). A non-loopback bind is **refused** unless `--metrics-auth`/`--metrics-auth-file` is set. Feature: `api` |
+| `--metrics-auth` | `<USER:PASS>` | -- | HTTP Basic auth credentials (`user:pass`) required by the metrics endpoint; requests must send `Authorization: Basic <base64>`. Prefer `--metrics-auth-file`. Feature: `api` |
+| `--metrics-auth-file` | `<FILE>` | -- | Read the metrics Basic-auth `user:pass` from a file (contents trimmed); precedence over `--metrics-auth`. Feature: `api` |
 | `--api` | `<ADDR>` | -- | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | API key for REST API authentication. Also reads `$SIPNAB_API_KEY` Feature: `api` |
 | `--api-tls-cert` | `<FILE>` | -- | **Not yet implemented** — built-in API TLS is not wired up, and sipnab exits if this is set. Terminate TLS at a reverse proxy instead. Feature: `api` |
@@ -411,9 +412,14 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 | `--api-token-ttl` | `<SECS>` | -- | Lifetime for minted API tokens |
 | `-L`, `--hep-listen` | `<ADDR>` | -- | Listen for HEP (Homer Encapsulation Protocol) packets. Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | Send captured packets via HEP to a remote collector. Feature: `hep` |
+| `--hep-auth` | `<KEY>` | -- | Homer authenticate key (HEP `0x000e` chunk). On `--hep-send` it stamps outgoing packets; on `--hep-listen` it **enables receiver-side authentication** (unmatched packets dropped, constant-time compare). Also read from `SIPNAB_HEP_AUTH`. Feature: `hep` |
+| `--hep-auth-file` | `<FILE>` | -- | Read the HEP shared secret from a file (contents trimmed); precedence over `--hep-auth`. Feature: `hep` |
+| `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode: `plain` sends/expects the secret verbatim (Homer-compatible, replayable); `hmac` sends/expects a per-message HMAC token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — sipnab-to-sipnab only. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
-| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable) Feature: `hep` |
-| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second Feature: `hep` |
+| `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). A non-loopback `--hep-listen` bind is **refused** unless this or `--hep-auth`/`--hep-auth-file` is set. Feature: `hep` |
+| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling) Feature: `hep` |
+| `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | Maximum HEP packets/second per source IP: a number, `off`, or `auto` (divide the global ceiling across `--hep-allow` sources); fairness against a single flooding peer. Feature: `hep` |
+| `--hep-allow-kill` | -- | off | Allow scanner-kill active responses for HEP-received packets. **Off by default** (sender-asserted src/dst); only enable with authenticated HEP input. Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |
 
 **Examples**
@@ -431,8 +437,22 @@ sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-
 sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key
 # Forward to a second collector under a different agent id and auth key
 sudo sipnab -N -d eth0 --hep-send 198.51.100.20:9060 --hep-id 7 --hep-auth homerkey2
+# Replay-resistant sipnab-to-sipnab forwarding: HMAC-token auth over an untrusted path
+sudo sipnab -N -d eth0 --hep-send 198.51.100.30:9060 --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac
+# The matching HMAC collector: verifies the per-message token and rejects replays
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac
 # Run a HEP collector that parses incoming packets, only from two allowed CIDRs, capped at 20k pkts/sec
 sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-allow 192.0.2.0/24 --hep-allow 198.51.100.20/32 --hep-rate-limit 20000
+# Authenticated HEP collector on a routable address: packets must carry the shared secret, with a 5k/s per-peer fairness cap
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-rate-limit 40000 --hep-rate-limit-per-peer 5000
+# Authenticated HEP collector allowed to actively kill scanners in the HEP stream (safe only because the feed is authenticated)
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --hep-allow-kill --kill-scanner
+# Inline HEP secret (prefer --hep-auth-file) with a tight per-peer cap for a busy multi-proxy fleet
+sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth s3cr3t-homer-key --hep-rate-limit-per-peer 2000 --hep-allow-kill --kill-target 198.51.100.7
+# Loopback metrics endpoint reading its Basic-auth credential from a file
+sipnab -N -I capture.pcap --metrics 127.0.0.1:9090 --metrics-auth-file /etc/sipnab/metrics.cred
+# Routable metrics endpoint (non-loopback requires auth) with a file-backed credential; terminate TLS at a reverse proxy
+sudo sipnab -d eth0 --metrics 0.0.0.0:9090 --metrics-auth-file /etc/sipnab/metrics.cred
 # Mint a signed bearer token with a fixed id (for later revocation) and a 1-hour TTL, then exit
 sipnab --mint-token --token-id alice-2026 --api-signing-key-file /etc/sipnab/signing.key --api-token-ttl 3600
 ```

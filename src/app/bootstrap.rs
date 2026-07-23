@@ -117,11 +117,20 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
             }
             v
         };
+        let hep_auth = cli
+            .resolve_hep_auth()
+            .map_err(|e| PlanError::arg(format!("HEP auth: {e}")))?;
         Some(CaptureSource::Hep {
             bind_addr: hep_addr.clone(),
             #[cfg(feature = "hep")]
             allowlist,
             rate_limit: cli.hep_rate_limit,
+            per_peer_rate_limit: cli
+                .hep_rate_limit_per_peer
+                .resolve(cli.hep_rate_limit, cli.hep_allow.len()),
+            auth_key: hep_auth,
+            #[cfg(feature = "hep")]
+            auth_mode: cli.hep_auth_mode,
         })
     } else {
         None

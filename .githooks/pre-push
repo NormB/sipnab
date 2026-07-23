@@ -1,11 +1,15 @@
 #!/bin/sh
 # sipnab pre-push hook (portable POSIX sh).
 #
-# Hard gate: refuse to push code that fails `cargo fmt --all -- --check`.
-# This is the exact gap that broke CI -- unformatted Rust must never reach the
-# remote. Clippy runs as a soft warning only.
+# Hard gate: refuse to push code that fails either
+#   * `cargo fmt --all -- --check`, or
+#   * `cargo clippy --all-features --all-targets -- -D warnings`.
+# These are the exact gaps that break CI -- unformatted or lint-dirty Rust must
+# never reach the remote, since CI runs both as blocking gates (RUSTFLAGS
+# -Dwarnings + the same clippy invocation). Catching them locally turns a
+# 10-minute red-CI round-trip into a few seconds before push.
 #
-# Bypass for emergencies (use sparingly):
+# Bypass for emergencies (use sparingly) -- skips BOTH gates:
 #   SKIP_FMT_HOOK=1 git push ...
 #
 # Activate once per clone:
@@ -58,15 +62,24 @@ else
 	exit 1
 fi
 
-# -- Soft warning: clippy -----------------------------------------------------
-# Non-blocking by design: a clippy regression should be visible but must not
-# stop an otherwise-formatted push. Promote to a hard gate later if desired.
-printf '  cargo clippy --all-targets -- -D warnings ... '
-if cargo clippy --all-targets -- -D warnings >/dev/null 2>&1; then
+# -- Hard gate: clippy --------------------------------------------------------
+# Mirrors CI exactly (`cargo clippy --all-features --all-targets -- -D warnings`)
+# so a lint that would fail CI fails here first. `--all-features --all-targets`
+# is broader than pre-commit's `--features full`: it also lints tests, benches,
+# and examples, and every feature-gated path.
+printf '  cargo clippy --all-features --all-targets -- -D warnings ... '
+if cargo clippy --all-features --all-targets -- -D warnings; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
-	printf '%bWARN%b\n' "$YELLOW" "$NC"
-	printf '%bclippy reported warnings (not blocking). Run: cargo clippy --all-targets -- -D warnings%b\n' "$YELLOW" "$NC"
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '\n'
+	printf '%bPush blocked: clippy reported warnings.%b\n' "$RED" "$NC"
+	printf 'Fix them with:\n'
+	printf '    cargo clippy --all-features --all-targets --fix\n'
+	printf 'or address them by hand, then commit and push again.\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
 fi
 
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"

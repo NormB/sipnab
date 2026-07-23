@@ -70,6 +70,12 @@ pub struct ParsedPacket {
     pub more_fragments: bool,
     /// The IP protocol number of the payload (for fragment reassembly key).
     pub ip_protocol: u8,
+    /// Whether this packet originated from the HEP listener (its addressing
+    /// came from HEP chunks a remote sender asserted, not from an observed
+    /// IP header). Active responses such as scanner-kill treat HEP-origin
+    /// packets as ineligible by default, since their src/dst are
+    /// attacker-controllable and unauthenticated absent `--hep-auth` (SN-01).
+    pub from_hep: bool,
 }
 
 // ── DLT constants ─────────────────────────────────────────────────────
@@ -280,6 +286,7 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: meta.ip_protocol,
+            from_hep: true,
         });
     }
 
@@ -559,6 +566,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            from_hep: false,
         });
     }
 
@@ -584,6 +592,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            from_hep: false,
         });
     }
 
@@ -605,6 +614,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            from_hep: false,
         }),
         TransportSlice::Tcp(tcp) => Ok(ParsedPacket {
             timestamp,
@@ -626,6 +636,7 @@ fn extract_parsed_packet(
             fragment_offset,
             more_fragments,
             ip_protocol,
+            from_hep: false,
         }),
         TransportSlice::Icmpv4(_) | TransportSlice::Icmpv6(_) => Err(CaptureError::Icmp),
     }
@@ -1121,6 +1132,47 @@ mod tests {
         assert_eq!(parsed.fragment_offset, None);
         assert!(!parsed.more_fragments);
         assert_eq!(parsed.ip_protocol, 17);
+    }
+
+    /// A pre-parsed (HEP-listener-origin) packet is flagged `from_hep` so
+    /// downstream active responses (scanner-kill) can refuse to trust its
+    /// attacker-assertable addressing by default (SN-01).
+    #[test]
+    fn parse_packet_flags_pre_parsed_as_from_hep() {
+        let pkt = Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n".to_vec(),
+            Some("hep:0.0.0.0:9060".to_string()),
+            super::super::packet::PreParsed {
+                src_addr: "192.0.2.10".parse().unwrap(),
+                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_port: 5060,
+                dst_port: 5060,
+                ip_protocol: 17,
+            },
+        );
+        assert!(
+            parse_packet(&pkt).unwrap().from_hep,
+            "HEP-origin must be flagged"
+        );
+    }
+
+    /// A normally captured (link/IP/transport) packet is NOT flagged
+    /// `from_hep`, so scanner-kill remains eligible for live/pcap traffic.
+    #[test]
+    fn parse_packet_normal_capture_is_not_from_hep() {
+        let data = build_eth_ipv4_udp(
+            [192, 168, 1, 10],
+            [192, 168, 1, 20],
+            5060,
+            5060,
+            b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n",
+        );
+        let pkt = make_packet(data, DLT_EN10MB);
+        assert!(
+            !parse_packet(&pkt).unwrap().from_hep,
+            "live capture is not HEP-origin"
+        );
     }
 
     #[test]

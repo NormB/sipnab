@@ -106,6 +106,267 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
     )
 }
 
+// ── Receiver-side authentication & bind policy ───────────────────────
+
+/// Decide whether a received HEP packet's auth-key chunk satisfies the
+/// configured receiver secret.
+///
+/// * `expected = None` — no receiver secret configured: accept everything
+///   (backward compatible; HEP was previously unauthenticated on receive).
+/// * `expected = Some(secret)` — the packet must carry an auth-key chunk
+///   whose bytes equal `secret`. A missing chunk or any mismatch is
+///   rejected. The comparison is constant time so a network attacker
+///   cannot recover the secret byte-by-byte from timing (SN-01, CWE-345).
+pub fn hep_auth_ok(expected: Option<&str>, presented: Option<&[u8]>) -> bool {
+    match expected {
+        None => true,
+        Some(secret) => match presented {
+            Some(bytes) => crate::crypto::constant_time_eq(secret.as_bytes(), bytes),
+            None => false,
+        },
+    }
+}
+
+/// Enforce the HEP listener bind policy, mirroring the REST API / MCP HTTP
+/// rule (D18): a non-loopback bind is refused unless the deployment has
+/// constrained who or what it will trust — either receiver-side
+/// authentication (`has_auth`) or a non-empty source allowlist
+/// (`allowlist_len > 0`). A loopback bind is always permitted.
+///
+/// An address that does not resolve to any socket address is treated as
+/// non-loopback (fail closed).
+pub fn enforce_hep_bind_policy(
+    bind_addr: &str,
+    has_auth: bool,
+    allowlist_len: usize,
+) -> Result<(), String> {
+    if has_auth || allowlist_len > 0 {
+        return Ok(());
+    }
+    if hep_bind_is_loopback(bind_addr) {
+        return Ok(());
+    }
+    Err(format!(
+        "HEP listener refuses to start: --hep-listen {bind_addr} is non-loopback but \
+         neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
+         (--hep-allow) was configured. Bind to 127.0.0.1, add an allowlist, or set a \
+         secret to accept HEP from a routable address."
+    ))
+}
+
+/// Whether every socket address `bind_addr` resolves to is loopback.
+/// Returns `false` if the address fails to resolve (fail closed).
+fn hep_bind_is_loopback(bind_addr: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    match bind_addr.to_socket_addrs() {
+        Ok(mut addrs) => {
+            let mut any = false;
+            let all_loopback = addrs.all(|a| {
+                any = true;
+                a.ip().is_loopback()
+            });
+            any && all_loopback
+        }
+        Err(_) => false,
+    }
+}
+
+// ── Per-peer rate-limit ergonomics ───────────────────────────────────
+
+/// One-line description of the active HEP rate limiters for the startup
+/// log, so an operator can see at a glance whether the per-peer cap is on.
+pub fn describe_hep_limiters(global: u64, per_peer: u64) -> String {
+    let per_peer = if per_peer == 0 {
+        "disabled".to_string()
+    } else {
+        format!("{per_peer}/s")
+    };
+    format!("HEP rate limiting: global {global}/s, per-peer {per_peer}")
+}
+
+// ── HMAC authentication mode (opt-in, sipnab↔sipnab) ──────────────────
+//
+// `HepAuthMode` lives in `crate::cli` (always compiled) so the CLI struct
+// can name it without the `hep` feature; the crypto below is HEP-only.
+
+use crate::cli::HepAuthMode;
+
+/// Wire-format version byte of the HMAC auth token.
+#[cfg(feature = "hep")]
+const HMAC_TOKEN_VERSION: u8 = 1;
+/// Token length: version(1) + timestamp(8) + nonce(16) + HMAC-SHA256(32).
+#[cfg(feature = "hep")]
+const HMAC_TOKEN_LEN: usize = 1 + 8 + 16 + 32;
+/// Acceptance window (seconds) for a token timestamp, each side of `now`.
+#[cfg(feature = "hep")]
+pub const HMAC_WINDOW_SECS: u64 = 30;
+
+/// Why an HMAC auth token was rejected.
+#[cfg(feature = "hep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HmacAuthError {
+    /// Wrong length or unrecognized version byte.
+    BadFormat,
+    /// Timestamp is further than the acceptance window from now.
+    TimestampOutOfWindow,
+    /// HMAC did not match (wrong key, or tampered token/payload).
+    BadMac,
+    /// A token with this nonce was already accepted within the window.
+    Replay,
+}
+
+#[cfg(feature = "hep")]
+fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
+    use hmac::{Hmac, KeyInit, Mac};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+    // HMAC accepts a key of any length, so new_from_slice cannot fail; handle
+    // the Result without panicking (production forbids unwrap/expect). The
+    // impossible Err path returns a zero tag, which fails closed on verify.
+    match HmacSha256::new_from_slice(key) {
+        Ok(mut mac) => {
+            mac.update(data);
+            let tag = mac.finalize().into_bytes();
+            let mut out = [0u8; 32];
+            out.copy_from_slice(&tag);
+            out
+        }
+        Err(_) => [0u8; 32],
+    }
+}
+
+/// The byte region the token's MAC is computed over: version, timestamp,
+/// nonce, and the message payload. Binding the payload authenticates the
+/// message content, not merely possession of the key.
+#[cfg(feature = "hep")]
+fn hmac_signed_region(ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(1 + 8 + 16 + payload.len());
+    buf.push(HMAC_TOKEN_VERSION);
+    buf.extend_from_slice(&ts.to_be_bytes());
+    buf.extend_from_slice(nonce);
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// Build the 57-byte HMAC auth token carried in the `0x000e` chunk when
+/// `--hep-auth-mode hmac` is active.
+#[cfg(feature = "hep")]
+pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
+    let mac = hmac_sha256(key, &hmac_signed_region(ts, nonce, payload));
+    let mut token = Vec::with_capacity(HMAC_TOKEN_LEN);
+    token.push(HMAC_TOKEN_VERSION);
+    token.extend_from_slice(&ts.to_be_bytes());
+    token.extend_from_slice(nonce);
+    token.extend_from_slice(&mac);
+    token
+}
+
+/// Verify a received HMAC auth token against the configured key and the
+/// message payload, rejecting stale timestamps, bad MACs, and replays.
+///
+/// The MAC is checked *before* the replay cache is consulted or updated, so
+/// a forged token can never seed the cache with an attacker-chosen nonce.
+#[cfg(feature = "hep")]
+pub fn verify_hmac_auth_token(
+    key: &[u8],
+    token: &[u8],
+    payload: &[u8],
+    now: u64,
+    window: u64,
+    seen: &mut HmacNonceCache,
+) -> Result<(), HmacAuthError> {
+    if token.len() != HMAC_TOKEN_LEN || token[0] != HMAC_TOKEN_VERSION {
+        return Err(HmacAuthError::BadFormat);
+    }
+    // Length is exactly HMAC_TOKEN_LEN (checked above), so these fixed-size
+    // copies cannot panic and need no unwrap/expect.
+    let mut ts_bytes = [0u8; 8];
+    ts_bytes.copy_from_slice(&token[1..9]);
+    let ts = u64::from_be_bytes(ts_bytes);
+    if now.abs_diff(ts) > window {
+        return Err(HmacAuthError::TimestampOutOfWindow);
+    }
+    let mut nonce = [0u8; 16];
+    nonce.copy_from_slice(&token[9..25]);
+
+    // Verify the MAC before touching the replay cache, so a forged token
+    // cannot record its (attacker-chosen) nonce and lock out a legitimate one.
+    let expected = hmac_sha256(key, &hmac_signed_region(ts, &nonce, payload));
+    if !crate::crypto::constant_time_eq(&expected, &token[25..HMAC_TOKEN_LEN]) {
+        return Err(HmacAuthError::BadMac);
+    }
+
+    seen.prune(now.saturating_sub(window));
+    if seen.contains(&nonce) {
+        return Err(HmacAuthError::Replay);
+    }
+    seen.insert(nonce, ts);
+    Ok(())
+}
+
+/// Bounded record of recently accepted token nonces, used to reject replays
+/// within the acceptance window. Entries older than the window are pruned,
+/// so memory is bounded by the authentic packet rate times the window.
+#[cfg(feature = "hep")]
+#[derive(Default)]
+pub struct HmacNonceCache {
+    seen: std::collections::HashMap<[u8; 16], u64>,
+}
+
+#[cfg(feature = "hep")]
+impl HmacNonceCache {
+    /// A fresh, empty replay cache.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn contains(&self, nonce: &[u8; 16]) -> bool {
+        self.seen.contains_key(nonce)
+    }
+
+    fn insert(&mut self, nonce: [u8; 16], ts: u64) {
+        self.seen.insert(nonce, ts);
+    }
+
+    /// Drop nonces whose timestamp is older than `min_ts`; those can no
+    /// longer pass the timestamp check, so they cannot be replayed.
+    fn prune(&mut self, min_ts: u64) {
+        self.seen.retain(|_, ts| *ts >= min_ts);
+    }
+}
+
+/// Receiver-side gate for `--hep-auth-mode hmac`. Mirrors [`hep_auth_ok`]'s
+/// contract: with no configured secret every packet passes; otherwise the
+/// packet must carry a valid, fresh, unreplayed HMAC token over its payload.
+#[cfg(feature = "hep")]
+fn hmac_auth_ok(
+    expected: Option<&str>,
+    token: Option<&[u8]>,
+    payload: &[u8],
+    cache: &mut HmacNonceCache,
+) -> bool {
+    match (expected, token) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(key), Some(token)) => {
+            let now = chrono::Utc::now().timestamp().max(0) as u64;
+            match verify_hmac_auth_token(
+                key.as_bytes(),
+                token,
+                payload,
+                now,
+                HMAC_WINDOW_SECS,
+                cache,
+            ) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!("HEP HMAC auth rejected: {e:?}");
+                    false
+                }
+            }
+        }
+    }
+}
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Protocol type carried inside a HEP packet.
@@ -172,6 +433,10 @@ pub struct HepPacket {
     pub correlation_id: Option<String>,
     /// Capture agent ID, if present (v3 only).
     pub capture_id: Option<u32>,
+    /// Authenticate-key / shared secret from the HEP `0x000e` chunk, if
+    /// present (v3 only). Retained so the receiver can authenticate the
+    /// sender; compared in constant time via [`hep_auth_ok`].
+    pub auth_key: Option<Vec<u8>>,
 }
 
 // ── Parsing ──────────────────────────────────────────────────────────
@@ -224,6 +489,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     let mut payload: Vec<u8> = Vec::new();
     let mut correlation_id: Option<String> = None;
     let mut capture_id: Option<u32> = None;
+    let mut auth_key: Option<Vec<u8>> = None;
 
     let mut offset = HEP3_HEADER_LEN;
     while offset + CHUNK_HEADER_LEN <= total_len {
@@ -322,6 +588,9 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
                     chunk_data[3],
                 ]));
             }
+            CHUNK_AUTH_KEY => {
+                auth_key = Some(chunk_data.to_vec());
+            }
             CHUNK_PAYLOAD => {
                 payload = chunk_data.to_vec();
             }
@@ -363,6 +632,7 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
         payload,
         correlation_id,
         capture_id,
+        auth_key,
     })
 }
 
@@ -408,6 +678,9 @@ fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
         payload,
         correlation_id: None,
         capture_id: None,
+        // HEP v2's fixed header has no auth-key field; receiver-side
+        // authentication therefore applies to v3 senders only.
+        auth_key: None,
     })
 }
 
@@ -435,6 +708,27 @@ pub fn build_hep_v3(
     protocol: HepProtocol,
     capture_id: u32,
     auth_key: Option<&str>,
+    payload: &[u8],
+) -> Vec<u8> {
+    build_hep_v3_bytes(
+        endpoint,
+        timestamp,
+        protocol,
+        capture_id,
+        auth_key.map(str::as_bytes),
+        payload,
+    )
+}
+
+/// Like [`build_hep_v3`] but the `0x000e` auth chunk carries arbitrary
+/// bytes, so `--hep-auth-mode hmac` can stamp a binary token there instead
+/// of a cleartext key.
+pub fn build_hep_v3_bytes(
+    endpoint: &HepEndpoint,
+    timestamp: DateTime<Utc>,
+    protocol: HepProtocol,
+    capture_id: u32,
+    auth_key: Option<&[u8]>,
     payload: &[u8],
 ) -> Vec<u8> {
     let src_addr = endpoint.src_addr;
@@ -492,9 +786,9 @@ pub fn build_hep_v3(
         &capture_id.to_be_bytes(),
     );
 
-    // Authenticate key (Homer shared secret), when configured.
+    // Authenticate key (Homer shared secret) or HMAC token, when configured.
     if let Some(key) = auth_key {
-        append_chunk(&mut chunks, 0x0000, CHUNK_AUTH_KEY, key.as_bytes());
+        append_chunk(&mut chunks, 0x0000, CHUNK_AUTH_KEY, key);
     }
 
     // Payload
@@ -616,38 +910,77 @@ impl CidrRange {
     }
 }
 
-/// Simple token-bucket rate limiter for HEP input.
+/// Upper bound on the number of distinct peers tracked within a one-second
+/// window. Bounds memory against a source-address flood; when exceeded, new
+/// peers in that window are held only to the global ceiling (the per-peer
+/// map stops growing until the window resets).
+const HEP_MAX_TRACKED_PEERS: usize = 4096;
+
+/// Fixed-window rate limiter for HEP input with both a global ceiling and a
+/// per-peer cap.
+///
+/// The global ceiling bounds total load; the per-peer cap adds fairness so a
+/// single reachable sender cannot consume the whole allowance and starve
+/// other producers (a gap in the previous global-only limiter). Both counters
+/// reset once per elapsed second.
 struct HepRateLimiter {
-    max_per_second: u64,
+    global_max: u64,
+    per_peer_max: u64,
     count_this_second: u64,
+    per_peer: std::collections::HashMap<IpAddr, u64>,
     window_start: Instant,
     dropped_total: u64,
 }
 
 impl HepRateLimiter {
-    fn new(max_per_second: u64) -> Self {
+    /// `global_max` caps total packets/second across all peers;
+    /// `per_peer_max` caps packets/second from any single source IP. A zero
+    /// `per_peer_max` disables the per-peer cap (global-only behavior).
+    fn new(global_max: u64, per_peer_max: u64) -> Self {
         Self {
-            max_per_second,
+            global_max,
+            per_peer_max,
             count_this_second: 0,
+            per_peer: std::collections::HashMap::new(),
             window_start: Instant::now(),
             dropped_total: 0,
         }
     }
 
-    /// Returns `true` if the message should be processed, `false` if rate-limited.
-    fn allow(&mut self) -> bool {
+    /// Returns `true` if a packet from `peer` may be processed, `false` if it
+    /// is rate-limited by either the global ceiling or the per-peer cap.
+    fn allow(&mut self, peer: IpAddr) -> bool {
         let now = Instant::now();
         if now.duration_since(self.window_start).as_secs() >= 1 {
             self.window_start = now;
             self.count_this_second = 0;
+            self.per_peer.clear();
+        }
+
+        // Per-peer cap first, so one noisy peer's drops do not consume the
+        // global budget. Skipped once the tracking map is full (memory bound).
+        if self.per_peer_max > 0
+            && (self.per_peer.len() < HEP_MAX_TRACKED_PEERS || self.per_peer.contains_key(&peer))
+        {
+            let peer_count = self.per_peer.entry(peer).or_insert(0);
+            *peer_count += 1;
+            if *peer_count > self.per_peer_max {
+                self.dropped_total += 1;
+                tracing::debug!(
+                    "HEP per-peer rate limit exceeded ({}/s) for {peer}, dropping (total dropped: {})",
+                    self.per_peer_max,
+                    self.dropped_total
+                );
+                return false;
+            }
         }
 
         self.count_this_second += 1;
-        if self.count_this_second > self.max_per_second {
+        if self.count_this_second > self.global_max {
             self.dropped_total += 1;
             tracing::debug!(
-                "HEP rate limit exceeded ({}/s), dropping packet (total dropped: {})",
-                self.max_per_second,
+                "HEP global rate limit exceeded ({}/s), dropping packet (total dropped: {})",
+                self.global_max,
                 self.dropped_total
             );
             return false;
@@ -729,6 +1062,24 @@ fn is_transient_recv_error(kind: std::io::ErrorKind) -> bool {
     )
 }
 
+/// Options for the HEP listener, grouped so [`capture_hep`] keeps a small
+/// signature. Borrows the allowlist and secret from the caller.
+pub struct HepListenerOpts<'a> {
+    /// CIDR allowlist for the outer UDP source (empty = allow any source).
+    pub allowlist: &'a [CidrRange],
+    /// Global ceiling: maximum HEP packets/second across all peers.
+    pub rate_limit: u64,
+    /// Per-peer cap: maximum HEP packets/second from any one source IP
+    /// (0 = disabled; the global ceiling still applies).
+    pub per_peer_rate_limit: u64,
+    /// Receiver-side shared secret. When `Some`, incoming packets must carry
+    /// a matching 0x000e auth-key chunk (constant-time compared) or be dropped.
+    pub auth_key: Option<&'a str>,
+    /// How the 0x000e chunk is interpreted: a verbatim shared secret
+    /// (`Plain`) or a per-message HMAC token (`Hmac`).
+    pub auth_mode: HepAuthMode,
+}
+
 /// HEP listener: binds a UDP socket and receives HEP packets.
 ///
 /// Each received HEP packet is parsed and converted via `hep_to_packet`
@@ -737,23 +1088,45 @@ fn is_transient_recv_error(kind: std::io::ErrorKind) -> bool {
 /// HEP payload as the transport-layer message bytes directly.
 ///
 /// The listener checks [`signals::shutdown_requested`] each iteration and
-/// respects the `count` and `duration` limits from `config`.
+/// respects the `count` and `duration` limits from `config`. Source
+/// filtering, rate limiting, and receiver-side authentication come from
+/// [`HepListenerOpts`].
 ///
 /// # Default bind address
 ///
 /// Per design decision D18, the default bind address is `127.0.0.1:9060`.
+/// A non-loopback bind is refused unless `opts.auth_key` or a non-empty
+/// `opts.allowlist` is configured (SN-01).
 ///
 /// # Errors
 ///
-/// Returns an error if the UDP socket cannot be bound.
+/// Returns an error if the bind policy is violated or the UDP socket
+/// cannot be bound.
 pub fn capture_hep(
     bind_addr: &str,
     config: &CaptureConfig,
     tx: PacketTx,
-    allowlist: &[CidrRange],
-    rate_limit: u64,
+    opts: &HepListenerOpts<'_>,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<()> {
+    let HepListenerOpts {
+        allowlist,
+        rate_limit,
+        per_peer_rate_limit,
+        auth_key,
+        auth_mode,
+    } = *opts;
+
+    // Fail closed on an unguarded non-loopback bind before touching the
+    // socket (SN-01, D18): a routable HEP listener must be constrained by a
+    // shared secret or a source allowlist.
+    if let Err(reason) = enforce_hep_bind_policy(bind_addr, auth_key.is_some(), allowlist.len()) {
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(reason.clone()));
+        }
+        return Err(anyhow::anyhow!(reason));
+    }
+
     let socket = match UdpSocket::bind(bind_addr)
         .with_context(|| format!("Failed to bind HEP listener on '{bind_addr}'"))
     {
@@ -785,10 +1158,21 @@ pub fn capture_hep(
     let start = Instant::now();
     let mut count: u64 = 0;
     let mut buf = vec![0u8; 65535];
-    let mut rate_limiter = HepRateLimiter::new(rate_limit);
+    let mut rate_limiter = HepRateLimiter::new(rate_limit, per_peer_rate_limit);
+    // Per-listener replay cache for HMAC auth mode (SN-01 residual).
+    let mut hmac_nonce_cache = HmacNonceCache::new();
 
     if !allowlist.is_empty() {
         tracing::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
+    }
+    tracing::info!("{}", describe_hep_limiters(rate_limit, per_peer_rate_limit));
+    if auth_key.is_some() {
+        tracing::info!("HEP receiver authentication active: packets must carry a matching key");
+    } else if !hep_bind_is_loopback(bind_addr) {
+        tracing::warn!(
+            "HEP listener on {bind_addr} is non-loopback and unauthenticated — the inner \
+             src/dst addresses a sender asserts are trusted verbatim; prefer --hep-auth."
+        );
     }
 
     // Log the actual bound address: with port 0 the OS assigns an ephemeral
@@ -860,8 +1244,8 @@ pub fn capture_hep(
             }
         }
 
-        // Check rate limit
-        if !rate_limiter.allow() {
+        // Check rate limit (global ceiling + per-peer fairness)
+        if !rate_limiter.allow(peer.ip()) {
             continue;
         }
 
@@ -872,6 +1256,30 @@ pub fn capture_hep(
                 continue;
             }
         };
+
+        // Receiver-side authentication (SN-01): when a secret is configured,
+        // the sender must prove it via the 0x000e auth-key chunk. This binds
+        // the attacker-asserted inner src/dst metadata to a trusted producer.
+        // Plain mode compares the secret verbatim; Hmac mode verifies a
+        // per-message token (timestamp + nonce + HMAC over the payload),
+        // which also resists on-path replay.
+        let auth_pass = match auth_mode {
+            HepAuthMode::Plain => hep_auth_ok(auth_key, hep.auth_key.as_deref()),
+            HepAuthMode::Hmac => hmac_auth_ok(
+                auth_key,
+                hep.auth_key.as_deref(),
+                &hep.payload,
+                &mut hmac_nonce_cache,
+            ),
+        };
+        if !auth_pass {
+            tracing::debug!(
+                "Dropping HEP packet from {}: failed {:?} auth",
+                peer.ip(),
+                auth_mode
+            );
+            continue;
+        }
 
         // Convert to a Packet that the rest of the pipeline can process.
         // The HEP chunks (src/dst addr+port, IP protocol) flow into
@@ -903,6 +1311,16 @@ pub struct HepSender {
     capture_id: u32,
     /// Optional Homer authenticate key (0x000e chunk) added to every packet.
     auth_key: Option<String>,
+    /// How the auth key is presented: verbatim (`Plain`) or as a per-message
+    /// HMAC token (`Hmac`).
+    auth_mode: HepAuthMode,
+    /// Per-sender salt for HMAC-token nonces, mixing time and PID so nonces
+    /// do not collide across senders or restarts. The nonce need only be
+    /// unique (replay protection), not unpredictable — the HMAC provides
+    /// unforgeability — so a salt+counter is sufficient and needs no RNG dep.
+    nonce_salt: u64,
+    /// Monotonic per-message counter forming the low half of each nonce.
+    nonce_counter: std::sync::atomic::AtomicU64,
 }
 
 impl HepSender {
@@ -913,17 +1331,51 @@ impl HepSender {
     /// # Errors
     ///
     /// Returns an error if the socket cannot be created or connected.
-    pub fn new(dest_addr: &str, capture_id: u32, auth_key: Option<String>) -> Result<Self> {
+    pub fn new(
+        dest_addr: &str,
+        capture_id: u32,
+        auth_key: Option<String>,
+        auth_mode: HepAuthMode,
+    ) -> Result<Self> {
         let socket = UdpSocket::bind("0.0.0.0:0")
             .context("Failed to bind ephemeral UDP socket for HEP sender")?;
         socket
             .connect(dest_addr)
             .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
+        let nonce_salt = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+            ^ (std::process::id() as u64).rotate_left(32);
         Ok(Self {
             socket,
             capture_id,
             auth_key,
+            auth_mode,
+            nonce_salt,
+            nonce_counter: std::sync::atomic::AtomicU64::new(0),
         })
+    }
+
+    /// The auth bytes to place in the `0x000e` chunk for `payload`: the key
+    /// verbatim in `Plain` mode, or a fresh per-message HMAC token in `Hmac`
+    /// mode. `None` when no key is configured.
+    fn auth_bytes_for(&self, payload: &[u8]) -> Option<Vec<u8>> {
+        let key = self.auth_key.as_deref()?;
+        match self.auth_mode {
+            HepAuthMode::Plain => Some(key.as_bytes().to_vec()),
+            HepAuthMode::Hmac => Some(self.hmac_token(key, payload)),
+        }
+    }
+
+    fn hmac_token(&self, key: &str, payload: &[u8]) -> Vec<u8> {
+        use std::sync::atomic::Ordering;
+        let ts = chrono::Utc::now().timestamp().max(0) as u64;
+        let counter = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
+        let mut nonce = [0u8; 16];
+        nonce[..8].copy_from_slice(&self.nonce_salt.to_be_bytes());
+        nonce[8..].copy_from_slice(&counter.to_be_bytes());
+        build_hmac_auth_token(key.as_bytes(), ts, &nonce, payload)
     }
 
     /// Encapsulate and send a SIP message as a HEP v3 packet.
@@ -942,12 +1394,13 @@ impl HepSender {
             src_port: msg.src_port,
             dst_port: msg.dst_port,
         };
-        let pkt = build_hep_v3(
+        let auth_bytes = self.auth_bytes_for(&msg.raw);
+        let pkt = build_hep_v3_bytes(
             &endpoint,
             msg.timestamp,
             HepProtocol::Sip,
             self.capture_id,
-            self.auth_key.as_deref(),
+            auth_bytes.as_deref(),
             &msg.raw,
         );
 
@@ -1248,6 +1701,276 @@ mod tests {
     }
 
     #[test]
+    fn parse_captures_auth_key_chunk() {
+        // The receiver must be able to READ the 0x000e auth-key chunk, not
+        // just the sender write it — this is what enables receiver-side
+        // authentication (SN-01).
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let pkt = build_hep_v3(
+            &v4_endpoint(),
+            ts,
+            HepProtocol::Sip,
+            1,
+            Some("s3cr3t"),
+            b"INVITE",
+        );
+        let parsed = parse_hep(&pkt).unwrap();
+        assert_eq!(parsed.auth_key.as_deref(), Some(b"s3cr3t".as_slice()));
+    }
+
+    #[test]
+    fn parse_auth_key_none_when_absent() {
+        let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
+        assert_eq!(parse_hep(&pkt).unwrap().auth_key, None);
+    }
+
+    #[test]
+    fn verify_hep_auth_accepts_all_when_no_secret_configured() {
+        // Backward compatible: with no receiver secret, any packet passes
+        // (with or without an auth chunk).
+        assert!(hep_auth_ok(None, Some(b"anything")));
+        assert!(hep_auth_ok(None, None));
+    }
+
+    #[test]
+    fn verify_hep_auth_requires_matching_key_when_secret_configured() {
+        assert!(
+            hep_auth_ok(Some("secret"), Some(b"secret")),
+            "exact match accepted"
+        );
+        assert!(
+            !hep_auth_ok(Some("secret"), Some(b"wrong")),
+            "mismatch rejected"
+        );
+        assert!(!hep_auth_ok(Some("secret"), None), "missing chunk rejected");
+        assert!(
+            !hep_auth_ok(Some("secret"), Some(b"secretX")),
+            "prefix not accepted"
+        );
+    }
+
+    #[test]
+    fn hep_bind_policy_refuses_non_loopback_without_auth_or_allowlist() {
+        let err = enforce_hep_bind_policy("0.0.0.0:9060", false, 0).unwrap_err();
+        assert!(err.contains("non-loopback"), "got: {err}");
+    }
+
+    #[test]
+    fn hep_bind_policy_allows_loopback_unauthenticated() {
+        assert!(enforce_hep_bind_policy("127.0.0.1:9060", false, 0).is_ok());
+        assert!(enforce_hep_bind_policy("[::1]:9060", false, 0).is_ok());
+    }
+
+    #[test]
+    fn hep_bind_policy_allows_non_loopback_with_auth_or_allowlist() {
+        assert!(
+            enforce_hep_bind_policy("0.0.0.0:9060", true, 0).is_ok(),
+            "auth suffices"
+        );
+        assert!(
+            enforce_hep_bind_policy("0.0.0.0:9060", false, 1).is_ok(),
+            "allowlist suffices"
+        );
+    }
+
+    #[test]
+    fn per_peer_limiter_global_ceiling_drops_excess() {
+        // Global ceiling of 2/s: the third packet in a window is dropped
+        // regardless of peer.
+        let mut lim = HepRateLimiter::new(2, 100);
+        let a: IpAddr = "10.0.0.1".parse().unwrap();
+        let b: IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(lim.allow(a));
+        assert!(lim.allow(b));
+        assert!(!lim.allow(a), "global ceiling of 2 reached");
+    }
+
+    #[test]
+    fn per_peer_limiter_isolates_noisy_peer() {
+        // Per-peer cap of 1 with a generous global ceiling: a flooding peer
+        // is throttled without consuming another peer's allowance.
+        let mut lim = HepRateLimiter::new(1000, 1);
+        let noisy: IpAddr = "10.0.0.1".parse().unwrap();
+        let quiet: IpAddr = "10.0.0.2".parse().unwrap();
+        assert!(lim.allow(noisy));
+        assert!(!lim.allow(noisy), "noisy peer hit its per-peer cap");
+        assert!(lim.allow(quiet), "quiet peer still gets its own allowance");
+    }
+
+    #[test]
+    fn describe_limiters_reports_per_peer_state() {
+        assert_eq!(
+            describe_hep_limiters(50000, 0),
+            "HEP rate limiting: global 50000/s, per-peer disabled"
+        );
+        assert_eq!(
+            describe_hep_limiters(40000, 10000),
+            "HEP rate limiting: global 40000/s, per-peer 10000/s"
+        );
+    }
+
+    #[cfg(feature = "hep")]
+    mod hmac_auth {
+        use super::super::*;
+
+        const KEY: &[u8] = b"shared-hmac-key";
+        const NONCE: [u8; 16] = [7u8; 16];
+        const NOW: u64 = 1_700_000_000;
+
+        #[test]
+        fn token_round_trips_and_verifies() {
+            let payload = b"REGISTER sip:example.com SIP/2.0\r\n";
+            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            assert_eq!(token.len(), 1 + 8 + 16 + 32);
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn verify_rejects_bad_length_and_version() {
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_auth_token(KEY, b"short", b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::BadFormat)
+            );
+            let mut token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
+            token[0] = 9; // unknown version
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::BadFormat)
+            );
+        }
+
+        #[test]
+        fn verify_rejects_stale_and_future_timestamps() {
+            let payload = b"p";
+            let mut cache = HmacNonceCache::new();
+            let stale = build_hmac_auth_token(KEY, NOW - 100, &NONCE, payload);
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &stale, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow)
+            );
+            let future = build_hmac_auth_token(KEY, NOW + 100, &NONCE, payload);
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &future, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow)
+            );
+        }
+
+        #[test]
+        fn verify_rejects_tampered_payload_and_wrong_key() {
+            let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"original-payload");
+            let mut cache = HmacNonceCache::new();
+            // Same token, different payload → MAC mismatch.
+            assert_eq!(
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    b"tampered-payload",
+                    NOW,
+                    HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
+                Err(HmacAuthError::BadMac)
+            );
+            // Right payload, wrong key → MAC mismatch.
+            assert_eq!(
+                verify_hmac_auth_token(
+                    b"attacker-key",
+                    &token,
+                    b"original-payload",
+                    NOW,
+                    HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
+                Err(HmacAuthError::BadMac)
+            );
+        }
+
+        #[test]
+        fn verify_rejects_replayed_nonce() {
+            let payload = b"INVITE";
+            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Ok(()),
+                "first use accepted"
+            );
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::Replay),
+                "identical replay rejected"
+            );
+        }
+
+        #[test]
+        fn hep_v3_round_trips_through_build_parse_verify() {
+            // End to end: a sender stamps the token into the 0x000e chunk, the
+            // wire packet parses back, and the receiver verifies the token
+            // against the parsed payload — proving the on-wire format composes.
+            use std::net::IpAddr;
+            let payload = b"OPTIONS sip:probe SIP/2.0\r\n";
+            let token = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            let endpoint = HepEndpoint {
+                src_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+                dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
+                src_port: 5060,
+                dst_port: 5060,
+            };
+            let pkt = build_hep_v3_bytes(
+                &endpoint,
+                chrono::Utc::now(),
+                HepProtocol::Sip,
+                1,
+                Some(&token),
+                payload,
+            );
+            let parsed = parse_hep(&pkt).expect("valid HEP v3");
+            assert_eq!(parsed.auth_key.as_deref(), Some(token.as_slice()));
+            assert_eq!(parsed.payload, payload);
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_auth_token(
+                    KEY,
+                    &token,
+                    &parsed.payload,
+                    NOW,
+                    HMAC_WINDOW_SECS,
+                    &mut cache
+                ),
+                Ok(())
+            );
+        }
+
+        #[test]
+        fn forged_token_does_not_poison_replay_cache() {
+            // A forged token (valid nonce, bad MAC) must be rejected as BadMac
+            // and must NOT record its nonce, so a later authentic token reusing
+            // that nonce still verifies (MAC-checked-before-replay ordering).
+            let payload = b"OPTIONS";
+            let mut forged = build_hmac_auth_token(b"wrong-key", NOW, &NONCE, payload);
+            let last = forged.len() - 1;
+            forged[last] ^= 0xFF; // ensure MAC is wrong even if keys collide
+            let mut cache = HmacNonceCache::new();
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &forged, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::BadMac)
+            );
+            let authentic = build_hmac_auth_token(KEY, NOW, &NONCE, payload);
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &authentic, payload, NOW, HMAC_WINDOW_SECS, &mut cache),
+                Ok(()),
+                "authentic token with the same nonce still accepted"
+            );
+        }
+    }
+
+    #[test]
     fn hep_auth_chunk_handles_special_bytes() {
         // An auth key with backslashes / colons / slashes must round-trip
         // verbatim in the 0x000e chunk (no escaping or truncation).
@@ -1351,6 +2074,7 @@ mod tests {
             payload: payload.to_vec(),
             correlation_id: None,
             capture_id: None,
+            auth_key: None,
             ip_protocol: 17,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");
@@ -1381,6 +2105,7 @@ mod tests {
             payload: b"REGISTER sip:carol SIP/2.0\r\n\r\n".to_vec(),
             correlation_id: None,
             capture_id: None,
+            auth_key: None,
             ip_protocol: 6,
         };
         let packet = hep_to_packet(hep, "0.0.0.0:9060");
