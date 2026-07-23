@@ -276,19 +276,22 @@ fn resolve_user(username: &str) -> Result<(u32, u32)> {
             buf_len *= 2; // buffer too small — retry larger
             continue;
         }
-        if ret != 0 {
-            bail!(
-                "Failed to resolve user '{}': {}",
-                username,
-                std::io::Error::from_raw_os_error(ret)
-            );
-        }
-        if result.is_null() {
+        // "Not found" arrives two ways, both POSIX-sanctioned: glibc's files
+        // backend returns 0 with a null result, while NSS modules such as
+        // sss/systemd surface ENOENT (or ESRCH) as the return value.
+        if result.is_null() && (ret == 0 || ret == libc::ENOENT || ret == libc::ESRCH) {
             bail!(
                 "User '{}' not found. Create it with \
                  'useradd -r -s /usr/sbin/nologin {}' or use --user <name>",
                 username,
                 username
+            );
+        }
+        if ret != 0 {
+            bail!(
+                "Failed to resolve user '{}': {}",
+                username,
+                std::io::Error::from_raw_os_error(ret)
             );
         }
         return Ok((pwd.pw_uid, pwd.pw_gid));
