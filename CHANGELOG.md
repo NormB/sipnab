@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.28] - 2026-07-23
 
 ### Documentation
 - Crate-wide documentation pass: every module, function (public, private,
@@ -36,6 +36,13 @@ All notable changes to sipnab will be documented in this file.
   milestones, with per-phase duration labels, phase colors, a legend,
   and a PDD/ring/setup/teardown summary line. Degrades gracefully for
   never-answered calls and dialogs without timing data.
+
+### Fixed
+- Privilege drop: a nonexistent `--user` is now reported as "not found"
+  with the `useradd`/`--user` guidance on hosts whose NSS stack (e.g.
+  sss/systemd modules) signals a missing user via an `ENOENT`/`ESRCH`
+  return from `getpwnam_r`, instead of surfacing a raw "No such file or
+  directory" OS error. Plain-glibc hosts are unaffected.
 
 ## [0.5.27] - 2026-07-22
 
