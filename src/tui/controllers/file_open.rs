@@ -405,11 +405,10 @@ fn run_pcap_load(
             .packets
             .store(packet_count, std::sync::atomic::Ordering::Relaxed);
 
-        let ts = chrono::DateTime::from_timestamp(
-            pkt.header.ts.tv_sec,
-            (pkt.header.ts.tv_usec as u32) * 1000,
-        )
-        .unwrap_or_else(chrono::Utc::now);
+        // Route through the shared, hardened converter: it clamps an
+        // out-of-range tv_usec (crafted or nanosecond-precision capture)
+        // before the µs→ns multiply instead of overflowing u32 here.
+        let ts = crate::capture::file::pcap_ts_to_chrono(pkt.header.ts);
 
         let capture_pkt = crate::capture::Packet::new(
             ts,
@@ -650,6 +649,39 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A capture whose packet record carries an out-of-range microsecond
+    /// field (as a crafted or nanosecond-precision file can) must not
+    /// overflow the timestamp conversion (which panics in debug builds)
+    /// while loading.
+    #[test]
+    fn load_pcap_with_out_of_range_usec_does_not_panic() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bad_ts.pcap");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Classic pcap global header: LE microsecond magic, v2.4, EN10MB.
+        f.write_all(&0xa1b2_c3d4u32.to_le_bytes()).unwrap();
+        f.write_all(&2u16.to_le_bytes()).unwrap();
+        f.write_all(&4u16.to_le_bytes()).unwrap();
+        f.write_all(&0i32.to_le_bytes()).unwrap();
+        f.write_all(&0u32.to_le_bytes()).unwrap();
+        f.write_all(&65535u32.to_le_bytes()).unwrap();
+        f.write_all(&1u32.to_le_bytes()).unwrap(); // LINKTYPE_ETHERNET
+        // One record whose ts_usec is far outside [0, 1_000_000): the old
+        // `(tv_usec as u32) * 1000` overflows u32 here.
+        let payload = [0u8; 14];
+        f.write_all(&1_000u32.to_le_bytes()).unwrap(); // ts_sec
+        f.write_all(&2_000_000_000u32.to_le_bytes()).unwrap(); // ts_usec (corrupt)
+        f.write_all(&(payload.len() as u32).to_le_bytes()).unwrap(); // incl_len
+        f.write_all(&(payload.len() as u32).to_le_bytes()).unwrap(); // orig_len
+        f.write_all(&payload).unwrap();
+        drop(f);
+
+        let mut app = App::new_test();
+        // Must return an outcome message rather than panicking.
+        let _ = load_pcap_file(&mut app, path.to_str().unwrap());
+    }
 
     /// Extension matrix for the browser filter: pcap/pcapng/cap in any
     /// case, optionally gzipped, are browsable; everything else is not.
