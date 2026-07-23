@@ -9,6 +9,7 @@
 use crate::rtp::quality::estimate_mos;
 use crate::rtp::stream::{RtpStream, StreamKey};
 use crate::rtp::stream_store::StreamStore;
+use crate::tui::App;
 
 /// One point of a per-stream quality trend (one 5 s quality interval).
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +133,207 @@ impl DashboardSnapshot {
             rows,
         }
     }
+}
+
+/// Map a packet-loss percentage to a Unicode block character.
+///
+/// Input is clamped to `[0, 100]`; NaN and negatives read as `0`
+/// (baseline glyph ▁) and `100` (or above) saturates at the full block █.
+/// Scale: 0 = ▁, ≥0.5 = ▂, ≥1 = ▃, ≥2 = ▄, ≥5 = ▅, ≥10 = ▆, ≥20 = ▇, ≥50 = █.
+fn loss_to_block(loss_pct: f64) -> char {
+    let clamped = if loss_pct.is_nan() || loss_pct < 0.0 {
+        0.0
+    } else if loss_pct > 100.0 {
+        100.0
+    } else {
+        loss_pct
+    };
+    match clamped {
+        l if l >= 50.0 => '\u{2588}', // █
+        l if l >= 20.0 => '\u{2587}', // ▇
+        l if l >= 10.0 => '\u{2586}', // ▆
+        l if l >= 5.0 => '\u{2585}',  // ▅
+        l if l >= 2.0 => '\u{2584}',  // ▄
+        l if l >= 1.0 => '\u{2583}',  // ▃
+        l if l >= 0.5 => '\u{2582}',  // ▂
+        _ => '\u{2581}',              // ▁
+    }
+}
+
+/// Render the live call-quality dashboard from the snapshot cached by
+/// `sync_caches` (read-only pass — no store access, no locking).
+pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect, app: &App) {
+    use crate::tui::stream_detail::{jitter_to_block, mos_to_block};
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Paragraph};
+
+    let theme = &app.theme;
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    let Some(snap) = app.dashboard_snapshot.as_ref() else {
+        lines.push(Line::raw(""));
+        lines.push(Line::raw("  Gathering stream quality data..."));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Quality Dashboard ");
+        frame.render_widget(Paragraph::new(lines).block(block), area);
+        return;
+    };
+
+    let mos_style = |m: f64| {
+        if m >= 4.0 {
+            Style::default().fg(theme.good)
+        } else if m >= 3.0 {
+            Style::default().fg(theme.warning)
+        } else {
+            Style::default().fg(theme.bad)
+        }
+    };
+    // Loss color bands mirror the stream-detail view: <0.5% good,
+    // <2% warning, otherwise bad.
+    let loss_color = |l: f64| {
+        if l < 0.5 {
+            theme.good
+        } else if l < 2.0 {
+            theme.warning
+        } else {
+            theme.bad
+        }
+    };
+
+    // ── summary strip ───────────────────────────────────────────────
+    let mut summary = vec![Span::raw(format!(
+        "  Streams: {} ({} active)   ",
+        snap.total_streams, snap.active_streams
+    ))];
+    match (snap.avg_mos, snap.worst_mos) {
+        (Some(avg), Some(worst)) => {
+            summary.push(Span::raw("Avg MOS: "));
+            summary.push(Span::styled(format!("{avg:.1}"), mos_style(avg)));
+            summary.push(Span::raw("   Worst: "));
+            summary.push(Span::styled(format!("{worst:.1}"), mos_style(worst)));
+        }
+        _ => summary.push(Span::styled(
+            "No RTP streams yet",
+            Style::default().fg(theme.muted),
+        )),
+    }
+    summary.push(Span::raw(format!(
+        "   With loss: {}",
+        snap.streams_with_loss
+    )));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(summary));
+    lines.push(Line::raw(""));
+
+    // ── worst-streams table ─────────────────────────────────────────
+    lines.push(Line::styled(
+        format!(
+            "    {:<5} {:>8} {:>7} {:>9}  {:<8} {}",
+            "MOS", "Jitter", "Loss%", "Packets", "Codec", "Stream"
+        ),
+        Style::default().fg(theme.muted),
+    ));
+
+    // Fixed overhead: 4 lines above + MOS/jitter/loss trend + legend + borders.
+    let visible = (area.height as usize).saturating_sub(13).max(1);
+    let first = app
+        .dashboard_selected
+        .saturating_sub(visible.saturating_sub(1));
+    for (i, row) in snap.rows.iter().enumerate().skip(first).take(visible) {
+        let selected = i == app.dashboard_selected;
+        let marker = if selected { "▶ " } else { "  " };
+        let activity = if row.active { "●" } else { "·" };
+        let who = row
+            .call_id
+            .clone()
+            .unwrap_or_else(|| format!("{} → {}", row.key.src, row.key.dst));
+        let text = format!(
+            "{marker}{activity} {:<5.1} {:>6.1}ms {:>6.2} {:>9}  {:<8} {}",
+            row.mos,
+            row.jitter_ms,
+            row.loss_pct,
+            row.packets,
+            row.codec.as_deref().unwrap_or("?"),
+            who,
+        );
+        let style = if selected {
+            mos_style(row.mos).add_modifier(Modifier::REVERSED)
+        } else {
+            mos_style(row.mos)
+        };
+        lines.push(Line::styled(text, style));
+    }
+
+    // ── trend for the selected stream ───────────────────────────────
+    if let Some(row) = snap.rows.get(app.dashboard_selected) {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  Trend (selected, 5s intervals, oldest → newest)",
+            Style::default().fg(theme.muted),
+        ));
+        let mut mos_spans = vec![Span::styled("  MOS:    ", Style::default().fg(theme.muted))];
+        let mut jit_spans = vec![Span::styled("  Jitter: ", Style::default().fg(theme.muted))];
+        let mut loss_spans = vec![Span::styled("  Loss:   ", Style::default().fg(theme.muted))];
+        for p in &row.trend {
+            mos_spans.push(Span::styled(
+                String::from(mos_to_block(p.mos)),
+                mos_style(p.mos),
+            ));
+            let jcolor = if p.jitter_ms < 20.0 {
+                theme.good
+            } else if p.jitter_ms < 50.0 {
+                theme.warning
+            } else {
+                theme.bad
+            };
+            jit_spans.push(Span::styled(
+                String::from(jitter_to_block(p.jitter_ms)),
+                Style::default().fg(jcolor),
+            ));
+            loss_spans.push(Span::styled(
+                String::from(loss_to_block(p.loss_pct)),
+                Style::default().fg(loss_color(p.loss_pct)),
+            ));
+        }
+        if row.trend.is_empty() {
+            let none = Span::styled(
+                "(no completed intervals yet)",
+                Style::default().fg(theme.muted),
+            );
+            mos_spans.push(none.clone());
+            jit_spans.push(none.clone());
+            loss_spans.push(none);
+        }
+        lines.push(Line::from(mos_spans));
+        lines.push(Line::from(jit_spans));
+        lines.push(Line::from(loss_spans));
+
+        // Legend: metric names with units and the good/warn/bad color keys.
+        // Rendered as a single line so a narrow terminal clips it rather
+        // than wrapping or overflowing.
+        lines.push(Line::from(vec![
+            Span::styled("  Legend: ", Style::default().fg(theme.muted)),
+            Span::styled("MOS 1–5", Style::default().fg(theme.muted)),
+            Span::raw("  "),
+            Span::styled("Jitter ms", Style::default().fg(theme.muted)),
+            Span::raw("  "),
+            Span::styled("Loss %", Style::default().fg(theme.muted)),
+            Span::raw("   "),
+            Span::styled("\u{2588}", Style::default().fg(theme.good)),
+            Span::styled(" good  ", Style::default().fg(theme.muted)),
+            Span::styled("\u{2588}", Style::default().fg(theme.warning)),
+            Span::styled(" warn  ", Style::default().fg(theme.muted)),
+            Span::styled("\u{2588}", Style::default().fg(theme.bad)),
+            Span::styled(" bad", Style::default().fg(theme.muted)),
+        ]));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Quality Dashboard ");
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 #[cfg(test)]
@@ -316,5 +518,158 @@ mod tests {
         // trend MOS must agree with the canonical estimator
         let expect = estimate_mos(80.0, 20.0, snap.rows[0].codec.as_deref());
         assert!((trend[1].mos - expect).abs() < 1e-9);
+    }
+
+    // ── loss_to_block glyph mapping ─────────────────────────────────
+
+    #[test]
+    fn loss_to_block_across_range() {
+        // Ascending loss climbs the eight-glyph block ramp; the lowest
+        // glyph is the flat baseline and the highest is a full block.
+        assert_eq!(loss_to_block(0.0), '\u{2581}'); // ▁ baseline
+        assert_eq!(loss_to_block(0.5), '\u{2582}'); // ▂
+        assert_eq!(loss_to_block(1.0), '\u{2583}'); // ▃
+        assert_eq!(loss_to_block(2.0), '\u{2584}'); // ▄
+        assert_eq!(loss_to_block(5.0), '\u{2585}'); // ▅
+        assert_eq!(loss_to_block(10.0), '\u{2586}'); // ▆
+        assert_eq!(loss_to_block(20.0), '\u{2587}'); // ▇
+        assert_eq!(loss_to_block(50.0), '\u{2588}'); // █
+        assert_eq!(loss_to_block(100.0), '\u{2588}'); // █ full loss
+        // Just below a boundary stays in the lower band.
+        assert_eq!(loss_to_block(0.4), '\u{2581}'); // ▁
+        assert_eq!(loss_to_block(49.9), '\u{2587}'); // ▇
+    }
+
+    #[test]
+    fn loss_to_block_clamps_invalid_input() {
+        // NaN, negatives and sub-zero all clamp to the baseline glyph.
+        assert_eq!(loss_to_block(f64::NAN), '\u{2581}'); // ▁
+        assert_eq!(loss_to_block(-1.0), '\u{2581}'); // ▁
+        assert_eq!(loss_to_block(-100.0), '\u{2581}'); // ▁
+        // Anything above 100 clamps down to the full block.
+        assert_eq!(loss_to_block(150.0), '\u{2588}'); // █
+        assert_eq!(loss_to_block(f64::INFINITY), '\u{2588}'); // █
+    }
+
+    // ── render_dashboard loss trend + legend ────────────────────────
+
+    use crate::rtp::stream::QualityInterval;
+    use crate::tui::App;
+
+    /// Build a stream whose completed quality intervals carry the given
+    /// `(jitter_ms, loss_pct)` pairs, oldest first.
+    fn stream_with_intervals(ssrc: u32, intervals: &[(f64, f64)]) -> RtpStream {
+        let start = Utc::now();
+        let mut s = clean_stream(ssrc, 3);
+        s.quality_intervals.clear();
+        for (i, &(jitter_ms, loss_pct)) in intervals.iter().enumerate() {
+            s.quality_intervals.push(QualityInterval {
+                timestamp: start + Duration::seconds(5 * i as i64),
+                jitter_ms,
+                loss_pct,
+                packets: 250,
+            });
+        }
+        s
+    }
+
+    /// Render the dashboard from a prebuilt snapshot into a fixed-size test
+    /// backend and flatten the buffer to newline-joined rows.
+    fn render_snapshot(snap: DashboardSnapshot, selected: usize, w: u16, h: u16) -> String {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut app = App::new_test();
+        app.dashboard_snapshot = Some(snap);
+        app.dashboard_selected = selected;
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_dashboard(frame, frame.area(), &app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The trend loss row is the one carrying the "Loss:" label (the table
+    /// header uses "Loss%", so it never collides).
+    fn loss_row(out: &str) -> &str {
+        out.lines()
+            .find(|l| l.contains("Loss:"))
+            .expect("loss trend row must be rendered")
+    }
+
+    #[test]
+    fn render_shows_loss_spike_and_legend() {
+        let s = stream_with_intervals(1, &[(1.0, 0.0), (2.0, 100.0)]);
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let out = render_snapshot(snap, 0, 100, 30);
+        // The legend names the metrics, their units, and the color keys.
+        assert!(out.contains("Legend"), "legend missing: {out}");
+        assert!(out.contains("MOS 1"), "MOS unit missing: {out}");
+        assert!(out.contains("Jitter ms"), "jitter unit missing: {out}");
+        assert!(out.contains("Loss %"), "loss unit missing: {out}");
+        // A 100% loss interval drives the loss row to the full block.
+        assert!(
+            loss_row(&out).contains('\u{2588}'),
+            "loss spike glyph missing: {out}"
+        );
+    }
+
+    #[test]
+    fn render_full_loss_is_max_glyph() {
+        let s = stream_with_intervals(1, &[(1.0, 100.0), (1.0, 100.0)]);
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let out = render_snapshot(snap, 0, 100, 30);
+        let row = loss_row(&out);
+        assert!(row.contains('\u{2588}'), "expected full block: {row}");
+        assert!(
+            !row.contains('\u{2581}'),
+            "no baseline glyph when fully lost: {row}"
+        );
+    }
+
+    #[test]
+    fn render_zero_loss_is_flat_baseline() {
+        let s = stream_with_intervals(1, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)]);
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let out = render_snapshot(snap, 0, 100, 30);
+        let row = loss_row(&out);
+        assert!(row.contains('\u{2581}'), "expected baseline glyph: {row}");
+        assert!(
+            !row.contains('\u{2588}'),
+            "no full block when loss-free: {row}"
+        );
+    }
+
+    #[test]
+    fn render_empty_history_degrades_gracefully() {
+        // A stream with no completed intervals must still render the loss
+        // row and legend without panicking.
+        let mut s = clean_stream(1, 3);
+        s.quality_intervals.clear();
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let out = render_snapshot(snap, 0, 100, 30);
+        assert!(out.contains("Loss:"), "loss row label missing: {out}");
+        assert!(out.contains("Legend"), "legend missing: {out}");
+        assert!(
+            out.contains("(no completed intervals yet)"),
+            "empty-history placeholder missing: {out}"
+        );
+    }
+
+    #[test]
+    fn render_narrow_terminal_does_not_panic() {
+        // Robustness: a very narrow, short terminal must clip, not overflow.
+        let s = stream_with_intervals(1, &[(1.0, 50.0)]);
+        let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
+        let _ = render_snapshot(snap, 0, 8, 4);
     }
 }

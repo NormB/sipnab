@@ -7,11 +7,13 @@ use super::*;
 
 mod call_flow;
 mod call_list;
+mod dashboard;
 mod file_open;
 mod filter_dialog;
 mod name_dialog;
 mod save_dialog;
 mod stream;
+mod timeline;
 
 // Re-exported at `tui` scope so keybinding_drift_test can probe the
 // key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
@@ -27,6 +29,7 @@ pub(in crate::tui) use call_flow::{
 };
 pub(in crate::tui) use call_list::handle_call_list_key;
 pub use call_list::{CallListAction, call_list_action};
+pub use dashboard::{DashboardAction, dashboard_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
 pub(in crate::tui) use name_dialog::*;
@@ -35,6 +38,7 @@ pub(in crate::tui) use save_dialog::*;
 pub(in crate::tui) use stream::get_selected_stream_key;
 pub use stream::{StreamDetailAction, StreamListAction, stream_detail_action, stream_list_action};
 pub(in crate::tui) use stream::{handle_stream_detail_key, handle_stream_list_key};
+pub use timeline::{TimelineAction, timeline_action};
 
 /// Dispatch a key event to the handler for the current view.
 pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
@@ -115,7 +119,8 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::CombinedDetail { .. } => handle_combined_detail_key(app, key),
         View::Help => handle_help_key(app, key),
         View::Statistics => handle_statistics_key(app, key),
-        View::QualityDashboard => handle_dashboard_key(app, key),
+        View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
+        View::CallTimeline(_) => timeline::handle_timeline_key(app, key),
     }
 }
 
@@ -286,77 +291,6 @@ pub fn statistics_action(km: &Keymap, key: KeyEvent) -> Option<StatisticsAction>
     })
 }
 
-/// Everything the quality dashboard view can do for a single key press.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DashboardAction {
-    Close,
-    Up,
-    Down,
-    PageUp,
-    PageDown,
-    Top,
-    Bottom,
-    OpenStreamDetail,
-}
-
-/// Pure key→action mapping for the quality dashboard (keymap-aware).
-pub fn dashboard_action(km: &Keymap, key: KeyEvent) -> Option<DashboardAction> {
-    use DashboardAction::*;
-    Some(match key.code {
-        k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('D') => Close,
-        KeyCode::Up | KeyCode::Char('k') => Up,
-        KeyCode::Down | KeyCode::Char('j') => Down,
-        KeyCode::PageUp => PageUp,
-        KeyCode::PageDown => PageDown,
-        KeyCode::Home => Top,
-        KeyCode::End => Bottom,
-        KeyCode::Enter => OpenStreamDetail,
-        _ => return None,
-    })
-}
-
-/// Handle keys in the quality dashboard: map, then execute.
-pub(in crate::tui) fn handle_dashboard_key(app: &mut App, key: KeyEvent) {
-    let Some(action) = dashboard_action(&app.keymap, key) else {
-        return;
-    };
-    let rows = app.dashboard_snapshot.as_ref().map_or(0, |s| s.rows.len());
-    let clamp = |i: usize| if rows > 0 { i.min(rows - 1) } else { 0 };
-    match action {
-        DashboardAction::Close => {
-            app.current_view = app.dashboard_return_view.take().unwrap_or(View::CallList);
-        }
-        DashboardAction::Up => {
-            app.dashboard_selected = app.dashboard_selected.saturating_sub(1);
-        }
-        DashboardAction::Down => {
-            app.dashboard_selected = clamp(app.dashboard_selected + 1);
-        }
-        DashboardAction::PageUp => {
-            app.dashboard_selected = app.dashboard_selected.saturating_sub(10);
-        }
-        DashboardAction::PageDown => {
-            app.dashboard_selected = clamp(app.dashboard_selected + 10);
-        }
-        DashboardAction::Top => app.dashboard_selected = 0,
-        DashboardAction::Bottom => {
-            app.dashboard_selected = rows.saturating_sub(1);
-        }
-        DashboardAction::OpenStreamDetail => {
-            let key = app
-                .dashboard_snapshot
-                .as_ref()
-                .and_then(|s| s.rows.get(app.dashboard_selected))
-                .map(|r| r.key.clone());
-            if let Some(k) = key {
-                app.stream_detail_scroll = 0;
-                app.stream_detail_return_view = Some(View::QualityDashboard);
-                app.current_view = View::StreamDetail(k);
-            }
-        }
-    }
-}
-
 /// Handle keys in the statistics view: map, then execute.
 pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
     let Some(action) = statistics_action(&app.keymap, key) else {
@@ -478,6 +412,8 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.stats_scroll.saturating_sub(3)
             };
         }
+        // Wheel navigation lands here once the timeline layout exists.
+        View::CallTimeline(_) => {}
     }
 }
 
@@ -735,57 +671,6 @@ mod tests {
         );
         assert_eq!(help_action(&km, key(KeyCode::Char('q'))), None);
         assert_eq!(help_action(&km, key(KeyCode::Esc)), Some(HelpAction::Close));
-    }
-
-    #[test]
-    fn dashboard_action_maps_nav_and_close() {
-        let km = Keymap::default();
-        use DashboardAction::*;
-        assert_eq!(dashboard_action(&km, key(KeyCode::Esc)), Some(Close));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Char('D'))), Some(Close));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Up)), Some(Up));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Char('k'))), Some(Up));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Down)), Some(Down));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Char('j'))), Some(Down));
-        assert_eq!(dashboard_action(&km, key(KeyCode::Home)), Some(Top));
-        assert_eq!(dashboard_action(&km, key(KeyCode::End)), Some(Bottom));
-        assert_eq!(
-            dashboard_action(&km, key(KeyCode::Enter)),
-            Some(OpenStreamDetail)
-        );
-        assert_eq!(dashboard_action(&km, key(KeyCode::Char('z'))), None);
-    }
-
-    #[test]
-    fn dashboard_action_honors_remapped_quit() {
-        let km = Keymap {
-            quit: KeyCode::Char('x'),
-            ..Default::default()
-        };
-        assert_eq!(
-            dashboard_action(&km, key(KeyCode::Char('x'))),
-            Some(DashboardAction::Close)
-        );
-        assert_eq!(dashboard_action(&km, key(KeyCode::Char('q'))), None);
-    }
-
-    #[test]
-    fn dashboard_opens_from_call_list_and_returns_on_close() {
-        let mut app = App::new_test();
-        app.handle_key(KeyCode::Char('D'));
-        assert_eq!(app.current_view, View::QualityDashboard);
-        app.handle_key(KeyCode::Esc);
-        assert_eq!(app.current_view, View::CallList);
-    }
-
-    #[test]
-    fn dashboard_opens_from_stream_list_and_returns_there() {
-        let mut app = App::new_test();
-        app.current_view = View::StreamList;
-        app.handle_key(KeyCode::Char('D'));
-        assert_eq!(app.current_view, View::QualityDashboard);
-        app.handle_key(KeyCode::Char('D'));
-        assert_eq!(app.current_view, View::StreamList);
     }
 
     #[test]

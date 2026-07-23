@@ -5,14 +5,25 @@ Forward-looking feature backlog only. Shipped work is recorded in
 
 ## Capture
 
-- [ ] **SCTP transport parsing** — SCTP is detected (proto 132) but its
-  payload is discarded; parsing DATA chunks to extract SIP would enable
-  SIGTRAN/Diameter (3GPP IMS) environments. Low priority — IMS/SIGTRAN only.
+- [x] **SCTP transport parsing** — **Done:** `parse_packet` now decodes the SCTP
+  common header and iterates chunks, extracting the SIP payload from the first
+  complete (B+E) DATA chunk (type 0) and recovering the real src/dst ports;
+  fails closed to an empty payload on any truncation/malformed length. Single
+  unfragmented DATA chunk per packet; multi-packet fragment reassembly (B/E
+  spanning) is a documented follow-up. Enables SIGTRAN/Diameter (3GPP IMS).
 
 ## TUI
 
-- [ ] **Live call quality dashboard** — real-time MOS/jitter/loss graphs.
-- [ ] **Call timeline visualization** — horizontal timeline of call states.
+- [x] **Live call quality dashboard** — the `QualityDashboard` view already
+  rendered MOS + jitter trend sparklines over retained per-stream history.
+  **Done:** added the third metric — a packet-loss % trend row (`loss_to_block`,
+  good/warn/bad thresholds) — plus a legend naming all three metrics with units,
+  completing the real-time MOS/jitter/loss graph.
+- [x] **Call timeline visualization** — **Done:** new `CallTimeline` view (opened
+  with `T` from the call list) draws a horizontal, proportional time axis of call
+  phases (setup → ringing → in-call → teardown, or the failed/cancelled path)
+  from `DialogTiming` milestones, labeled with durations + units, phase colors,
+  and a legend; degrades gracefully for never-answered / no-timing calls.
 - [ ] **Packet loss map** — visual representation of RTP loss patterns.
 
 ## Security hardening (follow-ups from codex_analysis.md)

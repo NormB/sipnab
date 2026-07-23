@@ -442,7 +442,10 @@ pub(in crate::tui) fn render_app(
             fb.stats_scroll = Some(render_statistics(frame, main_area, app, ds, ss));
         }
         View::QualityDashboard => {
-            render_dashboard(frame, main_area, app);
+            crate::tui::dashboard::render_dashboard(frame, main_area, app);
+        }
+        View::CallTimeline(call_id) => {
+            crate::tui::timeline::render_timeline(frame, app, main_area, call_id);
         }
     }
 
@@ -482,150 +485,6 @@ pub(in crate::tui) fn render_app(
     }
 
     fb
-}
-
-/// Render the statistics summary view with real data from stores.
-/// Render the live call-quality dashboard from the snapshot cached by
-/// `sync_caches` (read-only pass — no store access, no locking).
-pub(in crate::tui) fn render_dashboard(
-    frame: &mut ratatui::Frame,
-    area: ratatui::layout::Rect,
-    app: &App,
-) {
-    use crate::tui::stream_detail::{jitter_to_block, mos_to_block};
-    use ratatui::style::{Modifier, Style};
-    use ratatui::text::{Line, Span};
-    use ratatui::widgets::{Block, Borders, Paragraph};
-
-    let theme = &app.theme;
-    let mut lines: Vec<Line<'_>> = Vec::new();
-
-    let Some(snap) = app.dashboard_snapshot.as_ref() else {
-        lines.push(Line::raw(""));
-        lines.push(Line::raw("  Gathering stream quality data..."));
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Quality Dashboard ");
-        frame.render_widget(Paragraph::new(lines).block(block), area);
-        return;
-    };
-
-    let mos_style = |m: f64| {
-        if m >= 4.0 {
-            Style::default().fg(theme.good)
-        } else if m >= 3.0 {
-            Style::default().fg(theme.warning)
-        } else {
-            Style::default().fg(theme.bad)
-        }
-    };
-
-    // ── summary strip ───────────────────────────────────────────────
-    let mut summary = vec![Span::raw(format!(
-        "  Streams: {} ({} active)   ",
-        snap.total_streams, snap.active_streams
-    ))];
-    match (snap.avg_mos, snap.worst_mos) {
-        (Some(avg), Some(worst)) => {
-            summary.push(Span::raw("Avg MOS: "));
-            summary.push(Span::styled(format!("{avg:.1}"), mos_style(avg)));
-            summary.push(Span::raw("   Worst: "));
-            summary.push(Span::styled(format!("{worst:.1}"), mos_style(worst)));
-        }
-        _ => summary.push(Span::styled(
-            "No RTP streams yet",
-            Style::default().fg(theme.muted),
-        )),
-    }
-    summary.push(Span::raw(format!(
-        "   With loss: {}",
-        snap.streams_with_loss
-    )));
-    lines.push(Line::raw(""));
-    lines.push(Line::from(summary));
-    lines.push(Line::raw(""));
-
-    // ── worst-streams table ─────────────────────────────────────────
-    lines.push(Line::styled(
-        format!(
-            "    {:<5} {:>8} {:>7} {:>9}  {:<8} {}",
-            "MOS", "Jitter", "Loss%", "Packets", "Codec", "Stream"
-        ),
-        Style::default().fg(theme.muted),
-    ));
-
-    // Fixed overhead: 4 lines above + 5 trend lines below + borders.
-    let visible = (area.height as usize).saturating_sub(11).max(1);
-    let first = app
-        .dashboard_selected
-        .saturating_sub(visible.saturating_sub(1));
-    for (i, row) in snap.rows.iter().enumerate().skip(first).take(visible) {
-        let selected = i == app.dashboard_selected;
-        let marker = if selected { "▶ " } else { "  " };
-        let activity = if row.active { "●" } else { "·" };
-        let who = row
-            .call_id
-            .clone()
-            .unwrap_or_else(|| format!("{} → {}", row.key.src, row.key.dst));
-        let text = format!(
-            "{marker}{activity} {:<5.1} {:>6.1}ms {:>6.2} {:>9}  {:<8} {}",
-            row.mos,
-            row.jitter_ms,
-            row.loss_pct,
-            row.packets,
-            row.codec.as_deref().unwrap_or("?"),
-            who,
-        );
-        let style = if selected {
-            mos_style(row.mos).add_modifier(Modifier::REVERSED)
-        } else {
-            mos_style(row.mos)
-        };
-        lines.push(Line::styled(text, style));
-    }
-
-    // ── trend for the selected stream ───────────────────────────────
-    if let Some(row) = snap.rows.get(app.dashboard_selected) {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(
-            "  Trend (selected, 5s intervals, oldest → newest)",
-            Style::default().fg(theme.muted),
-        ));
-        let mut mos_spans = vec![Span::styled("  MOS:    ", Style::default().fg(theme.muted))];
-        let mut jit_spans = vec![Span::styled("  Jitter: ", Style::default().fg(theme.muted))];
-        for p in &row.trend {
-            mos_spans.push(Span::styled(
-                String::from(mos_to_block(p.mos)),
-                mos_style(p.mos),
-            ));
-            let jcolor = if p.jitter_ms < 20.0 {
-                theme.good
-            } else if p.jitter_ms < 50.0 {
-                theme.warning
-            } else {
-                theme.bad
-            };
-            jit_spans.push(Span::styled(
-                String::from(jitter_to_block(p.jitter_ms)),
-                Style::default().fg(jcolor),
-            ));
-        }
-        if row.trend.is_empty() {
-            let none = Span::styled(
-                "(no completed intervals yet)",
-                Style::default().fg(theme.muted),
-            );
-            mos_spans.push(none.clone());
-            jit_spans.push(none);
-        }
-        lines.push(Line::from(mos_spans));
-        lines.push(Line::from(jit_spans));
-    }
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Quality Dashboard ");
-    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Compose the statistics view's aggregate text — a full pass over every

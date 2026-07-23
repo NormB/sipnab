@@ -16,8 +16,8 @@ expression: output
 │  Trend (selected, 5s intervals, oldest → newest)                                                                               │
 │  MOS:    (no completed intervals yet)                                                                                          │
 │  Jitter: (no completed intervals yet)                                                                                          │
-│                                                                                                                                │
-│                                                                                                                                │
+│  Loss:   (no completed intervals yet)                                                                                          │
+│  Legend: MOS 1–5  Jitter ms  Loss %   █ good  █ warn  █ bad                                                                    │
 │                                                                                                                                │
 │                                                                                                                                │
 │                                                                                                                                │
