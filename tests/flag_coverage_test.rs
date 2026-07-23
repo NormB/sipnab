@@ -41,9 +41,6 @@ const KNOWN_UNTESTED: &[&str] = &[
     // ── Root / system services (cannot run in the sandbox) ──────────────────
     "chroot", // requires root to chroot()
     "syslog", // requires a syslog daemon to observe alerts
-    // ── Standalone servers that need a live source to stay alive ────────────
-    "metrics",      // metrics-only process exits after an offline pcap read
-    "metrics-auth", // (auth logic is unit-tested in prometheus_server.rs)
     // ── Need crafted fixtures / hard-to-trigger events ──────────────────────       // needs a HEP-encapsulated pcap to unwrap
     "telephone-event", // DTMF RTP display — needs a DTMF pcap + RTP-output check
     "on-quality-exec", // fires on an RTP quality drop — needs a degraded fixture

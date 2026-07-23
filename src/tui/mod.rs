@@ -1264,6 +1264,7 @@ mod tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            from_hep: false,
         };
         let rtp = crate::rtp::parser::RtpHeader {
             version: 2,
@@ -1317,6 +1318,7 @@ mod tests {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    from_hep: false,
                 },
                 &crate::rtp::parser::RtpHeader {
                     version: 2,
@@ -1843,6 +1845,7 @@ mod tests {
                     fragment_offset: None,
                     more_fragments: false,
                     ip_protocol: 17,
+                    from_hep: false,
                 };
                 let rtp = crate::rtp::parser::RtpHeader {
                     version: 2,

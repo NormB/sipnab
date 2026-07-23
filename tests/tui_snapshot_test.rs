@@ -214,6 +214,7 @@ mod tui_snapshots {
                 fragment_offset: None,
                 more_fragments: false,
                 ip_protocol: 17,
+                from_hep: false,
             };
             let rtp1 = RtpHeader {
                 version: 2,
@@ -245,6 +246,7 @@ mod tui_snapshots {
                 fragment_offset: None,
                 more_fragments: false,
                 ip_protocol: 17,
+                from_hep: false,
             };
             let rtp2 = RtpHeader {
                 version: 2,

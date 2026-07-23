@@ -89,7 +89,10 @@ pub fn run_tui_mode(
             bind_addr,
             Arc::clone(&dialog_store),
             Arc::clone(&stream_store),
-            cli.metrics_auth.clone(),
+            cli.resolve_metrics_auth().unwrap_or_else(|e| {
+                tracing::error!("metrics auth: {e}");
+                None
+            }),
             Some(rx.meter()),
         ) {
             Ok(h) => Some(h),

@@ -439,6 +439,7 @@ mod quiet_bad_parse_tests {
             fragment_offset: None,
             more_fragments: false,
             ip_protocol: 17,
+            from_hep: false,
         }
     }
 

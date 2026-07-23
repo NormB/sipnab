@@ -126,6 +126,19 @@ fn reason_phrase(code: u16) -> &'static str {
     }
 }
 
+/// Whether a scanner-kill active response may be sent for a packet, given
+/// whether it originated from the HEP listener and whether the operator
+/// opted in with `--hep-allow-kill`.
+///
+/// HEP-origin packets are ineligible by default (SN-01): a HEP sender
+/// asserts the inner src/dst addresses, so absent receiver-side
+/// authentication an attacker could steer the kill response at a chosen
+/// victim (SSRF-style). Live/pcap traffic, whose addressing comes from an
+/// observed IP header, is always eligible.
+pub fn kill_response_eligible(from_hep: bool, hep_allow_kill: bool) -> bool {
+    !from_hep || hep_allow_kill
+}
+
 /// Build a minimal SIP response to send back to a scanner.
 ///
 /// Copies mandatory dialog-identifying headers (Via, From, To, Call-ID, CSeq)
@@ -218,6 +231,22 @@ mod tests {
 
     fn scanner_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99))
+    }
+
+    #[test]
+    fn kill_eligibility_blocks_unauthed_hep_by_default() {
+        // Live/pcap traffic is always eligible.
+        assert!(kill_response_eligible(false, false));
+        assert!(kill_response_eligible(false, true));
+        // HEP-origin traffic is blocked unless the operator opts in.
+        assert!(
+            !kill_response_eligible(true, false),
+            "HEP kill blocked by default"
+        );
+        assert!(
+            kill_response_eligible(true, true),
+            "opt-in re-enables HEP kill"
+        );
     }
 
     fn local_ip() -> IpAddr {

@@ -6,6 +6,90 @@
 
 use clap::Parser;
 
+/// Value of `--hep-rate-limit-per-peer`: disabled, a fixed cap, or `auto`
+/// (derive a fair per-peer cap from the global ceiling and the number of
+/// allowed sources at startup).
+///
+/// Defined here (not in the feature-gated `capture::hep` module) so the
+/// always-compiled CLI struct can name it even in builds without the `hep`
+/// feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PerPeerLimit {
+    /// No per-peer cap; only the global ceiling applies.
+    Off,
+    /// A fixed packets-per-second cap per source IP.
+    Fixed(u64),
+    /// Derive per-peer = `global / allowlist_len` at startup.
+    Auto,
+}
+
+impl std::str::FromStr for PerPeerLimit {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "off" | "disabled" => Ok(Self::Off),
+            other => other
+                .parse::<u64>()
+                .map(|n| if n == 0 { Self::Off } else { Self::Fixed(n) })
+                .map_err(|_| format!("expected a number, 'auto', or 'off', got '{s}'")),
+        }
+    }
+}
+
+impl PerPeerLimit {
+    /// Resolve a concrete per-peer packets/second cap from the global ceiling
+    /// and the number of source-allowlist entries.
+    ///
+    /// `Auto` divides the global ceiling evenly across the allowed sources so
+    /// no single peer can exceed its fair share; with no allowlist there is no
+    /// sender count to divide by, so it stays disabled (only the global
+    /// ceiling applies). `Off` yields 0; `Fixed(n)` passes through.
+    pub fn resolve(self, global: u64, allowlist_len: usize) -> u64 {
+        match self {
+            Self::Off => 0,
+            Self::Fixed(n) => n,
+            Self::Auto => {
+                if allowlist_len == 0 {
+                    0
+                } else {
+                    global / allowlist_len as u64
+                }
+            }
+        }
+    }
+}
+
+/// Authentication mode for the HEP `0x000e` chunk (`--hep-auth-mode`).
+///
+/// Defined here (not in the feature-gated `capture::hep` module) so the
+/// always-compiled CLI struct can name it even without the `hep` feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HepAuthMode {
+    /// The chunk carries the shared secret verbatim (Homer-compatible, but
+    /// the secret rides in cleartext and is replayable by an on-path sniffer).
+    #[default]
+    Plain,
+    /// The chunk carries a timestamped, per-message HMAC token: resists
+    /// on-path replay by binding the payload, a timestamp, and a nonce under
+    /// HMAC-SHA256. sipnab-to-sipnab only — a stock Homer/Kamailio sender does
+    /// not produce it.
+    Hmac,
+}
+
+impl std::str::FromStr for HepAuthMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "plain" => Ok(Self::Plain),
+            "hmac" => Ok(Self::Hmac),
+            other => Err(format!("expected 'plain' or 'hmac', got '{other}'")),
+        }
+    }
+}
+
 /// Build a version string including git commit hash, optional tag,
 /// and the list of compile-time features that were enabled.
 ///
@@ -539,6 +623,14 @@ pub struct Cli {
     )]
     pub kill_spoof: KillSpoof,
 
+    /// Allow scanner-kill to send active responses for packets received via
+    /// the HEP listener. OFF by default: a HEP sender asserts the inner
+    /// src/dst addresses, so absent `--hep-auth` an attacker could aim the
+    /// kill response at a victim of their choosing (SN-01). Only enable when
+    /// HEP input is authenticated and trusted.
+    #[arg(help_heading = "Security", long = "hep-allow-kill")]
+    pub hep_allow_kill: bool,
+
     /// Enable fraud detection heuristics.
     #[arg(help_heading = "Security", long)]
     pub fraud_detect: bool,
@@ -582,14 +674,25 @@ pub struct Cli {
     pub exec_rate_limit: u32,
 
     // ── Network listeners ────────────────────────────────────────────
-    /// Enable Prometheus metrics endpoint (e.g., "0.0.0.0:9090").
+    /// Enable Prometheus metrics endpoint (e.g., "127.0.0.1:9090"). A
+    /// non-loopback bind (e.g. "0.0.0.0:9090") is refused unless
+    /// --metrics-auth / --metrics-auth-file is also set.
     #[arg(help_heading = "Network listeners", long, value_name = "ADDR")]
     pub metrics: Option<String>,
 
     /// HTTP Basic auth credentials (`user:pass`) required by the metrics
     /// endpoint. When set, requests must send `Authorization: Basic <base64>`.
+    /// Prefer --metrics-auth-file so the secret is not visible in the process
+    /// list. Basic credentials are base64-encoded, not encrypted: terminate
+    /// TLS upstream for non-loopback exposure.
     #[arg(help_heading = "Network listeners", long, value_name = "USER:PASS")]
     pub metrics_auth: Option<String>,
+
+    /// Read the metrics Basic-auth `user:pass` from a file (contents trimmed),
+    /// keeping the secret out of the process list. Takes precedence over
+    /// --metrics-auth when both are set.
+    #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
+    pub metrics_auth_file: Option<std::path::PathBuf>,
 
     /// Enable REST API endpoint (e.g., "0.0.0.0:8080").
     #[arg(help_heading = "Network listeners", long, value_name = "ADDR")]
@@ -793,6 +896,32 @@ pub struct Cli {
     )]
     pub hep_auth: Option<String>,
 
+    /// Read the HEP shared secret from a file (contents trimmed), keeping it
+    /// out of the process list. Takes precedence over --hep-auth. When set on
+    /// a `--hep-listen` receiver it ENABLES receiver-side authentication:
+    /// incoming HEP packets must carry a matching 0x000e auth-key chunk or
+    /// they are dropped.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "hep-auth-file",
+        value_name = "FILE"
+    )]
+    pub hep_auth_file: Option<std::path::PathBuf>,
+
+    /// HEP authentication mode: `plain` (default) sends/expects the shared
+    /// secret verbatim in the 0x000e chunk (Homer-compatible, but replayable
+    /// by an on-path sniffer); `hmac` sends/expects a per-message HMAC token
+    /// (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay.
+    /// `hmac` is sipnab-to-sipnab only — a stock Homer/Kamailio peer will not
+    /// understand it.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "hep-auth-mode",
+        value_name = "plain|hmac",
+        default_value = "plain"
+    )]
+    pub hep_auth_mode: HepAuthMode,
+
     /// Parse incoming HEP packets (enable HEP decoding).
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
@@ -809,7 +938,7 @@ pub struct Cli {
     )]
     pub hep_allow: Vec<String>,
 
-    /// Maximum HEP packets per second.
+    /// Maximum HEP packets per second (global ceiling across all senders).
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long,
@@ -817,6 +946,21 @@ pub struct Cli {
         default_value = "50000"
     )]
     pub hep_rate_limit: u64,
+
+    /// Maximum HEP packets per second from any single source IP: a number,
+    /// `off` (0, the default), or `auto`. Adds fairness in multi-sender
+    /// deployments so one flooding peer cannot consume the whole
+    /// --hep-rate-limit allowance and starve others. `auto` divides the
+    /// global ceiling evenly across the --hep-allow sources (disabled when no
+    /// allowlist is set). Leave at `off` for the common single-collector
+    /// topology.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long,
+        value_name = "N|auto|off",
+        default_value = "off"
+    )]
+    pub hep_rate_limit_per_peer: PerPeerLimit,
 
     /// Send alerts to syslog.
     #[arg(help_heading = "MCP (Model Context Protocol)", long)]
@@ -1100,6 +1244,50 @@ impl Cli {
         // All flags are now implemented. Feature-gated flags produce errors
         // at startup in main.rs when the required feature is not compiled in.
     }
+
+    /// Resolve the metrics Basic-auth credential, preferring
+    /// `--metrics-auth-file` over the inline `--metrics-auth` so the secret
+    /// can be kept out of the process argument list.
+    pub fn resolve_metrics_auth(&self) -> Result<Option<String>, String> {
+        resolve_file_or_inline_secret(
+            self.metrics_auth.as_deref(),
+            self.metrics_auth_file.as_deref(),
+            "--metrics-auth-file",
+        )
+    }
+
+    /// Resolve the HEP shared secret, preferring `--hep-auth-file` over the
+    /// inline `--hep-auth` / `SIPNAB_HEP_AUTH` value. Used both to stamp
+    /// outgoing packets (`--hep-send`) and to authenticate incoming ones
+    /// (`--hep-listen`).
+    pub fn resolve_hep_auth(&self) -> Result<Option<String>, String> {
+        resolve_file_or_inline_secret(
+            self.hep_auth.as_deref(),
+            self.hep_auth_file.as_deref(),
+            "--hep-auth-file",
+        )
+    }
+}
+
+/// Resolve a secret from an optional file (preferred) or an optional inline
+/// value. A file's contents are trimmed of surrounding whitespace; an empty
+/// or unreadable file is an error naming `flag`, so a mis-set secret fails
+/// loudly instead of silently disabling authentication.
+pub fn resolve_file_or_inline_secret(
+    inline: Option<&str>,
+    file: Option<&std::path::Path>,
+    flag: &str,
+) -> Result<Option<String>, String> {
+    if let Some(path) = file {
+        let contents = std::fs::read_to_string(path)
+            .map_err(|e| format!("{flag} '{}': {e}", path.display()))?;
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            return Err(format!("{flag} '{}': file is empty", path.display()));
+        }
+        return Ok(Some(trimmed.to_string()));
+    }
+    Ok(inline.map(str::to_string))
 }
 
 #[cfg(test)]
@@ -1107,10 +1295,176 @@ mod tests {
     use super::*;
 
     #[test]
+    fn resolve_secret_prefers_file_over_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        std::fs::write(&path, "  file-secret\n").unwrap();
+        let got = resolve_file_or_inline_secret(Some("inline"), Some(&path), "--x").unwrap();
+        assert_eq!(
+            got.as_deref(),
+            Some("file-secret"),
+            "file wins and is trimmed"
+        );
+    }
+
+    #[test]
+    fn resolve_secret_falls_back_to_inline() {
+        let got = resolve_file_or_inline_secret(Some("inline"), None, "--x").unwrap();
+        assert_eq!(got.as_deref(), Some("inline"));
+    }
+
+    #[test]
+    fn resolve_secret_none_when_neither_set() {
+        let got = resolve_file_or_inline_secret(None, None, "--x").unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn resolve_secret_empty_file_is_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty");
+        std::fs::write(&path, "   \n").unwrap();
+        let err = resolve_file_or_inline_secret(None, Some(&path), "--x").unwrap_err();
+        assert!(err.contains("--x"), "error names the flag, got: {err}");
+        assert!(
+            err.contains("empty"),
+            "error explains emptiness, got: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_secret_missing_file_is_error() {
+        let path = std::path::Path::new("/nonexistent/sipnab/secret");
+        let err = resolve_file_or_inline_secret(None, Some(path), "--x").unwrap_err();
+        assert!(err.contains("--x"), "error names the flag, got: {err}");
+    }
+
+    #[test]
     fn cores_flag_parses() {
         // `--cores N` selects the multi-core offline reconstruction core count.
         let cli = Cli::parse_from_args(["sipnab", "--cores", "4", "-I", "x.pcap"]);
         assert_eq!(cli.cores, 4);
+    }
+
+    #[test]
+    fn security_secret_and_kill_flags_parse() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-auth-file",
+            "/etc/sipnab/hep.key",
+            "--hep-rate-limit-per-peer",
+            "5000",
+            "--hep-allow-kill",
+            "--metrics",
+            "127.0.0.1:9090",
+            "--metrics-auth-file",
+            "/etc/sipnab/metrics.cred",
+        ]);
+        assert_eq!(
+            cli.hep_auth_file.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/hep.key"))
+        );
+        assert_eq!(cli.hep_rate_limit_per_peer, PerPeerLimit::Fixed(5000));
+        assert!(
+            cli.hep_allow_kill,
+            "--hep-allow-kill opts into HEP scanner-kill"
+        );
+        assert_eq!(
+            cli.metrics_auth_file.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/metrics.cred"))
+        );
+    }
+
+    #[test]
+    fn hep_allow_kill_defaults_off() {
+        let cli = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
+        assert!(
+            !cli.hep_allow_kill,
+            "HEP-origin scanner-kill must be opt-in (SN-01)"
+        );
+        assert_eq!(
+            cli.hep_rate_limit_per_peer,
+            PerPeerLimit::Off,
+            "per-peer cap off by default"
+        );
+    }
+
+    #[test]
+    fn hep_rate_limit_per_peer_accepts_auto() {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-rate-limit-per-peer",
+            "auto",
+        ]);
+        assert_eq!(cli.hep_rate_limit_per_peer, PerPeerLimit::Auto);
+    }
+
+    #[test]
+    fn hep_rate_limit_per_peer_rejects_invalid_value() {
+        let err = Cli::try_parse_from([
+            "sipnab",
+            "-L",
+            "127.0.0.1:9060",
+            "--hep-rate-limit-per-peer",
+            "sometimes",
+        ]);
+        assert!(
+            err.is_err(),
+            "non-numeric, non-keyword value must be rejected"
+        );
+    }
+
+    #[test]
+    fn per_peer_limit_from_str() {
+        use std::str::FromStr;
+        assert_eq!(PerPeerLimit::from_str("auto"), Ok(PerPeerLimit::Auto));
+        assert_eq!(PerPeerLimit::from_str("AUTO"), Ok(PerPeerLimit::Auto));
+        assert_eq!(PerPeerLimit::from_str("off"), Ok(PerPeerLimit::Off));
+        assert_eq!(PerPeerLimit::from_str("0"), Ok(PerPeerLimit::Off));
+        assert_eq!(
+            PerPeerLimit::from_str("5000"),
+            Ok(PerPeerLimit::Fixed(5000))
+        );
+        assert!(PerPeerLimit::from_str("fast").is_err());
+        assert!(PerPeerLimit::from_str("-1").is_err());
+    }
+
+    #[test]
+    fn per_peer_limit_resolve() {
+        assert_eq!(PerPeerLimit::Off.resolve(50000, 4), 0);
+        assert_eq!(PerPeerLimit::Fixed(2000).resolve(50000, 4), 2000);
+        // Fixed ignores the allowlist entirely.
+        assert_eq!(PerPeerLimit::Fixed(2000).resolve(50000, 0), 2000);
+        // Auto divides the ceiling across the allowlist.
+        assert_eq!(PerPeerLimit::Auto.resolve(40000, 4), 10000);
+        // Auto with no allowlist stays disabled (nothing to divide by).
+        assert_eq!(PerPeerLimit::Auto.resolve(50000, 0), 0);
+    }
+
+    #[test]
+    fn hep_auth_mode_from_str() {
+        use std::str::FromStr;
+        assert_eq!(HepAuthMode::from_str("plain"), Ok(HepAuthMode::Plain));
+        assert_eq!(HepAuthMode::from_str("HMAC"), Ok(HepAuthMode::Hmac));
+        assert!(HepAuthMode::from_str("sigv4").is_err());
+        assert_eq!(HepAuthMode::default(), HepAuthMode::Plain);
+    }
+
+    #[test]
+    fn hep_auth_mode_flag_parses() {
+        let cli =
+            Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060", "--hep-auth-mode", "hmac"]);
+        assert_eq!(cli.hep_auth_mode, HepAuthMode::Hmac);
+        let default = Cli::parse_from_args(["sipnab", "-L", "127.0.0.1:9060"]);
+        assert_eq!(
+            default.hep_auth_mode,
+            HepAuthMode::Plain,
+            "plain is the default mode"
+        );
     }
 
     #[test]
