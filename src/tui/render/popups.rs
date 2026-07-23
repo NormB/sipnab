@@ -13,6 +13,46 @@ pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rec
     Rect::new(x, y, w, h)
 }
 
+/// Build the styled spans for an editable path line: a header-colored label
+/// followed by the path text with a reverse-video block cursor.
+///
+/// `cursor` is clamped into `path` and backed up to a `char` boundary, and
+/// the cursor cell spans the whole (possibly multibyte) character under it,
+/// so no byte offset used here can split a UTF-8 sequence. Shared by the
+/// save dialog and the file-open manual-path dialog.
+fn path_with_cursor_spans<'a>(
+    label: &'a str,
+    path: &'a str,
+    cursor: usize,
+    theme: &Theme,
+) -> Vec<Span<'a>> {
+    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+    let text_style = Style::default()
+        .fg(theme.foreground)
+        .add_modifier(Modifier::BOLD);
+    let mut spans: Vec<Span<'a>> = vec![Span::styled(label, Style::default().fg(theme.header))];
+    if path.is_empty() {
+        spans.push(Span::styled(" ", cursor_style));
+        return spans;
+    }
+    let cursor = crate::text::floor_char_boundary(path, cursor);
+    if cursor > 0 {
+        spans.push(Span::styled(&path[..cursor], text_style));
+    }
+    match path[cursor..].chars().next() {
+        Some(c) => {
+            let cursor_end = cursor + c.len_utf8();
+            spans.push(Span::styled(&path[cursor..cursor_end], cursor_style));
+            if cursor_end < path.len() {
+                spans.push(Span::styled(&path[cursor_end..], text_style));
+            }
+        }
+        // Cursor at end — show a trailing block cursor.
+        None => spans.push(Span::styled(" ", cursor_style)),
+    }
+    spans
+}
+
 /// Render the save dialog as a centered popup overlay: the editable path
 /// (with a block cursor), the category-grouped format list with the current
 /// selection marked, the dialog/message counts and the controls line. The
@@ -92,50 +132,8 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
     );
 
     // Build the path display with a visible cursor (reverse video at cursor position)
-    let path = &app.save.path;
-    let cursor = app.save.cursor.min(path.len());
-    let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
-        "  Save to: ",
-        Style::default().fg(app.theme.header),
-    )];
-    if path.is_empty() {
-        path_spans.push(Span::styled(
-            " ",
-            Style::default().bg(Color::White).fg(Color::Black),
-        ));
-    } else {
-        // Text before cursor
-        if cursor > 0 {
-            path_spans.push(Span::styled(
-                path[..cursor].to_string(),
-                Style::default()
-                    .fg(app.theme.foreground)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Cursor character (reverse video)
-        if cursor < path.len() {
-            path_spans.push(Span::styled(
-                path[cursor..cursor + 1].to_string(),
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
-            // Text after cursor
-            if cursor + 1 < path.len() {
-                path_spans.push(Span::styled(
-                    path[cursor + 1..].to_string(),
-                    Style::default()
-                        .fg(app.theme.foreground)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        } else {
-            // Cursor at end — show block cursor
-            path_spans.push(Span::styled(
-                " ",
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
-        }
-    }
+    let path_spans =
+        path_with_cursor_spans("  Save to: ", &app.save.path, app.save.cursor, &app.theme);
 
     let mut lines: Vec<Line<'_>> = vec![Line::from(""), Line::from(path_spans), Line::from("")];
     lines.extend(fmt_lines);
@@ -508,46 +506,12 @@ pub(in crate::tui) fn render_file_open_browser(frame: &mut ratatui::Frame, inner
 /// # Side effects
 /// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_file_open_manual(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
-    let path = &app.file_open.path;
-    let cursor = app.file_open.cursor.min(path.len());
-    let mut path_spans: Vec<Span<'_>> = vec![Span::styled(
+    let path_spans = path_with_cursor_spans(
         "  Path: ",
-        Style::default().fg(app.theme.header),
-    )];
-    if path.is_empty() {
-        path_spans.push(Span::styled(
-            " ",
-            Style::default().bg(Color::White).fg(Color::Black),
-        ));
-    } else {
-        if cursor > 0 {
-            path_spans.push(Span::styled(
-                path[..cursor].to_string(),
-                Style::default()
-                    .fg(app.theme.foreground)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        if cursor < path.len() {
-            path_spans.push(Span::styled(
-                path[cursor..cursor + 1].to_string(),
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
-            if cursor + 1 < path.len() {
-                path_spans.push(Span::styled(
-                    path[cursor + 1..].to_string(),
-                    Style::default()
-                        .fg(app.theme.foreground)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        } else {
-            path_spans.push(Span::styled(
-                " ",
-                Style::default().bg(Color::White).fg(Color::Black),
-            ));
-        }
-    }
+        &app.file_open.path,
+        app.file_open.cursor,
+        &app.theme,
+    );
 
     let lines: Vec<Line<'_>> = vec![
         Line::from(""),
@@ -643,14 +607,17 @@ pub(in crate::tui) fn render_filter_text_field(
     let field_x = x + label.len() as u16;
     buf.set_string(field_x, y, "[", bracket_style);
 
-    // Paint field content with cursor
+    // Paint field content with cursor. All byte offsets below are kept on
+    // char boundaries so no slice can split a multibyte UTF-8 sequence.
     let content_x = field_x + 1;
     let inner_width = (field_width - 2) as usize; // subtract brackets
-    let cursor = cursor_pos.min(value.len());
+    let cursor = crate::text::floor_char_boundary(value, cursor_pos);
+    // End of the display window, backed up to a boundary.
+    let visible_end = crate::text::floor_char_boundary(value, inner_width);
 
     if focused {
-        // Before cursor
-        let before = &value[..cursor.min(inner_width)];
+        // Before cursor (clipped to the visible window)
+        let before = &value[..cursor.min(visible_end)];
         buf.set_string(
             content_x,
             y,
@@ -659,9 +626,13 @@ pub(in crate::tui) fn render_filter_text_field(
                 .fg(theme.foreground)
                 .add_modifier(Modifier::BOLD),
         );
-        // Cursor character (reverse video)
+        // Cursor cell: the whole char under the cursor, or a trailing space.
+        let cursor_end = match value[cursor..].chars().next() {
+            Some(c) => cursor + c.len_utf8(),
+            None => cursor,
+        };
         let cursor_char = if cursor < value.len() {
-            &value[cursor..cursor + 1]
+            &value[cursor..cursor_end]
         } else {
             " "
         };
@@ -671,12 +642,11 @@ pub(in crate::tui) fn render_filter_text_field(
             cursor_char,
             Style::default().bg(Color::White).fg(Color::Black),
         );
-        // After cursor
-        if cursor + 1 < value.len() {
-            let after_end = value.len().min(inner_width);
-            let after = &value[cursor + 1..after_end];
+        // After cursor (clipped; the window may end before the cursor does)
+        if cursor_end < visible_end {
+            let after = &value[cursor_end..visible_end];
             buf.set_string(
-                content_x + cursor as u16 + 1,
+                content_x + cursor_end as u16,
                 y,
                 after,
                 Style::default()
@@ -692,11 +662,7 @@ pub(in crate::tui) fn render_filter_text_field(
         }
     } else {
         // Not focused: just show value dimmed
-        let display = if value.len() > inner_width {
-            &value[..inner_width]
-        } else {
-            value
-        };
+        let display = &value[..visible_end];
         buf.set_string(content_x, y, display, Style::default().fg(theme.foreground));
         // Fill remaining
         if display.len() < inner_width {
@@ -1168,6 +1134,92 @@ mod tests {
             row2.push_str(buf2.cell((x, 0)).unwrap().symbol());
         }
         assert!(row2.contains("To:"));
+    }
+
+    /// A block cursor sitting on a multibyte character renders that whole
+    /// character without panicking on a `cursor..cursor + 1` byte slice.
+    #[test]
+    fn render_filter_text_field_multibyte_cursor_no_panic() {
+        let theme = Theme::default();
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field = FilterTextField {
+            label: "F: ",
+            value: "héllo",
+            field_width: 20,
+            focused: true,
+            cursor_pos: 1, // on the two-byte 'é'
+        };
+        render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(row.contains('h'), "field content missing: {row}");
+    }
+
+    /// A cursor past the visible field width must not build an inverted
+    /// (start > end) slice range for the after-cursor text.
+    #[test]
+    fn render_filter_text_field_cursor_beyond_inner_width_no_panic() {
+        let theme = Theme::default();
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field = FilterTextField {
+            label: "F: ",
+            value: "abcdefghijklmnopqrst",
+            field_width: 10, // inner width 8, cursor well beyond it
+            focused: true,
+            cursor_pos: 10,
+        };
+        render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+    }
+
+    /// Unfocused truncation of a value whose display cut lands inside a
+    /// multibyte character backs up to the previous boundary, not a panic.
+    #[test]
+    fn render_filter_text_field_unfocused_multibyte_truncation_no_panic() {
+        let theme = Theme::default();
+        let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 60, 1));
+        let field = FilterTextField {
+            label: "F: ",
+            value: "éééééééééé", // 10 chars, 20 bytes
+            field_width: 11,     // inner width 9 — mid-character in bytes
+            focused: false,
+            cursor_pos: 0,
+        };
+        render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+    }
+
+    /// The file-open manual path renders a block cursor on a multibyte
+    /// character without panicking on a `cursor..cursor + 1` byte slice.
+    #[test]
+    fn render_file_open_manual_multibyte_cursor_no_panic() {
+        let mut app = App::new_test();
+        app.file_open.path = "/tmp/café.pcap".to_string();
+        app.file_open.cursor = app.file_open.path.find('é').unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                let inner = centered_popup(area, 80, 22);
+                render_file_open_manual(frame, inner, &app);
+            })
+            .unwrap();
+    }
+
+    /// The save-dialog path renders a block cursor on a multibyte character
+    /// without panicking on a `cursor..cursor + 1` byte slice.
+    #[test]
+    fn render_save_popup_multibyte_cursor_no_panic() {
+        let mut app = App::new_test();
+        app.save.path = "/tmp/café.pcap".to_string();
+        app.save.cursor = app.save.path.find('é').unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_save_popup(frame, area, &app);
+            })
+            .unwrap();
     }
 
     /// A cursor at `value.len()` paints the trailing block cursor without

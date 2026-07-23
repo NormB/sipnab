@@ -196,7 +196,10 @@ pub fn format_sip_message(
         let raw_str = String::from_utf8_lossy(&msg.raw);
         match opts.payload_limit {
             Some(limit) if raw_str.len() > limit => {
-                out.push_str(&raw_str[..limit]);
+                // Back the cut up to a char boundary — the limit is a byte
+                // count and may land inside a multibyte UTF-8 sequence.
+                let cut = crate::text::floor_char_boundary(&raw_str, limit);
+                out.push_str(&raw_str[..cut]);
                 out.push_str("\n[truncated]\n");
             }
             _ => {
@@ -421,6 +424,56 @@ mod tests {
         assert!(
             output.contains(BOLD_RED),
             "should contain bold red for error response"
+        );
+    }
+
+    /// A `payload_limit` that lands mid-way through a multibyte UTF-8
+    /// character truncates at the previous character boundary instead of
+    /// panicking on a byte slice.
+    #[test]
+    fn payload_limit_mid_utf8_truncates_at_boundary() {
+        let body = "média=é".repeat(8);
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: utf8-truncate-test@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", body.len()),
+            ],
+            body.as_bytes(),
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        // Aim the limit one byte into the first 'é' of the body so the cut
+        // point is guaranteed to be inside a multibyte character.
+        let raw_str = String::from_utf8_lossy(&msg.raw).into_owned();
+        let limit = raw_str.find('é').expect("body contains é") + 1;
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            payload_limit: Some(limit),
+            ..Default::default()
+        };
+        let output = format_sip_message(&msg, &opts, None);
+
+        assert!(
+            output.contains("[truncated]"),
+            "expected [truncated] marker, got: {output}"
+        );
+        assert!(
+            !output.contains('\u{FFFD}'),
+            "truncation must not split a UTF-8 sequence"
         );
     }
 

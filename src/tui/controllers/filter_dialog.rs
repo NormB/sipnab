@@ -154,8 +154,14 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
             if cursor > 0
                 && let Some(field) = app.filter_dialog.text_field_mut(idx)
             {
-                field.remove(cursor - 1);
-                app.filter_dialog.cursor_pos -= 1;
+                // Remove the whole (possibly multibyte) char before the cursor.
+                let prev = field[..cursor]
+                    .char_indices()
+                    .next_back()
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                field.remove(prev);
+                app.filter_dialog.cursor_pos = prev;
             }
         }
         KeyCode::Delete if app.filter_dialog.is_text_field_focused() => {
@@ -168,13 +174,23 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
             }
         }
         KeyCode::Left if app.filter_dialog.is_text_field_focused() => {
-            app.filter_dialog.cursor_pos = app.filter_dialog.cursor_pos.saturating_sub(1);
+            let idx = app.filter_dialog.focused_field;
+            let cursor = app.filter_dialog.cursor_pos;
+            let field = app.filter_dialog.text_field(idx);
+            // Step back one whole char, not one byte.
+            app.filter_dialog.cursor_pos = field[..cursor.min(field.len())]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
         }
         KeyCode::Right if app.filter_dialog.is_text_field_focused() => {
             let idx = app.filter_dialog.focused_field;
-            let len = app.filter_dialog.text_field(idx).len();
-            if app.filter_dialog.cursor_pos < len {
-                app.filter_dialog.cursor_pos += 1;
+            let cursor = app.filter_dialog.cursor_pos;
+            let field = app.filter_dialog.text_field(idx);
+            // Step forward by the width of the char under the cursor.
+            if let Some(c) = field[cursor.min(field.len())..].chars().next() {
+                app.filter_dialog.cursor_pos = cursor + c.len_utf8();
             }
         }
         KeyCode::Home if app.filter_dialog.is_text_field_focused() => {
@@ -189,7 +205,7 @@ pub(in crate::tui) fn handle_filter_popup_key(app: &mut App, key: KeyEvent) {
             let cursor = app.filter_dialog.cursor_pos;
             if let Some(field) = app.filter_dialog.text_field_mut(idx) {
                 field.insert(cursor, c);
-                app.filter_dialog.cursor_pos += 1;
+                app.filter_dialog.cursor_pos += c.len_utf8();
             }
         }
         _ => {}
@@ -255,6 +271,30 @@ mod all_checkbox_order_tests {
     fn open_filter(app: &mut App) {
         app.filter_dialog = FilterDialogState::default();
         app.active_popup = Some(Popup::FilterDialog);
+    }
+
+    /// Typing, arrowing over, and deleting multibyte characters keeps the
+    /// cursor on char boundaries — no mid-character `String::insert`/`remove`
+    /// panics.
+    #[test]
+    fn multibyte_text_editing_is_char_boundary_safe() {
+        let mut app = App::new_test();
+        open_filter(&mut app);
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Char('é')));
+        handle_filter_popup_key(&mut app, key(KeyCode::Char('x')));
+        assert_eq!(app.filter_dialog.text_field(0), "éx");
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Left)); // before 'x'
+        handle_filter_popup_key(&mut app, key(KeyCode::Left)); // before 'é'
+        assert_eq!(app.filter_dialog.cursor_pos, 0);
+        handle_filter_popup_key(&mut app, key(KeyCode::Right)); // after 'é'
+        assert_eq!(app.filter_dialog.cursor_pos, 'é'.len_utf8());
+
+        handle_filter_popup_key(&mut app, key(KeyCode::Backspace)); // drop 'é'
+        assert_eq!(app.filter_dialog.text_field(0), "x");
+        handle_filter_popup_key(&mut app, key(KeyCode::Delete)); // drop 'x'
+        assert_eq!(app.filter_dialog.text_field(0), "");
     }
 
     /// Tab order after the reorder: text fields → All → methods (REGISTER

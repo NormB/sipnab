@@ -115,13 +115,16 @@ fn parse_duration(s: &str) -> Option<Duration> {
         return None;
     }
 
-    let (num_part, suffix) = s.split_at(s.len() - 1);
+    // Split on the last character, not the last byte — a multibyte final
+    // character (e.g. "10µ") would make `split_at(len - 1)` panic.
+    let suffix = s.chars().next_back()?;
+    let num_part = &s[..s.len() - suffix.len_utf8()];
     let value: u64 = num_part.parse().ok()?;
 
     match suffix {
-        "s" => Some(Duration::from_secs(value)),
-        "m" => Some(Duration::from_secs(value * 60)),
-        "h" => Some(Duration::from_secs(value * 3600)),
+        's' => Some(Duration::from_secs(value)),
+        'm' => Some(Duration::from_secs(value * 60)),
+        'h' => Some(Duration::from_secs(value * 3600)),
         _ => None,
     }
 }
@@ -457,6 +460,15 @@ mod tests {
     /// A fixed source IP used across the alerting tests.
     fn test_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
+    }
+
+    /// A multibyte final character is rejected as an invalid suffix instead
+    /// of panicking on a non-boundary `split_at`.
+    #[test]
+    fn parse_duration_multibyte_suffix_is_invalid() {
+        assert_eq!(parse_duration("10µ"), None);
+        assert_eq!(parse_duration("5秒"), None);
+        assert_eq!(parse_duration("µ"), None);
     }
 
     /// A basic rule parses name/threshold/window and defaults cooldown to 2x.
