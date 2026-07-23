@@ -25,7 +25,7 @@ Tiers:
 - [x] src/tui/render/popups.rs:677 — [bug] range start > end panic when focused cursor beyond inner_width; cursor never clamped. **Done:** after-cursor slice is clipped to a boundary-floored visible window and only drawn when `cursor_end < visible_end`.
 - [x] src/output/cli_print.rs:199 — [panic] `--payload-limit` byte-slices str mid-UTF-8 → process panic on multibyte raw messages. **Done:** cut point floors to the previous char boundary.
 - [x] src/security/alerting.rs:110 — [robustness] `parse_duration` split_at panics on non-boundary last byte (multibyte suffix). **Done:** splits on the last *char*; a multibyte suffix is now just an invalid suffix (`None`).
-- [ ] src/tui/controllers/file_open.rs:353 — [potential-bug] `tv_usec as u32 * 1000` overflows for nanosecond-precision pcaps (panic in debug, wrong ts in release).
+- [x] src/tui/controllers/file_open.rs:353 — [potential-bug] `tv_usec as u32 * 1000` overflows for nanosecond-precision pcaps (panic in debug, wrong ts in release). **Done:** now routes through the shared hardened `capture::file::pcap_ts_to_chrono`, which clamps `tv_usec` before the µs→ns multiply (the local raw conversion was the last copy that skipped it).
 - [ ] src/output/api.rs:536 — [security] auth checked before rate limit; unlimited-speed Bearer-token brute force.
 - [ ] src/output/wireshark.rs:122 — [security] single-quotes values without escaping embedded quotes in generated shell command.
 - [ ] src/tui/call_flow/export.rs — [correctness/security] labels interpolated unescaped into Mermaid/HTML; `;#<`/newlines can break rendering or inject markup.
