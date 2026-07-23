@@ -73,6 +73,7 @@ pub mod security;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;
 pub mod sip;
+pub mod text;
 
 #[doc(hidden)]
 #[cfg(feature = "tui")]

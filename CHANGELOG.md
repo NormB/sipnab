@@ -2,6 +2,19 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- Four UTF-8 byte-boundary panics reachable from real input, all now going
+  through a shared `text::floor_char_boundary` helper or whole-character
+  slicing: `--payload-limit` truncation mid-character in CLI output; the
+  TUI filter-field renderer (cursor on a multibyte character, cursor past
+  the visible field width, unfocused truncation mid-character) plus the
+  filter dialog's byte-stepping cursor when typing/editing multibyte text;
+  the save/file-open path cursor cell (the two duplicated span builders are
+  now one); and `--alert` duration parsing with a multibyte suffix, which
+  now reads as an invalid suffix instead of panicking.
+
 ## [0.5.28] - 2026-07-23
 
 ### Documentation
