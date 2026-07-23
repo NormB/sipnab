@@ -1,15 +1,19 @@
 #!/bin/sh
 # sipnab pre-push hook (portable POSIX sh).
 #
-# Hard gate: refuse to push code that fails either
-#   * `cargo fmt --all -- --check`, or
-#   * `cargo clippy --all-features --all-targets -- -D warnings`.
-# These are the exact gaps that break CI -- unformatted or lint-dirty Rust must
-# never reach the remote, since CI runs both as blocking gates (RUSTFLAGS
-# -Dwarnings + the same clippy invocation). Catching them locally turns a
-# 10-minute red-CI round-trip into a few seconds before push.
+# Hard gate: refuse to push code that fails any of
+#   * `cargo fmt --all -- --check`,
+#   * `cargo clippy --all-features --all-targets -- -D warnings`,
+#   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings), or
+#   * `cd fuzz && cargo check`.
+# These are the exact gaps that break CI -- unformatted, lint-dirty, doc-broken,
+# or fuzz-broken Rust must never reach the remote, since CI runs all four as
+# blocking gates. The doc and fuzz gates matter because neither is built by
+# `cargo test` or `clippy --all-targets`: rustdoc lints (e.g. private intra-doc
+# links) and the separate fuzz workspace compile independently. Catching them
+# locally turns a 10-minute red-CI round-trip into seconds before push.
 #
-# Bypass for emergencies (use sparingly) -- skips BOTH gates:
+# Bypass for emergencies (use sparingly) -- skips ALL gates:
 #   SKIP_FMT_HOOK=1 git push ...
 #
 # Activate once per clone:
@@ -80,6 +84,47 @@ else
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 	exit 1
+fi
+
+# -- Hard gate: rustdoc -------------------------------------------------------
+# Mirrors CI's Docs step (`cargo doc --no-deps --all-features --workspace` with
+# RUSTDOCFLAGS=-D warnings). Catches broken or private intra-doc links that
+# clippy and the test suite never build.
+printf '  cargo doc --no-deps --all-features --workspace (RUSTDOCFLAGS=-D warnings) ... '
+if RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace; then
+	printf '%bOK%b\n' "$GREEN" "$NC"
+else
+	printf '%bFAIL%b\n' "$RED" "$NC"
+	printf '\n'
+	printf '%bPush blocked: rustdoc reported warnings (e.g. a broken or private intra-doc link).%b\n' "$RED" "$NC"
+	printf 'Reproduce with:\n'
+	printf '    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace\n'
+	printf 'fix the docs, then commit and push again.\n'
+	printf '\n'
+	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+	exit 1
+fi
+
+# -- Hard gate: fuzz targets --------------------------------------------------
+# Mirrors CI's fuzz-check (`cd fuzz && cargo check`). The fuzz crate is a
+# separate workspace that `cargo test` / `clippy --all-targets` never build, so
+# a struct or signature change can compile everywhere else yet break a fuzz
+# target. Skipped if the fuzz/ directory is absent (matches CI).
+if [ -d fuzz ]; then
+	printf '  (cd fuzz && cargo check) ... '
+	if ( cd fuzz && cargo check ); then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: fuzz targets do not compile.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cd fuzz && cargo check\n'
+		printf 'fix the fuzz targets, then commit and push again.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
 fi
 
 printf '%bAll required pre-push checks passed.%b\n' "$GREEN" "$NC"
