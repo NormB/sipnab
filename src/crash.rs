@@ -237,7 +237,7 @@ fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
 /// The file is created exclusively and without following symlinks, so a
 /// crash in a privileged process cannot be redirected to overwrite an
 /// attacker-chosen file even when `dir` is shared or attacker-writable
-/// (see [`open_new_report_file`]). On a name collision — a planted
+/// (see `open_new_report_file`). On a name collision — a planted
 /// file/symlink, or two threads crashing in the same second — the write
 /// retries with a fresh sequence suffix.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
