@@ -963,6 +963,8 @@ pub enum View {
     StreamList,
     /// Ladder diagram for a specific dialog (by Call-ID).
     CallFlow(String),
+    /// Chronological call-timeline view for a specific dialog (by Call-ID).
+    CallTimeline(String),
     /// Raw SIP message viewer (message index within a dialog).
     RawMessage {
         /// Call-ID of the dialog containing this message.

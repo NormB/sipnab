@@ -43,6 +43,7 @@ pub enum CallListAction {
     NameEndpoints,
     OpenStatistics,
     OpenDashboard,
+    OpenTimeline,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
@@ -92,6 +93,9 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
         KeyCode::Char('N') => NameEndpoints,
         KeyCode::Char('s') => OpenStatistics,
         KeyCode::Char('D') => OpenDashboard,
+        // 't' (lowercase) is the timestamp-mode cycle; the timeline opens
+        // on Shift+T so both keep a call-list binding.
+        KeyCode::Char('T') => OpenTimeline,
         _ => return None,
     })
 }
@@ -228,6 +232,11 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.dashboard_selected = 0;
             app.dashboard_return_view = Some(View::CallList);
             app.current_view = View::QualityDashboard;
+        }
+        CallListAction::OpenTimeline => {
+            if let Some(call_id) = get_selected_call_id(app) {
+                app.current_view = View::CallTimeline(call_id);
+            }
         }
     }
 }
@@ -646,6 +655,16 @@ mod tests {
         let mut app = App::new_test();
         handle_call_list_key(&mut app, key(KeyCode::Char('s')));
         assert_eq!(app.current_view, View::Statistics);
+    }
+
+    #[test]
+    fn timeline_opens_from_call_list_and_returns_on_close() {
+        // Needs a selected call: the timeline opens for the highlighted row.
+        let mut app = app_with_dialogs();
+        app.handle_key(KeyCode::Char('T'));
+        assert!(matches!(app.current_view, View::CallTimeline(_)));
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(app.current_view, View::CallList);
     }
 
     #[test]

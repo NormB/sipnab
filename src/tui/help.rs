@@ -41,6 +41,7 @@ CALL LIST:
   O                Open pcap file
   s                Statistics view
   D                Quality dashboard (live MOS/jitter/loss)
+  T                Call timeline (selected dialog)
   F9               Clear active filter
   F10              Column selector
   Tab              Switch to RTP Streams

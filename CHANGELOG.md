@@ -4,6 +4,26 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+- Capture: SIP over SCTP. `parse_packet` now decodes the SCTP common
+  header and chunk stream, extracting the SIP payload from the first
+  complete (B+E) DATA chunk and recovering the real source/destination
+  ports; any truncated or malformed SCTP input fails closed to an empty
+  payload so downstream never misreads transport bytes as SIP. Single
+  unfragmented DATA chunk per packet; multi-packet fragment reassembly
+  is a documented follow-up. Enables SIGTRAN/Diameter (3GPP IMS)
+  environments.
+- TUI: packet-loss % trend row on the quality dashboard alongside the
+  existing MOS and jitter sparklines, colored by good/warn/bad loss
+  thresholds, plus a legend naming all three metrics with units —
+  completing the real-time MOS/jitter/loss view.
+- TUI: call-timeline view (`T` from the call list) — a horizontal,
+  proportional time axis of call phases (setup → ringing → in-call →
+  teardown, or the failed/cancelled path) derived from dialog timing
+  milestones, with per-phase duration labels, phase colors, a legend,
+  and a PDD/ring/setup/teardown summary line. Degrades gracefully for
+  never-answered calls and dialogs without timing data.
+
 ## [0.5.27] - 2026-07-22
 
 ### Fixed

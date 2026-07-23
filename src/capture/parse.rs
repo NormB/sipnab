@@ -165,6 +165,96 @@ fn ip_protocol_to_transport(p: u8) -> TransportProto {
     }
 }
 
+// ── SCTP ──────────────────────────────────────────────────────────────
+
+/// A zero-copy reference to the SIP payload carried in an SCTP DATA chunk.
+///
+/// `payload` is the byte range of the SIP message within the SCTP packet slice
+/// passed to [`parse_sctp_data_chunk`]; `src_port`/`dst_port` come from the
+/// SCTP common header.
+struct SctpDataRef {
+    src_port: u16,
+    dst_port: u16,
+    payload: std::ops::Range<usize>,
+}
+
+/// Parse the first complete, unfragmented DATA chunk out of an SCTP packet.
+///
+/// `sctp` is the full SCTP packet: the 12-byte common header (src port, dst
+/// port, verification tag, checksum) followed by one or more chunks. Each chunk
+/// is `type(1) flags(1) length(2)` — where `length` includes the 4-byte chunk
+/// header — then `length - 4` value bytes, then padding to the next 4-byte
+/// boundary (the final chunk's padding may be absent).
+///
+/// A DATA chunk (type 0) carries a 12-byte data header (TSN, stream id, stream
+/// seq, PPID); the application payload (here, the SIP message) is the chunk
+/// value after that data header. Only a chunk with both the B (beginning) and E
+/// (ending) flags set is a complete, unfragmented message; fragments are
+/// skipped. Returns the ports and the byte range of the first such chunk's
+/// non-empty payload.
+///
+/// Fails closed: any truncation, out-of-bounds, or malformed length yields
+/// `None`.
+///
+/// Reassembling DATA fragments (a B-only chunk, continuation chunks, and an
+/// E-only chunk) that span multiple packets by TSN/stream is not handled yet
+/// and is a follow-up; such fragments are currently dropped.
+fn parse_sctp_data_chunk(sctp: &[u8]) -> Option<SctpDataRef> {
+    const COMMON_HEADER_LEN: usize = 12;
+    const CHUNK_HEADER_LEN: usize = 4;
+    const DATA_HEADER_LEN: usize = 12;
+    const DATA_CHUNK_TYPE: u8 = 0;
+    const FLAG_E: u8 = 0x01; // ending fragment
+    const FLAG_B: u8 = 0x02; // beginning fragment
+
+    if sctp.len() < COMMON_HEADER_LEN {
+        return None;
+    }
+    let src_port = u16::from_be_bytes([sctp[0], sctp[1]]);
+    let dst_port = u16::from_be_bytes([sctp[2], sctp[3]]);
+
+    let mut offset = COMMON_HEADER_LEN;
+    while offset + CHUNK_HEADER_LEN <= sctp.len() {
+        let chunk_type = sctp[offset];
+        let flags = sctp[offset + 1];
+        let length = u16::from_be_bytes([sctp[offset + 2], sctp[offset + 3]]) as usize;
+
+        // The length always includes the 4-byte header; a smaller value is
+        // malformed and could stall iteration, so fail closed.
+        if length < CHUNK_HEADER_LEN {
+            return None;
+        }
+        // The declared chunk must fit within the buffer.
+        let chunk_end = offset.checked_add(length)?;
+        if chunk_end > sctp.len() {
+            return None;
+        }
+
+        if chunk_type == DATA_CHUNK_TYPE {
+            let complete = (flags & FLAG_B != 0) && (flags & FLAG_E != 0);
+            let payload_start = offset
+                .checked_add(CHUNK_HEADER_LEN)?
+                .checked_add(DATA_HEADER_LEN)?;
+            // Accept only a complete message with a non-empty payload.
+            if complete && payload_start < chunk_end {
+                return Some(SctpDataRef {
+                    src_port,
+                    dst_port,
+                    payload: payload_start..chunk_end,
+                });
+            }
+            // Otherwise it is a fragment or an empty DATA chunk — keep scanning.
+        }
+
+        // Advance past this chunk, rounding its length up to the next 4-byte
+        // boundary. The final chunk's padding may be absent, so an advance
+        // beyond the buffer simply ends iteration.
+        let padded = length.checked_add(3)? & !3usize;
+        offset = offset.checked_add(padded)?;
+    }
+    None
+}
+
 // ── Public API ────────────────────────────────────────────────────────
 
 /// Byte range `child` occupies within `parent`, if `child` is a subslice.
@@ -570,20 +660,23 @@ fn extract_parsed_packet(
         });
     }
 
-    // SCTP: etherparse does not parse SCTP, so it arrives with no transport slice.
-    // Detect it via the IP protocol number and return a debug log rather than an error.
+    // SCTP: etherparse does not parse SCTP, so it arrives with no transport
+    // slice. Recover the ports and the SIP payload from the first complete DATA
+    // chunk ourselves. On any malformed/truncated SCTP, fail closed to an empty
+    // payload so downstream never misreads SCTP header bytes as a SIP message.
     if ip_protocol == 132 {
-        tracing::debug!("SCTP packet detected — not yet parsed");
-        let payload = net
-            .ip_payload_ref()
-            .map(|p| slice_of(data, p.payload))
-            .unwrap_or_default();
+        let extracted = net.ip_payload_ref().and_then(|p| {
+            let data_ref = parse_sctp_data_chunk(p.payload)?;
+            let sip = p.payload.get(data_ref.payload)?;
+            Some((data_ref.src_port, data_ref.dst_port, slice_of(data, sip)))
+        });
+        let (src_port, dst_port, payload) = extracted.unwrap_or((0, 0, bytes::Bytes::new()));
         return Ok(ParsedPacket {
             timestamp,
             src_addr,
             dst_addr,
-            src_port: 0,
-            dst_port: 0,
+            src_port,
+            dst_port,
             transport: TransportProto::Sctp,
             payload,
             ip_id,
@@ -845,6 +938,78 @@ mod tests {
         pkt
     }
 
+    /// SCTP common header (12 bytes): src port, dst port, verification tag,
+    /// checksum.
+    fn sctp_common_header(src_port: u16, dst_port: u16) -> Vec<u8> {
+        let mut h = Vec::with_capacity(12);
+        h.extend_from_slice(&src_port.to_be_bytes());
+        h.extend_from_slice(&dst_port.to_be_bytes());
+        h.extend_from_slice(&0x1234_5678u32.to_be_bytes()); // verification tag
+        h.extend_from_slice(&0u32.to_be_bytes()); // checksum (0 = skip)
+        h
+    }
+
+    /// Build one SCTP DATA chunk (type 0) with the given `flags`, wrapping
+    /// `payload` after the 12-byte data header (TSN, stream id, stream seq,
+    /// PPID). The chunk is padded to the next 4-byte boundary.
+    fn sctp_data_chunk(flags: u8, payload: &[u8]) -> Vec<u8> {
+        let length = 4 + 12 + payload.len(); // chunk header + data header + value
+        let mut chunk = Vec::new();
+        chunk.push(0); // type: DATA
+        chunk.push(flags);
+        chunk.extend_from_slice(&(length as u16).to_be_bytes());
+        chunk.extend_from_slice(&1u32.to_be_bytes()); // TSN
+        chunk.extend_from_slice(&0u16.to_be_bytes()); // stream id
+        chunk.extend_from_slice(&0u16.to_be_bytes()); // stream seq
+        chunk.extend_from_slice(&0u32.to_be_bytes()); // PPID
+        chunk.extend_from_slice(payload);
+        while chunk.len() % 4 != 0 {
+            chunk.push(0); // padding to 4-byte boundary
+        }
+        chunk
+    }
+
+    /// Wrap raw SCTP bytes (common header + chunks) in Ethernet + IPv4 with
+    /// IP protocol byte = 132.
+    fn build_eth_ipv4_sctp_raw(src_ip: [u8; 4], dst_ip: [u8; 4], sctp: &[u8]) -> Vec<u8> {
+        let ip_total_len: u16 = 20 + sctp.len() as u16;
+        let mut pkt = Vec::with_capacity(14 + ip_total_len as usize);
+
+        // Ethernet header
+        pkt.extend_from_slice(&[0xAA; 6]);
+        pkt.extend_from_slice(&[0xBB; 6]);
+        pkt.extend_from_slice(&[0x08, 0x00]); // EtherType: IPv4
+
+        // IPv4 header (20 bytes, no options)
+        pkt.push(0x45);
+        pkt.push(0x00);
+        pkt.extend_from_slice(&ip_total_len.to_be_bytes());
+        pkt.extend_from_slice(&[0x00, 0x03]); // identification = 3
+        pkt.extend_from_slice(&[0x40, 0x00]); // DF
+        pkt.push(64);
+        pkt.push(132); // protocol: SCTP
+        pkt.extend_from_slice(&[0x00, 0x00]); // checksum
+        pkt.extend_from_slice(&src_ip);
+        pkt.extend_from_slice(&dst_ip);
+
+        pkt.extend_from_slice(sctp);
+        pkt
+    }
+
+    /// Build Ethernet + IPv4 + SCTP with a single complete (B&E) DATA chunk
+    /// carrying `sip`.
+    fn build_eth_ipv4_sctp(
+        src_ip: [u8; 4],
+        dst_ip: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        sip: &[u8],
+    ) -> Vec<u8> {
+        let mut sctp = sctp_common_header(src_port, dst_port);
+        sctp.extend_from_slice(&sctp_data_chunk(0x03, sip)); // B|E
+        build_eth_ipv4_sctp_raw(src_ip, dst_ip, &sctp)
+    }
+
     /// Helper to create a [`Packet`] from raw data.
     fn make_packet(data: Vec<u8>, link_type: i32) -> Packet {
         let len = data.len();
@@ -927,6 +1092,102 @@ mod tests {
         assert_eq!(parsed.transport, TransportProto::Udp);
         assert_eq!(parsed.payload[..], payload[..]);
         assert!(parsed.ip_id.is_none()); // IPv6 has no identification
+    }
+
+    #[test]
+    fn parse_ethernet_ipv4_sctp_data_chunk_sip() {
+        let sip = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\n\r\n";
+        let data = build_eth_ipv4_sctp([10, 0, 0, 1], [10, 0, 0, 2], 5060, 5062, sip);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.src_addr, "10.0.0.1".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.dst_addr, "10.0.0.2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 5060);
+        assert_eq!(parsed.dst_port, 5062);
+        assert_eq!(parsed.payload[..], sip[..]);
+    }
+
+    #[test]
+    fn parse_sctp_data_chunk_is_payload_agnostic() {
+        // The transport parser only extracts bytes; SIP detection is downstream.
+        let raw = b"\x00\x01\x02\x03not-sip-at-all\xff\xfe";
+        let data = build_eth_ipv4_sctp([10, 0, 0, 5], [10, 0, 0, 6], 9000, 9001, raw);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 9000);
+        assert_eq!(parsed.dst_port, 9001);
+        assert_eq!(parsed.payload[..], raw[..]);
+    }
+
+    #[test]
+    fn parse_sctp_common_header_truncated_yields_empty_payload() {
+        // Fewer than the 12-byte common header — must not panic, empty payload.
+        let sctp = vec![0x13, 0xc4, 0x13, 0xc6, 0x00, 0x00]; // 6 bytes only
+        let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 0);
+        assert_eq!(parsed.dst_port, 0);
+        assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
+    fn parse_sctp_non_data_chunk_yields_empty_payload() {
+        // A single SACK chunk (type 3), no DATA chunk present.
+        let mut sctp = sctp_common_header(5060, 5062);
+        let mut sack = Vec::new();
+        sack.push(3); // type: SACK
+        sack.push(0); // flags
+        sack.extend_from_slice(&16u16.to_be_bytes()); // length incl. header
+        sack.extend_from_slice(&[0u8; 12]); // cum TSN ack + a_rwnd + counts
+        sctp.extend_from_slice(&sack);
+        let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 0);
+        assert_eq!(parsed.dst_port, 0);
+        assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
+    fn parse_sctp_data_chunk_length_past_buffer_yields_empty_payload() {
+        // DATA chunk header claims a length that runs past the buffer end.
+        let mut sctp = sctp_common_header(5060, 5062);
+        sctp.push(0); // type: DATA
+        sctp.push(0x03); // B|E
+        sctp.extend_from_slice(&0xFFFFu16.to_be_bytes()); // absurd length
+        sctp.extend_from_slice(&[0u8; 8]); // only a few value bytes actually present
+        let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 0);
+        assert_eq!(parsed.dst_port, 0);
+        assert!(parsed.payload.is_empty());
+    }
+
+    #[test]
+    fn parse_sctp_fragmented_data_chunk_yields_empty_payload() {
+        // B set, E clear → a fragment; must be skipped (no reassembly here).
+        let mut sctp = sctp_common_header(5060, 5062);
+        sctp.extend_from_slice(&sctp_data_chunk(0x02, b"fragment start only")); // B, no E
+        let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
+        let pkt = make_packet(data, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse");
+
+        assert_eq!(parsed.transport, TransportProto::Sctp);
+        assert_eq!(parsed.src_port, 0);
+        assert_eq!(parsed.dst_port, 0);
+        assert!(parsed.payload.is_empty());
     }
 
     #[test]
