@@ -1,11 +1,25 @@
 //! Mermaid sequence diagram export.
+//!
+//! Turns a prepared call flow (participants + formatted messages) into
+//! Mermaid `sequenceDiagram` source, either raw (`export_mermaid`) or
+//! wrapped in a self-contained dark-themed HTML page that renders it in a
+//! browser (`export_mermaid_html`). Pure string generation — writing the
+//! result to disk is the caller's job.
 
 use super::{FormattedMessage, Participant};
 
 /// Generate a self-contained HTML page that renders a Mermaid sequence diagram.
 ///
 /// The HTML embeds the Mermaid source and loads mermaid.js from CDN to render
-/// it in any browser — no extensions or plugins needed.
+/// it in any browser — no extensions or plugins needed. The page also
+/// includes a collapsible "Mermaid source" section holding the raw diagram.
+///
+/// # Arguments
+/// * `participants` — endpoint columns, in ladder order.
+/// * `messages` — prepared ladder rows; forwarded to `export_mermaid`.
+///
+/// # Returns
+/// The complete HTML document as a string.
 pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMessage]) -> String {
     let diagram = export_mermaid(participants, messages);
     format!(
@@ -40,6 +54,19 @@ pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMe
 }
 
 /// Generate raw Mermaid sequenceDiagram source from participants and messages.
+///
+/// Each participant becomes a `participant <id> as <label>` line (id from
+/// `sanitize_id`); each message becomes an arrow line, `->>` for requests
+/// and `-->>` for responses, labeled with the message label. Synthetic
+/// spacer rows, rows with empty labels, and rows whose column indices fall
+/// outside `participants` are skipped.
+///
+/// # Arguments
+/// * `participants` — endpoint columns; `src_col`/`dst_col` index into this.
+/// * `messages` — prepared ladder rows to emit as arrows.
+///
+/// # Returns
+/// The Mermaid source text (always starting with `sequenceDiagram`).
 pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage]) -> String {
     let mut out = String::from("sequenceDiagram\n");
 
@@ -70,11 +97,14 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
     out
 }
 
-/// Sanitize an address string into a valid Mermaid participant ID.
+/// Sanitize an address string into a valid Mermaid participant ID by
+/// replacing `:` and `.` with `_` (e.g. `10.0.0.1:5060` → `10_0_0_1_5060`).
 fn sanitize_id(s: &str) -> String {
     s.replace([':', '.'], "_")
 }
 
+/// Tests for the Mermaid export: participant/arrow emission, row skipping,
+/// and ID sanitization.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,7 +113,8 @@ mod tests {
 
     use crate::tui::call_flow::SelectionState;
 
-    /// Helper to create a minimal FormattedMessage for testing.
+    /// Helper to create a minimal `FormattedMessage` with the given columns,
+    /// label and request/response flag; all other fields defaulted.
     fn test_msg(
         src_col: usize,
         dst_col: usize,
@@ -114,6 +145,8 @@ mod tests {
         }
     }
 
+    /// A two-party INVITE/200 exchange emits both participants, a `->>`
+    /// request arrow and a `-->>` response arrow.
     #[test]
     fn mermaid_basic() {
         let participants = vec![
@@ -137,6 +170,7 @@ mod tests {
         assert!(out.contains("10_0_0_2_5060-->>10_0_0_1_5060: 200 OK"));
     }
 
+    /// Spacer rows are omitted: only real messages become arrow lines.
     #[test]
     fn mermaid_skips_spacers() {
         let participants = vec![
@@ -162,6 +196,8 @@ mod tests {
         assert_eq!(msg_lines.len(), 2);
     }
 
+    /// A three-party (proxied) flow lists all participants and one arrow
+    /// per message, requests and responses alike.
     #[test]
     fn mermaid_three_participants() {
         let participants = vec![
@@ -196,6 +232,7 @@ mod tests {
         );
     }
 
+    /// A fold-header row exports its (fold-annotated) label verbatim.
     #[test]
     fn mermaid_fold_label_included() {
         let participants = vec![
@@ -219,6 +256,7 @@ mod tests {
         );
     }
 
+    /// `sanitize_id` maps dots and colons in an ip:port to underscores.
     #[test]
     fn sanitize_addresses() {
         assert_eq!(sanitize_id("10.0.0.1:5060"), "10_0_0_1_5060");

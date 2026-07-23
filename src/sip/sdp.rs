@@ -218,6 +218,7 @@ pub fn effective_address(media: &SdpMedia, session: &SdpSession) -> Option<Strin
 }
 
 /// Parse a `c=` line value (e.g., `"IN IP4 10.0.0.1"`) into an [`SdpConnection`].
+/// Returns `None` when fewer than three whitespace-separated fields are present.
 fn parse_connection(value: &str) -> Option<SdpConnection> {
     // Format: IN IP4 addr  or  IN IP6 addr
     let parts: Vec<&str> = value.split_whitespace().collect();
@@ -231,6 +232,9 @@ fn parse_connection(value: &str) -> Option<SdpConnection> {
 }
 
 /// Parse an `m=` line value (e.g., `"audio 20000 RTP/AVP 0 8 18 101"`) into an [`SdpMedia`].
+/// Returns `None` when fewer than three fields are present or the port is
+/// not a valid `u16`. Attribute fields start empty and direction defaults
+/// to `sendrecv`.
 fn parse_media_line(value: &str) -> Option<SdpMedia> {
     let parts: Vec<&str> = value.split_whitespace().collect();
     if parts.len() < 3 {
@@ -258,6 +262,18 @@ fn parse_media_line(value: &str) -> Option<SdpMedia> {
 }
 
 /// Parse a single `a=` attribute value and apply it to the current media section.
+///
+/// # Arguments
+///
+/// * `value` — the attribute text after `a=` (e.g. `"rtpmap:0 PCMU/8000"`).
+/// * `media` — the media description the attribute belongs to.
+///
+/// # Side effects
+///
+/// Mutates `media` in place: sets `direction` for bare direction attributes,
+/// and appends to `rtpmap`, `fmtp`, `crypto`, or `ice_candidates` (or sets
+/// `ptime`) for the corresponding `name:value` attributes. Unrecognized
+/// attributes are ignored.
 fn parse_attribute(value: &str, media: &mut SdpMedia) {
     // Direction attributes (no colon)
     match value {
@@ -299,6 +315,8 @@ fn parse_attribute(value: &str, media: &mut SdpMedia) {
 }
 
 /// Parse an `a=rtpmap` value (e.g., `"0 PCMU/8000"` or `"111 opus/48000/2"`).
+/// Returns `None` when the payload type, encoding, or clock rate is missing
+/// or non-numeric.
 fn parse_rtpmap(value: &str) -> Option<RtpMap> {
     let mut parts = value.splitn(2, ' ');
     let pt_str = parts.next()?.trim();
@@ -320,6 +338,8 @@ fn parse_rtpmap(value: &str) -> Option<RtpMap> {
 }
 
 /// Parse an `a=crypto` value (e.g., `"1 AES_CM_128_HMAC_SHA1_80 inline:key"`).
+/// Returns `None` when the tag is non-numeric or fewer than three
+/// space-separated fields are present.
 fn parse_crypto(value: &str) -> Option<SdpCrypto> {
     let mut parts = value.splitn(3, ' ');
     let tag: u32 = parts.next()?.trim().parse().ok()?;
@@ -333,6 +353,7 @@ fn parse_crypto(value: &str) -> Option<SdpCrypto> {
     })
 }
 
+/// Tests for SDP session/media/attribute parsing and error handling.
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -25,6 +25,8 @@
 #[path = "support/mod.rs"]
 mod support;
 
+/// Runs every `tests/cli/cmd/*.trycmd` and `tests/cli/out/*.trycmd` case,
+/// pinning each command's stdout/stderr and exit code under the determinism env.
 #[test]
 fn cli_goldens() {
     // Register the built binary explicitly: with more than one `[[bin]]` in the

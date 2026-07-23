@@ -1,4 +1,6 @@
-//! RTP stream detail view — full quality metrics for a single stream.
+//! RTP stream detail view — full quality metrics for a single stream:
+//! header, quality summary, MOS/jitter sparklines, per-interval table,
+//! burst/gap analysis and silence detection.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -13,16 +15,31 @@ use super::Theme;
 
 /// Display parameters for the stream detail view.
 pub struct StreamDetailDisplay<'a> {
+    /// Color theme used for all styling.
     pub theme: &'a Theme,
+    /// Resolver mapping endpoint addresses to user-assigned names.
     pub resolver: &'a crate::names::NameResolver,
+    /// How endpoint names are displayed (off / name only / name+address).
     pub name_mode: crate::names::NameMode,
 }
 
 /// Render a full-screen scrollable detail view for a single RTP stream.
 ///
-/// Renders the view and returns the effective (content-clamped) scroll so
-/// the caller can write it back — otherwise Up appears dead after
-/// over-scrolling past the end.
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the view (no border of its own).
+/// * `key` - Key of the stream to show.
+/// * `store` - Stream store snapshot the stream is read from.
+/// * `scroll` - Requested vertical scroll offset in rows.
+/// * `display` - Theme and name-resolution parameters.
+///
+/// # Returns
+/// The effective (content-clamped) scroll so the caller can write it back —
+/// otherwise Up appears dead after over-scrolling past the end. Returns `0`
+/// when the stream is gone (a placeholder notice is drawn instead).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub fn render_stream_detail(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -370,6 +387,8 @@ pub fn render_stream_detail(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/// Build a section header line: `── <title> ` in bold accent followed by a
+/// horizontal rule in the border color. Pure.
 fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
     Line::from(vec![
         Span::styled(
@@ -382,6 +401,8 @@ fn section_header<'a>(title: &'a str, theme: &Theme) -> Line<'a> {
     ])
 }
 
+/// Style for a jitter value: < 20ms good, 20–50ms warning, >= 50ms bad.
+/// Pure.
 fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
     if jitter_ms < 20.0 {
         Style::default().fg(theme.good)
@@ -392,6 +413,8 @@ fn jitter_style(jitter_ms: f64, theme: &Theme) -> Style {
     }
 }
 
+/// Style for a packet-loss percentage: < 0.5% good, 0.5–2.0% warning,
+/// >= 2.0% bad. Pure.
 fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
     if loss_pct < 0.5 {
         Style::default().fg(theme.good)
@@ -403,6 +426,8 @@ fn loss_style(loss_pct: f64, theme: &Theme) -> Style {
 }
 
 /// Map a MOS value (1.0–4.5) to a Unicode block character.
+/// Scale: < 1.5 = ▁, 1.5–2.0 = ▂, 2.0–2.5 = ▃, 2.5–3.0 = ▄,
+///        3.0–3.5 = ▅, 3.5–4.0 = ▆, 4.0–4.3 = ▇, 4.3+ = █
 pub(in crate::tui) fn mos_to_block(mos: f64) -> char {
     match mos {
         m if m >= 4.3 => '\u{2588}', // █
@@ -432,10 +457,14 @@ pub(in crate::tui) fn jitter_to_block(jitter_ms: f64) -> char {
     }
 }
 
+/// Unit tests for the block-glyph mappers, style threshold bands and the
+/// full stream-detail render across quality levels.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every MOS band maps to its block glyph, including exact boundaries
+    /// and below-minimum values.
     #[test]
     fn mos_to_block_boundaries() {
         // Top of scale: excellent MOS
@@ -459,6 +488,8 @@ mod tests {
         assert_eq!(mos_to_block(0.5), '\u{2581}'); // ▁
     }
 
+    /// Every jitter band maps to its block glyph, including exact
+    /// boundaries and values far above the top band.
     #[test]
     fn jitter_to_block_boundaries() {
         // Minimal jitter
@@ -480,6 +511,7 @@ mod tests {
 
     use ratatui::style::Color;
 
+    /// `jitter_style` picks good/warning/bad at the 20ms and 50ms bounds.
     #[test]
     fn jitter_style_thresholds() {
         let theme = Theme::default();
@@ -494,6 +526,7 @@ mod tests {
         assert_eq!(jitter_style(120.0, &theme).fg, Some(theme.bad));
     }
 
+    /// `loss_style` picks good/warning/bad at the 0.5% and 2.0% bounds.
     #[test]
     fn loss_style_thresholds() {
         let theme = Theme::default();
@@ -508,6 +541,8 @@ mod tests {
         assert_eq!(loss_style(75.0, &theme).fg, Some(theme.bad));
     }
 
+    /// A section header carries the bold accented title span followed by
+    /// a border-colored rule span.
     #[test]
     fn section_header_has_title_and_accent() {
         let theme = Theme::default();
@@ -541,6 +576,8 @@ mod tests {
     use crate::rtp::parser::RtpHeader;
     use crate::rtp::rtcp::{ReceiverReport, ReceptionReport, RtcpPacket};
 
+    /// Build a minimal fixture RTP header for `ssrc` at sequence `seq`
+    /// with payload type `pt` (8kHz 20ms timestamp spacing).
     fn rtp_header(ssrc: u32, seq: u16, pt: u8) -> RtpHeader {
         RtpHeader {
             version: 2,
@@ -556,6 +593,8 @@ mod tests {
         }
     }
 
+    /// Build a fixture UDP packet 10.0.0.1 → 10.0.0.2 with the given ports
+    /// and timestamp, carrying a 172-byte zeroed payload.
     fn parsed(src_port: u16, dst_port: u16, ts: DateTime<Utc>) -> ParsedPacket {
         ParsedPacket {
             timestamp: ts,
@@ -616,6 +655,8 @@ mod tests {
         (store, key)
     }
 
+    /// Render the stream detail for `key` into a 100x40 test terminal and
+    /// return the buffer contents as one string.
     fn render_to_string(store: &StreamStore, key: &StreamKey) -> String {
         let theme = Theme::default();
         let backend = TestBackend::new(100, 40);
@@ -649,6 +690,8 @@ mod tests {
         out
     }
 
+    /// A key absent from the store renders the "Stream no longer
+    /// available." placeholder.
     #[test]
     fn render_stream_detail_missing_key_shows_placeholder() {
         let theme = Theme::default();
@@ -689,6 +732,8 @@ mod tests {
         assert!(out.contains("Stream no longer available."), "got: {out}");
     }
 
+    /// Low jitter and no loss render the "Good" MOS label and all summary
+    /// lines.
     #[test]
     fn render_stream_detail_good_quality() {
         // Low jitter, no loss → "Good" MOS path, good-colored styles.
@@ -706,6 +751,8 @@ mod tests {
         assert!(out.contains("Orphaned:"), "flags line missing: {out}");
     }
 
+    /// Moderate jitter with some loss renders the warning-band styles and
+    /// the lost-packets line.
     #[test]
     fn render_stream_detail_warn_quality() {
         // Moderate jitter (30ms) and some loss → warning-band styles.
@@ -717,6 +764,8 @@ mod tests {
         assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
     }
 
+    /// High jitter with a real RTP sequence gap (loss) renders the
+    /// bad-band styles and reaches the burst/gap section.
     #[test]
     fn render_stream_detail_bad_quality() {
         // High jitter (80ms) and heavy loss → bad-band styles and low MOS.

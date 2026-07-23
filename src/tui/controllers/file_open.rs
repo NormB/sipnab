@@ -5,6 +5,11 @@ use crate::tui::*;
 
 /// Open the file-open dialog, seeding it with a directory listing rooted at
 /// the last-browsed directory (or the current working directory on first use).
+///
+/// # Side effects
+/// Resets the dialog's filter, manual-path buffer, and cursor, rebuilds
+/// the directory listing from the filesystem via `refresh_file_entries`,
+/// and sets `app.active_popup` to the file-open dialog.
 pub(in crate::tui) fn open_file_dialog(app: &mut App) {
     if !app.file_open.dir.is_dir() {
         app.file_open.dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -23,7 +28,7 @@ pub(in crate::tui) const PCAP_EXTENSIONS: &[&str] = &["pcap", "pcapng", "cap"];
 /// True if `name` is a capture file the browser should list: a bare
 /// pcap/pcapng/cap file, or a gzip-compressed one (`*.pcap.gz`, `*.cap.gz`…).
 ///
-/// [`crate::capture::file::open_offline`] transparently decompresses gzip
+/// `crate::capture::file::open_offline` transparently decompresses gzip
 /// captures (it sniffs the `1f 8b` magic), so hiding `*.gz` here would let the
 /// browser refuse files the loader can actually open. Case-insensitive.
 pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
@@ -37,8 +42,16 @@ pub(in crate::tui) fn is_browsable_capture(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Rebuild [`App::open_entries`] from the current [`App::open_dir`], applying
-/// [`App::open_filter`] and sorting dirs-first / alphabetical.
+/// Rebuild `app.file_open.entries` from the current `app.file_open.dir`,
+/// applying the name filter and sorting dirs-first / alphabetical.
+///
+/// # Side effects
+/// Reads the directory from the filesystem. On failure sets
+/// `app.file_open.error` (with a privilege-drop hint for permission
+/// errors) and leaves the previous entries; on success clears the error,
+/// replaces the entries (`..` first, hidden files skipped unless the
+/// filter starts with a dot, non-capture files skipped), and clamps
+/// `app.file_open.selected` to the new length.
 pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
     let mut entries: Vec<FileEntry> = Vec::new();
 
@@ -123,7 +136,22 @@ pub(in crate::tui) fn refresh_file_entries(app: &mut App) {
     }
 }
 
-/// Handle keys in the file-open dialog popup.
+/// Handle keys in the file-open dialog popup (browser mode).
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (this popup has no keymap
+///   bindings). Routed to `handle_file_open_manual_key` while manual-path
+///   mode is active.
+///
+/// # Side effects
+/// Esc closes the popup. Tab switches to manual-path mode (seeding the
+/// path with the browsed directory). Navigation keys move
+/// `app.file_open.selected`. Enter descends into a directory (refreshing
+/// the listing) or starts loading the selected capture via
+/// `begin_pcap_load` and closes the popup. Typed characters extend the
+/// name filter; Backspace trims the filter or ascends to the parent
+/// directory — both refresh the listing from the filesystem.
 pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
     if app.file_open.manual_mode {
         handle_file_open_manual_key(app, key);
@@ -203,6 +231,16 @@ pub(in crate::tui) fn handle_file_open_popup_key(app: &mut App, key: KeyEvent) {
 
 /// Manual-path edit mode within the file-open dialog.
 /// Tab toggles back to browser mode; Enter loads the typed path.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly.
+///
+/// # Side effects
+/// Esc closes the popup. Enter expands a leading `~`, starts the load
+/// via `begin_pcap_load` (or reports an empty path on the status line),
+/// and closes the popup. The remaining keys edit `app.file_open.path`
+/// and move `app.file_open.cursor` on char boundaries.
 pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -264,7 +302,8 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
     }
 }
 
-/// Expand a leading `~` to the user's home directory.
+/// Expand a leading `~` to the user's home directory (`$HOME`); paths
+/// without a leading `~`, or with no `HOME` set, are returned unchanged.
 pub(in crate::tui) fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix('~')
         && let Ok(home) = std::env::var("HOME")
@@ -276,6 +315,11 @@ pub(in crate::tui) fn expand_tilde(path: &str) -> String {
 
 /// Reset stores and per-capture TUI state before (re)loading a pcap,
 /// preserving column-visibility preferences.
+///
+/// # Side effects
+/// Clears the dialog and stream stores (write locks), rebuilds the call
+/// and stream list states, drops the active filter, resets the call-flow
+/// selection/scroll/fold/mark state, and returns to the call list view.
 fn reset_for_load(app: &mut App) {
     {
         let mut ds = app.dialog_store.write();
@@ -303,12 +347,23 @@ fn reset_for_load(app: &mut App) {
 /// Parse `path` into the shared stores and build the load outcome. Runs on
 /// a worker thread for interactive loads (the stores are the same
 /// `Arc<RwLock>`s live capture writes through, so the UI renders the data
-/// progressively) and inline for the synchronous [`load_pcap_file`].
+/// progressively) and inline for the synchronous `load_pcap_file`.
 ///
-/// Routes every packet through the shared [`crate::pipeline::classify_packet`]
+/// Routes every packet through the shared `crate::pipeline::classify_packet`
 /// core — the same router as live capture — so RTP-only pcaps populate the
 /// stream store for playback and WAV export, and WebSocket-wrapped SIP is
 /// unwrapped.
+///
+/// # Arguments
+/// * `path` - the capture file to read (gzip handled transparently).
+/// * `dialog_store` / `stream_store` - shared stores the parsed SIP/RTP/
+///   RTCP data is written into under brief per-packet write locks.
+/// * `progress` - live packet counter the UI polls while the load runs.
+///
+/// # Returns
+/// A `PcapLoadOutcome` carrying the status-line message, the SIP message
+/// count, the "Offline (file)" capture-mode label, and any embedded
+/// pcapng Name Resolution Block names.
 fn run_pcap_load(
     path: &std::path::Path,
     dialog_store: &Arc<RwLock<DialogStore>>,
@@ -446,6 +501,12 @@ fn run_pcap_load(
 
 /// Apply a finished load's outcome to the app: capture-mode label, embedded
 /// names into the resolver, and the RTP-only jump to the stream list.
+///
+/// # Side effects
+/// Sets the capture-mode label and marks data updated. Loads embedded
+/// file names into the resolver, flipping `app.name_mode` on when names
+/// arrived while it was `Off`. When the capture had no SIP but has RTP
+/// streams, switches `app.current_view` to the stream list.
 fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
     app.set_capture_mode(outcome.capture_mode);
     app.mark_data_updated();
@@ -467,7 +528,19 @@ fn apply_load_outcome(app: &mut App, outcome: PcapLoadOutcome) {
 
 /// Load a pcap file synchronously, replacing all existing data. Kept for
 /// unit tests (which need the final message immediately); interactive
-/// loads go through [`begin_pcap_load`] so the UI stays live.
+/// loads go through `begin_pcap_load` so the UI stays live.
+///
+/// # Arguments
+/// * `app` - the application state; stores are reset then repopulated.
+/// * `path_str` - the capture file path.
+///
+/// # Returns
+/// The final status message ("Loaded …" or an error such as "File not
+/// found").
+///
+/// # Side effects
+/// Everything `reset_for_load`, `run_pcap_load`, and
+/// `apply_load_outcome` do, on the calling thread.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
     let path = std::path::Path::new(path_str);
@@ -485,7 +558,19 @@ pub(in crate::tui) fn load_pcap_file(app: &mut App, path_str: &str) -> String {
 /// Start loading a pcap on a background worker so the event loop keeps
 /// running — parsing a large capture on the UI thread froze the TUI for the
 /// whole load. Progress and the final result are applied by
-/// [`poll_pcap_load`] each tick.
+/// `poll_pcap_load` each tick.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `path_str` - the capture file path.
+///
+/// # Side effects
+/// Refuses (status line only) when a load is already in flight or the
+/// file does not exist. Otherwise resets the stores/TUI state via
+/// `reset_for_load`, spawns the "pcap-load" worker thread writing into
+/// the shared stores, stores the progress handle in `app.pcap_load`, and
+/// paints a "Loading…" status. A failed thread spawn is reported on the
+/// status line.
 pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
     if app.pcap_load.is_some() {
         app.status_error = Some("A pcap load is already in progress".to_string());
@@ -532,6 +617,13 @@ pub(in crate::tui) fn begin_pcap_load(app: &mut App, path_str: &str) {
 
 /// Event-loop tick hook: refresh the "Loading…" progress line while a
 /// background load runs, and apply its outcome once it finishes.
+///
+/// # Side effects
+/// No-op without an in-flight load. While running, updates the status
+/// line with the live packet count and keeps the adaptive refresh cadence
+/// active. On completion, clears `app.pcap_load`, sets the final status
+/// message, applies the outcome via `apply_load_outcome`, and clears the
+/// churn floors so every view reflects the new stores immediately.
 pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
     let Some(progress) = app.pcap_load.clone() else {
         return;
@@ -553,10 +645,14 @@ pub(in crate::tui) fn poll_pcap_load(app: &mut App) {
     }
 }
 
+/// Unit tests for the file browser, tilde expansion, and pcap loading
+/// (synchronous and background).
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Extension matrix for the browser filter: pcap/pcapng/cap in any
+    /// case, optionally gzipped, are browsable; everything else is not.
     #[test]
     fn is_browsable_capture_matrix() {
         // Plain captures, any case.
@@ -580,6 +676,8 @@ mod tests {
         assert!(!is_browsable_capture(".pcap")); // dotfile, extension-less stem
     }
 
+    /// The browser lists every capture flavor (including dotted stems and
+    /// gzipped files) plus directories, and hides non-capture files.
     #[test]
     fn refresh_file_entries_repro() {
         let dir = tempfile::tempdir().unwrap();
@@ -610,12 +708,14 @@ mod tests {
         assert!(names.contains(&"upper.PCAP"), "listed: {names:?}");
         assert!(names.contains(&"subdir"), "listed: {names:?}");
         assert!(!names.contains(&"notes.txt"), "listed: {names:?}");
-        // Gzipped captures are loadable but currently filtered out by the browser.
+        // Gzipped captures are loadable, so the browser must list them too.
         assert!(names.contains(&"gz.pcap.gz"), "listed: {names:?}");
         // A readable directory produces no error.
         assert!(app.file_open.error.is_none());
     }
 
+    /// An unreadable directory surfaces a "Cannot read" error with the
+    /// privilege-drop hint instead of a silently blank list.
     #[cfg(unix)]
     #[test]
     fn refresh_file_entries_reports_unreadable_dir() {
@@ -648,6 +748,8 @@ mod tests {
         );
     }
 
+    /// Refreshing a readable directory clears a stale error from an
+    /// earlier failed refresh.
     #[test]
     fn refresh_file_entries_clears_stale_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -663,6 +765,8 @@ mod tests {
         assert!(app.file_open.entries.iter().any(|e| e.name == "a.pcap"));
     }
 
+    /// The offline load path shares `pipeline::is_rtcp_packet` with live
+    /// capture — spot-checks its port/version/payload-type gates.
     #[test]
     fn offline_rtcp_detection_uses_the_pipeline_check() {
         // The offline TUI load path routes RTCP through the same
@@ -680,6 +784,7 @@ mod tests {
         assert!(!is_rtcp_packet(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
     }
 
+    /// `~` expands to `$HOME`; absolute paths pass through unchanged.
     #[test]
     fn expand_tilde_expands_home() {
         // SAFETY: test-only env mutation
@@ -690,6 +795,7 @@ mod tests {
         assert_eq!(expand_tilde("/abs/path"), "/abs/path");
     }
 
+    /// Loading a nonexistent path returns "File not found" immediately.
     #[test]
     fn load_pcap_file_missing_returns_error() {
         let mut app = App::new_test();
@@ -697,6 +803,7 @@ mod tests {
         assert!(msg.contains("File not found"), "got: {msg}");
     }
 
+    /// Absolute path of the repo's `sip_call.pcap` test fixture.
     fn fixture_pcap() -> std::path::PathBuf {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sip_call.pcap")
     }
@@ -732,6 +839,8 @@ mod tests {
         );
     }
 
+    /// A missing file is reported on the status line without spawning a
+    /// load worker.
     #[test]
     fn begin_pcap_load_missing_file_reports_immediately() {
         let mut app = App::new_test();
@@ -747,6 +856,8 @@ mod tests {
         );
     }
 
+    /// A second load while one is in flight is refused and the running
+    /// load's progress handle is untouched.
     #[test]
     fn begin_pcap_load_rejects_concurrent_load() {
         let mut app = App::new_test();
@@ -762,6 +873,8 @@ mod tests {
         );
     }
 
+    /// Names from an embedded pcapng Name Resolution Block become
+    /// resolvable after the load (libpcap itself ignores the block).
     #[test]
     fn load_pcap_file_reads_embedded_nrb_names() {
         use crate::capture::{PcapExportMode, PcapWriter};
@@ -788,6 +901,8 @@ mod tests {
         );
     }
 
+    /// A capture carrying a Decryption Secrets Block makes the final
+    /// status message warn about the embedded secrets.
     #[test]
     fn load_pcap_file_alerts_on_embedded_secrets() {
         use crate::capture::{PcapExportMode, PcapWriter};
@@ -826,7 +941,7 @@ mod tests {
         use crate::capture::packet::Packet;
         use crate::capture::{PcapExportMode, PcapWriter};
 
-        // Unmasked FIN+text WebSocket frame wrapping `payload`.
+        /// Unmasked FIN+text WebSocket frame wrapping `payload`.
         fn ws_frame(payload: &[u8]) -> Vec<u8> {
             let mut f = vec![0x81];
             if payload.len() < 126 {
@@ -839,7 +954,7 @@ mod tests {
             f
         }
 
-        // Minimal Ethernet + IPv4 + TCP frame (PSH|ACK) carrying `payload`.
+        /// Minimal Ethernet + IPv4 + TCP frame (PSH|ACK) carrying `payload`.
         fn eth_ipv4_tcp(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
             let ip_total = 20 + 20 + payload.len() as u16;
             let mut p = Vec::new();

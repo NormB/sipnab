@@ -1,10 +1,10 @@
 //! Batch (non-interactive) mode: the state and receive loop behind every
 //! headless run (`--no-tui`, `--mcp`, replay, `--cores`).
 //!
-//! [`BatchRunner`] owns what used to be ~25 loose locals in main.rs — the
+//! `BatchRunner` owns what used to be ~25 loose locals in main.rs — the
 //! writer, detector engines, decryption state, counters, and companion-server
 //! handles — built once in `BatchRunner::new` and consumed by the receive
-//! loop. [`run`] is the single entry point the binary dispatches to (WS2).
+//! loop. `run` is the single entry point the binary dispatches to (WS2).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,14 +35,21 @@ use crate::capture::tls;
 
 /// Security detection engines bundle.
 struct DetectionEngines {
+    /// UA/behavioral SIP-scanner detector (`--kill-scanner`).
     scanner: Option<ScannerDetector>,
+    /// Toll-fraud pattern detector (`--fraud-detect`).
     fraud: Option<FraudDetector>,
+    /// Digest-authentication credential-leak detector (`--digest-leak`).
     digest: Option<DigestLeakDetector>,
+    /// REGISTER-flood detector (`--reg-flood`).
     reg_flood: Option<RegFloodDetector>,
     /// Shared with the MCP server (when --mcp is on) so the
     /// `security_findings` tool can read the FindingsHistory ring buffer.
     alerts: Arc<RwLock<AlertEngine>>,
+    /// Channel to the isolated scanner-kill worker thread; `None` when no
+    /// kill feature is active (or the worker failed to spawn).
     kill_handle: Option<ScannerKillHandle>,
+    /// SIP status code sent in kill responses (`--kill-response`).
     kill_response_code: u16,
     /// Targeted-kill directives (`-K` / `--kill-target`): any SIP request whose
     /// source matches is killed regardless of UA/behavioral detection.
@@ -51,9 +58,13 @@ struct DetectionEngines {
 
 /// Packet processing counters and state.
 struct PacketCounters {
+    /// Total SIP messages classified so far.
     sip_count: u64,
+    /// Total RTP packets classified so far.
     rtp_count: u64,
+    /// Timestamp of the previously emitted SIP message, for `--delta-time`.
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Remaining trailing-context (`-A`) budget; re-armed by each direct match.
     trailing_remaining: usize,
     /// Call-IDs of dialogs "armed" by a `-e` payload match. Once a dialog is
     /// armed, every subsequent message of it is emitted (dialog-following).
@@ -61,7 +72,7 @@ struct PacketCounters {
 }
 
 /// Owned batch-mode processing components, built by the binary's
-/// bootstrap and handed to [`run`].
+/// bootstrap and handed to `run`.
 pub struct BatchProcessing {
     /// Header-level SIP matcher (`-m`, `--method`, ...).
     pub matcher: SipMatcher,
@@ -75,20 +86,31 @@ pub struct BatchProcessing {
 
 /// Immutable batch-mode configuration for packet processing.
 struct BatchContext<'a> {
+    /// Header-level SIP matcher (`-m`, `--method`, ...).
     matcher: &'a SipMatcher,
+    /// Compiled `--filter` DSL expression, when given.
     filter_expr: &'a Option<FilterExpr>,
+    /// Per-message output formatting options.
     output_opts: &'a OutputOptions,
+    /// Full parsed CLI, consulted for the many per-message flags.
     cli: &'a Cli,
+    /// Skip all RTP processing (`--no-rtp` or config equivalent).
     no_rtp: bool,
+    /// Trailing-context budget granted per direct match (`-A N`).
     after_count: usize,
+    /// SIP signaling port range; RTP is never gated by it.
     portrange: (u16, u16),
 }
 
 /// Mutable processing state for the main receive loop.
 struct ProcessingState<'a> {
+    /// Dialog store (already write-locked by the caller).
     dialog_store: &'a mut DialogStore,
+    /// RTP stream store (already write-locked by the caller).
     stream_store: &'a mut StreamStore,
+    /// Heuristic RTP detector for streams with no SDP linkage.
     rtp_heuristic: &'a mut rtp::heuristic::RtpHeuristic,
+    /// `--on-*` event execution engine (dialog + quality events).
     event_exec: &'a mut EventExecEngine,
     /// SRTP decryption context (keys from `--srtp-keys` + SDES `a=crypto`),
     /// used to authenticate and decrypt RTP payloads before media analysis.
@@ -119,6 +141,20 @@ pub struct CapturePolicy {
 /// threads, fusing read+peek+shard into one stage — no capture reader
 /// thread, no semaphore channel. Reports and exits; advanced per-message
 /// features use the single-threaded path.
+///
+/// # Arguments
+///
+/// * `cli` — parsed flags; `cli.input` names the pcap (a silent no-op when
+///   absent) and `cli.cores` the worker count.
+/// * `config` — loaded configuration for `no_rtp` / X-CID fallbacks.
+/// * `capture_config` — capture parameters forwarded to the file reader.
+/// * `portrange` — SIP signaling port range for classification.
+///
+/// # Side effects
+///
+/// Spawns N worker threads inside `run_offline_parallel_file`, prints the
+/// post-capture reports and summary to stdout/stderr, and exits the
+/// process with code 1 when reconstruction fails.
 pub fn run_cores_file(
     cli: &Cli,
     config: &Config,
@@ -169,7 +205,28 @@ pub fn run_cores_file(
 }
 
 /// Run batch mode to completion: the multi-core offline fast path when
-/// `--cores N` applies, otherwise the single-threaded [`BatchRunner`].
+/// `--cores N` applies, otherwise the single-threaded `BatchRunner`.
+///
+/// # Arguments
+///
+/// * `cli` / `config` — parsed flags and loaded configuration (owned; this
+///   is the mode's terminal consumer).
+/// * `capture_config` — capture limits (`--count`, `--duration`) enforced
+///   by the receive loop.
+/// * `handle` — the running capture thread's handle, joined at EOF.
+/// * `rx` — receiving side of the packet channel.
+/// * `batch` — pre-built matcher/filter/output/event-exec components.
+/// * `policy` — split/autostop policy resolved from the CLI.
+/// * `raw_kill_sock` — raw socket opened during the privileged window for
+///   source-spoofed kill responses, when active.
+///
+/// # Side effects
+///
+/// The multi-core arm spawns worker threads, joins the capture thread, and
+/// prints reports; the single-threaded arm builds a `BatchRunner` (which
+/// spawns the kill worker and companion-server thread) and drives its
+/// receive loop to completion. Either way this function blocks until the
+/// batch run is over.
 #[expect(clippy::too_many_arguments)]
 pub fn run(
     cli: Cli,
@@ -183,7 +240,7 @@ pub fn run(
 ) {
     let portrange = policy.portrange;
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
-    // 17p. Offline multi-core reconstruction (`--jobs N`, N>1). Shard parsed
+    // 17p. Offline multi-core reconstruction (`--cores N`, N>1). Shard parsed
     // packets by host pair across N workers with thread-local stores, merge, and
     // report — covers dialog + RTP-stream reconstruction and `--report`/`--json`.
     // Advanced features (live, per-message output ordering, security detectors,
@@ -231,30 +288,53 @@ pub fn run(
 /// stores, and companion-server handles. Built once by `BatchRunner::new`
 /// (bootstrap steps 16-17), consumed by `BatchRunner::run_loop` (step 18).
 pub struct BatchRunner {
+    /// Parsed command-line flags (owned for the life of the run).
     cli: Cli,
+    /// Loaded configuration (cloned; consulted for NRB name resolution).
     config: Config,
+    /// Header-level SIP matcher (`-m`, `--method`, ...).
     matcher: SipMatcher,
+    /// Compiled `--filter` DSL expression, when given.
     filter_expr: Option<FilterExpr>,
+    /// Per-message output formatting options.
     output_opts: OutputOptions,
+    /// `--on-*` event execution engine.
     event_exec: EventExecEngine,
+    /// `-O` output writer; `None` until the first packet supplies the
+    /// link type (opened lazily in `run_loop`).
     writer: Option<PcapWriter>,
+    /// Write pcapng (with DSB/NRB blocks) instead of classic pcap.
     use_pcapng: bool,
+    /// What payload variant `-O` records (decrypted / encrypted+DSB / raw).
     export_mode: PcapExportMode,
+    /// `--hep-send` forwarder for matched SIP messages, when configured.
     #[cfg(feature = "hep")]
     hep_sender: Option<crate::capture::hep::HepSender>,
+    /// IP/TCP reassembly and parse front-end for raw captured packets.
     processor: capture::PacketProcessor,
+    /// Dialog store; shared with the companion servers via the lock.
     dialog_store: Arc<RwLock<DialogStore>>,
+    /// RTP stream store; shared with the companion servers via the lock.
     stream_store: Arc<RwLock<StreamStore>>,
+    /// Heuristic RTP detector for streams with no SDP linkage.
     rtp_heuristic: rtp::heuristic::RtpHeuristic,
+    /// Skip all RTP processing (`--no-rtp` or config equivalent).
     no_rtp: bool,
+    /// Security detectors, alert engine, and kill-worker handle.
     engines: DetectionEngines,
+    /// SIP-over-TLS decryptor (`--keylog` / `--tls-key`), when configured.
     #[cfg(feature = "tls")]
     tls_decryptor: Option<TlsDecryptor>,
+    /// SRTP media decryption context (`--srtp-keys` + learned SDES keys).
     #[cfg(feature = "tls")]
     srtp_context: Option<crate::rtp::srtp::SrtpContext>,
+    /// DTLS-SRTP key extractor (`--dtls-keylog`), when configured.
     #[cfg(feature = "tls")]
     dtls_extractor: Option<crate::capture::dtls::DtlsSrtpExtractor>,
+    /// Handles to the companion-server thread (REST API / MCP), when any
+    /// server started.
     servers: Option<crate::app::servers::ServerHandles>,
+    /// Split/autostop policy resolved from the CLI.
     policy: CapturePolicy,
 }
 
@@ -262,6 +342,24 @@ impl BatchRunner {
     /// Build every piece of batch state (bootstrap steps 16-17): output
     /// writer policy, HEP sender, stores, security detectors + alert engine,
     /// TLS/SRTP/DTLS decryption state, and the companion servers.
+    ///
+    /// # Arguments
+    ///
+    /// * `cli` / `config` — parsed flags and loaded configuration.
+    /// * `batch` — pre-built matcher/filter/output/event-exec components.
+    /// * `policy` — split/autostop policy resolved from the CLI.
+    /// * `raw_kill_sock` — raw socket for spoofed kill responses, handed to
+    ///   the kill worker when spawned.
+    ///
+    /// # Side effects
+    ///
+    /// Spawns the isolated scanner-kill worker thread when any kill feature
+    /// is active; reads TLS keylog / RSA key / SRTP key / DTLS keylog files
+    /// and embedded pcapng secrets from disk; starts the companion REST
+    /// API + MCP servers on their shared runtime thread; logs progress via
+    /// `tracing`. Exits the process on an unloadable `--tls-key`,
+    /// `--srtp-keys`, or `--dtls-keylog` file (code 1) and on companion
+    /// server configuration errors (code 2).
     fn new(
         cli: Cli,
         config: &Config,
@@ -273,7 +371,8 @@ impl BatchRunner {
         let filter_expr = batch.filter_expr;
         let output_opts = batch.output_opts;
         let event_exec = batch.event_exec;
-        // 16. Open output writer if -O is specified
+        // 16. Output writer placeholder for -O — opened lazily on the first
+        //     packet in run_loop, once the link type is known.
         let writer: Option<PcapWriter> = None;
         let use_pcapng = cli.pcapng;
         let export_mode =
@@ -617,6 +716,28 @@ impl BatchRunner {
 
     /// The main receive loop (step 18) plus end-of-capture reporting and the
     /// server keep-alive tail. Consumes the runner.
+    ///
+    /// # Arguments
+    ///
+    /// * `capture_config` — supplies the `--count` / `--duration` stop
+    ///   limits.
+    /// * `handle` — capture-thread handle, joined once the channel drains.
+    /// * `rx` — receiving side of the packet channel.
+    ///
+    /// # Side effects
+    ///
+    /// Blocks until capture ends: drains the packet channel, mutates the
+    /// shared stores, lazily opens and writes the `-O` output file
+    /// (embedding DSB/NRB blocks for pcapng), emits per-message output
+    /// through the buffered stdout sink, fires alert/exec events, sweeps
+    /// reassembly and detector state every 5 s, and honors the
+    /// count/duration/autostop stop conditions. On exit it flushes the
+    /// sink and writer, shuts down the kill worker, joins the capture
+    /// thread, flips the MCP `source_exhausted` flag, prints reports and
+    /// the summary, and — when a companion server is running — parks until
+    /// shutdown is requested or the MCP stdio client disconnects. Exits
+    /// the process on a failed output-file open (code 1) or a failed
+    /// `--call-report` lookup (code 1).
     fn run_loop(
         self,
         capture_config: CaptureConfig,
@@ -1068,9 +1189,6 @@ impl BatchRunner {
 }
 // ── Packet processing ─────────────────────────────────────────────────
 
-/// Process a single parsed packet: classify via the shared pipeline core,
-/// then apply the batch extras — counters, matcher/DSL filter, output
-/// dispatch, security detectors, dialog events, DTMF, quality events.
 /// Decide whether a SIP message should be emitted, updating dialog-follow and
 /// trailing-context state.
 ///
@@ -1085,6 +1203,19 @@ impl BatchRunner {
 ///
 /// With `follow_dialogs == false` the follow set stays empty and behavior is
 /// identical to trailing-context-only selection.
+///
+/// # Arguments
+///
+/// * `direct_match` — the message itself passed matcher + DSL + calls-only.
+/// * `call_id` — the message's Call-ID, when present.
+/// * `follow_dialogs` — dialog-following (`-e`) is active.
+/// * `followed` — set of armed Call-IDs; mutated when a match arms one.
+/// * `trailing_remaining` — live `-A` budget; mutated as described above.
+/// * `after_count` — the `-A N` budget granted per direct match.
+///
+/// # Returns
+///
+/// `true` when the message should be emitted.
 fn decide_emit(
     direct_match: bool,
     call_id: Option<&str>,
@@ -1120,6 +1251,27 @@ fn decide_emit(
     emit
 }
 
+/// Process a single parsed packet: classify via the shared pipeline core,
+/// then apply the batch extras — counters, matcher/DSL filter, output
+/// dispatch, security detectors, dialog events, DTMF, quality events.
+///
+/// # Arguments
+///
+/// * `pp` — the parsed (and possibly TLS-decrypted) packet to classify.
+/// * `ctx` — immutable per-run configuration (matcher, filter, CLI, ports).
+/// * `state` — mutable stores, heuristic, event engine, and media-decrypt
+///   state (the store guards are held by the caller).
+/// * `engines` — security detectors, alert engine, and kill-worker handle.
+/// * `counters` — SIP/RTP counts and emit-selection state, updated here.
+/// * `sink` — buffered per-message output sink.
+///
+/// # Side effects
+///
+/// Mutates the dialog and stream stores; fires alert-engine findings and
+/// `--on-*` exec events; hands kill requests to the isolated worker for
+/// detected or targeted scanners; writes hexdump/fail2ban/per-message
+/// output into `sink`; decrypts SRTP payloads in place via the pipeline;
+/// and logs DTMF/STIR-SHAKEN details.
 fn process_parsed_packet<W: std::io::Write>(
     pp: &ParsedPacket,
     ctx: &BatchContext<'_>,
@@ -1495,8 +1647,11 @@ fn process_parsed_packet<W: std::io::Write>(
 ///
 /// If the payload looks like TLS, parses the records and tries to decrypt
 /// ApplicationData records. If decryption yields SIP content, returns a
-/// synthetic [`ParsedPacket`] with the decrypted payload and transport set
-/// to reflect the TLS origin.
+/// synthetic `ParsedPacket` with the decrypted payload and transport set
+/// to reflect the TLS origin; returns `None` for non-TCP/non-TLS payloads,
+/// when no decryptor is configured, or when nothing decrypts to SIP. As a
+/// side effect, Handshake records are fed into the decryptor to capture
+/// key material.
 #[cfg(feature = "tls")]
 fn try_tls_decrypt(
     pp: &ParsedPacket,
@@ -1539,7 +1694,23 @@ fn try_tls_decrypt(
 
 // ── SIP output dispatch ──────────────────────────────────────────────
 
-/// Dispatch a matched SIP message to the configured output backend.
+/// Dispatch a matched SIP message to the configured output backend
+/// (pretty JSON, NDJSON, fail2ban event, raw text dump, or the default
+/// sipgrep-style print).
+///
+/// # Arguments
+///
+/// * `msg` — the SIP message to emit.
+/// * `opts` — formatting options for the default text print.
+/// * `cli` — flags selecting the backend and suppression modes.
+/// * `prev_timestamp` — previous message's timestamp for `--delta-time`.
+/// * `sink` — buffered output sink written to.
+///
+/// # Side effects
+///
+/// Writes into `sink` (flushing per message when `--line-buffer` is set).
+/// Emits nothing in MCP mode (stdout is the JSON-RPC wire) or under
+/// `--no-cli-print`.
 fn dispatch_sip_output<W: std::io::Write>(
     msg: &sip::SipMessage,
     opts: &OutputOptions,
@@ -1547,7 +1718,7 @@ fn dispatch_sip_output<W: std::io::Write>(
     prev_timestamp: Option<chrono::DateTime<chrono::Utc>>,
     sink: &mut output::BatchSink<W>,
 ) {
-    // Phase 8.1 — MCP mode owns stdout; no per-packet text/JSON output.
+    // MCP mode owns stdout (JSON-RPC wire); no per-packet text/JSON output.
     #[cfg(feature = "mcp")]
     if cli.mcp {
         return;
@@ -1593,6 +1764,12 @@ fn dispatch_sip_output<W: std::io::Write>(
 /// final store contents. Returns `false` when a requested report could not
 /// be produced (unknown `--call-report` Call-ID) so the caller can exit
 /// non-zero — scripts must be able to trust the exit code.
+///
+/// # Side effects
+///
+/// Prints the requested reports to stdout, the not-found error (and the
+/// opt-in `SIPNAB_PERF_STATS=1` perf line) to stderr; reads the
+/// `SIPNAB_PERF_STATS` environment variable.
 pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &StreamStore) -> bool {
     // SNB-0015 probe: set SIPNAB_PERF_STATS=1 to surface the per-run work that
     // scales with call count. `endpoint_link_scan_visits` is the cost that was
@@ -1648,6 +1825,8 @@ pub fn generate_reports(cli: &Cli, dialog_store: &DialogStore, stream_store: &St
 }
 
 // ── Unit tests for the batch runner's pure helpers ──────────────────────
+/// Unit tests for the batch runner's pure helpers: output dispatch, report
+/// generation, packet processing, targeted kills, and emit selection.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1683,6 +1862,7 @@ mod tests {
         msg.into_bytes()
     }
 
+    /// A UDP `ParsedPacket` from 10.0.0.1 to 10.0.0.2 carrying `payload`.
     fn parsed_sip_packet(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
         ParsedPacket {
             timestamp: chrono::Utc::now(),
@@ -1704,6 +1884,8 @@ mod tests {
 
     // ── dispatch_sip_output ────────────────────────────────────────────
 
+    /// Every output backend (default text, JSON, pretty JSON, fail2ban, raw
+    /// dump, suppressed, line-buffered) produces its expected bytes.
     #[test]
     fn dispatch_sip_output_all_modes() {
         let data = bytes::Bytes::from(invite_bytes("disp-1@example.com"));
@@ -1781,6 +1963,8 @@ mod tests {
 
     // ── generate_reports ───────────────────────────────────────────────
 
+    /// `--report` and `--call-report` run without panicking on empty stores,
+    /// unknown Call-IDs, and a tracked dialog across all report formats.
     #[test]
     fn generate_reports_summary_and_call_report() {
         let mut dialog_store = DialogStore::new(100, false);
@@ -1955,6 +2139,8 @@ mod tests {
             .collect()
     }
 
+    /// A request whose source IP:port falls inside a `--kill-target` range
+    /// fires a kill-target scanner alert.
     #[test]
     fn kill_target_matching_request_fires_kill_alert() {
         // parsed_sip_packet sources from 10.0.0.1; src_port 5075 is inside the
@@ -1969,6 +2155,7 @@ mod tests {
         );
     }
 
+    /// A source port outside the target's range must not trigger a kill.
     #[test]
     fn kill_target_out_of_range_port_does_not_fire() {
         // src_port 6000 is outside 5060-5090 → no targeted kill.
@@ -1982,6 +2169,7 @@ mod tests {
         );
     }
 
+    /// A source IP different from the target's must not trigger a kill.
     #[test]
     fn kill_target_wrong_ip_does_not_fire() {
         // Target a different IP than the packet's source (10.0.0.1) → no kill.
@@ -2096,6 +2284,7 @@ mod tests {
         );
     }
 
+    /// A valid INVITE on the SIP port increments the SIP counter.
     #[test]
     fn process_parsed_packet_counts_sip() {
         let mut cli = base_cli();
@@ -2105,6 +2294,8 @@ mod tests {
         assert_eq!(sip, 1, "one SIP message should be counted");
     }
 
+    /// Garbage payloads and SIP messages outside the port range are not
+    /// counted as SIP.
     #[test]
     fn process_parsed_packet_ignores_non_sip_and_out_of_range() {
         let mut cli = base_cli();
@@ -2131,6 +2322,8 @@ mod tests {
         decide_emit(direct, call_id, true, followed, &mut trailing, 0)
     }
 
+    /// A direct match arms its dialog; later non-matching messages of that
+    /// dialog still emit while unrelated dialogs stay silent.
     #[test]
     fn follow_arms_dialog_then_emits_rest() {
         let mut followed = HashSet::new();
@@ -2143,6 +2336,8 @@ mod tests {
         assert!(!emit_follow(false, Some("Y"), &mut followed));
     }
 
+    /// With follow off, matching is strictly per-message and no dialog is
+    /// ever armed.
     #[test]
     fn no_follow_when_expression_absent() {
         // follow_dialogs = false → per-message semantics, no arming.
@@ -2171,6 +2366,8 @@ mod tests {
         );
     }
 
+    /// `-A 2` without follow: a match shows the next two messages, then the
+    /// budget is exhausted.
     #[test]
     fn trailing_context_preserved_without_follow() {
         // -A 2, no match-expression: a match shows the next 2 messages, then stops.
@@ -2214,6 +2411,8 @@ mod tests {
         ));
     }
 
+    /// A followed-dialog message emits without spending the `-A` budget;
+    /// only pure trailing-context messages consume it.
     #[test]
     fn followed_messages_do_not_consume_trailing_budget() {
         // With both -A 1 and a match-expression: a followed-dialog message is
@@ -2252,6 +2451,7 @@ mod tests {
         assert_eq!(trailing, 0);
     }
 
+    /// A match without a Call-ID emits but cannot arm any dialog.
     #[test]
     fn follow_with_missing_call_id_does_not_arm_or_panic() {
         // A direct match with no Call-ID cannot arm any dialog.
@@ -2262,6 +2462,8 @@ mod tests {
         assert!(!emit_follow(false, None, &mut followed));
     }
 
+    /// Call-IDs with NUL/backslash/tab bytes round-trip through the follow
+    /// set without corruption.
     #[test]
     fn follow_handles_adversarial_call_id_bytes() {
         // Call-IDs with backslashes / embedded NUL must round-trip through the

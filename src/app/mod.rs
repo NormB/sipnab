@@ -19,6 +19,27 @@ use crate::config::Config;
 /// operator `--names` mapping files, the configured hosts file, and the inline
 /// `[names.manual]` table. The TUI layer's name setup adds its own
 /// persistence-file handling on top of this.
+///
+/// # Arguments
+///
+/// * `cli` — parsed command-line flags (`--resolve`, `--reverse-dns`,
+///   `--names <file>` mappings).
+/// * `config` — loaded configuration whose `[names]` section supplies the
+///   fallback enable flags, hosts file, and inline manual table.
+///
+/// # Returns
+///
+/// The shared resolver plus the active `NameMode`: `Dns` when reverse DNS is
+/// requested, `Names` when any manual-name source is configured, `Off`
+/// otherwise.
+///
+/// # Side effects
+///
+/// Reads `/etc/hosts` and every configured mapping file from disk (failures
+/// are logged and skipped, never fatal), and — when reverse DNS is enabled —
+/// `NameResolver::with_reverse_dns` starts the background reverse-DNS lookup
+/// machinery. Invalid `[names.manual]` entries are warned about via
+/// `tracing` and ignored.
 pub fn build_resolver(
     cli: &Cli,
     config: &Config,

@@ -15,11 +15,20 @@ use server::ApiServer;
 
 /// One non-comment sample line: `name{labels}? value` (value may be -0, +Inf
 /// handled within buckets). Validates the exposition grammar loosely.
+///
+/// # Returns
+/// The compiled regex for a Prometheus sample line.
 fn sample_re() -> Regex {
     Regex::new(r#"^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^}]*\})?\s+-?[0-9eE.+-]+(\s+[0-9]+)?$"#).unwrap()
 }
 
 /// Map of `family -> type` from the `# TYPE` lines.
+///
+/// # Arguments
+/// * `body` — the raw `/metrics` exposition text.
+///
+/// # Returns
+/// Metric family name mapped to its declared type string.
 fn type_lines(body: &str) -> std::collections::HashMap<String, String> {
     body.lines()
         .filter_map(|l| l.strip_prefix("# TYPE "))
@@ -30,6 +39,8 @@ fn type_lines(body: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
+/// The `/metrics` exposition declares all ten expected metric families with
+/// the correct `# TYPE` (counter/gauge/histogram).
 #[test]
 fn metrics_expose_expected_families_with_types() {
     let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
@@ -59,6 +70,8 @@ fn metrics_expose_expected_families_with_types() {
     }
 }
 
+/// Every non-comment line matches the exposition grammar, and the expected
+/// label sets (dialog state, method, stream status) appear for the RTP fixture.
 #[test]
 fn metrics_sample_lines_parse_and_labels_are_correct() {
     let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);
@@ -79,6 +92,8 @@ fn metrics_sample_lines_parse_and_labels_are_correct() {
     assert!(body.contains(r#"sipnab_rtp_streams_total{status="orphaned"}"#));
 }
 
+/// Each of the four histogram families carries `_bucket` lines (including
+/// `+Inf`), `_count`, and `_sum`.
 #[test]
 fn histograms_have_bucket_count_and_sum() {
     let srv = ApiServer::spawn_with_pcap("tests/pcap-samples/sip-rtp-g711.pcap", &[]);

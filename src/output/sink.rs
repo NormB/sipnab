@@ -5,7 +5,7 @@
 //! paid 70k `write(2)` syscalls plus a stdout lock/unlock per message —
 //! measured at ~40% of the wall time of `sipnab -N --json -I file.pcap`.
 //!
-//! [`BatchSink`] wraps one writer (a 64 KiB `BufWriter<Stdout>` in
+//! `BatchSink` wraps one writer (a 64 KiB `BufWriter<Stdout>` in
 //! production) that every per-message emitter in the batch loop shares, so
 //! output ordering is preserved while syscalls collapse to one per buffer
 //! fill. The receive loop flushes it whenever the packet channel goes idle
@@ -24,7 +24,10 @@ use std::io::Write;
 /// downstream `| head` never panics the capture process. `line_buffer`
 /// preserves the `--line-buffer` contract of one flush per message.
 pub struct BatchSink<W: Write> {
+    /// The wrapped writer all emitters share.
     w: W,
+    /// When `true`, `end_message` flushes after every message
+    /// (`--line-buffer`).
     line_buffer: bool,
 }
 
@@ -88,18 +91,24 @@ impl<W: Write> BatchSink<W> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for pass-through writes, flush semantics, and best-effort error
+/// swallowing via an instrumented probe writer.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// A writer that records flush calls and can be told to fail writes.
     struct Probe {
+        /// Bytes successfully written.
         buf: Vec<u8>,
+        /// Number of `flush` calls observed.
         flushes: usize,
+        /// When `true`, every write fails with `BrokenPipe`.
         fail_writes: bool,
     }
 
     impl Probe {
+        /// A fresh probe: empty buffer, zero flushes, writes succeed.
         fn new() -> Self {
             Self {
                 buf: Vec::new(),
@@ -110,6 +119,8 @@ mod tests {
     }
 
     impl Write for Probe {
+        /// Record `data` into the buffer, or fail with `BrokenPipe` when
+        /// `fail_writes` is set.
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
             if self.fail_writes {
                 return Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
@@ -117,12 +128,14 @@ mod tests {
             self.buf.extend_from_slice(data);
             Ok(data.len())
         }
+        /// Count the flush call; always succeeds.
         fn flush(&mut self) -> std::io::Result<()> {
             self.flushes += 1;
             Ok(())
         }
     }
 
+    /// Consecutive `write_str` calls append bytes unmodified.
     #[test]
     fn write_str_passes_bytes_through() {
         let mut sink = BatchSink::new(Probe::new(), false);
@@ -131,6 +144,7 @@ mod tests {
         assert_eq!(sink.get_ref().buf, b"hello world\n");
     }
 
+    /// `write!` formatting lands in the underlying writer.
     #[test]
     fn write_fmt_formats_into_sink() {
         let mut sink = BatchSink::new(Probe::new(), false);
@@ -139,6 +153,7 @@ mod tests {
         assert_eq!(sink.get_ref().buf, b"a b:42");
     }
 
+    /// `end_message` flushes only when `line_buffer` is set.
     #[test]
     fn end_message_flushes_only_in_line_buffer_mode() {
         let mut sink = BatchSink::new(Probe::new(), false);
@@ -160,6 +175,7 @@ mod tests {
         );
     }
 
+    /// An explicit `flush` reaches the underlying writer.
     #[test]
     fn flush_is_forwarded() {
         let mut sink = BatchSink::new(Probe::new(), false);
@@ -168,6 +184,7 @@ mod tests {
         assert_eq!(sink.get_ref().flushes, 1);
     }
 
+    /// Failing writes (broken pipe) are swallowed without panicking.
     #[test]
     fn broken_pipe_does_not_panic() {
         // Adversarial: downstream `| head` closes the pipe mid-stream. The
@@ -184,6 +201,7 @@ mod tests {
         assert!(sink.get_ref().buf.is_empty());
     }
 
+    /// Empty writes and NUL/backslash/multi-byte UTF-8 pass through intact.
     #[test]
     fn empty_and_special_bytes_round_trip() {
         // Boundary/adversarial: empty writes, embedded NUL, backslashes and

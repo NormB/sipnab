@@ -36,6 +36,8 @@ pub enum SrtpProfile {
 }
 
 impl SrtpProfile {
+    /// Map a `use_srtp` protection-profile code point to a supported profile,
+    /// or `None` for codes this tool cannot decrypt (non-AES-CM profiles).
     fn from_code(code: u16) -> Option<Self> {
         match code {
             0x0001 => Some(Self::Aes128CmHmacSha1_80),
@@ -54,6 +56,8 @@ impl SrtpProfile {
         14
     }
 
+    /// Map this DTLS-SRTP profile to the corresponding `SrtpSuite` used by the
+    /// SRTP decryption context.
     fn suite(self) -> SrtpSuite {
         match self {
             Self::Aes128CmHmacSha1_80 => SrtpSuite::AesCm128HmacSha1_80,
@@ -192,11 +196,17 @@ pub fn derive_srtp_keys(
 /// material once the `client_random`, `server_random`, and a matching master
 /// secret are all known. Keys are emitted once per handshake.
 pub struct DtlsSrtpExtractor {
+    /// DTLS keylog entries (NSS `CLIENT_RANDOM` lines) supplying master secrets.
     keylog: Vec<KeyLogEntry>,
+    /// Crypto backend used to run the RFC 5705 exporter (TLS 1.2 PRF).
     crypto: Box<dyn CryptoBackend>,
+    /// `client_random` seen in an observed ClientHello, if any.
     client_random: Option<[u8; 32]>,
+    /// `server_random` seen in an observed ServerHello, if any.
     server_random: Option<[u8; 32]>,
+    /// SRTP profile from the ServerHello `use_srtp` extension, if seen.
     profile: Option<SrtpProfile>,
+    /// Set once keys have been emitted, to enforce single emission per handshake.
     produced: bool,
 }
 
@@ -284,11 +294,15 @@ impl DtlsSrtpExtractor {
     }
 }
 
+/// Unit tests for DTLS record detection, handshake-message parsing, the RFC
+/// 5705 SRTP key exporter, and the end-to-end extractor, including a round-trip
+/// that decrypts an SRTP packet with the exported keys.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::RingCryptoBackend;
 
+    /// A boxed `ring`-backed crypto backend for the exporter under test.
     fn backend() -> Box<dyn CryptoBackend> {
         Box::new(RingCryptoBackend)
     }
@@ -348,6 +362,8 @@ mod tests {
         b
     }
 
+    /// `is_dtls` accepts a real DTLS 1.2 record and rejects short input and a
+    /// (non-DTLS) TLS record.
     #[test]
     fn is_dtls_detects_records_and_rejects_others() {
         let cr = [0u8; 32];
@@ -357,6 +373,8 @@ mod tests {
         assert!(!is_dtls(&[22, 0x03, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
     }
 
+    /// ClientHello/ServerHello randoms and the ServerHello `use_srtp` profile
+    /// are extracted correctly from wrapped handshake records.
     #[test]
     fn parses_hello_randoms_and_profile() {
         let cr = [0xC1u8; 32];
@@ -376,6 +394,8 @@ mod tests {
         );
     }
 
+    /// Derived per-direction keys have the profile's key/salt lengths and the
+    /// client and server material differ.
     #[test]
     fn derive_srtp_keys_lengths_and_distinctness() {
         let cr = [0x11u8; 32];
@@ -398,6 +418,7 @@ mod tests {
         assert_ne!(c2s.master_salt, s2c.master_salt);
     }
 
+    /// The exporter is deterministic: identical inputs yield identical keys.
     #[test]
     fn derive_srtp_keys_is_deterministic() {
         let cr = [0x11u8; 32];
@@ -423,6 +444,8 @@ mod tests {
         assert_eq!(a.1.master_salt, b.1.master_salt);
     }
 
+    /// The extractor emits two keys once the handshake completes, matches the
+    /// independently derived exporter output, and does not emit again.
     #[test]
     fn extractor_emits_keys_once_when_complete() {
         let cr = [0xABu8; 32];
@@ -463,6 +486,8 @@ mod tests {
         );
     }
 
+    /// With no keylog entry matching the observed `client_random`, no keys are
+    /// produced.
     #[test]
     fn extractor_without_matching_master_secret_yields_nothing() {
         let cr = [0xABu8; 32];

@@ -16,21 +16,25 @@ use crate::sip::dialog_store::DialogStore;
 
 /// Navigation and display state for the raw message viewer.
 pub struct RawMessageView<'a> {
+    /// Call-ID of the dialog whose message is shown.
     pub call_id: &'a str,
+    /// Index of the message within the dialog's message list.
     pub message_index: usize,
+    /// Vertical scroll offset in rendered (wrapped) rows.
     pub scroll_offset: u16,
+    /// Active search query; matches are background-highlighted.
     pub search_query: &'a str,
     /// When `false`, render the message as plain unstyled text.
     pub syntax_highlight: bool,
     /// Header-name display form (as captured / expanded / compact).
     pub header_form: super::header_form::HeaderFormMode,
+    /// Color theme used for all styling.
     pub theme: &'a super::Theme,
 }
 
-/// Render the raw SIP message text with syntax highlighting.
 /// Estimated rendered rows for `lines` wrapped to `width` columns: the ceil
 /// of each line's display width. Word-wrap can add a stray row; close enough
-/// to clamp the scroll near the true bottom.
+/// to clamp the scroll near the true bottom. Pure.
 fn estimated_rows(lines: &[Line<'_>], width: u16) -> u16 {
     let w = (width.max(1)) as usize;
     lines
@@ -43,8 +47,25 @@ fn estimated_rows(lines: &[Line<'_>], width: u16) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
-/// Renders the view and returns the estimated content height in rows, so the
-/// caller can clamp its stored scroll offset to the content.
+/// Render the raw SIP message text with syntax highlighting.
+///
+/// Looks up the message via `view.call_id`/`view.message_index`, applies the
+/// header-form rewrite, and draws it (highlighted or plain per
+/// `view.syntax_highlight`) with wrapping and the stored scroll offset.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full main-pane area for the viewer (block border included).
+/// * `store` - Dialog store snapshot the message is read from.
+/// * `view` - Navigation and display state (see `RawMessageView`).
+///
+/// # Returns
+/// The estimated content height in rendered rows, so the caller can clamp
+/// its stored scroll offset to the content; `0` when the dialog or message
+/// is missing (a placeholder notice is drawn instead).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub fn render_raw_message(
     frame: &mut Frame,
     area: Rect,
@@ -106,6 +127,10 @@ pub fn render_raw_message(
 /// The exact text the raw view displays for `msg` — the info line plus the
 /// header-reformatted raw message — so rendering and search-match
 /// navigation always agree on line positions.
+///
+/// # Returns
+/// `(info, raw_text)`: the timestamp/endpoint info line and the raw message
+/// text after the `header_form` rewrite. Pure.
 pub fn raw_display_text(
     msg: &crate::sip::SipMessage,
     header_form: super::header_form::HeaderFormMode,
@@ -127,6 +152,10 @@ pub fn raw_display_text(
 /// Display-line indices (info = 0, blank = 1, raw lines from 2 — the layout
 /// both `plain_sip_message` and `highlight_sip_message` build) whose text
 /// contains `query`, case-insensitively. Powers n/N match navigation.
+///
+/// # Returns
+/// Ascending display-line indices of matching lines; empty when `query` is
+/// empty or nothing matches. Pure.
 pub fn search_match_lines(info: &str, raw_text: &str, query: &str) -> Vec<u16> {
     if query.is_empty() {
         return Vec::new();
@@ -146,24 +175,40 @@ pub fn search_match_lines(info: &str, raw_text: &str, query: &str) -> Vec<u16> {
 
 /// Navigation and display state for the combined (transaction/dialog) viewer.
 pub struct CombinedDetailView<'a> {
+    /// Call-ID of the dialog whose messages are shown.
     pub call_id: &'a str,
     /// Original message indices to show, in order.
     pub indices: &'a [usize],
     /// Scope label for the title (e.g. "Transaction" / "Dialog").
     pub scope: &'a str,
+    /// Vertical scroll offset in rendered (wrapped) rows.
     pub scroll_offset: u16,
     /// When `false`, render the messages as plain unstyled text.
     pub syntax_highlight: bool,
     /// Header-name display form (as captured / expanded / compact).
     pub header_form: super::header_form::HeaderFormMode,
+    /// Color theme used for all styling.
     pub theme: &'a super::Theme,
 }
 
 /// Render several messages' raw detail stacked into one scrollable view —
 /// every message of a transaction or dialog read together. `indices` are
 /// original positions into the dialog's message list.
-/// Renders the view and returns the estimated content height in rows, so the
-/// caller can clamp its stored scroll offset to the content.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full main-pane area for the viewer (block border included).
+/// * `store` - Dialog store snapshot the messages are read from.
+/// * `view` - Navigation and display state (see `CombinedDetailView`).
+///
+/// # Returns
+/// The estimated content height in rendered rows, so the caller can clamp
+/// its stored scroll offset to the content; `0` when the dialog is missing
+/// (a placeholder notice is drawn instead). Out-of-range indices are
+/// silently skipped.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub fn render_combined_detail(
     frame: &mut Frame,
     area: Rect,
@@ -263,6 +308,10 @@ fn plain_sip_message(info: &str, raw_text: &str) -> Vec<Line<'static>> {
 /// - Header values: default
 /// - SDP body: dimmed/italic
 /// - Search matches: highlighted background
+///
+/// # Returns
+/// The styled display lines: info line, blank, then one line per raw line
+/// (headers and body). Pure.
 fn highlight_sip_message<'a>(
     info: &str,
     raw_text: &str,
@@ -358,7 +407,8 @@ fn highlight_sip_message<'a>(
     lines
 }
 
-/// Highlight occurrences of `query` in a line with a colored background.
+/// Highlight occurrences of `query` in a line with a colored background,
+/// case-insensitively; non-matching segments keep `base_style`. Pure.
 fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> Line<'a> {
     if query.is_empty() {
         return Line::from(Span::styled(line.to_string(), base_style));
@@ -401,16 +451,19 @@ fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> L
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for search highlighting and message styling.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A query with no occurrence yields a single unhighlighted span.
     #[test]
     fn highlight_search_in_line_no_match() {
         let line = highlight_search_in_line("Hello World", "xyz", Style::default());
         assert_eq!(line.spans.len(), 1);
     }
 
+    /// Repeated matches split the line into alternating match/text spans.
     #[test]
     fn highlight_search_in_line_with_match() {
         let line = highlight_search_in_line("Hello World Hello", "Hello", Style::default());
@@ -418,12 +471,15 @@ mod tests {
         assert!(line.spans.len() >= 3);
     }
 
+    /// Lowercase query still highlights an uppercase occurrence.
     #[test]
     fn highlight_search_case_insensitive() {
         let line = highlight_search_in_line("INVITE sip:foo", "invite", Style::default());
         assert!(line.spans.len() >= 2);
     }
 
+    /// A minimal INVITE produces the expected line layout: info, blank,
+    /// start-line, header, body separator, SDP line.
     #[test]
     fn highlight_sip_message_basic() {
         let theme = crate::tui::Theme::default();

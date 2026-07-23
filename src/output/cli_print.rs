@@ -13,11 +13,17 @@ use crate::sip::SipMessage;
 
 // ── ANSI escape codes ───────────────────────────────────────────────
 
+/// ANSI reset — ends any active color span.
 const RESET: &str = "\x1b[0m";
+/// ANSI green — INVITE requests and 2xx responses.
 const GREEN: &str = "\x1b[32m";
+/// ANSI red — BYE and CANCEL requests.
 const RED: &str = "\x1b[31m";
+/// ANSI bold red — error responses (4xx-6xx).
 const BOLD_RED: &str = "\x1b[1;31m";
+/// ANSI cyan — provisional responses (1xx).
 const CYAN: &str = "\x1b[36m";
+/// ANSI yellow — other methods and 3xx responses.
 const YELLOW: &str = "\x1b[33m";
 
 /// Controls whether ANSI color codes are emitted in output.
@@ -48,6 +54,8 @@ pub struct OutputOptions {
 }
 
 impl Default for OutputOptions {
+    /// Defaults: auto color, absolute timestamps, no payload limit, show
+    /// empty-bodied messages, no proto-number annotation.
     fn default() -> Self {
         Self {
             color: ColorMode::Auto,
@@ -72,6 +80,12 @@ impl Default for OutputOptions {
 ///
 /// The `prev_timestamp` is used when `opts.delta_time` is `true` to compute
 /// the time delta from the previous message.
+///
+/// # Side effects
+///
+/// Locks stdout, writes the formatted message, and flushes. Writes are
+/// best-effort: errors (e.g. broken pipe from `| head`) are swallowed
+/// rather than panicking the capture process.
 pub fn print_sip_message(
     msg: &SipMessage,
     opts: &OutputOptions,
@@ -86,6 +100,20 @@ pub fn print_sip_message(
 }
 
 /// Format a SIP message into a display string (testable without stdout).
+///
+/// # Arguments
+///
+/// * `msg` — The parsed SIP message to render.
+/// * `opts` — Color mode, delta-time, payload truncation, empty-body, and
+///   proto-number options.
+/// * `prev_timestamp` — Previous message's timestamp for delta-time mode
+///   (`None` renders `+0.000s`).
+///
+/// # Returns
+///
+/// The newline-terminated header line, followed by the raw message text
+/// when the body is non-empty or `show_empty` is set (truncated with a
+/// `[truncated]` marker under `payload_limit`). Pure — nothing printed.
 pub fn format_sip_message(
     msg: &SipMessage,
     opts: &OutputOptions,
@@ -188,6 +216,7 @@ pub fn format_sip_message(
 }
 
 /// Determine whether to use color based on the mode and TTY detection.
+/// `Auto` queries `isatty(STDOUT_FILENO)`; `Always`/`Never` are fixed.
 fn should_use_color(mode: ColorMode) -> bool {
     match mode {
         ColorMode::Always => true,
@@ -201,6 +230,8 @@ fn should_use_color(mode: ColorMode) -> bool {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for the sipgrep-style formatter: color selection, delta-time,
+/// truncation, proto-number annotation, and show-empty semantics.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,16 +239,19 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Parse a minimal bodyless INVITE request.
     fn make_invite() -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -242,6 +276,7 @@ mod tests {
         .expect("should parse INVITE")
     }
 
+    /// Parse a 503 Service Unavailable response (error-color path).
     fn make_error_response() -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 503 Service Unavailable",
@@ -266,6 +301,7 @@ mod tests {
         .expect("should parse response")
     }
 
+    /// Parse a bodyless OPTIONS keepalive request.
     fn make_options() -> SipMessage {
         // A bodyless request, like the OPTIONS keepalives in a real trace.
         let raw = build_sip(
@@ -297,6 +333,7 @@ mod tests {
     // ever show their one-line summary — the raw header block was hard-blocked
     // regardless of the flag, so From/To/Call-ID/CSeq/Via were unreachable in
     // `-N` output. show_empty must actually reveal those headers.
+    /// With `show_empty`, bodyless messages print their full header block.
     #[test]
     fn show_empty_reveals_headers_of_bodyless_messages() {
         for msg in [make_options(), make_error_response()] {
@@ -316,6 +353,7 @@ mod tests {
 
     // The terse default (no --show-empty) still shows only the summary line for
     // bodyless messages — no wall of headers for every OPTIONS keepalive.
+    /// Without `show_empty`, bodyless messages stay a one-line summary.
     #[test]
     fn bodyless_messages_stay_terse_without_show_empty() {
         let opts = OutputOptions {
@@ -331,6 +369,8 @@ mod tests {
         );
     }
 
+    /// An INVITE with `Always` color carries green + reset ANSI codes and
+    /// the src -> dst line.
     #[test]
     fn format_invite_with_color() {
         let msg = make_invite();
@@ -350,6 +390,7 @@ mod tests {
         assert!(output.contains("->"), "should contain arrow");
     }
 
+    /// `Never` color mode emits no ANSI escapes at all.
     #[test]
     fn format_no_color() {
         let msg = make_invite();
@@ -366,6 +407,7 @@ mod tests {
         );
     }
 
+    /// A 503 response is rendered bold red.
     #[test]
     fn format_error_response_bold_red() {
         let msg = make_error_response();
@@ -382,6 +424,7 @@ mod tests {
         );
     }
 
+    /// `payload_limit` truncates the raw dump and appends `[truncated]`.
     #[test]
     fn payload_limit_truncates() {
         let body = b"v=0\r\no=- 0 0 IN IP4 10.0.0.1\r\ns=-\r\n";
@@ -421,6 +464,7 @@ mod tests {
         );
     }
 
+    /// Delta-time mode renders `+1.500s` for a 1500 ms gap.
     #[test]
     fn delta_time_format() {
         let msg = make_invite();
@@ -438,6 +482,7 @@ mod tests {
         );
     }
 
+    /// `show_proto_number` renders `UDP(17)` after the transport tag.
     #[test]
     fn proto_number_appended_to_transport_tag() {
         let msg = make_invite();
@@ -454,6 +499,7 @@ mod tests {
         );
     }
 
+    /// The default renders a bare `UDP` tag with no proto number.
     #[test]
     fn proto_number_off_by_default() {
         let msg = make_invite();
@@ -468,6 +514,8 @@ mod tests {
         );
     }
 
+    /// The proto-number annotation lands after the method's ANSI reset,
+    /// never inside the color span.
     #[test]
     fn proto_number_with_color_stays_outside_reset() {
         // Adversarial: the number must not land inside the ANSI color span
@@ -486,6 +534,7 @@ mod tests {
         assert!(tag_pos > reset_pos, "transport tag must follow reset");
     }
 
+    /// Delta-time with no previous message renders `+0.000s`.
     #[test]
     fn delta_time_no_previous() {
         let msg = make_invite();

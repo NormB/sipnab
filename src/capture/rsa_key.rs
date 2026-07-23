@@ -15,10 +15,18 @@ use rsa::{Pkcs1v15Encrypt, RsaPrivateKey};
 
 /// A loaded RSA private key used to recover the TLS pre-master secret.
 pub struct RsaKey {
+    /// The parsed RSA private key. Never logged or exposed; the `Debug` impl
+    /// redacts it.
     key: RsaPrivateKey,
 }
 
 impl std::fmt::Debug for RsaKey {
+    /// Format as the fixed string `RsaKey(<redacted>)`, deliberately hiding the
+    /// key bytes so private key material can never leak through `Debug`/logs.
+    ///
+    /// # Side effects
+    ///
+    /// Writes to the formatter `f`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never expose key internals.
         f.write_str("RsaKey(<redacted>)")
@@ -59,19 +67,27 @@ impl RsaKey {
     }
 }
 
+/// Unit tests for RSA private-key loading and pre-master decryption, driven by
+/// a fixed PKCS#8 key + known-answer ciphertext/pre-master fixtures.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// PEM-encoded PKCS#8 RSA private key fixture used across the tests.
     const KEY_PEM: &str = include_str!("../../tests/fixtures/tls_rsa/key.pem");
+    /// The PKCS#1 v1.5 ciphertext of the fixture pre-master (from `openssl`).
     const PREMASTER_CT: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster_ct.bin");
+    /// The expected 48-byte plaintext pre-master matching `PREMASTER_CT`.
     const PREMASTER: &[u8] = include_bytes!("../../tests/fixtures/tls_rsa/premaster.bin");
 
+    /// A valid PKCS#8 PEM loads successfully.
     #[test]
     fn loads_pkcs8_pem() {
         assert!(RsaKey::from_pem(KEY_PEM).is_ok());
     }
 
+    /// Malformed PEM is rejected with an error that names "RSA private key"
+    /// but never echoes the offending key bytes.
     #[test]
     fn rejects_garbage_pem_without_leaking() {
         let err = RsaKey::from_pem(
@@ -83,6 +99,8 @@ mod tests {
         assert!(!msg.contains("NOTBASE64"), "must not echo key bytes: {msg}");
     }
 
+    /// Known-answer test: decrypting the fixture ciphertext recovers the
+    /// 48-byte pre-master, whose first two bytes carry the client version.
     #[test]
     fn decrypts_known_premaster() {
         // KAT: the fixture ciphertext was produced by openssl pkeyutl
@@ -95,6 +113,7 @@ mod tests {
         assert_eq!(&pm[..2], &[0x03, 0x03]);
     }
 
+    /// A truncated ciphertext (not a full RSA block) errors rather than panics.
     #[test]
     fn wrong_ciphertext_length_errors() {
         let key = RsaKey::from_pem(KEY_PEM).unwrap();

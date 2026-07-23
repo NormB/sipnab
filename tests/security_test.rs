@@ -17,14 +17,23 @@ use sipnab::security::{FraudDetector, RegFloodDetector, ScannerDetector};
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/// Loopback IPv4 address used as the default packet endpoint.
 fn localhost() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
 }
 
+/// Fixed deterministic timestamp (2024-06-15 14:00:00 UTC) for parses.
 fn ts() -> DateTime<Utc> {
     chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 14, 0, 0).unwrap()
 }
 
+/// Assembles a raw SIP message from a first line, header lines, and a body,
+/// with CRLF line endings and the blank separator line.
+///
+/// # Arguments
+/// * `first_line` — request or status line without line ending.
+/// * `headers` — header lines without line endings.
+/// * `body` — message body bytes (may be empty).
 fn build_sip(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
     let mut msg = Vec::new();
     msg.extend_from_slice(first_line.as_bytes());

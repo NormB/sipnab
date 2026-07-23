@@ -8,7 +8,7 @@
 //! Call sequence:
 //! 1. Open capture devices (requires root/`CAP_NET_RAW`)
 //! 2. Open key files, bind API/metrics ports
-//! 3. Call [`drop_privileges()`]
+//! 3. Call `drop_privileges()`
 //! 4. Begin packet processing (unprivileged)
 
 use anyhow::{Result, bail};
@@ -92,11 +92,11 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
 #[cfg(target_os = "linux")]
 const CAPTURE_CAPS: &str = "cap_net_raw,cap_net_admin+ep";
 
-/// Build the `setcap` command (program + args) that grants [`CAPTURE_CAPS`] to
+/// Build the `setcap` command (program + args) that grants `CAPTURE_CAPS` to
 /// `exe`. When `as_root` is false the call is wrapped in `sudo` so it can
 /// elevate (prompting for a password on the controlling terminal if needed).
 ///
-/// Factored out from [`setup_capabilities`] so the command shape is unit-testable
+/// Factored out from `setup_capabilities` so the command shape is unit-testable
 /// without actually invoking the privileged `setcap`.
 #[cfg(target_os = "linux")]
 fn setcap_command(exe: &str, as_root: bool) -> (String, Vec<String>) {
@@ -418,26 +418,32 @@ fn verify_dropped(expected_uid: u32, expected_gid: u32) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    //! Privilege-drop no-op paths, user resolution, chroot failure, and the
+    //! `setcap` command-shape tests (none of which require root).
     use super::*;
 
+    /// A normal (non-root) test process reports `is_root() == false`.
     #[test]
     fn is_root_returns_false_for_normal_user() {
         // CI and dev machines run as non-root
         assert!(!is_root());
     }
 
+    /// `no_priv_drop == true` returns `Ok` without touching any syscall.
     #[test]
     fn no_priv_drop_flag_skips_immediately() {
         // Should return Ok without touching any syscalls
         assert!(drop_privileges(None, true).is_ok());
     }
 
+    /// When not root, `drop_privileges` is a no-op that returns `Ok`.
     #[test]
     fn non_root_skips_privilege_drop() {
         // When not root, drop_privileges is a no-op
         assert!(drop_privileges(None, false).is_ok());
     }
 
+    /// `nobody` resolves to a non-zero uid or gid on Linux and macOS.
     #[test]
     fn resolve_user_nobody_succeeds() {
         // "nobody" exists on both Linux and macOS
@@ -447,6 +453,8 @@ mod tests {
         assert!(uid > 0 || gid > 0, "nobody should have non-zero uid or gid");
     }
 
+    /// An unknown username errors with a "not found" message suggesting
+    /// `--user`.
     #[test]
     fn resolve_user_nonexistent_returns_error() {
         let result = resolve_user("nonexistent_user_xyz123");
@@ -462,18 +470,21 @@ mod tests {
         );
     }
 
+    /// `disable_core_dumps` never panics regardless of permission outcome.
     #[test]
     fn disable_core_dumps_does_not_panic() {
         // May or may not succeed depending on permissions, but must not panic
         let _ = disable_core_dumps();
     }
 
+    /// `root` resolves to uid 0.
     #[test]
     fn resolve_user_root_is_uid_zero() {
         let (uid, _gid) = resolve_user("root").expect("root should exist");
         assert_eq!(uid, 0, "root must resolve to uid 0");
     }
 
+    /// As non-root, requesting a target user is still a no-op `Ok`.
     #[test]
     fn drop_privileges_with_target_user_non_root_is_noop() {
         // As a non-root process, requesting a target user is still a no-op Ok
@@ -482,6 +493,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    /// When already root, the `setcap` command runs directly (no `sudo`) with
+    /// the executable as the final argument.
     #[test]
     fn setcap_command_root_is_direct() {
         let (prog, args) = setcap_command("/usr/local/bin/sipnab", true);
@@ -498,6 +511,7 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    /// When not root, the command is wrapped in `sudo setcap ...`.
     #[test]
     fn setcap_command_non_root_wraps_sudo() {
         let (prog, args) = setcap_command("/home/u/.cargo/bin/sipnab", false);
@@ -508,6 +522,8 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    /// `CAPTURE_CAPS` requests `cap_net_raw` + `cap_net_admin` in the `+ep`
+    /// sets.
     #[test]
     fn capture_caps_cover_raw_and_admin() {
         // CAP_NET_RAW opens the socket; CAP_NET_ADMIN enables promiscuous mode.
@@ -517,6 +533,7 @@ mod tests {
         assert!(CAPTURE_CAPS.ends_with("+ep"));
     }
 
+    /// `chroot` without `CAP_SYS_CHROOT` errors rather than silently succeeds.
     #[test]
     fn do_chroot_without_root_fails() {
         // chroot(2) requires CAP_SYS_CHROOT; as a normal user this must error

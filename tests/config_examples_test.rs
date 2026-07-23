@@ -9,9 +9,16 @@
 
 use std::io::Write;
 
+/// The full text of `docs/config-reference.md`, embedded at compile time.
 const CONFIG_REFERENCE: &str = include_str!("../docs/config-reference.md");
 
 /// Extract the bodies of all ```toml fenced code blocks from markdown.
+///
+/// # Arguments
+/// * `md` — markdown source to scan.
+///
+/// # Returns
+/// The body text of each toml fence, in document order.
 fn toml_blocks(md: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut in_block = false;
@@ -32,6 +39,8 @@ fn toml_blocks(md: &str) -> Vec<String> {
     blocks
 }
 
+/// Every toml block in `docs/config-reference.md` (at least 5 expected) loads
+/// through `Config::load` and passes `limits.validate()` without error.
 #[test]
 fn documented_config_samples_parse_and_validate() {
     let blocks = toml_blocks(CONFIG_REFERENCE);

@@ -13,8 +13,15 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::security::AlertEngine;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// Shorthand for the `Arc<RwLock<T>>` shape `start_servers` expects for its
+/// shared stores.
 type Shared<T> = Arc<RwLock<T>>;
 
+/// Builds a fresh, empty trio of shared stores (dialogs, streams, alerts)
+/// sized for tests.
+///
+/// # Returns
+/// `(DialogStore, StreamStore, AlertEngine)` each wrapped in `Arc<RwLock<_>>`.
 fn stores() -> (
     Shared<DialogStore>,
     Shared<StreamStore>,

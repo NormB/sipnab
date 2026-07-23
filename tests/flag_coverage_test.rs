@@ -50,6 +50,9 @@ const KNOWN_UNTESTED: &[&str] = &[
 ];
 
 /// All long flags (and long aliases) the CLI accepts, via clap.
+///
+/// # Returns
+/// The set of long flag names, including `help` and `version`.
 fn cli_long_flags() -> BTreeSet<String> {
     let cmd = sipnab::cli::Cli::command();
     let mut flags = BTreeSet::new();
@@ -70,6 +73,13 @@ fn cli_long_flags() -> BTreeSet<String> {
 
 /// Core gate logic, factored out so it can be tested with synthetic data:
 /// returns the flags whose `--name` token is absent from `corpus`.
+///
+/// # Arguments
+/// * `flags` — long flag names to check.
+/// * `corpus` — concatenated test-source text to search.
+///
+/// # Returns
+/// Flags with no `--name` occurrence in the corpus.
 fn unreferenced(flags: &BTreeSet<String>, corpus: &str) -> Vec<String> {
     flags
         .iter()
@@ -80,6 +90,11 @@ fn unreferenced(flags: &BTreeSet<String>, corpus: &str) -> Vec<String> {
 
 /// Recursively read every file under `dir` whose extension matches, appending
 /// to `out`. (Used to assemble the test corpus.)
+///
+/// # Arguments
+/// * `dir` — root directory to walk (missing directories are skipped).
+/// * `exts` — file extensions to include (without dots).
+/// * `out` — buffer the matching files' text is appended to.
 fn read_tree(dir: &Path, exts: &[&str], out: &mut String) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -104,6 +119,12 @@ fn read_tree(dir: &Path, exts: &[&str], out: &mut String) {
 /// Build the corpus: all of `tests/` + the `#[cfg(test)]` tail of `src/cli.rs`
 /// (which holds `parse_from_args` cases). Excludes this gate's own file so its
 /// waiver list cannot count as "references".
+///
+/// # Arguments
+/// * `manifest` — the crate root (`CARGO_MANIFEST_DIR`).
+///
+/// # Returns
+/// The concatenated corpus text.
 fn test_corpus(manifest: &Path) -> String {
     let mut corpus = String::new();
     read_tree(&manifest.join("tests"), &["rs", "trycmd"], &mut corpus);
@@ -118,6 +139,9 @@ fn test_corpus(manifest: &Path) -> String {
     corpus
 }
 
+/// Three-part ratchet: (a) every non-waived flag is referenced by a test or
+/// golden, (b) a waived flag that is now referenced must leave `KNOWN_UNTESTED`,
+/// and (c) every waiver still names a real flag.
 #[test]
 fn every_cli_flag_is_referenced_by_a_test() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -161,6 +185,8 @@ fn every_cli_flag_is_referenced_by_a_test() {
 }
 
 // ── Negative meta-test (proves the gate actually guards) ──────────────
+/// `unreferenced` on a synthetic corpus reports exactly the flag no test uses,
+/// proving the gate can fail.
 #[test]
 fn gate_detects_an_unreferenced_flag() {
     let flags: BTreeSet<String> = ["json", "ghost-flag-xyz"]

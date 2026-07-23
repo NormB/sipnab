@@ -91,6 +91,16 @@ const HEP2_MIN_HEADER: usize = 16;
 /// `link_type = DLT_RAW` plus payload-only data, which `etherparse`
 /// would mis-interpret as an IPv4 header (e.g. `INVITE`'s first byte
 /// `0x49` parses as IPv4 IHL=9), silently dropping every HEP message.
+///
+/// # Arguments
+///
+/// * `hep` — the parsed HEP packet whose payload and metadata to convert.
+/// * `source` — listener bind address, recorded as interface `"hep:{source}"`.
+///
+/// # Returns
+///
+/// A `Packet` whose `data` is the HEP payload and whose `pre_parsed`
+/// carries the HEP-asserted addressing.
 fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
     Packet::with_pre_parsed(
         hep.timestamp,
@@ -117,6 +127,17 @@ fn hep_to_packet(hep: HepPacket, source: &str) -> Packet {
 ///   whose bytes equal `secret`. A missing chunk or any mismatch is
 ///   rejected. The comparison is constant time so a network attacker
 ///   cannot recover the secret byte-by-byte from timing (SN-01, CWE-345).
+///
+/// # Arguments
+///
+/// * `expected` — the configured receiver secret, if any.
+/// * `presented` — the raw bytes of the packet's `0x000e` auth-key chunk,
+///   if the packet carried one.
+///
+/// # Returns
+///
+/// `true` when the packet should be accepted, `false` when it must be
+/// dropped.
 pub fn hep_auth_ok(expected: Option<&str>, presented: Option<&[u8]>) -> bool {
     match expected {
         None => true,
@@ -135,6 +156,22 @@ pub fn hep_auth_ok(expected: Option<&str>, presented: Option<&[u8]>) -> bool {
 ///
 /// An address that does not resolve to any socket address is treated as
 /// non-loopback (fail closed).
+///
+/// # Arguments
+///
+/// * `bind_addr` — the listener bind address (host:port form).
+/// * `has_auth` — whether a receiver-side shared secret is configured.
+/// * `allowlist_len` — number of configured source CIDR ranges.
+///
+/// # Errors
+///
+/// Returns a human-readable refusal message when `bind_addr` is
+/// non-loopback and neither `has_auth` nor a non-empty allowlist applies.
+///
+/// # Side effects
+///
+/// Resolving `bind_addr` may perform a blocking DNS lookup when it is a
+/// hostname rather than a literal IP.
 pub fn enforce_hep_bind_policy(
     bind_addr: &str,
     has_auth: bool,
@@ -156,6 +193,11 @@ pub fn enforce_hep_bind_policy(
 
 /// Whether every socket address `bind_addr` resolves to is loopback.
 /// Returns `false` if the address fails to resolve (fail closed).
+///
+/// # Side effects
+///
+/// `to_socket_addrs` may perform a blocking DNS lookup when `bind_addr`
+/// is a hostname rather than a literal IP.
 fn hep_bind_is_loopback(bind_addr: &str) -> bool {
     use std::net::ToSocketAddrs;
     match bind_addr.to_socket_addrs() {
@@ -175,6 +217,10 @@ fn hep_bind_is_loopback(bind_addr: &str) -> bool {
 
 /// One-line description of the active HEP rate limiters for the startup
 /// log, so an operator can see at a glance whether the per-peer cap is on.
+///
+/// `global` is the packets/second ceiling across all peers; `per_peer` is
+/// the per-source cap (0 renders as "disabled"). Returns the formatted
+/// summary string.
 pub fn describe_hep_limiters(global: u64, per_peer: u64) -> String {
     let per_peer = if per_peer == 0 {
         "disabled".to_string()
@@ -215,9 +261,13 @@ pub enum HmacAuthError {
     Replay,
 }
 
+/// Compute HMAC-SHA256 of `data` under `key`, returning the 32-byte tag.
+/// Pure; on the impossible key-setup failure it returns an all-zero tag,
+/// which can never match a real MAC, so verification fails closed.
 #[cfg(feature = "hep")]
 fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     use hmac::{Hmac, KeyInit, Mac};
+    // Local alias: HMAC keyed over SHA-256 (the token's MAC algorithm).
     type HmacSha256 = Hmac<sha2::Sha256>;
     // HMAC accepts a key of any length, so new_from_slice cannot fail; handle
     // the Result without panicking (production forbids unwrap/expect). The
@@ -249,6 +299,18 @@ fn hmac_signed_region(ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
 
 /// Build the 57-byte HMAC auth token carried in the `0x000e` chunk when
 /// `--hep-auth-mode hmac` is active.
+///
+/// # Arguments
+///
+/// * `key` — the shared HMAC secret.
+/// * `ts` — token timestamp, seconds since the Unix epoch.
+/// * `nonce` — 16-byte unique-per-message nonce.
+/// * `payload` — the message bytes the token authenticates.
+///
+/// # Returns
+///
+/// The wire token: version(1) + timestamp(8, big-endian) + nonce(16) +
+/// HMAC-SHA256 tag(32).
 #[cfg(feature = "hep")]
 pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u8]) -> Vec<u8> {
     let mac = hmac_sha256(key, &hmac_signed_region(ts, nonce, payload));
@@ -265,6 +327,27 @@ pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u
 ///
 /// The MAC is checked *before* the replay cache is consulted or updated, so
 /// a forged token can never seed the cache with an attacker-chosen nonce.
+///
+/// # Arguments
+///
+/// * `key` — the shared HMAC secret.
+/// * `token` — the received 57-byte wire token.
+/// * `payload` — the message bytes the token must authenticate.
+/// * `now` — current time, seconds since the Unix epoch.
+/// * `window` — acceptance window in seconds, applied on each side of `now`.
+/// * `seen` — mutable replay cache of recently accepted nonces.
+///
+/// # Errors
+///
+/// `BadFormat` for a wrong length or version byte; `TimestampOutOfWindow`
+/// when the token timestamp is more than `window` seconds from `now`;
+/// `BadMac` when the HMAC does not match; `Replay` when the nonce was
+/// already accepted within the window.
+///
+/// # Side effects
+///
+/// On reaching the replay stage, prunes expired entries from `seen`, and on
+/// success records the token's nonce there.
 #[cfg(feature = "hep")]
 pub fn verify_hmac_auth_token(
     key: &[u8],
@@ -309,6 +392,8 @@ pub fn verify_hmac_auth_token(
 #[cfg(feature = "hep")]
 #[derive(Default)]
 pub struct HmacNonceCache {
+    /// Accepted nonces mapped to their token timestamps (epoch seconds),
+    /// used both for replay lookups and for window-based pruning.
     seen: std::collections::HashMap<[u8; 16], u64>,
 }
 
@@ -319,10 +404,13 @@ impl HmacNonceCache {
         Self::default()
     }
 
+    /// Whether `nonce` was already accepted (and not yet pruned).
     fn contains(&self, nonce: &[u8; 16]) -> bool {
         self.seen.contains_key(nonce)
     }
 
+    /// Record `nonce` as accepted with its token timestamp `ts` (epoch
+    /// seconds), mutating the cache.
     fn insert(&mut self, nonce: [u8; 16], ts: u64) {
         self.seen.insert(nonce, ts);
     }
@@ -337,6 +425,23 @@ impl HmacNonceCache {
 /// Receiver-side gate for `--hep-auth-mode hmac`. Mirrors [`hep_auth_ok`]'s
 /// contract: with no configured secret every packet passes; otherwise the
 /// packet must carry a valid, fresh, unreplayed HMAC token over its payload.
+///
+/// # Arguments
+///
+/// * `expected` — the configured shared HMAC key, if any.
+/// * `token` — the packet's `0x000e` chunk bytes, if present.
+/// * `payload` — the packet payload the token must authenticate.
+/// * `cache` — mutable per-listener replay cache.
+///
+/// # Returns
+///
+/// `true` when the packet should be accepted, `false` when it must be
+/// dropped.
+///
+/// # Side effects
+///
+/// Reads the system clock, mutates `cache` (prune/insert) during
+/// verification, and logs a `tracing::debug` line on rejection.
 #[cfg(feature = "hep")]
 fn hmac_auth_ok(
     expected: Option<&str>,
@@ -462,6 +567,27 @@ pub fn parse_hep(data: &[u8]) -> Result<HepPacket> {
 }
 
 /// Parse a HEP v3 (chunk-based) packet.
+///
+/// Walks the chunk list after the 6-byte `"HEP3"` + total-length header,
+/// collecting addresses, ports, timestamp, protocol, payload, and optional
+/// correlation/capture/auth chunks. Unknown chunk types are skipped (with a
+/// `tracing::trace` line) for forward compatibility. An out-of-range
+/// `TS_USEC` is clamped rather than rejected, and an unrepresentable
+/// timestamp falls back to the current time.
+///
+/// # Arguments
+///
+/// * `data` — the full received datagram, starting at the `"HEP3"` magic.
+///
+/// # Returns
+///
+/// The extracted `HepPacket` with `version = 3`.
+///
+/// # Errors
+///
+/// Returns an error when the packet or any chunk is truncated, a chunk's
+/// declared length is smaller than its 6-byte header or overflows the
+/// packet, or a required source/destination address chunk is missing.
 fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
     ensure!(
         data.len() >= HEP3_HEADER_LEN,
@@ -637,6 +763,24 @@ fn parse_hep_v3(data: &[u8]) -> Result<HepPacket> {
 }
 
 /// Parse a HEP v2 (fixed-header) packet.
+///
+/// Reads the fixed IPv4-only header (ports at bytes 2..6, addresses at
+/// 6..14) and treats everything past the declared header length as payload.
+/// HEP v2 carries no timestamp, so the packet is stamped with the current
+/// time; protocol is always SIP over UDP and there is no auth-key field.
+///
+/// # Arguments
+///
+/// * `data` — the full received datagram, starting at the 0x02 version byte.
+///
+/// # Returns
+///
+/// The extracted `HepPacket` with `version = 2`.
+///
+/// # Errors
+///
+/// Returns an error when the packet is too short to hold its declared
+/// header, or the declared header length is below the 16-byte minimum.
 fn parse_hep_v2(data: &[u8]) -> Result<HepPacket> {
     ensure!(
         data.len() >= 2,
@@ -702,6 +846,20 @@ pub struct HepEndpoint {
 ///
 /// Constructs a valid HEP v3 byte sequence with all required chunks.
 /// Used by [`HepSender`] and by round-trip tests.
+///
+/// # Arguments
+///
+/// * `endpoint` — source/destination addresses and ports of the original flow.
+/// * `timestamp` — capture time, encoded as TS_SEC/TS_USEC chunks.
+/// * `protocol` — application protocol type chunk (SIP/RTCP/RTP/...).
+/// * `capture_id` — capture agent ID chunk value.
+/// * `auth_key` — optional Homer shared secret, emitted verbatim as the
+///   `0x000e` chunk when `Some`.
+/// * `payload` — the encapsulated message bytes.
+///
+/// # Returns
+///
+/// The complete wire-format HEP v3 packet bytes.
 pub fn build_hep_v3(
     endpoint: &HepEndpoint,
     timestamp: DateTime<Utc>,
@@ -723,6 +881,9 @@ pub fn build_hep_v3(
 /// Like [`build_hep_v3`] but the `0x000e` auth chunk carries arbitrary
 /// bytes, so `--hep-auth-mode hmac` can stamp a binary token there instead
 /// of a cleartext key.
+///
+/// Same arguments and return value as `build_hep_v3`, except `auth_key`
+/// is raw bytes (e.g. a binary HMAC token) rather than a UTF-8 secret.
 pub fn build_hep_v3_bytes(
     endpoint: &HepEndpoint,
     timestamp: DateTime<Utc>,
@@ -803,7 +964,9 @@ pub fn build_hep_v3_bytes(
     pkt
 }
 
-/// Append a single HEP v3 chunk to the buffer.
+/// Append a single HEP v3 chunk to `buf`: a 6-byte header (`vendor`,
+/// `chunk_type`, and a length that includes the header) followed by `data`
+/// verbatim. All header fields are big-endian. Mutates `buf` in place.
 fn append_chunk(buf: &mut Vec<u8>, vendor: u16, chunk_type: u16, data: &[u8]) {
     let len = (CHUNK_HEADER_LEN + data.len()) as u16;
     buf.extend_from_slice(&vendor.to_be_bytes());
@@ -838,6 +1001,10 @@ impl CidrRange {
         })
     }
 
+    /// Parse implementation: split `cidr` at `/`, parse the address and
+    /// prefix length, and normalize to a masked 128-bit network value
+    /// (IPv4 occupies the top 32 bits). Returns the range or a plain-text
+    /// reason string for `CidrRange::parse` to wrap.
     fn parse_inner(cidr: &str) -> Result<Self, String> {
         let (addr_str, prefix_str) = cidr
             .split_once('/')
@@ -880,6 +1047,8 @@ impl CidrRange {
     }
 
     /// Check whether an IP address falls within this CIDR range.
+    /// Returns `false` for an address-family mismatch (an IPv4 range never
+    /// contains an IPv6 address, and vice versa).
     pub fn contains(&self, addr: IpAddr) -> bool {
         let ip_bits = match addr {
             IpAddr::V4(v4) => {
@@ -924,11 +1093,18 @@ const HEP_MAX_TRACKED_PEERS: usize = 4096;
 /// other producers (a gap in the previous global-only limiter). Both counters
 /// reset once per elapsed second.
 struct HepRateLimiter {
+    /// Global ceiling: maximum packets/second across all peers.
     global_max: u64,
+    /// Per-peer cap: maximum packets/second per source IP (0 = disabled).
     per_peer_max: u64,
+    /// Packets counted against the global ceiling in the current window.
     count_this_second: u64,
+    /// Per-source packet counts for the current window (bounded by
+    /// `HEP_MAX_TRACKED_PEERS`; cleared when the window resets).
     per_peer: std::collections::HashMap<IpAddr, u64>,
+    /// Start of the current one-second window.
     window_start: Instant,
+    /// Lifetime count of packets dropped by either limiter (for log lines).
     dropped_total: u64,
 }
 
@@ -949,6 +1125,13 @@ impl HepRateLimiter {
 
     /// Returns `true` if a packet from `peer` may be processed, `false` if it
     /// is rate-limited by either the global ceiling or the per-peer cap.
+    ///
+    /// # Side effects
+    ///
+    /// Reads the monotonic clock; resets the window (clearing the per-peer
+    /// map) once a second has elapsed; increments the per-peer and global
+    /// counters; and on a drop, increments `dropped_total` and logs a
+    /// `tracing::debug` line.
     fn allow(&mut self, peer: IpAddr) -> bool {
         let now = Instant::now();
         if now.duration_since(self.window_start).as_secs() >= 1 {
@@ -1005,8 +1188,11 @@ pub const HEP_IDLE_WARN_AFTER: Duration = Duration::from_secs(30);
 /// [`IdleWatch::on_packet`] returns `Some(outage)` on the first packet
 /// after a warned period. A zero threshold disables the watch.
 pub struct IdleWatch {
+    /// Idle duration that triggers a warning (zero disables the watch).
     threshold: Duration,
+    /// When the last packet was observed (or when the watch was created).
     last_packet: Instant,
+    /// Whether the current idle period has already been warned about.
     warned: bool,
 }
 
@@ -1020,8 +1206,10 @@ impl IdleWatch {
         }
     }
 
-    /// Record traffic. Returns `Some(outage_duration)` if this packet ends
-    /// a previously-warned idle period (i.e., the feed recovered).
+    /// Record traffic at time `now`. Returns `Some(outage_duration)` if this
+    /// packet ends a previously-warned idle period (i.e., the feed
+    /// recovered), else `None`. Mutates the watch: resets the idle clock and
+    /// clears the warned flag.
     pub fn on_packet(&mut self, now: Instant) -> Option<Duration> {
         let idle = now.duration_since(self.last_packet);
         self.last_packet = now;
@@ -1032,9 +1220,10 @@ impl IdleWatch {
         }
     }
 
-    /// Poll the watch. Returns `Some(idle_duration)` the first time the
-    /// idle threshold is crossed; `None` on subsequent polls until traffic
-    /// resumes (no log spam).
+    /// Poll the watch at time `now`. Returns `Some(idle_duration)` the first
+    /// time the idle threshold is crossed; `None` on subsequent polls until
+    /// traffic resumes (no log spam). Mutates the watch: sets the warned
+    /// flag when the threshold is crossed.
     pub fn check(&mut self, now: Instant) -> Option<Duration> {
         if self.threshold.is_zero() || self.warned {
             return None;
@@ -1098,10 +1287,35 @@ pub struct HepListenerOpts<'a> {
 /// A non-loopback bind is refused unless `opts.auth_key` or a non-empty
 /// `opts.allowlist` is configured (SN-01).
 ///
+/// # Arguments
+///
+/// * `bind_addr` — UDP address to bind (host:port; port 0 = ephemeral).
+/// * `config` — capture limits (`count` = max packets, `duration` = max
+///   runtime); either being reached stops the listener cleanly.
+/// * `tx` — pipeline channel each converted `Packet` is sent to; the loop
+///   ends when the receiving side is dropped.
+/// * `opts` — allowlist, rate limits, and receiver-side auth settings.
+/// * `ready_tx` — optional one-shot channel that receives `Ok(())` once the
+///   socket is bound (or `Err(reason)` on startup failure), letting the
+///   spawning thread await readiness.
+///
+/// # Returns
+///
+/// `Ok(())` after a clean stop (shutdown signal, count/duration limit, or
+/// receiver dropped).
+///
 /// # Errors
 ///
-/// Returns an error if the bind policy is violated or the UDP socket
-/// cannot be bound.
+/// Returns an error if the bind policy is violated, the UDP socket cannot
+/// be bound or configured, or a non-transient socket receive error occurs.
+///
+/// # Side effects
+///
+/// Binds and reads a UDP socket (blocking, with a 100 ms read timeout);
+/// logs startup/limit/drop/idle events via `tracing`; sends readiness on
+/// `ready_tx`; forwards accepted packets to `tx` (blocking on channel
+/// backpressure); and maintains internal rate-limiter and HMAC replay-cache
+/// state for the life of the loop.
 pub fn capture_hep(
     bind_addr: &str,
     config: &CaptureConfig,
@@ -1328,9 +1542,21 @@ impl HepSender {
     ///
     /// Binds an ephemeral local UDP socket and connects it to the destination.
     ///
+    /// # Arguments
+    ///
+    /// * `dest_addr` — destination HEP collector address (host:port).
+    /// * `capture_id` — capture agent ID stamped into every packet.
+    /// * `auth_key` — optional shared secret for the `0x000e` chunk.
+    /// * `auth_mode` — how the secret is presented (`Plain` or `Hmac`).
+    ///
     /// # Errors
     ///
     /// Returns an error if the socket cannot be created or connected.
+    ///
+    /// # Side effects
+    ///
+    /// Binds a UDP socket on `0.0.0.0:0` and connects it to `dest_addr`;
+    /// reads the system clock and process ID to derive the HMAC nonce salt.
     pub fn new(
         dest_addr: &str,
         capture_id: u32,
@@ -1368,6 +1594,14 @@ impl HepSender {
         }
     }
 
+    /// Build a fresh per-message HMAC token for `payload` under `key`,
+    /// using the current time and a salt+counter nonce. Returns the 57-byte
+    /// wire token.
+    ///
+    /// # Side effects
+    ///
+    /// Reads the system clock and increments the sender's atomic
+    /// `nonce_counter` (each call consumes one nonce).
     fn hmac_token(&self, key: &str, payload: &[u8]) -> Vec<u8> {
         use std::sync::atomic::Ordering;
         let ts = chrono::Utc::now().timestamp().max(0) as u64;
@@ -1387,6 +1621,11 @@ impl HepSender {
     /// # Errors
     ///
     /// Returns an error if the UDP send fails.
+    ///
+    /// # Side effects
+    ///
+    /// Transmits one datagram on the connected UDP socket; in `Hmac` auth
+    /// mode also reads the clock and increments the atomic nonce counter.
     pub fn send(&self, msg: &crate::sip::message::SipMessage) -> Result<()> {
         let endpoint = HepEndpoint {
             src_addr: msg.src_addr,
@@ -1414,11 +1653,15 @@ impl HepSender {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for HEP v2/v3 parsing and building, receiver-side auth (plain and
+/// HMAC), bind policy, rate limiting, and the idle watch.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
+    /// EINTR / WouldBlock / TimedOut are transient recv errors (retry);
+    /// genuine socket failures are not.
     #[test]
     fn eintr_and_read_timeouts_are_transient_not_fatal() {
         use std::io::ErrorKind;
@@ -1516,6 +1759,7 @@ mod tests {
         pkt
     }
 
+    /// A well-formed IPv4 HEP v3 packet parses with every field intact.
     #[test]
     fn parse_valid_hep_v3_ipv4() {
         let sip_payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
@@ -1536,6 +1780,7 @@ mod tests {
         assert_eq!(hep.timestamp.timestamp(), 1700000000);
     }
 
+    /// A well-formed IPv6 HEP v3 packet parses with the right addresses.
     #[test]
     fn parse_valid_hep_v3_ipv6() {
         let src = IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
@@ -1552,6 +1797,8 @@ mod tests {
         assert_eq!(hep.dst_port, 5080);
     }
 
+    /// A well-formed legacy HEP v2 packet parses as SIP with its fixed
+    /// header fields extracted.
     #[test]
     fn parse_valid_hep_v2() {
         let payload = b"REGISTER sip:example.com SIP/2.0\r\n\r\n";
@@ -1573,6 +1820,7 @@ mod tests {
         assert_eq!(hep.payload[..], payload[..]);
     }
 
+    /// A HEP v3 packet shorter than its 6-byte header is rejected.
     #[test]
     fn parse_truncated_hep_v3_errors() {
         // Too short to even have the header
@@ -1580,6 +1828,7 @@ mod tests {
         assert!(parse_hep(data).is_err());
     }
 
+    /// A declared total_length larger than the received bytes is rejected.
     #[test]
     fn parse_hep_v3_bad_total_length() {
         // total_length claims 1000 bytes but we only have 6
@@ -1589,6 +1838,8 @@ mod tests {
         assert!(parse_hep(&data).is_err());
     }
 
+    /// A v3 packet without any source-address chunk fails with an error
+    /// naming the missing source address.
     #[test]
     fn parse_hep_v3_missing_src_addr() {
         // Build a v3 packet with no source address chunks
@@ -1609,6 +1860,7 @@ mod tests {
         );
     }
 
+    /// Empty input and non-HEP bytes (unknown magic/version) are rejected.
     #[test]
     fn parse_non_hep_data_errors() {
         assert!(parse_hep(b"").is_err());
@@ -1616,6 +1868,8 @@ mod tests {
         assert!(parse_hep(b"HTTP/1.1 200 OK").is_err());
     }
 
+    /// Truncated HEP v2 packets (bare version byte, or fewer bytes than
+    /// the declared header) are rejected.
     #[test]
     fn parse_hep_v2_truncated() {
         // Just the version byte
@@ -1624,6 +1878,8 @@ mod tests {
         assert!(parse_hep(&[0x02, 16, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
     }
 
+    /// An IPv4 packet built by `build_hep_v3` parses back with every field
+    /// (including microsecond timestamp precision) preserved.
     #[test]
     fn build_and_parse_round_trip_ipv4() {
         let src = IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1));
@@ -1671,6 +1927,7 @@ mod tests {
         None
     }
 
+    /// Helper: a fixed 10.0.0.1:5060 → 10.0.0.2:5060 IPv4 endpoint pair.
     fn v4_endpoint() -> HepEndpoint {
         HepEndpoint {
             src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
@@ -1680,6 +1937,8 @@ mod tests {
         }
     }
 
+    /// With a key configured, the builder emits the `0x000e` auth chunk
+    /// carrying the key verbatim.
     #[test]
     fn hep_auth_chunk_emitted_when_key_present() {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
@@ -1700,6 +1959,7 @@ mod tests {
         assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(42));
     }
 
+    /// The parser surfaces the `0x000e` auth-key chunk to the receiver.
     #[test]
     fn parse_captures_auth_key_chunk() {
         // The receiver must be able to READ the 0x000e auth-key chunk, not
@@ -1718,6 +1978,7 @@ mod tests {
         assert_eq!(parsed.auth_key.as_deref(), Some(b"s3cr3t".as_slice()));
     }
 
+    /// With no auth chunk on the wire, the parsed `auth_key` is `None`.
     #[test]
     fn parse_auth_key_none_when_absent() {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
@@ -1725,6 +1986,7 @@ mod tests {
         assert_eq!(parse_hep(&pkt).unwrap().auth_key, None);
     }
 
+    /// With no receiver secret configured, every packet passes auth.
     #[test]
     fn verify_hep_auth_accepts_all_when_no_secret_configured() {
         // Backward compatible: with no receiver secret, any packet passes
@@ -1733,6 +1995,8 @@ mod tests {
         assert!(hep_auth_ok(None, None));
     }
 
+    /// With a secret configured, only an exact key match passes; missing,
+    /// wrong, and prefix-extended keys are rejected.
     #[test]
     fn verify_hep_auth_requires_matching_key_when_secret_configured() {
         assert!(
@@ -1750,18 +2014,22 @@ mod tests {
         );
     }
 
+    /// An unguarded non-loopback bind (no auth, no allowlist) is refused.
     #[test]
     fn hep_bind_policy_refuses_non_loopback_without_auth_or_allowlist() {
         let err = enforce_hep_bind_policy("0.0.0.0:9060", false, 0).unwrap_err();
         assert!(err.contains("non-loopback"), "got: {err}");
     }
 
+    /// IPv4 and IPv6 loopback binds are allowed without auth or allowlist.
     #[test]
     fn hep_bind_policy_allows_loopback_unauthenticated() {
         assert!(enforce_hep_bind_policy("127.0.0.1:9060", false, 0).is_ok());
         assert!(enforce_hep_bind_policy("[::1]:9060", false, 0).is_ok());
     }
 
+    /// Either a shared secret or a non-empty allowlist permits a
+    /// non-loopback bind.
     #[test]
     fn hep_bind_policy_allows_non_loopback_with_auth_or_allowlist() {
         assert!(
@@ -1774,6 +2042,8 @@ mod tests {
         );
     }
 
+    /// The global ceiling drops the excess packet regardless of which peer
+    /// sends it.
     #[test]
     fn per_peer_limiter_global_ceiling_drops_excess() {
         // Global ceiling of 2/s: the third packet in a window is dropped
@@ -1786,6 +2056,8 @@ mod tests {
         assert!(!lim.allow(a), "global ceiling of 2 reached");
     }
 
+    /// The per-peer cap throttles a flooding peer without consuming a
+    /// quiet peer's allowance.
     #[test]
     fn per_peer_limiter_isolates_noisy_peer() {
         // Per-peer cap of 1 with a generous global ceiling: a flooding peer
@@ -1798,6 +2070,8 @@ mod tests {
         assert!(lim.allow(quiet), "quiet peer still gets its own allowance");
     }
 
+    /// The startup summary renders per-peer 0 as "disabled" and non-zero
+    /// values as a rate.
     #[test]
     fn describe_limiters_reports_per_peer_state() {
         assert_eq!(
@@ -1810,14 +2084,21 @@ mod tests {
         );
     }
 
+    /// Tests for the HMAC auth-token build/verify cycle: format, timestamp
+    /// window, MAC binding, and replay protection.
     #[cfg(feature = "hep")]
     mod hmac_auth {
         use super::super::*;
 
+        /// Shared HMAC key used by every test in this module.
         const KEY: &[u8] = b"shared-hmac-key";
+        /// Fixed 16-byte nonce used across tests (uniqueness not needed here).
         const NONCE: [u8; 16] = [7u8; 16];
+        /// Fixed "current time" (epoch seconds) the tests verify against.
         const NOW: u64 = 1_700_000_000;
 
+        /// A freshly built token has the expected length and verifies
+        /// against the same key/payload/time.
         #[test]
         fn token_round_trips_and_verifies() {
             let payload = b"REGISTER sip:example.com SIP/2.0\r\n";
@@ -1830,6 +2111,7 @@ mod tests {
             );
         }
 
+        /// A short token or an unknown version byte fails as `BadFormat`.
         #[test]
         fn verify_rejects_bad_length_and_version() {
             let mut cache = HmacNonceCache::new();
@@ -1845,6 +2127,8 @@ mod tests {
             );
         }
 
+        /// Timestamps beyond the window — stale or future — fail as
+        /// `TimestampOutOfWindow`.
         #[test]
         fn verify_rejects_stale_and_future_timestamps() {
             let payload = b"p";
@@ -1861,6 +2145,8 @@ mod tests {
             );
         }
 
+        /// A tampered payload or a wrong key both fail as `BadMac`,
+        /// proving the MAC binds the payload, not just the key.
         #[test]
         fn verify_rejects_tampered_payload_and_wrong_key() {
             let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"original-payload");
@@ -1891,6 +2177,7 @@ mod tests {
             );
         }
 
+        /// An identical token replayed within the window fails as `Replay`.
         #[test]
         fn verify_rejects_replayed_nonce() {
             let payload = b"INVITE";
@@ -1908,6 +2195,8 @@ mod tests {
             );
         }
 
+        /// End to end: token stamped into the `0x000e` chunk survives the
+        /// wire round trip and verifies against the parsed payload.
         #[test]
         fn hep_v3_round_trips_through_build_parse_verify() {
             // End to end: a sender stamps the token into the 0x000e chunk, the
@@ -1947,6 +2236,8 @@ mod tests {
             );
         }
 
+        /// A forged (bad-MAC) token must not record its nonce, so a later
+        /// authentic token reusing that nonce still verifies.
         #[test]
         fn forged_token_does_not_poison_replay_cache() {
             // A forged token (valid nonce, bad MAC) must be rejected as BadMac
@@ -1970,6 +2261,8 @@ mod tests {
         }
     }
 
+    /// An auth key containing backslashes/colons/slashes round-trips
+    /// verbatim in the `0x000e` chunk.
     #[test]
     fn hep_auth_chunk_handles_special_bytes() {
         // An auth key with backslashes / colons / slashes must round-trip
@@ -1983,6 +2276,7 @@ mod tests {
         );
     }
 
+    /// A non-default capture agent ID is emitted and parses back intact.
     #[test]
     fn hep_custom_capture_id_round_trips() {
         // A non-default capture/agent id is emitted and parses back.
@@ -1991,6 +2285,8 @@ mod tests {
         assert_eq!(parse_hep(&pkt).unwrap().capture_id, Some(4242));
     }
 
+    /// With no key configured, the builder omits the `0x000e` chunk while
+    /// still producing a valid packet.
     #[test]
     fn hep_no_auth_chunk_when_key_absent() {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
@@ -2003,6 +2299,8 @@ mod tests {
         assert!(parse_hep(&pkt).is_ok());
     }
 
+    /// An IPv6 RTP packet built by `build_hep_v3` parses back with its
+    /// addresses and ports preserved.
     #[test]
     fn build_and_parse_round_trip_ipv6() {
         let src = IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1));
@@ -2026,6 +2324,8 @@ mod tests {
         assert_eq!(parsed.protocol, HepProtocol::Rtp);
     }
 
+    /// `HepProtocol` byte encode/decode is a bijection for known and
+    /// unknown protocol values.
     #[test]
     fn hep_protocol_round_trip() {
         assert_eq!(HepProtocol::from_byte(1), HepProtocol::Sip);
@@ -2039,6 +2339,7 @@ mod tests {
         assert_eq!(HepProtocol::Unknown(42).to_byte(), 42);
     }
 
+    /// A chunk claiming more bytes than the packet holds is rejected.
     #[test]
     fn hep_v3_chunk_overflow_rejected() {
         // Build a packet where a chunk claims to be longer than remaining data
@@ -2144,10 +2445,13 @@ mod tests {
 
     use std::time::Instant;
 
+    /// Helper: a fresh `Instant` origin for the idle-watch tests (offsets
+    /// are added to it, so no sleeping is needed).
     fn t0() -> Instant {
         Instant::now()
     }
 
+    /// Below the threshold, `check` stays quiet.
     #[test]
     fn idle_watch_quiet_below_threshold() {
         let start = t0();
@@ -2155,6 +2459,8 @@ mod tests {
         assert_eq!(w.check(start + Duration::from_secs(29)), None);
     }
 
+    /// Crossing the threshold warns exactly once — repeated polls during
+    /// the same idle period stay silent.
     #[test]
     fn idle_watch_warns_once_when_threshold_crossed() {
         let start = t0();
@@ -2166,6 +2472,8 @@ mod tests {
         assert_eq!(w.check(start + Duration::from_secs(600)), None);
     }
 
+    /// The first packet after a warned idle period reports the full outage
+    /// duration; steady traffic afterwards is silent.
     #[test]
     fn idle_watch_reports_recovery_with_total_idle_time() {
         let start = t0();
@@ -2178,6 +2486,8 @@ mod tests {
         assert_eq!(w.on_packet(start + Duration::from_secs(101)), None);
     }
 
+    /// Each packet restarts the idle clock; the threshold is measured from
+    /// the last packet, not from creation.
     #[test]
     fn idle_watch_packet_resets_idle_clock() {
         let start = t0();
@@ -2189,6 +2499,7 @@ mod tests {
         assert!(w.check(start + Duration::from_secs(51)).is_some());
     }
 
+    /// After a recovery, a second outage produces a second warning.
     #[test]
     fn idle_watch_can_warn_again_after_recovery() {
         let start = t0();
@@ -2199,6 +2510,8 @@ mod tests {
         assert!(w.check(start + Duration::from_secs(80)).is_some());
     }
 
+    /// A zero threshold disables the watch entirely: no warnings, no
+    /// recovery reports.
     #[test]
     fn idle_watch_zero_threshold_is_disabled() {
         let start = t0();
@@ -2561,6 +2874,8 @@ mod tests {
         assert_eq!(parsed.timestamp.timestamp_subsec_micros(), 250_000);
     }
 
+    /// A crafted TS_USEC far outside the microsecond range must not
+    /// overflow the ns conversion; the packet still parses.
     #[test]
     fn parse_hep_v3_huge_ts_usec_does_not_panic() {
         // A crafted HEP packet can carry a TS_USEC far outside [0, 1_000_000).

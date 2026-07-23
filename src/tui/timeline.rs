@@ -2,7 +2,7 @@
 //! dialog's signaling phases (setup, ringing, in-call, teardown) laid out
 //! proportionally to their real durations.
 //!
-//! The milestone timestamps captured in [`DialogTiming`] are turned into an
+//! The milestone timestamps captured in `DialogTiming` are turned into an
 //! ordered list of colored phase segments; the renderer draws a proportional
 //! bar, per-phase labels with units, a derived-metric summary, a color legend
 //! and the total call duration, degrading gracefully in narrow terminals.
@@ -60,6 +60,17 @@ pub struct TimelineSegment {
 /// case. Missing intermediate milestones are simply skipped, so a call that
 /// was never answered yields only its setup/ringing phases plus a terminal
 /// failed/cancelled marker, with no in-call segment.
+///
+/// # Arguments
+///
+/// * `dialog` — the dialog whose timing milestones and messages are read.
+///
+/// # Returns
+///
+/// Segments in chronological order with `start_ms` offsets relative to
+/// the first milestone; empty when no milestone was ever recorded.
+/// Terminal failed/cancelled markers appear as zero-length segments at
+/// the end of the bar.
 pub fn timeline_segments(dialog: &SipDialog) -> Vec<TimelineSegment> {
     let t = &dialog.timing;
 
@@ -137,6 +148,24 @@ pub fn timeline_segments(dialog: &SipDialog) -> Vec<TimelineSegment> {
 }
 
 /// Render the call-timeline view for `call_id`.
+///
+/// Draws a bordered block containing the total/state header, the
+/// proportional phase bar, per-phase duration labels, the derived-metric
+/// summary, and a legend of the present phase kinds.
+///
+/// # Arguments
+///
+/// * `f` — ratatui frame to draw into.
+/// * `app` — application state supplying the dialog store and theme.
+/// * `area` — screen rectangle for the bordered timeline block.
+/// * `call_id` — Call-ID of the dialog to visualize.
+///
+/// # Side effects
+///
+/// Draws widgets into `f`. Attempts a non-blocking `try_read` on
+/// `app.dialog_store`; when the lock is contended, the dialog is
+/// missing, or it has no usable timing, a placeholder is drawn instead
+/// (the frame is never blocked on a queued writer).
 pub fn render_timeline(f: &mut Frame, app: &App, area: Rect, call_id: &str) {
     let theme = &app.theme;
     let block = Block::default()
@@ -247,6 +276,19 @@ fn timeline_total_ms(segments: &[TimelineSegment]) -> i64 {
 /// Build the colored, proportional phase bar as styled spans. Every
 /// non-marker segment claims at least one cell so short phases stay visible;
 /// the last segment absorbs any rounding slack to exactly fill `width`.
+///
+/// # Arguments
+///
+/// * `segments` — timeline segments; zero-length markers are skipped.
+/// * `total_ms` — total timeline span the widths are scaled against.
+/// * `width` — target bar width in terminal cells.
+/// * `theme` — color theme for the per-kind colors.
+///
+/// # Returns
+///
+/// One block-character span per drawn segment summing to exactly
+/// `width` cells; a single blank span when only markers exist; empty
+/// when `width` is zero.
 fn segment_bar_spans(
     segments: &[TimelineSegment],
     total_ms: i64,
@@ -305,6 +347,11 @@ fn segment_bar_spans(
 
 /// One-line derived-metric summary using the timing accessors, e.g.
 /// `PDD 120ms · ring 3.2s · setup 3.3s · teardown 200ms`.
+///
+/// # Returns
+///
+/// A styled line listing only the metrics whose accessor produced a
+/// value; `None` when no metric is available at all.
 fn metric_summary_line(dialog: &SipDialog, theme: &Theme) -> Option<Line<'static>> {
     let t = &dialog.timing;
     let parts: [(&str, Option<i64>); 4] = [
@@ -337,7 +384,8 @@ fn metric_summary_line(dialog: &SipDialog, theme: &Theme) -> Option<Line<'static
     Some(Line::from(spans))
 }
 
-/// Legend mapping each present phase kind to its color swatch and name.
+/// Legend mapping each present phase kind to its color swatch and name,
+/// deduplicated in first-appearance order.
 fn legend_line(segments: &[TimelineSegment], theme: &Theme) -> Line<'static> {
     let mut spans: Vec<Span<'static>> =
         vec![Span::styled("  Legend ", Style::default().fg(theme.muted))];
@@ -358,6 +406,11 @@ fn legend_line(segments: &[TimelineSegment], theme: &Theme) -> Line<'static> {
 }
 
 /// Bordered placeholder for a call with no usable timeline data.
+///
+/// # Side effects
+///
+/// Draws the titled block with a muted "No timeline data" message
+/// into `f`.
 fn render_placeholder(f: &mut Frame, area: Rect, block: Block<'static>, theme: &Theme) {
     let paragraph = Paragraph::new("  No timeline data for this call.")
         .block(block)
@@ -396,7 +449,8 @@ fn kind_name(kind: PhaseKind) -> &'static str {
     }
 }
 
-/// Short display label for the dialog's terminal state.
+/// Short display label for the dialog's terminal state (delegates to
+/// the call list's `state_display_str`).
 fn state_label(state: &DialogState) -> &'static str {
     crate::tui::call_list::state_display_str(state)
 }
@@ -412,7 +466,7 @@ fn state_color(state: &DialogState, theme: &Theme) -> ratatui::style::Color {
 }
 
 /// Format a phase duration with units: sub-second in ms, under a minute in
-/// seconds with one decimal, else `MmSs`.
+/// seconds with one decimal, else `MmSs`. Negative input is floored to 0.
 fn format_duration_ms(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 1_000 {
@@ -427,6 +481,8 @@ fn format_duration_ms(ms: i64) -> String {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for segment derivation across call outcomes (completed,
+/// unanswered, failed, zero-length) and rendering robustness.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -504,6 +560,8 @@ mod tests {
         ]
     }
 
+    /// A fully-completed call yields the five canonical phases in order
+    /// with exact per-phase durations, offsets, and total.
     #[test]
     fn completed_call_yields_ordered_segments_with_durations() {
         let app = app_with(completed_call("done@test"));
@@ -532,6 +590,8 @@ mod tests {
         assert_eq!(timeline_total_ms(&segs), 20200);
     }
 
+    /// Rendering a completed call shows phase labels, a unit-bearing
+    /// duration, the PDD metric, the legend, and the total.
     #[test]
     fn completed_call_renders_labels_metrics_and_legend() {
         let app = app_with(completed_call("done@test"));
@@ -551,6 +611,8 @@ mod tests {
         assert!(text.contains("Total"), "missing total:\n{text}");
     }
 
+    /// An INVITE with no responses yields a setup phase but never an
+    /// in-call segment.
     #[test]
     fn invite_only_call_has_setup_but_no_in_call() {
         let t0 = base_ts();
@@ -567,6 +629,8 @@ mod tests {
         assert_eq!(segs[0].kind, PhaseKind::Setup);
     }
 
+    /// A 486-rejected call gets a Failed marker, no in-call segment, and
+    /// renders the marker without panicking.
     #[test]
     fn failed_call_appends_marker_without_in_call() {
         let t0 = base_ts();
@@ -609,6 +673,8 @@ mod tests {
         assert!(text.contains("Failed"), "missing Failed marker:\n{text}");
     }
 
+    /// All milestones at the same instant yield zero-length segments, a
+    /// total floored to 1 ms, and a panic-free render.
     #[test]
     fn simultaneous_timestamps_do_not_divide_by_zero() {
         let t0 = base_ts();
@@ -632,6 +698,8 @@ mod tests {
         );
     }
 
+    /// A milestone-free (OPTIONS) dialog yields no segments and renders
+    /// the "No timeline data" placeholder.
     #[test]
     fn dialog_without_timing_shows_placeholder() {
         let t0 = base_ts();
@@ -650,6 +718,7 @@ mod tests {
         );
     }
 
+    /// An unknown Call-ID renders the placeholder instead of panicking.
     #[test]
     fn missing_call_shows_placeholder_without_panic() {
         let app = App::new_test();
@@ -660,6 +729,7 @@ mod tests {
         );
     }
 
+    /// A 12x16 terminal shrinks the bar and clips content, not panics.
     #[test]
     fn narrow_terminal_still_renders_without_panic() {
         let app = app_with(completed_call("done@test"));

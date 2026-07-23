@@ -8,6 +8,14 @@ use sipnab::capture::CaptureSource;
 use sipnab::cli::Cli;
 use sipnab::config::Config;
 
+/// Parses `args` as if passed on a `sipnab` command line (the binary name is
+/// prepended automatically).
+///
+/// # Arguments
+/// * `args` — flags and positionals, without the leading program name.
+///
+/// # Returns
+/// The parsed `Cli`; panics via clap on invalid input.
 fn cli(args: &[&str]) -> Cli {
     let mut full = vec!["sipnab"];
     full.extend_from_slice(args);

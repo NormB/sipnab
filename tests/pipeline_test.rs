@@ -16,6 +16,12 @@ use sipnab::rtp::heuristic::RtpHeuristic;
 use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 
+/// Builds a UDP `ParsedPacket` between 10.0.0.1 and 10.0.0.2 with the given
+/// payload and ports.
+///
+/// # Arguments
+/// * `payload` — raw application payload bytes.
+/// * `src_port` / `dst_port` — UDP ports stamped on the packet.
 fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
     ParsedPacket {
         timestamp: Utc::now(),
@@ -35,6 +41,7 @@ fn parsed(payload: Vec<u8>, src_port: u16, dst_port: u16) -> ParsedPacket {
     }
 }
 
+/// A minimal parseable SIP INVITE with Call-ID `pipeline-1@test` and no body.
 fn invite() -> Vec<u8> {
     b"INVITE sip:bob@example.com SIP/2.0\r\n\
       Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKpipe\r\n\
@@ -46,6 +53,8 @@ fn invite() -> Vec<u8> {
         .to_vec()
 }
 
+/// An INVITE (Call-ID `pipeline-sdp@test`) carrying a one-media PCMU SDP offer
+/// with a correct Content-Length.
 fn invite_with_sdp() -> Vec<u8> {
     let sdp = b"v=0\r\n\
 o=- 1 1 IN IP4 10.0.0.9\r\n\
@@ -70,6 +79,8 @@ a=rtpmap:0 PCMU/8000\r\n";
     msg
 }
 
+/// A valid RTP packet (V=2, PT=0) with the given SSRC and sequence number and
+/// a 160-byte payload.
 fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
     let mut p = vec![0x80, 0x00];
     p.extend_from_slice(&seq.to_be_bytes());
@@ -79,6 +90,8 @@ fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
     p
 }
 
+/// In-process pipeline harness: fresh dialog/stream stores plus an RTP
+/// heuristic, driven through `pipeline::process_packet`.
 struct Harness {
     ds: Arc<RwLock<DialogStore>>,
     ss: Arc<RwLock<StreamStore>>,
@@ -86,6 +99,7 @@ struct Harness {
 }
 
 impl Harness {
+    /// Builds a harness with empty 100-capacity stores and a fresh heuristic.
     fn new() -> Self {
         Self {
             ds: Arc::new(RwLock::new(DialogStore::new(100, false))),
@@ -94,6 +108,8 @@ impl Harness {
         }
     }
 
+    /// Routes one parsed packet through `process_packet` into the harness
+    /// stores with a default `MediaDecrypt`.
     fn run(&mut self, pp: &ParsedPacket, opts: &PipelineOptions) {
         let mut decrypt = pipeline::MediaDecrypt::default();
         pipeline::process_packet(
@@ -107,6 +123,8 @@ impl Harness {
     }
 }
 
+/// Processing an INVITE creates exactly one dialog (retrievable by Call-ID)
+/// and leaves the stream store empty.
 #[test]
 fn sip_invite_lands_in_dialog_store() {
     let mut h = Harness::new();
@@ -116,6 +134,7 @@ fn sip_invite_lands_in_dialog_store() {
     assert!(h.ss.read().is_empty(), "no RTP yet");
 }
 
+/// Processing an RTP packet creates exactly one stream and no dialogs.
 #[test]
 fn rtp_lands_in_stream_store() {
     let mut h = Harness::new();
@@ -127,6 +146,7 @@ fn rtp_lands_in_stream_store() {
     assert!(h.ds.read().is_empty());
 }
 
+/// With `no_rtp` set, an RTP packet leaves the stream store empty.
 #[test]
 fn no_rtp_option_skips_media() {
     let mut h = Harness::new();
@@ -138,6 +158,7 @@ fn no_rtp_option_skips_media() {
     assert!(h.ss.read().is_empty(), "no_rtp must skip RTP tracking");
 }
 
+/// With `no_dialog` set, an INVITE leaves the dialog store empty.
 #[test]
 fn no_dialog_option_skips_sip_tracking() {
     let mut h = Harness::new();
@@ -152,6 +173,8 @@ fn no_dialog_option_skips_sip_tracking() {
     );
 }
 
+/// `port_in_range` matches when either src or dst is inside the inclusive
+/// range, including the degenerate single-port case.
 #[test]
 fn port_in_range_is_inclusive_and_either_direction() {
     assert!(pipeline::port_in_range(5060, 9999, (5060, 5061)));
@@ -161,6 +184,8 @@ fn port_in_range_is_inclusive_and_either_direction() {
     assert!(pipeline::port_in_range(5060, 1, (5060, 5060)));
 }
 
+/// `is_rtcp_packet` requires an odd destination port and a full valid RTCP
+/// header — even ports and truncated packets are rejected.
 #[test]
 fn rtcp_detection_requires_odd_port_and_valid_header() {
     // Valid RTCP SR header (V=2, PT=200) on an odd port
@@ -300,6 +325,8 @@ fn classify_maps_packets_to_actions() {
     ));
 }
 
+/// `no_dialog` still classifies SIP as `Sip` (batch needs the message) but
+/// with empty sdp_links; `no_rtp` classifies an RTP packet as `None`.
 #[test]
 fn classify_honors_opt_outs() {
     use pipeline::{PacketAction, classify_packet};

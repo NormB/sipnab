@@ -50,9 +50,17 @@ const SIP_METHODS: &[&[u8]] = &[
 
 /// Quick check whether `data` looks like the start of a SIP message.
 ///
+/// # Arguments
+///
+/// * `data` — raw captured bytes to sniff (typically a UDP payload or the
+///   start of a TCP stream segment).
+///
+/// # Returns
+///
 /// Returns `true` if the data begins with a SIP response line (`SIP/2.0 `)
 /// or a SIP request line (`METHOD SP ... SIP/2.0`). Only inspects the first
-/// line — does **not** validate the entire message.
+/// line — does **not** validate the entire message. Inputs shorter than
+/// 8 bytes always return `false`.
 pub fn is_sip_message(data: &[u8]) -> bool {
     if data.len() < 8 {
         return false;
@@ -80,7 +88,7 @@ pub fn is_sip_message(data: &[u8]) -> bool {
     false
 }
 
-/// Find the position of the first `\r\n` in `data`.
+/// Find the position of the first `\r\n` in `data`, or `None` if absent.
 fn find_crlf(data: &[u8]) -> Option<usize> {
     // SIMD \r search, then verify the following \n — byte-identical to the old
     // windows(2) scan (bare \r is skipped; a trailing \r returns None).
@@ -95,28 +103,33 @@ fn find_crlf(data: &[u8]) -> Option<usize> {
     None
 }
 
+/// Tests for the `is_sip_message` first-line sniffer.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// An INVITE request line is detected as SIP.
     #[test]
     fn detect_invite_request() {
         let data = b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/UDP ...\r\n\r\n";
         assert!(is_sip_message(data));
     }
 
+    /// A `SIP/2.0` status line is detected as SIP.
     #[test]
     fn detect_response() {
         let data = b"SIP/2.0 200 OK\r\nVia: SIP/2.0/UDP ...\r\n\r\n";
         assert!(is_sip_message(data));
     }
 
+    /// A REGISTER request line is detected as SIP.
     #[test]
     fn detect_register() {
         let data = b"REGISTER sip:registrar.example.com SIP/2.0\r\n\r\n";
         assert!(is_sip_message(data));
     }
 
+    /// HTTP, free text, empty, and too-short inputs are all rejected.
     #[test]
     fn reject_non_sip() {
         assert!(!is_sip_message(b"GET / HTTP/1.1\r\n\r\n"));
@@ -125,6 +138,7 @@ mod tests {
         assert!(!is_sip_message(b"SIP"));
     }
 
+    /// Non-text bytes with no SIP first line are rejected.
     #[test]
     fn reject_binary_garbage() {
         assert!(!is_sip_message(&[

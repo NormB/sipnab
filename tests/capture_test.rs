@@ -14,7 +14,11 @@ use sipnab::capture::parse::{TransportProto, parse_packet};
 use sipnab::capture::writer::PcapWriter;
 use sipnab::capture::{CaptureConfig, PacketProcessor, PcapExportMode};
 
-/// Path to the test fixture pcap.
+/// Path to the test fixture pcap (`tests/fixtures/udp_5060.pcap`, 10 UDP
+/// SIP packets on port 5060).
+///
+/// # Returns
+/// Absolute path rooted at `CARGO_MANIFEST_DIR`.
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -22,7 +26,14 @@ fn fixture_path() -> PathBuf {
         .join("udp_5060.pcap")
 }
 
-/// Collect all packets from a file capture with the given config.
+/// Runs `capture_file` on the fixture pcap with the given config and drains
+/// every captured packet from the channel.
+///
+/// # Arguments
+/// * `config` — capture options (count limit, BPF filter, …) to apply.
+///
+/// # Returns
+/// All packets the capture emitted, in file order.
 fn collect_packets(config: CaptureConfig) -> Vec<Packet> {
     let (tx, rx) = packet_channel(1 << 20);
     capture_file(&fixture_path(), &config, tx, None).expect("capture_file should succeed");
@@ -31,12 +42,15 @@ fn collect_packets(config: CaptureConfig) -> Vec<Packet> {
 
 // ── Reading ────────────────────────────────────────────────────────────
 
+/// A default (unfiltered, unlimited) file capture yields all 10 fixture packets.
 #[test]
 fn read_fixture_all_packets() {
     let packets = collect_packets(CaptureConfig::default());
     assert_eq!(packets.len(), 10, "Fixture contains exactly 10 packets");
 }
 
+/// Every captured packet has non-empty data, positive caplen/origlen with no
+/// truncation, no interface (file capture), and link type DLT_EN10MB.
 #[test]
 fn packets_have_valid_metadata() {
     let packets = collect_packets(CaptureConfig::default());
@@ -52,6 +66,7 @@ fn packets_have_valid_metadata() {
 
 // ── Count limit ────────────────────────────────────────────────────────
 
+/// `count: Some(5)` stops the capture after exactly 5 of the 10 packets.
 #[test]
 fn count_limit_stops_early() {
     let config = CaptureConfig {
@@ -62,6 +77,7 @@ fn count_limit_stops_early() {
     assert_eq!(packets.len(), 5, "Should stop after exactly 5 packets");
 }
 
+/// The boundary case `count: Some(1)` yields exactly one packet.
 #[test]
 fn count_limit_one() {
     let config = CaptureConfig {
@@ -72,6 +88,7 @@ fn count_limit_one() {
     assert_eq!(packets.len(), 1);
 }
 
+/// A count limit larger than the file (100 > 10) yields all packets without error.
 #[test]
 fn count_limit_exceeds_file() {
     let config = CaptureConfig {
@@ -84,6 +101,7 @@ fn count_limit_exceeds_file() {
 
 // ── BPF filter ─────────────────────────────────────────────────────────
 
+/// The BPF filter `udp port 5060` matches all 10 fixture packets.
 #[test]
 fn bpf_filter_udp_5060() {
     let config = CaptureConfig {
@@ -99,6 +117,7 @@ fn bpf_filter_udp_5060() {
     );
 }
 
+/// A non-matching BPF filter (`tcp port 80`) yields zero packets.
 #[test]
 fn bpf_filter_no_match() {
     let config = CaptureConfig {
@@ -109,6 +128,8 @@ fn bpf_filter_no_match() {
     assert_eq!(packets.len(), 0, "No packets should match 'tcp port 80'");
 }
 
+/// BPF filter and count limit compose: matching filter plus `count: 3` yields
+/// exactly 3 packets.
 #[test]
 fn bpf_filter_with_count() {
     let config = CaptureConfig {
@@ -122,6 +143,8 @@ fn bpf_filter_with_count() {
 
 // ── Writer roundtrip ───────────────────────────────────────────────────
 
+/// Writing all fixture packets with `PcapWriter` and re-reading the file
+/// preserves packet count, data bytes, caplen, and origlen.
 #[test]
 fn writer_roundtrip() {
     let dir = tempfile::tempdir().expect("create tempdir");
@@ -159,6 +182,8 @@ fn writer_roundtrip() {
     }
 }
 
+/// Writing a count-limited capture (5 packets) produces a file that re-reads
+/// as exactly 5 packets.
 #[test]
 fn writer_with_count_limit() {
     let dir = tempfile::tempdir().expect("create tempdir");
@@ -193,7 +218,14 @@ fn writer_with_count_limit() {
 
 // ── format roundtrip (M2 — T2.6) ─────────────────────────────────────────
 
-/// Read the first `n` bytes of a file (for magic-number assertions).
+/// Reads the first `n` bytes of a file (for magic-number assertions).
+///
+/// # Arguments
+/// * `path` — file to inspect.
+/// * `n` — number of leading bytes to return; panics if the file is shorter.
+///
+/// # Returns
+/// The first `n` bytes.
 fn read_magic(path: &std::path::Path, n: usize) -> Vec<u8> {
     let bytes = std::fs::read(path).expect("read output file");
     assert!(bytes.len() >= n, "file too short for magic check");
@@ -281,6 +313,8 @@ fn pcapng_roundtrip_and_magic() {
 
 // ── start_capture integration ──────────────────────────────────────────
 
+/// `start_capture` with a `CaptureSource::File` spawns a thread that reads the
+/// fixture to completion and delivers all 10 packets over the channel.
 #[test]
 fn start_capture_file_source() {
     use sipnab::capture::{CaptureSource, start_capture};
@@ -300,6 +334,8 @@ fn start_capture_file_source() {
 
 // ── Packet parsing integration ────────────────────────────────────────
 
+/// `parse_packet` on every fixture packet yields UDP 5060→5060 from 10.0.0.1
+/// with a non-empty payload containing `SIP/2.0`.
 #[test]
 fn fixture_packets_parse_to_valid_udp() {
     let packets = collect_packets(CaptureConfig::default());
@@ -335,6 +371,8 @@ fn fixture_packets_parse_to_valid_udp() {
     }
 }
 
+/// `PacketProcessor::process` passes all 10 UDP fixture packets straight
+/// through (no reassembly buffering), each parsed as UDP port 5060.
 #[test]
 fn packet_processor_handles_fixture() {
     let packets = collect_packets(CaptureConfig::default());

@@ -59,6 +59,9 @@ impl EventExecEngine {
     /// * `on_quality_cmd` — Command template for quality events
     /// * `rate_limit` — Maximum executions per second (0 = unlimited)
     /// * `quality_threshold` — MOS score below which quality events fire
+    ///
+    /// Legacy `%variable` placeholders in both templates are rewritten to
+    /// `$SIPNAB_*` references at construction time.
     pub fn new(
         on_dialog_cmd: Option<String>,
         on_quality_cmd: Option<String>,
@@ -85,6 +88,15 @@ impl EventExecEngine {
     /// - `SIPNAB_TO` — To user
     /// - `SIPNAB_STATE` — Dialog state (e.g., "Completed")
     /// - `SIPNAB_METHOD` — Initial method (e.g., "INVITE")
+    ///
+    /// No-op when no `--on-dialog` command is configured or the rate limit
+    /// is exceeded (the event is silently dropped).
+    ///
+    /// # Side effects
+    ///
+    /// Spawns a `sh -c` child process running the configured command (see
+    /// `spawn_command`); reaps finished children and mutates the
+    /// rate-limit counters.
     pub fn fire_dialog_event(&mut self, dialog: &SipDialog) {
         let cmd = match self.on_dialog_cmd {
             Some(ref cmd) => cmd.clone(),
@@ -136,6 +148,16 @@ impl EventExecEngine {
     /// - `SIPNAB_MOS` — Estimated MOS score
     /// - `SIPNAB_JITTER` — Current jitter in ms
     /// - `SIPNAB_LOSS` — Loss percentage
+    ///
+    /// No-op when no `--on-quality` command is configured, the stream's
+    /// estimated MOS is at or above the threshold, or the rate limit is
+    /// exceeded.
+    ///
+    /// # Side effects
+    ///
+    /// Spawns a `sh -c` child process running the configured command (see
+    /// `spawn_command`); reaps finished children and mutates the
+    /// rate-limit counters.
     pub fn fire_quality_event(&mut self, stream: &RtpStream) {
         let cmd = match self.on_quality_cmd {
             Some(ref cmd) => cmd.clone(),
@@ -165,7 +187,14 @@ impl EventExecEngine {
         self.spawn_command(&cmd, &vars);
     }
 
-    /// Check and update rate limiting. Returns `true` if execution is allowed.
+    /// Check and update rate limiting. Returns `true` if execution is allowed
+    /// (always `true` when `rate_limit` is 0).
+    ///
+    /// # Side effects
+    ///
+    /// Resets the one-second window (and its exec count) when more than a
+    /// second has elapsed. The count itself is incremented by
+    /// `spawn_command` on successful spawn, not here.
     fn check_rate_limit(&mut self) -> bool {
         if self.rate_limit == 0 {
             return true;
@@ -188,6 +217,12 @@ impl EventExecEngine {
     }
 
     /// Reap completed child processes to prevent zombies and update queue depth.
+    ///
+    /// # Side effects
+    ///
+    /// Calls `try_wait` on every tracked child, dropping completed ones;
+    /// a child whose status check errors is dropped too (after a warning
+    /// log), which can leave it unreaped.
     fn reap_children(&mut self) {
         self.children.retain_mut(|child| {
             match child.try_wait() {
@@ -205,6 +240,20 @@ impl EventExecEngine {
     ///
     /// SIP data is passed exclusively via environment variables — never
     /// interpolated into the command string — to prevent command injection.
+    ///
+    /// # Arguments
+    ///
+    /// * `cmd` — Shell command template, run via `sh -c`.
+    /// * `env_vars` — `SIPNAB_*` name/value pairs set on the child.
+    ///
+    /// # Side effects
+    ///
+    /// Executes an external command: spawns `sh -c <cmd>` without waiting
+    /// for it. First reaps finished children; if the pending-child queue
+    /// is at `MAX_QUEUE_DEPTH` the event is dropped with a warning. On
+    /// successful spawn the rate-limit exec count is incremented and the
+    /// child is tracked for later reaping; spawn failures are logged and
+    /// swallowed.
     fn spawn_command(&mut self, cmd: &str, env_vars: &[(&str, String)]) {
         self.reap_children();
 
@@ -240,7 +289,8 @@ impl EventExecEngine {
     }
 }
 
-/// Calculate loss percentage for a stream.
+/// Calculate loss percentage for a stream as `lost / (received + lost)`
+/// (0.0 when no packets).
 fn loss_pct(stream: &RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     if total > 0 {
@@ -275,6 +325,8 @@ fn migrate_template_vars(template: &str) -> String {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for template migration, rate limiting, MOS gating, and the
+/// no-command no-op paths (no real hook commands are spawned).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,6 +334,7 @@ mod tests {
     // The per-RTP-packet hot path guards the quality-event work on this; it must
     // be true iff a command is configured (else fire_quality_event no-ops and the
     // guard lets the hot path skip the StreamKey rebuild + store lookup).
+    /// `quality_events_enabled` is true iff an `--on-quality` command is set.
     #[test]
     fn quality_events_enabled_tracks_command() {
         let off = EventExecEngine::new(None, None, 0, 4.0);
@@ -298,16 +351,19 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a minimal dialog from a single INVITE.
     fn make_dialog() -> SipDialog {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -333,6 +389,7 @@ mod tests {
         SipDialog::new(&msg).expect("should create dialog")
     }
 
+    /// Build a fresh single-packet PCMU RTP stream with SSRC 0xAABBCCDD.
     fn make_stream() -> RtpStream {
         let key = StreamKey {
             ssrc: 0xAABBCCDD,
@@ -354,12 +411,14 @@ mod tests {
         RtpStream::new(key, &hdr, ts())
     }
 
+    /// `%call_id` migrates to `$SIPNAB_CALL_ID`.
     #[test]
     fn migrate_template_vars_call_id() {
         let migrated = migrate_template_vars("echo %call_id");
         assert_eq!(migrated, "echo $SIPNAB_CALL_ID");
     }
 
+    /// Multiple `%` placeholders in one template all migrate.
     #[test]
     fn migrate_template_vars_multiple() {
         let migrated = migrate_template_vars("notify --from=%from --to=%to --state=%state");
@@ -368,6 +427,8 @@ mod tests {
         assert!(migrated.contains("$SIPNAB_STATE"));
     }
 
+    /// The command template is stored verbatim — values are only ever
+    /// passed as env vars, never interpolated (injection defense).
     #[test]
     fn env_var_injection_prevents_command_injection() {
         // A malicious call-id with shell metacharacters should NOT be
@@ -380,6 +441,7 @@ mod tests {
         );
     }
 
+    /// With rate_limit=10, exactly 10 of 15 exec attempts are allowed.
     #[test]
     fn rate_limiting_blocks_excess() {
         let mut engine = EventExecEngine::new(Some("true".to_string()), None, 10, 3.0);
@@ -397,6 +459,7 @@ mod tests {
         assert_eq!(fired, 10, "should only allow 10 execs with rate_limit=10");
     }
 
+    /// Low jitter and zero loss yield an estimated MOS above 4.0.
     #[test]
     fn mos_estimation_good_quality() {
         // Good conditions: low jitter, no loss — uses canonical estimate_mos
@@ -407,6 +470,7 @@ mod tests {
         );
     }
 
+    /// High jitter and heavy loss yield an estimated MOS below 3.0.
     #[test]
     fn mos_estimation_bad_quality() {
         // Bad conditions: high jitter, significant loss — uses canonical estimate_mos
@@ -414,6 +478,7 @@ mod tests {
         assert!(mos < 3.0, "bad conditions should give MOS < 3.0: got {mos}");
     }
 
+    /// Firing events with no commands configured neither panics nor spawns.
     #[test]
     fn no_cmd_configured_noop() {
         let mut engine = EventExecEngine::new(None, None, 10, 3.0);
@@ -424,12 +489,14 @@ mod tests {
         engine.fire_quality_event(&stream);
     }
 
+    /// A fresh engine reports queue depth 0.
     #[test]
     fn queue_depth_tracking() {
         let engine = EventExecEngine::new(None, None, 10, 3.0);
         assert_eq!(engine.queue_depth(), 0);
     }
 
+    /// Both dialog and quality templates are migrated at construction.
     #[test]
     fn legacy_template_migration_at_construction() {
         let engine = EventExecEngine::new(

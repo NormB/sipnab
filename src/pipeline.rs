@@ -96,7 +96,7 @@ pub fn try_websocket_unwrap(pp: &ParsedPacket) -> Option<Vec<u8>> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PipelineOptions {
     /// Skip dialog tracking for SIP messages. Classification still returns
-    /// [`PacketAction::Sip`] (batch mode counts/matches/outputs untracked
+    /// `PacketAction::Sip` (batch mode counts/matches/outputs untracked
     /// messages), but SDP link extraction is skipped and appliers must not
     /// write the dialog store.
     pub no_dialog: bool,
@@ -116,7 +116,7 @@ pub struct PipelineOptions {
 /// Optional media-decryption state threaded through the live pipeline: the SRTP
 /// context (`--srtp-keys` + SDES `a=crypto`) and the DTLS-SRTP extractor
 /// (`--dtls-keylog`). Both absent in non-`tls` builds; construct with
-/// [`Default`] and populate the fields when a `tls` build has keys.
+/// `Default` and populate the fields when a `tls` build has keys.
 #[derive(Default)]
 pub struct MediaDecrypt<'a> {
     /// SRTP context that authenticates and decrypts RTP payloads in place.
@@ -125,24 +125,25 @@ pub struct MediaDecrypt<'a> {
     /// DTLS-SRTP extractor that recovers SRTP keys from DTLS handshakes.
     #[cfg(feature = "tls")]
     pub dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+    /// Holds the `'a` lifetime when neither decrypt field is compiled in.
     #[cfg(not(feature = "tls"))]
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
-/// The store-mutation intent produced by [`classify_packet`] — the outcome of
+/// The store-mutation intent produced by `classify_packet` — the outcome of
 /// classifying one packet *without touching any store or lock*. Each router
 /// applies it with its own store access: the live path takes brief per-store
-/// write locks ([`process_packet`]); the offline `--jobs` and batch paths call
+/// write locks (`process_packet`); the offline `--jobs` and batch paths call
 /// plain `&mut` stores directly. Separating the (duplicated) classification
 /// from the (legitimately different) application is the core of the pipeline
 /// unification (WS1).
 pub enum PacketAction {
     /// Nothing to record: not SIP/RTP/RTCP, a DTLS handshake already consumed
-    /// for key material, or opted out via [`PipelineOptions`].
+    /// for key material, or opted out via `PipelineOptions`.
     None,
     /// A parsed SIP message plus the RTP-stream link tuples derived from its
-    /// SDP (see [`extract_sdp_links`]). Returned even under
-    /// [`PipelineOptions::no_dialog`] (with empty `sdp_links`) — batch mode
+    /// SDP (see `extract_sdp_links`). Returned even under
+    /// `PipelineOptions::no_dialog` (with empty `sdp_links`) — batch mode
     /// still counts, matches, and outputs the message; appliers gate the
     /// dialog-store write on the option.
     Sip {
@@ -155,14 +156,14 @@ pub enum PacketAction {
     Rtcp(Vec<rtp::rtcp::RtcpPacket>),
     /// An RTP packet to record. `decrypted_payload` is `Some` only when SRTP
     /// substituted a plaintext payload; `None` means use the original
-    /// [`ParsedPacket`] unchanged — so the common (unencrypted) path never
+    /// `ParsedPacket` unchanged — so the common (unencrypted) path never
     /// clones the packet.
     Rtp {
         /// The parsed RTP header.
         hdr: rtp::parser::RtpHeader,
         /// SRTP-decrypted payload, if any.
         decrypted_payload: Option<bytes::Bytes>,
-        /// `true` when the packet failed the strict [`rtp::is_rtp_packet`]
+        /// `true` when the packet failed the strict `rtp::is_rtp_packet`
         /// pre-filter and was promoted by the consecutive-packet heuristic
         /// instead. Batch mode uses this to skip DTMF extraction and quality
         /// events for heuristic streams.
@@ -170,7 +171,7 @@ pub enum PacketAction {
     },
 }
 
-/// Classify one parsed packet into a [`PacketAction`] — the lock-free core of
+/// Classify one parsed packet into a `PacketAction` — the lock-free core of
 /// the per-packet pipeline. WebSocket unwrap, SIP parse + SDP-link extraction,
 /// DTLS/SRTP key learning, RTCP parse, and RTP (header or heuristic) detection
 /// all happen here, touching no store. `decrypt` is mutated in place to learn
@@ -323,7 +324,7 @@ pub fn classify_packet(
 
 /// Route one parsed packet into the dialog / stream stores (live/TUI path).
 ///
-/// Classifies via [`classify_packet`] (lock-free), then applies the result
+/// Classifies via `classify_packet` (lock-free), then applies the result
 /// with brief per-store write locks — each store is locked once and released,
 /// never both at once, to minimize contention with the TUI render thread.
 ///
@@ -382,6 +383,8 @@ pub fn process_packet(
 // output, which needs `tracing-subscriber` (only compiled under `native`).
 #[cfg(all(test, feature = "native"))]
 mod quiet_bad_parse_tests {
+    //! Tests that `--quiet-bad-parse` gates only the parse-error diagnostic and
+    //! never changes how a packet classifies.
     use super::*;
     use crate::capture::parse::{ParsedPacket, TransportProto};
     use chrono::Utc;
@@ -424,6 +427,8 @@ mod quiet_bad_parse_tests {
         String::from_utf8_lossy(&bytes).into_owned()
     }
 
+    /// Build a UDP `ParsedPacket` from 10.0.0.1:5060 → 10.0.0.2:5060 carrying
+    /// `payload`, for driving `classify_packet` without a real capture.
     fn packet(payload: &[u8]) -> ParsedPacket {
         ParsedPacket {
             timestamp: Utc::now(),
@@ -450,6 +455,7 @@ mod quiet_bad_parse_tests {
         packet(b"SIP/2.0 XYZ Bad Status\r\n\r\n")
     }
 
+    /// A well-formed INVITE packet that parses successfully.
     fn valid_invite() -> ParsedPacket {
         packet(
             b"INVITE sip:bob@example.com SIP/2.0\r\n\
@@ -462,12 +468,15 @@ mod quiet_bad_parse_tests {
         )
     }
 
+    /// Classify `pp` with default heuristic/decrypt state (test wrapper).
     fn classify(pp: &ParsedPacket, opts: &PipelineOptions) -> PacketAction {
         let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = MediaDecrypt::default();
         classify_packet(pp, &mut heur, opts, &mut decrypt)
     }
 
+    /// By default a malformed SIP packet drops to `None` and emits the
+    /// "SIP parse error" diagnostic.
     #[test]
     fn default_reports_bad_parse() {
         let pp = malformed_sip();
@@ -481,6 +490,8 @@ mod quiet_bad_parse_tests {
         );
     }
 
+    /// With `quiet_bad_parse` set, the same malformed packet still drops but
+    /// the diagnostic is silenced.
     #[test]
     fn quiet_flag_suppresses_diagnostic() {
         let pp = malformed_sip();
@@ -498,6 +509,7 @@ mod quiet_bad_parse_tests {
         );
     }
 
+    /// The flag never changes classification of a valid INVITE (still `Sip`).
     #[test]
     fn quiet_flag_does_not_affect_valid_sip() {
         // Adversarial: the flag must only gate the error notice, never change

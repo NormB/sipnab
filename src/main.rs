@@ -1,7 +1,7 @@
 //! sipnab — SIP & RTP capture, analysis, and security tool.
 //!
 //! The binary is a thin dispatcher (WS2): parse arguments, run the
-//! immediate commands, load config, build a [`bootstrap::RunPlan`], launch
+//! immediate commands, load config, build a `bootstrap::RunPlan`, launch
 //! the capture, and hand off to the TUI or batch runner in `sipnab::app`.
 
 // Same production-path panic policy as the library (tests exempt via
@@ -18,6 +18,20 @@ use sipnab::app::bootstrap::{self, RunMode};
 use sipnab::cli::Cli;
 use sipnab::signals;
 
+/// Binary entry point: run the startup sequence end to end.
+///
+/// Parses CLI arguments, initializes logging, runs the immediate commands
+/// (`--setup-caps`, `--strip-secrets`, `--mint-token`), installs signal and
+/// panic handlers, loads and validates configuration, plans the run, launches
+/// the capture, and dispatches to the TUI or batch runner.
+///
+/// # Side effects
+///
+/// Installs the global mimalloc allocator, writes to stdout/stderr via
+/// `tracing`, installs SIGINT/SIGTERM/SIGUSR1 handlers and the panic hook,
+/// opens capture devices, may drop privileges and chroot, and calls
+/// `std::process::exit` for the immediate commands and on fatal errors
+/// (exit code 2 on argument-validation failure).
 fn main() {
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();

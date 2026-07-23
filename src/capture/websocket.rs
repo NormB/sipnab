@@ -12,8 +12,9 @@ use anyhow::{Result, bail};
 /// Maximum allowed WebSocket frame payload size (D17 limit: 64 KB).
 const MAX_FRAME_SIZE: u64 = 65_536;
 
-/// WebSocket opcodes for data frames.
+/// WebSocket text-frame opcode (RFC 6455 section 5.2).
 const OPCODE_TEXT: u8 = 1;
+/// WebSocket binary-frame opcode (RFC 6455 section 5.2).
 const OPCODE_BINARY: u8 = 2;
 
 /// Common ports where SIP-over-WebSocket traffic is expected.
@@ -197,6 +198,9 @@ fn header_size(len7: u64, masked: bool) -> usize {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for WebSocket frame detection and unwrapping, covering masked and
+/// unmasked frames, extended-length encodings, control frames, and truncation
+/// / oversize error paths.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +253,7 @@ mod tests {
         frame
     }
 
+    /// An unmasked text frame is detected and unwraps to its exact payload.
     #[test]
     fn unwrap_unmasked_text_frame() {
         let payload = b"INVITE sip:bob@example.com SIP/2.0\r\n\r\n";
@@ -259,6 +264,7 @@ mod tests {
         assert_eq!(result, Some(payload.to_vec()));
     }
 
+    /// A masked frame is detected and XOR-unmasks back to the original payload.
     #[test]
     fn unwrap_masked_frame() {
         let payload = b"SIP/2.0 200 OK\r\n\r\n";
@@ -270,6 +276,8 @@ mod tests {
         assert_eq!(result, Some(payload.to_vec()));
     }
 
+    /// A payload > 125 bytes uses the 126-format 16-bit length and unwraps
+    /// correctly.
     #[test]
     fn unwrap_extended_length_126() {
         // Create a payload > 125 bytes to trigger 126-format length
@@ -284,6 +292,7 @@ mod tests {
         assert_eq!(result, Some(payload));
     }
 
+    /// A close control frame (opcode 8) unwraps to `None`, not an error.
     #[test]
     fn control_frame_close_returns_none() {
         // opcode 8 = close, FIN=1
@@ -293,6 +302,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    /// A frame declaring a payload above the 64 KB limit errors with "too large".
     #[test]
     fn oversized_frame_returns_error() {
         let mut frame = Vec::new();
@@ -311,6 +321,7 @@ mod tests {
         assert!(err_msg.contains("too large"), "error: {err_msg}");
     }
 
+    /// A header declaring more payload than is present errors with "truncated".
     #[test]
     fn truncated_frame_returns_error() {
         // Valid header declaring 50-byte payload, but only 10 bytes of data
@@ -325,12 +336,14 @@ mod tests {
         assert!(err_msg.contains("truncated"), "error: {err_msg}");
     }
 
+    /// Inputs shorter than the 2-byte minimum header are not WebSocket frames.
     #[test]
     fn is_websocket_frame_rejects_too_short() {
         assert!(!is_websocket_frame(&[]));
         assert!(!is_websocket_frame(&[0x81]));
     }
 
+    /// A control frame (opcode 8) fails the data-frame detection heuristic.
     #[test]
     fn is_websocket_frame_rejects_control_frame() {
         // Close frame: opcode=8
@@ -338,6 +351,7 @@ mod tests {
         assert!(!is_websocket_frame(&frame));
     }
 
+    /// A frame with an RSV bit set is rejected by the detection heuristic.
     #[test]
     fn is_websocket_frame_rejects_rsv_bits_set() {
         // FIN=1, RSV1=1, opcode=1 — invalid
@@ -345,6 +359,7 @@ mod tests {
         assert!(!is_websocket_frame(&frame));
     }
 
+    /// A binary frame (opcode 2) is detected and unwraps to its payload.
     #[test]
     fn unwrap_binary_frame() {
         let payload = b"\x00\x01\x02\x03binary data";

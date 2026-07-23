@@ -130,6 +130,14 @@ fn r_to_mos(r: f64) -> f64 {
 ///
 /// * `received` — ordered sequence of packet reception outcomes.
 /// * `ptime_ms` — packet interval in milliseconds (e.g., 20.0 for G.711).
+///
+/// # Returns
+///
+/// A `BurstGapAnalysis` with burst counts, average burst/gap durations in
+/// milliseconds (interval count times `ptime_ms`), and per-region loss
+/// rates as fractions (0.0 to 1.0). An empty `received` slice yields an
+/// all-zero result with `is_bursty == false`. Pure function — no side
+/// effects.
 pub fn analyze_burst_gap(received: &[bool], ptime_ms: f64) -> BurstGapAnalysis {
     if received.is_empty() {
         return BurstGapAnalysis {
@@ -261,12 +269,16 @@ pub fn analyze_burst_gap(received: &[bool], ptime_ms: f64) -> BurstGapAnalysis {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for E-model MOS estimation (codec impairments, clamping,
+/// monotonic degradation) and burst/gap loss-pattern analysis.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     // ── MOS estimation tests ─────────────────────────────────────────
 
+    /// MOS stays within [1.0, 4.5] even at extreme loss where the raw
+    /// G.107 cubic dips below 1.0.
     #[test]
     fn mos_never_dips_below_documented_floor() {
         // 100% loss on G.711 lands R ≈ 4.4, where the raw G.107 cubic
@@ -288,6 +300,7 @@ mod tests {
         }
     }
 
+    /// Clean G.711 (0% loss, 10 ms jitter) scores above 4.0.
     #[test]
     fn mos_g711_perfect_conditions() {
         // G.711, 0% loss, 10ms jitter — should be excellent
@@ -295,6 +308,8 @@ mod tests {
         assert!(mos > 4.0, "Expected MOS > 4.0 for perfect G.711, got {mos}");
     }
 
+    /// G.711 at 5% loss and 50 ms jitter lands in the noticeably degraded
+    /// 2.0-3.5 band.
     #[test]
     fn mos_g711_moderate_degradation() {
         // G.711, 5% loss, 50ms jitter — noticeable degradation
@@ -305,6 +320,8 @@ mod tests {
         );
     }
 
+    /// G.729's inherent equipment impairment (Ie=10) scores below G.711 at
+    /// identical network conditions.
     #[test]
     fn mos_g729_lower_than_g711() {
         // G.729 has inherent codec impairment
@@ -316,6 +333,7 @@ mod tests {
         );
     }
 
+    /// Opus and G.711 share Ie=0, so their MOS matches at equal conditions.
     #[test]
     fn mos_opus_comparable_to_g711() {
         let mos_g711 = estimate_mos(10.0, 0.0, Some("PCMU"));
@@ -326,6 +344,7 @@ mod tests {
         );
     }
 
+    /// PCMA and PCMU (both G.711) produce identical MOS.
     #[test]
     fn mos_pcma_same_as_pcmu() {
         let mos_pcmu = estimate_mos(20.0, 1.0, Some("PCMU"));
@@ -336,6 +355,8 @@ mod tests {
         );
     }
 
+    /// An unknown/absent codec gets the moderate Ie=5 impairment, scoring
+    /// below G.711.
     #[test]
     fn mos_unknown_codec_moderate_impairment() {
         let mos_unknown = estimate_mos(10.0, 0.0, None);
@@ -346,6 +367,8 @@ mod tests {
         );
     }
 
+    /// Extreme conditions (100% loss, 500 ms jitter) never push MOS below
+    /// the 1.0 floor.
     #[test]
     fn mos_never_below_one() {
         // Extreme conditions: 100% loss, 500ms jitter
@@ -353,6 +376,7 @@ mod tests {
         assert!(mos >= 1.0, "MOS should never go below 1.0, got {mos}");
     }
 
+    /// Perfect conditions never push MOS above the 4.5 ceiling.
     #[test]
     fn mos_never_above_four_five() {
         // Perfect conditions
@@ -360,6 +384,8 @@ mod tests {
         assert!(mos <= 4.5, "MOS should never exceed 4.5, got {mos}");
     }
 
+    /// Raising jitter from 5 ms to 200 ms lowers the score (delay
+    /// impairment Id grows).
     #[test]
     fn mos_high_jitter_degrades_quality() {
         let mos_low = estimate_mos(5.0, 0.0, Some("PCMU"));
@@ -370,6 +396,7 @@ mod tests {
         );
     }
 
+    /// Raising loss from 0% to 20% lowers the score (Ie-eff grows).
     #[test]
     fn mos_high_loss_degrades_quality() {
         let mos_low = estimate_mos(10.0, 0.0, Some("PCMU"));
@@ -382,6 +409,8 @@ mod tests {
 
     // ── Burst/gap analysis tests ─────────────────────────────────────
 
+    /// Ten consecutive losses in otherwise clean traffic are detected as
+    /// at least one burst.
     #[test]
     fn burst_detected_consecutive_loss() {
         // 10 consecutive lost packets in a sequence of 100
@@ -399,6 +428,7 @@ mod tests {
         );
     }
 
+    /// Isolated single losses (every 50th packet) never form a burst.
     #[test]
     fn no_burst_random_isolated_loss() {
         // Random loss: every 50th packet lost (never more than 1 consecutive)
@@ -415,6 +445,7 @@ mod tests {
         assert_eq!(analysis.burst_count, 0);
     }
 
+    /// Two consecutive losses stay below the 3-loss burst threshold.
     #[test]
     fn no_burst_two_consecutive_loss() {
         // 2 consecutive losses is below the burst threshold (3)
@@ -430,6 +461,8 @@ mod tests {
         assert_eq!(analysis.burst_count, 0);
     }
 
+    /// Exactly three consecutive losses is the minimum counted as one
+    /// burst.
     #[test]
     fn burst_exactly_three_consecutive() {
         // Exactly 3 consecutive losses — minimum burst
@@ -443,6 +476,7 @@ mod tests {
         assert_eq!(analysis.burst_count, 1);
     }
 
+    /// Two separated loss runs are counted as two distinct bursts.
     #[test]
     fn multiple_bursts_detected() {
         let mut received = vec![true; 100];
@@ -464,6 +498,7 @@ mod tests {
         );
     }
 
+    /// An empty reception sequence yields the all-zero, non-bursty result.
     #[test]
     fn empty_sequence() {
         let analysis = analyze_burst_gap(&[], 20.0);
@@ -473,6 +508,7 @@ mod tests {
         assert_eq!(analysis.gap_duration_ms, 0.0);
     }
 
+    /// A loss-free sequence reports no bursts and zero loss rates.
     #[test]
     fn all_received_no_loss() {
         let received = vec![true; 100];
@@ -483,6 +519,8 @@ mod tests {
         assert_eq!(analysis.gap_loss_rate, 0.0);
     }
 
+    /// With one clear burst in clean traffic, the burst-region loss rate
+    /// exceeds the gap-region loss rate.
     #[test]
     fn burst_loss_rate_higher_than_gap() {
         // Create a clear burst in otherwise clean traffic
@@ -501,6 +539,8 @@ mod tests {
         );
     }
 
+    /// A 2-packet all-lost sequence is below the burst threshold, so not
+    /// bursty.
     #[test]
     fn all_lost_below_threshold_not_bursty() {
         let received = vec![false, false]; // Only 2 lost = below burst threshold of 3
@@ -509,6 +549,8 @@ mod tests {
         assert!(!result.is_bursty);
     }
 
+    /// 100 consecutive losses form exactly one burst with ~100% burst loss
+    /// rate.
     #[test]
     fn all_lost_single_burst() {
         let received = vec![false; 100]; // 100 consecutive lost
@@ -522,6 +564,8 @@ mod tests {
         );
     }
 
+    /// Burst duration scales with `ptime_ms`: the same loss pattern lasts
+    /// longer at 30 ms packets than at 20 ms.
     #[test]
     fn burst_duration_reflects_ptime() {
         let mut received = vec![true; 50];

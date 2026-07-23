@@ -20,7 +20,7 @@ pub fn shutdown_requested() -> bool {
 /// Programmatically request a shutdown (e.g., when the TUI exits).
 ///
 /// Sets the same flag as the SIGINT/SIGTERM handler so all threads
-/// that check [`shutdown_requested`] will see it.
+/// that check `shutdown_requested` will see it.
 pub fn request_shutdown() {
     SHUTDOWN_REQUESTED.store(true, Ordering::SeqCst);
 }
@@ -74,8 +74,10 @@ extern "C" fn rotate_handler(_sig: libc::c_int) {
 
 #[cfg(test)]
 mod tests {
+    //! Tests for the shutdown/rotation atomic-flag accessors.
     use super::*;
 
+    /// Both signal flags read `false` when freshly reset (no signal pending).
     #[test]
     fn default_flags_are_false() {
         // Reset flags for a clean test
@@ -86,6 +88,8 @@ mod tests {
         assert!(!rotation_requested());
     }
 
+    /// Setting the shutdown flag is observable via `shutdown_requested`, which
+    /// (unlike rotation) does not reset it on read.
     #[test]
     fn shutdown_flag_set_and_read() {
         SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
@@ -98,6 +102,8 @@ mod tests {
         SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
     }
 
+    /// The rotation flag is read-once: the first `rotation_requested` after a
+    /// set returns `true` and clears it; the next returns `false`.
     #[test]
     fn rotation_flag_resets_on_read() {
         ROTATE_REQUESTED.store(false, Ordering::SeqCst);

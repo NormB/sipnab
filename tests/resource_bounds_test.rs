@@ -19,9 +19,13 @@ use sipnab::rtp::stream_store::StreamStore;
 use sipnab::sip::dialog_store::DialogStore;
 use sipnab::sip::parser::parse_sip;
 
+/// Number of unique hostile identities (Call-IDs / SSRCs) each flood sends.
 const FLOOD: usize = 50_000;
+/// Store capacity the flood must never exceed.
 const CAP: usize = 1_000;
 
+/// A well-formed INVITE whose Call-ID (and branch/tag) embed `call_id`, so
+/// every flood iteration is a distinct dialog.
 fn invite_bytes(call_id: &str) -> Vec<u8> {
     format!(
         "INVITE sip:bob@example.com SIP/2.0\r\n\
@@ -35,6 +39,8 @@ fn invite_bytes(call_id: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// Parses the crafted INVITE for `call_id` into a `SipMessage` via the real
+/// `parse_sip` entry point.
 fn parse_invite(call_id: &str) -> sipnab::sip::SipMessage {
     parse_sip(
         &invite_bytes(call_id),
@@ -102,6 +108,8 @@ fn dialog_flood_bounded_without_rotate() {
     );
 }
 
+/// A valid RTP packet (V=2, PT=0) with the given SSRC/seq and a 160-byte
+/// G.711 payload.
 fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
     let mut p = vec![0x80, 0x00]; // V=2, PT=0
     p.extend_from_slice(&seq.to_be_bytes());
@@ -111,6 +119,8 @@ fn rtp_packet(ssrc: u32, seq: u16) -> Vec<u8> {
     p
 }
 
+/// Wraps an RTP payload in a `ParsedPacket` whose source address/port vary
+/// with the SSRC, so every flood iteration has a genuinely unique StreamKey.
 fn parsed_for(ssrc: u32, payload: Vec<u8>) -> ParsedPacket {
     // Vary the 4-tuple per SSRC too, so the StreamKey is genuinely
     // unique (an attacker controls all of it).

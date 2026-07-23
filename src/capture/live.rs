@@ -98,6 +98,33 @@ fn wait_readable(
 /// reached, or the duration limit expires.
 ///
 /// This function blocks and is intended to be called from a dedicated thread.
+///
+/// # Arguments
+///
+/// * `device` - interface name (`"any"` is never promiscuous).
+/// * `config` - snaplen, kernel buffer size, promiscuous flag, BPF filter,
+///   and count/duration limits.
+/// * `tx` - channel the captured `Packet`s are sent into.
+/// * `ready_tx` - optional one-shot channel: receives `Ok(())` once the
+///   device is open and filtered (so the caller can drop privileges), or
+///   `Err(msg)` on open/filter failure.
+///
+/// # Returns
+///
+/// `Ok(())` on shutdown, count limit, duration limit, or receiver drop.
+///
+/// # Errors
+///
+/// Fails when the device cannot be opened/activated (the message appends the
+/// available-device list for non-permission failures), the BPF filter does
+/// not compile, non-blocking mode cannot be set, or polling/reading the
+/// capture fd hits a fatal error.
+///
+/// # Side effects
+///
+/// Opens a capture socket (promiscuous unless disabled), sends packets on
+/// `tx`, signals `ready_tx`, blocks up to `POLL_INTERVAL` per idle poll,
+/// checks the global shutdown flag, and logs progress via tracing.
 pub fn capture_live(
     device: &str,
     config: &CaptureConfig,
@@ -298,6 +325,8 @@ fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
     })
 }
 
+/// Tests for live-capture support code: device-open error messages, poll
+/// timeout conversion, bounded fd waits, and timestamp hardening.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,6 +365,8 @@ mod tests {
         }
     }
 
+    /// Build a `libc::timeval` from `sec`/`usec` (casting to the target's
+    /// field widths).
     fn tv(sec: i64, usec: i64) -> libc::timeval {
         libc::timeval {
             tv_sec: sec as _,
@@ -344,27 +375,34 @@ mod tests {
     }
 
     // ── poll_timeout_millis: overflow-safe Duration → c_int conversion ────
+    /// Tests that the Duration → `poll(2)` millisecond conversion clamps
+    /// instead of wrapping negative.
     #[cfg(unix)]
     mod poll_timeout {
         use super::*;
         use std::time::Duration;
 
+        /// A zero duration converts to a zero timeout.
         #[test]
         fn zero_duration_is_zero() {
             assert_eq!(poll_timeout_millis(Duration::ZERO), 0);
         }
 
+        /// An in-range duration converts to its exact millisecond count.
         #[test]
         fn normal_duration_converts_exactly() {
             assert_eq!(poll_timeout_millis(Duration::from_millis(100)), 100);
         }
 
+        /// Exactly `c_int::MAX` milliseconds passes through unclamped.
         #[test]
         fn boundary_at_int_max_is_preserved() {
             let max = libc::c_int::MAX;
             assert_eq!(poll_timeout_millis(Duration::from_millis(max as u64)), max);
         }
 
+        /// A huge duration clamps to `c_int::MAX`, never wrapping negative
+        /// ("block forever" in poll(2)).
         #[test]
         fn overflowing_duration_clamps_not_wraps() {
             // A huge duration must clamp to c_int::MAX, never wrap to a small or
@@ -374,6 +412,7 @@ mod tests {
             assert!(poll_timeout_millis(huge) > 0);
         }
 
+        /// One millisecond past `c_int::MAX` clamps to `c_int::MAX`.
         #[test]
         fn one_past_int_max_clamps() {
             let over = Duration::from_millis(libc::c_int::MAX as u64 + 1);
@@ -384,13 +423,15 @@ mod tests {
     // ── wait_readable: a BOUNDED wait that returns even with no data ──────
     // This is the property the idle capture loop lacked, which let --duration
     // hang. Tested deterministically with a pipe — no capture privileges.
+    /// Deterministic `wait_readable` tests using a pipe — no capture
+    /// privileges required.
     #[cfg(unix)]
     mod wait_readable_tests {
         use super::*;
         use std::os::unix::io::RawFd;
         use std::time::{Duration, Instant};
 
-        /// (read_fd, write_fd)
+        /// Create a pipe via `pipe(2)` and return `(read_fd, write_fd)`.
         fn make_pipe() -> (RawFd, RawFd) {
             let mut fds = [0 as libc::c_int; 2];
             // SAFETY: `fds` is a valid 2-element array; `pipe` writes both.
@@ -399,11 +440,14 @@ mod tests {
             (fds[0], fds[1])
         }
 
+        /// Close a pipe fd from `make_pipe` (exactly once).
         fn close(fd: RawFd) {
             // SAFETY: `fd` came from `make_pipe` and is closed exactly once.
             unsafe { libc::close(fd) };
         }
 
+        /// An idle fd yields `TimedOut` within roughly the timeout — the
+        /// bounded-wait property the old loop lacked.
         #[test]
         fn times_out_on_idle_fd() {
             // The regression test: nothing is ever written, yet the wait MUST
@@ -425,6 +469,7 @@ mod tests {
             close(w);
         }
 
+        /// With data already queued, the wait returns `Readable` promptly.
         #[test]
         fn returns_readable_when_data_present() {
             let (r, w) = make_pipe();
@@ -443,6 +488,7 @@ mod tests {
             close(w);
         }
 
+        /// A zero timeout on an idle fd returns `TimedOut` immediately.
         #[test]
         fn zero_timeout_returns_immediately() {
             let (r, w) = make_pipe();
@@ -454,6 +500,8 @@ mod tests {
             close(w);
         }
 
+        /// A closed fd (POLLNVAL) surfaces as an error, never a spurious
+        /// `Readable` that would hot-spin the capture loop.
         #[test]
         fn invalid_fd_is_an_error_not_a_spin() {
             // Adversarial: a closed fd yields POLLNVAL. wait_readable must
@@ -486,6 +534,7 @@ mod tests {
         }
     }
 
+    /// An in-range timeval converts to the exact seconds + microseconds.
     #[test]
     fn valid_timestamp_converts_exactly() {
         let dt = pcap_ts_to_chrono(tv(1_700_000_000, 123_456));
@@ -493,6 +542,7 @@ mod tests {
         assert_eq!(dt.timestamp_subsec_micros(), 123_456);
     }
 
+    /// `tv_usec = 999_999` is the last valid value and converts exactly.
     #[test]
     fn usec_boundary_999_999_is_valid() {
         let dt = pcap_ts_to_chrono(tv(0, 999_999));
@@ -500,6 +550,7 @@ mod tests {
         assert_eq!(dt.timestamp_subsec_micros(), 999_999);
     }
 
+    /// `tv_sec = 0` is a real epoch timestamp, not an error fallback.
     #[test]
     fn zero_timestamp_is_valid_epoch() {
         // A pcap with tv_sec = 0 is a real (if odd) timestamp, not an error:
@@ -509,6 +560,8 @@ mod tests {
         assert_eq!(dt.timestamp_subsec_micros(), 0);
     }
 
+    /// A negative `tv_usec` falls back to "now" without panicking and bumps
+    /// the invalid-timestamp counter.
     #[test]
     fn negative_usec_does_not_panic_and_is_counted() {
         // Corrupted tv_usec: `as u32` wraps -1 to u32::MAX, and the old
@@ -522,6 +575,7 @@ mod tests {
         assert!((Utc::now() - dt).num_seconds().abs() < 60);
     }
 
+    /// `tv_usec >= 1_000_000` is corrupt: falls back to "now" and counts.
     #[test]
     fn oversized_usec_falls_back_and_is_counted() {
         // tv_usec must be < 1_000_000; 5_000_000 is corrupt.
@@ -532,6 +586,8 @@ mod tests {
         assert!((Utc::now() - dt).num_seconds().abs() < 60);
     }
 
+    /// An unrepresentable `tv_sec` (i64::MAX) falls back to "now" and
+    /// counts.
     #[test]
     fn out_of_range_sec_falls_back_and_is_counted() {
         let before = INVALID_PCAP_TIMESTAMPS.load(Ordering::Relaxed);

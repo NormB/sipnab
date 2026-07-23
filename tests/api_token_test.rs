@@ -17,10 +17,15 @@ use server::ApiServer;
 /// in-test minting.
 const SIGNING_KEY: &str = "e2e-api-signing-key-0123456789abcdef";
 
+/// Current UTC time as a Unix timestamp, used to build token `exp` claims.
+///
+/// # Returns
+/// Seconds since the Unix epoch.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// A token minted with the server's signing key and a future expiry gets 200.
 #[test]
 fn valid_signed_token_is_accepted() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
@@ -29,6 +34,7 @@ fn valid_signed_token_is_accepted() {
     assert_eq!(resp.status, 200, "valid signed token should be 200");
 }
 
+/// With signed-token auth enabled, a request with no Authorization header gets 401.
 #[test]
 fn missing_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
@@ -36,6 +42,8 @@ fn missing_token_is_rejected() {
     assert_eq!(resp.status, 401, "missing token should be 401");
 }
 
+/// A correctly-signed token whose `exp` is already in the past gets 401
+/// (deterministic: minted expired, no sleeping).
 #[test]
 fn expired_signed_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
@@ -45,6 +53,7 @@ fn expired_signed_token_is_rejected() {
     assert_eq!(resp.status, 401, "expired token should be 401");
 }
 
+/// A token minted with a different signing key than the server's gets 401.
 #[test]
 fn forged_wrong_key_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
@@ -53,6 +62,7 @@ fn forged_wrong_key_token_is_rejected() {
     assert_eq!(resp.status, 401, "forged token should be 401");
 }
 
+/// Flipping one byte in a valid token's payload part invalidates the HMAC → 401.
 #[test]
 fn tampered_payload_token_is_rejected() {
     let srv = ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]);
@@ -68,6 +78,8 @@ fn tampered_payload_token_is_rejected() {
     assert_eq!(resp.status, 401, "tampered payload should be 401");
 }
 
+/// With `--api-revoked-file`, a valid unexpired token whose id is on the
+/// denylist gets 401 while a token with a fresh id still gets 200.
 #[test]
 fn revoked_id_is_rejected_via_denylist_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -92,6 +104,8 @@ fn revoked_id_is_rejected_via_denylist_file() {
     assert_eq!(resp.status, 200, "non-revoked id should be 200");
 }
 
+/// With two `--api-signing-key` flags (rotation), tokens minted under either
+/// key are accepted with 200.
 #[test]
 fn rotation_accepts_tokens_from_either_key() {
     let key2 = "second-rotation-key-abcdef0123456789";
@@ -102,6 +116,8 @@ fn rotation_accepts_tokens_from_either_key() {
     assert_eq!(srv.get_bearer("/v1/dialogs", &t2).status, 200, "key2 token");
 }
 
+/// The legacy `--api-key` static-secret path still works: correct secret → 200,
+/// wrong secret → 401.
 #[test]
 fn static_api_key_backward_compat() {
     let srv = ApiServer::spawn(&["--api-key", "legacy-static-secret"]);

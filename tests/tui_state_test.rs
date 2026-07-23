@@ -3,6 +3,16 @@
 //! Tests App state transitions (view switching, key handling, filtering)
 //! without rendering. These exercise the core TUI logic independent of
 //! the visual output.
+//!
+//! Approach: each test builds an `App` directly (no real terminal, no capture
+//! thread), feeds it synthetic SIP messages produced by the fixture builders
+//! below, and drives it through `handle_key`/`handle_mouse_kind`, asserting
+//! on the view/state accessors. A minority of tests do render — into an
+//! in-memory ratatui `TestBackend` — where the behavior under test depends on
+//! layout (scroll clamping, checkbox focus styling, autoscroll, fold-row
+//! mapping); they assert on state or buffer cells, never on snapshots
+//! (`tui_snapshot_test.rs` owns those). Everything is gated on the `tui`
+//! feature.
 
 #[cfg(feature = "tui")]
 mod tui_state {
@@ -18,18 +28,38 @@ mod tui_state {
 
     // ── Helper: SIP message constructors ───────────────────────────────
 
+    /// A-side test endpoint address used as the source of requests.
+    ///
+    /// # Returns
+    /// `10.0.0.1` (note: not actually a loopback address despite the name).
     fn localhost_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
 
+    /// B-side test endpoint address used as the destination of requests.
+    ///
+    /// # Returns
+    /// `10.0.0.2` (note: not actually a loopback address despite the name).
     fn localhost_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
 
+    /// Fixed reference timestamp all fixture messages are offset from.
+    ///
+    /// # Returns
+    /// 2024-06-15 12:00:00 UTC, so tests are independent of wall-clock time.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble raw SIP wire bytes from a first line and header lines.
+    ///
+    /// # Arguments
+    /// * `first_line` - Request or status line, without CRLF.
+    /// * `headers` - Header lines, each without CRLF.
+    ///
+    /// # Returns
+    /// CRLF-terminated bytes ending in the blank header/body separator (no body).
     fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -42,6 +72,15 @@ mod tui_state {
         msg
     }
 
+    /// Parse a minimal INVITE (A-side to B-side, UDP 5060/5060).
+    ///
+    /// # Arguments
+    /// * `call_id` - Call-ID header value.
+    /// * `from` / `to` - Users placed in the From/To display names and URIs.
+    /// * `ts` - Capture timestamp.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             &format!("INVITE sip:{to}@example.com SIP/2.0"),
@@ -65,6 +104,16 @@ mod tui_state {
         .expect("parse INVITE")
     }
 
+    /// Parse a SIP response (B-side to A-side) for Alice/Bob's dialog.
+    ///
+    /// # Arguments
+    /// * `call_id` - Call-ID header value.
+    /// * `status` / `reason` - Status line, e.g. 200 "OK".
+    /// * `cseq_method` - Method echoed in the CSeq header.
+    /// * `ts` - Capture timestamp.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_response(
         call_id: &str,
         status: u16,
@@ -94,6 +143,12 @@ mod tui_state {
         .expect("parse response")
     }
 
+    /// Build an `App` preloaded with three INVITE dialogs: `call-1@test`
+    /// completed (200 OK), `call-2@test` failed (503), `call-3@test` active
+    /// in-call (200 OK, no BYE).
+    ///
+    /// # Returns
+    /// The `App` with all six messages already processed into its dialog store.
     fn app_with_three_dialogs() -> App {
         let t0 = base_ts();
         let messages = vec![
@@ -130,12 +185,14 @@ mod tui_state {
 
     // ── State machine tests ───────────────────────────────────────────
 
+    /// A fresh app starts in the `CallList` view.
     #[test]
     fn initial_view_is_call_list() {
         let app = App::new_test();
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Tab from the call list switches to the `StreamList` view.
     #[test]
     fn tab_switches_to_stream_list() {
         let mut app = App::new_test();
@@ -143,6 +200,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::StreamList);
     }
 
+    /// A second Tab from the stream list returns to the call list.
     #[test]
     fn tab_toggles_back_to_call_list() {
         let mut app = App::new_test();
@@ -152,6 +210,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Pressing `q` sets the quit flag.
     #[test]
     fn q_sets_should_quit() {
         let mut app = App::new_test();
@@ -160,6 +219,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// F1 opens the Help view.
     #[test]
     fn f1_opens_help() {
         let mut app = App::new_test();
@@ -167,6 +227,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Help);
     }
 
+    /// Esc closes Help and returns to the call list.
     #[test]
     fn esc_from_help_returns_to_call_list() {
         let mut app = App::new_test();
@@ -176,6 +237,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Enter on a populated call list opens `CallFlow` for the selected dialog.
     #[test]
     fn enter_on_dialog_opens_call_flow() {
         let mut app = app_with_three_dialogs();
@@ -188,6 +250,7 @@ mod tui_state {
         );
     }
 
+    /// Esc from the call flow returns to the call list.
     #[test]
     fn esc_from_call_flow_returns_to_call_list() {
         let mut app = app_with_three_dialogs();
@@ -197,6 +260,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Enter with no dialogs is a no-op: the view stays on the call list.
     #[test]
     fn enter_on_empty_list_stays_in_call_list() {
         let mut app = App::new_test();
@@ -205,6 +269,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// F7 opens the filter popup while the underlying view stays `CallList`.
     #[test]
     fn f7_opens_filter_popup() {
         let mut app = App::new_test();
@@ -214,6 +279,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Esc in the filter popup cancels without applying: all 3 dialogs stay visible.
     #[test]
     fn filter_esc_cancels_without_applying() {
         let mut app = app_with_three_dialogs();
@@ -225,6 +291,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3); // no filter applied
     }
 
+    /// Typing "1003" into the From field and applying narrows the list to 1 dialog.
     #[test]
     fn filter_applied_narrows_visible_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -241,6 +308,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 1); // only dialog with From=1003
     }
 
+    /// F9 clears an applied filter, restoring all 3 dialogs.
     #[test]
     fn f9_clears_filter() {
         let mut app = app_with_three_dialogs();
@@ -258,6 +326,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
+    /// `s` opens the Statistics view.
     #[test]
     fn s_opens_statistics_view() {
         let mut app = App::new_test();
@@ -265,6 +334,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Statistics);
     }
 
+    /// Esc closes Statistics back to the call list.
     #[test]
     fn esc_from_statistics_returns_to_call_list() {
         let mut app = App::new_test();
@@ -274,6 +344,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Esc leaves the stream list for the call list.
     #[test]
     fn esc_from_stream_list_returns_to_call_list() {
         let mut app = App::new_test();
@@ -283,6 +354,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Enter inside the call flow opens `RawMessage` for the selected message.
     #[test]
     fn call_flow_enter_opens_raw_message() {
         let mut app = app_with_three_dialogs();
@@ -296,6 +368,7 @@ mod tui_state {
         );
     }
 
+    /// Esc from a raw message opened via the call flow returns to the call flow.
     #[test]
     fn esc_from_raw_message_returns_to_call_flow() {
         let mut app = app_with_three_dialogs();
@@ -306,6 +379,7 @@ mod tui_state {
         assert!(matches!(app.current_view(), View::CallFlow(_)));
     }
 
+    /// `q` quits from the stream list and from the call flow alike.
     #[test]
     fn q_quits_from_any_view() {
         // From stream list
@@ -321,6 +395,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Filter text like "[invalid" is a literal substring: no error, zero matches.
     #[test]
     fn regex_metachars_in_filter_are_literal_text() {
         let mut app = app_with_three_dialogs();
@@ -336,6 +411,8 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 0);
     }
 
+    /// F9 clears filter and dialog state; re-applying empty filter fields
+    /// afterwards is a no-op that keeps all 3 dialogs visible.
     #[test]
     fn empty_filter_clears_active_filter() {
         let mut app = app_with_three_dialogs();
@@ -362,8 +439,11 @@ mod tui_state {
 
     // ── SIP method checkbox set/unset scenarios ──────────────────────────
     // All three fixture dialogs are INVITEs. INVITE is checkbox index 2.
+    /// Method-checkbox grid index of INVITE in the filter popup (the grid
+    /// itself starts at focus index 6, after the 5 text fields and "All").
     const INVITE_IDX: usize = 2;
 
+    /// Applying the popup untouched (all methods checked) shows every dialog (regression: it used to show none).
     #[test]
     fn filter_default_open_apply_shows_all_messages() {
         // SIP messages are checked by default → applying with nothing changed
@@ -375,6 +455,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
+    /// With every method checkbox unchecked, no dialogs are shown.
     #[test]
     fn filter_uncheck_all_methods_shows_nothing() {
         let mut app = app_with_three_dialogs();
@@ -386,6 +467,7 @@ mod tui_state {
         );
     }
 
+    /// With only INVITE checked, all three INVITE fixtures remain visible.
     #[test]
     fn filter_only_invite_checked_shows_invite_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -395,6 +477,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3, "all fixtures are INVITE");
     }
 
+    /// With every method except INVITE checked, all INVITE fixtures disappear.
     #[test]
     fn filter_uncheck_invite_hides_invite_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -408,6 +491,7 @@ mod tui_state {
         );
     }
 
+    /// Re-checking all methods after an uncheck-all restores every dialog.
     #[test]
     fn filter_recheck_all_after_unchecking_shows_all_again() {
         let mut app = app_with_three_dialogs();
@@ -423,6 +507,7 @@ mod tui_state {
 
     // ── "All" master checkbox (enable/disable every method at once) ─────
 
+    /// The "All" master checkbox toggles every method off then back on; applying then shows all dialogs.
     #[test]
     fn filter_all_checkbox_disables_then_enables_every_method() {
         // Focus order: 5 text fields (0-4), the "All" master checkbox (5),
@@ -445,6 +530,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3);
     }
 
+    /// From a mixed checkbox state, toggling "All" enables every method first.
     #[test]
     fn filter_all_checkbox_from_mixed_state_enables_all_first() {
         let mut app = App::new_test();
@@ -471,6 +557,7 @@ mod tui_state {
         );
     }
 
+    /// The rendered filter popup contains the "All" master checkbox label.
     #[test]
     fn filter_all_checkbox_is_rendered_in_popup() {
         let backend = ratatui::backend::TestBackend::new(80, 40);
@@ -492,6 +579,7 @@ mod tui_state {
         );
     }
 
+    /// Via the real key path (F7, 8 Tabs, Space, Enter), unchecking INVITE hides the INVITE dialogs.
     #[test]
     fn filter_space_toggles_method_via_keys() {
         // Drive the real key path: F7, move focus to the INVITE checkbox, Space
@@ -514,6 +602,7 @@ mod tui_state {
         );
     }
 
+    /// Seven Tabs land on right-column checkbox OPTIONS (focus 7) and Space toggles it off.
     #[test]
     fn filter_right_column_reachable_by_tab_and_toggle() {
         let mut app = App::new_test();
@@ -535,6 +624,7 @@ mod tui_state {
         );
     }
 
+    /// A focused right-column checkbox (OPTIONS) renders bold in the popup.
     #[test]
     fn filter_right_column_focus_renders_bold() {
         use ratatui::style::Modifier;
@@ -563,6 +653,7 @@ mod tui_state {
         );
     }
 
+    /// Down from the bottom of the left checkbox column enters the right column instead of skipping to the buttons.
     #[test]
     fn filter_down_arrow_reaches_second_column() {
         let mut app = App::new_test();
@@ -592,6 +683,7 @@ mod tui_state {
         );
     }
 
+    /// Right arrow moves focus from REGISTER (left column) into OPTIONS (right column).
     #[test]
     fn filter_right_arrow_reaches_second_column() {
         let mut app = App::new_test();
@@ -612,6 +704,7 @@ mod tui_state {
         assert!(!app.filter_focus_and_methods_for_test().1[1]);
     }
 
+    /// F9 clears a no-methods filter and restores all dialogs.
     #[test]
     fn filter_f9_clears_method_filter_to_show_all() {
         let mut app = app_with_three_dialogs();
@@ -623,6 +716,7 @@ mod tui_state {
 
     // ── Filter dialog checkbox grid navigation ─────────────────────────
 
+    /// Down walks the checkbox grid row by row: left column, then right column, then the buttons.
     #[test]
     fn filter_checkbox_down_moves_by_row() {
         // Layout: 2 columns, 5 rows. idx 0=REGISTER, 1=OPTIONS, 2=INVITE, ...
@@ -667,6 +761,7 @@ mod tui_state {
         assert_eq!(app.filter_dialog.focused_field(), 16); // Filter button
     }
 
+    /// Right/Left move between the two checkbox columns; Right at the right edge is a no-op.
     #[test]
     fn filter_checkbox_right_moves_by_column() {
         let mut app = App::new_test();
@@ -689,6 +784,7 @@ mod tui_state {
         assert_eq!(app.filter_dialog.focused_field(), 6); // REGISTER
     }
 
+    /// Up walks a method row up, then to the All checkbox, then to the last text field.
     #[test]
     fn filter_checkbox_up_moves_by_row() {
         let mut app = App::new_test();
@@ -715,6 +811,7 @@ mod tui_state {
 
     // ── F5 / Ctrl-L — Clear calls ─────────────────────────────────────
 
+    /// F5 with nothing check-selected clears every dialog.
     #[test]
     fn f5_clears_all_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -723,6 +820,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 0);
     }
 
+    /// Ctrl-L clears every dialog, same as F5.
     #[test]
     fn ctrl_l_clears_all_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -731,6 +829,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 0);
     }
 
+    /// With one row check-selected, F5 clears only that dialog, leaving 2.
     #[test]
     fn f5_clears_only_selected_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -744,6 +843,7 @@ mod tui_state {
 
     // ── F6 / r — Raw message view ─────────────────────────────────────
 
+    /// F6 from the call list jumps straight to the `RawMessage` view.
     #[test]
     fn f6_opens_raw_message_view() {
         let mut app = app_with_three_dialogs();
@@ -755,6 +855,7 @@ mod tui_state {
         );
     }
 
+    /// `r` from the call list opens the `RawMessage` view.
     #[test]
     fn r_opens_raw_message_view() {
         let mut app = app_with_three_dialogs();
@@ -768,6 +869,7 @@ mod tui_state {
 
     // ── F10 / t — Column selector ─────────────────────────────────────
 
+    /// F10 opens the call-list column selector.
     #[test]
     fn f10_opens_column_selector() {
         let mut app = App::new_test();
@@ -776,6 +878,7 @@ mod tui_state {
         assert!(app.call_list_state().column_selector_open);
     }
 
+    /// `t` cycles the timestamp mode DeltaPrev, DeltaFirst, Scaled, Absolute, back to DeltaPrev.
     #[test]
     fn t_cycles_timestamp_mode() {
         let mut app = App::new_test();
@@ -790,6 +893,7 @@ mod tui_state {
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaPrev);
     }
 
+    /// Enter closes the column selector.
     #[test]
     fn column_selector_enter_closes() {
         let mut app = App::new_test();
@@ -799,6 +903,7 @@ mod tui_state {
         assert!(!app.call_list_state().column_selector_open);
     }
 
+    /// Esc closes the column selector.
     #[test]
     fn column_selector_esc_closes() {
         let mut app = App::new_test();
@@ -807,6 +912,7 @@ mod tui_state {
         assert!(!app.call_list_state().column_selector_open);
     }
 
+    /// Space in the column selector toggles the focused column's visibility both ways.
     #[test]
     fn column_selector_space_toggles_visibility() {
         let mut app = App::new_test();
@@ -821,6 +927,7 @@ mod tui_state {
 
     // ── Sort column cycling ───────────────────────────────────────────
 
+    /// `>` and `<` cycle the sort column forward and backward (Index, Method, From).
     #[test]
     fn angle_brackets_cycle_sort_column() {
         use sipnab::tui::call_list::SortColumn;
@@ -842,6 +949,7 @@ mod tui_state {
 
     // ── Z — Reverse sort ──────────────────────────────────────────────
 
+    /// `Z` toggles the sort direction between ascending and descending.
     #[test]
     fn z_reverses_sort_direction() {
         let mut app = App::new_test();
@@ -854,6 +962,7 @@ mod tui_state {
 
     // ── A — Toggle autoscroll ─────────────────────────────────────────
 
+    /// `A` toggles the call-list autoscroll flag off and back on.
     #[test]
     fn a_toggles_autoscroll() {
         let mut app = App::new_test();
@@ -866,6 +975,7 @@ mod tui_state {
 
     // ── p — Pause/resume ──────────────────────────────────────────────
 
+    /// `p` toggles capture pause on and off.
     #[test]
     fn p_toggles_paused() {
         let mut app = App::new_test();
@@ -878,6 +988,7 @@ mod tui_state {
 
     // ── i/I — Clear with filter ───────────────────────────────────────
 
+    /// With a filter active, `i` deletes the non-matching dialogs, keeping only the 1 match.
     #[test]
     fn i_clears_non_matching_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -900,6 +1011,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 1);
     }
 
+    /// With a filter active, `I` deletes the matching dialog, keeping the other 2.
     #[test]
     fn i_uppercase_clears_matching_dialogs() {
         let mut app = app_with_three_dialogs();
@@ -921,6 +1033,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 2);
     }
 
+    /// `i` without an active filter changes nothing.
     #[test]
     fn i_without_filter_does_nothing() {
         let mut app = app_with_three_dialogs();
@@ -929,6 +1042,7 @@ mod tui_state {
         assert_eq!(app.visible_dialog_count(), 3); // no change
     }
 
+    /// `I` without an active filter changes nothing.
     #[test]
     fn i_uppercase_without_filter_does_nothing() {
         let mut app = app_with_three_dialogs();
@@ -938,6 +1052,9 @@ mod tui_state {
     }
 
     /// Create an app with the call flow view open on dialog 1.
+    ///
+    /// # Returns
+    /// The three-dialog fixture app with the call flow view active.
     fn app_with_call_flow_open() -> App {
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::Enter); // open call flow for first dialog
@@ -946,6 +1063,9 @@ mod tui_state {
     }
 
     /// Create an app with the raw message view open.
+    ///
+    /// # Returns
+    /// The fixture app viewing the raw bytes of dialog 1's first message.
     fn app_in_raw_message() -> App {
         let mut app = app_with_call_flow_open();
         app.handle_key(KeyCode::Enter); // open raw message from call flow
@@ -954,6 +1074,9 @@ mod tui_state {
     }
 
     /// Create an app in the message diff view.
+    ///
+    /// # Returns
+    /// The fixture app with the diff of dialog 1's messages 0 and 1 open.
     fn app_in_message_diff() -> App {
         let mut app = app_with_call_flow_open();
         app.handle_key(KeyCode::Char(' ')); // select first message
@@ -967,6 +1090,7 @@ mod tui_state {
     // (filter + search + sort), not a filter-only unsorted list.
 
     // With a search narrowing the list to one row, Enter must open that row.
+    /// With search narrowed to one row, a single Enter commits the query and opens that row (`call-2@test`).
     #[test]
     fn enter_after_search_opens_the_call_the_user_sees() {
         let mut app = app_with_three_dialogs();
@@ -988,6 +1112,7 @@ mod tui_state {
 
     // With a search active, Down must not walk the selection past the
     // visible rows.
+    /// With one searched row visible, repeated Down keeps the selection clamped at 0.
     #[test]
     fn navigation_clamps_to_searched_rows() {
         let mut app = app_with_three_dialogs();
@@ -1008,6 +1133,7 @@ mod tui_state {
 
     // After reversing the sort, the top row is the LAST dialog; Enter must
     // open that one.
+    /// After `Z` reverses the sort, Enter opens the new top row (`call-3@test`), not the old index.
     #[test]
     fn enter_after_sort_reversal_opens_the_top_displayed_row() {
         let mut app = app_with_three_dialogs();
@@ -1025,6 +1151,7 @@ mod tui_state {
     // Multi-select checkmarks must stick to the CALL, not the row position:
     // selecting call-1, then reordering the list, then clearing selected must
     // remove call-1 — not whatever now sits at the old row index.
+    /// A selection checkmark follows the call across a sort reversal: F5 clears checked call-1, not the new row-0 occupant.
     #[test]
     fn multi_select_survives_reordering() {
         let mut app = app_with_three_dialogs();
@@ -1046,6 +1173,7 @@ mod tui_state {
     // Esc from a raw message opened DIRECTLY from the call list (F6) must
     // return to the call list, not dump the user into a call-flow view they
     // never opened.
+    /// Esc from a raw message opened via F6 returns to the call list, not to an unvisited call flow.
     #[test]
     fn esc_from_raw_message_opened_from_call_list_returns_to_call_list() {
         let mut app = app_with_three_dialogs();
@@ -1057,6 +1185,11 @@ mod tui_state {
 
     // ── Filter dialog: user text is matched literally ──────────────────
 
+    /// Parse an INVITE whose From user is exactly `from_user` (no display
+    /// name) and that carries a fixed User-Agent, for literal filter matching.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_invite_from_user(call_id: &str, from_user: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -1082,6 +1215,10 @@ mod tui_state {
     }
 
     /// Open the filter popup, type `text` into the From field, apply.
+    ///
+    /// # Arguments
+    /// * `app` - App driven via key events.
+    /// * `text` - Literal (non-regex) text typed into the focused From field.
     fn apply_from_filter(app: &mut App, text: &str) {
         app.handle_key(KeyCode::F(7));
         assert!(matches!(app.active_popup(), Some(Popup::FilterDialog)));
@@ -1093,6 +1230,7 @@ mod tui_state {
 
     // Regex metacharacters typed into a filter field must match literally —
     // "a+b" is a user name, not a regex.
+    /// Filter text "a+b" matches only the literal `a+b` user (a regex would also match "aab"), with no error.
     #[test]
     fn filter_text_with_regex_metachars_matches_literally() {
         let t0 = base_ts();
@@ -1124,6 +1262,7 @@ mod tui_state {
     // Adversarial input: unbalanced parens, quotes, backslashes must never
     // produce a parse error — they are literal text that simply matches
     // nothing here.
+    /// Unbalanced parens/brackets/quotes/backslashes in a filter never error; they just match nothing.
     #[test]
     fn filter_adversarial_text_never_errors() {
         let t0 = base_ts();
@@ -1142,6 +1281,7 @@ mod tui_state {
 
     // The Payload field must actually filter: it matches against the raw
     // message content of the dialog.
+    /// The Payload filter field matches raw message content (a User-Agent string), narrowing to 1 dialog.
     #[test]
     fn payload_filter_matches_message_content() {
         let t0 = base_ts();
@@ -1168,6 +1308,7 @@ mod tui_state {
     }
 
     // Reopening search must allow refining the existing query, not wipe it.
+    /// Reopening search with `/` keeps the committed query for refinement instead of wiping it.
     #[test]
     fn search_query_preserved_on_reopen() {
         let mut app = app_with_three_dialogs();
@@ -1187,16 +1328,27 @@ mod tui_state {
 
     // ── Scroll clamping: no view may strand past its content ──────────
 
+    /// Render one frame of `app` into the given test terminal.
+    ///
+    /// # Arguments
+    /// * `app` - App whose `render` is invoked.
+    /// * `term` - In-memory terminal receiving the frame.
     fn draw(app: &mut App, term: &mut ratatui::Terminal<ratatui::backend::TestBackend>) {
         term.draw(|f| app.render(f)).unwrap();
     }
 
+    /// Build an 80x10 in-memory terminal, small enough to force overflow
+    /// and exercise scroll clamping.
+    ///
+    /// # Returns
+    /// A ratatui `Terminal` over a `TestBackend`.
     fn small_terminal() -> ratatui::Terminal<ratatui::backend::TestBackend> {
         ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 10)).unwrap()
     }
 
     // Raw message view: scrolling far past the end must clamp to the content
     // (so a single Up immediately moves the view back).
+    /// Raw view: 50 Downs and End both clamp near the ~8-line message, and one Up immediately moves back.
     #[test]
     fn raw_message_overscroll_clamps_and_recovers() {
         let mut app = app_with_three_dialogs();
@@ -1223,6 +1375,7 @@ mod tui_state {
 
     // Combined (transaction/dialog) detail: End claimed to clamp but never
     // did — u16::MAX scroll rendered a blank screen.
+    /// Combined detail: End clamps to content height instead of stranding at `u16::MAX` on a blank screen (regression).
     #[test]
     fn combined_detail_end_is_clamped_not_blank() {
         let mut app = app_with_three_dialogs();
@@ -1242,6 +1395,7 @@ mod tui_state {
     }
 
     // Call flow ladder: PageDown must not push the scroll past the ladder.
+    /// Repeated PageDown clamps the ladder scroll on a 2-message call flow.
     #[test]
     fn call_flow_pagedown_clamps_to_ladder() {
         let mut app = app_with_three_dialogs();
@@ -1261,6 +1415,7 @@ mod tui_state {
 
     // Statistics view must scroll: content taller than the pane was simply
     // cut off with no way to see the bottom.
+    /// Statistics scrolls with Down, clamps at End, and Home returns to 0.
     #[test]
     fn statistics_view_scrolls_and_clamps() {
         let mut app = app_with_three_dialogs();
@@ -1284,6 +1439,7 @@ mod tui_state {
 
     // Message diff must scroll: long messages were truncated with no
     // navigation at all.
+    /// Message diff scrolls with Down, clamps at End, and Home returns to 0.
     #[test]
     fn message_diff_scrolls_and_clamps() {
         let mut app = app_in_message_diff();
@@ -1307,6 +1463,7 @@ mod tui_state {
 
     // ── Keymap rebinds must apply in EVERY view ────────────────────────
 
+    /// Rebinding quit to `x` applies in the diff view; the unbound `q` no longer quits.
     #[test]
     fn diff_view_respects_quit_rebind() {
         let mut app = app_in_message_diff();
@@ -1320,6 +1477,7 @@ mod tui_state {
         );
     }
 
+    /// Rebinding help to F12 applies in the combined detail view.
     #[test]
     fn combined_detail_respects_help_rebind() {
         let mut app = app_with_call_flow_open();
@@ -1332,6 +1490,7 @@ mod tui_state {
 
     // A key the user rebinds to an action must win over the built-in global
     // fallbacks ('v' version, 'n' name-mode cycle).
+    /// A user rebind (`n` mapped to quit) wins over the built-in global fallback (name-mode cycle).
     #[test]
     fn keymap_rebind_beats_global_fallback_keys() {
         let mut app = app_with_three_dialogs();
@@ -1345,6 +1504,7 @@ mod tui_state {
 
     // ── Mouse wheel ────────────────────────────────────────────────────
 
+    /// Mouse wheel moves the call-list selection down twice and back up once.
     #[test]
     fn mouse_wheel_scrolls_call_list() {
         use crossterm::event::MouseEventKind;
@@ -1356,6 +1516,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 1);
     }
 
+    /// Mouse wheel scrolls the Help view.
     #[test]
     fn mouse_wheel_scrolls_help_view() {
         use crossterm::event::MouseEventKind;
@@ -1367,6 +1528,7 @@ mod tui_state {
     }
 
     // Left/Right in call flow silently did nothing with the split pane off.
+    /// Left with the split pane off shows a status hint mentioning `R` instead of silently doing nothing.
     #[test]
     fn call_flow_left_right_hint_when_split_off() {
         let mut app = app_with_call_flow_open();
@@ -1385,6 +1547,7 @@ mod tui_state {
     // Autoscroll: with the toggle ON and the selection sitting on the last
     // row, newly arriving dialogs pull the selection to the new bottom.
     // With the selection elsewhere, or the toggle OFF, nothing moves.
+    /// With autoscroll on and the selection on the last row, a newly arriving dialog pulls the selection to the new bottom.
     #[test]
     fn autoscroll_follows_new_dialogs_when_at_bottom() {
         let t0 = base_ts();
@@ -1410,6 +1573,7 @@ mod tui_state {
         );
     }
 
+    /// A new dialog does not move a selection that is not sitting on the bottom row.
     #[test]
     fn autoscroll_does_not_yank_selection_away() {
         let mut app = app_with_three_dialogs();
@@ -1432,6 +1596,7 @@ mod tui_state {
     }
 
     // Syntax highlight toggle: OFF must render the raw message plain.
+    /// Toggling syntax highlight off with `s` renders the raw message with zero bold cells.
     #[test]
     fn syntax_highlight_toggle_takes_effect() {
         use ratatui::style::Modifier;
@@ -1471,6 +1636,11 @@ mod tui_state {
 
     // ── Call flow with folded retransmissions: index mapping ──────────
 
+    /// Parse an OPTIONS keepalive without a Via header, so retransmission
+    /// detection falls back to CSeq identity (a repeated `cseq` folds as a retx).
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_options(call_id: &str, cseq: u32, ts: DateTime<Utc>) -> SipMessage {
         // No Via header → retransmission detection falls back to CSeq
         // identity, so a repeated CSeq is flagged as a retransmission.
@@ -1501,6 +1671,9 @@ mod tui_state {
     /// rows, each a fold header (+1 retx). Renders once so the App caches
     /// (visible row count, row→message mapping) are populated like in the
     /// real event loop.
+    ///
+    /// # Returns
+    /// The app (call flow open) and the 120x40 terminal it was rendered into.
     fn app_with_folded_flow() -> (App, ratatui::Terminal<ratatui::backend::TestBackend>) {
         let t0 = base_ts();
         let messages = vec![
@@ -1521,6 +1694,7 @@ mod tui_state {
     // Enter must open the raw view of the message the user SEES selected.
     // Visible row 1 is the second OPTIONS (raw message index 2) because the
     // two retransmissions are folded away.
+    /// In a folded ladder, Enter on visible row 1 opens raw message index 2 (OPT#2), not the folded retransmission.
     #[test]
     fn flow_enter_opens_the_message_the_user_sees() {
         let (mut app, mut terminal) = app_with_folded_flow();
@@ -1540,6 +1714,7 @@ mod tui_state {
 
     // 'e' on a fold header must expand THAT header's retransmissions, even
     // when earlier folds make the visible index differ from the raw index.
+    /// `e` on the second fold header expands that header's own retransmission (raw index 3) despite earlier folds shifting indices.
     #[test]
     fn flow_expand_on_second_fold_header_reveals_its_retransmissions() {
         let (mut app, mut terminal) = app_with_folded_flow();
@@ -1565,6 +1740,7 @@ mod tui_state {
 
     // Down at the end of the folded ladder must stop at the last VISIBLE row
     // (folded rows are not navigable positions).
+    /// Down past the end of a folded ladder clamps to the last visible row (1), not the raw message count (3).
     #[test]
     fn flow_selection_clamps_to_visible_rows_not_raw_count() {
         let (mut app, mut terminal) = app_with_folded_flow();
@@ -1581,6 +1757,7 @@ mod tui_state {
 
     // ── Call list: additional keys ───────────────────────────────────
 
+    /// Home returns the call-list selection to row 0.
     #[test]
     fn home_moves_to_top() {
         let mut app = app_with_three_dialogs();
@@ -1591,6 +1768,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 0);
     }
 
+    /// `/` enters search mode with an empty query.
     #[test]
     fn slash_activates_search_mode() {
         let mut app = app_with_three_dialogs();
@@ -1599,6 +1777,7 @@ mod tui_state {
         assert_eq!(app.search_query(), "");
     }
 
+    /// F3 also enters search mode.
     #[test]
     fn f3_activates_search_mode() {
         let mut app = app_with_three_dialogs();
@@ -1606,6 +1785,7 @@ mod tui_state {
         assert!(app.search_active());
     }
 
+    /// F4 (extended flow) on an empty list does nothing.
     #[test]
     fn f4_on_empty_list_stays_in_call_list() {
         let mut app = App::new_test();
@@ -1614,6 +1794,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// F8 opens the settings popup from the call list.
     #[test]
     fn f8_opens_settings_popup_from_call_list() {
         let mut app = App::new_test();
@@ -1623,6 +1804,7 @@ mod tui_state {
 
     // ── Search mode ──────────────────────────────────────────────────
 
+    /// Esc in search mode cancels and clears the typed query.
     #[test]
     fn search_esc_cancels_and_clears() {
         let mut app = app_with_three_dialogs();
@@ -1636,6 +1818,7 @@ mod tui_state {
         assert_eq!(app.search_query(), "");
     }
 
+    /// Enter commits the search query; it is retained for highlighting after search mode exits.
     #[test]
     fn search_enter_commits_query() {
         let mut app = app_with_three_dialogs();
@@ -1648,6 +1831,7 @@ mod tui_state {
         assert_eq!(app.search_query(), "hello"); // retained for highlighting
     }
 
+    /// Backspace removes the last character from the search query.
     #[test]
     fn search_backspace_removes_last_char() {
         let mut app = App::new_test();
@@ -1659,6 +1843,7 @@ mod tui_state {
         assert_eq!(app.search_query(), "ab");
     }
 
+    /// Typed characters append to the search query while search stays active.
     #[test]
     fn search_char_appends() {
         let mut app = App::new_test();
@@ -1669,6 +1854,7 @@ mod tui_state {
         assert!(app.search_active());
     }
 
+    /// Backspace with an empty query is a no-op and search stays active.
     #[test]
     fn search_backspace_on_empty_is_noop() {
         let mut app = App::new_test();
@@ -1680,6 +1866,7 @@ mod tui_state {
 
     // ── Call flow: navigation ────────────────────────────────────────
 
+    /// `q` quits from the call flow.
     #[test]
     fn call_flow_q_quits() {
         let mut app = app_with_call_flow_open();
@@ -1687,6 +1874,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Esc from the call flow returns to the call list.
     #[test]
     fn call_flow_esc_returns_to_call_list() {
         let mut app = app_with_call_flow_open();
@@ -1694,6 +1882,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Down advances the selected message index from 0 to 1.
     #[test]
     fn call_flow_down_increments_selected_msg() {
         let mut app = app_with_call_flow_open();
@@ -1702,6 +1891,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 1);
     }
 
+    /// Up at the first message keeps the selection at 0.
     #[test]
     fn call_flow_up_at_top_stays() {
         let mut app = app_with_call_flow_open();
@@ -1709,6 +1899,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 0);
     }
 
+    /// Up after Down returns the selection to 0.
     #[test]
     fn call_flow_up_decrements() {
         let mut app = app_with_call_flow_open();
@@ -1717,6 +1908,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 0);
     }
 
+    /// `j` moves the message selection down.
     #[test]
     fn call_flow_j_increments() {
         let mut app = app_with_call_flow_open();
@@ -1724,6 +1916,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 1);
     }
 
+    /// `k` moves the message selection back up.
     #[test]
     fn call_flow_k_decrements() {
         let mut app = app_with_call_flow_open();
@@ -1732,6 +1925,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 0);
     }
 
+    /// Moving to another message resets the detail-pane scroll to 0.
     #[test]
     fn call_flow_down_resets_detail_scroll() {
         let mut app = app_with_call_flow_open();
@@ -1743,6 +1937,7 @@ mod tui_state {
         assert_eq!(app.detail_scroll(), 0);
     }
 
+    /// PageDown clamps to the last message (index 1) of a 2-message dialog.
     #[test]
     fn call_flow_page_down() {
         let mut app = app_with_call_flow_open();
@@ -1751,6 +1946,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 1);
     }
 
+    /// PageUp after PageDown moves the selection back toward the top.
     #[test]
     fn call_flow_page_up_after_page_down() {
         let mut app = app_with_call_flow_open();
@@ -1760,6 +1956,7 @@ mod tui_state {
         assert!(app.selected_msg_index() < after_down || after_down == 0);
     }
 
+    /// Home selects the first message and resets the ladder scroll.
     #[test]
     fn call_flow_home_goes_to_first() {
         let mut app = app_with_call_flow_open();
@@ -1769,6 +1966,7 @@ mod tui_state {
         assert_eq!(app.call_flow_scroll(), 0);
     }
 
+    /// End selects the last message (index 1 of 2).
     #[test]
     fn call_flow_end_goes_to_last() {
         let mut app = app_with_call_flow_open();
@@ -1777,6 +1975,7 @@ mod tui_state {
         assert_eq!(app.selected_msg_index(), 1);
     }
 
+    /// Enter opens the `RawMessage` view at the currently selected message index.
     #[test]
     fn call_flow_enter_opens_raw_at_selected() {
         let mut app = app_with_call_flow_open();
@@ -1790,6 +1989,7 @@ mod tui_state {
 
     // ── Call flow: display modes ─────────────────────────────────────
 
+    /// `d` cycles the SDP display None, Summary, Full, back to None.
     #[test]
     fn call_flow_d_cycles_sdp_display() {
         let mut app = app_with_call_flow_open();
@@ -1802,6 +2002,7 @@ mod tui_state {
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::None);
     }
 
+    /// `t` in the call flow advances the timestamp mode (DeltaPrev to DeltaFirst).
     #[test]
     fn call_flow_t_cycles_timestamp() {
         let mut app = app_with_call_flow_open();
@@ -1809,6 +2010,7 @@ mod tui_state {
         assert_eq!(app.timestamp_mode(), TimestampMode::DeltaFirst);
     }
 
+    /// `c` cycles the color mode Method, CallId, CSeq, back to Method.
     #[test]
     fn call_flow_c_cycles_color() {
         let mut app = app_with_call_flow_open();
@@ -1823,6 +2025,7 @@ mod tui_state {
 
     // ── Call flow: split controls ────────────────────────────────────
 
+    /// `R` toggles the raw-preview split pane off and back on (default on).
     #[test]
     fn call_flow_r_toggles_raw_preview() {
         let mut app = app_with_call_flow_open();
@@ -1833,6 +2036,7 @@ mod tui_state {
         assert!(app.raw_preview());
     }
 
+    /// `+` grows the detail split width by 5 percentage points.
     #[test]
     fn call_flow_plus_increases_pct() {
         let mut app = app_with_call_flow_open();
@@ -1841,6 +2045,7 @@ mod tui_state {
         assert_eq!(app.raw_preview_pct(), before + 5);
     }
 
+    /// `-` shrinks the detail split width by 5 percentage points.
     #[test]
     fn call_flow_minus_decreases_pct() {
         let mut app = app_with_call_flow_open();
@@ -1849,6 +2054,7 @@ mod tui_state {
         assert_eq!(app.raw_preview_pct(), before - 5);
     }
 
+    /// Repeated `+` clamps the split at 80 percent.
     #[test]
     fn call_flow_plus_clamps_at_max() {
         let mut app = app_with_call_flow_open();
@@ -1858,6 +2064,7 @@ mod tui_state {
         assert!(app.raw_preview_pct() <= 80);
     }
 
+    /// Repeated `-` clamps the split at 10 percent.
     #[test]
     fn call_flow_minus_clamps_at_min() {
         let mut app = app_with_call_flow_open();
@@ -1867,6 +2074,7 @@ mod tui_state {
         assert!(app.raw_preview_pct() >= 10);
     }
 
+    /// `]` and `[` scroll the detail pane down and back up.
     #[test]
     fn call_flow_bracket_scrolls_detail() {
         let mut app = app_with_call_flow_open();
@@ -1876,6 +2084,7 @@ mod tui_state {
         assert_eq!(app.detail_scroll(), 0);
     }
 
+    /// `[` at detail scroll 0 is a no-op.
     #[test]
     fn call_flow_bracket_up_at_zero_stays() {
         let mut app = app_with_call_flow_open();
@@ -1885,6 +2094,7 @@ mod tui_state {
 
     // ── Call flow: toggles ───────────────────────────────────────────
 
+    /// F4 toggles extended flow on and off.
     #[test]
     fn call_flow_f4_toggles_extended_flow() {
         let mut app = app_with_call_flow_open();
@@ -1895,6 +2105,7 @@ mod tui_state {
         assert!(!app.extended_flow());
     }
 
+    /// `x` enables extended flow.
     #[test]
     fn call_flow_x_toggles_extended_flow() {
         let mut app = app_with_call_flow_open();
@@ -1902,6 +2113,7 @@ mod tui_state {
         assert!(app.extended_flow());
     }
 
+    /// F6 toggles RTP display in the ladder on and off.
     #[test]
     fn call_flow_f6_toggles_rtp_in_flow() {
         let mut app = app_with_call_flow_open();
@@ -1914,6 +2126,7 @@ mod tui_state {
 
     // ── Call flow: diff / compare ────────────────────────────────────
 
+    /// Space marks the current message as the diff anchor.
     #[test]
     fn call_flow_space_sets_diff_selected() {
         let mut app = app_with_call_flow_open();
@@ -1922,6 +2135,7 @@ mod tui_state {
         assert_eq!(app.diff_selected_msg(), Some(0));
     }
 
+    /// Space on a second, different message opens the `MessageDiff` view.
     #[test]
     fn call_flow_space_second_opens_diff() {
         let mut app = app_with_call_flow_open();
@@ -1931,6 +2145,7 @@ mod tui_state {
         assert!(matches!(app.current_view(), View::MessageDiff { .. }));
     }
 
+    /// Space twice on the same message opens no diff; the anchor stays set.
     #[test]
     fn call_flow_space_same_msg_no_diff() {
         let mut app = app_with_call_flow_open();
@@ -1940,6 +2155,7 @@ mod tui_state {
         assert_eq!(app.diff_selected_msg(), Some(0)); // still set
     }
 
+    /// F5 clears the diff anchor.
     #[test]
     fn call_flow_f5_resets_compare() {
         let mut app = app_with_call_flow_open();
@@ -1949,6 +2165,7 @@ mod tui_state {
         assert_eq!(app.diff_selected_msg(), None);
     }
 
+    /// Esc clears the diff anchor and leaves the call flow for the call list.
     #[test]
     fn call_flow_esc_clears_diff() {
         let mut app = app_with_call_flow_open();
@@ -1960,6 +2177,7 @@ mod tui_state {
 
     // ── Call flow: popups and navigation ─────────────────────────────
 
+    /// F1 opens Help from the call flow.
     #[test]
     fn call_flow_f1_opens_help() {
         let mut app = app_with_call_flow_open();
@@ -1967,6 +2185,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Help);
     }
 
+    /// F2 opens the save popup from the call flow.
     #[test]
     fn call_flow_f2_opens_save() {
         let mut app = app_with_call_flow_open();
@@ -1974,6 +2193,7 @@ mod tui_state {
         assert_eq!(app.active_popup(), Some(&Popup::SaveDialog));
     }
 
+    /// F7 opens the filter popup from the call flow.
     #[test]
     fn call_flow_f7_opens_filter() {
         let mut app = app_with_call_flow_open();
@@ -1981,6 +2201,7 @@ mod tui_state {
         assert_eq!(app.active_popup(), Some(&Popup::FilterDialog));
     }
 
+    /// F9 inside the call flow clears the active filter (visible count grows back).
     #[test]
     fn call_flow_f9_clears_filter() {
         let mut app = app_with_call_flow_open();
@@ -2001,6 +2222,7 @@ mod tui_state {
 
     // ── Raw message: navigation ──────────────────────────────────────
 
+    /// `q` quits from the raw message view.
     #[test]
     fn raw_msg_q_quits() {
         let mut app = app_in_raw_message();
@@ -2008,6 +2230,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Esc from the raw view returns to the call flow it was opened from.
     #[test]
     fn raw_msg_esc_returns_to_call_flow() {
         let mut app = app_in_raw_message();
@@ -2015,6 +2238,7 @@ mod tui_state {
         assert!(matches!(app.current_view(), View::CallFlow(_)));
     }
 
+    /// Down scrolls the raw view by one line.
     #[test]
     fn raw_msg_down_scrolls() {
         let mut app = app_in_raw_message();
@@ -2022,6 +2246,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 1);
     }
 
+    /// Up scrolls the raw view back to 0.
     #[test]
     fn raw_msg_up_scrolls_back() {
         let mut app = app_in_raw_message();
@@ -2030,6 +2255,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 0);
     }
 
+    /// `j` scrolls the raw view down.
     #[test]
     fn raw_msg_j_scrolls() {
         let mut app = app_in_raw_message();
@@ -2037,6 +2263,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 1);
     }
 
+    /// `k` scrolls the raw view back up.
     #[test]
     fn raw_msg_k_scrolls_back() {
         let mut app = app_in_raw_message();
@@ -2045,6 +2272,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 0);
     }
 
+    /// PageDown scrolls the raw view by 20 lines.
     #[test]
     fn raw_msg_page_down() {
         let mut app = app_in_raw_message();
@@ -2052,6 +2280,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 20);
     }
 
+    /// PageUp undoes a PageDown, back to 0.
     #[test]
     fn raw_msg_page_up_after_page_down() {
         let mut app = app_in_raw_message();
@@ -2060,6 +2289,7 @@ mod tui_state {
         assert_eq!(app.raw_msg_scroll(), 0);
     }
 
+    /// Home resets the raw-view scroll to 0.
     #[test]
     fn raw_msg_home_resets_scroll() {
         let mut app = app_in_raw_message();
@@ -2071,6 +2301,7 @@ mod tui_state {
 
     // ── Raw message: modes ───────────────────────────────────────────
 
+    /// `/` activates search from the raw view.
     #[test]
     fn raw_msg_slash_activates_search() {
         let mut app = app_in_raw_message();
@@ -2078,6 +2309,7 @@ mod tui_state {
         assert!(app.search_active());
     }
 
+    /// `s` toggles syntax highlighting off and back on.
     #[test]
     fn raw_msg_s_toggles_syntax_highlight() {
         let mut app = app_in_raw_message();
@@ -2088,6 +2320,7 @@ mod tui_state {
         assert_eq!(app.syntax_highlight(), before);
     }
 
+    /// `c` advances the color mode (Method to CallId) from the raw view.
     #[test]
     fn raw_msg_c_cycles_color_mode() {
         let mut app = app_in_raw_message();
@@ -2095,6 +2328,7 @@ mod tui_state {
         assert_eq!(app.color_mode(), ColorMode::CallId);
     }
 
+    /// F1 opens Help from the raw view.
     #[test]
     fn raw_msg_f1_opens_help() {
         let mut app = app_in_raw_message();
@@ -2102,6 +2336,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Help);
     }
 
+    /// F2 opens the save popup from the raw view.
     #[test]
     fn raw_msg_f2_opens_save() {
         let mut app = app_in_raw_message();
@@ -2111,6 +2346,7 @@ mod tui_state {
 
     // ── Message diff ─────────────────────────────────────────────────
 
+    /// `q` quits from the diff view.
     #[test]
     fn message_diff_q_quits() {
         let mut app = app_in_message_diff();
@@ -2118,6 +2354,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Esc from the diff returns to the call flow.
     #[test]
     fn message_diff_esc_returns_to_call_flow() {
         let mut app = app_in_message_diff();
@@ -2125,6 +2362,7 @@ mod tui_state {
         assert!(matches!(app.current_view(), View::CallFlow(_)));
     }
 
+    /// F1 opens Help from the diff view.
     #[test]
     fn message_diff_f1_opens_help() {
         let mut app = app_in_message_diff();
@@ -2134,6 +2372,7 @@ mod tui_state {
 
     // ── Stream list: additional keys ─────────────────────────────────
 
+    /// `/` activates search in the stream list.
     #[test]
     fn stream_list_slash_activates_search() {
         let mut app = App::new_test();
@@ -2142,6 +2381,7 @@ mod tui_state {
         assert!(app.search_active());
     }
 
+    /// F1 opens Help from the stream list.
     #[test]
     fn stream_list_f1_opens_help() {
         let mut app = App::new_test();
@@ -2150,6 +2390,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Help);
     }
 
+    /// F7 opens the filter popup from the stream list.
     #[test]
     fn stream_list_f7_opens_filter() {
         let mut app = App::new_test();
@@ -2160,6 +2401,7 @@ mod tui_state {
 
     // ── Help view ────────────────────────────────────────────────────
 
+    /// F1 while Help is open closes it back to the call list.
     #[test]
     fn help_f1_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2168,6 +2410,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// `q` closes Help back to the call list (it does not quit the app).
     #[test]
     fn help_q_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2178,6 +2421,7 @@ mod tui_state {
 
     // ── Statistics view ──────────────────────────────────────────────
 
+    /// `q` closes Statistics back to the call list (it does not quit).
     #[test]
     fn statistics_q_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2187,6 +2431,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// A second `s` closes Statistics.
     #[test]
     fn statistics_s_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2197,6 +2442,7 @@ mod tui_state {
 
     // ── Save popup ───────────────────────────────────────────────────
 
+    /// Esc closes the save popup.
     #[test]
     fn save_popup_esc_closes() {
         let mut app = app_with_three_dialogs();
@@ -2206,6 +2452,7 @@ mod tui_state {
         assert_eq!(app.active_popup(), None);
     }
 
+    /// Tab cycles through all 11 save formats in order and wraps back to Pcap.
     #[test]
     fn save_popup_tab_cycles_format() {
         let mut app = app_with_three_dialogs();
@@ -2236,6 +2483,7 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::Pcap);
     }
 
+    /// BackTab cycles formats in reverse (Pcap, RtpJson, SippXml).
     #[test]
     fn save_popup_backtab_reverse_cycles() {
         let mut app = app_with_three_dialogs();
@@ -2248,6 +2496,7 @@ mod tui_state {
         assert_eq!(app.save_format(), SaveFormat::SippXml);
     }
 
+    /// Cycling the format rewrites the path extension (.pcapng, then .txt).
     #[test]
     fn save_popup_tab_updates_extension() {
         let mut app = app_with_three_dialogs();
@@ -2267,6 +2516,7 @@ mod tui_state {
         );
     }
 
+    /// Backspace deletes one character from the save path.
     #[test]
     fn save_popup_backspace_removes_char() {
         let mut app = app_with_three_dialogs();
@@ -2277,6 +2527,7 @@ mod tui_state {
         assert_eq!(app.save_path().len(), before_len - 1);
     }
 
+    /// Left moves the save-path cursor one position back.
     #[test]
     fn save_popup_left_moves_cursor() {
         let mut app = app_with_three_dialogs();
@@ -2287,6 +2538,7 @@ mod tui_state {
         assert_eq!(app.save_cursor(), end - 1);
     }
 
+    /// Right with the cursor already at the end of the path is a no-op.
     #[test]
     fn save_popup_right_at_end_is_noop() {
         let mut app = app_with_three_dialogs();
@@ -2297,6 +2549,7 @@ mod tui_state {
         assert_eq!(app.save_cursor(), end); // already at end
     }
 
+    /// Home moves the save-path cursor to position 0.
     #[test]
     fn save_popup_home_moves_cursor_to_start() {
         let mut app = app_with_three_dialogs();
@@ -2306,6 +2559,7 @@ mod tui_state {
         assert_eq!(app.save_cursor(), 0);
     }
 
+    /// End moves the cursor to the end of the path.
     #[test]
     fn save_popup_end_moves_cursor_to_end() {
         let mut app = app_with_three_dialogs();
@@ -2316,6 +2570,7 @@ mod tui_state {
         assert_eq!(app.save_cursor(), app.save_path().len());
     }
 
+    /// A typed character inserts at the cursor position.
     #[test]
     fn save_popup_char_inserts() {
         let mut app = app_with_three_dialogs();
@@ -2326,6 +2581,8 @@ mod tui_state {
         assert!(app.save_path().starts_with('X'));
     }
 
+    /// Enter performs the save, closes the popup, and reports a status
+    /// message. Writes `/tmp/sipnab_test_save.pcap` as a side effect.
     #[test]
     fn save_popup_enter_closes() {
         let mut app = app_with_three_dialogs();
@@ -2338,6 +2595,7 @@ mod tui_state {
 
     // ── Column selector: navigation ──────────────────────────────────
 
+    /// Down moves the column-selector cursor from 0 to 1.
     #[test]
     fn column_selector_down_moves_cursor() {
         let mut app = App::new_test();
@@ -2347,6 +2605,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().column_selector_cursor, 1);
     }
 
+    /// Up at the top of the column selector stays at 0.
     #[test]
     fn column_selector_up_at_top_stays() {
         let mut app = App::new_test();
@@ -2357,6 +2616,7 @@ mod tui_state {
 
     // ── Global shortcuts ─────────────────────────────────────────────
 
+    /// Ctrl-C quits from the call list.
     #[test]
     fn ctrl_c_quits_from_call_list() {
         let mut app = App::new_test();
@@ -2364,6 +2624,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Ctrl-C quits from the call flow.
     #[test]
     fn ctrl_c_quits_from_call_flow() {
         let mut app = app_with_call_flow_open();
@@ -2371,6 +2632,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Ctrl-C quits from the raw message view.
     #[test]
     fn ctrl_c_quits_from_raw_message() {
         let mut app = app_in_raw_message();
@@ -2378,6 +2640,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Ctrl-C quits even while Help is open.
     #[test]
     fn ctrl_c_quits_from_help() {
         let mut app = App::new_test();
@@ -2387,6 +2650,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Ctrl-C quits from the Statistics view.
     #[test]
     fn ctrl_c_quits_from_statistics() {
         let mut app = App::new_test();
@@ -2396,6 +2660,7 @@ mod tui_state {
         assert!(app.should_quit());
     }
 
+    /// Ctrl-C quits even with the save popup open.
     #[test]
     fn ctrl_c_quits_from_save_popup() {
         let mut app = app_with_three_dialogs();
@@ -2407,6 +2672,7 @@ mod tui_state {
 
     // ── Call list: more navigation ───────────────────────────────────
 
+    /// End selects the last call-list row.
     #[test]
     fn end_moves_to_bottom() {
         let mut app = app_with_three_dialogs();
@@ -2414,6 +2680,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 2);
     }
 
+    /// PageDown clamps to the last row of a 3-row list.
     #[test]
     fn page_down_on_call_list() {
         let mut app = app_with_three_dialogs();
@@ -2422,6 +2689,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 2);
     }
 
+    /// PageUp from the bottom returns to row 0.
     #[test]
     fn page_up_on_call_list() {
         let mut app = app_with_three_dialogs();
@@ -2430,6 +2698,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 0);
     }
 
+    /// Down past the last row clamps at the bottom.
     #[test]
     fn down_at_bottom_stays() {
         let mut app = app_with_three_dialogs();
@@ -2439,6 +2708,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 2);
     }
 
+    /// Up at row 0 stays at 0.
     #[test]
     fn up_at_top_stays() {
         let mut app = app_with_three_dialogs();
@@ -2446,6 +2716,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 0);
     }
 
+    /// `j` moves the call-list selection down.
     #[test]
     fn j_moves_down_in_call_list() {
         let mut app = app_with_three_dialogs();
@@ -2453,6 +2724,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 1);
     }
 
+    /// `k` moves the call-list selection back up.
     #[test]
     fn k_moves_up_in_call_list() {
         let mut app = app_with_three_dialogs();
@@ -2461,6 +2733,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().selected(), 0);
     }
 
+    /// F1 opens Help from the call list.
     #[test]
     fn call_list_f1_opens_help() {
         let mut app = App::new_test();
@@ -2468,6 +2741,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::Help);
     }
 
+    /// F2 opens the save popup from the call list.
     #[test]
     fn call_list_f2_opens_save() {
         let mut app = app_with_three_dialogs();
@@ -2477,6 +2751,7 @@ mod tui_state {
 
     // ── Stream list: more navigation ─────────────────────────────────
 
+    /// Esc leaves the stream list for the call list.
     #[test]
     fn stream_list_esc_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2486,6 +2761,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// Tab toggles from the stream list back to the call list.
     #[test]
     fn stream_list_tab_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2494,6 +2770,7 @@ mod tui_state {
         assert_eq!(*app.current_view(), View::CallList);
     }
 
+    /// `q` quits from the stream list.
     #[test]
     fn stream_list_q_quits() {
         let mut app = App::new_test();
@@ -2504,6 +2781,7 @@ mod tui_state {
 
     // ── Help: Esc closes ─────────────────────────────────────────────
 
+    /// Esc closes Help back to the call list.
     #[test]
     fn help_esc_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2515,6 +2793,7 @@ mod tui_state {
 
     // ── Statistics: Esc closes ───────────────────────────────────────
 
+    /// Esc closes Statistics back to the call list.
     #[test]
     fn statistics_esc_returns_to_call_list() {
         let mut app = App::new_test();
@@ -2526,6 +2805,7 @@ mod tui_state {
 
     // ── Popup intercepts keys ────────────────────────────────────────
 
+    /// With the save popup open, `q` is typed into the path instead of quitting.
     #[test]
     fn popup_intercepts_normal_keys() {
         let mut app = app_with_three_dialogs();
@@ -2536,6 +2816,7 @@ mod tui_state {
         assert!(app.save_path().contains('q'));
     }
 
+    /// In search mode, `q` goes into the query instead of quitting.
     #[test]
     fn search_mode_intercepts_normal_keys() {
         let mut app = app_with_three_dialogs();
@@ -2549,6 +2830,7 @@ mod tui_state {
 
     // ── Call flow: Right key resizes split ────────────────────────────
 
+    /// Right pushes the split right: the detail percentage shrinks by 5.
     #[test]
     fn call_flow_right_decreases_pct() {
         // Right = push split right = ladder wider = detail pct decreases
@@ -2558,6 +2840,7 @@ mod tui_state {
         assert_eq!(app.raw_preview_pct(), before - 5);
     }
 
+    /// Left pushes the split left: the detail percentage grows by 5.
     #[test]
     fn call_flow_left_increases_pct() {
         // Left = push split left = detail wider = detail pct increases
@@ -2569,6 +2852,7 @@ mod tui_state {
 
     // ── Call flow: End resets detail_scroll ───────────────────────────
 
+    /// End resets the detail-pane scroll to 0.
     #[test]
     fn call_flow_end_resets_detail_scroll() {
         let mut app = app_with_call_flow_open();
@@ -2578,6 +2862,7 @@ mod tui_state {
         assert_eq!(app.detail_scroll(), 0);
     }
 
+    /// Home resets the detail-pane scroll to 0.
     #[test]
     fn call_flow_home_resets_detail_scroll() {
         let mut app = app_with_call_flow_open();
@@ -2587,6 +2872,7 @@ mod tui_state {
         assert_eq!(app.detail_scroll(), 0);
     }
 
+    /// PageUp resets the detail-pane scroll to 0.
     #[test]
     fn call_flow_page_up_resets_detail_scroll() {
         let mut app = app_with_call_flow_open();
@@ -2596,6 +2882,7 @@ mod tui_state {
         assert_eq!(app.detail_scroll(), 0);
     }
 
+    /// PageDown resets the detail-pane scroll to 0.
     #[test]
     fn call_flow_page_down_resets_detail_scroll() {
         let mut app = app_with_call_flow_open();
@@ -2607,6 +2894,7 @@ mod tui_state {
 
     // ── Call flow: raw_preview off disables resize ───────────────────
 
+    /// `+` does not resize the split while the raw preview is off.
     #[test]
     fn call_flow_plus_noop_when_preview_off() {
         let mut app = app_with_call_flow_open();
@@ -2617,6 +2905,7 @@ mod tui_state {
         assert_eq!(app.raw_preview_pct(), before); // unchanged
     }
 
+    /// `-` does not resize the split while the raw preview is off.
     #[test]
     fn call_flow_minus_noop_when_preview_off() {
         let mut app = app_with_call_flow_open();
@@ -2628,6 +2917,7 @@ mod tui_state {
 
     // ── Column selector: j/k alternatives ────────────────────────────
 
+    /// `j` moves the column-selector cursor down.
     #[test]
     fn column_selector_j_moves_down() {
         let mut app = App::new_test();
@@ -2636,6 +2926,7 @@ mod tui_state {
         assert_eq!(app.call_list_state().column_selector_cursor, 1);
     }
 
+    /// `k` moves the column-selector cursor back up.
     #[test]
     fn column_selector_k_moves_up() {
         let mut app = App::new_test();
@@ -2647,6 +2938,7 @@ mod tui_state {
 
     // ── Save popup: backspace at 0 is noop ───────────────────────────
 
+    /// Backspace with the cursor at 0 leaves the path unchanged.
     #[test]
     fn save_popup_backspace_at_zero_is_noop() {
         let mut app = app_with_three_dialogs();
@@ -2658,6 +2950,7 @@ mod tui_state {
         assert_eq!(app.save_path(), before);
     }
 
+    /// Left at cursor 0 is a no-op.
     #[test]
     fn save_popup_left_at_zero_is_noop() {
         let mut app = app_with_three_dialogs();
@@ -2668,6 +2961,7 @@ mod tui_state {
         assert_eq!(app.save_cursor(), 0);
     }
 
+    /// Left then Right returns the cursor to its original position.
     #[test]
     fn save_popup_right_then_left_round_trips() {
         let mut app = app_with_three_dialogs();
@@ -2681,60 +2975,70 @@ mod tui_state {
 
     // ── Default state assertions ─────────────────────────────────────
 
+    /// The SDP display mode defaults to None.
     #[test]
     fn default_sdp_display_mode_is_none() {
         let app = App::new_test();
         assert_eq!(app.sdp_display_mode(), SdpDisplayMode::None);
     }
 
+    /// The color mode defaults to Method.
     #[test]
     fn default_color_mode_is_method() {
         let app = App::new_test();
         assert_eq!(app.color_mode(), ColorMode::Method);
     }
 
+    /// The raw-preview split defaults to on.
     #[test]
     fn default_raw_preview_is_true() {
         let app = App::new_test();
         assert!(app.raw_preview());
     }
 
+    /// The detail split defaults to 40 percent.
     #[test]
     fn default_raw_preview_pct_is_40() {
         let app = App::new_test();
         assert_eq!(app.raw_preview_pct(), 40);
     }
 
+    /// Syntax highlighting defaults to on.
     #[test]
     fn default_syntax_highlight_is_true() {
         let app = App::new_test();
         assert!(app.syntax_highlight());
     }
 
+    /// The save format defaults to Pcap.
     #[test]
     fn default_save_format_is_pcap() {
         let app = App::new_test();
         assert_eq!(app.save_format(), SaveFormat::Pcap);
     }
 
+    /// Extended flow defaults to off.
     #[test]
     fn default_extended_flow_is_false() {
         let app = App::new_test();
         assert!(!app.extended_flow());
     }
 
+    /// RTP-in-flow display defaults to off.
     #[test]
     fn default_show_rtp_in_flow_is_false() {
         let app = App::new_test();
         assert!(!app.show_rtp_in_flow());
     }
 
+    /// No diff anchor is set by default.
     #[test]
     fn default_diff_selected_is_none() {
         let app = App::new_test();
         assert_eq!(app.diff_selected_msg(), None);
     }
 
+    /// Capture starts unpaused.
     #[test]
     fn default_paused_is_false() {
         let app = App::new_test();
@@ -2743,6 +3047,7 @@ mod tui_state {
 
     // ── Step 2 & 3: F4 extended flow and F8 settings popup ──────────
 
+    /// F4 from the call list opens the call flow with extended mode already on.
     #[test]
     fn f4_opens_extended_call_flow() {
         let mut app = app_with_three_dialogs();
@@ -2751,6 +3056,7 @@ mod tui_state {
         assert!(app.extended_flow());
     }
 
+    /// F8 opens the settings popup.
     #[test]
     fn f8_opens_settings_popup() {
         let mut app = App::new_test();
@@ -2758,6 +3064,7 @@ mod tui_state {
         assert!(app.active_popup().is_some());
     }
 
+    /// Esc closes the settings popup.
     #[test]
     fn settings_popup_esc_closes() {
         let mut app = App::new_test();
@@ -2767,6 +3074,7 @@ mod tui_state {
         assert!(app.active_popup().is_none());
     }
 
+    /// Enter on settings item 0 cycles the color mode.
     #[test]
     fn settings_popup_enter_toggles_color_mode() {
         let mut app = App::new_test();
@@ -2776,6 +3084,7 @@ mod tui_state {
         assert_ne!(app.color_mode(), initial);
     }
 
+    /// Down then Enter toggles the second settings item (timestamp mode).
     #[test]
     fn settings_popup_navigate_and_toggle() {
         let mut app = App::new_test();
@@ -2788,6 +3097,7 @@ mod tui_state {
 
     // ── Mark + Delta (Feature 1) ──────────────────────────────────
 
+    /// `m` sets the mark at the selected message and reports "Mark set".
     #[test]
     fn call_flow_m_sets_mark() {
         let mut app = app_with_call_flow_open();
@@ -2797,6 +3107,7 @@ mod tui_state {
         assert_eq!(app.status_error(), Some("Mark set"));
     }
 
+    /// `M` clears the mark and reports "Mark cleared".
     #[test]
     fn call_flow_m_uppercase_clears_mark() {
         let mut app = app_with_call_flow_open();
@@ -2807,6 +3118,7 @@ mod tui_state {
         assert_eq!(app.status_error(), Some("Mark cleared"));
     }
 
+    /// The mark is placed at the message selected when `m` is pressed (index 1 after Down).
     #[test]
     fn call_flow_mark_follows_selected() {
         let mut app = app_with_call_flow_open();
@@ -2817,6 +3129,7 @@ mod tui_state {
 
     // ── Fold expand toggle (Feature 3) ──────────────────────────────
 
+    /// `e` expands and re-collapses the fold at the selected index.
     #[test]
     fn call_flow_e_toggles_fold_expand() {
         let mut app = app_with_call_flow_open();
@@ -2827,6 +3140,7 @@ mod tui_state {
         assert!(!app.fold_expanded().contains(&0));
     }
 
+    /// Folds expanded at two different indices are tracked independently.
     #[test]
     fn call_flow_e_at_different_indices() {
         let mut app = app_with_call_flow_open();
@@ -2839,6 +3153,7 @@ mod tui_state {
 
     // ── File Open popup ─────────────────────────────────────────────
 
+    /// `O` opens the file-open dialog.
     #[test]
     fn file_open_o_opens_popup() {
         let mut app = App::new_test();
@@ -2846,6 +3161,7 @@ mod tui_state {
         assert_eq!(app.active_popup(), Some(&Popup::FileOpenDialog));
     }
 
+    /// Esc closes the file-open dialog.
     #[test]
     fn file_open_esc_closes() {
         let mut app = App::new_test();
@@ -2865,6 +3181,7 @@ mod tui_state {
         app.open_path_clear_for_test();
     }
 
+    /// Typed characters append to the manual path and advance the cursor.
     #[test]
     fn file_open_char_appends() {
         let mut app = App::new_test();
@@ -2877,6 +3194,7 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 4);
     }
 
+    /// Backspace removes the last typed path character.
     #[test]
     fn file_open_backspace() {
         let mut app = App::new_test();
@@ -2888,6 +3206,7 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 1);
     }
 
+    /// Left/Right move the path cursor without editing the text.
     #[test]
     fn file_open_left_right_cursor() {
         let mut app = App::new_test();
@@ -2902,6 +3221,7 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 2);
     }
 
+    /// Home and End jump the path cursor to the start and end.
     #[test]
     fn file_open_home_end() {
         let mut app = App::new_test();
@@ -2914,6 +3234,7 @@ mod tui_state {
         assert_eq!(app.open_cursor(), 2);
     }
 
+    /// Enter on an empty path closes the dialog with an error status.
     #[test]
     fn file_open_enter_empty_path_closes() {
         let mut app = App::new_test();
@@ -2924,6 +3245,7 @@ mod tui_state {
         assert!(app.status_error().is_some());
     }
 
+    /// Enter on a nonexistent path closes the dialog and reports not-found/failure.
     #[test]
     fn file_open_enter_nonexistent_file() {
         let mut app = App::new_test();
@@ -2940,6 +3262,7 @@ mod tui_state {
         );
     }
 
+    /// Entering a real pcap path loads dialogs from it (silently skipped when the sample is absent).
     #[test]
     fn file_open_enter_valid_pcap_loads() {
         // Use one of the test pcap files (path relative to CARGO_MANIFEST_DIR)
@@ -2966,6 +3289,7 @@ mod tui_state {
         );
     }
 
+    /// An RTP-only pcap yields 0 dialogs, populates streams, and auto-switches to the stream list.
     #[test]
     fn file_open_rtp_only_pcap_populates_streams_and_switches_view() {
         // RTP-only pcap (no SIP) — exercises the RTP ingestion path in
@@ -2998,6 +3322,7 @@ mod tui_state {
         );
     }
 
+    /// Opening a pcap replaces the existing dialogs and reports a "Loaded" status.
     #[test]
     fn file_open_clears_existing_data() {
         let mut app = app_with_three_dialogs();
@@ -3095,6 +3420,7 @@ mod tui_state {
 
     // ── Save format labels (all 11) ─────────────────────────────────
 
+    /// Each of the 11 save formats reports its expected UI label.
     #[test]
     fn save_popup_format_labels() {
         assert_eq!(SaveFormat::Pcap.label(), "PCAP");
@@ -3110,6 +3436,7 @@ mod tui_state {
         assert_eq!(SaveFormat::RtpJson.label(), "RTP");
     }
 
+    /// Each save format maps to its expected file extension.
     #[test]
     fn save_popup_format_extensions() {
         assert_eq!(SaveFormat::Pcap.extension(), "pcap");
@@ -3125,6 +3452,7 @@ mod tui_state {
         assert_eq!(SaveFormat::RtpJson.extension(), "rtp.json");
     }
 
+    /// Each save format reports its expected category grouping.
     #[test]
     fn save_popup_format_categories() {
         assert_eq!(SaveFormat::Pcap.category(), "Packet Capture");
@@ -3142,6 +3470,7 @@ mod tui_state {
 
     // ── Mark + delta additional tests ────────────────────────────────
 
+    /// After marking message 0 and moving to 1, mark and selection point at different messages.
     #[test]
     fn call_flow_mark_delta_different_messages() {
         let mut app = app_with_call_flow_open();
@@ -3155,6 +3484,7 @@ mod tui_state {
 
     // ── Fold expansion additional tests ──────────────────────────────
 
+    /// No folds are expanded when the call flow opens.
     #[test]
     fn call_flow_fold_starts_empty() {
         let app = app_with_call_flow_open();
@@ -3164,6 +3494,7 @@ mod tui_state {
         );
     }
 
+    /// Toggling the same fold twice returns the expanded set to empty.
     #[test]
     fn call_flow_fold_multiple_toggles() {
         let mut app = app_with_call_flow_open();
@@ -3178,6 +3509,7 @@ mod tui_state {
 
     // ── Swimlane selection default ───────────────────────────────────
 
+    /// `SelectionState` variants are distinct and a fresh app stays in the call list.
     #[test]
     fn default_selection_state_is_normal() {
         use sipnab::tui::call_flow::SelectionState;
@@ -3193,6 +3525,7 @@ mod tui_state {
 
     // ── Mermaid export key (E) ───────────────────────────────────────
 
+    /// `E` exports a Mermaid sequence diagram and reports a clipboard/Mermaid status message.
     #[test]
     fn call_flow_e_uppercase_export_mermaid() {
         let mut app = app_with_call_flow_open();
@@ -3212,6 +3545,7 @@ mod tui_state {
 
     // ── New save format file save tests ──────────────────────────────
 
+    /// Saving as JSON writes a file containing `call_id` fields (in a tempdir).
     #[test]
     fn save_json_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3234,6 +3568,7 @@ mod tui_state {
         );
     }
 
+    /// Saving as NDJSON writes a file containing `call_id` fields (in a tempdir).
     #[test]
     fn save_ndjson_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3256,6 +3591,7 @@ mod tui_state {
         );
     }
 
+    /// Saving as CSV writes a file whose content includes a `call_id` header (in a tempdir).
     #[test]
     fn save_csv_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3279,6 +3615,7 @@ mod tui_state {
         );
     }
 
+    /// Saving as HTML writes a file with html/mermaid content (in a tempdir).
     #[test]
     fn save_html_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3301,6 +3638,7 @@ mod tui_state {
         );
     }
 
+    /// Saving as Markdown writes a file with a heading or Call reference (in a tempdir).
     #[test]
     fn save_markdown_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3323,6 +3661,7 @@ mod tui_state {
         );
     }
 
+    /// WAV export with no RTP streams reports a "No RTP streams" error instead of writing a file.
     #[test]
     fn save_wav_without_rtp_streams_shows_error() {
         let dir = tempfile::tempdir().unwrap();
@@ -3345,6 +3684,7 @@ mod tui_state {
         );
     }
 
+    /// Saving as SIPp XML writes a scenario file (in a tempdir).
     #[test]
     fn save_sipp_xml_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -3367,6 +3707,7 @@ mod tui_state {
         );
     }
 
+    /// RTP-JSON export with no streams reports a no-streams message instead of writing a file.
     #[test]
     fn save_rtp_json_no_streams_shows_message() {
         let dir = tempfile::tempdir().unwrap();
@@ -3391,6 +3732,7 @@ mod tui_state {
 
     // ── Save format correctness tests ──────────────────────────────────
 
+    /// TXT export contains per-message headers, separators, and raw SIP text.
     #[test]
     fn save_txt_format_correct() {
         let dir = tempfile::tempdir().unwrap();
@@ -3413,6 +3755,7 @@ mod tui_state {
         assert!(content.contains("SIP/2.0"), "Txt should contain raw SIP");
     }
 
+    /// CSV export's first line carries `call_id` and `method` columns, followed by data rows.
     #[test]
     fn save_csv_has_correct_header() {
         let dir = tempfile::tempdir().unwrap();
@@ -3444,6 +3787,7 @@ mod tui_state {
         );
     }
 
+    /// Markdown export has summary/dialog headings and table pipes.
     #[test]
     fn save_markdown_has_headings() {
         let dir = tempfile::tempdir().unwrap();
@@ -3466,6 +3810,7 @@ mod tui_state {
         assert!(content.contains("|"), "MD should have table pipes");
     }
 
+    /// SIPp export from the call flow contains scenario open/close tags and send/recv elements.
     #[test]
     fn save_sipp_xml_has_scenario_tags() {
         let dir = tempfile::tempdir().unwrap();
@@ -3500,6 +3845,7 @@ mod tui_state {
 
     // ── 3-participant prepare_messages test ──────────────────────────
 
+    /// `prepare_messages` with 3 distinct endpoints yields 3 participants and messages spanning all 3 columns.
     #[test]
     fn prepare_messages_three_participants() {
         use sipnab::tui::call_flow::prepare::prepare_messages;
@@ -3635,6 +3981,7 @@ mod tui_state {
 
     // ── Settings popup timestamp mode cycle with Scaled ──────────────
 
+    /// The settings popup cycles the timestamp mode through all four values, including Scaled.
     #[test]
     fn settings_popup_timestamp_cycles_through_scaled() {
         let mut app = App::new_test();
@@ -3657,6 +4004,11 @@ mod tui_state {
 
     // ── Helper: SIP message with SDP body ────────────────────────────
 
+    /// Assemble raw SIP bytes like `build_sip`, then append `body` after the
+    /// blank separator line.
+    ///
+    /// # Returns
+    /// The complete wire-format message bytes.
     fn build_sip_with_body(first_line: &str, headers: &[&str], body: &[u8]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -3670,6 +4022,10 @@ mod tui_state {
         msg
     }
 
+    /// Parse an INVITE carrying a PCMU SDP offer (audio port 20000).
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_invite_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let sdp = "v=0\r\n\
                    o=- 123 456 IN IP4 10.0.0.1\r\n\
@@ -3702,6 +4058,10 @@ mod tui_state {
         .unwrap()
     }
 
+    /// Parse a `100 Trying` provisional response for the given Call-ID.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_100_trying(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 100 Trying",
@@ -3725,6 +4085,10 @@ mod tui_state {
         .unwrap()
     }
 
+    /// Parse a `180 Ringing` provisional response (with a To tag).
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_180_ringing(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 180 Ringing",
@@ -3748,6 +4112,10 @@ mod tui_state {
         .unwrap()
     }
 
+    /// Parse a `200 OK` carrying a PCMU SDP answer (audio port 30000).
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_200_ok_with_sdp(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let sdp = "v=0\r\n\
                    o=- 789 101 IN IP4 10.0.0.2\r\n\
@@ -3780,6 +4148,10 @@ mod tui_state {
         .unwrap()
     }
 
+    /// Parse the ACK that completes the INVITE transaction.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_ack(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "ACK sip:1002@10.0.0.2 SIP/2.0",
@@ -3804,6 +4176,9 @@ mod tui_state {
     }
 
     /// Build a full INVITE dialog: INVITE(SDP) -> 100 -> 180 -> 200 OK(SDP) -> ACK
+    ///
+    /// # Returns
+    /// The five parsed messages in capture order, timestamped from `base_ts`.
     fn make_full_dialog_messages(call_id: &str) -> Vec<SipMessage> {
         let t0 = base_ts();
         vec![
@@ -3820,6 +4195,7 @@ mod tui_state {
 
     // ── Test 1: stream_detail_enter_from_stream_list ─────────────────
 
+    /// Enter on a populated stream list opens the `StreamDetail` view.
     #[test]
     fn stream_detail_enter_from_stream_list() {
         use sipnab::capture::parse::ParsedPacket;
@@ -3890,6 +4266,7 @@ mod tui_state {
 
     // ── Test 2: stream_detail_escape_returns_to_stream_list ──────────
 
+    /// Esc from stream detail returns to the stream list.
     #[test]
     fn stream_detail_escape_returns_to_stream_list() {
         use sipnab::capture::parse::ParsedPacket;
@@ -3956,6 +4333,7 @@ mod tui_state {
 
     // ── Test 3: stream_detail_scroll_j_k ─────────────────────────────
 
+    /// `j`/`k` scroll the stream detail down and up, clamping at 0.
     #[test]
     fn stream_detail_scroll_j_k() {
         use sipnab::capture::parse::ParsedPacket;
@@ -4034,6 +4412,7 @@ mod tui_state {
 
     // ── Test 4: rtp_bar_is_after_ack_not_200ok ───────────────────────
 
+    /// The RTP bar is a separate ladder entry placed after the ACK (and 200 OK), not attached to the 200 OK.
     #[test]
     fn rtp_bar_is_after_ack_not_200ok() {
         use sipnab::tui::call_flow::prepare::prepare_messages;
@@ -4096,6 +4475,7 @@ mod tui_state {
 
     // ── Test 5: rtp_bar_has_timestamp_and_codec ──────────────────────
 
+    /// The RTP bar label carries "RTP" plus the PCMU codec, no redundant "active", and a populated timestamp.
     #[test]
     fn rtp_bar_has_timestamp_and_codec() {
         use sipnab::tui::call_flow::prepare::prepare_messages;
@@ -4160,6 +4540,9 @@ mod tui_state {
 
     /// Build an INVITE with a User-Agent header that only appears in the
     /// raw bytes, not in any structured dialog field.
+    ///
+    /// # Returns
+    /// The parsed `SipMessage`; panics if parsing fails.
     fn make_invite_with_user_agent(
         call_id: &str,
         from: &str,
@@ -4190,6 +4573,11 @@ mod tui_state {
         .expect("parse INVITE with User-Agent")
     }
 
+    /// Build an `App` with one completed dialog whose INVITE carries a
+    /// FreeSWITCH User-Agent header, for body-search tests.
+    ///
+    /// # Returns
+    /// The `App` with both messages processed.
     fn app_with_user_agent_dialog() -> App {
         let t0 = base_ts();
         let messages = vec![
@@ -4211,6 +4599,7 @@ mod tui_state {
         App::with_processed_messages(messages)
     }
 
+    /// The full-text search predicate matches "freeswitch", which exists only in the raw message bytes.
     #[test]
     fn body_search_finds_sip_header_in_body() {
         // "FreeSWITCH" appears only in the User-Agent header of the raw
@@ -4253,6 +4642,7 @@ mod tui_state {
         );
     }
 
+    /// The same predicate matches nothing for a string absent from every field and body.
     #[test]
     fn body_search_no_match_excludes_dialog() {
         let app = app_with_user_agent_dialog();
@@ -4296,6 +4686,7 @@ mod tui_state {
     // Column preference tests — apply_visible_columns
     // ═══════════════════════════════════════════════════════════════════
 
+    /// `apply_visible_columns` shows exactly the named columns and hides all others.
     #[test]
     fn column_config_apply_visible_columns() {
         use sipnab::tui::call_list::CallListState;
@@ -4321,6 +4712,7 @@ mod tui_state {
         assert!(!state.visible_columns[9], "PDD should be hidden");
     }
 
+    /// Column names in the config list match case-insensitively.
     #[test]
     fn column_config_case_insensitive() {
         use sipnab::tui::call_list::CallListState;
@@ -4349,6 +4741,7 @@ mod tui_state {
         assert!(!state.visible_columns[6], "State should be hidden");
     }
 
+    /// Applying an empty column list leaves all columns visible.
     #[test]
     fn column_config_empty_list_preserves_defaults() {
         use sipnab::tui::call_list::CallListState;

@@ -60,10 +60,12 @@ pub fn write_wav(path: &Path, samples: &[i16], sample_rate: u32, channels: u16) 
     Ok(())
 }
 
+/// Unit tests for the RIFF/WAVE PCM writer.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Writing samples creates a file of header + payload size on disk.
     #[test]
     fn write_wav_creates_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -78,6 +80,7 @@ mod tests {
         assert_eq!(metadata.len(), 54);
     }
 
+    /// The written RIFF/fmt/data headers carry the expected field values.
     #[test]
     fn write_wav_header_correct() {
         let dir = tempfile::tempdir().unwrap();
@@ -116,6 +119,7 @@ mod tests {
         assert_eq!(data.len(), 44 + 320);
     }
 
+    /// A 2-channel write records channel count and block align correctly.
     #[test]
     fn write_stereo_wav() {
         let dir = tempfile::tempdir().unwrap();
@@ -133,6 +137,7 @@ mod tests {
         assert_eq!(block_align, 4); // 2 channels * 2 bytes
     }
 
+    /// Writing zero samples produces a header-only 44-byte file.
     #[test]
     fn write_empty_wav() {
         let dir = tempfile::tempdir().unwrap();

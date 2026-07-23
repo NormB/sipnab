@@ -5,6 +5,16 @@
 
 use std::process::Command;
 
+/// Runs the `sipnab` binary from the crate root with color disabled.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+///
+/// # Returns
+/// `(stdout, stderr, exit_code)` of the finished process.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))

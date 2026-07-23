@@ -15,8 +15,11 @@ mod support;
 use server::{ApiServer, run_and_capture_stderr};
 use support::schema::{assert_valid, load_validator};
 
+/// The Call-ID of the single dialog in the default `sip_call.pcap` fixture,
+/// used to address per-dialog endpoints.
 const CALL_ID: &str = "test-call-1@10.0.0.1";
 
+/// `GET /health` returns 200 with the literal body `ok`.
 #[test]
 fn health_returns_ok() {
     let srv = ApiServer::spawn(&[]);
@@ -25,6 +28,8 @@ fn health_returns_ok() {
     assert_eq!(resp.body.trim(), "ok");
 }
 
+/// `GET /v1/dialogs` returns the versioned list wrapper (schema_version/total/
+/// offset/limit) and each summary validates against `dialog.schema.json`.
 #[test]
 fn list_dialogs_wrapper_and_summaries_validate() {
     let srv = ApiServer::spawn(&[]);
@@ -46,6 +51,8 @@ fn list_dialogs_wrapper_and_summaries_validate() {
     }
 }
 
+/// Both `GET /v1/dialogs/{id}` and `/v1/dialogs/{id}/report` return 200 and
+/// validate against `call_report.schema.json`.
 #[test]
 fn get_dialog_and_report_validate_call_report_schema() {
     let srv = ApiServer::spawn(&[]);
@@ -61,6 +68,7 @@ fn get_dialog_and_report_validate_call_report_schema() {
     }
 }
 
+/// Requesting a Call-ID that is not in the store returns 404.
 #[test]
 fn unknown_dialog_returns_404() {
     let srv = ApiServer::spawn(&[]);
@@ -68,6 +76,8 @@ fn unknown_dialog_returns_404() {
     assert_eq!(resp.status, 404, "unknown dialog must 404");
 }
 
+/// `GET /v1/stats` returns 200 with schema_version 1, correct dialog counts
+/// for the fixture, and a `timing` object.
 #[test]
 fn stats_returns_structured_json() {
     let srv = ApiServer::spawn(&[]);
@@ -80,6 +90,8 @@ fn stats_returns_structured_json() {
     assert!(body["timing"].is_object(), "stats has a timing block");
 }
 
+/// With an RTP fixture loaded, `/v1/streams` summaries carry all expected keys
+/// and the `/v1/streams/{ssrc}` detail validates against `stream.schema.json`.
 #[test]
 fn streams_endpoints_validate_against_stream_schema() {
     // sip_call.pcap has no RTP; use an RTP fixture so streams are non-empty.
@@ -119,6 +131,8 @@ fn streams_endpoints_validate_against_stream_schema() {
 
 // ── auth (T3.3) ──────────────────────────────────────────────────────────
 
+/// With `--api-key` set, the correct Bearer token gets 200 while a missing
+/// token, wrong token, Basic scheme, and prefix-less raw key each get 401.
 #[test]
 fn auth_accepts_correct_bearer_and_rejects_everything_else() {
     let srv = ApiServer::spawn(&["--api-key", "s3cret-key"]);
@@ -149,6 +163,8 @@ fn auth_accepts_correct_bearer_and_rejects_everything_else() {
     );
 }
 
+/// A low `--api-max-conn` cap still serves sequential requests: five
+/// consecutive `/health` calls all return 200.
 #[test]
 fn max_conn_limiter_active_still_serves() {
     // A low connection cap must not break normal serving. (Deterministic
@@ -160,6 +176,8 @@ fn max_conn_limiter_active_still_serves() {
     }
 }
 
+/// Passing `--api-tls-cert`/`--api-tls-key` fails fast with the documented
+/// "requires the axum-server crate" error and the API never starts listening.
 #[test]
 fn tls_flags_fail_fast_and_do_not_serve() {
     // Reality check: API TLS is NOT implemented — run_server returns an error
@@ -185,6 +203,8 @@ fn tls_flags_fail_fast_and_do_not_serve() {
     );
 }
 
+/// `GET /metrics` returns 200 and contains the `sipnab_dialogs_total` counter
+/// TYPE line, proving the Prometheus exposition endpoint serves.
 #[test]
 fn metrics_endpoint_serves_prometheus_text() {
     let srv = ApiServer::spawn(&[]);

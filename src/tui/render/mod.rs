@@ -4,7 +4,9 @@
 
 use super::*;
 
+/// Modal popup rendering (save, filter, settings, file-open, name-address).
 mod popups;
+/// Status lines and the context-sensitive F-key bar.
 mod status;
 
 pub(in crate::tui) use popups::*;
@@ -17,16 +19,24 @@ pub(in crate::tui) use status::*;
 /// the frame. `None` fields (views that didn't render) leave state as is.
 #[derive(Debug, Default)]
 pub(in crate::tui) struct RenderFeedback {
+    /// Content-clamped scroll of the stream detail view (rows).
     pub(in crate::tui) stream_detail_scroll: Option<usize>,
+    /// Selection-following, content-clamped ladder scroll (ladder rows).
     pub(in crate::tui) flow_scroll: Option<usize>,
+    /// Clamped vertical scroll of the call-flow detail pane.
     pub(in crate::tui) flow_detail_scroll: Option<u16>,
+    /// Clamped horizontal scroll of the call-flow detail pane.
     pub(in crate::tui) flow_detail_hscroll: Option<u16>,
     /// `(cached_msg_count, cached_rtp_bar_indices, cached_raw_indices)`.
     pub(in crate::tui) flow_caches:
         Option<(usize, std::collections::HashSet<usize>, Vec<Option<usize>>)>,
+    /// Clamped scroll of the raw-message / combined-detail views.
     pub(in crate::tui) raw_msg_scroll: Option<u16>,
+    /// Clamped scroll of the message diff view.
     pub(in crate::tui) diff_scroll: Option<u16>,
+    /// Clamped scroll of the help view.
     pub(in crate::tui) help_scroll: Option<u16>,
+    /// Clamped scroll of the statistics view.
     pub(in crate::tui) stats_scroll: Option<u16>,
 }
 
@@ -42,8 +52,23 @@ pub(in crate::tui) struct RenderFeedback {
 /// Takes `&mut App` only because the call/stream list tables are ratatui
 /// stateful widgets (their inner offset state updates during render);
 /// everything else is read-only. State writes are returned as
-/// [`RenderFeedback`], never applied here — `App::sync_caches` (pre-draw)
+/// `RenderFeedback`, never applied here — `App::sync_caches` (pre-draw)
 /// and `App::apply_render_feedback` (post-draw) are the writers.
+///
+/// # Arguments
+/// * `frame` - Frame covering the whole terminal.
+/// * `app` - Application state; mutable only for stateful table widgets.
+/// * `ds` - Dialog store read guard held by the caller for the frame.
+/// * `ss` - Stream store read guard held by the caller for the frame.
+///
+/// # Returns
+/// The `RenderFeedback` collected from the view that rendered (clamped
+/// scrolls, flow caches); default-`None` fields for views that did not.
+///
+/// # Side effects
+/// Draws the full frame (status lines, current view, f-key bar, popup
+/// overlays) and updates the inner offsets of the call/stream list table
+/// states during stateful rendering.
 pub(in crate::tui) fn render_app(
     frame: &mut ratatui::Frame,
     app: &mut App,
@@ -55,7 +80,9 @@ pub(in crate::tui) fn render_app(
 
     // Below this the fixed chrome (3 status lines + f-key bar) leaves no
     // usable main area — show an explicit notice instead of a garbled screen.
+    /// Minimum terminal width (columns) the layout can render in.
     const MIN_WIDTH: u16 = 40;
+    /// Minimum terminal height (rows) the layout can render in.
     const MIN_HEIGHT: u16 = 6;
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
@@ -490,6 +517,14 @@ pub(in crate::tui) fn render_app(
 /// Compose the statistics view's aggregate text — a full pass over every
 /// dialog, so it is derived in `App::sync_caches` (churn-floored) and
 /// cached, never recomputed per frame.
+///
+/// # Arguments
+/// * `ds` - Dialog store snapshot to aggregate.
+/// * `ss` - Stream store snapshot to aggregate.
+///
+/// # Returns
+/// The full multi-line statistics text: totals, per-state counts and the
+/// method distribution (both sorted by count descending, then name). Pure.
 pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> String {
     use crate::sip::dialog::DialogState;
     use std::collections::HashMap;
@@ -559,6 +594,22 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
     text
 }
 
+/// Render the statistics view: the cached `app.stats.text` (or a direct
+/// recomputation on the first frame before the cache exists) inside a
+/// bordered, scrollable paragraph.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area for the view.
+/// * `app` - Application state (cached text, scroll, theme).
+/// * `ds` - Dialog store snapshot for the cache-miss fallback.
+/// * `ss` - Stream store snapshot for the cache-miss fallback.
+///
+/// # Returns
+/// The content-clamped scroll offset, reported back via `RenderFeedback`.
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_statistics(
     frame: &mut ratatui::Frame,
     area: ratatui::layout::Rect,
@@ -594,17 +645,36 @@ pub(in crate::tui) fn render_statistics(
 
 /// Parameters for the side-by-side message diff view.
 pub(in crate::tui) struct MessageDiffView<'a> {
+    /// Call-ID of the dialog holding both messages.
     pub(in crate::tui) call_id: &'a str,
+    /// Index of the left-hand message in the dialog's message list.
     pub(in crate::tui) msg1_idx: usize,
+    /// Index of the right-hand message in the dialog's message list.
     pub(in crate::tui) msg2_idx: usize,
+    /// Vertical scroll offset shared by both panes (rows).
     pub(in crate::tui) scroll: u16,
     /// Header-name display form (as captured / expanded / compact).
     pub(in crate::tui) header_form: header_form::HeaderFormMode,
+    /// Color theme used for all styling.
     pub(in crate::tui) theme: &'a Theme,
 }
 
-/// Render a side-by-side diff of two SIP messages. Returns the content
-/// height in rows so the caller can clamp its stored scroll offset.
+/// Render a side-by-side diff of two SIP messages: both texts split into
+/// halves, compared line-by-line by position, differing lines emphasized.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Main-pane area, split into equal left/right halves.
+/// * `store` - Dialog store snapshot the messages are read from.
+/// * `view` - Diff parameters (see `MessageDiffView`).
+///
+/// # Returns
+/// The content height in rows (longest message plus the header line) so
+/// the caller can clamp its stored scroll offset; `0` when the dialog or
+/// either message is missing (a placeholder notice is drawn instead).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_message_diff(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -718,18 +788,23 @@ pub(crate) mod test_support {
     pub(crate) use ratatui::backend::TestBackend;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixture caller address (10.0.0.1).
     pub(crate) fn addr_a() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
 
+    /// Fixture callee address (10.0.0.2).
     pub(crate) fn addr_b() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
     }
 
+    /// Fixed fixture timestamp (2024-06-15 12:00:00 UTC).
     pub(crate) fn base_ts() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// Assemble raw SIP bytes from a start line and header lines, with
+    /// CRLF endings and the blank header/body separator.
     pub(crate) fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
         let mut msg = Vec::new();
         msg.extend_from_slice(first_line.as_bytes());
@@ -742,6 +817,8 @@ pub(crate) mod test_support {
         msg
     }
 
+    /// Build and parse a fixture INVITE from `from` to `to` (A → B) with
+    /// the given Call-ID and timestamp.
     pub(crate) fn make_invite(
         call_id: &str,
         from: &str,
@@ -770,6 +847,8 @@ pub(crate) mod test_support {
         .expect("parse INVITE")
     }
 
+    /// Build and parse a fixture response (B → A) to the INVITE with the
+    /// given status code, reason and timestamp.
     pub(crate) fn make_response(
         call_id: &str,
         status: u16,
@@ -798,6 +877,7 @@ pub(crate) mod test_support {
         .expect("parse response")
     }
 
+    /// Build and parse a fixture BYE (A → B) ending the dialog.
     pub(crate) fn make_bye(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "BYE sip:1002@example.com SIP/2.0",
@@ -898,11 +978,14 @@ pub(crate) mod test_support {
     // ── render_app dispatch across views & widths ──────────────────
 }
 
+/// Full-frame `render_app` dispatch tests: every view, status line
+/// variants, popup overlays, and direct diff edge cases.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
 
+    /// Empty app renders the chrome; a populated one shows "Dialogs: 1".
     #[test]
     fn render_app_call_list_empty_and_populated() {
         let mut empty = App::new_test();
@@ -916,6 +999,8 @@ mod tests {
         assert!(out.contains("Dialogs: 1"));
     }
 
+    /// The call-list f-key bar drops low-priority items when narrow and
+    /// advertises the Open hotkey when wide.
     #[test]
     fn render_app_call_list_narrow_and_wide() {
         let mut app = app_with_dialog();
@@ -926,6 +1011,7 @@ mod tests {
         assert!(wide.contains("Open"));
     }
 
+    /// The stream-list view renders with its Tab-to-Calls f-key hint.
     #[test]
     fn render_app_stream_list_view() {
         let mut app = App::new_test();
@@ -935,6 +1021,8 @@ mod tests {
         assert!(out.contains("Calls"));
     }
 
+    /// Call flow renders in both split (raw preview) and full-width
+    /// layouts, with the mode hints on status line 3.
     #[test]
     fn render_app_call_flow_view_split_and_nosplit() {
         let mut app = app_with_dialog();
@@ -951,6 +1039,7 @@ mod tests {
         assert!(nosplit.contains("Back"));
     }
 
+    /// Extended (merged multi-dialog) call flow renders without panic.
     #[test]
     fn render_app_call_flow_extended_flow() {
         let mut app = app_with_dialog();
@@ -960,6 +1049,7 @@ mod tests {
         assert!(out.contains("Back"));
     }
 
+    /// The raw-message view renders with its Highlight f-key hint.
     #[test]
     fn render_app_raw_message_view() {
         let mut app = app_with_dialog();
@@ -972,6 +1062,7 @@ mod tests {
         assert!(out.contains("Highlight"));
     }
 
+    /// The diff view shows both message panes with their index titles.
     #[test]
     fn render_app_message_diff_view() {
         let mut app = app_with_dialog();
@@ -985,6 +1076,7 @@ mod tests {
         assert!(out.contains("Message 2"));
     }
 
+    /// Help renders non-empty; statistics shows its title and counts.
     #[test]
     fn render_app_help_and_statistics_views() {
         let mut app = app_with_dialog();
@@ -1000,6 +1092,7 @@ mod tests {
 
     // ── Status line variants ───────────────────────────────────────
 
+    /// Status line 1 shows PAUSED and the [A] autoscroll indicator.
     #[test]
     fn render_app_status_line1_paused_and_autoscroll() {
         let mut app = app_with_dialog();
@@ -1010,6 +1103,7 @@ mod tests {
         assert!(out.contains("[A]"));
     }
 
+    /// Status line 1 shows the Offline capture mode text.
     #[test]
     fn render_app_status_line1_offline_mode() {
         let mut app = app_with_dialog();
@@ -1018,6 +1112,7 @@ mod tests {
         assert!(out.contains("Offline"));
     }
 
+    /// With search active, status line 3 shows the `/query` overlay.
     #[test]
     fn render_app_status_line3_search_active() {
         let mut app = app_with_dialog();
@@ -1027,6 +1122,8 @@ mod tests {
         assert!(out.contains("/invite"));
     }
 
+    /// A status message containing "fail"/"error" renders on line 3 via
+    /// the error color path.
     #[test]
     fn render_app_status_line3_error_message() {
         let mut app = app_with_dialog();
@@ -1035,6 +1132,8 @@ mod tests {
         assert!(out.contains("save failed"));
     }
 
+    /// A neutral status message renders on line 3 via the info
+    /// (foreground) color path.
     #[test]
     fn render_app_status_line3_info_message() {
         let mut app = app_with_dialog();
@@ -1044,6 +1143,7 @@ mod tests {
         assert!(out.contains("saved 3 dialogs"));
     }
 
+    /// Status line 2 shows both the match expression and the BPF filter.
     #[test]
     fn render_app_status_line2_filter_and_bpf() {
         let mut app = app_with_dialog();
@@ -1056,6 +1156,7 @@ mod tests {
 
     // ── Popups via render_app overlay ──────────────────────────────
 
+    /// The save popup overlays the frame with title and typed path.
     #[test]
     fn render_app_save_popup_overlay() {
         let mut app = app_with_dialog();
@@ -1101,6 +1202,7 @@ mod tests {
         );
     }
 
+    /// The file-open popup in browser mode shows the directory header.
     #[test]
     fn render_app_file_open_browser_overlay() {
         let mut app = app_with_dialog();
@@ -1111,6 +1213,7 @@ mod tests {
         assert!(out.contains("Dir:"));
     }
 
+    /// The file-open popup in manual mode shows the Path input.
     #[test]
     fn render_app_file_open_manual_overlay() {
         let mut app = app_with_dialog();
@@ -1121,6 +1224,7 @@ mod tests {
         assert!(out.contains("Path:"));
     }
 
+    /// The settings popup overlays with its title and first setting row.
     #[test]
     fn render_app_settings_popup_overlay() {
         let mut app = app_with_dialog();
@@ -1130,6 +1234,7 @@ mod tests {
         assert!(out.contains("Color Mode"));
     }
 
+    /// The filter popup overlays with its title and SIP From field.
     #[test]
     fn render_app_filter_popup_overlay() {
         let mut app = App::new_test();
@@ -1141,6 +1246,7 @@ mod tests {
 
     // ── Direct popup function tests ────────────────────────────────
 
+    /// A missing Call-ID renders the "Dialog not found" placeholder.
     #[test]
     fn render_message_diff_dialog_not_found() {
         let app = App::new_test();
@@ -1175,6 +1281,7 @@ mod tests {
         assert!(text.contains("Dialog not found"));
     }
 
+    /// An out-of-range message index renders "Message not found".
     #[test]
     fn render_message_diff_message_index_out_of_range() {
         let app = app_with_dialog();

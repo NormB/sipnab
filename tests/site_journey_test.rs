@@ -9,15 +9,24 @@
 //!   makes that unshippable.
 //! - Nav entries pointing at docs pages that don't exist (5 pages were once
 //!   hidden the other way around — nav and content must stay in sync).
+//!
+//! Approach: all guards are static checks over the repo tree (templates,
+//! tapes, content, stylesheets, CI workflows). Where a guard needs behavior,
+//! it drives the real thing rather than a mock: the `tui`-gated modules load
+//! the demo pcaps through the actual TUI `App`, and the CSP guards execute
+//! `ops/cloudflare/refresh_csp_hashes.py` in dry-run mode.
 
 use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
+/// Repository root, taken from `CARGO_MANIFEST_DIR`.
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// Read a repo-relative file to a `String`, panicking with the path on
+/// failure.
 fn read(rel: &str) -> String {
     std::fs::read_to_string(repo().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
 }
@@ -28,6 +37,9 @@ fn read(rel: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Monospace font families installed on this machine, per fontconfig.
+///
+/// # Returns
+/// `None` when `fc-list` is unavailable or fails; otherwise the family set.
 fn installed_mono_families() -> Option<BTreeSet<String>> {
     let out = Command::new("fc-list")
         .args([":spacing=mono", "family"])
@@ -47,6 +59,9 @@ fn installed_mono_families() -> Option<BTreeSet<String>> {
 }
 
 /// `Set FontFamily "X"` declarations across all demo tapes.
+///
+/// # Returns
+/// (tape filename, font family) pairs for every declaration found.
 fn tape_font_families() -> Vec<(String, String)> {
     let mut out = Vec::new();
     let re = regex::Regex::new(r#"(?m)^Set FontFamily\s+"([^"]+)""#).unwrap();
@@ -66,6 +81,8 @@ fn tape_font_families() -> Vec<(String, String)> {
     out
 }
 
+/// Every FontFamily a demo tape names must be an installed monospace
+/// family (2026-07-18 regression); skips off-Linux or when fc-list is missing.
 #[test]
 fn demo_tape_fonts_are_installed_monospace() {
     let fonts = tape_font_families();
@@ -103,6 +120,12 @@ fn demo_tape_fonts_are_installed_monospace() {
 // Demo-asset journey: index.html references <-> website/static/demos contents.
 // ---------------------------------------------------------------------------
 
+/// Demo asset filenames the site actually references: `get_url` paths in
+/// the homepage/base templates, the sample pcap fetched by `analyze.js`,
+/// and the derived `-poster.png` first-frames of each animated demo.
+///
+/// # Returns
+/// The referenced filenames (relative to `website/static/demos`).
 fn referenced_demo_assets() -> BTreeSet<String> {
     let re = regex::Regex::new(r#"get_url\(path='demos/([^']+)'\)"#).unwrap();
     let mut out = BTreeSet::new();
@@ -130,6 +153,7 @@ fn referenced_demo_assets() -> BTreeSet<String> {
     out
 }
 
+/// Filenames actually shipped in `website/static/demos`.
 fn present_demo_assets() -> BTreeSet<String> {
     std::fs::read_dir(repo().join("website/static/demos"))
         .expect("static/demos dir")
@@ -138,6 +162,7 @@ fn present_demo_assets() -> BTreeSet<String> {
         .collect()
 }
 
+/// Every referenced demo asset exists in static/demos and no shipped file is unreferenced.
 #[test]
 fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
     let referenced = referenced_demo_assets();
@@ -158,6 +183,7 @@ fn every_referenced_demo_asset_exists_and_none_are_orphaned() {
     );
 }
 
+/// Every tape Output/Screenshot landing in static/demos must map to a referenced asset (its .webp counterpart counts).
 #[test]
 fn every_tape_output_is_a_referenced_site_asset() {
     // A tape whose Output lands in static/demos must correspond to a
@@ -199,6 +225,7 @@ fn every_tape_output_is_a_referenced_site_asset() {
 // Nav journey: every docs link in the chrome resolves to a content page.
 // ---------------------------------------------------------------------------
 
+/// Every `@/docs` link in the base/index chrome resolves to an existing content page.
 #[test]
 fn every_nav_docs_link_resolves_to_a_content_page() {
     let re = regex::Regex::new(r"@/docs/([A-Za-z0-9_-]+\.md)").unwrap();
@@ -227,6 +254,7 @@ fn every_nav_docs_link_resolves_to_a_content_page() {
     );
 }
 
+/// The Zola config version (homepage badge, download links) equals the Cargo.toml crate version.
 #[test]
 fn site_version_matches_crate_version() {
     // Guards the "homepage still shows the old version" defect: the Zola
@@ -252,6 +280,7 @@ fn site_version_matches_crate_version() {
     );
 }
 
+/// Docs frontmatter hygiene: every page has a description and weights never collide.
 #[test]
 fn docs_page_weights_are_unique_and_descriptions_present() {
     let w_re = regex::Regex::new(r"(?m)^weight = (\d+)").unwrap();
@@ -313,6 +342,9 @@ mod search_demo_narrowing {
 
     /// The pcap the tape plays and each search query it types (`Type "/"`
     /// immediately followed by another `Type "..."` line).
+    ///
+    /// # Returns
+    /// The repo-relative pcap path and the search queries in tape order.
     fn tape_pcap_and_queries(tape: &str) -> (String, Vec<String>) {
         let cmd = regex::Regex::new(r#"(?m)^Type "sipnab [^"]*-I ([^"\s]+)"#).unwrap();
         let pcap = cmd
@@ -332,6 +364,8 @@ mod search_demo_narrowing {
         (pcap, queries)
     }
 
+    /// Each `/` query 04-filter.tape types must match some but not all dialogs
+    /// of its pcap, so the demo visibly narrows (2026-07-18 regression).
     #[test]
     fn every_typed_search_query_narrows_the_demo_pcap() {
         let tape = read("demos/04-filter.tape");
@@ -398,6 +432,7 @@ mod search_demo_narrowing {
 // addEventListener inside a hashed <script> instead. This guard makes an
 // inline handler unshippable.
 // ---------------------------------------------------------------------------
+/// No template may use inline `on*=` handler attributes: the hash-based CSP silently blocks them.
 #[test]
 fn no_inline_event_handlers_in_templates() {
     // Match an inline handler used as an HTML attribute (quote follows the `=`).
@@ -447,6 +482,7 @@ fn no_inline_event_handlers_in_templates() {
 // nothing is worse than no ToC.
 // ---------------------------------------------------------------------------
 
+/// download.html carries a doc-sidebar ToC whose anchors all resolve, including #all-files and #verify.
 #[test]
 fn download_page_has_left_toc_sidebar_like_docs() {
     let tpl = read("website/templates/download.html");
@@ -499,6 +535,7 @@ fn download_page_has_left_toc_sidebar_like_docs() {
 // with no footer at all (no nav links, no license, no credits).
 // ---------------------------------------------------------------------------
 
+/// base.html renders .site-footer and no child template blanks the footer block away.
 #[test]
 fn every_page_template_keeps_the_site_footer() {
     let base = read("website/templates/base.html");
@@ -552,6 +589,7 @@ fn base_block(name: &str) -> String {
     base[start..start + end].to_string()
 }
 
+/// Patreon, GitHub Sponsors, and GitHub links appear only in the footer block, never in the top nav.
 #[test]
 fn sponsor_heart_and_github_live_only_in_the_footer() {
     let nav = base_block("nav");
@@ -581,6 +619,8 @@ fn sponsor_heart_and_github_live_only_in_the_footer() {
     }
 }
 
+/// The footer is a single non-wrapping .footer-row with svg icon sponsor
+/// links: no two-tier layout, no text links, no "Built with" credit.
 #[test]
 fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
     let footer = base_block("footer");
@@ -652,6 +692,7 @@ fn footer_is_one_non_wrapping_row_with_icon_sponsor_links() {
 // content hash (`cachebust=true`), which changes whenever the CSS does.
 // ---------------------------------------------------------------------------
 
+/// style.css is cachebusted by Zola content hash (cachebust=true), never by `?v=` release version.
 #[test]
 fn stylesheet_link_is_content_hash_cachebusted() {
     let base = read("website/templates/base.html");
@@ -683,6 +724,8 @@ fn stylesheet_link_is_content_hash_cachebusted() {
 // checksums) organize theirs.
 // ---------------------------------------------------------------------------
 
+/// The download page keeps its DevOps content (container image, pinned
+/// install, releases-API discovery, checksums) and source-persona content.
 #[test]
 fn download_page_serves_devops_and_source_personas() {
     let tpl = read("website/templates/download.html");
@@ -744,6 +787,8 @@ fn download_page_serves_devops_and_source_personas() {
 // being silently dropped.
 // ---------------------------------------------------------------------------
 
+/// Release/docker workflows keep their sigstore attestation steps and
+/// permissions; the site keeps the verify text and CC BY footer license.
 #[test]
 fn releases_are_attested_and_site_content_is_licensed() {
     // Release artifacts: one attestation pass over everything uploaded.
@@ -805,6 +850,7 @@ fn releases_are_attested_and_site_content_is_licensed() {
 // tile's integer fallback text disagrees with its own data-count.
 // ---------------------------------------------------------------------------
 
+/// Every homepage .arch-stat tile's visible fallback number equals its data-count animation target.
 #[test]
 fn homepage_stat_fallback_text_matches_data_count() {
     let html = read("website/templates/index.html");
@@ -845,6 +891,7 @@ fn homepage_stat_fallback_text_matches_data_count() {
 // download page's Rust version claims must equal the crate's real MSRV.
 // ---------------------------------------------------------------------------
 
+/// Every "Rust x.y+" claim on the download page equals Cargo.toml's rust-version, and at least one exists.
 #[test]
 fn download_page_msrv_matches_cargo() {
     let cargo = read("Cargo.toml");
@@ -888,6 +935,8 @@ fn download_page_msrv_matches_cargo() {
 // base.html today).
 // ---------------------------------------------------------------------------
 
+/// The sha256 of every executable inline template script must equal the
+/// PINNED list, making inline-script edits a conscious, reviewed act.
 #[test]
 fn inline_script_edits_require_csp_hash_refresh() {
     use base64::Engine as _;
@@ -965,6 +1014,8 @@ fn inline_script_edits_require_csp_hash_refresh() {
 // at a deleted page, and page weights must be unique (prev/next order).
 // ---------------------------------------------------------------------------
 
+/// The docs pages, both sidebar nav_group lists, and the header dropdown
+/// must be identical sets, and page weights must be unique.
 #[test]
 fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
     let docs_dir = repo().join("website/content/docs");
@@ -1055,6 +1106,7 @@ fn every_docs_page_is_in_the_sidebar_and_dropdown_navs() {
 // production CSP.
 // ---------------------------------------------------------------------------
 
+/// CSP source token (quoted `sha256-BASE64`) for an inline script body.
 fn csp_token(body: &str) -> String {
     use base64::Engine as _;
     use sha2::Digest as _;
@@ -1064,6 +1116,13 @@ fn csp_token(body: &str) -> String {
     )
 }
 
+/// Run `ops/cloudflare/refresh_csp_hashes.py` with the given arguments.
+///
+/// # Side effects
+/// Spawns a `python3` child process.
+///
+/// # Returns
+/// The process output (status, stdout, stderr).
 fn run_csp_refresh(args: &[&str]) -> std::process::Output {
     std::process::Command::new("python3")
         .arg(repo().join("ops/cloudflare/refresh_csp_hashes.py"))
@@ -1072,6 +1131,8 @@ fn run_csp_refresh(args: &[&str]) -> std::process::Output {
         .expect("run refresh_csp_hashes.py")
 }
 
+/// In --site-dir --dry-run mode the CSP refresher hashes executable inline
+/// scripts recursively, skips src=/ld+json blocks, and prints the CSP.
 #[test]
 fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1138,6 +1199,7 @@ fn csp_refresh_site_dir_hashes_executable_inline_scripts() {
     );
 }
 
+/// An HTML-free --site-dir must fail loudly rather than publish an empty hash set.
 #[test]
 fn csp_refresh_site_dir_empty_tree_is_an_error() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1176,8 +1238,10 @@ mod multileg_demo_ladder {
     /// glyph metrics, so px/font arithmetic over-estimates the grid (the
     /// common.tape FontSize 20 gives 88x27, NOT the naive 98x28).
     const DEMO_COLS: u16 = 96;
+    /// Row half of the measured 96x30 VHS grid; see `DEMO_COLS` above.
     const DEMO_ROWS: u16 = 30;
 
+    /// The terminal buffer as one string per row.
     fn buffer_rows(term: &Terminal<TestBackend>) -> Vec<String> {
         let buf = term.backend().buffer();
         (0..buf.area.height)
@@ -1191,6 +1255,9 @@ mod multileg_demo_ladder {
 
     /// Replay the 10-multileg tape's key sequence (load pcap, Down x5,
     /// Enter, `x`) and return the app plus the rendered demo-size screen.
+    ///
+    /// # Returns
+    /// The app (extended flow active) and the rendered rows of the demo-size screen.
     fn extended_flow_screen() -> (App, Vec<String>) {
         let pcap = repo().join("tests/pcap-samples/b2bua-asterisk.pcapng");
         assert!(pcap.is_file(), "demo fixture missing: {}", pcap.display());

@@ -4,7 +4,7 @@
 //! to 48 kHz mono. The actual device output is delegated to the
 //! `sipnab-audio` plugin (`libsipnab_audio.so` / `.dylib`), which is the only
 //! component linking rodio/ALSA. The plugin is `dlopen`'d lazily on first
-//! [`AudioPlayer::new`], so the main binary carries no load-time
+//! `AudioPlayer::new`, so the main binary carries no load-time
 //! `NEEDED libasound.so.2` ELF entry and starts fine without libasound.
 
 use std::ffi::OsString;
@@ -19,10 +19,18 @@ use super::opus_decode::OpusStreamDecoder;
 use super::stream::RtpStream;
 
 // C ABI of the sipnab-audio plugin (see crates/sipnab-audio/src/lib.rs).
+
+/// Opens the default output device and returns an opaque handle (null on
+/// failure).
 type OpenFn = unsafe extern "C" fn() -> *mut c_void;
+/// Plays a slice of interleaved f32 samples: `(handle, ptr, len, sample_rate,
+/// channels)`, returning 0 on success.
 type PlayFn = unsafe extern "C" fn(*mut c_void, *const f32, usize, u32, u16) -> i32;
+/// Stops playback on the given handle.
 type StopFn = unsafe extern "C" fn(*mut c_void);
+/// Returns non-zero while the given handle is still playing.
 type IsPlayingFn = unsafe extern "C" fn(*mut c_void) -> i32;
+/// Closes the given handle and releases the device.
 type CloseFn = unsafe extern "C" fn(*mut c_void);
 
 /// Audio player backed by the lazily-loaded `sipnab-audio` plugin.
@@ -32,14 +40,20 @@ type CloseFn = unsafe extern "C" fn(*mut c_void);
 pub struct AudioPlayer {
     // Raw function pointers resolved from `_lib`. They are only valid while
     // `_lib` is alive, so `_lib` is kept (and dropped last via field order).
+    /// Resolved `sipnab_audio_play` symbol.
     play: PlayFn,
+    /// Resolved `sipnab_audio_stop` symbol.
     stop: StopFn,
+    /// Resolved `sipnab_audio_is_playing` symbol.
     is_playing: IsPlayingFn,
+    /// Resolved `sipnab_audio_close` symbol.
     close: CloseFn,
+    /// Opaque device handle returned by `sipnab_audio_open`.
     handle: *mut c_void,
     // The loaded plugin library. MUST outlive the function pointers above and
     // the handle; it is dropped last (struct fields drop in declaration order,
     // so `_lib` is listed last here).
+    /// The loaded plugin library, dropped last so the symbols above stay valid.
     _lib: Library,
 }
 
@@ -156,6 +170,8 @@ impl AudioPlayer {
 }
 
 impl Drop for AudioPlayer {
+    /// Closes the plugin device handle exactly once (side effect: releases the
+    /// audio device), then lets `_lib` drop to unload the plugin.
     fn drop(&mut self) {
         if !self.handle.is_null() {
             // SAFETY: valid plugin symbol; `handle` was opened in `new` and is
@@ -203,7 +219,7 @@ fn plugin_candidates() -> Vec<OsString> {
     candidates
 }
 
-/// Resolve and `dlopen` the audio plugin, trying [`plugin_candidates`] in
+/// Resolve and `dlopen` the audio plugin, trying `plugin_candidates` in
 /// order and returning the first that loads.
 fn load_plugin() -> Result<Library> {
     let candidates = plugin_candidates();
@@ -279,6 +295,7 @@ fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
 // Tests cover the device-free DSP helpers (decode + resample) and the plugin
 // load/error paths. The rodio device path lives in the `sipnab-audio` plugin
 // and is hardware-bound, so it stays uncovered by design.
+/// Unit tests for the device-free DSP helpers and plugin load/error paths.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,6 +326,7 @@ mod tests {
         RtpStream::new(key, &hdr, Utc::now())
     }
 
+    /// Resampling at an equal rate, or an empty input, is an identity operation.
     #[test]
     fn resample_same_rate_and_empty_are_identity() {
         let s = vec![0.1, -0.2, 0.3];
@@ -316,6 +334,7 @@ mod tests {
         assert_eq!(resample_f32(&[], 8000, 16000), Vec::<f32>::new());
     }
 
+    /// Up- and down-sampling produce output lengths scaled by the rate ratio.
     #[test]
     fn resample_upsample_and_downsample_lengths() {
         let s = vec![0.0f32; 100];
@@ -326,6 +345,7 @@ mod tests {
         assert_eq!(resample_f32(&s, 48000, 8000).len(), 10);
     }
 
+    /// 2x upsampling linearly interpolates a midpoint between two samples.
     #[test]
     fn resample_linear_interpolation_values() {
         // Upsampling [0.0, 1.0] by 2x interpolates a midpoint near 0.5.
@@ -335,6 +355,7 @@ mod tests {
         assert!((out[1] - 0.5).abs() < 1e-6, "midpoint should interpolate");
     }
 
+    /// G.711 decode yields one f32 sample per byte, all within [-1.0, 1.0].
     #[test]
     fn decode_g711_normalizes_to_unit_range() {
         let mut s = stream(0); // PCMU
@@ -351,17 +372,21 @@ mod tests {
         assert_eq!(alaw.len(), 160);
     }
 
+    /// A PCMA stream carrying a single 160-byte A-law frame.
     fn stream_with_frame() -> RtpStream {
         let mut s = stream(8); // PCMA
         s.payload_buffer.push_back((0, vec![0x55u8; 160]));
         s
     }
 
+    /// Decoding a stream with no captured frames yields empty PCM.
     #[test]
     fn decode_g711_empty_stream_is_empty() {
         assert!(decode_g711_to_f32(G711Codec::Ulaw, &stream(0)).is_empty());
     }
 
+    /// Opus decode returns `Ok` for an empty stream and skips undecodable
+    /// frames without erroring.
     #[test]
     fn decode_opus_skips_undecodable_frames() {
         // Empty stream -> Ok(empty).
@@ -379,6 +404,7 @@ mod tests {
         assert!(pcm.is_empty());
     }
 
+    /// The plugin filename carries the base name and the platform DLL suffix.
     #[test]
     fn plugin_filename_is_platform_appropriate() {
         let name = plugin_filename();
@@ -387,6 +413,7 @@ mod tests {
         assert!(name.ends_with(std::env::consts::DLL_SUFFIX));
     }
 
+    /// A non-existent explicit plugin path does not `dlopen` successfully.
     #[test]
     fn explicit_nonexistent_plugin_path_does_not_load() {
         // A non-existent explicit path must not dlopen successfully. We test
@@ -397,6 +424,7 @@ mod tests {
         assert!(!loaded, "a non-existent plugin path must not load");
     }
 
+    /// A missing plugin makes `AudioPlayer::new` return an `Err`, never panic.
     #[test]
     fn new_with_missing_plugin_returns_err_not_panic() {
         // Pointing SIPNAB_AUDIO_PLUGIN at a non-existent path forces the

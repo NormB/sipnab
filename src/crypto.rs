@@ -1,10 +1,10 @@
 //! Cryptographic backend abstraction for TLS/SRTP operations.
 //!
-//! Defines the [`CryptoBackend`] trait that abstracts over different crypto
+//! Defines the `CryptoBackend` trait that abstracts over different crypto
 //! implementations (pure-Rust via `ring`, wolfSSL, or OpenSSL). When the
-//! `tls` feature is enabled, [`RingCryptoBackend`] provides the real
+//! `tls` feature is enabled, `RingCryptoBackend` provides the real
 //! implementation using the `ring` crate. Without `tls`, only the
-//! [`StubCryptoBackend`] is available (returns errors for all operations).
+//! `StubCryptoBackend` is available (returns errors for all operations).
 
 use anyhow::Result;
 
@@ -189,6 +189,7 @@ struct HkdfLen(usize);
 
 #[cfg(feature = "tls")]
 impl ring::hkdf::KeyType for HkdfLen {
+    /// Output key-material length in bytes that `ring` should produce.
     fn len(&self) -> usize {
         self.0
     }
@@ -196,7 +197,7 @@ impl ring::hkdf::KeyType for HkdfLen {
 
 /// Create the default crypto backend for the current feature set.
 ///
-/// Returns [`RingCryptoBackend`] when `tls` is enabled, [`StubCryptoBackend`]
+/// Returns `RingCryptoBackend` when `tls` is enabled, `StubCryptoBackend`
 /// otherwise.
 pub fn default_backend() -> Box<dyn CryptoBackend> {
     #[cfg(feature = "tls")]
@@ -234,8 +235,11 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    //! Stub-backend error tests plus, under `tls`, `RingCryptoBackend`
+    //! round-trip and known-answer tests.
     use super::*;
 
+    /// The stub backend errors on AES-GCM decrypt with a build-hint message.
     #[test]
     fn stub_aes_gcm_decrypt_returns_error() {
         let stub = StubCryptoBackend;
@@ -248,6 +252,7 @@ mod tests {
         );
     }
 
+    /// The stub backend errors on AES-CBC decrypt.
     #[test]
     fn stub_aes_cbc_decrypt_returns_error() {
         let stub = StubCryptoBackend;
@@ -255,6 +260,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// The stub backend errors on HMAC-SHA1.
     #[test]
     fn stub_hmac_sha1_returns_error() {
         let stub = StubCryptoBackend;
@@ -262,6 +268,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// The stub backend errors on HKDF-Expand.
     #[test]
     fn stub_hkdf_expand_returns_error() {
         let stub = StubCryptoBackend;
@@ -269,8 +276,10 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// `StubCryptoBackend` is `Send + Sync` (compile-time assertion).
     #[test]
     fn stub_is_send_and_sync() {
+        /// Compiles only if `T: Send + Sync` (the actual assertion).
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StubCryptoBackend>();
     }
@@ -281,6 +290,7 @@ mod tests {
 
     #[cfg(feature = "tls")]
     mod ring_tests {
+        //! Round-trip and known-answer tests for the `ring`-backed backend.
         use super::*;
 
         /// Encrypt with ring, then decrypt — roundtrip must match.
@@ -314,16 +324,19 @@ mod tests {
             assert_eq!(decrypted, plaintext);
         }
 
+        /// AES-128-GCM seal-then-open recovers the plaintext.
         #[test]
         fn aes_128_gcm_roundtrip() {
             aes_gcm_roundtrip(&[0xAAu8; 16]);
         }
 
+        /// AES-256-GCM seal-then-open recovers the plaintext.
         #[test]
         fn aes_256_gcm_roundtrip() {
             aes_gcm_roundtrip(&[0xBBu8; 32]);
         }
 
+        /// Decrypting AES-GCM with the wrong key fails authentication.
         #[test]
         fn aes_gcm_wrong_key_fails() {
             use ring::aead;
@@ -346,6 +359,7 @@ mod tests {
             assert!(result.is_err(), "Wrong key should produce an error");
         }
 
+        /// A 24-byte AES-GCM key is rejected with a length error.
         #[test]
         fn aes_gcm_invalid_key_length() {
             let backend = RingCryptoBackend;
@@ -359,6 +373,7 @@ mod tests {
             );
         }
 
+        /// HMAC-SHA1 matches the RFC 2202 Test Case 1 known-answer vector.
         #[test]
         fn hmac_sha1_known_vector() {
             // RFC 2202 Test Case 1: key=0x0b repeated 20 times, data="Hi There"
@@ -374,6 +389,8 @@ mod tests {
             assert_eq!(result, expected);
         }
 
+        /// HKDF-Expand yields the requested length, obeys the prefix property,
+        /// and produces distinct output for distinct `info`.
         #[test]
         fn hkdf_expand_produces_correct_length() {
             let backend = RingCryptoBackend;
@@ -399,6 +416,7 @@ mod tests {
             );
         }
 
+        /// HKDF-Expand is deterministic for the same PRK/info/length.
         #[test]
         fn hkdf_expand_deterministic() {
             let backend = RingCryptoBackend;
@@ -410,12 +428,15 @@ mod tests {
             assert_eq!(a, b, "HKDF-Expand must be deterministic");
         }
 
+        /// `RingCryptoBackend` is `Send + Sync` (compile-time assertion).
         #[test]
         fn ring_is_send_and_sync() {
+            /// Compiles only if `T: Send + Sync` (the actual assertion).
             fn assert_send_sync<T: Send + Sync>() {}
             assert_send_sync::<RingCryptoBackend>();
         }
 
+        /// AES-128-CBC encrypt-then-decrypt (PKCS7) recovers the plaintext.
         #[test]
         fn aes_128_cbc_roundtrip() {
             use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
@@ -436,6 +457,7 @@ mod tests {
             assert_eq!(decrypted, plaintext);
         }
 
+        /// AES-256-CBC encrypt-then-decrypt (PKCS7) recovers the plaintext.
         #[test]
         fn aes_256_cbc_roundtrip() {
             use cbc::cipher::{BlockModeEncrypt, KeyIvInit};
@@ -454,6 +476,7 @@ mod tests {
             assert_eq!(decrypted, plaintext);
         }
 
+        /// A 24-byte AES-CBC key is rejected with a length error.
         #[test]
         fn aes_cbc_invalid_key_length() {
             let backend = RingCryptoBackend;
@@ -467,6 +490,7 @@ mod tests {
             );
         }
 
+        /// AES-CBC ciphertext that is not a multiple of the block size errors.
         #[test]
         fn aes_cbc_invalid_ciphertext_length() {
             let backend = RingCryptoBackend;

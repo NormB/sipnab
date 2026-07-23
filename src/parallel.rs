@@ -4,7 +4,7 @@
 //! many-core host it left most cores idle. RTP is ~93% of carrier traffic and is
 //! independent per stream, so the work parallelizes well — *if* a flow's packets
 //! always land on the same worker. This module provides the sharding function
-//! and (with [`crate::rtp::stream_store`] / [`crate::sip::dialog_store`] merge)
+//! and (with `crate::rtp::stream_store` / `crate::sip::dialog_store` merge)
 //! the building blocks of a sharded worker pool: one reader → N workers, each
 //! owning thread-local stores, merged at the end.
 //!
@@ -15,7 +15,7 @@
 //! media ride *different* host pairs (e.g. a proxy/SBC in the signaling path, or
 //! the carrier corpus where SDP advertises a separate media IP), the SDP lands
 //! on a different worker than the RTP — so dialog↔stream association is resolved
-//! globally at merge ([`crate::rtp::stream_store::StreamStore::reassociate_all`]),
+//! globally at merge (`crate::rtp::stream_store::StreamStore::reassociate_all`),
 //! reproducing the single-threaded result.
 
 use std::collections::hash_map::DefaultHasher;
@@ -91,7 +91,7 @@ pub struct ReconResult {
 }
 
 /// Reconstruct ONE already-parsed packet into thread-local stores, using the
-/// same [`crate::pipeline::classify_packet`] core as every other router — so
+/// same `crate::pipeline::classify_packet` core as every other router — so
 /// `--jobs N` classifies identically to `--jobs 1` (WebSocket-SIP unwrap and
 /// heuristic RTP discovery included). Only the flag-gated batch extras (SRTP
 /// decrypt, DTMF, quality events, security detectors, per-message output) stay
@@ -141,7 +141,7 @@ fn reconstruct(
 }
 
 /// Offline multi-core reconstruction. A single dispatcher reads `rx` and, using a
-/// cheap host-pair peek ([`crate::capture::parse::peek_host_pair`] — link+IP
+/// cheap host-pair peek (`crate::capture::parse::peek_host_pair` — link+IP
 /// headers only, no full parse), shards each RAW packet to one of `cfg.cores`
 /// worker threads. Each worker owns its own `PacketProcessor` (so reassembly
 /// stays per-flow correct — a flow's packets share a host pair and route to one
@@ -234,13 +234,13 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
     }
 }
 
-/// Like [`run_offline_parallel`], but reads the pcap FILE directly in this thread
-/// instead of consuming a [`PacketRx`] fed by a separate capture reader thread.
+/// Like `run_offline_parallel`, but reads the pcap FILE directly in this thread
+/// instead of consuming a `PacketRx` fed by a separate capture reader thread.
 /// This fuses pcap-read + host-pair peek + shard into a SINGLE serial stage —
 /// eliminating the dispatcher thread and the semaphore-capped capture channel
 /// that capped `--cores` scaling at ~2 workers (the read→dispatcher hand-off was
 /// two serial stages). Sharding/reassembly/merge are identical to
-/// [`run_offline_parallel`], so `--cores N` parity with `--cores 1` is preserved.
+/// `run_offline_parallel`, so `--cores N` parity with `--cores 1` is preserved.
 pub fn run_offline_parallel_file(
     path: &std::path::Path,
     capture_config: &crate::capture::CaptureConfig,
@@ -379,19 +379,25 @@ pub fn run_offline_parallel_file(
 
 #[cfg(test)]
 mod tests {
+    //! Sharding-invariant tests and end-to-end offline-reconstruction fixtures
+    //! (heuristic RTP, core-count invariance, codec negotiation, dynamic codec).
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Build an IPv4 `IpAddr` from four octets (test brevity helper).
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
 
+    /// `jobs <= 1` always routes to worker 0 (the single-threaded path).
     #[test]
     fn jobs_one_is_always_shard_zero() {
         assert_eq!(shard_for(ip(10, 0, 0, 1), ip(10, 0, 0, 2), 1), 0);
         assert_eq!(shard_for(ip(1, 2, 3, 4), ip(5, 6, 7, 8), 0), 0);
     }
 
+    /// Both directions of a host pair hash to the same worker, so a flow never
+    /// splits across workers.
     #[test]
     fn direction_independent() {
         // Both directions of a flow must hash to the same worker.
@@ -406,6 +412,7 @@ mod tests {
         }
     }
 
+    /// Every shard index stays within `0..jobs` across many inputs.
     #[test]
     fn shard_in_range() {
         for n in [2usize, 4, 7, 12] {
@@ -416,6 +423,7 @@ mod tests {
         }
     }
 
+    /// Distinct host pairs spread across all workers (no empty bucket).
     #[test]
     fn distributes_across_workers() {
         // Distinct host pairs should spread over the workers (not all in one).
@@ -492,6 +500,8 @@ mod tests {
         );
     }
 
+    /// A permissive `ParallelConfig` for tests: large capacities, reassembly
+    /// on, full port range, all protocols enabled.
     #[cfg(feature = "native")]
     fn pcfg(cores: usize) -> ParallelConfig {
         ParallelConfig {

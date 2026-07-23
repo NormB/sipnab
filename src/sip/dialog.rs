@@ -45,6 +45,8 @@ pub enum DialogState {
 }
 
 impl std::fmt::Display for DialogState {
+    /// Write the state's canonical name (e.g. "InCall") to `f`; matches the
+    /// spellings the filter DSL compares against.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Trying => "Trying",
@@ -133,6 +135,15 @@ pub const MAX_SEEN_CSEQ_PER_DIALOG: usize = 4096;
 /// Messages lacking a branch (RFC 2543 peers) fall back to CSeq identity.
 /// `\n` separates the branch because header values cannot contain one
 /// after parsing, so a crafted CSeq method can't collide with a branch.
+///
+/// # Arguments
+///
+/// * `msg` — The parsed SIP message to derive an identity key for.
+///
+/// # Returns
+///
+/// The identity key string, or `None` when the message has no parseable
+/// CSeq header (such a message cannot be tracked for retransmission).
 pub(crate) fn seen_cseq_key(msg: &SipMessage) -> Option<String> {
     let (seq, method) = msg.cseq()?;
     let branch = msg.top_via_branch().unwrap_or("");
@@ -191,6 +202,20 @@ impl SipDialog {
     /// - REGISTER → `Trying`
     /// - SUBSCRIBE → `Pending`
     /// - All others → `Trying`
+    ///
+    /// For a response, the dialog method is derived from the CSeq header;
+    /// a missing or unparseable method falls back to the `UNKNOWN` sentinel.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg` — The first message of the conversation; cloned into the
+    ///   dialog's message list and mined for From/To identity, addresses,
+    ///   timestamps, and the initial seen-CSeq entry.
+    ///
+    /// # Returns
+    ///
+    /// The new dialog, or `None` when the message has no Call-ID header
+    /// (no dialog identity exists without one).
     pub fn new(msg: &SipMessage) -> Option<Self> {
         let call_id = msg.call_id()?.to_string();
         let method = if msg.is_request {
@@ -239,12 +264,24 @@ impl SipDialog {
 /// Transition the dialog state based on a new SIP message.
 ///
 /// Applies the state machine rules for the dialog's initial method:
-/// - **INVITE**: 100→Trying, 180/183→Ringing, 200→InCall,
+/// - **INVITE**: 100→Trying, 180/183→Ringing, 2xx→InCall,
 ///   4xx/5xx/6xx→Failed, CANCEL→Cancelled, BYE→Completed
-/// - **REGISTER**: 200→Registered, 4xx/5xx→Failed
-/// - **SUBSCRIBE**: 200→Active, NOTIFY→Active, terminal→Terminated
+/// - **REGISTER**: 2xx→Registered, 4xx/5xx/6xx→Failed
+/// - **SUBSCRIBE**: 2xx→Active, NOTIFY→Active, 4xx/5xx/6xx→Terminated
+/// - **all other methods**: 2xx→Completed, 4xx/5xx/6xx→Failed
 ///
 /// ACK messages are recorded but do not cause state transitions.
+///
+/// # Arguments
+///
+/// * `dialog` — The dialog whose state machine is advanced.
+/// * `msg` — The incoming SIP message driving the transition.
+///
+/// # Side effects
+///
+/// May rewrite `dialog.state`, and captures the remote tag into
+/// `dialog.to_tag` the first time a To tag appears (typically in the
+/// first response from the far end). No other fields are touched.
 pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     match dialog.method {
         SipMethod::Invite => update_invite_state(dialog, msg),
@@ -264,7 +301,20 @@ pub fn update_state(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
-/// State transitions for INVITE dialogs.
+/// State transitions for INVITE dialogs, driven by `msg`.
+///
+/// Requests: CANCEL→Cancelled, BYE→Completed, REFER while
+/// InCall→Transferring, NOTIFY with `Subscription-State: terminated`
+/// while Transferring→InCall (the transfer subscription ended); ACK and
+/// other in-dialog requests (re-INVITE, UPDATE, …) leave the state
+/// unchanged. Responses: 180/183 while Trying/Ringing→Ringing; 2xx whose
+/// CSeq method is INVITE while Trying/Ringing→InCall; 4xx–6xx whose CSeq
+/// method is INVITE while Trying/Ringing→Failed; 100 and 487 confirm the
+/// current state without changing it.
+///
+/// # Side effects
+///
+/// May rewrite `dialog.state`; no other fields are touched.
 fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if msg.is_request {
         match msg.method.as_ref() {
@@ -336,7 +386,14 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
-/// State transitions for REGISTER dialogs.
+/// State transitions for REGISTER dialogs: a 2xx response moves the
+/// dialog to `Registered`, a 4xx–6xx response (including 401/407 auth
+/// challenges) to `Failed`; requests and provisional responses are
+/// ignored.
+///
+/// # Side effects
+///
+/// May rewrite `dialog.state`.
 fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if !msg.is_request
         && let Some(code) = msg.status_code
@@ -353,7 +410,13 @@ fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
-/// State transitions for SUBSCRIBE dialogs.
+/// State transitions for SUBSCRIBE dialogs: an in-dialog NOTIFY request
+/// or a 2xx response moves the dialog to `Active`; a 4xx–6xx response to
+/// `Terminated`; other requests and provisional responses are ignored.
+///
+/// # Side effects
+///
+/// May rewrite `dialog.state`.
 fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if msg.is_request {
         if msg.method.as_ref() == Some(&SipMethod::Notify) {
@@ -372,7 +435,14 @@ fn update_subscribe_state(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
-/// Generic state transitions for methods without specific state machines.
+/// Generic state transitions for methods without a dedicated state
+/// machine (OPTIONS, MESSAGE, standalone NOTIFY, …): a 2xx response moves
+/// the dialog to `Completed`, a 4xx–6xx response to `Failed`; requests
+/// and provisional responses are ignored.
+///
+/// # Side effects
+///
+/// May rewrite `dialog.state`.
 fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
     if !msg.is_request
         && let Some(code) = msg.status_code
@@ -391,6 +461,8 @@ fn update_generic_state(dialog: &mut SipDialog, msg: &SipMessage) {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for dialog creation and the per-method state machines
+/// (INVITE, REGISTER, SUBSCRIBE, and REFER-driven transfers).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,16 +470,21 @@ mod tests {
     use crate::sip::parser::parse_sip;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed 127.0.0.1 address used as both source and destination of
+    /// every test message.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed timestamp (2024-06-15 12:00:00 UTC) so tests are deterministic.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build and parse a minimal INVITE (CSeq 1, from-tag only) for the
+    /// shared `dialog-test@example.com` Call-ID.
     fn make_invite() -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -432,6 +509,8 @@ mod tests {
         .expect("should parse INVITE")
     }
 
+    /// Build and parse a response with the given status, reason phrase, and
+    /// CSeq method, carrying both from- and to-tags.
     fn make_response(status: u16, reason: &str, cseq_method: &str) -> SipMessage {
         let raw = build_sip(
             &format!("SIP/2.0 {status} {reason}"),
@@ -456,6 +535,7 @@ mod tests {
         .expect("should parse response")
     }
 
+    /// Build and parse an in-dialog request (CSeq 2) for the given method.
     fn make_request(method: &str) -> SipMessage {
         let raw = build_sip(
             &format!("{method} sip:bob@example.com SIP/2.0"),
@@ -480,6 +560,8 @@ mod tests {
         .expect("should parse request")
     }
 
+    /// Full INVITE lifecycle: Trying → (100) Trying → (180) Ringing →
+    /// (200) InCall → (BYE) Completed, with identity fields populated.
     #[test]
     fn invite_full_lifecycle() {
         let invite = make_invite();
@@ -516,6 +598,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Completed);
     }
 
+    /// CANCEL during Ringing moves the dialog to Cancelled, and the 487
+    /// confirmation keeps it there.
     #[test]
     fn invite_cancelled() {
         let invite = make_invite();
@@ -535,6 +619,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Cancelled);
     }
 
+    /// A 503 error response to the initial INVITE moves the dialog to Failed.
     #[test]
     fn invite_failed() {
         let invite = make_invite();
@@ -545,6 +630,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Failed);
     }
 
+    /// A REGISTER dialog starts in Trying and moves to Registered on 200 OK.
     #[test]
     fn register_success() {
         let raw = build_sip(
@@ -578,6 +664,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Registered);
     }
 
+    /// A 401 Unauthorized response moves a REGISTER dialog to Failed.
     #[test]
     fn register_failure() {
         let raw = build_sip(
@@ -609,6 +696,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Failed);
     }
 
+    /// A SUBSCRIBE dialog starts in Pending and moves to Active on 200 OK.
     #[test]
     fn subscribe_lifecycle() {
         let raw = build_sip(
@@ -643,6 +731,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Active);
     }
 
+    /// An in-dialog NOTIFY activates a Pending SUBSCRIBE dialog even
+    /// before any 200 OK arrives.
     #[test]
     fn subscribe_notify_activates() {
         let raw = build_sip(
@@ -675,6 +765,7 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Active);
     }
 
+    /// An ACK after the 200 OK leaves the dialog in InCall (no transition).
     #[test]
     fn ack_does_not_change_state() {
         let invite = make_invite();
@@ -689,6 +780,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::InCall); // Unchanged
     }
 
+    /// The remote To tag, absent on the initial INVITE, is captured from
+    /// the first response that carries one (180 Ringing here).
     #[test]
     fn to_tag_captured_from_response() {
         let invite = make_invite();
@@ -701,6 +794,7 @@ mod tests {
         assert_eq!(dialog.to_tag.as_deref(), Some("t2"));
     }
 
+    /// SipDialog::new returns None for a message without a Call-ID header.
     #[test]
     fn missing_call_id_returns_none() {
         let raw = build_sip(
@@ -726,6 +820,7 @@ mod tests {
         assert!(SipDialog::new(&msg).is_none());
     }
 
+    /// 183 Session Progress triggers the Ringing state just like 180.
     #[test]
     fn session_progress_triggers_ringing() {
         let invite = make_invite();
@@ -739,6 +834,8 @@ mod tests {
 
     // ── Transfer detection tests ────────────────────────────────────────
 
+    /// Build and parse an in-dialog REFER (CSeq 3) with a Refer-To header
+    /// targeting carol.
     fn make_refer() -> SipMessage {
         let raw = build_sip(
             "REFER sip:bob@example.com SIP/2.0",
@@ -764,6 +861,8 @@ mod tests {
         .expect("should parse REFER")
     }
 
+    /// Build and parse a NOTIFY with `Subscription-State: terminated`
+    /// (signals the end of a REFER-initiated transfer subscription).
     fn make_notify_terminated() -> SipMessage {
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
@@ -789,6 +888,8 @@ mod tests {
         .expect("should parse NOTIFY")
     }
 
+    /// Build and parse a NOTIFY with `Subscription-State: active` (transfer
+    /// still in progress).
     fn make_notify_active() -> SipMessage {
         let raw = build_sip(
             "NOTIFY sip:alice@example.com SIP/2.0",
@@ -814,6 +915,7 @@ mod tests {
         .expect("should parse NOTIFY")
     }
 
+    /// A REFER received while InCall moves the dialog to Transferring.
     #[test]
     fn refer_during_incall_transitions_to_transferring() {
         let invite = make_invite();
@@ -828,6 +930,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Transferring);
     }
 
+    /// A NOTIFY with `Subscription-State: terminated` while Transferring
+    /// returns the dialog to InCall.
     #[test]
     fn notify_terminated_returns_to_incall() {
         let invite = make_invite();
@@ -844,6 +948,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::InCall);
     }
 
+    /// A REFER received while still Trying does not start a transfer —
+    /// only InCall dialogs can transition to Transferring.
     #[test]
     fn refer_outside_incall_no_transition() {
         let invite = make_invite();
@@ -856,6 +962,8 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Trying);
     }
 
+    /// A NOTIFY with `Subscription-State: active` keeps a Transferring
+    /// dialog in Transferring (only "terminated" ends the transfer).
     #[test]
     fn notify_active_does_not_change_transferring() {
         let invite = make_invite();

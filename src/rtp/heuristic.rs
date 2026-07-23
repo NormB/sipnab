@@ -121,11 +121,13 @@ impl RtpHeuristic {
 }
 
 impl Default for RtpHeuristic {
+    /// Equivalent to `RtpHeuristic::new` — an empty detector.
     fn default() -> Self {
         Self::new()
     }
 }
 
+/// Unit tests for heuristic RTP detection without SDP.
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -166,6 +168,7 @@ mod tests {
         }
     }
 
+    /// Three consecutive valid RTP packets reach the threshold and are detected.
     #[test]
     fn three_consecutive_valid_packets_detected() {
         let mut heuristic = RtpHeuristic::new();
@@ -193,6 +196,7 @@ mod tests {
         assert_eq!(hdr.sequence, 102);
     }
 
+    /// Two valid packets fall short of the threshold and are not detected.
     #[test]
     fn two_packets_not_detected() {
         let mut heuristic = RtpHeuristic::new();
@@ -209,6 +213,7 @@ mod tests {
         // Only 2 — not enough
     }
 
+    /// A payload that fails RTP parsing (bad version) is never detected.
     #[test]
     fn invalid_packets_not_detected() {
         let mut heuristic = RtpHeuristic::new();
@@ -221,6 +226,7 @@ mod tests {
         assert!(heuristic.check(&pkt).is_none());
     }
 
+    /// Packets to an odd destination port (RTCP convention) are ignored.
     #[test]
     fn odd_destination_port_ignored() {
         let mut heuristic = RtpHeuristic::new();
@@ -235,6 +241,7 @@ mod tests {
         }
     }
 
+    /// A change in SSRC resets the candidate's consecutive-valid counter.
     #[test]
     fn ssrc_change_resets_candidate() {
         let mut heuristic = RtpHeuristic::new();
@@ -268,6 +275,7 @@ mod tests {
         );
     }
 
+    /// TCP packets are ignored (heuristic only considers UDP).
     #[test]
     fn tcp_ignored() {
         let mut heuristic = RtpHeuristic::new();
@@ -277,6 +285,7 @@ mod tests {
         assert!(heuristic.check(&pkt).is_none());
     }
 
+    /// A gap in sequence numbers resets the candidate's counter.
     #[test]
     fn sequence_gap_resets_candidate() {
         let mut heuristic = RtpHeuristic::new();

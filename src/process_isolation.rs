@@ -31,8 +31,10 @@ const IPV6_HDRINCL: libc::c_int = 36;
 /// family is opened best-effort: a host without an IPv6 stack still spoofs
 /// IPv4, and vice-versa.
 pub struct RawKillSocket {
+    /// Raw IPv4 send socket (`IP_HDRINCL`); `None` if that family failed to open.
     #[cfg(target_os = "linux")]
     fd_v4: Option<std::os::fd::OwnedFd>,
+    /// Raw IPv6 send socket; `None` if that family failed to open.
     #[cfg(target_os = "linux")]
     fd_v6: Option<std::os::fd::OwnedFd>,
 }
@@ -268,11 +270,14 @@ pub enum KillResponse {
 
 /// Handle for the main thread to communicate with the scanner-kill worker.
 ///
-/// Sending a [`KillRequest`] queues it for the worker thread. Call
-/// [`shutdown`](ScannerKillHandle::shutdown) to cleanly stop the worker.
+/// Sending a `KillRequest` queues it for the worker thread. Call
+/// `shutdown` to cleanly stop the worker.
 pub struct ScannerKillHandle {
+    /// Channel to queue kill requests for the worker thread.
     tx: Sender<KillRequest>,
+    /// Channel of per-request outcomes sent back by the worker.
     resp_rx: Receiver<KillResponse>,
+    /// Join handle for the worker thread; taken on shutdown.
     thread: Option<std::thread::JoinHandle<()>>,
     /// Set on the first failed send so a dead worker is reported exactly
     /// once, loudly, instead of every kill attempt silently vanishing.
@@ -283,12 +288,11 @@ impl ScannerKillHandle {
     /// Send a kill request to the worker thread.
     ///
     /// Returns `Ok(())` if the request was queued. The actual send result
-    /// can be retrieved via [`recv_response`](ScannerKillHandle::recv_response).
+    /// can be retrieved via `recv_response`.
     ///
     /// If the worker thread has died (panic or unexpected exit), the send
-    /// fails, an error is logged once, and [`defense_disabled`]
-    /// (ScannerKillHandle::defense_disabled) reports `true` from then on —
-    /// the kill defense is gone for the rest of the run.
+    /// fails, an error is logged once, and `defense_disabled` reports `true`
+    /// from then on — the kill defense is gone for the rest of the run.
     pub fn send_kill(
         &self,
         request: KillRequest,
@@ -344,13 +348,18 @@ impl Drop for ScannerKillHandle {
     }
 }
 
-/// Token-bucket rate limiter for scanner-kill responses.
+/// Fixed-window rate limiter for scanner-kill responses.
 ///
 /// Limits the number of responses sent per second to prevent the kill
-/// mechanism from becoming an amplification vector.
+/// mechanism from becoming an amplification vector. Counts within a
+/// one-second window and resets the count when the window rolls over (a
+/// fixed-window counter, not a continuously-refilling token bucket).
 struct RateLimiter {
+    /// Maximum responses permitted per one-second window.
     max_per_second: u32,
+    /// Responses sent so far in the current window.
     count_this_window: u32,
+    /// When the current window began; the window rolls over one second later.
     window_start: Instant,
 }
 
@@ -393,6 +402,7 @@ struct PerDstRateLimiter {
 const MAX_PER_DST_PER_MINUTE: u32 = 3;
 
 impl PerDstRateLimiter {
+    /// Create an empty per-destination limiter (no buckets yet).
     fn new() -> Self {
         Self {
             buckets: HashMap::new(),
@@ -427,7 +437,7 @@ impl PerDstRateLimiter {
 
 /// Scanner-kill worker that runs in a dedicated thread.
 ///
-/// Receives [`KillRequest`]s via channel, validates them, applies rate
+/// Receives `KillRequest`s via channel, validates them, applies rate
 /// limiting (both global and per-destination-IP), and transmits the SIP
 /// response to the scanner over UDP.
 ///
@@ -438,9 +448,13 @@ impl PerDstRateLimiter {
 /// CSeq / To-tag) accept it regardless; matching the source port would
 /// require raw sockets (`CAP_NET_RAW`) and is left as a future enhancement.
 struct ScannerKillWorker {
+    /// Inbound channel of kill requests from the main thread.
     rx: Receiver<KillRequest>,
+    /// Outbound channel of per-request outcomes back to the main thread.
     resp_tx: Sender<KillResponse>,
+    /// Global responses-per-second limiter.
     rate_limiter: RateLimiter,
+    /// Per-destination-IP limiter (amplification mitigation).
     per_dst_limiter: PerDstRateLimiter,
     /// UDP socket for IPv4 destinations (bound to `0.0.0.0:0`); `None` if the
     /// bind failed at spawn.
@@ -611,7 +625,7 @@ const DEFAULT_RATE_LIMIT: u32 = 10;
 /// Spawn the scanner-kill worker thread and return a handle for communication.
 ///
 /// The worker runs in a dedicated thread with its own rate limiter. Kill
-/// requests are sent via the returned [`ScannerKillHandle`]. The worker
+/// requests are sent via the returned `ScannerKillHandle`. The worker
 /// validates destinations (rejecting broadcast/multicast), applies rate
 /// limiting (both global and per-destination-IP), and logs responses.
 ///
@@ -670,6 +684,9 @@ pub fn spawn_scanner_kill_worker(
 
 #[cfg(test)]
 mod tests {
+    //! Scanner-kill worker tests: source-spoofed and ephemeral sends, rate
+    //! limiting, broadcast/multicast rejection, verbatim delivery, and dead-
+    //! worker detection. Raw-socket spoof tests self-skip without `CAP_NET_RAW`.
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
@@ -691,10 +708,12 @@ mod tests {
         }
     }
 
+    /// The IPv4 loopback address (test destination/source shorthand).
     fn localhost_v4() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// A minimal valid SIP 200 OK response body for kill-send tests.
     fn sample_response() -> Vec<u8> {
         b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()
     }
@@ -824,6 +843,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// A queued kill request is processed and answered with `Sent`.
     #[test]
     fn handle_send_and_receive() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -844,6 +864,8 @@ mod tests {
         handle.shutdown();
     }
 
+    /// With a 10/sec limit, 15 requests (to distinct dst IPs) yield exactly 10
+    /// `Sent` and 5 `RateLimited`.
     #[test]
     fn rate_limiter_enforces_limit() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -888,6 +910,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// A broadcast destination is rejected.
     #[test]
     fn broadcast_address_rejected() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -911,6 +934,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// An IPv4 multicast destination is rejected.
     #[test]
     fn multicast_v4_rejected() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -935,6 +959,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// An IPv6 multicast destination is rejected.
     #[test]
     fn multicast_v6_rejected() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -960,6 +985,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// `shutdown` joins the worker thread without panicking.
     #[test]
     fn shutdown_exits_cleanly() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -967,6 +993,7 @@ mod tests {
         // No panic, thread joined successfully
     }
 
+    /// An empty response body is rejected.
     #[test]
     fn empty_response_rejected() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -990,6 +1017,8 @@ mod tests {
         handle.shutdown();
     }
 
+    /// The worker actually puts the response bytes on the wire (a real UDP
+    /// listener receives them), not merely logs them.
     #[test]
     fn process_send_actually_transmits_over_udp() {
         // The worker must put the response bytes on the wire, not just log
@@ -1028,6 +1057,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// Response bytes with embedded NUL and high bytes are delivered verbatim.
     #[test]
     fn transmits_response_bytes_verbatim_including_nul() {
         // Adversarial: response bytes carrying embedded NUL and high bytes
@@ -1065,6 +1095,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// The `RateLimiter` allows exactly `max_per_second` then denies.
     #[test]
     fn rate_limiter_unit_allows_within_limit() {
         let mut limiter = RateLimiter::new(5);
@@ -1074,6 +1105,7 @@ mod tests {
         assert!(!limiter.allow(), "6th request should be rejected");
     }
 
+    /// A fresh worker reports alive/not-disabled; after shutdown it is gone.
     #[test]
     fn is_alive_true_for_running_worker() {
         let mut handle = spawn_scanner_kill_worker(Some(10), None).expect("spawn worker");
@@ -1083,6 +1115,8 @@ mod tests {
         assert!(!handle.is_alive(), "after shutdown the worker is gone");
     }
 
+    /// A dead worker reports not-alive, and a send fails (not silently
+    /// vanishes) while marking the defense disabled.
     #[test]
     fn worker_panic_is_detected_and_send_fails_loudly() {
         // Build a handle around a worker thread that dies immediately
@@ -1129,6 +1163,7 @@ mod tests {
         handle.shutdown();
     }
 
+    /// `is_broadcast_or_multicast` classifies broadcast/multicast vs unicast.
     #[test]
     fn broadcast_multicast_detection() {
         assert!(is_broadcast_or_multicast(IpAddr::V4(Ipv4Addr::BROADCAST)));

@@ -40,12 +40,18 @@ pub struct SirecStream {
     pub participant_id: Option<String>,
 }
 
+/// One part of a multipart MIME body: its Content-Type and body text.
 struct MimePart {
+    /// Value of the part's `Content-Type` header, if present.
     content_type: Option<String>,
+    /// Part body text (everything after the part's blank line).
     body: String,
 }
 
-/// Extract boundary parameter from a Content-Type header value.
+/// Extract the `boundary=` parameter from a Content-Type header value.
+///
+/// Handles both quoted (`boundary="x"`) and bare (`boundary=x`) forms.
+/// Returns `None` when no boundary parameter is present.
 fn extract_boundary(content_type: &str) -> Option<String> {
     content_type.split(';').find_map(|param| {
         let param = param.trim();
@@ -59,6 +65,17 @@ fn extract_boundary(content_type: &str) -> Option<String> {
 }
 
 /// Split a multipart body into MIME parts using the given boundary.
+///
+/// # Arguments
+///
+/// * `body` — the full multipart body text.
+/// * `boundary` — the boundary token (without the leading `--`).
+///
+/// # Returns
+///
+/// One `MimePart` per non-empty segment, each with its `Content-Type` (if
+/// any) and body text. A missing final `--` terminator is tolerated; empty
+/// segments and the terminator remnant are skipped.
 fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
     let delimiter = format!("--{}", boundary);
     let mut parts = Vec::new();
@@ -100,6 +117,19 @@ fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
 
 /// Parse SIPREC metadata XML using simple string extraction.
 /// No XML crate dependency — uses basic string matching for the well-defined RFC 7866 schema.
+///
+/// # Arguments
+///
+/// * `xml` — the `application/rs-metadata+xml` part body.
+///
+/// # Returns
+///
+/// The extracted session id, mode, `<participant>` blocks, and `<stream>`
+/// blocks. Malformed or unrecognized XML degrades to empty/default fields.
+///
+/// # Errors
+///
+/// Currently never fails — the `Result` exists for future stricter parsing.
 fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
     let mut metadata = SirecMetadata {
         session_id: extract_xml_attr(xml, "session_id")
@@ -153,7 +183,9 @@ fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
 /// Extract content between `<tag>...</tag>` or `<tag attr="..">...</tag>`.
 ///
 /// Ensures the match is an exact tag name and not a prefix
-/// (e.g., `"name"` won't match `<nameID>`).
+/// (e.g., `"name"` won't match `<nameID>`). Returns the trimmed content of
+/// the first matching element, or `None` when the tag is absent, unclosed,
+/// or empty.
 fn extract_xml_content(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{}", tag);
     let close = format!("</{}>", tag);
@@ -183,6 +215,9 @@ fn extract_xml_content(xml: &str, tag: &str) -> Option<String> {
 }
 
 /// Extract an attribute value from an XML element.
+///
+/// Finds the first `attr_name="value"` occurrence anywhere in `xml` and
+/// returns the value; `None` when absent, unterminated, or empty.
 fn extract_xml_attr(xml: &str, attr_name: &str) -> Option<String> {
     let pattern = format!("{}=\"", attr_name);
     let start = xml.find(&pattern)?;
@@ -197,6 +232,21 @@ fn extract_xml_attr(xml: &str, attr_name: &str) -> Option<String> {
 }
 
 /// Parse a multipart/mixed body to extract SIPREC metadata.
+///
+/// # Arguments
+///
+/// * `content_type` — the SIP message's `Content-Type` header value,
+///   carrying the multipart boundary parameter.
+/// * `body` — the raw multipart body bytes.
+///
+/// # Returns
+///
+/// The metadata parsed from the first `rs-metadata` MIME part.
+///
+/// # Errors
+///
+/// Fails when the Content-Type has no `boundary` parameter, the body is not
+/// valid UTF-8, or no `rs-metadata` part is found in the multipart body.
 pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadata> {
     let boundary = extract_boundary(content_type)
         .ok_or_else(|| anyhow::anyhow!("no boundary in content-type"))?;
@@ -217,22 +267,28 @@ pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadat
     bail!("no rs-metadata+xml part found in multipart body")
 }
 
+/// Tests for boundary extraction, multipart splitting, and SIPREC metadata
+/// parsing including truncated and malformed bodies.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A bare boundary parameter is extracted from Content-Type.
     #[test]
     fn test_extract_boundary() {
         let ct = "multipart/mixed; boundary=uniqueBoundary";
         assert_eq!(extract_boundary(ct), Some("uniqueBoundary".to_string()));
     }
 
+    /// A quoted boundary parameter is extracted without the quotes.
     #[test]
     fn test_extract_boundary_quoted() {
         let ct = r#"multipart/mixed; boundary="unique-Boundary""#;
         assert_eq!(extract_boundary(ct), Some("unique-Boundary".to_string()));
     }
 
+    /// A full SDP+metadata multipart body yields session, participant, and
+    /// stream fields.
     #[test]
     fn test_parse_siprec_body() {
         let ct = "multipart/mixed; boundary=boundary1";
@@ -263,6 +319,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert_eq!(result.streams[0].label.as_deref(), Some("audio"));
     }
 
+    /// A multipart body without an rs-metadata part is an error.
     #[test]
     fn test_no_metadata_part() {
         let ct = "multipart/mixed; boundary=b1";
@@ -270,6 +327,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert!(parse_siprec_body(ct, body).is_err());
     }
 
+    /// A body missing the final `--boundary--` terminator still parses.
     #[test]
     fn test_truncated_body_no_final_boundary() {
         let ct = "multipart/mixed; boundary=b1";
@@ -286,6 +344,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert_eq!(result.unwrap().session_id.as_deref(), Some("abc"));
     }
 
+    /// Malformed XML degrades to default metadata instead of failing.
     #[test]
     fn test_malformed_xml() {
         let ct = "multipart/mixed; boundary=b1";

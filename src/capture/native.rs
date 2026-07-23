@@ -76,6 +76,8 @@ pub struct CaptureConfig {
 }
 
 impl Default for CaptureConfig {
+    /// Defaults matching the CLI: full 65535 snaplen, 2 MiB kernel buffer,
+    /// no filter/limits, no replay, 64 MiB queue budget, promiscuous on.
     fn default() -> Self {
         Self {
             snaplen: 65535,
@@ -135,8 +137,20 @@ pub struct CaptureHandle {
 /// # Errors
 ///
 /// Returns an error if the source configuration is invalid (e.g., HEP
-/// without the `hep` feature). Capture-thread errors are returned when
-/// joining the handle.
+/// without the `hep` feature) or the thread cannot be spawned.
+/// Capture-thread errors are returned when joining the handle.
+///
+/// # Arguments
+///
+/// * `source` - live device, pcap file, or HEP listener to capture from.
+/// * `config` - capture parameters passed through to the capture loop.
+/// * `tx` - channel the capture thread sends packets into.
+/// * `ready_tx` - optional readiness signal (see above).
+///
+/// # Side effects
+///
+/// Spawns a named OS thread that owns the capture resource and runs until a
+/// stop condition.
 pub fn start_capture(
     source: CaptureSource,
     config: CaptureConfig,
@@ -215,6 +229,25 @@ pub fn start_capture(
 /// If `ready_tx` is provided, it signals `Ok(())` once **all** per-device
 /// capture threads have successfully opened their devices, or `Err(msg)` if
 /// any device fails to open.
+///
+/// # Arguments
+///
+/// * `devices` - comma-separated interface list (validated before any
+///   thread is spawned; a single device falls back to `start_capture`).
+/// * `config` - capture parameters, cloned into each per-device thread.
+/// * `tx` - shared channel all capture threads send into.
+/// * `ready_tx` - optional aggregated readiness signal (see above).
+///
+/// # Errors
+///
+/// Fails on a malformed device spec or when a thread cannot be spawned. The
+/// coordinator thread's result (joined via the handle) carries the first
+/// per-device capture error, if any.
+///
+/// # Side effects
+///
+/// Spawns one coordinator thread plus one capture thread per device, and
+/// logs the interface roster at info level.
 pub fn start_multi_capture(
     devices: &str,
     config: CaptureConfig,
@@ -336,11 +369,14 @@ pub fn start_multi_capture(
     Ok(CaptureHandle { thread, source })
 }
 
+/// Tests for capture configuration defaults, channel-capacity derivation,
+/// and capture-thread startup/validation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capture::channel;
 
+    /// `CaptureConfig::default()` matches the documented CLI defaults.
     #[test]
     fn default_capture_config() {
         let config = CaptureConfig::default();
@@ -352,6 +388,8 @@ mod tests {
         assert_eq!(config.buffer_budget_mb, 64);
     }
 
+    /// `channel_capacity` scales with the budget and clamps to the
+    /// 10k floor / 5M ceiling, monotonically in between.
     #[test]
     fn channel_capacity_derives_from_budget_and_clamps() {
         let cfg = |mb: u32| CaptureConfig {
@@ -369,6 +407,7 @@ mod tests {
         assert!(cfg(256).channel_capacity() > cfg(64).channel_capacity());
     }
 
+    /// `CaptureSource` variants debug-print their device/path.
     #[test]
     fn capture_source_debug() {
         use std::path::PathBuf;
@@ -383,6 +422,8 @@ mod tests {
         assert!(format!("{file:?}").contains("test.pcap"));
     }
 
+    /// A file capture signals readiness (before privileges would drop) and
+    /// then delivers the fixture's packets.
     #[test]
     fn ready_signal_sent_on_file_capture() {
         use std::path::PathBuf;
@@ -423,6 +464,8 @@ mod tests {
     }
 
     // ── start_multi_capture input validation ────────────────────────────
+    /// A doubled comma in the device spec is rejected before any capture
+    /// thread spawns.
     #[test]
     fn multi_capture_rejects_malformed_device_spec_before_spawning() {
         // A doubled comma is a validation error: start_multi_capture must
@@ -434,6 +477,7 @@ mod tests {
         }
     }
 
+    /// A whitespace-only device spec is rejected.
     #[test]
     fn multi_capture_rejects_empty_device_spec() {
         let (tx, _rx) = channel::packet_channel(1 << 20);

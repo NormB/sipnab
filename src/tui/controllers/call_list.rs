@@ -5,50 +5,98 @@ use crate::tui::*;
 
 /// Everything the call-list view can do in response to a single key press.
 ///
-/// Produced by [`call_list_action`] (the pure key→action mapping) and
+/// Produced by `call_list_action` (the pure key→action mapping) and
 /// consumed by the `handle_call_list_key` executor, so the binding table
 /// is testable without touching any `App` state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallListAction {
+    /// The configured quit key or Esc — exit the application.
     Quit,
+    /// Move the row selection up one row (saturating at the top).
     MoveUp,
+    /// Move the row selection down one row (clamped to the displayed count).
     MoveDown,
+    /// Jump the row selection to the first row.
     MoveTop,
+    /// Jump the row selection to the last displayed row.
     MoveBottom,
+    /// Move the row selection up one page.
     PageUp,
+    /// Move the row selection down one page (clamped to the displayed count).
     PageDown,
+    /// Enter — open the call flow: a merged flow of all checked rows when
+    /// two or more are checked, otherwise the cursor row's flow.
     OpenFlow,
+    /// Tab — switch to the RTP stream list view.
     SwitchToStreamList,
+    /// Space — toggle the checkbox (`[*]`) selection of the cursor row.
     ToggleSelection,
+    /// The configured search key or F3 — enter search-input mode (the
+    /// existing query is kept for refining).
     Search,
+    /// The configured clear key or Ctrl-L — clear the checked dialogs, or
+    /// every dialog when none are checked.
     ClearCalls,
+    /// F6 or `r` — open the raw view of the selected dialog's first message.
     OpenRaw,
+    /// `t` — cycle the timestamp display mode.
     CycleTimestampMode,
+    /// `u` — cycle the From/To column display (user / host:port / both).
     CycleFromToMode,
+    /// The configured column-selector key — open the column selector popup.
     OpenColumnSelector,
+    /// `<` — sort by the previous column.
     SortPrevColumn,
+    /// `>` — sort by the next column.
     SortNextColumn,
+    /// `Z` — reverse the sort direction.
     ReverseSort,
+    /// The configured autoscroll key — toggle follow-newest autoscroll.
     ToggleAutoscroll,
+    /// The configured pause key — toggle capture pause (shared flag with
+    /// the capture thread).
     TogglePause,
+    /// `i` — clear dialogs that do NOT match the active filter.
     ClearNonMatching,
+    /// `I` — clear dialogs that DO match the active filter.
     ClearMatching,
+    /// The configured help key — open the help view.
     Help,
+    /// The configured save key — open the save dialog.
     OpenSaveDialog,
+    /// The configured extended-flow key — open the selected call's flow
+    /// with multi-leg correlation on.
     OpenExtendedFlow,
+    /// The configured filter key — open the filter dialog popup.
     OpenFilterDialog,
+    /// The configured settings key — open the settings popup.
     OpenSettings,
+    /// F9 — drop the active filter, the filter dialog state, and the
+    /// persisted search query.
     ClearFilter,
+    /// `O` — open the file-open dialog.
     OpenFileDialog,
+    /// `N` — open the Name Address popup for the selected dialog's
+    /// endpoints (source focused first).
     NameEndpoints,
+    /// `s` — open the statistics view.
     OpenStatistics,
+    /// `D` — open the quality dashboard, remembering the call list as the
+    /// return view.
     OpenDashboard,
+    /// `T` — open the call timeline of the selected dialog.
     OpenTimeline,
 }
 
 /// Pure key→action mapping for the call list view (keymap-aware).
 ///
-/// Returns `None` for keys the view ignores. The arm order is the old
+/// # Arguments
+/// * `km` - the active keymap; every rebindable key is honored.
+/// * `key` - the key event; the code is matched against the bindings and
+///   the CONTROL modifier distinguishes Ctrl-L (clear calls).
+///
+/// # Returns
+/// `None` for keys the view ignores. The arm order is the old
 /// handler's match order verbatim — it defines the precedence between a
 /// user rebind (keymap guard) and the built-in literals, so a rebind
 /// behaves exactly as it always did.
@@ -101,7 +149,15 @@ pub fn call_list_action(km: &Keymap, key: KeyEvent) -> Option<CallListAction> {
 }
 
 /// Handle keys in the call list view: route to the column selector while
-/// it is open, otherwise map the key to a [`CallListAction`] and execute.
+/// it is open, otherwise map the key to a `CallListAction` and execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `call_list_action`.
+///
+/// # Side effects
+/// Delegates to `handle_column_selector_key` or
+/// `execute_call_list_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
     // Column selector popup captures keys when open
     if app.call_list.column_selector_open {
@@ -113,7 +169,17 @@ pub(in crate::tui) fn handle_call_list_key(app: &mut App, key: KeyEvent) {
     }
 }
 
-/// Apply one [`CallListAction`] to the application state.
+/// Apply one `CallListAction` to the application state.
+///
+/// # Side effects
+/// Mutates the state named by each variant (see `CallListAction`):
+/// navigation moves `app.call_list` over the displayed row count, the
+/// open/switch variants change `app.current_view` or `app.active_popup`
+/// (flow openers also reset the call-flow view state, and `OpenRaw`
+/// records the call list as the return view), the display-mode cycles
+/// update their mode plus the status line, `TogglePause` also stores the
+/// shared `paused_flag` for the capture thread, and the clear variants
+/// remove dialogs from the stores under write locks.
 fn execute_call_list_action(app: &mut App, action: CallListAction) {
     let dialog_count = filtered_dialog_count(app);
     match action {
@@ -125,7 +191,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
         CallListAction::PageUp => app.call_list.page_up(),
         CallListAction::PageDown => app.call_list.page_down(dialog_count),
         CallListAction::OpenFlow => {
-            // Two or more checked ([*]) rows: one flow merging ALL of them.
+            // Two or more checked (`[*]`) rows: one flow merging ALL of them.
             // Otherwise the classic single-dialog flow of the cursor row.
             let checked = checked_displayed_call_ids(app);
             if checked.len() >= 2 {
@@ -242,6 +308,15 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
 }
 
 /// Handle keys when the column selector popup is open.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (no keymap bindings).
+///
+/// # Side effects
+/// Up/Down (or k/j) move the selector cursor, Space toggles the cursor
+/// column's visibility, `s` persists the layout via `save_columns`, and
+/// Enter/Esc close the selector. Other keys are ignored.
 pub(in crate::tui) fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Up | KeyCode::Char('k') => app.call_list.column_selector_up(),
@@ -258,6 +333,10 @@ pub(in crate::tui) fn handle_column_selector_key(app: &mut App, key: KeyEvent) {
 /// Persist the current column layout to `[display] visible_columns` in the
 /// user's sipnabrc, then close the selector. Reports the outcome on the status
 /// line. A no-op (with an error message) when no config path is available.
+///
+/// # Side effects
+/// Closes the column selector, writes the config file at
+/// `app.column_config_path`, and sets `app.status_error` to the result.
 pub(in crate::tui) fn save_columns(app: &mut App) {
     app.call_list.column_selector_open = false;
     let cols = app.call_list.visible_column_names();
@@ -275,6 +354,11 @@ pub(in crate::tui) fn save_columns(app: &mut App) {
 ///
 /// If any rows are multi-selected, only those dialogs are removed.
 /// Otherwise all dialogs are cleared.
+///
+/// # Side effects
+/// Removes dialogs (and, on a full clear, streams) under store write
+/// locks, drops the checkbox selections, moves the cursor to the top on
+/// a full clear, and reports the cleared count on the status line.
 pub(in crate::tui) fn clear_calls(app: &mut App) {
     let selected_ids: Vec<String> = app.call_list.selected_rows().iter().cloned().collect();
 
@@ -312,6 +396,12 @@ pub(in crate::tui) fn clear_calls(app: &mut App) {
 }
 
 /// Clear calls that do NOT match the current filter (keep matching ones).
+///
+/// # Side effects
+/// A no-op without an active filter. Otherwise removes the non-matching
+/// dialogs under a store write lock, drops the checkbox selections,
+/// moves the cursor to the top, and reports the removed count on the
+/// status line.
 pub(in crate::tui) fn clear_non_matching(app: &mut App) {
     let filter = match &app.active_filter {
         Some(f) => f.clone(),
@@ -330,6 +420,12 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
 }
 
 /// Clear calls that DO match the current filter (keep non-matching ones).
+///
+/// # Side effects
+/// A no-op without an active filter. Otherwise removes the matching
+/// dialogs under a store write lock, drops the checkbox selections,
+/// moves the cursor to the top, and reports the removed count on the
+/// status line.
 pub(in crate::tui) fn clear_matching(app: &mut App) {
     let filter = match &app.active_filter {
         Some(f) => f.clone(),
@@ -347,11 +443,15 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
     app.status_error = Some(format!("Cleared {} matching dialogs", removed));
 }
 
+/// Unit tests for the call-list key handling, column selector, and the
+/// clear-calls variants.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// Saving columns with no config path closes the selector and reports
+    /// an error instead of writing anywhere.
     #[test]
     fn save_columns_without_config_path_reports_error() {
         // Default test App has no column_config_path → save is a safe no-op
@@ -370,6 +470,8 @@ mod tests {
         );
     }
 
+    /// `s` in the selector persists the visible layout; the written
+    /// config reloads with the hidden column absent.
     #[test]
     fn save_columns_writes_visible_layout_to_config() {
         let dir = tempfile::tempdir().unwrap();
@@ -407,6 +509,8 @@ mod tests {
         assert!(cols.iter().any(|c| c == "Method"));
     }
 
+    /// `u` cycles the From/To display through all four modes and back,
+    /// announcing each on the status line.
     #[test]
     fn call_list_u_cycles_from_to_mode() {
         let mut app = App::new_test();
@@ -467,6 +571,7 @@ mod tests {
         );
     }
 
+    /// `N` opens the Name Address popup with the source endpoint focused.
     #[test]
     fn call_list_shift_n_opens_name_dialog_for_source() {
         let mut app = app_with_dialogs();
@@ -476,6 +581,7 @@ mod tests {
         assert_eq!(app.name_dialog.active_ip(), "10.0.0.1");
     }
 
+    /// Down/j and Up/k move the row selection one row at a time.
     #[test]
     fn call_list_down_up_navigation() {
         let mut app = app_with_dialogs();
@@ -490,6 +596,7 @@ mod tests {
         assert_eq!(app.call_list.selected(), 0);
     }
 
+    /// Home/End jump the selection to the first/last row.
     #[test]
     fn call_list_home_end() {
         let mut app = app_with_dialogs();
@@ -499,6 +606,7 @@ mod tests {
         assert_eq!(app.call_list.selected(), 0);
     }
 
+    /// PageDown/PageUp page the selection, clamping at both ends.
     #[test]
     fn call_list_page_down_up() {
         let mut app = app_with_dialogs();
@@ -509,6 +617,7 @@ mod tests {
         assert_eq!(app.call_list.selected(), 0);
     }
 
+    /// Enter opens the call flow of the highlighted row.
     #[test]
     fn call_list_enter_opens_flow() {
         let mut app = app_with_dialogs();
@@ -516,6 +625,7 @@ mod tests {
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
+    /// Enter on an empty list is a no-op (no view change, no panic).
     #[test]
     fn call_list_enter_empty_noop() {
         let mut app = App::new_test();
@@ -523,6 +633,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// Tab switches to the stream list view.
     #[test]
     fn call_list_tab_to_stream_list() {
         let mut app = App::new_test();
@@ -530,6 +641,7 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// Space checks the highlighted row ([*] multi-selection).
     #[test]
     fn call_list_space_toggles_selection() {
         let mut app = app_with_dialogs();
@@ -538,6 +650,7 @@ mod tests {
         assert_eq!(app.call_list.selected_rows_count(), 1);
     }
 
+    /// Esc from the top-level call list quits the app.
     #[test]
     fn call_list_esc_quits() {
         let mut app = app_with_dialogs();
@@ -545,6 +658,7 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    /// Ctrl-L clears every dialog (alias for the clear-calls key).
     #[test]
     fn call_list_ctrl_l_clears() {
         let mut app = app_with_dialogs();
@@ -552,6 +666,7 @@ mod tests {
         assert_eq!(app.dialog_store.read().len(), 0);
     }
 
+    /// F6 opens the raw view of the selected dialog's first message.
     #[test]
     fn call_list_f6_opens_raw() {
         let mut app = app_with_dialogs();
@@ -559,6 +674,7 @@ mod tests {
         assert!(matches!(app.current_view, View::RawMessage { .. }));
     }
 
+    /// `r` opens the raw view (alias for F6).
     #[test]
     fn call_list_r_opens_raw() {
         let mut app = app_with_dialogs();
@@ -566,6 +682,7 @@ mod tests {
         assert!(matches!(app.current_view, View::RawMessage { .. }));
     }
 
+    /// `t` cycles the timestamp mode and announces it on the status line.
     #[test]
     fn call_list_t_cycles_timestamp() {
         let mut app = App::new_test();
@@ -575,6 +692,7 @@ mod tests {
         assert!(app.status_error.is_some());
     }
 
+    /// `<`/`>` move the sort column and `Z` reverses the direction.
     #[test]
     fn call_list_sort_prev_next_reverse() {
         let mut app = App::new_test();
@@ -588,6 +706,7 @@ mod tests {
         assert_ne!(app.call_list.sort_ascending(), asc);
     }
 
+    /// The autoscroll key toggles follow-newest autoscroll.
     #[test]
     fn call_list_a_toggles_autoscroll() {
         let mut app = App::new_test();
@@ -596,6 +715,7 @@ mod tests {
         assert_ne!(app.call_list.autoscroll, before);
     }
 
+    /// The pause key toggles capture pause.
     #[test]
     fn call_list_p_toggles_pause() {
         let mut app = App::new_test();
@@ -604,6 +724,7 @@ mod tests {
         assert!(app.paused);
     }
 
+    /// F1/F2/F7/F8 open help, save, filter, and settings respectively.
     #[test]
     fn call_list_help_save_filter_settings() {
         let mut app = App::new_test();
@@ -623,6 +744,7 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::SettingsDialog));
     }
 
+    /// Both `/` and F3 enter search-input mode.
     #[test]
     fn call_list_search_via_slash_and_f3() {
         let mut app = App::new_test();
@@ -634,6 +756,7 @@ mod tests {
         assert!(app.search_active);
     }
 
+    /// F10 opens the column selector popup.
     #[test]
     fn call_list_f10_opens_column_selector() {
         let mut app = App::new_test();
@@ -641,6 +764,7 @@ mod tests {
         assert!(app.call_list.column_selector_open);
     }
 
+    /// F9 drops the active filter and its display text.
     #[test]
     fn call_list_f9_clears_filter() {
         let mut app = app_with_dialogs();
@@ -650,6 +774,7 @@ mod tests {
         assert!(app.active_filter_text.is_empty());
     }
 
+    /// `s` opens the statistics view.
     #[test]
     fn call_list_s_opens_statistics() {
         let mut app = App::new_test();
@@ -657,6 +782,7 @@ mod tests {
         assert_eq!(app.current_view, View::Statistics);
     }
 
+    /// `T` opens the selected call's timeline; Esc returns to the list.
     #[test]
     fn timeline_opens_from_call_list_and_returns_on_close() {
         // Needs a selected call: the timeline opens for the highlighted row.
@@ -667,6 +793,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// The extended-flow key opens the flow with multi-leg mode on.
     #[test]
     fn call_list_extended_flow_key() {
         let mut app = app_with_dialogs();
@@ -675,6 +802,7 @@ mod tests {
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
+    /// `O` opens the file-open dialog.
     #[test]
     fn call_list_capital_o_opens_file_dialog() {
         let mut app = App::new_test();
@@ -682,6 +810,7 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::FileOpenDialog));
     }
 
+    /// An unbound key changes nothing.
     #[test]
     fn call_list_unhandled_key_noop() {
         let mut app = App::new_test();
@@ -690,6 +819,8 @@ mod tests {
         assert!(!app.should_quit);
     }
 
+    /// While the column selector is open it captures the keys (Esc closes
+    /// it instead of quitting).
     #[test]
     fn call_list_routes_to_column_selector_when_open() {
         let mut app = App::new_test();
@@ -700,6 +831,7 @@ mod tests {
 
     // ── handle_column_selector_key ───────────────────────────────────
 
+    /// Up/Down move the selector cursor and Space toggles visibility.
     #[test]
     fn column_selector_nav_and_toggle() {
         let mut app = App::new_test();
@@ -715,6 +847,7 @@ mod tests {
         assert_ne!(app.call_list.visible_columns[0], vis);
     }
 
+    /// Both Enter and Esc close the column selector.
     #[test]
     fn column_selector_enter_and_esc_close() {
         let mut app = App::new_test();
@@ -727,6 +860,7 @@ mod tests {
         assert!(!app.call_list.column_selector_open);
     }
 
+    /// An unbound key leaves the selector open and unchanged.
     #[test]
     fn column_selector_unhandled_noop() {
         let mut app = App::new_test();

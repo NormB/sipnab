@@ -18,10 +18,12 @@ use sipnab::sip::dsl::FilterExpr;
 use sipnab::sip::parser::parse_sip;
 use sipnab::sip::sdp::parse_sdp;
 
+/// Fixed endpoint address (10.0.0.1) used for every generated message.
 fn ip() -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
 }
 
+/// Fixed deterministic timestamp (2024-06-15 12:00:00 UTC) for parses.
 fn ts() -> chrono::DateTime<Utc> {
     Utc.with_ymd_and_hms(2024, 6, 15, 12, 0, 0).unwrap()
 }
@@ -125,6 +127,8 @@ proptest! {
 
 // ── Filter DSL: total function on arbitrary input ───────────────────
 
+/// A concrete `SipDialog` built from a fixed INVITE, used as the evaluation
+/// target for generated filter expressions.
 fn sample_dialog() -> SipDialog {
     let raw = b"INVITE sip:2002@example.com SIP/2.0\r\n\
         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKprop\r\n\

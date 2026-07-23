@@ -107,6 +107,8 @@ pub struct AsymmetryThresholds {
 }
 
 impl Default for AsymmetryThresholds {
+    /// The industry-standard default thresholds (5% / 2.0 s duration delta,
+    /// 500 ms late-media trigger).
     fn default() -> Self {
         Self {
             duration_pct_delta: 5.0,
@@ -125,7 +127,7 @@ impl Default for AsymmetryThresholds {
 ///   packet source address, indicating NAT rewriting.
 /// - **No media:** SDP was negotiated but zero RTP packets have arrived.
 ///
-/// Returns a [`MediaDiagnosis`] with boolean flags and descriptive hints.
+/// Returns a `MediaDiagnosis` with boolean flags and descriptive hints.
 pub fn diagnose_media(
     dialog_streams: &[&RtpStream],
     sdp_info: Option<&SdpSession>,
@@ -228,7 +230,7 @@ pub fn diagnose_media(
 /// Phase 8.7 — per-call asymmetry checks comparing the two RTP legs of a
 /// SIP call. Mutates `diag` in place; returns nothing. Each check sets a
 /// `Some(_)` field when an asymmetry is detected and leaves the field
-/// `None` otherwise. Callers obtain a diagnosis via [`diagnose_media`]
+/// `None` otherwise. Callers obtain a diagnosis via `diagnose_media`
 /// first, then enrich it with this function.
 ///
 /// `dialog` is used only for the `late_media` check (needs `answered_at`).
@@ -396,6 +398,7 @@ fn stream_duration_sec(s: &RtpStream) -> f64 {
     ms as f64 / 1000.0
 }
 
+/// Unit tests for media-path and per-call asymmetry diagnosis.
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -407,10 +410,12 @@ mod tests {
     use crate::rtp::stream::{RtpStream, StreamKey};
     use crate::sip::sdp::{SdpConnection, SdpDirection, SdpMedia, SdpSession};
 
+    /// A fixed capture timestamp used across the diagnosis tests.
     fn ts() -> DateTime<chrono::Utc> {
         DateTime::from_timestamp(1_700_000_000, 0).expect("valid")
     }
 
+    /// Build a 10-packet PCMU stream between the given endpoints.
     fn make_stream(src_ip: [u8; 4], dst_ip: [u8; 4], src_port: u16, dst_port: u16) -> RtpStream {
         let key = StreamKey {
             ssrc: 0x12345678,
@@ -442,6 +447,8 @@ mod tests {
         stream
     }
 
+    /// Build a minimal single-audio-media SDP session with the given
+    /// connection address and port.
     fn make_sdp(addr: &str, port: u16) -> SdpSession {
         SdpSession {
             origin: None,
@@ -465,6 +472,7 @@ mod tests {
         }
     }
 
+    /// Two streams in opposite directions are not flagged as one-way audio.
     #[test]
     fn bidirectional_streams_no_one_way() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
@@ -476,6 +484,7 @@ mod tests {
         assert!(diag.hints.is_empty() || !diag.hints.iter().any(|h| h.contains("only")));
     }
 
+    /// A single-direction stream is flagged as one-way audio.
     #[test]
     fn unidirectional_streams_flags_one_way() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
@@ -486,6 +495,8 @@ mod tests {
         assert!(diag.hints.iter().any(|h| h.contains("only")));
     }
 
+    /// An SDP `c=` address that differs from the observed RTP source flags
+    /// a NAT mismatch and records both addresses.
     #[test]
     fn sdp_address_differs_from_actual_flags_nat() {
         // SDP says 192.168.1.100, but actual RTP source is 10.0.0.1
@@ -500,6 +511,7 @@ mod tests {
         assert!(diag.hints.iter().any(|h| h.contains("NAT")));
     }
 
+    /// When the SDP address matches the RTP source, no NAT mismatch is flagged.
     #[test]
     fn sdp_address_matches_no_nat_flag() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
@@ -510,6 +522,7 @@ mod tests {
         assert!(!diag.nat_mismatch);
     }
 
+    /// SDP negotiated but no streams observed flags `no_media`.
     #[test]
     fn no_rtp_with_sdp_flags_no_media() {
         let streams: Vec<&RtpStream> = vec![];
@@ -520,6 +533,7 @@ mod tests {
         assert!(diag.hints.iter().any(|h| h.contains("zero RTP")));
     }
 
+    /// No streams and no SDP produces a clean diagnosis with no flags or hints.
     #[test]
     fn no_streams_no_sdp_is_clean() {
         let streams: Vec<&RtpStream> = vec![];
@@ -530,6 +544,8 @@ mod tests {
         assert!(diag.hints.is_empty());
     }
 
+    /// A high comfort-noise ratio suppresses the one-way-audio flag and adds a
+    /// comfort-noise hint instead.
     #[test]
     fn comfort_noise_suppresses_one_way_audio() {
         // Create a unidirectional stream with high CN ratio (>30%)
@@ -551,6 +567,8 @@ mod tests {
         );
     }
 
+    /// One-way audio plus a NAT mismatch produces the combined "wrong address"
+    /// hint.
     #[test]
     fn one_way_plus_nat_gives_combined_hint() {
         let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
@@ -606,6 +624,8 @@ mod tests {
         s
     }
 
+    /// Build a dialog from an INVITE whose `answered_at` is `secs_after_epoch`
+    /// seconds after the fixed test timestamp.
     fn make_dialog_with_answer(secs_after_epoch: i64) -> SipDialog {
         use crate::sip::SipMessage;
         use crate::sip::message::SipHeader;
@@ -644,6 +664,7 @@ mod tests {
         d
     }
 
+    /// Legs using different codecs (PCMU vs G729) set `codec_asymmetry`.
     #[test]
     fn codec_asymmetry_detected_when_legs_differ() {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
@@ -657,6 +678,7 @@ mod tests {
         assert_eq!(asym.b_codec, "G729");
     }
 
+    /// Matching codecs on both legs leave `codec_asymmetry` unset.
     #[test]
     fn codec_asymmetry_negative_when_legs_match() {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
@@ -668,6 +690,7 @@ mod tests {
         assert!(diag.codec_asymmetry.is_none());
     }
 
+    /// Same codec but different payload types sets `payload_type_asymmetry`.
     #[test]
     fn payload_type_asymmetry_detected_when_codec_matches_pt_differs() {
         // Both legs use PCMA codec but different PTs (one static 8, one dyn 96)
@@ -683,6 +706,8 @@ mod tests {
         assert_eq!((asym.a_pt, asym.b_pt), (8, 96));
     }
 
+    /// When codecs already differ, the PT-asymmetry field is left unset (the
+    /// codec asymmetry already covers it).
     #[test]
     fn payload_type_asymmetry_skipped_when_codec_differs() {
         // Codec already differs — payload-type field should NOT be set, since
@@ -697,6 +722,7 @@ mod tests {
         assert!(diag.payload_type_asymmetry.is_none());
     }
 
+    /// Inferred ptimes of 20 ms vs 30 ms set `ptime_asymmetry`.
     #[test]
     fn ptime_asymmetry_detected_20_vs_30() {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
@@ -710,6 +736,7 @@ mod tests {
         assert_eq!(asym.b_ptime_ms, 30);
     }
 
+    /// Equal ptimes on both legs leave `ptime_asymmetry` unset.
     #[test]
     fn ptime_asymmetry_negative_when_legs_match() {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);
@@ -721,6 +748,8 @@ mod tests {
         assert!(diag.ptime_asymmetry.is_none());
     }
 
+    /// A 30s-vs-25s duration gap (above both thresholds) sets
+    /// `duration_asymmetry`.
     #[test]
     fn duration_asymmetry_detected_when_above_thresholds() {
         // A leg: 30s, B leg: 25s → 5s delta, ~17% pct delta. Above 5%/2s default.
@@ -740,6 +769,8 @@ mod tests {
         assert!((dur.delta_sec - 5.0).abs() < 0.01);
     }
 
+    /// A sub-2-second duration gap stays below the minimum delta and is not
+    /// flagged.
     #[test]
     fn duration_asymmetry_negative_below_minimum_delta() {
         // 30s vs 29.5s — delta 0.5s, below 2.0s minimum.
@@ -754,6 +785,7 @@ mod tests {
         assert!(diag.duration_asymmetry.is_none());
     }
 
+    /// RTP starting well after the 200 OK sets `late_media` with the delay.
     #[test]
     fn late_media_detected_when_rtp_starts_after_threshold() {
         // 200 OK at +0s; RTP starts at +1.5s → 1500 ms delay > 500 ms default
@@ -773,6 +805,7 @@ mod tests {
         assert!(lm.delay_after_200_ok_ms >= 1_500);
     }
 
+    /// RTP starting promptly after the 200 OK leaves `late_media` unset.
     #[test]
     fn late_media_negative_when_rtp_starts_quickly() {
         let dialog = make_dialog_with_answer(0);
@@ -791,6 +824,7 @@ mod tests {
         assert!(diag.late_media.is_none());
     }
 
+    /// With only one stream, no asymmetry fields are computed.
     #[test]
     fn asymmetry_skipped_with_single_stream() {
         let a = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 100);

@@ -53,6 +53,9 @@ impl NameMode {
     }
 }
 
+/// Shared mutable state behind the resolver's lock: the three name
+/// sources in precedence order, the reverse-DNS caches, and the
+/// generation counter.
 #[derive(Debug, Default)]
 struct Inner {
     /// Operator-entered mappings (highest priority).
@@ -88,6 +91,7 @@ pub fn is_valid_name(name: &str) -> bool {
 /// Thread-safe IP -> name resolver shared across the TUI and output writers.
 #[derive(Debug, Default)]
 pub struct NameResolver {
+    /// Shared name tables and caches, behind a read-write lock.
     inner: Arc<RwLock<Inner>>,
     /// Channel to the reverse-DNS worker; `None` when reverse DNS is disabled.
     dns_tx: Option<Sender<IpAddr>>,
@@ -102,6 +106,12 @@ impl NameResolver {
     /// A resolver that performs reverse DNS on a background worker thread.
     ///
     /// When `enabled` is false this is equivalent to [`NameResolver::new`].
+    ///
+    /// # Side effects
+    /// When enabled, spawns a detached `sipnab-dns` worker thread that
+    /// serves PTR lookups until the resolver (the channel sender) is
+    /// dropped; each completed lookup writes the DNS cache and bumps the
+    /// generation counter.
     pub fn with_reverse_dns(enabled: bool) -> Self {
         if !enabled {
             return Self::new();
@@ -128,8 +138,11 @@ impl NameResolver {
 
     /// Resolve `ip` to a name under `mode`, or `None` to use the raw IP.
     ///
-    /// In `Dns` mode an unknown IP is enqueued for the background worker and
-    /// `None` is returned for now; the name appears on a later lookup.
+    /// Sources are consulted in precedence order: manual, hosts, file,
+    /// then (in `Dns` mode only) the reverse-DNS cache. In `Dns` mode an
+    /// unknown IP is enqueued for the background worker as a side effect
+    /// and `None` is returned for now; the name appears on a later lookup.
+    /// A cached negative DNS result (no PTR record) also returns `None`.
     pub fn name(&self, ip: IpAddr, mode: NameMode) -> Option<String> {
         if mode == NameMode::Off {
             return None;
@@ -183,6 +196,11 @@ impl NameResolver {
     }
 
     /// Enqueue an IP for reverse-DNS resolution (at most once per IP).
+    ///
+    /// No-op without a worker (`dns_tx` is `None`) or when the IP is
+    /// already cached or already requested. Otherwise records the IP in
+    /// `dns_requested` and sends it to the worker; a send failure (worker
+    /// gone) is silently ignored.
     fn enqueue_dns(&self, ip: IpAddr) {
         let Some(tx) = &self.dns_tx else { return };
         {
@@ -196,7 +214,8 @@ impl NameResolver {
 
     // ── Manual mappings ────────────────────────────────────────────────
 
-    /// Add or replace a manual mapping.
+    /// Add or replace a manual mapping for `ip`; bumps the generation
+    /// counter so cached labels re-derive.
     pub fn set_manual(&self, ip: IpAddr, name: String) {
         let mut inner = self.inner.write();
         inner.manual.insert(ip, name);
@@ -204,6 +223,7 @@ impl NameResolver {
     }
 
     /// Remove a manual mapping. Returns the previous name, if any.
+    /// Bumps the generation counter (even when nothing was removed).
     pub fn remove_manual(&self, ip: &IpAddr) -> Option<String> {
         let mut inner = self.inner.write();
         inner.generation += 1;
@@ -290,7 +310,9 @@ impl NameResolver {
 
     /// Load IP → name pairs read from a capture file's Name Resolution Block
     /// into the low-priority `file` source. Invalid names are skipped; the
-    /// first valid name for each IP wins. Returns how many were accepted.
+    /// first valid name for each IP wins (already-present IPs are not
+    /// replaced). Returns how many new entries were accepted. Bumps the
+    /// generation counter.
     pub fn load_file_names<I>(&self, entries: I) -> usize
     where
         I: IntoIterator<Item = (IpAddr, String)>,
@@ -316,21 +338,38 @@ impl NameResolver {
 
     // ── Hosts file ─────────────────────────────────────────────────────
 
-    /// Replace the hosts table from `/etc/hosts`-format text.
+    /// Replace the hosts table (in full) from `/etc/hosts`-format text.
+    /// Bumps the generation counter.
     pub fn load_hosts_str(&self, text: &str) {
         let mut inner = self.inner.write();
         inner.hosts = parse_hosts(text);
         inner.generation += 1;
     }
 
-    /// Load a hosts file from disk into the hosts table.
+    /// Load a hosts file from disk, replacing the hosts table.
+    ///
+    /// # Errors
+    /// The file at `path` cannot be read.
+    ///
+    /// # Side effects
+    /// Reads `path`; on success replaces the hosts table and bumps the
+    /// generation counter.
     pub fn load_hosts_file(&self, path: &Path) -> std::io::Result<()> {
         let text = std::fs::read_to_string(path)?;
         self.load_hosts_str(&text);
         Ok(())
     }
 
-    /// Load manual mappings from an `/etc/hosts`-format file (operator names).
+    /// Load manual mappings from an `/etc/hosts`-format file (operator
+    /// names). Unlike `load_hosts_file` this extends the manual table
+    /// (replacing colliding IPs) rather than clearing it first.
+    ///
+    /// # Errors
+    /// The file at `path` cannot be read.
+    ///
+    /// # Side effects
+    /// Reads `path`; on success merges into the manual table and bumps
+    /// the generation counter.
     pub fn load_manual_file(&self, path: &Path) -> std::io::Result<()> {
         let text = std::fs::read_to_string(path)?;
         let parsed = parse_hosts(&text);
@@ -340,7 +379,9 @@ impl NameResolver {
         Ok(())
     }
 
-    /// Serialize manual mappings to `/etc/hosts` line format.
+    /// Serialize manual mappings to `/etc/hosts` line format (one
+    /// `IP<TAB>name` line per entry, sorted by IP). Entries whose name
+    /// fails `is_valid_name` are skipped, never emitted.
     pub fn manual_to_hosts_format(&self) -> String {
         let mut out = String::new();
         for (ip, name) in self.manual_entries() {
@@ -363,6 +404,12 @@ impl NameResolver {
     /// through. The atomic helper depends on `tempfile` (a `native` dep); the
     /// sole caller is the native TUI, but this method compiles in every feature
     /// combo, so non-native builds fall back to a plain write.
+    ///
+    /// # Errors
+    /// The parent directory cannot be created, or the write/rename fails.
+    ///
+    /// # Side effects
+    /// Creates `path`'s parent directory if missing and writes the file.
     pub fn save_manual_file(&self, path: &Path) -> std::io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -384,7 +431,8 @@ impl NameResolver {
 /// Parse `/etc/hosts`-format text into an IP -> first-name map.
 ///
 /// Each non-comment line is `IP name [aliases...]`; `#` starts a comment. The
-/// first name listed for an IP wins; later duplicates are ignored.
+/// first name listed for an IP wins; later duplicates are ignored. Lines
+/// with an unparsable IP or no name are skipped silently. Pure.
 fn parse_hosts(text: &str) -> HashMap<IpAddr, String> {
     let mut map = HashMap::new();
     for line in text.lines() {
@@ -408,6 +456,11 @@ fn parse_hosts(text: &str) -> HashMap<IpAddr, String> {
 ///
 /// Returns `Some(hostname)` only when a name actually exists (`NI_NAMEREQD`);
 /// a numeric/no-record result yields `None`.
+///
+/// # Side effects
+/// Emits DNS queries on the network and blocks the calling thread until
+/// the system resolver answers or times out — call from the worker
+/// thread only.
 #[cfg(all(unix, feature = "native"))]
 fn reverse_dns(ip: IpAddr) -> Option<String> {
     use std::ffi::CStr;
@@ -469,15 +522,20 @@ fn reverse_dns(_ip: IpAddr) -> Option<String> {
     None
 }
 
+/// Unit tests for name-mode cycling, source precedence, generation
+/// tracking, name validation, NRB serialization, and persistence.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// Parse `s` into an `IpAddr`, panicking on invalid input (test helper).
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
 
+    /// `NameMode` defaults to Off, cycles Off→Names→Dns→Off, and each
+    /// mode has its status-line label.
     #[test]
     fn mode_cycles_and_labels() {
         assert_eq!(NameMode::default(), NameMode::Off);
@@ -489,6 +547,7 @@ mod tests {
         assert_eq!(NameMode::Dns.label(), "Names: DNS");
     }
 
+    /// In Off mode even a mapped IP stays raw.
     #[test]
     fn off_mode_never_resolves() {
         let r = NameResolver::new();
@@ -500,6 +559,7 @@ mod tests {
         );
     }
 
+    /// A manual mapping wins over a hosts-file entry for the same IP.
     #[test]
     fn manual_takes_precedence_over_hosts() {
         let r = NameResolver::new();
@@ -541,6 +601,8 @@ mod tests {
         assert_eq!(r.generation(), g4, "lookups must not bump the generation");
     }
 
+    /// Hosts-file entries resolve when no manual mapping exists;
+    /// unknown IPs stay unresolved.
     #[test]
     fn hosts_used_when_no_manual() {
         let r = NameResolver::new();
@@ -552,6 +614,8 @@ mod tests {
         assert_eq!(r.name(ip("10.0.0.9"), NameMode::Names), None);
     }
 
+    /// `label` swaps the IP for its name but keeps the port; unknown IPs
+    /// fall back to the raw `ip:port` form.
     #[test]
     fn label_preserves_port_and_substitutes_ip() {
         let r = NameResolver::new();
@@ -567,6 +631,8 @@ mod tests {
         );
     }
 
+    /// `label_socket` keeps the bracketed form for unresolved IPv6 and
+    /// drops the brackets once a name resolves.
     #[test]
     fn label_socket_brackets_unresolved_ipv6() {
         let r = NameResolver::new();
@@ -577,6 +643,8 @@ mod tests {
         assert_eq!(r.label_socket(sa, NameMode::Names), "v6host:5060");
     }
 
+    /// `parse_hosts` skips comments, invalid IPs, and blank lines, and
+    /// keeps the first name per IP.
     #[test]
     fn hosts_parsing_skips_comments_and_bad_lines() {
         let map = parse_hosts(
@@ -590,6 +658,8 @@ mod tests {
         assert_eq!(map.len(), 2);
     }
 
+    /// `manual_entries` sorts by IP, and the hosts-format serialization
+    /// round-trips back through the hosts parser.
     #[test]
     fn manual_entries_sorted_and_round_trip() {
         let r = NameResolver::new();
@@ -613,6 +683,7 @@ mod tests {
         );
     }
 
+    /// `remove_manual` returns the removed name and the IP stops resolving.
     #[test]
     fn remove_manual_returns_previous() {
         let r = NameResolver::new();
@@ -621,6 +692,7 @@ mod tests {
         assert_eq!(r.name(ip("10.0.0.2"), NameMode::Names), None);
     }
 
+    /// Dns mode on a resolver without a worker behaves like a cache miss.
     #[test]
     fn dns_mode_without_worker_does_not_panic() {
         // No reverse-DNS worker: Dns mode behaves like a cache miss (raw IP).
@@ -634,6 +706,7 @@ mod tests {
 
     // ── Name validation (success + failure) ────────────────────────────
 
+    /// Reasonable hostnames pass validation, including the length boundary.
     #[test]
     fn is_valid_name_accepts_reasonable_names() {
         assert!(is_valid_name("pbx"));
@@ -642,6 +715,8 @@ mod tests {
         assert!(is_valid_name(&"x".repeat(MAX_NAME_LEN))); // boundary
     }
 
+    /// Empty, NUL-bearing, control-character, and over-length names fail
+    /// validation.
     #[test]
     fn is_valid_name_rejects_bad_names() {
         assert!(!is_valid_name("")); // empty
@@ -653,6 +728,8 @@ mod tests {
 
     // ── NRB serialization (success + failure) ──────────────────────────
 
+    /// NRB entries are sorted by IP with each IP's names in source-
+    /// preference order (manual before hosts).
     #[test]
     fn nrb_entries_orders_sources_and_dedups() {
         let r = NameResolver::new();
@@ -669,6 +746,7 @@ mod tests {
         assert_eq!(e[1].1, vec!["only-hosts".to_string()]);
     }
 
+    /// The same name in two sources is emitted once, not duplicated.
     #[test]
     fn nrb_entries_dedups_identical_names_across_sources() {
         let r = NameResolver::new();
@@ -678,6 +756,7 @@ mod tests {
         assert_eq!(e[0].1, vec!["same".to_string()]); // not duplicated
     }
 
+    /// Cached DNS names appear in NRB output only when `include_dns` is set.
     #[test]
     fn nrb_entries_dns_gated_by_flag() {
         let r = NameResolver::new();
@@ -694,6 +773,8 @@ mod tests {
         );
     }
 
+    /// Invalid names are dropped from NRB output, and IPs left with no
+    /// valid name are omitted entirely.
     #[test]
     fn nrb_entries_skips_invalid_names_and_empty_result() {
         let r = NameResolver::new();
@@ -709,6 +790,7 @@ mod tests {
         assert!(empty.nrb_entries(false).is_empty());
     }
 
+    /// NRB output carries IPv4 and IPv6 entries side by side.
     #[test]
     fn nrb_entries_handles_ipv4_and_ipv6() {
         let r = NameResolver::new();
@@ -725,6 +807,8 @@ mod tests {
 
     // ── Read-back (success + failure) ──────────────────────────────────
 
+    /// `load_file_names` counts only accepted entries: invalid and empty
+    /// names are skipped, and the first name per IP wins.
     #[test]
     fn load_file_names_accepts_valid_skips_invalid() {
         let r = NameResolver::new();
@@ -743,6 +827,7 @@ mod tests {
         assert_eq!(r.name(ip("10.0.0.3"), NameMode::Names), None);
     }
 
+    /// Capture-file names rank below hosts, which rank below manual.
     #[test]
     fn file_source_ranks_below_manual_and_hosts() {
         let r = NameResolver::new();
@@ -763,6 +848,8 @@ mod tests {
         );
     }
 
+    /// Names that would corrupt the hosts format (newline injection,
+    /// tab/control chars) are skipped on serialization.
     #[test]
     fn manual_to_hosts_format_skips_invalid_names() {
         let r = NameResolver::new();
@@ -784,6 +871,8 @@ mod tests {
 
     // ── Persistence (atomic, symlink-safe) ─────────────────────────────
 
+    /// The atomic save replaces a symlink at the target path instead of
+    /// writing through it onto the link's target.
     #[test]
     #[cfg(all(unix, feature = "native"))]
     fn save_manual_file_replaces_symlink_not_target() {

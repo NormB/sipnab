@@ -5,26 +5,54 @@ use crate::tui::*;
 /// Everything the stream list view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamListAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// Move the row selection up one row (saturating at the top).
     MoveUp,
+    /// Move the row selection down one row (clamped to the displayed count).
     MoveDown,
+    /// Move the row selection up one page.
     PageUp,
+    /// Move the row selection down one page (clamped to the displayed count).
     PageDown,
+    /// Jump the row selection to the first row.
     MoveTop,
+    /// Jump the row selection to the last displayed row.
     MoveBottom,
+    /// Tab — switch to the call list view.
     SwitchToCallList,
+    /// The configured search key — enter search-input mode (the existing
+    /// query is kept for refining).
     Search,
+    /// The configured help key — open the help view.
     Help,
+    /// The configured save key — open the save dialog (WAV default here).
     OpenSaveDialog,
+    /// The configured filter key — open the filter dialog popup.
     OpenFilterDialog,
+    /// Enter — open the stream detail view of the selected row.
     OpenDetail,
+    /// `N` — open the Name Address popup for the selected stream's
+    /// source and destination endpoints.
     NameEndpoints,
+    /// Esc — return to the call list view.
     BackToCallList,
+    /// `D` — open the quality dashboard, remembering the stream list as
+    /// the return view.
     OpenDashboard,
 }
 
 /// Pure key→action mapping for the stream list (keymap-aware); arm order
 /// mirrors the old handler so rebind precedence is unchanged.
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/search/help/save/filter
+///   keys are honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `StreamListAction`, or `None` when the key is not bound in
+/// this view.
 pub fn stream_list_action(km: &Keymap, key: KeyEvent) -> Option<StreamListAction> {
     use StreamListAction::*;
     Some(match key.code {
@@ -49,13 +77,28 @@ pub fn stream_list_action(km: &Keymap, key: KeyEvent) -> Option<StreamListAction
 }
 
 /// Handle keys in the stream list view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `stream_list_action`.
+///
+/// # Side effects
+/// Delegates to `execute_stream_list_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_stream_list_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = stream_list_action(&app.keymap, key) {
         execute_stream_list_action(app, action);
     }
 }
 
-/// Apply one [`StreamListAction`] to the application state.
+/// Apply one `StreamListAction` to the application state.
+///
+/// # Side effects
+/// Mutates the state named by each variant (see `StreamListAction`):
+/// navigation moves `app.stream_list` over the cached displayed rows,
+/// the view/popup variants switch `app.current_view` or set
+/// `app.active_popup`, `Search` sets `search_active`, and `Quit` sets
+/// `should_quit`. `OpenDetail` also resets `stream_detail_scroll` and
+/// records the stream list as the return view.
 fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
     // Navigate over exactly the rows the table displays (search + filter):
     // the list is derived once per tick in sync_caches — a keypress must
@@ -110,21 +153,41 @@ fn execute_stream_list_action(app: &mut App, action: StreamListAction) {
 /// Everything the stream detail view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamDetailAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// Scroll the detail text up one line.
     ScrollUp,
+    /// Scroll the detail text down one line.
     ScrollDown,
+    /// Scroll the detail text up 20 lines.
     PageUp,
+    /// Scroll the detail text down 20 lines.
     PageDown,
+    /// Jump to the top of the detail text.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
+    /// The configured help key — open the help view.
     Help,
+    /// The configured save key — open the save dialog (WAV default here).
     OpenSaveDialog,
+    /// Esc — return to the view the detail was opened from.
     Back,
+    /// `P` — start or stop audio playback of the stream.
     #[cfg(feature = "audio")]
     TogglePlayback,
 }
 
 /// Pure key→action mapping for the stream detail view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/help/save keys are
+///   honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `StreamDetailAction`, or `None` when the key is not bound
+/// in this view.
 pub fn stream_detail_action(km: &Keymap, key: KeyEvent) -> Option<StreamDetailAction> {
     use StreamDetailAction::*;
     Some(match key.code {
@@ -145,13 +208,27 @@ pub fn stream_detail_action(km: &Keymap, key: KeyEvent) -> Option<StreamDetailAc
 }
 
 /// Handle keys in the RTP stream detail view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `stream_detail_action`.
+///
+/// # Side effects
+/// Delegates to `execute_stream_detail_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_stream_detail_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = stream_detail_action(&app.keymap, key) {
         execute_stream_detail_action(app, action);
     }
 }
 
-/// Apply one [`StreamDetailAction`] to the application state.
+/// Apply one `StreamDetailAction` to the application state.
+///
+/// # Side effects
+/// Scroll variants move `app.stream_detail_scroll`; `Help` and `Back`
+/// switch `app.current_view` (`Back` restores `stream_detail_return_view`,
+/// stream list fallback); `OpenSaveDialog` opens the save popup; `Quit`
+/// sets `should_quit`; `TogglePlayback` starts/stops audio via
+/// `handle_stream_detail_play`.
 fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
     match action {
         StreamDetailAction::Quit => app.should_quit = true,
@@ -184,6 +261,13 @@ fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
 }
 
 /// Handle Shift+P audio playback toggle in stream detail view.
+///
+/// # Side effects
+/// A cached init failure only re-surfaces its message on the status line.
+/// When already playing, stops the player immediately. Otherwise sets
+/// `app.pending_audio_play` so init/decode/play run on the next
+/// event-loop tick (`App::run_pending_audio`), and paints the "Decoding…"
+/// status first.
 #[cfg(feature = "audio")]
 pub(in crate::tui) fn handle_stream_detail_play(app: &mut App) {
     // Don't re-attempt init if it already failed — retrying would
@@ -210,6 +294,10 @@ pub(in crate::tui) fn handle_stream_detail_play(app: &mut App) {
 }
 
 /// Get the StreamKey for the currently selected row in the stream list.
+///
+/// # Returns
+/// The key of the highlighted displayed row, or `None` when the displayed
+/// list is empty or the selection is out of range.
 pub(in crate::tui) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::stream::StreamKey> {
     // The displayed order lives in the sync_caches-derived cache; resolving
     // the selection is an index lookup, not a store re-filter.
@@ -219,6 +307,7 @@ pub(in crate::tui) fn get_selected_stream_key(app: &App) -> Option<crate::rtp::s
         .cloned()
 }
 
+/// Unit tests for the stream list and stream detail key handling.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -244,6 +333,8 @@ mod tests {
         );
     }
 
+    /// A rebound help key maps in the detail view; navigation keys still
+    /// map and unbound keys return `None`.
     #[test]
     fn stream_detail_action_honors_remapped_help_key() {
         let km = Keymap {
@@ -261,6 +352,7 @@ mod tests {
         assert_eq!(stream_detail_action(&km, key(KeyCode::Char('z'))), None);
     }
 
+    /// Tab in the stream list switches back to the call list.
     #[test]
     fn stream_list_tab_back_to_call_list() {
         let mut app = App::new_test();
@@ -269,6 +361,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// Esc in the stream list returns to the call list.
     #[test]
     fn stream_list_esc_to_call_list() {
         let mut app = App::new_test();
@@ -277,6 +370,8 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// Quit, help, search, filter, and save keys reach their popups/views
+    /// from the stream list.
     #[test]
     fn stream_list_quit_help_search_filter_save() {
         let mut app = App::new_test();
@@ -305,6 +400,8 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
     }
 
+    /// Navigation and Enter on an empty stream list neither panic nor
+    /// change the view.
     #[test]
     fn stream_list_nav_noop_when_empty() {
         let mut app = App::new_test();
@@ -320,6 +417,8 @@ mod tests {
 
     // ── handle_stream_detail_key ─────────────────────────────────────
 
+    /// App on the StreamDetail view of a synthetic stream key, with the
+    /// stream list recorded as the return view.
     fn app_in_stream_detail() -> App {
         let mut app = App::new_test();
         let k = crate::rtp::stream::StreamKey {
@@ -332,6 +431,8 @@ mod tests {
         app
     }
 
+    /// Line, page, and Home scrolling move `stream_detail_scroll` by the
+    /// expected amounts.
     #[test]
     fn stream_detail_scroll() {
         let mut app = app_in_stream_detail();
@@ -349,6 +450,7 @@ mod tests {
         assert_eq!(app.stream_detail_scroll, 0);
     }
 
+    /// Scrolling up at the top saturates at zero instead of underflowing.
     #[test]
     fn stream_detail_up_saturates() {
         let mut app = app_in_stream_detail();
@@ -356,6 +458,7 @@ mod tests {
         assert_eq!(app.stream_detail_scroll, 0);
     }
 
+    /// Esc returns to the recorded return view (the stream list).
     #[test]
     fn stream_detail_esc_returns() {
         let mut app = app_in_stream_detail();
@@ -363,6 +466,7 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// With no recorded return view, Esc falls back to the stream list.
     #[test]
     fn stream_detail_esc_default_stream_list() {
         let mut app = app_in_stream_detail();
@@ -371,6 +475,7 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// Quit, help, and save keys work from the stream detail view.
     #[test]
     fn stream_detail_quit_help_save() {
         let mut app = app_in_stream_detail();
@@ -387,6 +492,7 @@ mod tests {
     }
 }
 
+/// Tests for the deferred (one-tick) audio playback start.
 #[cfg(all(test, feature = "audio"))]
 mod deferred_audio_tests {
     use super::*;

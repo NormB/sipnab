@@ -5,17 +5,34 @@ use crate::tui::*;
 /// Everything the quality dashboard view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DashboardAction {
+    /// Esc, the quit key, or `D` — return to the view the dashboard was
+    /// opened from.
     Close,
+    /// Move the row selection up one row (saturating at the top).
     Up,
+    /// Move the row selection down one row (clamped to the last row).
     Down,
+    /// Move the row selection up ten rows (saturating at the top).
     PageUp,
+    /// Move the row selection down ten rows (clamped to the last row).
     PageDown,
+    /// Jump the row selection to the first row.
     Top,
+    /// Jump the row selection to the last row.
     Bottom,
+    /// Enter — open the stream detail view of the selected row's stream.
     OpenStreamDetail,
 }
 
 /// Pure key→action mapping for the quality dashboard (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit key is honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `DashboardAction`, or `None` when the key is not bound in
+/// this view.
 pub fn dashboard_action(km: &Keymap, key: KeyEvent) -> Option<DashboardAction> {
     use DashboardAction::*;
     Some(match key.code {
@@ -32,6 +49,17 @@ pub fn dashboard_action(km: &Keymap, key: KeyEvent) -> Option<DashboardAction> {
 }
 
 /// Handle keys in the quality dashboard: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `dashboard_action`.
+///
+/// # Side effects
+/// Navigation actions move `app.dashboard_selected`, clamped to the row
+/// count of the current `dashboard_snapshot`. `Close` restores
+/// `app.current_view` from `dashboard_return_view` (call list fallback).
+/// `OpenStreamDetail` resets `stream_detail_scroll`, records the dashboard
+/// as the return view, and switches to the selected row's stream detail.
 pub(in crate::tui) fn handle_dashboard_key(app: &mut App, key: KeyEvent) {
     let Some(action) = dashboard_action(&app.keymap, key) else {
         return;
@@ -73,11 +101,14 @@ pub(in crate::tui) fn handle_dashboard_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// Unit tests for the dashboard key mapping and open/close navigation.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// The default keymap maps every navigation, close, and Enter binding;
+    /// unbound keys map to `None`.
     #[test]
     fn dashboard_action_maps_nav_and_close() {
         let km = Keymap::default();
@@ -97,6 +128,7 @@ mod tests {
         assert_eq!(dashboard_action(&km, key(KeyCode::Char('z'))), None);
     }
 
+    /// A rebound quit key maps to `Close` and the old key unbinds.
     #[test]
     fn dashboard_action_honors_remapped_quit() {
         let km = Keymap {
@@ -110,6 +142,8 @@ mod tests {
         assert_eq!(dashboard_action(&km, key(KeyCode::Char('q'))), None);
     }
 
+    /// `D` from the call list opens the dashboard; Esc returns to the
+    /// call list.
     #[test]
     fn dashboard_opens_from_call_list_and_returns_on_close() {
         let mut app = App::new_test();
@@ -119,6 +153,8 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// The dashboard remembers its opener: opened from the stream list,
+    /// closing returns to the stream list rather than the call list.
     #[test]
     fn dashboard_opens_from_stream_list_and_returns_there() {
         let mut app = App::new_test();

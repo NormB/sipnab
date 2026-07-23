@@ -1,11 +1,19 @@
 //! Integration tests for CLI argument parsing.
+//!
+//! Smoke-level checks that spawn the real `sipnab` binary: `--version` works,
+//! `--help` lists key flags, and unknown flags are rejected with an error.
 
 use std::process::Command;
 
+/// Builds a `Command` targeting the compiled `sipnab` test binary.
+///
+/// # Returns
+/// An unconfigured `Command`; callers add args and spawn it.
 fn sipnab_cmd() -> Command {
     Command::new(env!("CARGO_BIN_EXE_sipnab"))
 }
 
+/// `--version` exits 0 and its output contains the binary name `sipnab`.
 #[test]
 fn version_flag_works() {
     let output = sipnab_cmd().arg("--version").output().unwrap();
@@ -18,6 +26,7 @@ fn version_flag_works() {
     );
 }
 
+/// `--help` exits 0 and mentions each of a representative set of key flags.
 #[test]
 fn help_shows_key_flags() {
     let output = sipnab_cmd().arg("--help").output().unwrap();
@@ -46,6 +55,7 @@ fn help_shows_key_flags() {
     }
 }
 
+/// An unknown flag makes the process exit non-zero with an error on stderr.
 #[test]
 fn invalid_flag_rejected() {
     let output = sipnab_cmd().arg("--nonexistent-flag").output().unwrap();

@@ -9,6 +9,8 @@ use std::process::Command;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/// Absolute path to `tests/fixtures/sip_call.pcap` (7-message complete call:
+/// INVITE/100/180/200/ACK/BYE/200).
 fn sip_call_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -16,6 +18,7 @@ fn sip_call_fixture() -> PathBuf {
         .join("sip_call.pcap")
 }
 
+/// Absolute path to `tests/fixtures/udp_5060.pcap` (10 bare 200 OK packets).
 fn udp_5060_fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -24,11 +27,25 @@ fn udp_5060_fixture() -> PathBuf {
 }
 
 /// Run sipnab in non-interactive mode with the given arguments.
-/// Returns (stdout, stderr, exit_code).
+/// Returns (stdout, stderr, exit_code). Logs are set to `warn`.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, i32) {
     run_with_log(args, "warn")
 }
 
+/// Runs the `sipnab` binary with an explicit `SIPNAB_LOG` level.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+/// * `level` — value for the `SIPNAB_LOG` env var (e.g. `warn`, `info`).
+///
+/// # Returns
+/// `(stdout, stderr, exit_code)`; exit code is -1 if killed by a signal.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_with_log(args: &[&str], level: &str) -> (String, String, i32) {
     let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(args)
@@ -47,7 +64,8 @@ fn json_line_count(s: &str) -> usize {
     s.lines().filter(|l| l.starts_with('{')).count()
 }
 
-/// Shorthand: run with sip_call fixture in JSON mode.
+/// Shorthand: run with the sip_call fixture in JSON mode (`-N -I <fixture>
+/// --json` plus `extra` args); returns `(stdout, stderr, exit_code)`.
 fn run_json(extra: &[&str]) -> (String, String, i32) {
     let fixture = sip_call_fixture();
     let f = fixture.to_str().unwrap();
@@ -56,7 +74,8 @@ fn run_json(extra: &[&str]) -> (String, String, i32) {
     run(&args)
 }
 
-/// Shorthand: run with sip_call fixture in default text mode.
+/// Shorthand: run with the sip_call fixture in default text mode (`-N -I
+/// <fixture>` plus `extra` args); returns `(stdout, stderr, exit_code)`.
 fn run_text(extra: &[&str]) -> (String, String, i32) {
     let fixture = sip_call_fixture();
     let f = fixture.to_str().unwrap();
@@ -69,6 +88,7 @@ fn run_text(extra: &[&str]) -> (String, String, i32) {
 //  VERSION & HELP
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-V` exits 0 with `sipnab 0.` plus a parenthesised commit hash.
 #[test]
 fn version_includes_commit_hash() {
     let (stdout, _, code) = run(&["-V"]);
@@ -81,6 +101,7 @@ fn version_includes_commit_hash() {
     );
 }
 
+/// `-h` exits 0 and shows a `Usage:` line naming sipnab.
 #[test]
 fn short_help_flag() {
     let (stdout, _, code) = run(&["-h"]);
@@ -89,6 +110,7 @@ fn short_help_flag() {
     assert!(stdout.contains("sipnab"));
 }
 
+/// `--help` exits 0, has an `EXAMPLES:` section, and documents a spot-check set of flags.
 #[test]
 fn long_help_flag() {
     let (stdout, _, code) = run(&["--help"]);
@@ -119,6 +141,7 @@ fn long_help_flag() {
 //  CAPTURE SOURCE FLAGS (-I, -O, -n, --snaplen, --portrange, --no-rtp)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-I sip_call.pcap --json` emits all 7 SIP messages.
 #[test]
 fn input_file_reads_all_messages() {
     let (stdout, _, code) = run_json(&[]);
@@ -126,6 +149,7 @@ fn input_file_reads_all_messages() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `-n 3` limits JSON output to exactly 3 messages.
 #[test]
 fn count_flag_limits_output() {
     let (stdout, _, code) = run_json(&["-n", "3"]);
@@ -133,6 +157,7 @@ fn count_flag_limits_output() {
     assert_eq!(json_line_count(&stdout), 3);
 }
 
+/// `-n 1` emits exactly one message and it is the INVITE.
 #[test]
 fn count_one() {
     let (stdout, _, code) = run_json(&["-n", "1"]);
@@ -142,6 +167,7 @@ fn count_one() {
     assert_eq!(parsed["method"], "INVITE");
 }
 
+/// `-O <file>` writes a pcap that re-reads to the same 7 messages.
 #[test]
 fn output_writes_pcap() {
     let dir = tempfile::tempdir().unwrap();
@@ -167,6 +193,7 @@ fn output_writes_pcap() {
     );
 }
 
+/// `--snaplen 65535` is accepted and all 7 messages still parse.
 #[test]
 fn snaplen_accepted() {
     let (stdout, _, code) = run_json(&["--snaplen", "65535"]);
@@ -174,6 +201,7 @@ fn snaplen_accepted() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--portrange 5060-5061` (the fixture's ports) passes all 7 messages.
 #[test]
 fn portrange_matching() {
     let (stdout, _, code) = run_json(&["--portrange", "5060-5061"]);
@@ -181,6 +209,7 @@ fn portrange_matching() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// A non-matching `--portrange 8080-8081` yields zero messages.
 #[test]
 fn portrange_no_match() {
     let (stdout, _, code) = run_json(&["--portrange", "8080-8081"]);
@@ -188,6 +217,7 @@ fn portrange_no_match() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--no-rtp` still emits all 7 SIP messages (only RTP analysis is disabled).
 #[test]
 fn no_rtp_still_shows_sip() {
     let (stdout, _, code) = run_json(&["--no-rtp"]);
@@ -199,6 +229,7 @@ fn no_rtp_still_shows_sip() {
 //  OUTPUT MODE FLAGS (-N, --json, --json-pretty, -T, --hexdump)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Default `-N` text output includes the INVITE method.
 #[test]
 fn non_interactive_mode() {
     let (stdout, _, code) = run_text(&[]);
@@ -209,6 +240,7 @@ fn non_interactive_mode() {
     );
 }
 
+/// Every `--json` line parses as JSON and carries `schema_version` 1.
 #[test]
 fn json_output_valid() {
     let (stdout, _, code) = run_json(&[]);
@@ -220,6 +252,7 @@ fn json_output_valid() {
     }
 }
 
+/// `--json-pretty` exits 0 and the output still contains `schema_version`.
 #[test]
 fn json_pretty_output() {
     let fixture = sip_call_fixture();
@@ -236,6 +269,7 @@ fn json_pretty_output() {
     assert!(stdout.contains("schema_version"));
 }
 
+/// `-T` shows the raw request line plus Call-ID, Via, and CSeq headers.
 #[test]
 fn text_dump_shows_raw_headers() {
     let fixture = sip_call_fixture();
@@ -250,6 +284,7 @@ fn text_dump_shows_raw_headers() {
     assert!(stdout.contains("CSeq:"), "should show CSeq header");
 }
 
+/// `--hexdump` output has hex offset markers and the ASCII column delimiter.
 #[test]
 fn hexdump_output() {
     let fixture = sip_call_fixture();
@@ -273,6 +308,7 @@ fn hexdump_output() {
 //  HEADER FILTER FLAGS (--from, --to, --contact, --ua)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--from 1001` matches all 7 messages (shared From header).
 #[test]
 fn from_filter_match() {
     let (stdout, _, code) = run_json(&["--from", "1001"]);
@@ -280,6 +316,7 @@ fn from_filter_match() {
     assert_eq!(json_line_count(&stdout), 7, "all messages have From: 1001");
 }
 
+/// A non-matching `--from 9999` yields zero messages.
 #[test]
 fn from_filter_no_match() {
     let (stdout, _, code) = run_json(&["--from", "9999"]);
@@ -287,6 +324,7 @@ fn from_filter_no_match() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--to 1002` matches all 7 messages (shared To header).
 #[test]
 fn to_filter_match() {
     let (stdout, _, code) = run_json(&["--to", "1002"]);
@@ -294,6 +332,7 @@ fn to_filter_match() {
     assert_eq!(json_line_count(&stdout), 7, "all messages have To: 1002");
 }
 
+/// A non-matching `--to 9999` yields zero messages.
 #[test]
 fn to_filter_no_match() {
     let (stdout, _, code) = run_json(&["--to", "9999"]);
@@ -301,6 +340,7 @@ fn to_filter_no_match() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--contact 1001` matches only the INVITE (the sole message with Contact).
 #[test]
 fn contact_filter_match() {
     let (stdout, _, code) = run_json(&["--contact", "1001"]);
@@ -309,6 +349,7 @@ fn contact_filter_match() {
     assert_eq!(json_line_count(&stdout), 1);
 }
 
+/// `--ua sipnab-test` matches only the INVITE (the sole message with User-Agent).
 #[test]
 fn ua_filter_match() {
     let (stdout, _, code) = run_json(&["--ua", "sipnab-test"]);
@@ -317,6 +358,7 @@ fn ua_filter_match() {
     assert_eq!(json_line_count(&stdout), 1);
 }
 
+/// A non-matching `--ua` pattern yields zero messages.
 #[test]
 fn ua_filter_no_match() {
     let (stdout, _, code) = run_json(&["--ua", "nonexistent-agent"]);
@@ -328,6 +370,7 @@ fn ua_filter_no_match() {
 //  MATCH MODIFIER FLAGS (-i, -v, -w, --single-line)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-i` makes the upper-cased `--ua SIPNAB-TEST` match the one UA-bearing message.
 #[test]
 fn ignore_case_match() {
     let (stdout, _, code) = run_json(&["-i", "--ua", "SIPNAB-TEST"]);
@@ -335,6 +378,7 @@ fn ignore_case_match() {
     assert_eq!(json_line_count(&stdout), 1, "case-insensitive should match");
 }
 
+/// `-v --from 1001` inverts an all-match filter to zero messages.
 #[test]
 fn invert_match() {
     let (stdout, _, code) = run_json(&["-v", "--from", "1001"]);
@@ -343,6 +387,7 @@ fn invert_match() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `-w` is accepted and never yields more than the 7 total messages.
 #[test]
 fn word_match_flag_accepted() {
     let (stdout, _, code) = run_json(&["-w", "--from", "1001"]);
@@ -351,6 +396,7 @@ fn word_match_flag_accepted() {
     assert!(json_line_count(&stdout) <= 7);
 }
 
+/// `--single-line` is accepted and never yields more than the 7 total messages.
 #[test]
 fn single_line_flag_accepted() {
     let (stdout, _, code) = run_json(&["--single-line", "--from", "1001"]);
@@ -362,6 +408,7 @@ fn single_line_flag_accepted() {
 //  CALLS-ONLY & DIALOG FLAGS (-c, --no-dialog, -R, -l, --dialog-track)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-c` (calls-only) emits exactly one message and it is the INVITE.
 #[test]
 fn calls_only() {
     let (stdout, _, code) = run_json(&["-c"]);
@@ -371,6 +418,7 @@ fn calls_only() {
     assert_eq!(parsed["method"], "INVITE");
 }
 
+/// `--no-dialog` still emits all 7 messages (dialog tracking off, output unchanged).
 #[test]
 fn no_dialog_mode() {
     let (stdout, _, code) = run_json(&["--no-dialog"]);
@@ -382,6 +430,7 @@ fn no_dialog_mode() {
     );
 }
 
+/// `-R` (rotate) is accepted and all 7 messages are still emitted.
 #[test]
 fn rotate_flag() {
     let (stdout, _, code) = run_json(&["-R"]);
@@ -389,6 +438,7 @@ fn rotate_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `-l 5` (dialog limit above the fixture's 1 dialog) leaves all 7 messages.
 #[test]
 fn dialog_limit() {
     let (stdout, _, code) = run_json(&["-l", "5"]);
@@ -400,6 +450,7 @@ fn dialog_limit() {
 //  DISPLAY FLAGS (--delta-time, --color, -A, --show-empty, --payload-limit)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// With `--delta-time`, the first message line shows a `+0.000s` delta.
 #[test]
 fn delta_time_output() {
     let (stdout, _, code) = run_text(&["--delta-time"]);
@@ -412,6 +463,7 @@ fn delta_time_output() {
     );
 }
 
+/// `--color never` output contains no ANSI escape sequences.
 #[test]
 fn color_never() {
     let fixture = sip_call_fixture();
@@ -433,6 +485,7 @@ fn color_never() {
     );
 }
 
+/// `--color always` is accepted and exits 0.
 #[test]
 fn color_always() {
     let fixture = sip_call_fixture();
@@ -440,6 +493,7 @@ fn color_always() {
     assert_eq!(code, 0);
 }
 
+/// `-A 1 -n 1` still emits at least the matched message.
 #[test]
 fn after_context() {
     let (stdout, _, code) = run_json(&["-A", "1", "-n", "1"]);
@@ -448,12 +502,14 @@ fn after_context() {
     assert!(json_line_count(&stdout) >= 1);
 }
 
+/// `--show-empty` is accepted and exits 0.
 #[test]
 fn show_empty_flag() {
     let (_, _, code) = run_json(&["--show-empty"]);
     assert_eq!(code, 0);
 }
 
+/// `--payload-limit 50` truncates the dumped payload well below the full message size.
 #[test]
 fn payload_limit() {
     let fixture = sip_call_fixture();
@@ -472,6 +528,7 @@ fn payload_limit() {
     assert!(stdout.len() < 500, "payload should be truncated");
 }
 
+/// `-q` still emits all 7 JSON messages (quiet only affects logs).
 #[test]
 fn quiet_flag() {
     let (stdout, _, code) = run_json(&["-q"]);
@@ -479,6 +536,7 @@ fn quiet_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--line-buffer` still emits all 7 JSON messages.
 #[test]
 fn line_buffer_flag() {
     let (stdout, _, code) = run_json(&["--line-buffer"]);
@@ -490,6 +548,7 @@ fn line_buffer_flag() {
 //  REPORT FLAGS (--report, --call-report, --markdown)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--report` names the fixture Call-ID, both parties, and the Completed state.
 #[test]
 fn report_contains_dialog() {
     let (stdout, _, code) = run_text(&["--report"]);
@@ -500,6 +559,7 @@ fn report_contains_dialog() {
     assert!(stdout.contains("Completed"));
 }
 
+/// `--report --markdown` exits 0 and contains markdown markers or the call data.
 #[test]
 fn report_markdown_format() {
     let (stdout, _, code) = run_text(&["--report", "--markdown"]);
@@ -511,6 +571,7 @@ fn report_markdown_format() {
     );
 }
 
+/// `--call-report <call-id>` prints a `Call Report:` header for the fixture call.
 #[test]
 fn call_report_specific_call() {
     let fixture = sip_call_fixture();
@@ -529,6 +590,7 @@ fn call_report_specific_call() {
     assert!(stdout.contains("test-call-1@10.0.0.1"));
 }
 
+/// `--call-report --markdown` exits 0 and includes the Call-ID.
 #[test]
 fn call_report_markdown() {
     let fixture = sip_call_fixture();
@@ -544,6 +606,7 @@ fn call_report_markdown() {
     assert!(stdout.contains("test-call-1@10.0.0.1"));
 }
 
+/// `--call-report` for an unknown Call-ID exits 0 or 1 without crashing.
 #[test]
 fn call_report_nonexistent_call() {
     let fixture = sip_call_fixture();
@@ -563,6 +626,7 @@ fn call_report_nonexistent_call() {
 //                   --nat-issues)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--problems` on a clean call emits zero messages.
 #[test]
 fn problems_filter() {
     let (stdout, _, code) = run_json(&["--problems"]);
@@ -571,6 +635,7 @@ fn problems_filter() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--slow-setup` (3s threshold vs the fixture's 2s setup) emits zero messages.
 #[test]
 fn slow_setup_filter() {
     let (stdout, _, code) = run_json(&["--slow-setup"]);
@@ -579,6 +644,7 @@ fn slow_setup_filter() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--short-calls` is accepted and never emits more than the 7 total messages.
 #[test]
 fn short_calls_filter() {
     let (stdout, _, code) = run_json(&["--short-calls"]);
@@ -592,6 +658,7 @@ fn short_calls_filter() {
     );
 }
 
+/// `--one-way` on an RTP-free fixture emits zero messages.
 #[test]
 fn one_way_filter() {
     let (stdout, _, code) = run_json(&["--one-way"]);
@@ -600,6 +667,7 @@ fn one_way_filter() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
+/// `--nat-issues` on a clean fixture emits zero messages.
 #[test]
 fn nat_issues_filter() {
     let (stdout, _, code) = run_json(&["--nat-issues"]);
@@ -614,6 +682,7 @@ fn nat_issues_filter() {
 //                  --stir-shaken, --fail2ban)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--kill-scanner` leaves normal SIP output untouched (all 7 messages).
 #[test]
 fn kill_scanner_flag() {
     let (stdout, _, code) = run_json(&["--kill-scanner"]);
@@ -622,6 +691,7 @@ fn kill_scanner_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--kill-ua` with a non-matching UA leaves all 7 messages.
 #[test]
 fn kill_ua_flag() {
     let (stdout, _, code) = run_json(&["--kill-ua", "friendly-scanner"]);
@@ -629,6 +699,7 @@ fn kill_ua_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--kill-scanner --kill-response 403` leaves all 7 messages.
 #[test]
 fn kill_response_flag() {
     let (stdout, _, code) = run_json(&["--kill-scanner", "--kill-response", "403"]);
@@ -636,6 +707,7 @@ fn kill_response_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--fraud-detect` leaves all 7 messages on a clean fixture.
 #[test]
 fn fraud_detect_flag() {
     let (stdout, _, code) = run_json(&["--fraud-detect"]);
@@ -643,6 +715,7 @@ fn fraud_detect_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--reg-flood` leaves all 7 messages on a clean fixture.
 #[test]
 fn reg_flood_flag() {
     let (stdout, _, code) = run_json(&["--reg-flood"]);
@@ -650,6 +723,7 @@ fn reg_flood_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--digest-leak` leaves all 7 messages on a clean fixture.
 #[test]
 fn digest_leak_flag() {
     let (stdout, _, code) = run_json(&["--digest-leak"]);
@@ -657,6 +731,7 @@ fn digest_leak_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--stir-shaken` leaves all 7 messages on a clean fixture.
 #[test]
 fn stir_shaken_flag() {
     let (stdout, _, code) = run_json(&["--stir-shaken"]);
@@ -664,6 +739,7 @@ fn stir_shaken_flag() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--fail2ban` leaves all 7 JSON messages.
 #[test]
 fn fail2ban_flag() {
     let (stdout, _, code) = run_json(&["--fail2ban"]);
@@ -675,6 +751,7 @@ fn fail2ban_flag() {
 //  CONFIG FLAGS (-f, -F, -D)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-F --dump-config` exits 0 and reports that no config file was loaded.
 #[test]
 fn dump_config_no_config() {
     let (stdout, _, code) = run(&["-F", "--dump-config"]);
@@ -686,6 +763,7 @@ fn dump_config_no_config() {
     );
 }
 
+/// `-f <file> --dump-config` echoes the file's `device = "eth99"` value.
 #[test]
 fn dump_config_with_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -700,6 +778,7 @@ fn dump_config_with_file() {
     );
 }
 
+/// `--no-config --dump-config` reports defaults-only (no file loaded).
 #[test]
 fn no_config_flag() {
     let (stdout, _, code) = run(&["--no-config", "--dump-config"]);
@@ -707,6 +786,7 @@ fn no_config_flag() {
     assert!(stdout.contains("No config file loaded") || stdout.contains("defaults only"));
 }
 
+/// `-f /nonexistent/...` exits non-zero and reports the missing config file.
 #[test]
 fn missing_config_file_errors() {
     let (_, stderr, code) = run(&["-f", "/nonexistent/sipnab.toml", "--dump-config"]);
@@ -721,24 +801,28 @@ fn missing_config_file_errors() {
 //  RTP FLAGS (--rtp-interval, --max-streams, --quality-threshold, -t)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--rtp-interval 5` is accepted and exits 0.
 #[test]
 fn rtp_interval_accepted() {
     let (_, _, code) = run_json(&["--rtp-interval", "5"]);
     assert_eq!(code, 0);
 }
 
+/// `--max-streams 100` is accepted and exits 0.
 #[test]
 fn max_streams_accepted() {
     let (_, _, code) = run_json(&["--max-streams", "100"]);
     assert_eq!(code, 0);
 }
 
+/// `--quality-threshold 2.5` is accepted and exits 0.
 #[test]
 fn quality_threshold_accepted() {
     let (_, _, code) = run_json(&["--quality-threshold", "2.5"]);
     assert_eq!(code, 0);
 }
 
+/// `-t` (telephone-event) is accepted and exits 0.
 #[test]
 fn telephone_event_flag() {
     let (_, _, code) = run_json(&["-t"]);
@@ -749,6 +833,7 @@ fn telephone_event_flag() {
 //  GROUP-BY FLAG
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--group-by method` still emits all 7 JSON messages.
 #[test]
 fn group_by_method() {
     let (stdout, _, code) = run_json(&["--group-by", "method"]);
@@ -756,6 +841,7 @@ fn group_by_method() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `--group-by call-id` still emits all 7 JSON messages.
 #[test]
 fn group_by_call_id() {
     let (stdout, _, code) = run_json(&["--group-by", "call-id"]);
@@ -767,12 +853,14 @@ fn group_by_call_id() {
 //  EXEC / ALERT FLAGS (accepted without crashing)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--alert json` is accepted and exits 0.
 #[test]
 fn alert_json_flag() {
     let (_, _, code) = run_json(&["--alert", "json"]);
     assert_eq!(code, 0);
 }
 
+/// `--alert-json` (structured alert channel) is accepted and exits 0.
 #[test]
 fn alert_json_output_flag() {
     // structured JSON alert channel (--alert-json) is accepted without crashing
@@ -780,6 +868,7 @@ fn alert_json_output_flag() {
     assert_eq!(code, 0);
 }
 
+/// `--exec-rate-limit 5` is accepted and exits 0.
 #[test]
 fn exec_rate_limit_flag() {
     let (_, _, code) = run_json(&["--exec-rate-limit", "5"]);
@@ -790,18 +879,21 @@ fn exec_rate_limit_flag() {
 //  PRIVILEGE FLAGS (accepted in file-capture mode)
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `--allow-coredump` is accepted in file-capture mode and exits 0.
 #[test]
 fn allow_coredump_flag() {
     let (_, _, code) = run_json(&["--allow-coredump"]);
     assert_eq!(code, 0);
 }
 
+/// `--no-priv-drop` is accepted in file-capture mode and exits 0.
 #[test]
 fn no_priv_drop_flag() {
     let (_, _, code) = run_json(&["--no-priv-drop"]);
     assert_eq!(code, 0);
 }
 
+/// `--max-reassembly 500` is accepted and exits 0.
 #[test]
 fn max_reassembly_flag() {
     let (_, _, code) = run_json(&["--max-reassembly", "500"]);
@@ -812,6 +904,7 @@ fn max_reassembly_flag() {
 //  COMBINED FLAG TESTS
 // ═══════════════════════════════════════════════════════════════════════
 
+/// `-n 2 --from 1001` composes: exactly 2 messages are emitted.
 #[test]
 fn json_with_count_and_from_filter() {
     let (stdout, _, code) = run_json(&["-n", "2", "--from", "1001"]);
@@ -819,6 +912,7 @@ fn json_with_count_and_from_filter() {
     assert_eq!(json_line_count(&stdout), 2);
 }
 
+/// `-T -n 2` shows the raw INVITE and the 100 Trying.
 #[test]
 fn text_dump_with_count() {
     let fixture = sip_call_fixture();
@@ -828,6 +922,7 @@ fn text_dump_with_count() {
     assert!(stdout.contains("100 Trying"));
 }
 
+/// `--report -q` still prints the report with the fixture Call-ID.
 #[test]
 fn report_with_quiet() {
     let (stdout, _, code) = run_text(&["--report", "-q"]);
@@ -835,6 +930,7 @@ fn report_with_quiet() {
     assert!(stdout.contains("test-call-1@10.0.0.1"));
 }
 
+/// `--delta-time` does not break JSON mode: all 7 messages emitted.
 #[test]
 fn delta_time_with_json() {
     // delta-time is a display flag; verify it doesn't break JSON mode
@@ -843,6 +939,7 @@ fn delta_time_with_json() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// All four security flags together leave the 7 messages untouched.
 #[test]
 fn security_flags_combined() {
     let (stdout, _, code) = run_json(&[
@@ -855,6 +952,7 @@ fn security_flags_combined() {
     assert_eq!(json_line_count(&stdout), 7);
 }
 
+/// `-O` with `-n 3` writes a pcap that re-reads as exactly 3 messages.
 #[test]
 fn output_with_count_and_filter() {
     let dir = tempfile::tempdir().unwrap();
@@ -877,6 +975,7 @@ fn output_with_count_and_filter() {
     assert_eq!(json_line_count(&stdout), 3);
 }
 
+/// `--hexdump --color never` shows hex offsets with no ANSI escapes.
 #[test]
 fn hexdump_with_count_and_color_never() {
     let fixture = sip_call_fixture();
@@ -899,6 +998,7 @@ fn hexdump_with_count_and_color_never() {
 //  ERROR CASES
 // ═══════════════════════════════════════════════════════════════════════
 
+/// An unknown flag exits non-zero with an error on stderr.
 #[test]
 fn invalid_flag_rejected() {
     let (_, stderr, code) = run(&["--nonexistent-flag"]);
@@ -909,6 +1009,7 @@ fn invalid_flag_rejected() {
     );
 }
 
+/// `-I` with a nonexistent path exits non-zero and reports the missing file.
 #[test]
 fn missing_input_file_errors() {
     let (_, stderr, code) = run(&["-N", "-I", "/nonexistent/file.pcap"]);
@@ -919,6 +1020,7 @@ fn missing_input_file_errors() {
     );
 }
 
+/// A non-numeric `-n abc` exits non-zero with an invalid-value error.
 #[test]
 fn invalid_count_errors() {
     let (_, stderr, code) = run(&["-N", "-n", "abc"]);
@@ -929,6 +1031,7 @@ fn invalid_count_errors() {
     );
 }
 
+/// A non-numeric `--quality-threshold` exits non-zero with an error.
 #[test]
 fn invalid_quality_threshold_errors() {
     let (_, stderr, code) = run(&["-N", "--quality-threshold", "not-a-number"]);
@@ -943,6 +1046,7 @@ fn invalid_quality_threshold_errors() {
 //  FIXTURE BACKWARD COMPATIBILITY
 // ═══════════════════════════════════════════════════════════════════════
 
+/// The udp_5060 fixture works across JSON (10 messages), `--report` (packet count), and `-T` modes.
 #[test]
 fn udp_5060_fixture_all_options() {
     let fixture = udp_5060_fixture();
@@ -969,6 +1073,7 @@ fn udp_5060_fixture_all_options() {
 //  PACKET SUMMARY LINE
 // ═══════════════════════════════════════════════════════════════════════
 
+/// The end-of-run summary reports `7 packets captured` and `7 SIP messages`.
 #[test]
 fn summary_reports_correct_counts() {
     let fixture = sip_call_fixture();

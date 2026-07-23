@@ -147,6 +147,7 @@ impl RegFloodDetector {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for per-source registration flood detection.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,24 +156,29 @@ mod tests {
     use chrono::{DateTime, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// A fixed capture timestamp for the parsed messages.
     fn ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
+    /// The loopback address used as registrar/destination.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// The source IP used to simulate a flooding attacker.
     fn attacker_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99))
     }
 
+    /// A second, independent source IP.
     fn other_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 100))
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a REGISTER request from `src` with the given Call-ID.
     fn make_register(src: IpAddr, call_id: &str) -> SipMessage {
         let raw = build_sip(
             "REGISTER sip:registrar@example.com SIP/2.0",
@@ -197,6 +203,7 @@ mod tests {
         .expect("parse")
     }
 
+    /// Exceeding the per-second threshold triggers a flood alert.
     #[test]
     fn flood_detected_above_threshold() {
         let mut detector = RegFloodDetector::new(50);
@@ -213,6 +220,7 @@ mod tests {
         assert!(triggered, "should detect flood at 60 REGs/s (threshold 50)");
     }
 
+    /// Staying under the threshold raises no alert.
     #[test]
     fn below_threshold_no_alert() {
         let mut detector = RegFloodDetector::new(50);
@@ -227,6 +235,7 @@ mod tests {
         }
     }
 
+    /// Two sources each below the threshold are tracked independently.
     #[test]
     fn different_sources_independent() {
         let mut detector = RegFloodDetector::new(50);
@@ -241,6 +250,7 @@ mod tests {
         }
     }
 
+    /// A 401 response back to the source increments its auth-failure count.
     #[test]
     fn auth_failure_tracking() {
         let mut detector = RegFloodDetector::new(50);
@@ -278,6 +288,7 @@ mod tests {
         assert_eq!(state.auth_fail_count, 1, "should track auth failure");
     }
 
+    /// A threshold of 0 selects the built-in default (50/sec).
     #[test]
     fn default_threshold() {
         let detector = RegFloodDetector::new(0);
@@ -287,6 +298,7 @@ mod tests {
         );
     }
 
+    /// The emitted alert includes the register count, threshold, and source IP.
     #[test]
     fn alert_includes_counts() {
         let mut detector = RegFloodDetector::new(5);

@@ -59,10 +59,14 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 /// ```
 #[derive(Clone)]
 pub struct FilterExpr {
+    /// Root node of the parsed expression tree.
     root: Expr,
 }
 
 impl std::fmt::Debug for FilterExpr {
+    /// Write a debug rendering of the expression tree to `f` (manual impl
+    /// because `regex::Regex` inside `Value` is not `Debug`-derivable the
+    /// way the rest of the tree is).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FilterExpr")
             .field("root", &self.root)
@@ -73,67 +77,116 @@ impl std::fmt::Debug for FilterExpr {
 /// Expression tree node.
 #[derive(Debug, Clone)]
 enum Expr {
+    /// Logical conjunction of two subexpressions (`AND`).
     And(Box<Expr>, Box<Expr>),
+    /// Logical disjunction of two subexpressions (`OR`).
     Or(Box<Expr>, Box<Expr>),
+    /// Logical negation of a subexpression (`NOT`).
     Not(Box<Expr>),
+    /// Leaf comparison: `field operator value`.
     Compare(Field, Operator, Value),
 }
 
-/// Addressable fields in the filter DSL.
+/// Addressable fields in the filter DSL. Each variant maps to one entry in
+/// `FIELD_NAMES`; extraction semantics live in `eval_compare`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Field {
+    /// `from.user` — user part of the dialog's From URI.
     FromUser,
+    /// `to.user` — user part of the dialog's To URI.
     ToUser,
+    /// `method` — the dialog's initial SIP method.
     Method,
+    /// `ua` — first User-Agent header found in the dialog's messages.
     Ua,
+    /// `call_id` — the dialog's Call-ID.
     CallId,
+    /// `payload` — raw text of any SIP message in the dialog
+    /// (sngrep-style whole-message grep).
     Payload,
+    /// `src.ip` — source IP of the initial message.
     SrcIp,
+    /// `dst.ip` — destination IP of the initial message.
     DstIp,
+    /// `src.port` — source port of the first stored message.
     SrcPort,
+    /// `dst.port` — destination port of the first stored message.
     DstPort,
+    /// `state` — current dialog state name (e.g. `'InCall'`).
     State,
+    /// `duration` — seconds between dialog creation and last update.
     Duration,
+    /// `msg_count` — number of SIP messages stored in the dialog.
     MsgCount,
+    /// `pdd` — post-dial delay in seconds (0 when unknown).
     Pdd,
+    /// `setup_time` — call setup time in seconds (0 when unknown).
     SetupTime,
+    /// `retransmits` — total retransmission count across transactions.
     Retransmits,
+    /// `rtp.mos` — worst (lowest) approximate MOS across streams.
     RtpMos,
+    /// `rtp.jitter` — worst (highest) jitter across streams.
     RtpJitter,
+    /// `rtp.loss` — worst (highest) loss percentage across streams.
     RtpLoss,
+    /// `rtp.packets` — total packet count summed across streams.
     RtpPackets,
+    /// `rtp.orphaned` — true when any associated stream is marked
+    /// orphaned.
     RtpOrphaned,
+    /// `rtp.codec` — first known stream codec name.
     RtpCodec,
+    /// `rtp.ssrc` — first stream's SSRC as 0x-prefixed lowercase hex.
     RtpSsrc,
+    /// `one_way` — one-way-audio diagnosis flag.
     OneWay,
+    /// `nat_mismatch` — NAT mismatch diagnosis flag.
     NatMismatch,
+    /// `no_media` — no-media diagnosis flag.
     NoMedia,
-    // Phase 8.7 — per-call asymmetry signals
+    // Per-call asymmetry signals (8.7)
+    /// `codec_asymmetry` — the two legs negotiated different codecs.
     CodecAsymmetry,
+    /// `ptime_asymmetry` — the legs use different packetization times.
     PtimeAsymmetry,
+    /// `payload_asymmetry` — the legs use different RTP payload types.
     PayloadAsymmetry,
+    /// `duration_asymmetry` — the legs' media durations diverge.
     DurationAsymmetry,
+    /// `late_media` — RTP began long after the 200 OK.
     LateMedia,
 }
 
 /// Comparison operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operator {
+    /// `==` — equality.
     Eq,
+    /// `!=` — inequality.
     Ne,
+    /// `<` — less than.
     Lt,
+    /// `>` — greater than.
     Gt,
+    /// `<=` — less than or equal.
     Le,
+    /// `>=` — greater than or equal.
     Ge,
+    /// `=~` — regex match (right-hand side compiled as a regex).
     Regex,
 }
 
 /// A literal value on the right-hand side of a comparison.
 #[derive(Debug, Clone)]
 enum Value {
+    /// Quoted string literal (single or double quotes).
     Str(String),
+    /// Numeric literal; all numbers are `f64`.
     Num(f64),
+    /// Boolean literal `true`/`false` (case-insensitive).
     Bool(bool),
+    /// Compiled regex from the string literal of an `=~` comparison.
     Re(regex::Regex),
 }
 
@@ -264,6 +317,19 @@ impl FilterExpr {
     ///
     /// Boolean diagnosis fields (`one_way`, `nat_mismatch`, `no_media`) are
     /// computed from the associated streams via the diagnosis engine.
+    ///
+    /// The media/asymmetry diagnosis runs on every call, even when the
+    /// expression references no diagnosis field.
+    ///
+    /// # Arguments
+    ///
+    /// * `dialog` — The SIP dialog to test.
+    /// * `streams` — RTP streams associated with the dialog (may be empty;
+    ///   RTP fields then compare as zero/empty values).
+    ///
+    /// # Returns
+    ///
+    /// `true` when the dialog and its streams satisfy the expression.
     pub fn matches_dialog(&self, dialog: &SipDialog, streams: &[&RtpStream]) -> bool {
         let mut diag = diagnosis::diagnose_media(streams, None);
         diagnosis::diagnose_asymmetry(
@@ -279,6 +345,12 @@ impl FilterExpr {
 // ── Nesting depth check ─────────────────────────────────────────────
 
 /// Verify parenthesis nesting does not exceed [`MAX_NESTING_DEPTH`].
+///
+/// # Errors
+///
+/// Returns an error naming the limit as soon as the running open-paren
+/// depth exceeds it. Unbalanced closing parens saturate the depth at zero
+/// rather than underflowing, so they can never error here.
 fn check_nesting_depth(input: &str) -> Result<()> {
     let mut depth: usize = 0;
     for ch in input.chars() {
@@ -299,7 +371,18 @@ fn check_nesting_depth(input: &str) -> Result<()> {
 /// Nom error type used throughout the parser.
 type NomErr<'a> = nom::error::Error<&'a str>;
 
-/// Parse an or-expression: `and_expr ("OR" and_expr)*`.
+/// Parse an or-expression: `and_expr ("OR" and_expr)*`. `OR` is matched
+/// case-insensitively and must be followed by whitespace.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the parsed node — a left-associative `Or`
+/// chain (or just the single and-expression) — or a nom error at the
+/// failing position.
 fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, first) = parse_and_expr(input)?;
     let mut result = first;
@@ -321,7 +404,19 @@ fn parse_or_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     Ok((remaining, result))
 }
 
-/// Parse an and-expression: `not_expr ("AND" not_expr)*`.
+/// Parse an and-expression: `not_expr ("AND" not_expr)*`. `AND` is matched
+/// case-insensitively and must be followed by whitespace; binding tighter
+/// than `OR` gives the conventional precedence.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the parsed node — a left-associative
+/// `And` chain (or just the single not-expression) — or a nom error at
+/// the failing position.
 fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
     let (input, first) = parse_not_expr(input)?;
@@ -344,7 +439,17 @@ fn parse_and_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     Ok((remaining, result))
 }
 
-/// Parse a not-expression: `"NOT" atom | atom`.
+/// Parse a not-expression: `"NOT" atom | atom`. `NOT` is matched
+/// case-insensitively and must be followed by whitespace.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text.
+///
+/// # Returns
+///
+/// The unconsumed remainder and either a `Not` wrapping the atom or the
+/// atom itself, or a nom error from the atom parser.
 fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
@@ -360,6 +465,15 @@ fn parse_not_expr(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
 }
 
 /// Parse an atom: parenthesized expression or comparison.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the inner expression (parens are consumed
+/// but add no node), or a nom error when neither form parses.
 fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
@@ -376,7 +490,17 @@ fn parse_atom(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     parse_comparison(input)
 }
 
-/// Parse a comparison: `field operator value`.
+/// Parse a comparison: `field operator value`, with optional whitespace
+/// between the three parts.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text.
+///
+/// # Returns
+///
+/// The unconsumed remainder and an `Expr::Compare` leaf, or the first nom
+/// error from the field, operator, or value parser.
 fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
     let (input, field) = parse_field(input)?;
@@ -424,7 +548,18 @@ pub const FIELD_NAMES: &[&str] = &[
     "late_media",
 ];
 
-/// Parse a dotted field identifier.
+/// Parse a dotted field identifier (one or two `.`-separated segments of
+/// ASCII alphanumerics/underscores) into its `Field`.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text at the field position.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the matched `Field`. An identifier that
+/// is not a known field produces a nom `Failure` (not `Error`) so
+/// alternatives cannot mask the unknown-field diagnostic.
 fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
     let (rest, ident) = recognize((
         take_while1(|c: char| c.is_ascii_alphanumeric() || c == '_'),
@@ -482,6 +617,21 @@ fn parse_field(input: &str) -> IResult<&str, Field, NomErr<'_>> {
 /// windowed) expression, a caret under the offending position, a quoting
 /// hint when a bare word follows an operator (the classic mistake:
 /// `method == INVITE`), the operator list, and a docs pointer.
+///
+/// An unknown-field hint (with a closest-match suggestion and the valid
+/// field list) is added instead when an identifier-looking token sits in
+/// field position and the quoting hint did not fire.
+///
+/// # Arguments
+///
+/// * `expr` — The full (trimmed) filter expression being parsed.
+/// * `pos` — Byte offset of the error; clamped into range and onto a char
+///   boundary before use.
+/// * `problem` — Short description used as the headline.
+///
+/// # Returns
+///
+/// The formatted multi-line diagnostic string.
 fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
     // Clamp to a char boundary (nom positions are byte offsets).
     let mut pos = pos.min(expr.len());
@@ -612,7 +762,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-/// Parse a comparison operator.
+/// Parse a comparison operator token into an `Operator`.
+///
+/// Two-character operators (`=~`, `==`, `!=`, `<=`, `>=`) are tried
+/// before single-character `<`/`>` so a prefix is never misparsed.
+/// Returns the remainder and the operator, or a nom error when no
+/// operator matches.
 fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
     alt((
         map(tag("=~"), |_| Operator::Regex),
@@ -630,6 +785,19 @@ fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
 ///
 /// For the `=~` (regex) operator, the string value is compiled into a regex
 /// with a size limit of [`REGEX_SIZE_LIMIT`] bytes.
+///
+/// # Arguments
+///
+/// * `input` — Remaining expression text at the value position.
+/// * `op` — The operator already parsed; decides whether a quoted string
+///   is kept verbatim or compiled as a regex.
+///
+/// # Returns
+///
+/// The unconsumed remainder and the parsed `Value`. Boolean literals are
+/// matched case-insensitively and only when not a prefix of a longer
+/// identifier; an unterminated string or an invalid/oversized regex
+/// yields a nom `Failure`; any other token must parse as an `f64`.
 fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
@@ -686,6 +854,17 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
 // ── Expression evaluator ────────────────────────────────────────────
 
 /// Recursively evaluate an expression tree against a dialog and streams.
+///
+/// # Arguments
+///
+/// * `expr` — Node to evaluate.
+/// * `dialog` — Dialog under test.
+/// * `streams` — RTP streams associated with the dialog.
+/// * `diag` — Precomputed media diagnosis for boolean diagnosis fields.
+///
+/// # Returns
+///
+/// The boolean result; `And`/`Or` short-circuit left to right.
 fn eval_expr(
     expr: &Expr,
     dialog: &SipDialog,
@@ -705,6 +884,25 @@ fn eval_expr(
 }
 
 /// Evaluate a single field comparison.
+///
+/// Extracts the field's current value from the dialog, streams, or
+/// diagnosis and dispatches to the string/numeric/boolean comparator.
+/// Missing data falls back to neutral defaults (empty string, 0, first
+/// stream), so absent values compare like a zero/empty field rather than
+/// failing the whole expression.
+///
+/// # Arguments
+///
+/// * `field` — Which dialog/stream/diagnosis property to read.
+/// * `op` — Comparison operator.
+/// * `value` — Literal right-hand side from the parsed expression.
+/// * `dialog` — Dialog under test.
+/// * `streams` — RTP streams associated with the dialog.
+/// * `diag` — Precomputed media diagnosis for boolean fields.
+///
+/// # Returns
+///
+/// `true` when the extracted value satisfies the comparison.
 fn eval_compare(
     field: &Field,
     op: &Operator,
@@ -844,7 +1042,9 @@ fn eval_compare(
     }
 }
 
-/// Compare a string field value against the filter value.
+/// Compare a string field value `field_val` against the filter value.
+/// `<`/`>`/`<=`/`>=` order lexicographically; `=~` requires a compiled
+/// regex value. Type mismatches (non-string literal) return `false`.
 fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
     match (op, value) {
         (Operator::Eq, Value::Str(s)) => field_val == s,
@@ -858,7 +1058,9 @@ fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
     }
 }
 
-/// Compare a numeric field value against the filter value.
+/// Compare a numeric field value `field_val` against the filter value.
+/// `==`/`!=` use an absolute `f64::EPSILON` tolerance; `=~` and
+/// non-numeric literals return `false`.
 fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
     let rhs = match value {
         Value::Num(n) => *n,
@@ -875,7 +1077,9 @@ fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
     }
 }
 
-/// Compare a boolean field value against the filter value.
+/// Compare a boolean field value `field_val` against the filter value.
+/// Only `==`/`!=` are meaningful; ordering operators, `=~`, and
+/// non-boolean literals return `false`.
 fn compare_bool(field_val: bool, op: &Operator, value: &Value) -> bool {
     let rhs = match value {
         Value::Bool(b) => *b,
@@ -888,7 +1092,8 @@ fn compare_bool(field_val: bool, op: &Operator, value: &Value) -> bool {
     }
 }
 
-/// Convert a [`DialogState`] to its string representation for comparison.
+/// Convert a [`DialogState`] to its string representation for comparison
+/// against `state` field literals.
 fn state_to_str(state: &DialogState) -> &'static str {
     match state {
         DialogState::Trying => "Trying",
@@ -913,6 +1118,15 @@ fn state_to_str(state: &DialogState) -> &'static str {
 /// - jitter_penalty = jitter_ms (capped contribution)
 /// - loss_penalty = 2.5 * loss_pct
 /// - MOS = 1 + 0.035*R + R*(R-60)*(100-R)*7e-6 (for R > 0)
+///
+/// # Arguments
+///
+/// * `stream` — The RTP stream whose jitter and loss feed the estimate.
+///
+/// # Returns
+///
+/// The approximate MOS, floored at 1.0 (worst) with a practical ceiling
+/// near 4.4 for a clean stream.
 fn approximate_mos(stream: &RtpStream) -> f64 {
     let total = stream.packet_count + stream.lost_packets;
     let loss_pct = if total > 0 {
@@ -935,6 +1149,9 @@ fn approximate_mos(stream: &RtpStream) -> f64 {
 
 // ── Tests ───────────────────────────────────────────────────────────
 
+/// Unit tests for the filter DSL: field matching, operator precedence,
+/// regex and boolean values, nesting limits, parse-error rendering,
+/// diagnostic aliases, the comparators, and the MOS approximation.
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -948,16 +1165,22 @@ mod tests {
     use crate::sip::dialog::DialogState;
     use crate::sip::parser::parse_sip;
 
+    /// Fixed 127.0.0.1 address used as both source and destination of
+    /// every test message.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) so tests are
+    /// deterministic.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a dialog from a single request with the given From user, To
+    /// user, and method (User-Agent fixed to `TestUA/1.0`).
     fn make_dialog(from_user: &str, to_user: &str, method: &str) -> SipDialog {
         let raw = build_sip(
             &format!("{method} sip:{to_user}@example.com SIP/2.0"),
@@ -984,6 +1207,8 @@ mod tests {
         SipDialog::new(&msg).expect("should create dialog")
     }
 
+    /// Build an INVITE dialog whose timing yields a post-dial delay of
+    /// `pdd_ms` milliseconds.
     fn make_dialog_with_timing(pdd_ms: i64) -> SipDialog {
         let mut dialog = make_dialog("1001", "2002", "INVITE");
         dialog.timing.invite_sent = Some(base_ts());
@@ -991,6 +1216,8 @@ mod tests {
         dialog
     }
 
+    /// Build a one-packet RTP stream (SSRC 0xDEADBEEF) with the given
+    /// orphaned flag.
     fn make_rtp_stream(orphaned: bool) -> RtpStream {
         let key = StreamKey {
             ssrc: 0xDEADBEEF,
@@ -1016,6 +1243,7 @@ mod tests {
 
     // ── Basic field matching ────────────────────────────────────────
 
+    /// `from.user ==` matches a dialog with that exact From user.
     #[test]
     fn from_user_equals_match() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1023,6 +1251,9 @@ mod tests {
         assert!(filter.matches_dialog(&dialog, &[]));
     }
 
+    /// `payload` greps the raw text of every message: regex matches
+    /// content anywhere in the message, and equality never panics on
+    /// lossily-decoded bytes.
     #[test]
     fn payload_field_matches_raw_message_content() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1037,6 +1268,7 @@ mod tests {
         assert!(!f.matches_dialog(&dialog, &[]));
     }
 
+    /// `from.user ==` rejects a dialog with a different From user.
     #[test]
     fn from_user_equals_no_match() {
         let dialog = make_dialog("2002", "1001", "INVITE");
@@ -1046,6 +1278,8 @@ mod tests {
 
     // ── AND + NOT ───────────────────────────────────────────────────
 
+    /// `AND` combined with `NOT ua =~` matches when the UA does not match
+    /// the regex.
     #[test]
     fn method_and_not_ua_regex() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1057,6 +1291,7 @@ mod tests {
 
     // ── PDD in seconds ─────────────────────────────────────────────
 
+    /// `pdd` compares in seconds: a 4000 ms PDD satisfies `pdd > 3.0`.
     #[test]
     fn pdd_greater_than() {
         // PDD of 4000ms = 4.0 seconds, filter asks > 3.0
@@ -1065,6 +1300,7 @@ mod tests {
         assert!(filter.matches_dialog(&dialog, &[]));
     }
 
+    /// A 2000 ms PDD does not satisfy `pdd > 3.0`.
     #[test]
     fn pdd_not_greater_than() {
         // PDD of 2000ms = 2.0 seconds, filter asks > 3.0
@@ -1075,6 +1311,8 @@ mod tests {
 
     // ── RTP orphaned boolean ────────────────────────────────────────
 
+    /// `rtp.orphaned == true` matches when an associated stream is
+    /// orphaned.
     #[test]
     fn rtp_orphaned_true() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1084,6 +1322,8 @@ mod tests {
         assert!(filter.matches_dialog(&dialog, &streams));
     }
 
+    /// `rtp.orphaned == true` rejects when no associated stream is
+    /// orphaned.
     #[test]
     fn rtp_orphaned_false() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1095,6 +1335,8 @@ mod tests {
 
     // ── Boolean operator precedence ─────────────────────────────────
 
+    /// Explicit parentheses change the result: `(A OR B) AND C` differs
+    /// from `A OR (B AND C)` on the same dialog.
     #[test]
     fn precedence_or_and() {
         // (A OR B) AND C  vs  A OR (B AND C)
@@ -1118,6 +1360,7 @@ mod tests {
         assert!(filter_grouped_and.matches_dialog(&dialog, &[]));
     }
 
+    /// Without parentheses, `AND` binds tighter than `OR`.
     #[test]
     fn default_precedence_and_binds_tighter() {
         // Without parens: A OR B AND C
@@ -1135,6 +1378,7 @@ mod tests {
 
     // ── Regex matching ──────────────────────────────────────────────
 
+    /// `=~` matches when the field value satisfies the regex.
     #[test]
     fn regex_match_accepts() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1142,6 +1386,7 @@ mod tests {
         assert!(filter.matches_dialog(&dialog, &[]));
     }
 
+    /// `=~` rejects when the field value does not satisfy the regex.
     #[test]
     fn regex_match_rejects() {
         let dialog = make_dialog("2001", "3003", "INVITE");
@@ -1151,6 +1396,8 @@ mod tests {
 
     // ── Nesting depth limit ─────────────────────────────────────────
 
+    /// Parenthesis nesting past the limit fails to parse with a
+    /// nesting-depth error.
     #[test]
     fn nesting_depth_exceeded() {
         let open_parens = "(".repeat(60);
@@ -1165,6 +1412,7 @@ mod tests {
         );
     }
 
+    /// Nesting well within the limit (10 levels) parses fine.
     #[test]
     fn nesting_within_limit() {
         // 10 levels should be fine
@@ -1177,12 +1425,15 @@ mod tests {
 
     // ── Parse errors ────────────────────────────────────────────────
 
+    /// An expression ending after the operator (missing value) fails to
+    /// parse.
     #[test]
     fn parse_error_missing_value() {
         let result = FilterExpr::parse("from.user ==");
         assert!(result.is_err());
     }
 
+    /// An empty expression fails to parse with an "empty" error message.
     #[test]
     fn parse_error_empty_input() {
         let result = FilterExpr::parse("");
@@ -1194,12 +1445,14 @@ mod tests {
         );
     }
 
+    /// A whitespace-only expression fails to parse.
     #[test]
     fn parse_error_whitespace_only() {
         let result = FilterExpr::parse("   ");
         assert!(result.is_err());
     }
 
+    /// A comparison on an unknown field name fails to parse.
     #[test]
     fn parse_error_unknown_field() {
         let result = FilterExpr::parse("bogus_field == '1001'");
@@ -1208,6 +1461,8 @@ mod tests {
 
     // ── Rich parse-error rendering ──────────────────────────────────
 
+    /// The rendered parse error echoes the expression with a caret
+    /// aligned under the offending token.
     #[test]
     fn parse_error_shows_expression_with_caret_at_position() {
         let err = FilterExpr::parse("method == INVITE")
@@ -1231,6 +1486,8 @@ mod tests {
         );
     }
 
+    /// An unquoted string value produces a quoting hint showing the
+    /// corrected form.
     #[test]
     fn parse_error_hints_quoting_for_unquoted_value() {
         let err = FilterExpr::parse("method == INVITE")
@@ -1246,6 +1503,7 @@ mod tests {
         );
     }
 
+    /// Every rendered parse error lists the valid operators.
     #[test]
     fn parse_error_lists_operators() {
         let err = FilterExpr::parse("from.user @@ 'alice'")
@@ -1257,6 +1515,8 @@ mod tests {
         );
     }
 
+    /// Caret column math counts characters, not bytes, so a multibyte
+    /// prefix does not misplace the caret.
     #[test]
     fn parse_error_caret_correct_with_multibyte_prefix() {
         // 'é' is 2 bytes / 1 column: caret math must use chars, not bytes.
@@ -1282,6 +1542,8 @@ mod tests {
         );
     }
 
+    /// Very long expressions are windowed around the error position so
+    /// the diagnostic lines stay readable, caret included.
     #[test]
     fn parse_error_long_input_is_windowed_not_panicking() {
         let long = format!("from.user == '{}' and method == INVITE", "x".repeat(200));
@@ -1295,6 +1557,7 @@ mod tests {
 
     // ── Diagnostic aliases ──────────────────────────────────────────
 
+    /// Every documented alias expands to an expression that parses.
     #[test]
     fn all_aliases_expand_and_parse() {
         let aliases = [
@@ -1321,6 +1584,7 @@ mod tests {
         }
     }
 
+    /// expand_alias returns None for an unrecognized alias.
     #[test]
     fn unknown_alias_returns_none() {
         assert!(expand_alias("nonexistent").is_none());
@@ -1328,6 +1592,8 @@ mod tests {
 
     // ── Double-quoted strings ───────────────────────────────────────
 
+    /// Double-quoted string values parse and match like single-quoted
+    /// ones.
     #[test]
     fn double_quoted_string() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1337,6 +1603,8 @@ mod tests {
 
     // ── State comparison ────────────────────────────────────────────
 
+    /// `state ==` matches the dialog's current state name and rejects
+    /// others.
     #[test]
     fn state_comparison() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1350,6 +1618,7 @@ mod tests {
 
     // ── Dialog state with Failed ────────────────────────────────────
 
+    /// A dialog driven to Failed by a 503 matches `state == 'Failed'`.
     #[test]
     fn failed_state() {
         let mut dialog = make_dialog("1001", "2002", "INVITE");
@@ -1383,6 +1652,8 @@ mod tests {
 
     // ── Complex compound expression ─────────────────────────────────
 
+    /// A compound expression mixing AND, parentheses, and OR evaluates
+    /// correctly.
     #[test]
     fn complex_compound_expr() {
         let dialog = make_dialog_with_timing(4000);
@@ -1393,6 +1664,7 @@ mod tests {
 
     // ── Msg count ───────────────────────────────────────────────────
 
+    /// `msg_count` reflects the number of stored messages.
     #[test]
     fn msg_count() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1406,6 +1678,7 @@ mod tests {
 
     // ── RTP packets count ───────────────────────────────────────────
 
+    /// `rtp.packets` sums packet counts across associated streams.
     #[test]
     fn rtp_packets_count() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1418,6 +1691,7 @@ mod tests {
 
     // ── Retransmits ─────────────────────────────────────────────────
 
+    /// `retransmits` compares against the dialog's total retransmit count.
     #[test]
     fn retransmits_comparison() {
         let mut dialog = make_dialog("1001", "2002", "INVITE");
@@ -1431,6 +1705,7 @@ mod tests {
 
     // ── Not-equal operator ──────────────────────────────────────────
 
+    /// `!=` matches when the field value differs from the literal.
     #[test]
     fn not_equal_operator() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1440,6 +1715,7 @@ mod tests {
 
     // ── Integer numeric values ──────────────────────────────────────
 
+    /// Integer literals (no decimal point) parse as numbers.
     #[test]
     fn integer_numeric_value() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1449,6 +1725,7 @@ mod tests {
 
     // ── expand_alias: every alias maps to its documented expression ─────
 
+    /// Each alias expands to exactly its documented DSL expression.
     #[test]
     fn expand_alias_returns_exact_expansions() {
         assert!(
@@ -1476,6 +1753,8 @@ mod tests {
         assert_eq!(expand_alias("late-media"), Some("late_media == true"));
     }
 
+    /// Alias matching is exact and case-sensitive; near-misses return
+    /// None.
     #[test]
     fn expand_alias_empty_and_case_sensitive_are_none() {
         // Alias matching is exact and case-sensitive.
@@ -1487,6 +1766,7 @@ mod tests {
 
     // ── check_nesting_depth: boundary behaviour ─────────────────────────
 
+    /// Exactly 50 nested parens passes the depth check; 51 fails it.
     #[test]
     fn nesting_depth_exactly_at_limit_ok() {
         // Exactly MAX_NESTING_DEPTH (50) open parens is allowed; 51 is not.
@@ -1499,6 +1779,8 @@ mod tests {
         assert!(err.contains("nesting depth"), "got: {err}");
     }
 
+    /// Leading close-parens saturate the depth at zero instead of
+    /// underflowing.
     #[test]
     fn nesting_depth_unbalanced_close_parens_saturates() {
         // Leading ')' must not underflow; depth saturates at 0.
@@ -1507,6 +1789,8 @@ mod tests {
 
     // ── render_parse_error: direct unit coverage ────────────────────────
 
+    /// render_parse_error emits the headline, echoed expression, caret,
+    /// operator list, and docs pointer.
     #[test]
     fn render_parse_error_basic_caret_and_footer() {
         let expr = "from.user == 'x'";
@@ -1518,6 +1802,8 @@ mod tests {
         assert!(out.contains("docs/filter-dsl.md"));
     }
 
+    /// A position at end-of-string yields no offending token, so the
+    /// ": '...'" suffix is omitted.
     #[test]
     fn render_parse_error_empty_offending_omits_token() {
         // pos at end-of-string => no offending token => no ": '...'" suffix.
@@ -1528,6 +1814,8 @@ mod tests {
         assert!(!header.contains(": '"), "got: {header}");
     }
 
+    /// Keyword values like `true` after an operator do not trigger the
+    /// quoting hint.
     #[test]
     fn render_parse_error_no_quote_hint_for_keyword_value() {
         // "true" after an operator is a valid boolean, so no quoting hint.
@@ -1535,6 +1823,8 @@ mod tests {
         assert!(!out.contains("must be quoted"), "got: {out}");
     }
 
+    /// An out-of-range error position is clamped to the input length
+    /// instead of panicking.
     #[test]
     fn render_parse_error_pos_past_end_is_clamped() {
         // An out-of-range position must not panic; it is clamped to len.
@@ -1545,6 +1835,7 @@ mod tests {
 
     // ── parse_value / parse_operator error arms via FilterExpr::parse ───
 
+    /// A string literal with no closing quote fails to parse.
     #[test]
     fn parse_unterminated_string_errors() {
         // Missing closing quote hits the ErrorKind::Char failure arm.
@@ -1552,6 +1843,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// An `=~` value that fails regex compilation fails to parse.
     #[test]
     fn parse_invalid_regex_errors() {
         // An unbalanced group fails RegexBuilder::build -> Verify failure arm.
@@ -1559,6 +1851,8 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// A bare unquoted word where a number or string is expected fails to
+    /// parse.
     #[test]
     fn parse_non_numeric_value_for_number_errors() {
         // A bare unquoted word where a number/string is expected.
@@ -1566,12 +1860,15 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// An unknown operator token fails to parse.
     #[test]
     fn parse_unknown_operator_errors() {
         let result = FilterExpr::parse("from.user ?? '1001'");
         assert!(result.is_err());
     }
 
+    /// Unparsed trailing input after a valid expression fails with a
+    /// "trailing" error.
     #[test]
     fn parse_trailing_input_errors() {
         let result = FilterExpr::parse("from.user == '1001' garbage");
@@ -1580,6 +1877,7 @@ mod tests {
         assert!(err.contains("trailing"), "got: {err}");
     }
 
+    /// The `false` boolean literal parses and evaluates correctly.
     #[test]
     fn parse_false_boolean_literal() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1588,6 +1886,8 @@ mod tests {
         assert!(filter.matches_dialog(&dialog, &[]));
     }
 
+    /// A partial method selection (OR of method equalities) hides dialogs
+    /// whose method is not listed and shows those that are.
     #[test]
     fn partial_method_filter_excludes_unlisted_method() {
         // C1: a dialog whose initial method is not one of the filter checkboxes
@@ -1606,6 +1906,7 @@ mod tests {
         assert!(partial.matches_dialog(&invite, &[]));
     }
 
+    /// FilterExpr::never() rejects every dialog regardless of method.
     #[test]
     fn never_matches_no_dialog() {
         // `FilterExpr::never()` represents "show nothing" — it must reject every
@@ -1622,6 +1923,8 @@ mod tests {
 
     // ── compare_str: every operator + type mismatch ─────────────────────
 
+    /// compare_str handles every operator, including lexicographic
+    /// ordering and regex matching.
     #[test]
     fn compare_str_all_operators() {
         assert!(compare_str("b", &Operator::Eq, &Value::Str("b".into())));
@@ -1635,6 +1938,8 @@ mod tests {
         assert!(compare_str("bee", &Operator::Regex, &Value::Re(re)));
     }
 
+    /// compare_str returns false for non-string literals and for `=~`
+    /// without a compiled regex.
     #[test]
     fn compare_str_type_mismatch_is_false() {
         // String field compared against a numeric/bool literal => false.
@@ -1646,6 +1951,8 @@ mod tests {
 
     // ── compare_num: every operator + type mismatch ─────────────────────
 
+    /// compare_num handles every ordering operator; regex is never
+    /// applicable to numbers.
     #[test]
     fn compare_num_all_operators() {
         assert!(compare_num(3.0, &Operator::Eq, &Value::Num(3.0)));
@@ -1659,6 +1966,7 @@ mod tests {
         assert!(!compare_num(3.0, &Operator::Regex, &Value::Num(3.0)));
     }
 
+    /// compare_num returns false for non-numeric literals.
     #[test]
     fn compare_num_type_mismatch_is_false() {
         assert!(!compare_num(3.0, &Operator::Eq, &Value::Str("3".into())));
@@ -1667,6 +1975,8 @@ mod tests {
 
     // ── compare_bool: operators + type mismatch ─────────────────────────
 
+    /// compare_bool supports only ==/!=; ordering and regex operators
+    /// return false.
     #[test]
     fn compare_bool_eq_ne_and_unsupported_operators() {
         assert!(compare_bool(true, &Operator::Eq, &Value::Bool(true)));
@@ -1680,6 +1990,7 @@ mod tests {
         assert!(!compare_bool(true, &Operator::Regex, &Value::Bool(true)));
     }
 
+    /// compare_bool returns false for non-boolean literals.
     #[test]
     fn compare_bool_type_mismatch_is_false() {
         assert!(!compare_bool(true, &Operator::Eq, &Value::Num(1.0)));
@@ -1692,6 +2003,7 @@ mod tests {
 
     // ── state_to_str: all DialogState variants ──────────────────────────
 
+    /// state_to_str maps every DialogState variant to its expected name.
     #[test]
     fn state_to_str_covers_all_variants() {
         let cases = [
@@ -1715,6 +2027,7 @@ mod tests {
 
     // ── approximate_mos ─────────────────────────────────────────────────
 
+    /// A clean stream (no loss, no jitter) scores a MOS in the ~4.4 range.
     #[test]
     fn approximate_mos_clean_stream_is_high() {
         // No loss, no jitter => R near 93 => MOS in the ~4.4 range.
@@ -1723,6 +2036,8 @@ mod tests {
         assert!(mos > 4.0 && mos <= 4.5, "got {mos}");
     }
 
+    /// Heavy jitter and loss lower the MOS below a clean stream's, but
+    /// never below the 1.0 floor.
     #[test]
     fn approximate_mos_degrades_with_jitter_and_loss() {
         let mut stream = make_rtp_stream(false);
@@ -1735,6 +2050,7 @@ mod tests {
         assert!(degraded >= 1.0, "MOS floor is 1.0, got {degraded}");
     }
 
+    /// Worst-case jitter and loss floor the MOS at exactly 1.0.
     #[test]
     fn approximate_mos_worst_case_floored_at_one() {
         let mut stream = make_rtp_stream(false);
@@ -1744,6 +2060,8 @@ mod tests {
         assert!((mos - 1.0).abs() < 1e-9, "expected floor 1.0, got {mos}");
     }
 
+    /// Zero packets means zero loss percentage (no division by zero) and
+    /// a high MOS.
     #[test]
     fn approximate_mos_no_packets_no_loss() {
         // total == 0 path: loss_pct stays 0.0, no division by zero.
@@ -1756,6 +2074,8 @@ mod tests {
 
     // ── eval_compare numeric field paths via matches_dialog ─────────────
 
+    /// rtp.mos, rtp.jitter, and rtp.loss evaluate against the worst value
+    /// across the associated streams.
     #[test]
     fn rtp_mos_loss_jitter_fields_evaluate() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1777,6 +2097,8 @@ mod tests {
         assert!(loss_filter.matches_dialog(&dialog, &streams));
     }
 
+    /// rtp.codec matches the first stream codec; rtp.ssrc matches the
+    /// 0x-prefixed lowercase hex rendering.
     #[test]
     fn rtp_codec_and_ssrc_string_fields() {
         let dialog = make_dialog("1001", "2002", "INVITE");
@@ -1793,6 +2115,8 @@ mod tests {
     }
 }
 
+/// Tests for the unknown-field diagnostic: naming the field, suggesting
+/// the closest valid one, and keeping FIELD_NAMES in sync with the parser.
 #[cfg(test)]
 mod unknown_field_hint_tests {
     use super::*;
@@ -1844,6 +2168,8 @@ mod unknown_field_hint_tests {
     }
 }
 
+/// Regression tests proving parse-error rendering is total on adversarial
+/// (multibyte, odd-whitespace) input.
 #[cfg(test)]
 mod parse_error_render_robustness_tests {
     use super::*;

@@ -31,9 +31,13 @@ const MAX_TCP_BUFFER: usize = 65536;
 /// Key identifying a unique IP datagram for fragment reassembly.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FragmentKey {
+    /// Source IP address.
     src: IpAddr,
+    /// Destination IP address.
     dst: IpAddr,
+    /// IP identification field shared by all fragments of the datagram.
     ip_id: u32,
+    /// IP protocol number (e.g. 6 = TCP, 17 = UDP).
     protocol: u8,
 }
 
@@ -53,8 +57,11 @@ struct FragmentEntry {
 /// enforces a maximum entry count, a per-entry TTL, a maximum reassembled
 /// size of 64 KB, and detects overlapping fragments as an evasion indicator.
 pub struct FragmentReassembler {
+    /// In-progress reassemblies keyed by (src, dst, ip_id, protocol).
     entries: HashMap<FragmentKey, FragmentEntry>,
+    /// Entry cap; reaching it triggers batched oldest-first eviction.
     max_entries: usize,
+    /// Age at which an incomplete entry is swept.
     ttl: Duration,
 }
 
@@ -88,6 +95,17 @@ impl FragmentReassembler {
     /// - Overlapping fragments cause the entire entry to be dropped (evasion detection).
     /// - Reassembled size exceeding 64 KB causes the entry to be dropped.
     /// - When the entry cap is reached, the oldest entry is evicted.
+    ///
+    /// # Arguments
+    ///
+    /// * `parsed` - the fragment; its `fragment_offset` (8-byte units),
+    ///   `more_fragments`, `ip_id`, addresses, and payload are consumed.
+    ///   Packets without an `ip_id` return `None` immediately.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the entry map (insert/remove/evict) and logs overlaps,
+    /// oversize drops, and completions via tracing.
     pub fn insert(&mut self, parsed: &ParsedPacket) -> Option<Vec<u8>> {
         let ip_id = parsed.ip_id?;
         let frag_offset = parsed.fragment_offset.unwrap_or(0);
@@ -239,6 +257,7 @@ impl FragmentReassembler {
 }
 
 impl Default for FragmentReassembler {
+    /// Equivalent to `FragmentReassembler::new()` (default cap and TTL).
     fn default() -> Self {
         Self::new()
     }
@@ -251,7 +270,9 @@ impl Default for FragmentReassembler {
 /// Key identifying a TCP stream direction.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TcpStreamKey {
+    /// Sender socket address of this direction.
     src: SocketAddr,
+    /// Receiver socket address of this direction.
     dst: SocketAddr,
 }
 
@@ -284,8 +305,11 @@ struct TcpStream {
 /// out-of-order segments. Flushes reassembled data on PSH flag,
 /// connection close (FIN/RST), or buffer overflow.
 pub struct TcpReassembler {
+    /// Tracked stream directions keyed by (src, dst).
     streams: HashMap<TcpStreamKey, TcpStream>,
+    /// Stream cap; reaching it triggers batched oldest-first eviction.
     max_entries: usize,
+    /// Idle age (since `last_seen`) at which a stream is swept.
     ttl: Duration,
 }
 
@@ -322,6 +346,18 @@ impl TcpReassembler {
     /// - **RST flag:** discards the stream entirely (returns empty).
     /// - **Buffer overflow (>64 KB):** forces a flush.
     /// - **SYN flag:** initializes or resets the stream's expected sequence.
+    ///
+    /// # Arguments
+    ///
+    /// * `parsed` - the segment; its `tcp_flags`, `tcp_seq`, addresses,
+    ///   ports, and payload are consumed. Packets without flags or a
+    ///   sequence number return empty immediately.
+    ///
+    /// # Side effects
+    ///
+    /// Mutates the stream map (creating, updating, evicting, or removing
+    /// streams), updates per-stream buffers/counters/`last_seen`, and logs
+    /// RST discards and overflow flushes at debug level.
     pub fn insert(&mut self, parsed: &ParsedPacket) -> Vec<Vec<u8>> {
         let flags = match &parsed.tcp_flags {
             Some(f) => f,
@@ -454,7 +490,15 @@ impl TcpReassembler {
     /// Drain consecutive in-order segments from a stream's buffer.
     ///
     /// Returns the concatenated payload of all segments starting from
-    /// `expected_seq`, advancing it past each drained segment.
+    /// `expected_seq`, advancing it past each drained segment. Duplicate /
+    /// retransmitted segments (sequence below `expected_seq`) are discarded;
+    /// draining stops at the first gap. Empty when `key` is untracked or
+    /// nothing is in order yet.
+    ///
+    /// # Side effects
+    ///
+    /// Removes consumed segments from the stream's buffer and updates its
+    /// `expected_seq` and `buffered_bytes`.
     fn drain_in_order(&mut self, key: &TcpStreamKey) -> Vec<u8> {
         let stream = match self.streams.get_mut(key) {
             Some(s) => s,
@@ -544,6 +588,7 @@ impl TcpReassembler {
 }
 
 impl Default for TcpReassembler {
+    /// Equivalent to `TcpReassembler::new()` (default cap and TTL).
     fn default() -> Self {
         Self::new()
     }
@@ -551,6 +596,8 @@ impl Default for TcpReassembler {
 
 // ── Tests ─────────────────────────────────────────────────────────────
 
+/// Tests for IP-fragment and TCP-segment reassembly: ordering, overlap and
+/// oversize defenses, TTL sweeps, and capacity eviction.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,6 +660,7 @@ mod tests {
         }
     }
 
+    /// ACK-only flags (no SYN/FIN/RST/PSH) for plain data segments.
     fn default_tcp_flags() -> TcpFlags {
         TcpFlags {
             syn: false,
@@ -623,6 +671,8 @@ mod tests {
         }
     }
 
+    /// A PSH that stalls on a sequence gap must flush when a later
+    /// out-of-order segment fills the gap, not stay buffered forever.
     #[test]
     fn tcp_psh_on_final_segment_arriving_first_flushes_when_gap_fills() {
         // Real-world out-of-order: the FINAL segment (carrying PSH) arrives
@@ -675,6 +725,8 @@ mod tests {
         );
     }
 
+    /// TCP stream eviction at capacity is batched (cap/100), mirroring the
+    /// fragment reassembler's anti-flood behavior.
     #[test]
     fn tcp_eviction_batches_at_large_cap() {
         let mut r = TcpReassembler::with_limits(1000, DEFAULT_TTL);
@@ -693,6 +745,8 @@ mod tests {
 
     // ── Fragment reassembly tests ─────────────────────────────────────
 
+    /// Two in-order fragments reassemble into the concatenated datagram and
+    /// the entry is removed.
     #[test]
     fn fragment_two_pieces_reassembled() {
         let mut r = FragmentReassembler::new();
@@ -713,6 +767,7 @@ mod tests {
         assert!(r.is_empty());
     }
 
+    /// Fragments arriving last-first still reassemble in offset order.
     #[test]
     fn fragment_out_of_order() {
         let mut r = FragmentReassembler::new();
@@ -732,6 +787,7 @@ mod tests {
         assert_eq!(&result[16..], &[0xBB; 8]);
     }
 
+    /// Overlapping fragments (an evasion indicator) drop the whole entry.
     #[test]
     fn fragment_overlapping_dropped() {
         let mut r = FragmentReassembler::new();
@@ -750,6 +806,7 @@ mod tests {
         assert!(r.is_empty());
     }
 
+    /// An incomplete entry older than the TTL is removed by `sweep`.
     #[test]
     fn fragment_timeout_evicted() {
         let mut r = FragmentReassembler::with_limits(100, Duration::from_millis(50));
@@ -767,6 +824,7 @@ mod tests {
         assert!(r.is_empty(), "stale entry should have been swept");
     }
 
+    /// A datagram whose declared total exceeds 64 KB is dropped entirely.
     #[test]
     fn fragment_oversized_dropped() {
         let mut r = FragmentReassembler::new();
@@ -786,6 +844,8 @@ mod tests {
         assert!(r.is_empty());
     }
 
+    /// At the entry cap, inserting a new key evicts the oldest so the count
+    /// never exceeds the cap.
     #[test]
     fn fragment_max_entries_evicts_oldest() {
         let mut r = FragmentReassembler::with_limits(2, DEFAULT_TTL);
@@ -807,6 +867,7 @@ mod tests {
 
     // ── TCP reassembly tests ─────────────────────────────────────────
 
+    /// Two in-order segments flush as one concatenated chunk on PSH.
     #[test]
     fn tcp_in_order_with_psh() {
         let mut r = TcpReassembler::new();
@@ -825,6 +886,8 @@ mod tests {
         assert_eq!(result[0], b"INVITE sip:bob@ex");
     }
 
+    /// A segment arriving before its predecessor is reordered before the
+    /// PSH flush.
     #[test]
     fn tcp_out_of_order_reordered() {
         let mut r = TcpReassembler::new();
@@ -843,6 +906,7 @@ mod tests {
         assert_eq!(result[0], b"helloworld");
     }
 
+    /// FIN flushes all buffered data and removes the stream.
     #[test]
     fn tcp_fin_flushes_remaining() {
         let mut r = TcpReassembler::new();
@@ -861,6 +925,7 @@ mod tests {
         assert!(r.is_empty(), "stream should be removed after FIN");
     }
 
+    /// RST discards the stream and returns nothing.
     #[test]
     fn tcp_rst_discards_stream() {
         let mut r = TcpReassembler::new();
@@ -879,6 +944,7 @@ mod tests {
         assert!(r.is_empty(), "stream should be discarded on RST");
     }
 
+    /// An idle stream older than the TTL is removed by `sweep`.
     #[test]
     fn tcp_timeout_evicted() {
         let mut r = TcpReassembler::with_limits(100, Duration::from_millis(50));
@@ -892,6 +958,8 @@ mod tests {
         assert!(r.is_empty(), "stale stream should be swept");
     }
 
+    /// At the stream cap, a new stream evicts the oldest so the count never
+    /// exceeds the cap.
     #[test]
     fn tcp_max_entries_evicts_oldest() {
         let mut r = TcpReassembler::with_limits(2, DEFAULT_TTL);

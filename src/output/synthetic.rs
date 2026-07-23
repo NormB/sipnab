@@ -11,6 +11,19 @@ use std::net::IpAddr;
 ///
 /// The link-layer type is DLT_EN10MB (1). IP addresses and ports come from
 /// the SipMessage metadata.
+///
+/// # Arguments
+///
+/// * `msg` — Source message; its `raw` bytes become the UDP payload and
+///   its addresses/ports/timestamp fill the headers.
+///
+/// # Returns
+///
+/// A `Packet` with zeroed MACs, DF flag, TTL 64, and zero IP/UDP
+/// checksums (readers skip verification). IPv6 addresses degrade to
+/// `0.0.0.0`; payloads longer than a u16 length field saturate the UDP/IP
+/// length fields at `u16::MAX` rather than panicking or truncating the
+/// data. Pure — nothing is written to disk here.
 pub fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packet {
     let payload = &msg.raw;
     // Saturate instead of silently truncating for large payloads
@@ -54,10 +67,13 @@ pub fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::P
     crate::capture::Packet::new(msg.timestamp, pkt, len, len, None, 1) // DLT_EN10MB
 }
 
+/// Test for u16 saturation on oversized payloads.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A 70 kB payload saturates the IP total-length field at `u16::MAX`
+    /// instead of panicking.
     #[test]
     fn build_synthetic_packet_large_payload_no_panic() {
         // Verify that a SIP message with a raw payload exceeding 65535 bytes

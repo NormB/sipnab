@@ -8,9 +8,21 @@ use std::process::Command;
 
 use sipnab::auth::{TokenVerifier, VerifierConfig};
 
+/// Crate-root-relative path to the 7-message SIP call fixture used by most
+/// tests here.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
 /// Run the binary from the crate root with a quiet, deterministic env; return stdout.
+///
+/// # Arguments
+/// * `args` — CLI arguments passed to the `sipnab` binary.
+///
+/// # Returns
+/// The process's stdout as UTF-8; panics if the process exits non-zero.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess with `SIPNAB_LOG=off`
+/// and `NO_COLOR=1`.
 fn run(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
@@ -27,6 +39,14 @@ fn run(args: &[&str]) -> String {
     String::from_utf8(out.stdout).expect("utf8")
 }
 
+/// Parses every line of `s` that starts with `{` as a JSON value (NDJSON
+/// message output).
+///
+/// # Arguments
+/// * `s` — raw stdout from a `--json` run.
+///
+/// # Returns
+/// The parsed JSON objects, one per emitted message.
 fn ndjson_lines(s: &str) -> Vec<serde_json::Value> {
     s.lines()
         .filter(|l| l.starts_with('{'))
@@ -34,6 +54,7 @@ fn ndjson_lines(s: &str) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// `--count 3` stops capture after 3 packets, yielding exactly 3 JSON messages.
 #[test]
 fn count_limits_message_output() {
     // --count N stops after N packets → at most N messages.
@@ -41,6 +62,8 @@ fn count_limits_message_output() {
     assert_eq!(msgs.len(), 3, "--count 3 must yield exactly 3 messages");
 }
 
+/// `--calls-only` still emits the fixture call, and every emitted message
+/// carries a `call_id` (no standalone messages).
 #[test]
 fn calls_only_emits_only_call_associated_messages() {
     // --calls-only suppresses standalone messages → every emitted message
@@ -55,6 +78,7 @@ fn calls_only_emits_only_call_associated_messages() {
     }
 }
 
+/// `--text-dump` output contains the raw SIP request line and Via header.
 #[test]
 fn text_dump_emits_raw_sip() {
     // --text-dump prints the raw SIP message text (request line + headers).
@@ -66,6 +90,8 @@ fn text_dump_emits_raw_sip() {
     assert!(out.contains("Via: SIP/2.0/UDP"), "raw headers expected");
 }
 
+/// `-O <file> --pcapng` writes a file starting with the PCAP-NG Section
+/// Header Block magic (0x0a0d0d0a).
 #[test]
 fn pcapng_output_writes_pcapng_magic() {
     // -O <file> --pcapng writes a PCAP-NG file (Section Header Block magic).
@@ -84,6 +110,8 @@ fn pcapng_output_writes_pcapng_magic() {
     assert_eq!(&bytes[..4], &[0x0a, 0x0d, 0x0d, 0x0a], "pcapng SHB magic");
 }
 
+/// A token minted via `--mint-token --api-signing-key-file --api-token-ttl 60`
+/// verifies now and is rejected at now+61.
 #[test]
 fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
     // --api-signing-key-file (key from a file) + --api-token-ttl (lifetime):
@@ -124,6 +152,8 @@ fn mint_with_api_signing_key_file_and_ttl_roundtrips_with_expiry() {
 
 // Minting from an MCP signing key needs the `mcp` feature (the MCP verifier
 // config is mcp-gated); only run this where mcp is compiled in.
+/// `--mint-token --mcp-signing-key-file` produces a well-formed `s1.` token
+/// with exactly two dot separators.
 #[cfg(feature = "mcp")]
 #[test]
 fn mint_with_mcp_signing_key_file_produces_token() {
@@ -150,6 +180,7 @@ fn mint_with_mcp_signing_key_file_produces_token() {
     );
 }
 
+/// `--limit 1` on a two-dialog fixture leaves exactly one dialog in the report.
 #[test]
 fn limit_caps_tracked_dialogs() {
     // --limit N caps the number of dialogs tracked. The RTP fixture has 2
@@ -175,6 +206,8 @@ fn limit_caps_tracked_dialogs() {
     assert_eq!(capped_rows, 1, "--limit 1 must keep exactly one dialog");
 }
 
+/// `--config <file>` is loaded: `--dump-config` reports the source and echoes
+/// the file's `payload_limit = 99` value.
 #[test]
 fn config_file_is_loaded() {
     // --config: the loader reads the file and --dump-config reflects it.
@@ -196,6 +229,8 @@ fn config_file_is_loaded() {
     );
 }
 
+/// `--bpf-file` applies the filter read from the file: a matching filter
+/// passes all 7 messages, a non-matching one passes zero.
 #[test]
 fn bpf_file_filters_from_a_file() {
     // --bpf-file: a matching filter passes all packets; a non-matching one
@@ -237,6 +272,8 @@ fn bpf_file_filters_from_a_file() {
     assert!(drop.is_empty(), "non-matching --bpf-file must pass none");
 }
 
+/// `--on-dialog-exec` runs the command when a dialog completes, proven by a
+/// `touch`-created marker file existing afterward.
 #[test]
 fn on_dialog_exec_runs_per_dialog() {
     // --on-dialog-exec: the command runs as dialogs complete. Use a command
@@ -256,6 +293,8 @@ fn on_dialog_exec_runs_per_dialog() {
     );
 }
 
+/// A wrong-case `--ua SIPNAB` matches nothing by default but matches the
+/// fixture's `sipnab-test/1.0` UA with `--ignore-case`.
 #[test]
 fn ignore_case_matches_case_insensitively() {
     // The fixture's User-Agent is "sipnab-test/1.0". A wrong-case --ua pattern
@@ -280,6 +319,8 @@ fn ignore_case_matches_case_insensitively() {
     );
 }
 
+/// `--from 1001` matches all 7 messages; adding `--invert` flips the match to
+/// zero messages.
 #[test]
 fn invert_shows_non_matching() {
     // Every message's From is 1001, so --from 1001 matches all; --invert flips
@@ -295,6 +336,8 @@ fn invert_shows_non_matching() {
     );
 }
 
+/// `--ua nab` matches as a substring but yields nothing with `--word`, since
+/// "nab" is not a whole word in `sipnab-test`.
 #[test]
 fn word_matches_whole_words_only() {
     // "nab" is a substring of the UA "sipnab-test" but not a whole word, so
@@ -307,6 +350,8 @@ fn word_matches_whole_words_only() {
     assert!(whole.is_empty(), "--word must require a whole-word match");
 }
 
+/// `--after 2` (grep `-A` style) adds the two messages following the single
+/// UA match, growing output from 1 to 3 messages.
 #[test]
 fn after_shows_trailing_context() {
     // --after N is grep -A: N messages after each match. The UA appears on one
@@ -319,6 +364,7 @@ fn after_shows_trailing_context() {
     assert_eq!(with_after.len(), 3, "--after 2 adds two trailing messages");
 }
 
+/// The `--tag` value appears in the report's Tags column.
 #[test]
 fn tag_labels_dialogs() {
     // --tag applies the given tag to dialogs; it shows in the report Tags column.

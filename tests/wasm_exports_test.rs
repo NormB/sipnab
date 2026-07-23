@@ -4,6 +4,8 @@
 //! public API function name is present. Catches stale WASM builds where
 //! new Rust functions were added but wasm-pack wasn't re-run.
 
+/// The generated `website/static/wasm/sipnab.js` contains every required
+/// public API function name; skips (with a note) when WASM is not built.
 #[test]
 fn wasm_js_exports_all_required_functions() {
     let js_path = std::path::Path::new("website/static/wasm/sipnab.js");

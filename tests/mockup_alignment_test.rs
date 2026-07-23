@@ -84,6 +84,13 @@ fn extract_terminal_blocks(text: &str) -> Vec<(usize, Vec<String>)> {
 }
 
 /// Display-column positions of `needles` occurrences in a rendered line.
+///
+/// # Arguments
+/// * `line` — rendered (tag-stripped) mockup line.
+/// * `needles` — characters to locate.
+///
+/// # Returns
+/// `(char, display_column)` pairs in order of appearance.
 fn columns_of(line: &str, needles: &[char]) -> Vec<(char, usize)> {
     let mut col = 0;
     let mut hits = Vec::new();
@@ -96,9 +103,17 @@ fn columns_of(line: &str, needles: &[char]) -> Vec<(char, usize)> {
     hits
 }
 
+/// The Unicode box-drawing characters the alignment checker tracks.
 const BOX_CHARS: &[char] = &['┌', '┐', '└', '┘', '│', '├', '┤'];
 
 /// Check one rendered mockup block; returns human-readable violations.
+///
+/// # Arguments
+/// * `lines` — the block's rendered lines.
+///
+/// # Returns
+/// One message per box-outline or pipe-ladder alignment violation; empty when
+/// the block is aligned.
 fn check_block(lines: &[String]) -> Vec<String> {
     let mut violations = Vec::new();
     let hits: Vec<Vec<(char, usize)>> = lines.iter().map(|l| columns_of(l, BOX_CHARS)).collect();
@@ -191,10 +206,13 @@ fn check_block(lines: &[String]) -> Vec<String> {
 // Fixture tests — the checker must accept aligned art and reject misaligned.
 // ---------------------------------------------------------------------------
 
+/// Renders a fixture block: splits into lines and strips HTML like the
+/// real extractor does.
 fn render(block: &str) -> Vec<String> {
     block.lines().map(strip_html).collect()
 }
 
+/// `strip_html` drops tags, unescapes known entities, keeps unknown/unterminated ones verbatim, and handles empty input.
 #[test]
 fn strip_html_removes_tags_and_unescapes_entities() {
     assert_eq!(
@@ -216,6 +234,7 @@ fn strip_html_removes_tags_and_unescapes_entities() {
 // following line's leading whitespace (only the first line is affected —
 // which silently shifts a box's top border).
 
+/// A correctly aligned Unicode box (with interior pipes and HTML tags) yields no violations.
 #[test]
 fn aligned_box_passes() {
     let block = "\
@@ -228,6 +247,7 @@ fn aligned_box_passes() {
     assert!(v.is_empty(), "expected no violations, got: {v:?}");
 }
 
+/// A right border shifted by one column is reported as a violation.
 #[test]
 fn box_with_shifted_right_border_fails() {
     let block = "\
@@ -240,6 +260,7 @@ fn box_with_shifted_right_border_fails() {
     );
 }
 
+/// A bottom-left corner off the top corner's column is reported.
 #[test]
 fn box_with_mismatched_bottom_corner_fails() {
     let block = "\
@@ -252,6 +273,7 @@ fn box_with_mismatched_bottom_corner_fails() {
     );
 }
 
+/// An interior line missing its box-border verticals is reported.
 #[test]
 fn box_interior_line_missing_border_fails() {
     let block = "\
@@ -265,6 +287,7 @@ fn box_interior_line_missing_border_fails() {
     );
 }
 
+/// An HTML entity (`&gt;`) counts as one display column, so the box still aligns.
 #[test]
 fn entity_width_counts_one_column() {
     // `&gt;` renders as one column; treating it as 4 shifts the border.
@@ -276,6 +299,7 @@ fn entity_width_counts_one_column() {
     assert!(v.is_empty(), "entity must count 1 column, got: {v:?}");
 }
 
+/// An ASCII pipe ladder with all pipes on lifeline columns yields no violations.
 #[test]
 fn aligned_ladder_passes() {
     let block = "\
@@ -288,6 +312,7 @@ a               b               c
     assert!(v.is_empty(), "expected no violations, got: {v:?}");
 }
 
+/// A pipe one column off the lifelines is reported.
 #[test]
 fn ladder_with_off_column_pipe_fails() {
     let block = "\
@@ -301,6 +326,7 @@ a               b               c
     );
 }
 
+/// CJK glyphs count 2 display columns, so a line using them still lands the borders correctly.
 #[test]
 fn wide_glyphs_count_two_columns() {
     // CJK '実' is width 2 — a line using it must still land borders on the
@@ -314,6 +340,7 @@ fn wide_glyphs_count_two_columns() {
     assert!(v.is_empty(), "wide glyphs must count 2 columns, got: {v:?}");
 }
 
+/// Blocks with no box art and fewer than 3 pipe lines (tables, raw SIP) pass unchecked.
 #[test]
 fn plain_text_block_has_no_violations() {
     // Blocks with no box chars and <3 pipe lines (tables, raw SIP) pass.
@@ -328,6 +355,7 @@ Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK
 // Real content — every terminal-body mockup shipped on the site.
 // ---------------------------------------------------------------------------
 
+/// Every terminal-body mockup shipped on the site passes `check_block`, and at least 8 blocks are found (extractor liveness check).
 #[test]
 fn website_terminal_mockups_are_aligned() {
     let sources: &[(&str, &str)] = &[

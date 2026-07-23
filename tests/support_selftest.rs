@@ -9,22 +9,26 @@ mod support;
 
 use support::normalize;
 
+/// An RFC3339 Z-suffixed timestamp is replaced with `<TS>`.
 #[test]
 fn scrubs_rfc3339_timestamp() {
     assert_eq!(normalize("at 2024-06-15T12:00:00Z done"), "at <TS> done");
 }
 
+/// A timestamp with fractional seconds and a numeric offset is fully replaced with `<TS>`.
 #[test]
 fn scrubs_timestamp_with_fraction_and_offset() {
     assert_eq!(normalize("2024-06-15T12:00:00.123456+02:00"), "<TS>");
 }
 
+/// A fail2ban-style space-separated timestamp is replaced with `<TS>`.
 #[test]
 fn scrubs_space_separated_timestamp() {
     // fail2ban-style "%Y-%m-%d %H:%M:%S".
     assert_eq!(normalize("ban 2024-06-15 12:00:00 ip"), "ban <TS> ip");
 }
 
+/// Second and millisecond durations (with or without a space) become `<DUR>`.
 #[test]
 fn scrubs_durations_with_units() {
     assert_eq!(
@@ -33,23 +37,27 @@ fn scrubs_durations_with_units() {
     );
 }
 
+/// A `/tmp/...` path is replaced with `<TMP>`.
 #[test]
 fn scrubs_temp_paths() {
     assert_eq!(normalize("wrote /tmp/abc123/out.pcap ok"), "wrote <TMP> ok");
 }
 
+/// `pid=N` and `PID: N` both normalize to `pid=<PID>`.
 #[test]
 fn scrubs_pids_any_case() {
     assert_eq!(normalize("pid=12345"), "pid=<PID>");
     assert_eq!(normalize("PID: 678"), "pid=<PID>");
 }
 
+/// Loopback IPv4/IPv6 ports become `<PORT>` while the host part is kept.
 #[test]
 fn scrubs_loopback_ports_keeping_host() {
     assert_eq!(normalize("bound 127.0.0.1:54321"), "bound 127.0.0.1:<PORT>");
     assert_eq!(normalize("mcp [::1]:8731"), "mcp [::1]:<PORT>");
 }
 
+/// SIP URIs, version numbers, and codec clock-rates pass through unscrubbed.
 #[test]
 fn preserves_non_volatile_text() {
     // SIP, version numbers, and codec clock-rates must NOT be scrubbed.
@@ -57,17 +65,20 @@ fn preserves_non_volatile_text() {
     assert_eq!(normalize(s), s);
 }
 
+/// Normalizing an empty string yields an empty string.
 #[test]
 fn empty_input_is_empty() {
     assert_eq!(normalize(""), "");
 }
 
+/// Backslashes (Windows paths) survive normalization unchanged.
 #[test]
 fn backslashes_are_preserved() {
     let s = r"a\b\c windows\path";
     assert_eq!(normalize(s), s);
 }
 
+/// An embedded NUL byte is preserved and does not panic the normalizer.
 #[test]
 fn nul_byte_is_preserved_without_panic() {
     let out = normalize("a\u{0}b");
@@ -75,6 +86,7 @@ fn nul_byte_is_preserved_without_panic() {
     assert_eq!(out, "a\u{0}b");
 }
 
+/// `deterministic_env` stamps TZ=UTC, NO_COLOR=1, COLUMNS=120, LINES=40 onto a Command.
 #[test]
 fn deterministic_env_sets_contract_vars() {
     use std::ffi::OsStr;
@@ -90,6 +102,7 @@ fn deterministic_env_sets_contract_vars() {
     assert_eq!(envs.get(OsStr::new("LINES")).unwrap(), "40");
 }
 
+/// All volatile token classes on one line are scrubbed together in a single pass.
 #[test]
 fn multiple_tokens_on_one_line() {
     let input = "2024-06-15T12:00:00Z call took 0.05s via 127.0.0.1:5060 pid=42 -> /tmp/x";

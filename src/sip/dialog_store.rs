@@ -21,6 +21,16 @@ static MAX_MESSAGES_PER_DIALOG: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(DEFAULT_MAX_MESSAGES_PER_DIALOG);
 
 /// Set the per-dialog message limit from configuration. Call once at startup.
+///
+/// # Arguments
+///
+/// * `limit` — Maximum number of messages retained per dialog.
+///
+/// # Side effects
+///
+/// Stores `limit` into the process-wide `MAX_MESSAGES_PER_DIALOG` atomic
+/// (relaxed ordering), affecting every `DialogStore` in the process from
+/// the next message onward.
 pub fn set_max_messages_per_dialog(limit: usize) {
     MAX_MESSAGES_PER_DIALOG.store(limit, std::sync::atomic::Ordering::Relaxed);
 }
@@ -139,6 +149,11 @@ impl DialogStore {
     /// * `rotate` — If `true`, evict the oldest dialog when at capacity.
     ///   If `false`, new messages for unknown Call-IDs are silently dropped
     ///   when at capacity.
+    ///
+    /// # Returns
+    ///
+    /// An empty store (generation 0) with the default `X-Call-ID`
+    /// correlation header configured.
     pub fn new(max_dialogs: usize, rotate: bool) -> Self {
         Self {
             dialogs: IndexMap::with_capacity_and_hasher(
@@ -182,6 +197,23 @@ impl DialogStore {
     /// Intended to be called from the existing periodic sweep. Idempotent:
     /// a compacted dialog is skipped until it grows past the keep limit
     /// again.
+    ///
+    /// # Arguments
+    ///
+    /// * `now` — Current time; dialogs whose `updated_at` is more than
+    ///   `IDLE_COMPACT_AFTER` before `now` are considered idle.
+    ///
+    /// # Returns
+    ///
+    /// A `CompactStats` with the dialogs touched and messages evicted by
+    /// this sweep (all zero when nothing was idle or over the keep limit).
+    ///
+    /// # Side effects
+    ///
+    /// Drains the oldest messages of each idle dialog, releases the Vec's
+    /// excess capacity, adds to the lifetime `idle_messages_evicted`
+    /// counter, and bumps the generation counter (unconditionally, even
+    /// when nothing is compacted).
     pub fn compact_idle(&mut self, now: chrono::DateTime<chrono::Utc>) -> CompactStats {
         self.generation += 1;
         let mut stats = CompactStats::default();
@@ -222,6 +254,22 @@ impl DialogStore {
     /// 7. Evicts the oldest dialog if at capacity and `rotate` is enabled
     ///
     /// Messages without a Call-ID header are silently dropped.
+    ///
+    /// # Arguments
+    ///
+    /// * `msg` — The parsed SIP message to route (consumed; moved into the
+    ///   dialog's message list when under the per-dialog cap).
+    ///
+    /// # Side effects
+    ///
+    /// Bumps the generation counter unconditionally, then either mutates
+    /// the matched dialog in place (seen-CSeq set, retransmit counts,
+    /// state machine, timing, SDP timeline, REFER target, SIPREC
+    /// metadata, message list, `updated_at`) or inserts a new dialog —
+    /// possibly evicting the oldest batch first when at capacity with
+    /// `rotate` enabled. At capacity without `rotate`, messages for
+    /// unknown Call-IDs are dropped; updates to existing dialogs still
+    /// land.
     pub fn process_message(&mut self, mut msg: SipMessage) {
         self.generation += 1;
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -330,18 +378,27 @@ impl DialogStore {
         }
     }
 
-    /// Look up a dialog by Call-ID.
+    /// Look up a dialog by Call-ID; returns `None` when no dialog with
+    /// that Call-ID is tracked.
     pub fn get(&self, call_id: &str) -> Option<&SipDialog> {
         self.dialogs.get(call_id)
     }
 
-    /// Look up a dialog by Call-ID, returning a mutable reference.
+    /// Look up a dialog by Call-ID, returning a mutable reference, or
+    /// `None` when the Call-ID is unknown.
+    ///
+    /// # Side effects
+    ///
+    /// Bumps the generation counter — even on a miss — because the
+    /// handed-out reference may be used to mutate the dialog behind the
+    /// store's back.
     pub fn get_mut(&mut self, call_id: &str) -> Option<&mut SipDialog> {
         self.generation += 1;
         self.dialogs.get_mut(call_id)
     }
 
-    /// Iterate over all tracked dialogs.
+    /// Iterate over all tracked dialogs in insertion order (the TUI call
+    /// list's default sort order).
     pub fn iter(&self) -> impl Iterator<Item = &SipDialog> {
         self.dialogs.values()
     }
@@ -351,6 +408,17 @@ impl DialogStore {
     /// single worker and merging is a union. In the rare case the same Call-ID
     /// appears on two workers (signaling split across host pairs), keep the more
     /// complete reconstruction (more messages seen).
+    ///
+    /// # Arguments
+    ///
+    /// * `other` — The worker store to fold in (consumed).
+    ///
+    /// # Side effects
+    ///
+    /// Inserts `other`'s dialogs into `self` (replacing a same-Call-ID
+    /// dialog only when `other`'s copy has strictly more messages),
+    /// accumulates `other`'s lifetime idle-eviction counter, and bumps the
+    /// generation counter.
     pub fn merge(&mut self, other: DialogStore) {
         self.generation += 1;
         for (cid, dialog) in other.dialogs {
@@ -375,12 +443,27 @@ impl DialogStore {
     }
 
     /// Remove all dialogs from the store.
+    ///
+    /// # Side effects
+    ///
+    /// Drops every tracked dialog and bumps the generation counter. The
+    /// lifetime idle-eviction counter is NOT reset.
     pub fn clear(&mut self) {
         self.generation += 1;
         self.dialogs.clear();
     }
 
     /// Retain only dialogs for which `predicate` returns `true`.
+    ///
+    /// # Arguments
+    ///
+    /// * `predicate` — Keep-function evaluated once per dialog.
+    ///
+    /// # Side effects
+    ///
+    /// Removes non-matching dialogs (preserving insertion order of the
+    /// rest) and bumps the generation counter, even when nothing is
+    /// removed.
     pub fn retain<F>(&mut self, predicate: F)
     where
         F: Fn(&SipDialog) -> bool,
@@ -416,6 +499,15 @@ impl DialogStore {
     ///    and were created within 2 seconds of each other.
     ///
     /// Results are deduplicated (highest score wins) and sorted by score descending.
+    ///
+    /// # Arguments
+    ///
+    /// * `call_id` — Call-ID of the source dialog to correlate from.
+    ///
+    /// # Returns
+    ///
+    /// Borrowed correlation results, one per matching dialog; empty when
+    /// the Call-ID is unknown or nothing correlates.
     pub fn find_correlated_scored(&self, call_id: &str) -> Vec<CorrelationResult<'_>> {
         let dialog = match self.get(call_id) {
             Some(d) => d,
@@ -516,7 +608,9 @@ impl DialogStore {
     /// Find dialogs correlated to the given Call-ID via X-Call-ID headers,
     /// Via branch overlap, or timing heuristics.
     ///
-    /// Returns dialogs with a correlation score of at least 50.
+    /// Returns dialogs with a correlation score of at least 50 (currently
+    /// every strategy scores at least 50, so this keeps all scored
+    /// results); empty when the Call-ID is unknown or nothing correlates.
     pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
         self.find_correlated_scored(call_id)
             .into_iter()
@@ -535,28 +629,38 @@ impl DialogStore {
     /// (the TUI call list's default sort is store order). The store may
     /// briefly sit up to cap/100 below the cap; the cap remains a hard
     /// upper bound.
+    ///
+    /// # Side effects
+    ///
+    /// Removes up to `max_dialogs / 100` (at least 1) dialogs from the
+    /// front of the map, dropping their messages. Callers bump the
+    /// generation counter; this helper does not.
     fn evict_oldest(&mut self) {
         let batch = (self.max_dialogs / 100).max(1).min(self.dialogs.len());
         self.dialogs.drain(0..batch);
     }
 }
 
-/// Extract the `branch=` parameter value from a Via header.
+/// Extract the `branch=` parameter value from a Via header value
+/// `via_header`; returns `None` when no `branch=` parameter is present.
 fn extract_via_branch(via_header: &str) -> Option<&str> {
     via_header
         .split(';')
         .find_map(|param| param.trim().strip_prefix("branch="))
 }
 
-/// Detect whether `msg` is a retransmission of an already-seen message
-/// in the dialog.
+/// Build a CSeq key string (`"<num> <method>"`) from a SIP message, used
+/// as the map key for per-transaction retransmit counting in
+/// `DialogTiming::retransmit_counts`.
 ///
-/// A message is considered a retransmission if another message with the
-/// same CSeq number, CSeq method, and request/response type already
-/// exists in the dialog's message list. For responses, the status code
-/// must also match.
-/// Build a CSeq key string (`"<num> <method>"`) from a SIP message for
-/// retransmission counting.
+/// Retransmission *detection* itself is keyed on `seen_cseq_key` in the
+/// dialog module, which additionally includes the direction, status code,
+/// and top-Via branch.
+///
+/// # Returns
+///
+/// The key string, or `None` when the message has no parseable CSeq
+/// header.
 fn cseq_key(msg: &SipMessage) -> Option<String> {
     let (num, method) = msg.cseq()?;
     Some(format!("{num} {method}"))
@@ -564,6 +668,10 @@ fn cseq_key(msg: &SipMessage) -> Option<String> {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for `DialogStore`: dialog creation and lookup, branch-aware
+/// retransmission detection, capacity eviction (single and batched), idle
+/// compaction, multi-core merge, correlation scoring, REFER/SIPREC
+/// tracking, and the generation counter.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,10 +680,14 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed 127.0.0.1 address used as both source and destination of
+    /// every test message.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) so tests are
+    /// deterministic.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
@@ -585,6 +697,8 @@ mod tests {
     // Multi-core (--jobs): each worker reconstructs the calls sharded to it; the
     // merge unions distinct Call-IDs and, on the rare same-Call-ID collision,
     // keeps the more complete reconstruction.
+    /// Merging two stores unions distinct Call-IDs; a same-Call-ID
+    /// collision keeps the dialog that saw more messages.
     #[test]
     fn merge_unions_dialogs_keeping_the_more_complete() {
         let t0 = base_ts();
@@ -610,6 +724,7 @@ mod tests {
         );
     }
 
+    /// Build and parse a minimal INVITE (CSeq 1) for `call_id` at `ts`.
     fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -687,10 +802,14 @@ mod tests {
         store
     }
 
+    /// A timestamp just past the idle-compaction window after `base_ts`,
+    /// so any dialog last updated at `base_ts` counts as idle.
     fn idle_now() -> DateTime<Utc> {
         base_ts() + IDLE_COMPACT_AFTER + TimeDelta::seconds(1)
     }
 
+    /// An idle dialog over the keep limit is truncated to the most recent
+    /// `KEEP_MESSAGES_PER_IDLE_DIALOG` messages (the earliest are evicted).
     #[test]
     fn compact_idle_truncates_idle_dialog_to_keep_limit() {
         let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
@@ -708,6 +827,7 @@ mod tests {
         assert_eq!(d.messages[0].cseq().map(|(seq, _)| seq), Some(11));
     }
 
+    /// A dialog updated within the idle window is not compacted at all.
     #[test]
     fn compact_idle_leaves_active_dialogs_alone() {
         let n = KEEP_MESSAGES_PER_IDLE_DIALOG + 10;
@@ -719,6 +839,8 @@ mod tests {
         assert_eq!(store.get("active-1").unwrap().messages.len(), n);
     }
 
+    /// A second compaction sweep over an already-compacted dialog is a
+    /// no-op (stats stay zero).
     #[test]
     fn compact_idle_is_idempotent() {
         let mut store = store_with_messages("idle-2", KEEP_MESSAGES_PER_IDLE_DIALOG + 5);
@@ -729,6 +851,8 @@ mod tests {
         assert_eq!(second.messages_evicted, 0);
     }
 
+    /// An idle dialog already under the keep limit evicts nothing and is
+    /// not counted as compacted.
     #[test]
     fn compact_idle_skips_small_idle_dialogs() {
         // Idle but already under the keep limit: nothing to evict, and it
@@ -761,6 +885,8 @@ mod tests {
         );
     }
 
+    /// Evictions from compaction sweeps accumulate into the lifetime
+    /// `total_idle_messages_evicted` counter.
     #[test]
     fn compact_idle_accumulates_lifetime_counter() {
         let mut store = store_with_messages("idle-3", KEEP_MESSAGES_PER_IDLE_DIALOG + 4);
@@ -769,6 +895,8 @@ mod tests {
         assert_eq!(store.total_idle_messages_evicted(), 4);
     }
 
+    /// Build and parse a 200 OK to the initial INVITE (CSeq 1) for
+    /// `call_id` at `ts`.
     fn make_200_ok(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 200 OK",
@@ -793,6 +921,7 @@ mod tests {
         .expect("should parse 200 OK")
     }
 
+    /// Build and parse an in-dialog BYE (CSeq 2) for `call_id` at `ts`.
     fn make_bye_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "BYE sip:bob@example.com SIP/2.0",
@@ -817,6 +946,8 @@ mod tests {
         .expect("should parse BYE")
     }
 
+    /// INVITE followed by 200 OK yields one dialog in the InCall state
+    /// with both messages stored.
     #[test]
     fn invite_and_200_creates_incall_dialog() {
         let mut store = DialogStore::new(100, false);
@@ -832,6 +963,8 @@ mod tests {
         assert_eq!(dialog.messages.len(), 2);
     }
 
+    /// With rotate enabled, inserting past capacity evicts the oldest
+    /// dialog to make room for the new one.
     #[test]
     fn max_dialogs_with_rotate_evicts_oldest() {
         let mut store = DialogStore::new(2, true);
@@ -890,6 +1023,8 @@ mod tests {
         assert_eq!(*ids.last().unwrap(), "o-0499@test");
     }
 
+    /// Without rotate, a new Call-ID arriving at capacity is silently
+    /// dropped and existing dialogs are untouched.
     #[test]
     fn max_dialogs_without_rotate_drops_new() {
         let mut store = DialogStore::new(2, false);
@@ -905,6 +1040,8 @@ mod tests {
         assert!(store.get("call-3@test").is_none());
     }
 
+    /// Build and parse an OPTIONS request with an explicit CSeq number and
+    /// Via branch parameter (for transaction-identity tests).
     fn make_options_with_branch(
         call_id: &str,
         cseq: u32,
@@ -935,6 +1072,8 @@ mod tests {
         .expect("should parse OPTIONS")
     }
 
+    /// Build and parse a 200 OK to OPTIONS with an explicit CSeq number
+    /// and Via branch parameter.
     fn make_options_200_with_branch(
         call_id: &str,
         cseq: u32,
@@ -968,6 +1107,8 @@ mod tests {
     // RFC 3261 §17: transaction identity is the top Via branch. OPTIONS
     // keepalives that reuse Call-ID + CSeq but carry a fresh branch are new
     // transactions and must NOT be folded away as retransmissions.
+    /// OPTIONS keepalives reusing Call-ID + CSeq but with fresh Via
+    /// branches are distinct transactions, not retransmissions.
     #[test]
     fn same_cseq_new_branch_is_not_a_retransmission() {
         let mut store = DialogStore::new(100, false);
@@ -994,6 +1135,8 @@ mod tests {
         assert_eq!(dialog.timing.total_retransmits(), 0);
     }
 
+    /// A repeat of the same CSeq AND the same Via branch is flagged as a
+    /// retransmission and counted in the timing stats.
     #[test]
     fn same_cseq_same_branch_is_a_retransmission() {
         let mut store = DialogStore::new(100, false);
@@ -1019,6 +1162,9 @@ mod tests {
         assert_eq!(dialog.timing.total_retransmits(), 1);
     }
 
+    /// Responses are also keyed by branch: 200 OKs from distinct
+    /// transactions are new, while a repeated 200 OK (same branch) is a
+    /// retransmission.
     #[test]
     fn response_retransmission_keyed_by_branch_too() {
         let mut store = DialogStore::new(100, false);
@@ -1057,6 +1203,8 @@ mod tests {
     // Adversarial branch values: none of these may panic, and behavior must be
     // deterministic. An empty `branch=` is treated as absent (CSeq fallback),
     // so two of them compare equal → retransmission.
+    /// Adversarial branch values (backslashes, quotes, spaces, empty) are
+    /// handled deterministically without panicking.
     #[test]
     fn adversarial_branch_values_are_handled() {
         let mut store = DialogStore::new(100, false);
@@ -1093,6 +1241,8 @@ mod tests {
         assert!(dialog.messages[1].is_retransmission);
     }
 
+    /// Retransmitted INVITEs are stored for ladder display but flagged,
+    /// and only the repeats count as retransmissions.
     #[test]
     fn retransmission_stored_with_flag() {
         let mut store = DialogStore::new(100, false);
@@ -1117,6 +1267,8 @@ mod tests {
         assert!(dialog.messages[2].is_retransmission);
     }
 
+    /// A retransmitted INVITE after the 200 OK does not regress the
+    /// dialog state from InCall.
     #[test]
     fn retransmissions_do_not_update_state() {
         let mut store = DialogStore::new(100, false);
@@ -1142,6 +1294,7 @@ mod tests {
         assert!(dialog.messages[2].is_retransmission);
     }
 
+    /// Messages with distinct Call-IDs create independent dialogs.
     #[test]
     fn multiple_dialogs_independent() {
         let mut store = DialogStore::new(100, false);
@@ -1157,6 +1310,8 @@ mod tests {
         assert!(store.get("call-c@test").is_some());
     }
 
+    /// INVITE → 200 OK → BYE through the store ends in Completed with all
+    /// three messages stored.
     #[test]
     fn full_call_lifecycle() {
         let mut store = DialogStore::new(100, false);
@@ -1171,6 +1326,8 @@ mod tests {
         assert_eq!(dialog.messages.len(), 3);
     }
 
+    /// active_count counts only dialogs in an active state and drops as
+    /// calls complete, while len keeps counting completed ones.
     #[test]
     fn active_count_tracks_live_dialogs() {
         let mut store = DialogStore::new(100, false);
@@ -1190,6 +1347,8 @@ mod tests {
         assert_eq!(store.len(), 2);
     }
 
+    /// A message without a Call-ID header is silently dropped and creates
+    /// no dialog.
     #[test]
     fn message_without_call_id_is_dropped() {
         let mut store = DialogStore::new(100, false);
@@ -1218,6 +1377,7 @@ mod tests {
         assert_eq!(store.len(), 0);
     }
 
+    /// A freshly created store is empty with zero total and active counts.
     #[test]
     fn is_empty_on_new_store() {
         let store = DialogStore::new(100, false);
@@ -1226,6 +1386,7 @@ mod tests {
         assert_eq!(store.active_count(), 0);
     }
 
+    /// iter yields every tracked dialog exactly once.
     #[test]
     fn iter_returns_all_dialogs() {
         let mut store = DialogStore::new(100, false);
@@ -1240,6 +1401,8 @@ mod tests {
         assert!(call_ids.contains(&"iter-2@test"));
     }
 
+    /// Timing measurements (setup time here) are populated when messages
+    /// flow through the store's processing path.
     #[test]
     fn timing_populated_through_store() {
         let mut store = DialogStore::new(100, false);
@@ -1253,6 +1416,8 @@ mod tests {
         assert_eq!(dialog.timing.setup_ms(), Some(1500));
     }
 
+    /// Responses with the same CSeq but different status codes (100 then
+    /// 180) are distinct messages, not retransmissions.
     #[test]
     fn different_response_codes_not_retransmission() {
         let mut store = DialogStore::new(100, false);
@@ -1376,6 +1541,8 @@ mod tests {
         .expect("should parse INVITE with custom header")
     }
 
+    /// A custom correlation header configured via with_xcid_headers
+    /// (X-CID) correlates the B-leg that points back through it.
     #[test]
     fn xcid_custom_header_correlates() {
         // With a custom correlation header configured, a B-leg pointing back via
@@ -1394,6 +1561,8 @@ mod tests {
         assert_eq!(correlated[0].call_id, "b-leg@test");
     }
 
+    /// A header outside the configured correlation list (X-CID with the
+    /// default X-Call-ID-only config) does not correlate.
     #[test]
     fn xcid_header_not_in_configured_list_is_ignored() {
         // Default list is just ["X-Call-ID"]; a B-leg carrying only X-CID (30s
@@ -1413,6 +1582,8 @@ mod tests {
         );
     }
 
+    /// Passing an empty header list to with_xcid_headers keeps the
+    /// default X-Call-ID correlation working.
     #[test]
     fn with_xcid_headers_empty_keeps_default() {
         // An empty override must not wipe out the default X-Call-ID correlation.
@@ -1427,6 +1598,8 @@ mod tests {
         assert_eq!(store.find_correlated("a-leg@test").len(), 1);
     }
 
+    /// X-Call-ID correlation works in both directions: A-leg finds B-leg
+    /// and B-leg finds A-leg.
     #[test]
     fn find_correlated_via_x_call_id() {
         let mut store = DialogStore::new(100, false);
@@ -1453,6 +1626,8 @@ mod tests {
         assert_eq!(correlated[0].call_id, "a-leg@test");
     }
 
+    /// Unrelated dialogs (no shared headers/branches, created more than
+    /// 2 s apart) do not correlate.
     #[test]
     fn find_correlated_returns_empty_for_unlinked() {
         let mut store = DialogStore::new(100, false);
@@ -1466,12 +1641,15 @@ mod tests {
         assert!(store.find_correlated("another@test").is_empty());
     }
 
+    /// find_correlated for a Call-ID not in the store returns empty.
     #[test]
     fn find_correlated_unknown_call_id_returns_empty() {
         let store = DialogStore::new(100, false);
         assert!(store.find_correlated("nonexistent@test").is_empty());
     }
 
+    /// Legs whose X-Call-ID headers point at each other correlate without
+    /// duplicate results.
     #[test]
     fn find_correlated_bidirectional_x_call_id() {
         let mut store = DialogStore::new(100, false);
@@ -1492,6 +1670,7 @@ mod tests {
 
     // ── Step 4: Scored correlation tests ────────────────────────────────
 
+    /// An X-Call-ID match scores 100 with the XCallId reason.
     #[test]
     fn scored_x_call_id_returns_100() {
         let mut store = DialogStore::new(100, false);
@@ -1537,6 +1716,8 @@ mod tests {
         .expect("should parse INVITE with Via branch")
     }
 
+    /// A shared Via branch on the INVITEs scores 80 with the ViaBranch
+    /// reason.
     #[test]
     fn scored_via_branch_returns_80() {
         let mut store = DialogStore::new(100, false);
@@ -1560,6 +1741,8 @@ mod tests {
         assert_eq!(results[0].reason, CorrelationReason::ViaBranch);
     }
 
+    /// Two INVITE dialogs sharing an endpoint IP and created within 2 s
+    /// score 50 with the TimingHeuristic reason.
     #[test]
     fn scored_timing_heuristic_returns_50() {
         let mut store = DialogStore::new(100, false);
@@ -1576,6 +1759,8 @@ mod tests {
         assert_eq!(results[0].reason, CorrelationReason::TimingHeuristic);
     }
 
+    /// The timing heuristic does not fire for dialogs created more than
+    /// 2 s apart.
     #[test]
     fn timing_heuristic_excluded_beyond_2s() {
         let mut store = DialogStore::new(100, false);
@@ -1588,6 +1773,8 @@ mod tests {
         assert!(results.is_empty());
     }
 
+    /// A candidate matching several strategies is reported once with the
+    /// highest score (X-Call-ID beats Via branch).
     #[test]
     fn scored_dedup_highest_score_wins() {
         let mut store = DialogStore::new(100, false);
@@ -1635,6 +1822,8 @@ mod tests {
 
     // ── Eviction with max_dialogs=3 ──────────────────────────────────
 
+    /// After eviction at a small cap, remaining dialogs stay reachable by
+    /// key (immutably and mutably) and iteration order is preserved.
     #[test]
     fn eviction_max3_rotate() {
         let mut store = DialogStore::new(3, true);
@@ -1693,6 +1882,8 @@ mod tests {
 
     // ── Message cap per dialog ─────────────────────────────────────────
 
+    /// A dialog's message list stops growing at the per-dialog message
+    /// cap even as further messages are processed.
     #[test]
     fn message_cap_at_max_messages_per_dialog() {
         let mut store = DialogStore::new(100, false);
@@ -1739,6 +1930,8 @@ mod tests {
 
     // ── Via branch HashSet correlation smoke test ───────────────────────
 
+    /// Dialogs sharing a Via branch correlate (score 80); a dialog with a
+    /// different branch created well apart does not.
     #[test]
     fn via_branch_correlation_smoke_test() {
         let mut store = DialogStore::new(100, false);
@@ -1786,6 +1979,8 @@ mod tests {
 
     // ── REFER transfer tracking tests ─────────────────────────────────
 
+    /// A REFER during an established call moves the dialog to
+    /// Transferring and stores the Refer-To target URI.
     #[test]
     fn refer_stores_refer_to_header() {
         let mut store = DialogStore::new(100, false);
@@ -1844,6 +2039,8 @@ mod tests {
         );
     }
 
+    /// A REFER using the RFC 3515 compact `r:` form of Refer-To drives
+    /// transfer tracking exactly like the long form.
     #[test]
     fn refer_with_compact_r_header_tracks_transfer() {
         // RFC 3515 registers `r` as the compact form of Refer-To; a REFER
@@ -1891,6 +2088,8 @@ mod tests {
         assert!(refer_to.contains("sip:1003@example.com"));
     }
 
+    /// A REFER without a Refer-To header leaves the dialog's refer_to
+    /// field as None.
     #[test]
     fn refer_without_header_leaves_none() {
         let mut store = DialogStore::new(100, false);
@@ -1937,6 +2136,8 @@ mod tests {
 
     // ── SIPREC metadata parsing test ──────────────────────────────────
 
+    /// SIPREC metadata inside a multipart/mixed body is parsed and stored
+    /// on the dialog (session, participants, streams).
     #[test]
     fn siprec_metadata_parsed_from_multipart() {
         let mut store = DialogStore::new(100, false);

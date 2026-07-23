@@ -84,8 +84,15 @@ impl SipMethod {
 
     /// Parse a string into a `SipMethod`.
     ///
-    /// Known methods are mapped to their enum variant; anything else
-    /// becomes `Custom`.
+    /// # Arguments
+    ///
+    /// * `s` — method token exactly as it appears on the request line
+    ///   (matching is case-sensitive, per RFC 3261 §7.1).
+    ///
+    /// # Returns
+    ///
+    /// The matching enum variant for a known method; anything else becomes
+    /// `Custom` holding the original string. Never fails.
     pub fn parse(s: &str) -> Self {
         match s {
             "INVITE" => Self::Invite,
@@ -108,33 +115,39 @@ impl SipMethod {
 }
 
 impl std::fmt::Display for SipMethod {
+    /// Write the canonical uppercase method name (same as `as_str`) to `f`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
 impl PartialEq<str> for SipMethod {
+    /// Compare the canonical string form against `other` (case-sensitive).
     fn eq(&self, other: &str) -> bool {
         self.as_str() == other
     }
 }
 
 impl PartialOrd for SipMethod {
+    /// Delegate to `Ord::cmp`; always returns `Some` (total order).
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for SipMethod {
+    /// Order methods lexicographically by their canonical string form.
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.as_str().cmp(other.as_str())
     }
 }
 
+/// Tests for `SipMethod` parsing, display, equality, and ordering.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Every standard method string parses to its dedicated variant.
     #[test]
     fn parse_known_methods() {
         assert_eq!(SipMethod::parse("INVITE"), SipMethod::Invite);
@@ -153,6 +166,7 @@ mod tests {
         assert_eq!(SipMethod::parse("UPDATE"), SipMethod::Update);
     }
 
+    /// An unknown method round-trips through `Custom` and keeps its name.
     #[test]
     fn parse_custom_method() {
         let m = SipMethod::parse("XYZZY");
@@ -160,18 +174,21 @@ mod tests {
         assert_eq!(m.as_str(), "XYZZY");
     }
 
+    /// `Display` output equals `as_str` for both standard and custom methods.
     #[test]
     fn display_matches_as_str() {
         assert_eq!(SipMethod::Invite.to_string(), "INVITE");
         assert_eq!(SipMethod::Custom("FOO".into()).to_string(), "FOO");
     }
 
+    /// Methods order lexicographically by canonical name (ACK < INVITE).
     #[test]
     fn ordering() {
         assert!(SipMethod::Ack < SipMethod::Invite);
         assert!(SipMethod::Bye < SipMethod::Cancel);
     }
 
+    /// `SipMethod == str` compares against the canonical string form.
     #[test]
     fn partial_eq_str() {
         assert!(SipMethod::Invite == *"INVITE");

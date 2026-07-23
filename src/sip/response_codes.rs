@@ -328,10 +328,13 @@ pub fn explain_response_code(code: u16) -> Option<&'static str> {
     }
 }
 
+/// Tests pinning the response-code explanation table: spot checks per class
+/// plus an exhaustive sweep against the implemented-code list.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Spot-check common success/error codes have meaningful text.
     #[test]
     fn known_codes_have_explanations() {
         assert!(explain_response_code(200).unwrap().contains("OK"));
@@ -348,6 +351,7 @@ mod tests {
         );
     }
 
+    /// 1xx provisional codes carry their standard names.
     #[test]
     fn provisional_codes() {
         assert!(explain_response_code(100).unwrap().contains("Trying"));
@@ -359,6 +363,7 @@ mod tests {
         );
     }
 
+    /// Frequently seen 4xx codes carry their standard names.
     #[test]
     fn common_error_codes() {
         assert!(explain_response_code(401).unwrap().contains("Unauthorized"));
@@ -374,6 +379,7 @@ mod tests {
         assert!(explain_response_code(491).unwrap().contains("Pending"));
     }
 
+    /// 6xx global-failure codes carry their standard names.
     #[test]
     fn global_failure_codes() {
         assert!(
@@ -394,6 +400,7 @@ mod tests {
         );
     }
 
+    /// Unrecognized codes return `None`.
     #[test]
     fn unknown_code_returns_none() {
         assert!(explain_response_code(299).is_none());
@@ -421,6 +428,8 @@ mod tests {
         600, 603, 604, 606, 607, 608,
     ];
 
+    /// Every implemented explanation starts with its code and contains the
+    /// em-dash separator.
     #[test]
     fn every_implemented_code_starts_with_its_number_and_is_nonempty() {
         for &code in IMPLEMENTED_CODES {
@@ -440,6 +449,7 @@ mod tests {
         }
     }
 
+    /// Sweeping 0..=1000, a code returns Some iff it is in IMPLEMENTED_CODES.
     #[test]
     fn implemented_set_is_exactly_the_codes_returning_some() {
         // Sweep the entire u16 response-code space: a code returns Some iff it
@@ -455,6 +465,7 @@ mod tests {
         }
     }
 
+    /// Reserved, unused, and boundary codes all return `None`.
     #[test]
     fn unimplemented_and_boundary_codes_return_none() {
         // Boundaries just outside real classes, plus reserved/unused codes.

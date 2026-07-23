@@ -17,6 +17,13 @@ use crate::sip::dialog::{DialogState, SipDialog};
 ///
 /// * `dialogs` — Dialogs to include in the report.
 /// * `streams` — All RTP streams (both associated and orphaned).
+///
+/// # Returns
+///
+/// The formatted report as a `String` (despite the name, nothing is
+/// printed): a fixed-width dialog table, then an "RTP Streams:" table for
+/// associated streams and an "Orphaned Streams:" table, each section
+/// omitted when empty.
 pub fn print_dialog_report(dialogs: &[&SipDialog], streams: &[&RtpStream]) -> String {
     let mut out = String::with_capacity(4096);
 
@@ -178,7 +185,8 @@ fn state_str(state: &DialogState) -> &'static str {
     }
 }
 
-/// Format the dialog duration as a human-readable string.
+/// Format the dialog duration (`created_at` to `updated_at`) as a
+/// human-readable string; `"0s"` for dialogs with fewer than 2 messages.
 fn format_duration(dialog: &SipDialog) -> String {
     if dialog.messages.len() < 2 {
         return "0s".to_string();
@@ -190,7 +198,8 @@ fn format_duration(dialog: &SipDialog) -> String {
     format_seconds(secs)
 }
 
-/// Format seconds into a compact human-readable string.
+/// Format seconds into a compact human-readable string
+/// (`45s` / `2m 33s` / `1h 1m 1s`).
 fn format_seconds(secs: i64) -> String {
     if secs < 60 {
         format!("{secs}s")
@@ -219,6 +228,8 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for the tabular report: dialog rows (state, code, duration),
+/// RTP-stream columns, and UTF-8-safe truncation.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,16 +238,19 @@ mod tests {
     use chrono::{DateTime, TimeDelta, Utc};
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// The loopback IPv4 address used for all synthetic messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) for determinism.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build a Completed dialog: INVITE followed 153 s later by BYE.
     fn make_completed_dialog() -> SipDialog {
         let t0 = base_ts();
         let t1 = t0 + TimeDelta::seconds(153);
@@ -292,6 +306,8 @@ mod tests {
         dialog
     }
 
+    /// A single completed dialog renders Call-ID, users, state, duration,
+    /// and the Msgs header.
     #[test]
     fn single_completed_dialog_report() {
         let dialog = make_completed_dialog();
@@ -377,6 +393,7 @@ mod tests {
         dialog
     }
 
+    /// The dialog table header includes the Code column.
     #[test]
     fn report_has_code_column_header() {
         let dialog = make_completed_dialog();
@@ -387,6 +404,7 @@ mod tests {
         );
     }
 
+    /// An answered+ended call (200 then BYE) shows final code 200.
     #[test]
     fn completed_dialog_shows_final_code_200() {
         // A real answered+ended call: INVITE -> 200 (INVITE) -> BYE.
@@ -405,6 +423,7 @@ mod tests {
         );
     }
 
+    /// A 486-rejected INVITE shows state Failed with code 486.
     #[test]
     fn failed_dialog_shows_response_code() {
         // INVITE rejected with 486 Busy Here -> State Failed, Code 486.
@@ -420,6 +439,7 @@ mod tests {
         );
     }
 
+    /// A cancelled INVITE shows state Cancelled with code 487.
     #[test]
     fn cancelled_dialog_shows_487() {
         // INVITE cancelled before answer -> State Cancelled, Code 487.
@@ -445,6 +465,8 @@ mod tests {
         );
     }
 
+    /// An auth-challenged call that then succeeds reports 200, never the
+    /// intermediate 407.
     #[test]
     fn auth_challenged_call_reports_final_200_not_407() {
         // INVITE -> 407 (challenge) -> authed INVITE -> 200 -> BYE. The 407 is an
@@ -473,6 +495,7 @@ mod tests {
         );
     }
 
+    /// A 407 with no authenticated retry reports the 407 as the outcome.
     #[test]
     fn unauthenticated_call_still_reports_the_challenge() {
         // 407 with no authenticated retry: the challenge IS the outcome.
@@ -487,6 +510,7 @@ mod tests {
         assert_eq!(dialog.final_status_code(), Some(407));
     }
 
+    /// A ringing dialog with no final response has no final status code.
     #[test]
     fn in_progress_dialog_has_no_final_code() {
         // INVITE + 180 Ringing only — no final response yet -> Code "-".
@@ -501,6 +525,8 @@ mod tests {
         );
     }
 
+    /// Build a PCMA stream with 250 pkts / 5 lost / 12 ms jitter over 5 s
+    /// (64 kbps) for exercising the RTP table columns.
     fn make_rtp_stream() -> crate::rtp::stream::RtpStream {
         use crate::rtp::parser::RtpHeader;
         use crate::rtp::stream::{RtpStream, StreamKey};
@@ -531,6 +557,8 @@ mod tests {
         s
     }
 
+    /// The RTP table carries PT/Clock/Lost/Loss%/Jitter/Dur/Kbps columns
+    /// with correctly derived values.
     #[test]
     fn rtp_report_includes_pt_and_critical_fields() {
         let s = make_rtp_stream();
@@ -554,6 +582,7 @@ mod tests {
         assert!(report.contains("2.0%"), "loss 5/(250+5)=2.0%: {report}");
     }
 
+    /// A long Call-ID is truncated within the limit and ends with "...".
     #[test]
     fn truncate_long_call_id() {
         let result = truncate_str(
@@ -564,6 +593,7 @@ mod tests {
         assert!(result.ends_with("..."));
     }
 
+    /// `format_seconds` renders seconds, minutes, and hours variants.
     #[test]
     fn format_seconds_variants() {
         assert_eq!(format_seconds(0), "0s");
@@ -574,16 +604,19 @@ mod tests {
 
     // ── UTF-8 safe truncate_str ────────────────────────────────────────
 
+    /// A string within the limit is returned unchanged.
     #[test]
     fn truncate_str_short_string_unchanged() {
         assert_eq!(truncate_str("hello", 10), "hello");
     }
 
+    /// Truncation to 8 keeps 5 chars plus the "..." suffix.
     #[test]
     fn truncate_str_exact_ellipsis() {
         assert_eq!(truncate_str("hello world", 8), "hello...");
     }
 
+    /// 2-byte UTF-8 input truncates on a char boundary without panicking.
     #[test]
     fn truncate_str_multibyte_latin_no_panic() {
         // "héllo wörld" contains 2-byte UTF-8 chars
@@ -591,6 +624,7 @@ mod tests {
         assert!(result.ends_with("..."));
     }
 
+    /// 3-byte CJK input truncates without panicking or emptying the result.
     #[test]
     fn truncate_str_cjk_no_panic() {
         // "日本語テスト" — each char is 3 bytes in UTF-8

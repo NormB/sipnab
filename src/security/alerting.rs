@@ -44,7 +44,7 @@ impl AlertRule {
     ///
     /// # Errors
     ///
-    /// Returns [`crate::Error::InvalidAlertRule`] if the grammar is invalid.
+    /// Returns `crate::Error::InvalidAlertRule` if the grammar is invalid.
     pub fn parse(rule_str: &str) -> Result<Self, crate::Error> {
         Self::parse_inner(rule_str).map_err(|reason| crate::Error::InvalidAlertRule {
             input: rule_str.to_string(),
@@ -52,6 +52,14 @@ impl AlertRule {
         })
     }
 
+    /// Parse the rule grammar, returning a human-readable reason string on
+    /// failure (wrapped into a typed error by `parse`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an `Err(String)` when the `:` or `/` separators are missing,
+    /// the name is empty, the threshold is non-numeric, or a duration has an
+    /// invalid suffix.
     fn parse_inner(rule_str: &str) -> Result<Self, String> {
         // Split into name:rest
         let (name, rest) = rule_str
@@ -227,7 +235,7 @@ impl AlertEngine {
     /// Enable or disable syslog output for alerts.
     ///
     /// When enabled, each alert is also sent to syslog at LOG_WARNING priority
-    /// under the LOCAL0 facility. Call [`init_syslog`] once at startup before
+    /// under the LOCAL0 facility. Call `init_syslog` once at startup before
     /// enabling this.
     pub fn set_syslog(&mut self, enabled: bool) {
         self.syslog_enabled = enabled;
@@ -440,15 +448,18 @@ pub fn send_to_syslog(message: &str) {
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Unit tests for rule parsing, cooldowns, findings history, and log sanitizing.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
 
+    /// A fixed source IP used across the alerting tests.
     fn test_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
     }
 
+    /// A basic rule parses name/threshold/window and defaults cooldown to 2x.
     #[test]
     fn parse_rule_basic() {
         let rule = AlertRule::parse("5xx-rate:10/1m").expect("should parse");
@@ -462,6 +473,7 @@ mod tests {
         );
     }
 
+    /// An explicit cooldown segment overrides the 2x-window default.
     #[test]
     fn parse_rule_with_cooldown() {
         let rule = AlertRule::parse("reg-flood:50/10s:5m").expect("should parse");
@@ -471,6 +483,7 @@ mod tests {
         assert_eq!(rule.cooldown, Duration::from_secs(300));
     }
 
+    /// The `h` suffix parses windows and default cooldown in hours.
     #[test]
     fn parse_rule_hours() {
         let rule = AlertRule::parse("slow-scan:100/1h").expect("should parse");
@@ -478,36 +491,42 @@ mod tests {
         assert_eq!(rule.cooldown, Duration::from_secs(7200));
     }
 
+    /// A rule without a `:` separator fails to parse.
     #[test]
     fn parse_rule_invalid_no_colon() {
         let result = AlertRule::parse("invalid-rule");
         assert!(result.is_err(), "should fail without colon separator");
     }
 
+    /// A rule without a `/` between threshold and window fails to parse.
     #[test]
     fn parse_rule_invalid_no_slash() {
         let result = AlertRule::parse("bad:10");
         assert!(result.is_err(), "should fail without slash separator");
     }
 
+    /// A non-numeric threshold fails to parse.
     #[test]
     fn parse_rule_invalid_threshold() {
         let result = AlertRule::parse("bad:abc/1m");
         assert!(result.is_err(), "should fail with non-numeric threshold");
     }
 
+    /// An invalid window suffix fails to parse.
     #[test]
     fn parse_rule_invalid_window() {
         let result = AlertRule::parse("bad:10/1x");
         assert!(result.is_err(), "should fail with invalid window suffix");
     }
 
+    /// A rule with an empty name fails to parse.
     #[test]
     fn parse_rule_empty_name() {
         let result = AlertRule::parse(":10/1m");
         assert!(result.is_err(), "should fail with empty name");
     }
 
+    /// A second alert for the same source within the cooldown is suppressed.
     #[test]
     fn cooldown_suppresses_second_alert() {
         let rule = AlertRule::parse("test:1/1s:10m").expect("parse");
@@ -520,6 +539,7 @@ mod tests {
         assert!(!second, "second alert within cooldown should be suppressed");
     }
 
+    /// Different source IPs have independent cooldowns.
     #[test]
     fn different_sources_independent_cooldown() {
         let rule = AlertRule::parse("test:1/1s:10m").expect("parse");
@@ -535,6 +555,7 @@ mod tests {
         );
     }
 
+    /// An alert type with no matching rule falls back to the 60s default cooldown.
     #[test]
     fn unknown_rule_uses_default_cooldown() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -551,6 +572,7 @@ mod tests {
 
     // ── Phase 8.3 FindingsHistory ────────────────────────────────────
 
+    /// Each post-cooldown firing is recorded in the ring buffer, newest first.
     #[test]
     fn findings_history_records_each_post_cooldown_fire() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -569,6 +591,7 @@ mod tests {
         assert_eq!(all[2].rule_name, "scanner");
     }
 
+    /// `iter_findings` filters stored findings by rule kind.
     #[test]
     fn findings_history_filter_by_kind() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -580,6 +603,7 @@ mod tests {
         assert!(scanner_only.iter().all(|f| f.rule_name == "scanner"));
     }
 
+    /// The bounded ring buffer evicts oldest-first, keeping the most recent.
     #[test]
     fn findings_history_eviction_keeps_most_recent() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -602,6 +626,7 @@ mod tests {
         assert!(all[0].detail.contains("seq=1999"));
     }
 
+    /// Cooldown-suppressed firings are not recorded in the findings history.
     #[test]
     fn findings_history_cooldown_suppression_does_not_record() {
         let rule = AlertRule::parse("scanner:1/1s:10m").expect("parse");
@@ -620,6 +645,7 @@ mod tests {
         assert!(all[0].detail.contains("first"));
     }
 
+    /// A zero findings capacity disables retention entirely.
     #[test]
     fn findings_history_zero_capacity_disables_retention() {
         let mut engine = AlertEngine::new(vec![], None);
@@ -631,6 +657,7 @@ mod tests {
 
     // ── Security regression tests ────────────────────────────────────
 
+    /// CR and LF in a log value are each replaced with a space.
     #[test]
     fn sanitize_log_value_strips_crlf() {
         let result = sanitize_log_value("hello\r\nworld");
@@ -640,6 +667,7 @@ mod tests {
         );
     }
 
+    /// A JSON alert line carries the expected `alert`/`src`/`detail`/`ts` fields.
     #[test]
     fn alert_json_line_has_expected_fields() {
         let ts = chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2026, 6, 24, 1, 2, 3).unwrap();
@@ -656,6 +684,8 @@ mod tests {
         assert!(v["ts"].as_str().unwrap().starts_with("2026-06-24T01:02:03"));
     }
 
+    /// A crafted detail string stays escaped inside `detail` and cannot inject
+    /// sibling JSON fields.
     #[test]
     fn alert_json_line_escapes_adversarial_detail() {
         // a crafted detail (embedded quote/brace) must stay inside the string,

@@ -57,6 +57,24 @@ pub struct Packet {
 
 impl Packet {
     /// Create a new packet from raw capture data starting at the link layer.
+    ///
+    /// Pure constructor: converts `data` into refcounted `bytes::Bytes` and
+    /// leaves `pre_parsed` as `None`, so the parser walks the full
+    /// link/IP/transport header chain.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` — capture time of the packet (UTC).
+    /// * `data` — raw packet bytes beginning at the link layer.
+    /// * `caplen` — number of bytes actually captured (may be < `origlen`
+    ///   when the capture used a snap length).
+    /// * `origlen` — original on-the-wire length of the packet in bytes.
+    /// * `interface` — name of the live capture interface, if any.
+    /// * `link_type` — pcap link-layer header type (e.g. 1 = `DLT_EN10MB`).
+    ///
+    /// # Returns
+    ///
+    /// A `Packet` whose `data` starts at the link layer.
     pub fn new(
         timestamp: DateTime<Utc>,
         data: Vec<u8>,
@@ -81,6 +99,19 @@ impl Packet {
     /// `data` is the transport-layer payload only — no link/IP/transport
     /// headers. The parser short-circuits to produce a parsed packet
     /// directly from `pre_parsed` + `data`.
+    ///
+    /// # Arguments
+    ///
+    /// * `timestamp` — capture time of the packet (UTC).
+    /// * `data` — transport-layer payload bytes only (e.g. the SIP message).
+    /// * `interface` — logical source name (e.g. `"hep:0.0.0.0:9060"`).
+    /// * `pre_parsed` — addressing metadata supplied by the source.
+    ///
+    /// # Returns
+    ///
+    /// A `Packet` with `caplen`/`origlen` both set to `data.len()`,
+    /// `link_type` set to 0 (ignored on this path), and `pre_parsed`
+    /// populated so the parser skips the header walk.
     pub fn with_pre_parsed(
         timestamp: DateTime<Utc>,
         data: Vec<u8>,

@@ -1,5 +1,10 @@
 //! Pure-Rust pcap/pcapng file reader for WASM compatibility.
 //! Reads both pcap and pcapng files from raw byte slices without libpcap.
+//!
+//! `PcapReader` sniffs the format by magic number and iterates `PcapPacket`s;
+//! `decompress_capture` transparently inflates gzip-compressed captures
+//! (bounded against gzip bombs) before reading. Malformed or truncated input
+//! ends iteration cleanly rather than panicking.
 
 use crate::error::CaptureError;
 
@@ -18,28 +23,40 @@ pub struct PcapPacket {
 /// Unified reader for both pcap and pcapng formats.
 #[derive(Debug)]
 pub struct PcapReader<'a> {
+    /// Format-specific reader state (classic pcap or pcapng).
     inner: ReaderInner<'a>,
     /// Link-layer type from the file header (pcap DLT value).
     pub link_type: u32,
 }
 
+/// Format-specific reader state behind `PcapReader`.
 #[derive(Debug)]
 enum ReaderInner<'a> {
+    /// Classic pcap (24-byte global header + 16-byte record headers).
     Classic(ClassicReader<'a>),
+    /// Pcapng (block-structured: SHB/IDB/EPB/...).
     Ng(NgReader<'a>),
 }
 
 // ── Classic pcap ──────────────────────────────────────────────────────
 
+/// Cursor over the records of a classic pcap file.
 #[derive(Debug)]
 struct ClassicReader<'a> {
+    /// The whole file, including the 24-byte global header.
     data: &'a [u8],
+    /// Byte offset of the next record header (starts at 24).
     offset: usize,
+    /// File byte order, from the magic number.
     big_endian: bool,
+    /// Sub-second field is nanoseconds (magic `a1b23c4d`/`4d3cb2a1`), not
+    /// microseconds.
     nanoseconds: bool,
 }
 
 impl<'a> ClassicReader<'a> {
+    /// Read the u32 at byte offset `off` in the file's byte order; `None`
+    /// when the slice ends before `off + 4`.
     fn read_u32(&self, off: usize) -> Option<u32> {
         let bytes: [u8; 4] = self.data.get(off..off + 4)?.try_into().ok()?;
         Some(if self.big_endian {
@@ -49,6 +66,20 @@ impl<'a> ClassicReader<'a> {
         })
     }
 
+    /// Parse the record at the cursor and advance past it.
+    ///
+    /// Reads the 16-byte record header (ts_sec, ts_usec, incl_len, orig_len)
+    /// followed by `incl_len` data bytes. Nanosecond-format timestamps are
+    /// normalized to microseconds.
+    ///
+    /// # Returns
+    ///
+    /// The next packet, or `None` at end of data or when the record is
+    /// truncated (which permanently ends iteration).
+    ///
+    /// # Side effects
+    ///
+    /// Advances `self.offset` past the consumed record.
     fn next_packet(&mut self) -> Option<PcapPacket> {
         let ts_sec = self.read_u32(self.offset)?;
         let ts_usec = self.read_u32(self.offset + 4)?;
@@ -79,16 +110,26 @@ impl<'a> ClassicReader<'a> {
 
 // ── Pcapng ────────────────────────────────────────────────────────────
 
+/// Cursor over the blocks of a pcapng file.
 #[derive(Debug)]
 struct NgReader<'a> {
+    /// The whole file, starting at the Section Header Block.
     data: &'a [u8],
+    /// Byte offset of the next block header.
     offset: usize,
+    /// Current section's byte order (updated at each SHB).
     big_endian: bool,
-    if_tsresol: u64, // timestamp units per second (default 1_000_000 = microseconds)
+    /// Timestamp units per second from the most recent IDB's `if_tsresol`
+    /// option (default 1_000_000 = microseconds).
+    if_tsresol: u64,
+    /// Link type from the most recent IDB (pcap DLT value; defaults to 1,
+    /// Ethernet).
     link_type: u32,
 }
 
 impl<'a> NgReader<'a> {
+    /// Read the u16 at byte offset `off` in the current section's byte
+    /// order; `None` when the slice ends before `off + 2`.
     fn read_u16(&self, off: usize) -> Option<u16> {
         let bytes: [u8; 2] = self.data.get(off..off + 2)?.try_into().ok()?;
         Some(if self.big_endian {
@@ -98,6 +139,8 @@ impl<'a> NgReader<'a> {
         })
     }
 
+    /// Read the u32 at byte offset `off` in the current section's byte
+    /// order; `None` when the slice ends before `off + 4`.
     fn read_u32(&self, off: usize) -> Option<u32> {
         let bytes: [u8; 4] = self.data.get(off..off + 4)?.try_into().ok()?;
         Some(if self.big_endian {
@@ -107,6 +150,23 @@ impl<'a> NgReader<'a> {
         })
     }
 
+    /// Walk blocks from the cursor until the next Enhanced Packet Block.
+    ///
+    /// SHBs update the section byte order, IDBs update `link_type` and
+    /// `if_tsresol`, all other block types are skipped. EPB timestamps
+    /// (64-bit tick counts split across ts_high/ts_low) are converted to
+    /// seconds + microseconds using the interface's declared resolution.
+    ///
+    /// # Returns
+    ///
+    /// The next packet, or `None` at end of data or when a block header is
+    /// truncated/invalid (which permanently ends iteration). Truncated EPB
+    /// bodies are skipped, not fatal.
+    ///
+    /// # Side effects
+    ///
+    /// Advances `self.offset` and updates `big_endian` / `link_type` /
+    /// `if_tsresol` as SHB/IDB blocks are encountered.
     fn next_packet(&mut self) -> Option<PcapPacket> {
         loop {
             let block_type = self.read_u32(self.offset)?;
@@ -185,6 +245,18 @@ impl<'a> NgReader<'a> {
         }
     }
 
+    /// Scan an IDB's option list between byte offsets `pos` and `end` for
+    /// `if_tsresol` (code 9).
+    ///
+    /// The option value is one byte: bit 7 clear means a power-of-10
+    /// exponent, bit 7 set means a power-of-2 exponent. Overflowing
+    /// exponents clamp to `u64::MAX` instead of panicking; `opt_endofopt`
+    /// (code 0) or any malformed length terminates the scan.
+    ///
+    /// # Side effects
+    ///
+    /// Updates `self.if_tsresol` (timestamp ticks per second) when a valid
+    /// option is found.
     fn parse_idb_options(&mut self, mut pos: usize, end: usize) {
         while pos + 4 <= end {
             let opt_code = match self.read_u16(pos) {
@@ -429,6 +501,8 @@ impl<'a> PcapReader<'a> {
 impl<'a> Iterator for PcapReader<'a> {
     type Item = PcapPacket;
 
+    /// Yield the next packet from the underlying format reader; for pcapng,
+    /// also refresh the public `link_type` (an IDB may appear mid-file).
     fn next(&mut self) -> Option<Self::Item> {
         match &mut self.inner {
             ReaderInner::Classic(r) => r.next_packet(),
@@ -441,10 +515,13 @@ impl<'a> Iterator for PcapReader<'a> {
     }
 }
 
+/// Tests for the pure-Rust reader: real sample captures, malformed-input
+/// hardening, and gzip transparency.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A real classic pcap sample parses with link type 1 and many packets.
     #[test]
     fn parse_real_pcap_file() {
         let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
@@ -454,6 +531,7 @@ mod tests {
         assert!(packets.len() > 10, "should have multiple packets");
     }
 
+    /// A real pcapng sample parses with non-zero timestamps.
     #[test]
     fn parse_pcapng_file() {
         let data = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
@@ -470,6 +548,7 @@ mod tests {
         );
     }
 
+    /// The SIP-auth-failure pcapng sample yields packets.
     #[test]
     fn parse_pcapng_sip_auth_failure() {
         let data = std::fs::read("tests/pcap-samples/sip-auth-failure.pcapng").unwrap();
@@ -478,12 +557,15 @@ mod tests {
         assert!(!packets.is_empty(), "should have packets");
     }
 
+    /// Fewer than 12 bytes errors with `TooShort` instead of panicking.
     #[test]
     fn too_short_file() {
         let result = PcapReader::new(&[0u8; 10]);
         assert!(result.is_err());
     }
 
+    /// A pcap cut off mid-record ends iteration cleanly with at most one
+    /// packet.
     #[test]
     fn truncated_pcap_packet() {
         let data = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
@@ -493,6 +575,8 @@ mod tests {
         assert!(packets.len() <= 1);
     }
 
+    /// An unknown magic errors with `UnknownFormat` and a message that names
+    /// the supported formats including the gzip variants.
     #[test]
     fn invalid_magic() {
         let err = PcapReader::new(&[0xFF; 24]).unwrap_err();
@@ -506,6 +590,7 @@ mod tests {
         assert!(err.to_string().contains(".pcap.gz"), "got: {err}");
     }
 
+    /// A `.cap` file that is really pcap-format parses normally.
     #[test]
     fn cap_file_pcap_format() {
         let data = std::fs::read("tests/pcap-samples/SIP_DTMF2.cap").unwrap();
@@ -514,6 +599,8 @@ mod tests {
         assert!(!packets.is_empty(), "pcap-format .cap file should parse");
     }
 
+    /// A Microsoft Network Monitor `.cap` errors with a message naming the
+    /// format.
     #[test]
     fn cap_file_netmon_format_error() {
         let data = std::fs::read("tests/pcap-samples/rtsp-packets.cap").unwrap();
@@ -524,6 +611,8 @@ mod tests {
 
     // ── Malformed input tests ─────────────────────────────────────────
 
+    /// The tsresol guard (`max(1)`) prevents a division by zero; collecting
+    /// must not panic.
     #[test]
     fn crafted_pcapng_zero_tsresol() {
         // Ensure tsresol=0 doesn't cause division by zero
@@ -533,6 +622,8 @@ mod tests {
         let _packets: Vec<_> = reader.collect();
     }
 
+    /// A pcapng cut off right after the SHB yields (nearly) no packets and
+    /// no panic.
     #[test]
     fn truncated_pcapng_block() {
         // Pcapng with valid SHB header but truncated before any packets
@@ -545,6 +636,8 @@ mod tests {
 
     // ── Load every capture file in tests/pcap-samples/ ──────────────
 
+    /// Assert the capture at `path` parses and yields at least
+    /// `min_packets` packets.
     fn assert_loads(path: &str, min_packets: usize) {
         let data = std::fs::read(path).unwrap_or_else(|e| panic!("Can't read {path}: {e}"));
         let reader = PcapReader::new(&data).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -558,75 +651,93 @@ mod tests {
 
     // -- pcap format files --
 
+    /// Sample-capture smoke test: `Asterisk_ZFONE_XLITE.pcap` loads with >= 10 packet(s).
     #[test]
     fn load_asterisk_zfone() {
         assert_loads("tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap", 10);
     }
+    /// Sample-capture smoke test: `DTMFsipinfo.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_dtmfsipinfo() {
         assert_loads("tests/pcap-samples/DTMFsipinfo.pcap", 1);
     }
+    /// Sample-capture smoke test: `h263-over-rtp.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_h263_rtp() {
         assert_loads("tests/pcap-samples/h263-over-rtp.pcap", 1);
     }
+    /// Sample-capture smoke test: `metasploit-sip-invite-spoof.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_metasploit() {
         assert_loads("tests/pcap-samples/metasploit-sip-invite-spoof.pcap", 1);
     }
+    /// Sample-capture smoke test: `rtp-protocol.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_rtp_protocol() {
         assert_loads("tests/pcap-samples/rtp-protocol.pcap", 1);
     }
+    /// Sample-capture smoke test: `SIP_CALL_RTP_G711` loads with >= 100 packet(s).
     #[test]
     fn load_sip_call_g711() {
         assert_loads("tests/pcap-samples/SIP_CALL_RTP_G711", 100);
     }
+    /// Sample-capture smoke test: `SIP_DTMF2.cap` loads with >= 10 packet(s).
     #[test]
     fn load_sip_dtmf2_cap() {
         assert_loads("tests/pcap-samples/SIP_DTMF2.cap", 10);
     }
+    /// Sample-capture smoke test: `sip-over-tcp.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_sip_over_tcp() {
         assert_loads("tests/pcap-samples/sip-over-tcp.pcap", 1);
     }
+    /// Sample-capture smoke test: `sip-proxy.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_sip_proxy() {
         assert_loads("tests/pcap-samples/sip-proxy.pcap", 1);
     }
+    /// Sample-capture smoke test: `sip-register.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_sip_register() {
         assert_loads("tests/pcap-samples/sip-register.pcap", 1);
     }
+    /// Sample-capture smoke test: `sip-rtp-g711.pcap` loads with >= 10 packet(s).
     #[test]
     fn load_sip_rtp_g711() {
         assert_loads("tests/pcap-samples/sip-rtp-g711.pcap", 10);
     }
+    /// Sample-capture smoke test: `sip-rtp-g722.pcap` loads with >= 10 packet(s).
     #[test]
     fn load_sip_rtp_g722() {
         assert_loads("tests/pcap-samples/sip-rtp-g722.pcap", 10);
     }
+    /// Sample-capture smoke test: `sip-rtp-g729a.pcap` loads with >= 10 packet(s).
     #[test]
     fn load_sip_rtp_g729a() {
         assert_loads("tests/pcap-samples/sip-rtp-g729a.pcap", 10);
     }
+    /// Sample-capture smoke test: `sip-rtp-opus-hybrid.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_sip_rtp_opus() {
         assert_loads("tests/pcap-samples/sip-rtp-opus-hybrid.pcap", 1);
     }
+    /// Sample-capture smoke test: `sip-sdp-example.pcap` loads with >= 1 packet(s).
     #[test]
     fn load_sip_sdp_example() {
         assert_loads("tests/pcap-samples/sip-sdp-example.pcap", 1);
     }
+    /// Sample-capture smoke test: `rtsp-interleaved-tcp.cap` loads with >= 1 packet(s).
     #[test]
     fn load_rtsp_tcp_cap() {
         assert_loads("tests/pcap-samples/rtsp-interleaved-tcp.cap", 1);
     }
+    /// Sample-capture smoke test: `speech_8k_ulaw.pcap` loads with >= 100 packet(s).
     #[test]
     fn load_speech_8k_ulaw() {
         // Linux SLL (cooked v1) link-type — the only SLL fixture in the suite.
         assert_loads("tests/pcap-samples/speech_8k_ulaw.pcap", 100);
     }
+    /// Sample-capture smoke test: `voicecmd_combined.pcap` loads with >= 1000 packet(s).
     #[test]
     fn load_voicecmd_combined() {
         assert_loads("tests/pcap-samples/voicecmd_combined.pcap", 1000);
@@ -634,22 +745,27 @@ mod tests {
 
     // -- pcapng format files --
 
+    /// Sample-capture smoke test: `b2bua-asterisk.pcapng` loads with >= 10 packet(s).
     #[test]
     fn load_b2bua_pcapng() {
         assert_loads("tests/pcap-samples/b2bua-asterisk.pcapng", 10);
     }
+    /// Sample-capture smoke test: `sip-488-codec-reject.pcapng` loads with >= 1 packet(s).
     #[test]
     fn load_sip_488_pcapng() {
         assert_loads("tests/pcap-samples/sip-488-codec-reject.pcapng", 1);
     }
+    /// Sample-capture smoke test: `sip-auth-failure.pcapng` loads with >= 1 packet(s).
     #[test]
     fn load_sip_auth_pcapng() {
         assert_loads("tests/pcap-samples/sip-auth-failure.pcapng", 1);
     }
+    /// Sample-capture smoke test: `sip-routing-error.pcapng` loads with >= 1 packet(s).
     #[test]
     fn load_sip_routing_pcapng() {
         assert_loads("tests/pcap-samples/sip-routing-error.pcapng", 1);
     }
+    /// Sample-capture smoke test: `sipp-branch-scenario.pcapng` loads with >= 100 packet(s).
     #[test]
     fn load_sipp_branch_pcapng() {
         assert_loads("tests/pcap-samples/sipp-branch-scenario.pcapng", 100);
@@ -657,11 +773,14 @@ mod tests {
 
     // -- .cap files (mixed formats) --
 
+    /// Sample-capture smoke test: `http-example.cap` loads with >= 1 packet(s).
     #[test]
     fn load_http_cap_pcap_format() {
         assert_loads("tests/pcap-samples/http-example.cap", 1);
     }
 
+    /// `c07-sip-r2.cap` is NetMon format: errors mentioning Network Monitor
+    /// and suggesting editcap conversion.
     #[test]
     fn load_c07_sip_r2_netmon() {
         let data = std::fs::read("tests/pcap-samples/c07-sip-r2.cap").unwrap();
@@ -803,6 +922,8 @@ mod tests {
         buf
     }
 
+    /// An EPB whose declared length exceeds the file yields no packets and
+    /// no panic.
     #[test]
     fn truncated_epb_block_no_panic() {
         // EPB block header claims block_total_len >= 32 but the actual file
@@ -822,6 +943,8 @@ mod tests {
         assert!(packets.is_empty(), "truncated EPB should yield no packets");
     }
 
+    /// A classic pcap record claiming `incl_len = 0xFFFFFFFF` is bounds
+    /// checked: no out-of-bounds access, no allocation panic, no packets.
     #[test]
     fn huge_incl_len_classic_pcap_no_panic() {
         // Classic pcap with incl_len = 0xFFFFFFFF. The checked_add + bounds check
@@ -837,6 +960,8 @@ mod tests {
         );
     }
 
+    /// An EPB claiming `captured_len = 0xFFFFFFFF` beyond the actual data is
+    /// skipped without panicking.
     #[test]
     fn huge_captured_len_pcapng_epb_no_panic() {
         // pcapng EPB with captured_len = 0xFFFFFFFF. The data_end checked_add
@@ -866,6 +991,8 @@ mod tests {
         );
     }
 
+    /// An `if_tsresol` exponent of 20 (10^20 overflows u64) clamps to
+    /// `u64::MAX`; the following EPB still parses.
     #[test]
     fn if_tsresol_overflow_no_panic() {
         // IDB with if_tsresol option value = 20 (power-of-10 mode).
@@ -913,6 +1040,8 @@ mod tests {
         enc.finish().unwrap()
     }
 
+    /// A gzipped classic pcap inflates to an owned buffer and yields the
+    /// same packets as its uncompressed twin.
     #[test]
     fn gzip_classic_pcap_yields_same_packets_as_uncompressed_twin() {
         let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
@@ -934,6 +1063,7 @@ mod tests {
         );
     }
 
+    /// A gzipped pcapng yields the same packets as its uncompressed twin.
     #[test]
     fn gzip_pcapng_yields_same_packets_as_uncompressed_twin() {
         let plain = std::fs::read("tests/pcap-samples/b2bua-asterisk.pcapng").unwrap();
@@ -948,6 +1078,8 @@ mod tests {
         assert_eq!(twin, via_gz);
     }
 
+    /// Non-gzip input passes through `decompress_capture` as a borrowed
+    /// (zero-copy) slice.
     #[test]
     fn non_gzip_data_passes_through_borrowed() {
         let plain = std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap();
@@ -958,6 +1090,7 @@ mod tests {
         );
     }
 
+    /// A gzip stream cut in half errors with `GzipDecode`, not a panic.
     #[test]
     fn truncated_gzip_stream_errors_cleanly() {
         let compressed = gzip(&std::fs::read("tests/pcap-samples/sip-rtp-g711.pcap").unwrap());
@@ -970,6 +1103,8 @@ mod tests {
         assert!(err.to_string().contains("gzip"), "got: {err}");
     }
 
+    /// Valid gzip wrapping garbage decompresses fine; the format error then
+    /// names the decompressed magic, not the gzip one.
     #[test]
     fn gzip_wrapping_garbage_reports_decompressed_magic() {
         // 24 bytes of 0xdeadbeef (LE byte order ef be ad de) inside a valid
@@ -986,6 +1121,7 @@ mod tests {
         assert!(err.to_string().contains("0xdeadbeef"), "got: {err}");
     }
 
+    /// A gzip member inflating to zero bytes then errors with `TooShort`.
     #[test]
     fn empty_gzip_member_reports_too_short() {
         let compressed = gzip(&[]);
@@ -998,6 +1134,8 @@ mod tests {
         );
     }
 
+    /// Bytes starting with the gzip magic but followed by junk error with
+    /// `GzipDecode`.
     #[test]
     fn gzip_magic_prefix_with_corrupt_body_errors() {
         // Starts with 1f 8b but the rest is junk — not a valid gzip stream.
@@ -1010,6 +1148,8 @@ mod tests {
         );
     }
 
+    /// A small inflation cap refuses a gzip bomb with `GzipTooLarge`, while
+    /// the default cap admits an ordinary capture.
     #[test]
     fn gzip_bomb_is_bounded() {
         // 1 MiB of zeros compresses to ~1 KiB. A small inflation cap must
@@ -1024,6 +1164,8 @@ mod tests {
         assert!(decompress_capture(&compressed).is_ok());
     }
 
+    /// Feeding still-compressed bytes to `PcapReader::new` yields the
+    /// pointed `GzipData` error, not "unknown magic".
     #[test]
     fn pcap_reader_new_on_gzip_bytes_says_gzip_not_unknown_magic() {
         // A caller that skips decompress_capture must get a self-explanatory
@@ -1037,6 +1179,8 @@ mod tests {
         assert!(err.to_string().contains("gzip"), "got: {err}");
     }
 
+    /// A record with `incl_len = 0` parses as an empty-data packet with its
+    /// header fields intact.
     #[test]
     fn zero_length_classic_pcap_packet() {
         // Classic pcap with a packet whose incl_len = 0. Should parse

@@ -53,6 +53,7 @@ pub enum TimestampMode {
 }
 
 impl TimestampMode {
+    /// Cycle to the next mode.
     pub(in crate::tui) fn next(self) -> Self {
         match self {
             Self::Absolute => Self::DeltaPrev,
@@ -62,6 +63,7 @@ impl TimestampMode {
         }
     }
 
+    /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> &'static str {
         match self {
             Self::Absolute => "Time: Absolute",
@@ -85,6 +87,7 @@ pub enum ColorMode {
 }
 
 impl ColorMode {
+    /// Cycle to the next mode.
     pub(in crate::tui) fn next(self) -> Self {
         match self {
             Self::Method => Self::CallId,
@@ -93,6 +96,7 @@ impl ColorMode {
         }
     }
 
+    /// Human-readable label for the status bar.
     pub(in crate::tui) fn label(self) -> &'static str {
         match self {
             Self::Method => "Color: Method",
@@ -439,6 +443,8 @@ pub(in crate::tui) struct FileOpenState {
 }
 
 impl Default for FileOpenState {
+    /// Browser mode starting in the process's current directory (falling
+    /// back to `/`), with empty path, filter and entries.
     fn default() -> Self {
         Self {
             path: String::new(),
@@ -515,6 +521,8 @@ pub(in crate::tui) struct CallFlowViewState {
 }
 
 impl Default for CallFlowViewState {
+    /// Top of the ladder, split raw-preview on at 40%, wrap on, all
+    /// toggles/marks/caches cleared.
     fn default() -> Self {
         Self {
             scroll: 0,
@@ -558,12 +566,19 @@ pub(in crate::tui) enum LadderSource {
 /// selection) are deliberately absent.
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::tui) struct LadderKey {
+    /// Anchor dialog's Call-ID (the view's subject).
     pub(in crate::tui) call_id: String,
+    /// Store-state fingerprint the layout was derived from.
     pub(in crate::tui) source: LadderSource,
+    /// Active single-transaction filter, if any.
     pub(in crate::tui) transaction_filter: Option<(u32, String)>,
+    /// SDP display mode (changes row content/heights).
     pub(in crate::tui) sdp_mode: SdpDisplayMode,
+    /// Timestamp display mode (Scaled inserts spacer rows).
     pub(in crate::tui) ts_mode: TimestampMode,
+    /// Whether RTP bars are laid out between messages.
     pub(in crate::tui) show_rtp: bool,
+    /// Name-resolution mode (changes participant labels).
     pub(in crate::tui) name_mode: crate::names::NameMode,
     /// [`crate::names::NameResolver::generation`] — participant labels.
     pub(in crate::tui) resolver_generation: u64,
@@ -571,6 +586,7 @@ pub(in crate::tui) struct LadderKey {
     /// segments feed the layout (plain view with RTP bars on) — `None`
     /// when they don't (extended view, or bars off).
     pub(in crate::tui) stream_generation: Option<u64>,
+    /// Message indices whose retransmit folds are expanded.
     pub(in crate::tui) fold_expanded: HashSet<usize>,
     /// Checked dialogs a multi-selection flow merges (display order);
     /// empty for the classic single-dialog ladder.
@@ -583,8 +599,11 @@ pub(in crate::tui) struct LadderKey {
 /// the render pass re-runs only the cheap style stage over it.
 #[derive(Debug, Clone, Default)]
 pub(in crate::tui) struct LadderCache {
+    /// Key the cached layout was derived under; `None` until first derivation.
     pub(in crate::tui) key: Option<LadderKey>,
+    /// Laid-out participant columns (endpoints), in display order.
     pub(in crate::tui) participants: Vec<call_flow::Participant>,
+    /// Laid-out ladder rows (messages, SDP detail, RTP bars, spacers).
     pub(in crate::tui) rows: Vec<call_flow::LayoutRow>,
     /// Cached RTP codec segments for `segs_key`'s dialog — the layout
     /// input recomputed only when the stream store structurally changes.
@@ -668,6 +687,8 @@ pub struct FilterDialogState {
 }
 
 impl Default for FilterDialogState {
+    /// Empty text fields, every method checked (show all), focus on the
+    /// first field, no error.
     fn default() -> Self {
         Self {
             sip_from: String::new(),
@@ -861,8 +882,9 @@ impl FilterDialogState {
     /// before being embedded, so `a+b` means the user a+b and an unbalanced
     /// `(` can never produce a parse error.
     pub(in crate::tui) fn build_filter_expression(&self) -> Option<String> {
-        // The DSL string literal has no escape sequences, so a literal quote
-        // is smuggled through as the regex byte escape \x27 / \x22.
+        /// Regex-escape user text for embedding in a DSL string literal.
+        /// The DSL string literal has no escape sequences, so a literal quote
+        /// is smuggled through as the regex byte escape \x27 / \x22.
         fn escape_filter_text(s: &str) -> String {
             regex::escape(s)
                 .replace('\'', "\\x27")
@@ -1024,8 +1046,11 @@ pub(in crate::tui) struct DisplayedKey {
     pub(in crate::tui) generation: u64,
     /// Human-readable active-filter text (uniquely describes the filter).
     pub(in crate::tui) filter_text: String,
+    /// Search query in effect at derivation.
     pub(in crate::tui) query: String,
+    /// Sort column in effect at derivation.
     pub(in crate::tui) sort_column: crate::tui::call_list::SortColumn,
+    /// Sort direction in effect at derivation (`true` = ascending).
     pub(in crate::tui) sort_ascending: bool,
 }
 
@@ -1035,6 +1060,7 @@ pub(in crate::tui) struct DisplayedKey {
 /// ticks entirely while the store generation and view inputs are unchanged.
 #[derive(Debug, Default)]
 pub(in crate::tui) struct DisplayedCache {
+    /// Key the cached list was derived under; `None` until first derivation.
     pub(in crate::tui) key: Option<DisplayedKey>,
     /// Call-IDs in display order.
     pub(in crate::tui) ids: Vec<String>,
@@ -1049,10 +1075,14 @@ pub(in crate::tui) struct DisplayedCache {
 pub(in crate::tui) struct ChurnFloor(Option<std::time::Instant>);
 
 impl ChurnFloor {
+    /// Whether a churn-driven rebuild is allowed now: `true` when at
+    /// least `CHURN_REBUILD_MIN` has passed since the last `mark()` or
+    /// nothing was ever marked.
     pub(in crate::tui) fn ready(&self) -> bool {
         self.0.is_none_or(|t| t.elapsed() >= CHURN_REBUILD_MIN)
     }
 
+    /// Record that a rebuild just happened, starting a new floor window.
     pub(in crate::tui) fn mark(&mut self) {
         self.0 = Some(std::time::Instant::now());
     }
@@ -1074,12 +1104,15 @@ impl ChurnFloor {
 /// Everything that shaped the cached stream-list rows.
 #[derive(Debug, PartialEq)]
 pub(in crate::tui) struct StreamDisplayedKey {
+    /// Stream-store generation at derivation.
     pub(in crate::tui) stream_generation: u64,
     /// Dialog-store generation — the display filter matches through the
     /// associated dialog, so dialog changes reshape the list too. `None`
     /// when no filter was active (dialogs then don't participate).
     pub(in crate::tui) dialog_generation: Option<u64>,
+    /// Human-readable active-filter text at derivation.
     pub(in crate::tui) filter_text: String,
+    /// Search query at derivation.
     pub(in crate::tui) query: String,
 }
 
@@ -1089,9 +1122,11 @@ pub(in crate::tui) struct StreamDisplayedKey {
 /// under a blocking read lock on every keypress.
 #[derive(Debug, Default)]
 pub(in crate::tui) struct StreamDisplayedCache {
+    /// Key the cached rows were derived under; `None` until first derivation.
     pub(in crate::tui) key: Option<StreamDisplayedKey>,
     /// Stream keys in display order.
     pub(in crate::tui) keys: Vec<crate::rtp::stream::StreamKey>,
+    /// Floors generation-driven rebuilds (user inputs bypass it).
     pub(in crate::tui) floor: ChurnFloor,
 }
 
@@ -1101,7 +1136,9 @@ pub(in crate::tui) struct StreamDisplayedCache {
 pub(in crate::tui) struct StatsCache {
     /// (dialog generation, stream generation) the text was derived from.
     pub(in crate::tui) key: Option<(u64, u64)>,
+    /// Pre-rendered statistics text the view scrolls through.
     pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation of the aggregate text.
     pub(in crate::tui) floor: ChurnFloor,
 }
 

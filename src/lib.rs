@@ -28,11 +28,14 @@
 //! disappear in any release. Depend only on what appears in the rendered
 //! rustdoc.
 
-// Every public item must be documented, and unwrap/expect are banned on
-// library production paths (tests are exempt via clippy.toml). These are
-// crate attributes rather than workspace lints so test/bench crates are
-// not covered — see the [workspace.lints] comment in Cargo.toml.
+// Every item — public and private, down to fields and consts — must be
+// documented, and unwrap/expect are banned on library production paths
+// (tests are exempt via clippy.toml). These are crate attributes rather
+// than workspace lints so test/bench crates are not covered — see the
+// [workspace.lints] comment in Cargo.toml. CI runs clippy with
+// `-D warnings`, so both doc lints are hard gates in practice.
 #![warn(missing_docs)]
+#![warn(clippy::missing_docs_in_private_items)]
 #![warn(clippy::unwrap_used, clippy::expect_used)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod app;

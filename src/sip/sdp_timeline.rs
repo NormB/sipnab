@@ -67,6 +67,16 @@ pub enum OfferAnswer {
 /// to detect mid-call events (hold, resume, codec change, T.38, anchor change).
 ///
 /// Messages without SDP bodies are silently ignored.
+///
+/// # Arguments
+///
+/// * `timeline` — the dialog's SDP exchange history, oldest first.
+/// * `msg` — the SIP message to inspect for an SDP body.
+///
+/// # Side effects
+///
+/// Appends one `SdpExchange` to `timeline` when `msg` carries a parseable
+/// `application/sdp` body; otherwise leaves it untouched.
 pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     let sdp = match msg.sdp() {
         Some(s) => s,
@@ -93,6 +103,17 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
 ///
 /// Appends a [`SdpEvent::Transfer`] entry when the message is a REFER request.
 /// Non-REFER messages are silently ignored.
+///
+/// # Arguments
+///
+/// * `timeline` — the dialog's SDP exchange history, oldest first.
+/// * `msg` — the SIP message to inspect; only REFER requests are recorded.
+///
+/// # Side effects
+///
+/// Appends a synthetic `SdpExchange` (mode `"transfer"`, no media fields)
+/// to `timeline` for REFER requests; the `Refer-To` header value becomes
+/// the transfer target (`"unknown"` when absent).
 pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     if !msg.is_request || msg.method.as_ref() != Some(&super::method::SipMethod::Refer) {
         return;
@@ -170,6 +191,19 @@ fn extract_media_info(
 /// 3. Resume (sendonly/inactive → sendrecv)
 /// 4. Media anchor change (IP or port changed)
 /// 5. Codec change (different codec set)
+///
+/// # Arguments
+///
+/// * `timeline` — prior exchanges; only the last entry is compared against.
+/// * `codecs` — de-duplicated codec names of the current exchange.
+/// * `media_addr` / `media_port` — current media anchor.
+/// * `mode` — current direction mode string (`"sendrecv"` etc.).
+/// * `is_t38` — whether the current first media description is `m=image`.
+///
+/// # Returns
+///
+/// The highest-priority detected event, or `None` when the timeline is
+/// empty or nothing changed.
 fn detect_event(
     timeline: &[SdpExchange],
     codecs: &[String],
@@ -218,6 +252,8 @@ fn detect_event(
 
 // ── Tests ────────────────────────────────────────────────────────────
 
+/// Tests for SDP timeline tracking: offer/answer recording, hold/resume,
+/// codec change, T.38 switchover, anchor change, and REFER transfers.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,16 +262,19 @@ mod tests {
     use chrono::TimeDelta;
     use std::net::{IpAddr, Ipv4Addr};
 
+    /// Fixed 127.0.0.1 address used for all test messages.
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
     }
 
+    /// Fixed base timestamp (2024-06-15 12:00:00 UTC) tests offset from.
     fn base_ts() -> DateTime<Utc> {
         chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
     }
 
     use crate::test_utils::build_sip_message as build_sip;
 
+    /// Build an INVITE carrying `sdp_body` captured at `ts`.
     fn make_invite_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "INVITE sip:bob@example.com SIP/2.0",
@@ -261,6 +300,7 @@ mod tests {
         .expect("should parse INVITE with SDP")
     }
 
+    /// Build a 200 OK response carrying `sdp_body` captured at `ts`.
     fn make_200_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
             "SIP/2.0 200 OK",
@@ -286,6 +326,7 @@ mod tests {
         .expect("should parse 200 OK with SDP")
     }
 
+    /// Build a sendrecv audio SDP body with the given codec, address, and port.
     fn sendrecv_sdp(codec: &str, addr: &str, port: u16) -> Vec<u8> {
         format!(
             "v=0\r\n\
@@ -300,6 +341,8 @@ mod tests {
         .into_bytes()
     }
 
+    /// Build an audio SDP body with an explicit direction attribute
+    /// (`sendonly`, `inactive`, ...).
     fn directional_sdp(codec: &str, addr: &str, port: u16, direction: &str) -> Vec<u8> {
         format!(
             "v=0\r\n\
@@ -314,6 +357,7 @@ mod tests {
         .into_bytes()
     }
 
+    /// Build a T.38 fax SDP body (`m=image ... udptl t38`).
     fn t38_sdp(addr: &str, port: u16) -> Vec<u8> {
         format!(
             "v=0\r\n\
@@ -326,6 +370,8 @@ mod tests {
         .into_bytes()
     }
 
+    /// First offer records no event; the answer from a different anchor
+    /// records a MediaAnchorChange.
     #[test]
     fn initial_offer_and_answer() {
         let mut timeline = Vec::new();
@@ -354,6 +400,7 @@ mod tests {
         assert_eq!(timeline[1].event, Some(SdpEvent::MediaAnchorChange));
     }
 
+    /// A re-INVITE switching sendrecv to sendonly is detected as Hold.
     #[test]
     fn hold_detection() {
         let mut timeline = Vec::new();
@@ -373,6 +420,7 @@ mod tests {
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
     }
 
+    /// Returning to sendrecv after a hold is detected as Resume.
     #[test]
     fn resume_detection() {
         let mut timeline = Vec::new();
@@ -400,6 +448,7 @@ mod tests {
         assert_eq!(timeline[2].event, Some(SdpEvent::Resume));
     }
 
+    /// A re-INVITE swapping PCMU for opus is detected as CodecChange.
     #[test]
     fn codec_change_detection() {
         let mut timeline = Vec::new();
@@ -420,6 +469,7 @@ mod tests {
         assert_eq!(timeline[1].event, Some(SdpEvent::CodecChange));
     }
 
+    /// A re-INVITE moving audio to `m=image` is detected as T38Switch.
     #[test]
     fn t38_switch_detection() {
         let mut timeline = Vec::new();
@@ -440,6 +490,7 @@ mod tests {
         assert_eq!(timeline[1].event, Some(SdpEvent::T38Switch));
     }
 
+    /// A port change with identical codec/mode is a MediaAnchorChange.
     #[test]
     fn media_anchor_change_detection() {
         let mut timeline = Vec::new();
@@ -460,6 +511,7 @@ mod tests {
         assert_eq!(timeline[1].event, Some(SdpEvent::MediaAnchorChange));
     }
 
+    /// An audio+video offer records codecs from every m= line, not just the first.
     #[test]
     fn multi_mline_timeline_includes_video_codec() {
         // An audio+video offer must not drop the video codec from the
@@ -488,6 +540,7 @@ a=sendrecv\r\n";
         );
     }
 
+    /// A message without an SDP body leaves the timeline untouched.
     #[test]
     fn no_sdp_body_ignored() {
         let mut timeline = Vec::new();
@@ -517,6 +570,7 @@ a=sendrecv\r\n";
         assert!(timeline.is_empty());
     }
 
+    /// `a=inactive` is also detected as Hold (not just sendonly).
     #[test]
     fn inactive_hold_detection() {
         let mut timeline = Vec::new();
@@ -535,6 +589,7 @@ a=sendrecv\r\n";
         assert_eq!(timeline[1].event, Some(SdpEvent::Hold));
     }
 
+    /// A REFER request records a Transfer event with the Refer-To target.
     #[test]
     fn track_transfer_creates_event() {
         let mut timeline = Vec::new();
@@ -574,6 +629,7 @@ a=sendrecv\r\n";
         );
     }
 
+    /// A non-REFER request is ignored by track_transfer.
     #[test]
     fn track_transfer_ignores_non_refer() {
         let mut timeline = Vec::new();

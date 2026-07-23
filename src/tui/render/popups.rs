@@ -3,7 +3,8 @@
 
 use crate::tui::*;
 
-/// Compute a centered popup rectangle within the given area.
+/// Compute a centered popup rectangle within the given area, clamping the
+/// requested `width`/`height` to the area's size. Pure.
 pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rect {
     let w = width.min(area.width);
     let h = height.min(area.height);
@@ -12,7 +13,20 @@ pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rec
     Rect::new(x, y, w, h)
 }
 
-/// Render the save dialog as a centered popup overlay.
+/// Render the save dialog as a centered popup overlay: the editable path
+/// (with a block cursor), the category-grouped format list with the current
+/// selection marked, the dialog/message counts and the controls line. The
+/// popup is sized to its content and, on short terminals, scrolled so the
+/// selected format stays visible.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `app` - Application state (save dialog state, theme).
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
 pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width = 72.min(area.width.saturating_sub(4));
 
@@ -179,12 +193,19 @@ pub(in crate::tui) fn render_save_popup(frame: &mut ratatui::Frame, area: Rect, 
     frame.render_widget(para, inner);
 }
 
-/// Render the file-open dialog as a centered popup overlay.
-///
-/// Two modes: a directory browser (default) that lists subdirectories and
-/// pcap/pcapng/cap files, or a manual-path text input (toggled with Tab).
 /// Render the "Name Address" popup: a row of the view's endpoints (Tab to
-/// switch), the active IP (read-only), and that IP's editable name.
+/// switch), the active IP (read-only), and that IP's editable name with a
+/// block cursor. A validation error, when present, is shown inline so the
+/// typed name can be corrected without closing the popup.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `app` - Application state (name dialog state, theme).
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
 pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let multi = app.name_dialog.targets.len() > 1;
     let popup_width = 60.min(area.width.saturating_sub(4));
@@ -272,6 +293,20 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// Render the file-open dialog as a centered popup overlay.
+///
+/// Two modes: a directory browser (default) that lists subdirectories and
+/// pcap/pcapng/cap files, or a manual-path text input (toggled with Tab);
+/// the active mode's body renderer is dispatched from here.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `app` - Application state (file-open dialog state, theme).
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
 pub(in crate::tui) fn render_file_open_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width = 80.min(area.width.saturating_sub(4));
     let popup_height = 22.min(area.height.saturating_sub(2));
@@ -296,6 +331,8 @@ pub(in crate::tui) fn render_file_open_popup(frame: &mut ratatui::Frame, area: R
 
 /// Word-wrap `text` to `width` columns (best-effort, on whitespace). Used for
 /// the file-browser error message, since the dialog Paragraph does not wrap.
+/// Returns at least one (possibly empty) line; a zero `width` returns the
+/// text unwrapped. Pure.
 fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
@@ -322,7 +359,17 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-/// Render the directory-browser variant of the Open dialog.
+/// Render the directory-browser variant of the Open dialog: current
+/// directory, filter line, the scrolled entry list (or an error / empty
+/// notice) and the controls footer pinned to the bottom.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `inner` - The popup's inner area (inside the border block).
+/// * `app` - Application state (file-open dialog state, theme).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_file_open_browser(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
     let header = format!("  Dir: {}", app.file_open.dir.display());
     let filter_label = if app.file_open.filter.is_empty() {
@@ -449,7 +496,17 @@ pub(in crate::tui) fn render_file_open_browser(frame: &mut ratatui::Frame, inner
     frame.render_widget(para, inner);
 }
 
-/// Render the manual path-input variant of the Open dialog.
+/// Render the manual path-input variant of the Open dialog: the editable
+/// path with a block cursor, the supported-extensions hint and the
+/// controls line.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `inner` - The popup's inner area (inside the border block).
+/// * `app` - Application state (file-open dialog state, theme).
+///
+/// # Side effects
+/// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_file_open_manual(frame: &mut ratatui::Frame, inner: Rect, app: &App) {
     let path = &app.file_open.path;
     let cursor = app.file_open.cursor.min(path.len());
@@ -533,10 +590,15 @@ pub(in crate::tui) fn render_file_open_manual(frame: &mut ratatui::Frame, inner:
 
 /// State for a single filter text input field.
 pub(in crate::tui) struct FilterTextField<'a> {
+    /// Label painted before the bracketed field (e.g. "  SIP From:    ").
     label: &'a str,
+    /// Current text content of the field.
     value: &'a str,
+    /// Total field width in columns, brackets included.
     field_width: u16,
+    /// Whether this field has keyboard focus (shows the block cursor).
     focused: bool,
+    /// Cursor position within `value` (bytes); only used when focused.
     cursor_pos: usize,
 }
 
@@ -544,6 +606,16 @@ pub(in crate::tui) struct FilterTextField<'a> {
 ///
 /// Paints: `label [content_with_cursor_________________]`
 /// The field content is rendered with a block cursor at `cursor_pos` when focused.
+///
+/// # Arguments
+/// * `buf` - Buffer to paint into directly.
+/// * `x` - Column of the label's first character.
+/// * `y` - Row to paint on.
+/// * `field` - Field label, value, width, focus and cursor state.
+/// * `theme` - Color theme for label/bracket/content styling.
+///
+/// # Side effects
+/// Writes cells into `buf` only; no state is mutated.
 pub(in crate::tui) fn render_filter_text_field(
     buf: &mut ratatui::buffer::Buffer,
     x: u16,
@@ -659,6 +731,17 @@ pub(in crate::tui) fn render_filter_text_field(
 /// |                                                    |
 /// +----------------------------------------------------+
 /// ```
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `state` - Filter dialog state (field texts, focus, checkboxes, error).
+/// * `theme` - Color theme for all styling.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup) via direct
+/// buffer painting; no state is mutated. A parse error is shown inline
+/// below the buttons.
 pub(in crate::tui) fn render_filter_popup(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -815,7 +898,18 @@ pub(in crate::tui) fn render_filter_popup(
     }
 }
 
-/// Render the settings popup as a centered overlay.
+/// Render the settings popup as a centered overlay: one row per setting
+/// (color mode, timestamp mode, autoscroll, raw preview, SDP display,
+/// syntax highlight) with the focused row emphasized.
+///
+/// # Arguments
+/// * `frame` - Frame to draw into.
+/// * `area` - Full frame area the popup is centered within.
+/// * `app` - Application state (current mode values, focused item, theme).
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup) via direct
+/// buffer painting; no state is mutated.
 pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let popup_width: u16 = 50;
     let popup_height: u16 = 12;
@@ -894,11 +988,15 @@ pub(in crate::tui) fn render_settings_popup(frame: &mut ratatui::Frame, area: Re
     }
 }
 
+/// Unit tests for the popup renderers: cursor branches, empty/populated
+/// browser lists, field truncation and popup geometry.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
 
+    /// An empty save path renders the popup (block cursor branch) without
+    /// panicking.
     #[test]
     fn render_save_popup_empty_path_shows_cursor() {
         let mut app = App::new_test();
@@ -926,6 +1024,8 @@ mod tests {
         assert!(found);
     }
 
+    /// A cursor in the middle of the path exercises the split-span
+    /// (before/cursor/after) branch without panicking.
     #[test]
     fn render_save_popup_cursor_mid_string() {
         let mut app = App::new_test();
@@ -941,6 +1041,7 @@ mod tests {
         // Renders without panic; reaches the mid-string cursor branch.
     }
 
+    /// An empty entry list shows the "(no matching pcap files)" notice.
     #[test]
     fn render_file_open_browser_empty_and_populated() {
         // Empty entries → "(no matching pcap files)" path.
@@ -965,6 +1066,7 @@ mod tests {
         assert!(text.contains("no matching pcap files"));
     }
 
+    /// A typed filter replaces the hint line with "Filter: <text>".
     #[test]
     fn render_file_open_browser_with_filter() {
         let mut app = App::new_test();
@@ -988,6 +1090,8 @@ mod tests {
         assert!(text.contains("Filter: abc"));
     }
 
+    /// The manual variant renders both the empty-path and mid-path cursor
+    /// branches and shows the Path label.
     #[test]
     fn render_file_open_manual_empty_and_with_path() {
         // Empty path branch.
@@ -1027,6 +1131,8 @@ mod tests {
 
     // ── render_status_line2/3 direct (non-call-flow branch) ────────
 
+    /// A focused field shows label, value and cursor; an unfocused field
+    /// truncates a value longer than the field width.
     #[test]
     fn render_filter_text_field_focused_and_unfocused() {
         let theme = Theme::default();
@@ -1064,6 +1170,8 @@ mod tests {
         assert!(row2.contains("To:"));
     }
 
+    /// A cursor at `value.len()` paints the trailing block cursor without
+    /// panicking.
     #[test]
     fn render_filter_text_field_cursor_at_end() {
         let theme = Theme::default();
@@ -1081,6 +1189,7 @@ mod tests {
 
     // ── centered_popup geometry ────────────────────────────────────
 
+    /// Oversized requests clamp to the area; smaller ones center inside it.
     #[test]
     fn centered_popup_clamps_to_area() {
         let area = Rect::new(0, 0, 40, 20);

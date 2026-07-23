@@ -14,6 +14,27 @@ use std::path::Path;
 /// the same directory; on success the temp is fsync'd and renamed over `path`,
 /// and the directory is fsync'd for crash durability. On any error from `write`
 /// (or the fsync/rename) the temp file is removed and `path` is left untouched.
+///
+/// # Arguments
+///
+/// * `path` — final destination file; replaced atomically on success. A bare
+///   filename (no parent directory) is treated as relative to `.`.
+/// * `write` — closure that produces the new contents by writing to the
+///   supplied (unbuffered) writer.
+///
+/// # Errors
+///
+/// Returns any `io::Error` from creating the temp file, from the `write`
+/// closure itself, from fsyncing the temp file, or from the rename. In every
+/// error case the partial temp file is removed and `path` keeps its previous
+/// contents (or remains absent).
+///
+/// # Side effects
+///
+/// Filesystem I/O: creates a `.sipnab-tmp-*` temp file in `path`'s directory,
+/// fsyncs it, renames it over `path` (replacing any existing file), and
+/// best-effort fsyncs the containing directory (that fsync's own error is
+/// deliberately ignored).
 pub fn write_atomic<F>(path: &Path, write: F) -> io::Result<()>
 where
     F: FnOnce(&mut dyn Write) -> io::Result<()>,
@@ -46,10 +67,14 @@ where
     Ok(())
 }
 
+/// Tests for `write_atomic`: fresh-file creation, atomic replacement, and
+/// the guarantee that a failed write leaves the target and directory clean.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A successful write to a previously nonexistent path creates the file
+    /// with exactly the written contents.
     #[test]
     fn writes_new_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -58,6 +83,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"hello");
     }
 
+    /// A successful write over an existing file fully replaces the old
+    /// contents with the new ones.
     #[test]
     fn replaces_existing_file_on_success() {
         let dir = tempfile::tempdir().unwrap();
@@ -67,6 +94,8 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
     }
 
+    /// A mid-write failure must leave the original file byte-identical and
+    /// leave no `.sipnab-tmp-*` litter in the directory.
     #[test]
     fn failure_leaves_original_intact_and_no_temp() {
         let dir = tempfile::tempdir().unwrap();
@@ -90,6 +119,8 @@ mod tests {
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
     }
 
+    /// A failed write to a path that never existed must not create the
+    /// target file at all.
     #[test]
     fn failure_when_target_is_new_creates_nothing() {
         let dir = tempfile::tempdir().unwrap();

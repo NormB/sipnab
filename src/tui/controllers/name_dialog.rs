@@ -4,6 +4,11 @@ use crate::tui::*;
 
 /// Source + destination IPs of the selected dialog (for the Name Address
 /// popup). Resolved against the same displayed list as the renderer.
+///
+/// # Returns
+/// `(src_addr, dst_addr)` of the highlighted row, or `None` when the
+/// displayed list is empty or the selection is out of range. Briefly
+/// holds the dialog-store read lock.
 pub(in crate::tui) fn get_selected_dialog_endpoints(
     app: &App,
 ) -> Option<(std::net::IpAddr, std::net::IpAddr)> {
@@ -23,6 +28,16 @@ pub(in crate::tui) fn get_selected_dialog_endpoints(
 /// Open the "Name Address" popup offering every endpoint in `ips` (de-duplicated,
 /// order preserved), with `active` initially focused. Each target is pre-filled
 /// with its existing manual name. `Tab`/`Shift-Tab` switch between them.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `ips` - the endpoint addresses to offer; duplicates are dropped.
+/// * `active` - index of the target to focus first (clamped to the list).
+///
+/// # Side effects
+/// Populates `app.name_dialog` (targets, active index, cursor at the end
+/// of the active name, error cleared) and sets `app.active_popup` to the
+/// Name Address popup. A no-op when `ips` de-duplicates to nothing.
 pub(in crate::tui) fn open_name_dialog_for(
     app: &mut App,
     ips: Vec<std::net::IpAddr>,
@@ -57,6 +72,18 @@ pub(in crate::tui) fn open_name_dialog_for(
 
 /// Handle keys in the "Name Address" popup. `Tab`/`Shift-Tab` move between the
 /// offered endpoints; the other keys edit the active endpoint's name.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, matched directly (this popup has no keymap
+///   bindings).
+///
+/// # Side effects
+/// Esc closes the popup without applying. Enter applies every target via
+/// `apply_name_dialog` and closes only on success (a validation failure
+/// keeps the popup open with an inline error). The editing keys mutate
+/// the active target's name and `app.name_dialog.cursor` on char
+/// boundaries.
 pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -124,9 +151,20 @@ pub(in crate::tui) fn handle_name_popup_key(app: &mut App, key: KeyEvent) {
 /// Apply the Name Address popup: set or clear the manual mapping for every
 /// offered endpoint, persist the table, and turn name resolution on so the
 /// changes are visible immediately.
-/// Apply every target's name. Returns `false` on a validation failure —
-/// the error is shown inline in the popup (which stays open) and NOTHING
-/// is applied, so a multi-endpoint edit is never left half-saved.
+///
+/// # Returns
+/// `false` on a validation failure — the error is shown inline in the
+/// popup (which stays open) and NOTHING is applied, so a multi-endpoint
+/// edit is never left half-saved. `true` once every target has been
+/// applied.
+///
+/// # Side effects
+/// Non-empty names are set on the resolver's manual table (empty names
+/// clear existing mappings); the first set flips `app.name_mode` on when
+/// it was `Off`. Writes the manual table to `app.names_save_path` and,
+/// when configured, into the user's sipnabrc via `names_config_path` —
+/// write failures are reported on the status line. Sets `app.status_error`
+/// to a named/cleared summary.
 fn apply_name_dialog(app: &mut App) -> bool {
     let mut set = 0usize;
     let mut cleared = 0usize;
@@ -195,11 +233,14 @@ fn apply_name_dialog(app: &mut App) -> bool {
     true
 }
 
+/// Unit tests for the Name Address popup's edit/apply flow.
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
 
+    /// Typing a name and pressing Enter stores the manual mapping and
+    /// turns name resolution on so the change is visible.
     #[test]
     fn name_dialog_sets_mapping_and_enables_resolution() {
         let mut app = app_with_dialogs();
@@ -218,8 +259,8 @@ mod tests {
         );
     }
 
-    // R1: the popup offers every endpoint; Tab/Shift-Tab switch between them,
-    // each keeps its own edited name, and Enter applies them all.
+    /// The popup offers every endpoint; Tab/Shift-Tab switch between them,
+    /// each keeps its own edited name, and Enter applies them all.
     #[test]
     fn name_dialog_tab_edits_multiple_endpoints() {
         let mut app = app_with_dialogs();
@@ -253,6 +294,8 @@ mod tests {
         );
     }
 
+    /// Deleting an existing name and pressing Enter clears the manual
+    /// mapping (the plain IP shows again).
     #[test]
     fn name_dialog_empty_clears_mapping() {
         let mut app = app_with_dialogs();
@@ -270,6 +313,7 @@ mod tests {
     }
 }
 
+/// Tests for name validation keeping the popup open on invalid input.
 #[cfg(test)]
 mod validation_tests {
     use super::*;

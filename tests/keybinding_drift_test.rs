@@ -111,6 +111,8 @@ fn allowed_undocumented(ch: char) -> Option<&'static str> {
     }
 }
 
+/// Every action key in the default `Keymap` (quit/help/save/…) appears as a
+/// token in the F1 `HELP_TEXT`.
 #[test]
 fn keymap_default_keys_are_documented() {
     let docs = documented_tokens();
@@ -136,6 +138,8 @@ fn keymap_default_keys_are_documented() {
     }
 }
 
+/// A fixed roster of must-discover command keys (n/N/O/s/u/r/v/t/c/d,
+/// Shift+P, Ctrl+L) is present in the F1 help.
 #[test]
 fn important_command_keys_are_documented() {
     let docs = documented_tokens();
@@ -211,6 +215,8 @@ fn mapped_char_keys_are_documented_or_allowlisted() {
     );
 }
 
+/// Every `KeyCode::Char('x')` literal scraped from the controller sources is
+/// either documented in the F1 help or allow-listed with a reason.
 #[test]
 fn every_handled_char_key_is_documented_or_allowlisted() {
     let docs = documented_tokens();
@@ -268,7 +274,7 @@ fn every_documented_view_key_is_handled() {
             stream_detail_action(km, k).is_some()
         }),
     ];
-    // Handled globally in handle_key_event, valid in every view.
+    /// Keys handled globally in handle_key_event, valid in every view.
     fn is_global(kc: KeyCode) -> bool {
         // '?' re-dispatches as the help key from any view.
         matches!(kc, KeyCode::Char('v' | 'V' | 'n' | '?'))

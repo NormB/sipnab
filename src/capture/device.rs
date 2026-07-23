@@ -13,6 +13,23 @@ use anyhow::Result;
 ///
 /// On macOS/BSD, uses pcap's default device (based on routing table),
 /// then falls back to the first non-loopback interface.
+///
+/// # Returns
+///
+/// The name of the selected capture device (always `"any"` on Linux).
+///
+/// # Errors
+///
+/// On non-Linux platforms, returns an error when no device can be found —
+/// either because none exist / privileges are insufficient (with a
+/// `sudo` hint) or because only loopback devices exist (listing the
+/// available names).
+///
+/// # Side effects
+///
+/// On non-Linux platforms, queries libpcap for the default device and the
+/// full device list (system calls into the OS capture subsystem). No I/O
+/// on Linux.
 pub fn find_default_device() -> Result<String> {
     // On Linux, "any" captures all interfaces — this is what sngrep does.
     // SIP servers often listen on loopback, so capturing only eth0 misses traffic.
@@ -57,6 +74,11 @@ pub fn find_default_device() -> Result<String> {
 /// List all available capture device names.
 ///
 /// Returns an empty vec if listing fails (e.g., insufficient privileges).
+///
+/// # Side effects
+///
+/// Queries libpcap for the system's capture device list (system calls into
+/// the OS capture subsystem); errors are swallowed into the empty result.
 pub fn list_devices() -> Vec<String> {
     pcap::Device::list()
         .unwrap_or_default()
@@ -78,6 +100,20 @@ pub fn list_devices() -> Vec<String> {
 /// Otherwise-unusual names (backslashes, colons, dots — as in Windows NPF
 /// device paths) are passed through unchanged; whether the interface actually
 /// exists is left to the capture layer, which produces a precise OS error.
+///
+/// # Arguments
+///
+/// * `spec` — the raw comma-separated interface list as typed by the user
+///   (e.g. `"eth0,docker0"`).
+///
+/// # Returns
+///
+/// The validated, deduplicated interface names in first-seen order.
+///
+/// # Errors
+///
+/// Returns an error for an empty/whitespace-only spec, for an empty entry
+/// produced by a stray comma, or for a name containing an embedded NUL.
 pub fn parse_device_list(spec: &str) -> Result<Vec<String>> {
     if spec.trim().is_empty() {
         anyhow::bail!("no interface specified: device list is empty");
@@ -108,10 +144,14 @@ pub fn parse_device_list(spec: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Tests for device auto-detection (environment-tolerant, since CI may
+/// lack pcap privileges) and for `parse_device_list` validation.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `list_devices` must never panic; the result may be empty in
+    /// sandboxed CI environments.
     #[test]
     fn list_devices_returns_vec() {
         // Should not panic; may be empty in sandboxed CI environments.
@@ -120,6 +160,8 @@ mod tests {
         tracing::info!("Available devices: {:?}", devs);
     }
 
+    /// `find_default_device` yields a non-empty name, or one of the known
+    /// no-device/permission errors when the environment blocks pcap.
     #[test]
     fn find_default_device_returns_non_empty() {
         // This test may fail in heavily sandboxed CI (no pcap permissions).
@@ -155,11 +197,13 @@ mod tests {
 
     // ── parse_device_list: selected-interface parsing/validation ─────────
 
+    /// A single interface name parses to a one-element list.
     #[test]
     fn device_list_single() {
         assert_eq!(parse_device_list("eth0").unwrap(), vec!["eth0"]);
     }
 
+    /// Multiple comma-separated names parse in the order given.
     #[test]
     fn device_list_multiple_in_order() {
         assert_eq!(
@@ -168,6 +212,7 @@ mod tests {
         );
     }
 
+    /// Spaces and tabs around entries are trimmed away.
     #[test]
     fn device_list_trims_surrounding_whitespace() {
         assert_eq!(
@@ -176,6 +221,7 @@ mod tests {
         );
     }
 
+    /// Repeated names are deduplicated, keeping first-seen order.
     #[test]
     fn device_list_dedups_preserving_first_seen_order() {
         assert_eq!(
@@ -186,17 +232,21 @@ mod tests {
 
     // ── Failure / adversarial cases ──────────────────────────────────────
 
+    /// An empty spec is rejected with an "empty" error message.
     #[test]
     fn device_list_rejects_empty_string() {
         let err = parse_device_list("").unwrap_err().to_string();
         assert!(err.contains("empty"), "got: {err}");
     }
 
+    /// A spec containing only whitespace is rejected.
     #[test]
     fn device_list_rejects_whitespace_only() {
         assert!(parse_device_list("   \t ").is_err());
     }
 
+    /// A doubled comma ("eth0,,docker0") fails loudly rather than silently
+    /// producing an empty interface name.
     #[test]
     fn device_list_rejects_doubled_comma() {
         // The classic typo: "eth0,,docker0" must fail loudly, not silently
@@ -205,21 +255,26 @@ mod tests {
         assert!(err.contains("empty interface name"), "got: {err}");
     }
 
+    /// A leading comma yields an empty first entry and is rejected.
     #[test]
     fn device_list_rejects_leading_comma() {
         assert!(parse_device_list(",eth0").is_err());
     }
 
+    /// A trailing comma yields an empty last entry and is rejected.
     #[test]
     fn device_list_rejects_trailing_comma() {
         assert!(parse_device_list("eth0,").is_err());
     }
 
+    /// A spec that is only a comma has no valid entries and is rejected.
     #[test]
     fn device_list_rejects_bare_comma() {
         assert!(parse_device_list(",").is_err());
     }
 
+    /// A name with an embedded NUL is rejected (it would truncate at the
+    /// libpcap C-string boundary).
     #[test]
     fn device_list_rejects_embedded_nul() {
         // A NUL would truncate when passed to libpcap's C API — reject it
@@ -228,11 +283,14 @@ mod tests {
         assert!(err.contains("NUL"), "got: {err}");
     }
 
+    /// An entry consisting only of a NUL byte is rejected.
     #[test]
     fn device_list_rejects_nul_only_entry() {
         assert!(parse_device_list("eth0,\0,docker0").is_err());
     }
 
+    /// Platform-specific names with backslashes/dots/braces (e.g. Windows
+    /// NPF paths) pass through unmodified.
     #[test]
     fn device_list_preserves_unusual_but_valid_names() {
         // Backslashes/dots/colons appear in real capture device names on some

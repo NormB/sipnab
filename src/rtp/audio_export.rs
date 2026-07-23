@@ -198,6 +198,7 @@ fn resample_linear(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     out
 }
 
+/// Unit tests for mono and stereo WAV export from RTP streams.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +208,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
+    /// Build a stream with the given codec label and captured payload frames.
     fn make_stream(codec: Option<&str>, payloads: Vec<(u32, Vec<u8>)>) -> RtpStream {
         let key = StreamKey {
             ssrc: 0x12345678,
@@ -234,6 +236,7 @@ mod tests {
         stream
     }
 
+    /// A single PCMU stream exports to a mono mu-law WAV file.
     #[test]
     fn export_mono_pcmu() {
         let dir = tempfile::tempdir().unwrap();
@@ -248,6 +251,7 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// Exporting an unsupported codec (G729) returns an error.
     #[test]
     fn export_rejects_unsupported_codec() {
         let dir = tempfile::tempdir().unwrap();
@@ -265,6 +269,7 @@ mod tests {
         );
     }
 
+    /// Exporting a stream with no captured payload returns an error.
     #[test]
     fn export_rejects_empty_buffer() {
         let dir = tempfile::tempdir().unwrap();
@@ -277,6 +282,7 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("No audio payload"));
     }
 
+    /// A dialog with one exportable stream falls back to mono export.
     #[test]
     fn export_dialog_mono_fallback() {
         let dir = tempfile::tempdir().unwrap();
@@ -288,6 +294,7 @@ mod tests {
         assert!(result.contains("mu-law"));
     }
 
+    /// Two exportable streams export to an interleaved stereo WAV.
     #[test]
     fn export_dialog_stereo() {
         let dir = tempfile::tempdir().unwrap();
@@ -306,6 +313,7 @@ mod tests {
         assert_eq!(channels, 2);
     }
 
+    /// Unsupported-codec streams are filtered out before stereo/mono selection.
     #[test]
     fn export_dialog_filters_unsupported_codecs() {
         let dir = tempfile::tempdir().unwrap();
@@ -319,6 +327,7 @@ mod tests {
         assert!(result.contains("mu-law"));
     }
 
+    /// Exporting an empty stream list returns an error.
     #[test]
     fn export_dialog_empty_streams_errors() {
         let dir = tempfile::tempdir().unwrap();

@@ -7,21 +7,33 @@ use super::*;
 /// Resolved TUI color theme — all fields are concrete `Color` values.
 #[derive(Debug, Clone)]
 pub struct Theme {
+    /// Main pane background.
     pub background: Color,
+    /// Default text color.
     pub foreground: Color,
+    /// Table headers and titles.
     pub header: Color,
+    /// Selected-row highlight (config `selected`, legacy alias `highlight`).
     pub selected: Color,
+    /// Accent for emphasis (marks, active elements).
     pub accent: Color,
+    /// Positive/healthy values (e.g. good MOS, answered calls).
     pub good: Color,
+    /// Cautionary values (e.g. degraded quality).
     pub warning: Color,
+    /// Errors and failed/poor values.
     pub bad: Color,
+    /// De-emphasized text (hints, secondary detail).
     pub muted: Color,
+    /// Widget borders.
     pub border: Color,
     /// Status bar background — distinct from terminal bg for visibility.
     pub status_bg: Color,
 }
 
 impl Default for Theme {
+    /// Built-in color scheme: terminal-default background, an RGB
+    /// status-bar band readable on dark and light terminals.
     fn default() -> Self {
         Self {
             background: Color::Reset,
@@ -116,20 +128,32 @@ fn no_color_requested() -> bool {
 /// Resolved keymap — all fields are concrete `KeyCode` values.
 #[derive(Debug, Clone)]
 pub struct Keymap {
+    /// Quit the TUI (default `q`).
     pub quit: KeyCode,
+    /// Open the help overlay (default F1).
     pub help: KeyCode,
+    /// Open the save dialog (default F2).
     pub save: KeyCode,
+    /// Enter search mode (default `/`).
     pub search: KeyCode,
+    /// Open the filter dialog (default F7).
     pub filter: KeyCode,
+    /// Open the settings popup (default F8).
     pub settings: KeyCode,
+    /// Pause/resume packet processing (default `p`).
     pub pause: KeyCode,
+    /// Toggle sticky-bottom autoscroll (default `A`).
     pub autoscroll: KeyCode,
+    /// Toggle extended multi-leg call flow (default F4).
     pub extended_flow: KeyCode,
+    /// Clear all captured calls (default F5).
     pub clear_calls: KeyCode,
+    /// Open the column selector (default F10).
     pub column_selector: KeyCode,
 }
 
 impl Default for Keymap {
+    /// The built-in sngrep-style bindings listed on each field.
     fn default() -> Self {
         Self {
             quit: KeyCode::Char('q'),
@@ -211,25 +235,34 @@ impl Keymap {
     pub fn collisions(&self) -> Vec<String> {
         use crossterm::event::{KeyEvent, KeyModifiers};
 
+        /// A view's key→action mapper, type-erased to the action's Debug
+        /// string so mappers with different action enums are comparable.
         type Probe = fn(&Keymap, KeyEvent) -> Option<String>;
+        /// Probe the call-list view's action mapper with key `k`.
         fn p_call_list(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::call_list_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the call-flow view's action mapper with key `k`.
         fn p_call_flow(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::call_flow_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the raw-message view's action mapper with key `k`.
         fn p_raw_message(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::raw_message_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the message-diff view's action mapper with key `k`.
         fn p_message_diff(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::message_diff_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the combined-detail view's action mapper with key `k`.
         fn p_combined_detail(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::combined_detail_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the stream-list view's action mapper with key `k`.
         fn p_stream_list(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::stream_list_action(km, k).map(|a| format!("{a:?}"))
         }
+        /// Probe the stream-detail view's action mapper with key `k`.
         fn p_stream_detail(km: &Keymap, k: KeyEvent) -> Option<String> {
             crate::tui::controllers::stream_detail_action(km, k).map(|a| format!("{a:?}"))
         }
@@ -325,6 +358,8 @@ pub(super) const CHURN_REBUILD_MIN: Duration = Duration::from_millis(300);
 /// capture without ever flushing a half-rendered frame.
 pub(super) const FORCED_DRAW_AFTER_SKIPS: u32 = 3;
 
+/// Tests for `Keymap::collisions`: duplicate bindings, rebinds shadowed
+/// by view-literal keys, and clean rebinds staying silent.
 #[cfg(test)]
 mod keymap_collision_tests {
     use super::*;
@@ -348,6 +383,7 @@ mod keymap_collision_tests {
         );
     }
 
+    /// The shipped default keymap must produce zero collision warnings.
     #[test]
     fn default_keymap_has_no_collisions() {
         let collisions = Keymap::default().collisions();
@@ -357,6 +393,8 @@ mod keymap_collision_tests {
         );
     }
 
+    /// Two actions bound to the same key produce a duplicate warning
+    /// naming both actions.
     #[test]
     fn duplicate_bindings_between_actions_are_reported() {
         let km = Keymap {
@@ -405,6 +443,7 @@ mod keymap_collision_tests {
     }
 }
 
+/// Tests for the NO_COLOR handling in `Theme::from_config_with_no_color`.
 #[cfg(test)]
 mod no_color_tests {
     use super::*;

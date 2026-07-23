@@ -29,11 +29,15 @@ use super::packet::Packet;
 /// off the hot path (e.g. from the metrics thread); never gated on a lock.
 #[derive(Clone)]
 pub struct CaptureMeter {
+    /// Packets sent but not yet received (shared across all handles).
     in_flight: Arc<AtomicUsize>,
+    /// Cumulative count of sends that had to block at the capacity cap.
     backpressure_blocks: Arc<AtomicU64>,
 }
 
 impl CaptureMeter {
+    /// Create a meter with both counters at zero. Returns the meter; the
+    /// clones handed to `PacketTx`/`PacketRx` share the same atomics.
     fn new() -> Self {
         Self {
             in_flight: Arc::new(AtomicUsize::new(0)),
@@ -62,22 +66,36 @@ pub struct Closed;
 /// clones share one permit pool and meter.
 #[derive(Clone)]
 pub struct PacketTx {
+    /// Unbounded storage channel the packets actually travel through.
     data_tx: Sender<Packet>,
     /// "In-flight slots": a `bounded(capacity)` channel used as a semaphore.
     /// `send` fills a slot (blocks when full = at cap); `recv` frees one.
     slot_tx: Sender<()>,
+    /// Shared load counters updated on every send.
     meter: CaptureMeter,
 }
 
 /// Receiving half (single consumer in both TUI and batch modes).
 pub struct PacketRx {
+    /// Unbounded storage channel the packets actually travel through.
     data_rx: Receiver<Packet>,
+    /// Receiving side of the permit pool; one token is drained per packet
+    /// received, freeing a slot for a blocked sender.
     slot_rx: Receiver<()>,
+    /// Shared load counters updated on every receive.
     meter: CaptureMeter,
 }
 
 /// Create a capped, auto-shrinking packet channel holding at most `capacity`
 /// in-flight packets. Construction is O(1) (no permit pre-fill).
+///
+/// # Arguments
+///
+/// * `capacity` — maximum packets in flight at once; `0` is clamped to `1`.
+///
+/// # Returns
+///
+/// The `(PacketTx, PacketRx)` pair sharing one permit pool and one meter.
 pub fn packet_channel(capacity: usize) -> (PacketTx, PacketRx) {
     let capacity = capacity.max(1);
     let (data_tx, data_rx) = unbounded::<Packet>();
@@ -103,6 +121,13 @@ impl PacketTx {
     /// Returns `Err(Closed)` if the receiver has been dropped, so callers can
     /// break their capture loop exactly as with the old `crossbeam` sender
     /// (`tx.send(..).is_err()`).
+    ///
+    /// # Side effects
+    ///
+    /// May block the calling thread until a permit frees up. Increments the
+    /// shared meter's `backpressure_blocks` counter when it has to block and
+    /// its `in_flight` counter once a slot is claimed (decremented again if
+    /// the receiver disappears before the packet is enqueued).
     pub fn send(&self, packet: Packet) -> Result<(), Closed> {
         // Claim an in-flight slot (one per packet). Fast path is a non-blocking
         // try_send; only when the cap is reached do we count a backpressure
@@ -131,7 +156,7 @@ impl PacketTx {
         }
     }
 
-    /// A metrics handle for this channel.
+    /// A metrics handle for this channel (cheap clone of the shared meter).
     pub fn meter(&self) -> CaptureMeter {
         self.meter.clone()
     }
@@ -140,6 +165,21 @@ impl PacketTx {
 impl PacketRx {
     /// Receive a packet, returning its permit to the pool so a blocked sender
     /// can proceed.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` — how long to block waiting for a packet.
+    ///
+    /// # Errors
+    ///
+    /// `RecvTimeoutError::Timeout` when no packet arrives within `timeout`;
+    /// `RecvTimeoutError::Disconnected` when all senders are gone and the
+    /// channel is drained.
+    ///
+    /// # Side effects
+    ///
+    /// Blocks up to `timeout`. On success, decrements the meter's `in_flight`
+    /// counter and drains one permit token so a blocked sender can proceed.
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Packet, RecvTimeoutError> {
         let pkt = self.data_rx.recv_timeout(timeout)?;
         self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
@@ -151,6 +191,16 @@ impl PacketRx {
     }
 
     /// Drain all immediately-available packets, returning each one's permit.
+    ///
+    /// # Returns
+    ///
+    /// A non-blocking iterator that ends as soon as the channel is empty.
+    ///
+    /// # Side effects
+    ///
+    /// For each packet actually yielded, decrements the meter's `in_flight`
+    /// counter and drains one permit token (effects happen lazily as the
+    /// iterator is advanced, not when `try_iter` is called).
     pub fn try_iter(&self) -> impl Iterator<Item = Packet> + '_ {
         self.data_rx.try_iter().inspect(move |_pkt| {
             self.meter.in_flight.fetch_sub(1, Ordering::Relaxed);
@@ -158,7 +208,7 @@ impl PacketRx {
         })
     }
 
-    /// A metrics handle for this channel.
+    /// A metrics handle for this channel (cheap clone of the shared meter).
     pub fn meter(&self) -> CaptureMeter {
         self.meter.clone()
     }
@@ -171,16 +221,22 @@ impl PacketRx {
     }
 }
 
+/// Tests for the capped packet channel: backpressure blocking, permit
+/// return, disconnect semantics, and meter accuracy.
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Build a test packet with a `size`-byte zeroed payload (epoch
+    /// timestamp, Ethernet link type). Returns the `Packet`.
     fn pkt(size: usize) -> Packet {
         let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
         Packet::new(ts, vec![0u8; size], size, size, None, 1)
     }
 
+    /// A send beyond `capacity` blocks and only completes after a receive
+    /// returns a permit; the backpressure counter records the block.
     #[test]
     fn capacity_blocks_until_a_credit_is_returned() {
         let (tx, rx) = packet_channel(2);
@@ -204,6 +260,8 @@ mod tests {
         assert_eq!(tx.meter().in_flight(), 2);
     }
 
+    /// Receiving every queued packet restores the full permit pool so a
+    /// fresh full batch of sends succeeds without blocking.
     #[test]
     fn drain_restores_the_full_pool() {
         let (tx, rx) = packet_channel(3);
@@ -221,6 +279,8 @@ mod tests {
         assert_eq!(tx.meter().in_flight(), 3);
     }
 
+    /// Dropping the receiver wakes a sender parked at the cap with `Err`,
+    /// and subsequent sends also fail.
     #[test]
     fn dropping_receiver_makes_a_parked_send_return_err() {
         let (tx, rx) = packet_channel(1);
@@ -238,6 +298,8 @@ mod tests {
         assert!(tx.send(pkt(16)).is_err());
     }
 
+    /// With every sender dropped, `recv_timeout` reports `Disconnected`
+    /// rather than timing out.
     #[test]
     fn dropping_all_senders_disconnects_receiver() {
         let (tx, rx) = packet_channel(4);
@@ -248,6 +310,8 @@ mod tests {
         ));
     }
 
+    /// Cloned senders draw from one shared permit pool: total in-flight is
+    /// capped across all clones, not per handle.
     #[test]
     fn cloned_senders_share_one_cap() {
         let (tx, rx) = packet_channel(3);
@@ -263,6 +327,8 @@ mod tests {
         assert!(h.join().unwrap().is_ok());
     }
 
+    /// `try_iter` yields every queued packet and returns each one's permit,
+    /// leaving the pool full again.
     #[test]
     fn try_iter_drains_and_returns_credits() {
         let (tx, rx) = packet_channel(5);
@@ -278,6 +344,8 @@ mod tests {
         }
     }
 
+    /// The cap counts packets, not bytes: a 64 KiB payload still costs
+    /// exactly one permit.
     #[test]
     fn oversized_payload_costs_one_credit() {
         // A large packet still takes exactly one permit (count cap, not bytes).
@@ -294,6 +362,8 @@ mod tests {
         assert!(h.join().unwrap().is_ok());
     }
 
+    /// `is_empty` reflects pending packets: true when fresh, false after a
+    /// send, true again after draining or disconnect.
     #[test]
     fn is_empty_tracks_pending_packets() {
         let (tx, rx) = packet_channel(2);
@@ -306,6 +376,7 @@ mod tests {
         assert!(rx.is_empty(), "disconnected channel reads as empty");
     }
 
+    /// `packet_channel(0)` clamps the cap to 1 so one send still succeeds.
     #[test]
     fn zero_capacity_is_clamped_to_one() {
         let (tx, rx) = packet_channel(0);

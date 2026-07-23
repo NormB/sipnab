@@ -14,19 +14,37 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// A long, deterministic signing key shared between the spawned server and
+/// in-test minting.
 const SIGNING_KEY: &str = "e2e-mcp-signing-key-0123456789abcdef";
 
+/// Absolute path to a file under `tests/fixtures/`.
+///
+/// # Arguments
+/// * `path` — filename relative to the fixtures directory.
 fn fixture(path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(path)
 }
 
+/// Current UTC time as a Unix timestamp, used to build token `exp` claims.
+///
+/// # Returns
+/// Seconds since the Unix epoch.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
 /// Spawn sipnab with HTTP MCP and return the child + bind address.
+///
+/// # Returns
+/// `Some((child, addr))` once the "listening on" line appears; `None` if the
+/// server refuses to start or times out after 5s (child is reaped).
+///
+/// # Side effects
+/// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
+/// reader thread.
 fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
@@ -88,6 +106,10 @@ fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
     None
 }
 
+/// SIGTERMs a spawned sipnab child and waits for it to exit.
+///
+/// # Side effects
+/// Sends SIGTERM to the child process and reaps it.
 fn shutdown(mut child: std::process::Child) {
     // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
     unsafe {
@@ -107,6 +129,16 @@ fn initialize_status(addr: &str, bearer: Option<&str>) -> u16 {
     post_status(&format!("http://{addr}/mcp"), bearer, &payload)
 }
 
+/// Issues a raw-TCP HTTP POST of `body` as JSON and returns the status code
+/// (0 if the status line is unparsable).
+///
+/// # Arguments
+/// * `url` — plain `http://host:port/path` URL.
+/// * `bearer` — optional bearer token for the Authorization header.
+/// * `body` — JSON payload to serialize and send.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout.
 fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16 {
     let parsed = url.strip_prefix("http://").expect("http url");
     let (authority, path) = parsed.split_once('/').unwrap_or((parsed, ""));
@@ -145,6 +177,7 @@ fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16
         .unwrap_or(0)
 }
 
+/// A token minted with the server's signing key gets 200 on `initialize`; a missing token gets 401.
 #[test]
 fn valid_signed_token_initialize_succeeds() {
     let (child, addr) =
@@ -160,6 +193,7 @@ fn valid_signed_token_initialize_succeeds() {
     shutdown(child);
 }
 
+/// A correctly-signed token whose `exp` is already past gets 401.
 #[test]
 fn expired_signed_token_is_rejected() {
     let (child, addr) =
@@ -173,6 +207,7 @@ fn expired_signed_token_is_rejected() {
     shutdown(child);
 }
 
+/// A token minted under a different signing key gets 401.
 #[test]
 fn forged_wrong_key_token_is_rejected() {
     let (child, addr) =
@@ -186,6 +221,7 @@ fn forged_wrong_key_token_is_rejected() {
     shutdown(child);
 }
 
+/// With `--mcp-revoked-file`, a denylisted token id gets 401 while a fresh id gets 200.
 #[test]
 fn revoked_id_is_rejected_via_denylist_file() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -216,6 +252,7 @@ fn revoked_id_is_rejected_via_denylist_file() {
     shutdown(child);
 }
 
+/// With two `--mcp-signing-key` flags, tokens minted under either key get 200.
 #[test]
 fn rotation_accepts_tokens_from_either_key() {
     let key2 = "second-mcp-rotation-key-abcdef0123";
@@ -228,6 +265,7 @@ fn rotation_accepts_tokens_from_either_key() {
     shutdown(child);
 }
 
+/// The legacy static `--mcp-token` path: correct secret 200, wrong secret 401.
 #[test]
 fn static_mcp_token_backward_compat() {
     let (child, addr) =
@@ -245,6 +283,7 @@ fn static_mcp_token_backward_compat() {
     shutdown(child);
 }
 
+/// `--mint-token --mcp-signing-key` prints an `s1.` token that verifies under the same key via the library `TokenVerifier`.
 #[test]
 fn mint_token_cli_mode_produces_verifiable_token() {
     // Drive the --mint-token CLI mode and verify the printed token under the
@@ -280,6 +319,7 @@ fn mint_token_cli_mode_produces_verifiable_token() {
 }
 
 // M6 burn-down: --mcp-token-file (static token loaded from a file).
+/// A trimmed static token loaded from `--mcp-token-file` gets 200; wrong or missing tokens get 401.
 #[test]
 fn static_mcp_token_file_backward_compat() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -344,6 +384,7 @@ fn initialize_status_with_host(addr: &str, host_header: &str, bearer: Option<&st
 }
 
 // M6 burn-down: --mcp-allowed-host extends rmcp's Host-header allowlist.
+/// `--mcp-allowed-host custom.example` makes that Host header pass DNS-rebind protection (200) while an unlisted Host is rejected.
 #[test]
 fn mcp_allowed_host_controls_host_header() {
     let (child, addr) = spawn_http(&[

@@ -1,6 +1,6 @@
 //! RTP stream storage and lifecycle management.
 //!
-//! [`StreamStore`] maintains an indexed collection of [`RtpStream`]s,
+//! `StreamStore` maintains an indexed collection of `RtpStream`s,
 //! creating or updating streams as RTP/RTCP packets arrive. It handles
 //! dialog linking (from SDP), orphan detection, and capacity eviction.
 
@@ -27,6 +27,7 @@ use crate::sip::sdp::SdpMedia;
 /// that cannot be recomputed (SNB-0007).
 #[derive(Debug, Clone)]
 struct SdpEndpoint {
+    /// Call-ID of the SIP dialog whose SDP negotiated this endpoint.
     call_id: String,
     /// `a=rtpmap` entries as `(payload_type, encoding, clock_rate)`.
     rtpmap: Vec<(u8, String, u32)>,
@@ -34,7 +35,7 @@ struct SdpEndpoint {
 
 /// Central store for all tracked RTP streams.
 ///
-/// Streams are indexed by [`StreamKey`] for O(1) lookup. When the store
+/// Streams are indexed by `StreamKey` for O(1) lookup. When the store
 /// reaches its capacity limit, the oldest stream (by insertion order) is
 /// evicted to make room.
 ///
@@ -54,7 +55,7 @@ struct SdpEndpoint {
 /// ```
 #[derive(Debug)]
 pub struct StreamStore {
-    /// All tracked streams, keyed by [`StreamKey`] in insertion order.
+    /// All tracked streams, keyed by `StreamKey` in insertion order.
     streams: IndexMap<StreamKey, RtpStream, ahash::RandomState>,
     /// SSRC → keys of streams carrying it, in insertion order. RTCP
     /// reports identify streams by SSRC only; without this, every report
@@ -72,7 +73,7 @@ pub struct StreamStore {
     audio_capture: bool,
     /// SDP-negotiated media endpoints seen so far, keyed by `(addr, port)` in
     /// insertion order. Consulted when a stream is first created so dynamic
-    /// payload types resolve from packet one (see [`SdpEndpoint`]). Bounded to
+    /// payload types resolve from packet one (see `SdpEndpoint`). Bounded to
     /// `max_streams` with oldest-out eviction so a flood of unique calls can't
     /// grow it without limit (mirrors the stream cap, SNB-0004 robustness).
     sdp_endpoints: IndexMap<(IpAddr, u16), SdpEndpoint, ahash::RandomState>,
@@ -84,7 +85,7 @@ pub struct StreamStore {
     endpoint_index: std::collections::HashMap<(IpAddr, u16), Vec<StreamKey>, ahash::RandomState>,
     /// Probe (SNB-0015): cumulative count of per-stream visits performed while
     /// linking SDP endpoints to streams. This is the work that was O(calls²); the
-    /// endpoint index keeps it O(calls). Read via [`link_scan_iters`] and exposed
+    /// endpoint index keeps it O(calls). Read via `link_scan_iters` and exposed
     /// in batch stats so the scaling is observable and any regression is caught.
     link_scan_iters: u64,
     /// Probe (SNB-0015): cumulative number of entries shifted while evicting
@@ -94,7 +95,7 @@ pub struct StreamStore {
     /// per insertion. A value near evictions×max_streams means the regression is back.
     evict_shift_work: u64,
     /// Structural-change counter for cache invalidation — see
-    /// [`Self::generation`].
+    /// `Self::generation`.
     generation: u64,
 }
 
@@ -157,6 +158,23 @@ impl StreamStore {
     ///
     /// Uses the packet's 5-tuple (src/dst addresses and ports) combined with
     /// the RTP SSRC to form the stream key.
+    ///
+    /// # Arguments
+    ///
+    /// * `parsed` — the captured packet (addresses, ports, raw payload).
+    /// * `rtp` — the already-parsed RTP header for that payload.
+    /// * `timestamp` — wall-clock arrival time fed to the stream trackers.
+    ///
+    /// # Side effects
+    ///
+    /// * Existing stream: delegates to `RtpStream::update` (jitter, loss,
+    ///   interval accounting) and, when audio capture is on and the codec
+    ///   is capturable, appends the payload to the stream's ring buffer
+    ///   (oldest-out at `max_audio_frames`). No generation bump.
+    /// * New stream: may batch-evict the oldest streams via
+    ///   `ensure_capacity`, resolves codec/clock/dialog from any
+    ///   previously seen SDP endpoint, registers the key in the SSRC and
+    ///   endpoint indexes, inserts the stream, and bumps the generation.
     pub fn process_rtp(
         &mut self,
         parsed: &ParsedPacket,
@@ -213,6 +231,14 @@ impl StreamStore {
     ///
     /// Matches report SSRCs against known streams to incorporate
     /// authoritative loss/jitter data from receivers.
+    ///
+    /// # Side effects
+    ///
+    /// For each reception report block in an SR/RR whose SSRC matches a
+    /// tracked stream, overwrites the earliest surviving matching stream's
+    /// `jitter` with the report's jitter value (which is in RTP timestamp
+    /// units) and its `lost_packets` with the report's cumulative loss.
+    /// Other packet types and unknown SSRCs are ignored.
     pub fn process_rtcp(&mut self, packets: &[RtcpPacket]) {
         for pkt in packets {
             let reports: &[ReceptionReport] = match pkt {
@@ -250,6 +276,13 @@ impl StreamStore {
     /// When SDP is parsed from a SIP message, call this with the negotiated
     /// media address and port plus the dialog's Call-ID. Any stream whose
     /// source or destination matches the media endpoint gets linked.
+    ///
+    /// # Side effects
+    ///
+    /// Sets `associated_dialog` (and clears `orphaned`) on each matching
+    /// stream that is not yet linked, bumping the generation per newly
+    /// linked stream; already-linked streams are left untouched. Also
+    /// advances the `link_scan_iters` probe counter.
     pub fn link_to_dialog(&mut self, media_addr: IpAddr, media_port: u16, call_id: &str) {
         // Indexed: visit only the streams on this endpoint, not the whole store.
         let Some(keys) = self.endpoint_index.get(&(media_addr, media_port)) else {
@@ -270,7 +303,7 @@ impl StreamStore {
 
     /// Link streams to a SIP dialog and enrich codec/clock_rate from SDP.
     ///
-    /// Like [`Self::link_to_dialog`], but also propagates codec name and clock rate
+    /// Like `Self::link_to_dialog`, but also propagates codec name and clock rate
     /// from SDP `a=rtpmap` entries to streams with dynamic payload types.
     /// This enables audio capture and export for codecs like Opus that use
     /// dynamic PT numbers (96-127).
@@ -298,6 +331,14 @@ impl StreamStore {
     /// and again as a post-capture pass — the latter is what resolves streams
     /// created *after* their SDP, e.g. offline pcap replay where the INVITE/200
     /// is parsed before any RTP packet exists (SNB-0007).
+    ///
+    /// # Side effects
+    ///
+    /// Records/refreshes the endpoint in `sdp_endpoints` (for streams
+    /// created later), then for each already-existing matching stream
+    /// fills an unset `associated_dialog` and/or resolves an unknown
+    /// codec + clock rate from the rtpmap, bumping the generation for
+    /// each change. Advances the `link_scan_iters` probe counter.
     pub fn link_endpoint(
         &mut self,
         media_addr: IpAddr,
@@ -404,6 +445,17 @@ impl StreamStore {
 
     /// Mark unlinked streams as orphaned if they have been active longer
     /// than the given timeout without being associated to a dialog.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` — how long past `first_seen` (relative to `Utc::now()`)
+    ///   an unassociated stream may live before being flagged; a timeout
+    ///   too large for chrono falls back to 365 days.
+    ///
+    /// # Side effects
+    ///
+    /// Sets `orphaned = true` on qualifying streams. Does not bump the
+    /// generation.
     pub fn mark_orphaned(&mut self, timeout: Duration) {
         let now = Utc::now();
         let timeout_chrono = match chrono::Duration::from_std(timeout) {
@@ -455,7 +507,9 @@ impl StreamStore {
         self.streams.is_empty()
     }
 
-    /// Remove all streams from the store.
+    /// Remove all streams from the store, clearing the SSRC and endpoint
+    /// indexes with them and bumping the generation. Remembered SDP
+    /// endpoints are kept.
     pub fn clear(&mut self) {
         self.streams.clear();
         self.ssrc_index.clear();
@@ -508,7 +562,7 @@ impl StreamStore {
     /// Streams sharded by host pair never collide across workers, so this is a
     /// union; the ssrc/endpoint indexes are rebuilt for the moved streams and the
     /// SDP endpoints are combined. Probe counters accumulate. Call
-    /// [`reassociate_all`](Self::reassociate_all) afterwards to link streams to a
+    /// `reassociate_all` afterwards to link streams to a
     /// dialog whose SDP was processed on a different worker.
     pub fn merge(&mut self, other: StreamStore) {
         for (key, stream) in other.streams {
@@ -530,7 +584,7 @@ impl StreamStore {
     }
 
     /// Globally (re)link every stream to its dialog via the merged SDP endpoints.
-    /// Needed after [`merge`](Self::merge): when a stream and the SDP naming its
+    /// Needed after `merge`: when a stream and the SDP naming its
     /// call were processed on different workers, the inline association never ran.
     /// Idempotent and order-independent (only fills unset associations), so it
     /// reproduces the single-threaded result. O(total streams) via the endpoint
@@ -546,12 +600,19 @@ impl StreamStore {
         }
     }
 
-    /// Evict the oldest stream (first entry in insertion order) if at capacity.
+    /// Make room for one new stream if the store is at capacity.
+    ///
+    /// # Side effects
+    ///
+    /// When at `max_streams`, batch-evicts the oldest ~10% of streams
+    /// (at least one) in insertion order, removing their SSRC and
+    /// endpoint index entries and advancing the `evict_shift_work` probe
+    /// counter. Does not bump the generation.
     fn ensure_capacity(&mut self) {
         if self.streams.len() >= self.max_streams && !self.streams.is_empty() {
             // Evicting one-at-a-time with shift_remove_index(0) shifts O(n) entries
             // PER new stream once at capacity → O(calls²) under sustained pressure
-            // (SNB-0015). Batch-evict the oldest ~1% in a single `drain`, so the
+            // (SNB-0015). Batch-evict the oldest ~10% in a single `drain`, so the
             // O(n) IndexMap shift amortizes to O(1) per insertion — mirrors
             // DialogStore::evict_oldest. `.max(1)` keeps small caps evicting singly.
             let batch = (self.max_streams / 10).max(1).min(self.streams.len());
@@ -581,6 +642,9 @@ fn is_audio_capturable(codec: Option<&str>) -> bool {
     )
 }
 
+/// Unit tests for the stream store: creation/update, SDP linking in both
+/// orderings, RTCP matching, eviction and index consistency, multi-worker
+/// merge, and the SNB-0015 performance probes.
 #[cfg(test)]
 mod tests {
     use std::net::Ipv4Addr;
@@ -589,6 +653,9 @@ mod tests {
     use crate::net::TransportProto;
     use crate::rtp::parser::RtpHeader;
 
+    /// Build a UDP ParsedPacket from 10.0.0.1:`src_port` to
+    /// 10.0.0.2:`dst_port` with a zeroed 12-byte-header + `payload_len`
+    /// payload.
     fn make_parsed(src_port: u16, dst_port: u16, payload_len: usize) -> ParsedPacket {
         ParsedPacket {
             timestamp: DateTime::from_timestamp(1_700_000_000, 0).expect("valid"),
@@ -666,6 +733,8 @@ mod tests {
         assert!(store.generation() > g2, "clear must bump the generation");
     }
 
+    /// One INVITE offering audio (static PT) and video (dynamic PT) yields
+    /// two codec-resolved streams linked to the same dialog.
     #[test]
     fn multi_mline_audio_and_video_both_link_and_resolve_codecs() {
         // A single INVITE offering audio (m=audio, PCMU) AND video (m=video,
@@ -722,6 +791,7 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// streams_for yields only streams linked to the requested Call-ID.
     #[test]
     fn streams_for_returns_only_linked_streams() {
         let mut store = StreamStore::new(16);
@@ -745,6 +815,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert!(store.streams_for("call-b").next().is_none());
     }
 
+    /// Build a PT 0 (PCMU) RtpHeader with a 160-ticks-per-packet timestamp.
     fn make_rtp_header(ssrc: u32, seq: u16) -> RtpHeader {
         RtpHeader {
             version: 2,
@@ -760,14 +831,17 @@ a=rtpmap:96 H264/90000\r\n";
         }
     }
 
+    /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid")
     }
 
+    /// Fixed-epoch test clock with millisecond resolution.
     fn ts_ms(ms: i64) -> DateTime<Utc> {
         DateTime::from_timestamp_millis(1_700_000_000_000 + ms).expect("valid")
     }
 
+    /// Build an RtpHeader with explicit payload type and RTP timestamp.
     fn rtp_pkt(ssrc: u32, seq: u16, payload_type: u8, rtp_ts: u32) -> RtpHeader {
         RtpHeader {
             payload_type,
@@ -781,6 +855,8 @@ a=rtpmap:96 H264/90000\r\n";
     // first RTP packet — always so in offline pcap replay. The endpoint is
     // remembered, so when the stream is created its dynamic payload type
     // resolves to codec + clock + dialog from packet one, not "Codec ?".
+    /// SDP-before-RTP ordering: a stream created after its SDP resolves
+    /// codec, clock rate, and dialog at creation (SNB-0007).
     #[test]
     fn dynamic_pt_resolved_at_creation_when_sdp_seen_first() {
         let mut store = StreamStore::new(100);
@@ -818,6 +894,8 @@ a=rtpmap:96 H264/90000\r\n";
     // not O(overflow × cap). Drive `cap + overflow` distinct streams through a
     // small cap and assert the probe stays bounded — and that eviction is still
     // correct (store stays capped, oldest gone, indexes consistent).
+    /// Sustained cap pressure keeps cumulative eviction shift work ~O(N)
+    /// (batched eviction), with the store bounded and indexes consistent.
     #[test]
     fn eviction_shift_work_is_amortized_and_correct() {
         let cap = 1_000usize;
@@ -861,6 +939,8 @@ a=rtpmap:96 H264/90000\r\n";
     // endpoint, a full-store scan is O(N²); an endpoint index is O(N). The probe
     // counter makes the work observable: assert it stays ~O(N), and assert the
     // index links exactly the same streams a scan would (correctness preserved).
+    /// SDP-endpoint linking visits O(N) streams via the endpoint index
+    /// (not O(N²)) while linking exactly the streams a full scan would.
     #[test]
     fn endpoint_linking_is_subquadratic_and_correct() {
         let n: u16 = 300;
@@ -908,6 +988,8 @@ a=rtpmap:96 H264/90000\r\n";
     // B sees the RTP (creates the stream, no SDP → unassociated). merge() unions
     // them and reassociate_all() links the stream to its call — reproducing the
     // single-threaded result where association happens at stream creation.
+    /// merge + reassociate_all links a stream whose SDP was processed on a
+    /// different worker, matching the single-threaded result.
     #[test]
     fn merge_reassociates_streams_whose_sdp_was_on_another_worker() {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
@@ -942,6 +1024,8 @@ a=rtpmap:96 H264/90000\r\n";
 
     // The other ordering: RTP first (stream exists, dynamic PT unknown), then
     // the SDP — link_endpoint must enrich the existing stream + associate it.
+    /// RTP-before-SDP ordering: link_endpoint enriches and associates the
+    /// already-existing stream.
     #[test]
     fn dynamic_pt_resolved_when_rtp_precedes_sdp() {
         let mut store = StreamStore::new(100);
@@ -972,6 +1056,8 @@ a=rtpmap:96 H264/90000\r\n";
     // has near-zero jitter. The dynamic PT 96 resolved from SDP must yield the
     // SAME jitter as the static 90 kHz PT 34 — and far less than the inflated
     // estimate produced if it were left at the 8 kHz default.
+    /// An SDP-resolved dynamic PT produces the same near-zero jitter as
+    /// the static 90 kHz PT, unlike the inflated 8 kHz-default estimate.
     #[test]
     fn dynamic_pt_jitter_matches_static_clock() {
         let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
@@ -1017,6 +1103,7 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// The first packet of a new 5-tuple+SSRC creates a tracked stream.
     #[test]
     fn process_rtp_creates_stream() {
         let mut store = StreamStore::new(100);
@@ -1036,6 +1123,8 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(stream.payload_type, 0);
     }
 
+    /// A second packet on the same key updates the stream instead of
+    /// creating a duplicate.
     #[test]
     fn process_same_ssrc_updates_not_duplicates() {
         let mut store = StreamStore::new(100);
@@ -1056,6 +1145,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(stream.packet_count, 2);
     }
 
+    /// Exceeding the capacity of 2 evicts the oldest stream.
     #[test]
     fn max_streams_evicts_oldest() {
         let mut store = StreamStore::new(2);
@@ -1091,6 +1181,8 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// Linking a media endpoint sets the stream's Call-ID and clears
+    /// orphaned.
     #[test]
     fn link_to_dialog_sets_call_id() {
         let mut store = StreamStore::new(100);
@@ -1117,6 +1209,8 @@ a=rtpmap:96 H264/90000\r\n";
         assert!(!stream.orphaned);
     }
 
+    /// An unlinked stream whose first_seen is past the timeout gets
+    /// flagged as orphaned.
     #[test]
     fn mark_orphaned_flags_unlinked_streams() {
         let mut store = StreamStore::new(100);
@@ -1132,6 +1226,8 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(store.orphaned_count(), 1);
     }
 
+    /// A dialog-linked stream is never marked orphaned, even at zero
+    /// timeout.
     #[test]
     fn linked_streams_not_orphaned() {
         let mut store = StreamStore::new(100);
@@ -1149,6 +1245,8 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// An RR block matching a stream's SSRC overwrites its jitter and
+    /// loss counters.
     #[test]
     fn process_rtcp_updates_stream() {
         let mut store = StreamStore::new(100);
@@ -1216,6 +1314,8 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// Build a one-block Receiver Report targeting `ssrc` with the given
+    /// jitter.
     fn rr_for(ssrc: u32, jitter: u32) -> Vec<RtcpPacket> {
         use crate::rtp::rtcp::{ReceiverReport, ReceptionReport};
         vec![RtcpPacket::ReceiverReport(ReceiverReport {
@@ -1293,6 +1393,7 @@ a=rtpmap:96 H264/90000\r\n";
         );
     }
 
+    /// RTCP arriving after clear() must be a safe no-op.
     #[test]
     fn rtcp_after_clear_is_noop() {
         let mut store = StreamStore::new(100);
@@ -1303,6 +1404,8 @@ a=rtpmap:96 H264/90000\r\n";
         assert!(store.is_empty());
     }
 
+    /// An RTCP report for an untracked SSRC leaves existing streams
+    /// untouched.
     #[test]
     fn rtcp_unknown_ssrc_is_noop() {
         let mut store = StreamStore::new(100);
@@ -1317,6 +1420,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(store.get(&key).unwrap().jitter, 0.0);
     }
 
+    /// A fresh store reports empty with zero length.
     #[test]
     fn is_empty_and_len() {
         let store = StreamStore::new(100);
@@ -1324,6 +1428,7 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(store.len(), 0);
     }
 
+    /// iter() visits every tracked stream exactly once.
     #[test]
     fn iter_yields_all_streams() {
         let mut store = StreamStore::new(100);

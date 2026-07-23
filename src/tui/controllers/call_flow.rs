@@ -67,28 +67,55 @@ fn flow_selected_message(app: &App, anchor_call_id: &str) -> (String, usize) {
 /// `flow.detail_focused`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallFlowAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// Tab/BackTab — move focus between the ladder and the detail pane
+    /// (only meaningful while the split preview is visible).
     ToggleDetailFocus,
+    /// ↑/k — previous ladder row, or scroll the focused detail pane up.
     NavUp,
+    /// ↓/j — next ladder row, or scroll the focused detail pane down.
     NavDown,
+    /// PageUp — 20 rows up (selection or focused detail scroll).
     NavPageUp,
+    /// PageDown — 20 rows down (selection or focused detail scroll).
     NavPageDown,
+    /// Home — first row, or rewind the focused detail pane to the top.
     NavHome,
+    /// End — last row, or jump the focused detail pane to the bottom.
     NavEnd,
+    /// Enter — drill into the selected row: stream detail for an RTP bar,
+    /// otherwise the full-screen raw message view.
     Activate,
+    /// Space — select a message for diff comparison; the second selection
+    /// opens the diff view.
     DiffSelect,
+    /// F6 or Ctrl+R — toggle RTP bars in the ladder.
     ToggleRtpInFlow,
+    /// `r` — jump to the RTP stream list view.
     JumpToStreams,
+    /// `N` — open the Name Address popup for the flow's endpoints.
     NameParticipants,
+    /// `a` — open the combined detail of the selected message's transaction.
     CombinedDetailTransaction,
+    /// `A` — open the combined detail of the whole dialog.
     CombinedDetailDialog,
+    /// `f` — toggle the ladder between "this transaction only" and the
+    /// whole dialog.
     ToggleTransactionFilter,
+    /// `d` — cycle the SDP display mode.
     CycleSdpMode,
+    /// `t` — cycle the timestamp display mode.
     CycleTimestampMode,
+    /// `c` — cycle the color mode.
     CycleColorMode,
+    /// `h` — cycle the header-name display form.
     CycleHeaderForm,
+    /// `R` — toggle the split raw-preview pane.
     ToggleSplit,
+    /// `+`/`=`/`0` — widen the detail panel by 5% (max 80%).
     GrowDetail,
+    /// `-`/`9` — narrow the detail panel by 5% (min 10%).
     ShrinkDetail,
     /// ← — resize the split, or scroll the detail pane left when it is
     /// focused with wrapping off.
@@ -98,23 +125,48 @@ pub enum CallFlowAction {
     NavRight,
     /// `w` — toggle line wrapping in the detail pane.
     ToggleDetailWrap,
+    /// `[` — scroll the detail pane up one line (focus-independent).
     DetailScrollUp,
+    /// `]` — scroll the detail pane down one line (focus-independent).
     DetailScrollDown,
+    /// The configured extended-flow key or `x` — toggle multi-leg
+    /// correlation in the ladder.
     ToggleExtended,
+    /// `m` — mark the selected row (timing reference).
     SetMark,
+    /// `M` — clear the mark.
     ClearMark,
+    /// `e` — expand/collapse the fold under the selection.
     ToggleFold,
+    /// `E` — export the flow as a Mermaid diagram to the clipboard.
     ExportMermaid,
+    /// Esc — drop any pending diff selection and return to the call list.
     Close,
+    /// The configured help key — open the help view.
     Help,
+    /// The configured save key — open the save dialog.
     OpenSaveDialog,
+    /// The configured clear key (F5) — reset compare mode (drop the first
+    /// diff selection).
     ResetCompare,
+    /// The configured filter key — open the filter dialog popup.
     OpenFilterDialog,
+    /// F9 — drop the active filter and its display text.
     ClearFilter,
 }
 
 /// Pure key→action mapping for the call flow view (keymap-aware); arm
 /// order mirrors the old handler so rebind precedence is unchanged.
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/extended-flow/help/
+///   save/clear-calls/filter keys are honored.
+/// * `key` - the key event; the code is matched against the bindings and
+///   the CONTROL modifier distinguishes Ctrl+R from bare `r`.
+///
+/// # Returns
+/// The mapped `CallFlowAction`, or `None` when the key is not bound in
+/// this view.
 pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
     use CallFlowAction::*;
     Some(match key.code {
@@ -168,6 +220,11 @@ pub fn call_flow_action(km: &Keymap, key: KeyEvent) -> Option<CallFlowAction> {
 
 /// Increase detail panel size (← / + / = / 0 push the split leftward =
 /// detail wider).
+///
+/// # Side effects
+/// Bumps `app.flow.raw_preview_pct` by 5 (capped at 80) and announces the
+/// size on the status line; with the split off, explains on the status
+/// line why nothing resized.
 fn grow_detail(app: &mut App) {
     if app.flow.raw_preview {
         if app.flow.raw_preview_pct < 80 {
@@ -182,6 +239,11 @@ fn grow_detail(app: &mut App) {
 
 /// Decrease detail panel size (→ / - / 9 push the split rightward =
 /// ladder wider).
+///
+/// # Side effects
+/// Drops `app.flow.raw_preview_pct` by 5 (floored at 10) and announces
+/// the size on the status line; with the split off, explains on the
+/// status line why nothing resized.
 fn shrink_detail(app: &mut App) {
     if app.flow.raw_preview {
         if app.flow.raw_preview_pct > 10 {
@@ -194,13 +256,30 @@ fn shrink_detail(app: &mut App) {
 }
 
 /// Handle keys in the call flow view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `call_flow_action`.
+///
+/// # Side effects
+/// Delegates to `execute_call_flow_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_call_flow_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = call_flow_action(&app.keymap, key) {
         execute_call_flow_action(app, action);
     }
 }
 
-/// Apply one [`CallFlowAction`] to the application state.
+/// Apply one `CallFlowAction` to the application state.
+///
+/// # Side effects
+/// First clamps `app.flow.selected` to the visible row count. Then
+/// mutates the state named by each variant (see `CallFlowAction`):
+/// navigation routes to `app.flow.detail_scroll`/`detail_hscroll` when
+/// the detail pane is focused and to `app.flow.selected` (resetting the
+/// detail scroll) otherwise; the toggles/cycles flip their flag or mode
+/// and announce it on the status line; the open/close variants change
+/// `app.current_view` or `app.active_popup`; `ExportMermaid` spawns a
+/// clipboard worker; `Quit` sets `should_quit`.
 fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
     let msg_count = flow_visible_msg_count(app);
 
@@ -475,6 +554,18 @@ fn flow_visible_msg_count(app: &App) -> usize {
 
 /// Enter on the selected row: drill into stream detail for an RTP bar,
 /// otherwise open the full-screen raw view of the selected message.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `msg_count` - visible row count; selections at/past it are ignored.
+///
+/// # Side effects
+/// For an RTP bar, resolves a stream linked to the dialog (or any
+/// stream), resets `stream_detail_scroll`, records the flow as the
+/// return view, and switches to `View::StreamDetail` — or reports "No
+/// RTP streams found". For a message row, resets `raw_msg_scroll`,
+/// records the return view, and switches to `View::RawMessage` of the
+/// row's own dialog.
 fn activate_selected(app: &mut App, msg_count: usize) {
     if let View::CallFlow(ref call_id) = app.current_view
         && app.flow.selected < msg_count
@@ -514,6 +605,17 @@ fn activate_selected(app: &mut App, msg_count: usize) {
 
 /// Space: select a message for diff comparison; the second selection
 /// opens the diff view.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `msg_count` - visible row count; selections at/past it are ignored.
+///
+/// # Side effects
+/// The first press stores `(dialog, index)` in `app.flow.diff_selected`
+/// and prompts on the status line. A second press on a different message
+/// of the SAME dialog clears the pending selection, resets `diff_scroll`,
+/// and opens `View::MessageDiff`; rows from different dialogs abort with
+/// a status-line explanation.
 fn diff_select(app: &mut App, msg_count: usize) {
     if let View::CallFlow(ref call_id) = app.current_view
         && app.flow.selected < msg_count
@@ -550,6 +652,11 @@ fn diff_select(app: &mut App, msg_count: usize) {
 
 /// N — Name any participant. Offers every endpoint in the flow; the
 /// selected message's source is focused first. Tab switches columns.
+///
+/// # Side effects
+/// Gathers the dialog's unique endpoint IPs (dialog-store read lock) and
+/// opens the Name Address popup via `open_name_dialog_for`. A no-op when
+/// the dialog cannot be resolved.
 fn name_participants(app: &mut App) {
     if let View::CallFlow(ref call_id) = app.current_view {
         let (row_cid, sel) = flow_selected_message(app, call_id);
@@ -584,6 +691,11 @@ fn name_participants(app: &mut App) {
 /// a/A — combined detail of the selected message's transaction (`whole`
 /// false) or the whole dialog (`whole` true). Both stack every message's
 /// full text into one scrollable view.
+///
+/// # Side effects
+/// Resolves the selected row's own dialog and message indices
+/// (dialog-store read lock), resets `raw_msg_scroll`, and switches to
+/// `View::CombinedDetail`. A no-op when the indices come up empty.
 fn open_combined_detail(app: &mut App, whole: bool) {
     if let View::CallFlow(ref call_id) = app.current_view {
         // Scope to the selected row's OWN dialog (merged flows interleave).
@@ -612,6 +724,12 @@ fn open_combined_detail(app: &mut App, whole: bool) {
 
 /// f — toggle the ladder filter between "this transaction only" and the
 /// whole dialog, keeping the same message selected across the switch.
+///
+/// # Side effects
+/// Sets or clears `app.flow.transaction_filter`, re-projects
+/// `app.flow.selected` between the filtered and full index spaces,
+/// resets the ladder scroll, and announces the filter state on the
+/// status line.
 fn toggle_transaction_filter(app: &mut App) {
     if let View::CallFlow(ref call_id) = app.current_view {
         if app.flow.transaction_filter.is_some() {
@@ -651,6 +769,13 @@ fn toggle_transaction_filter(app: &mut App) {
 }
 
 /// E — export the flow as a Mermaid sequence diagram to the clipboard.
+///
+/// # Side effects
+/// Renders the dialog through the same `prepare_messages` pipeline the
+/// ladder uses (dialog-store read lock), spawns a detached clipboard
+/// worker via `spawn_clipboard_copy`, and paints a "Copying…" status —
+/// the worker's outcome lands later through the async-messages drain.
+/// Reports "No messages to export" for an empty dialog.
 fn export_mermaid_to_clipboard(app: &mut App) {
     if let View::CallFlow(ref call_id) = app.current_view
         && let Some(store) = app.dialog_store.try_read()
@@ -698,6 +823,10 @@ fn export_mermaid_to_clipboard(app: &mut App) {
 /// Copy `text` to the system clipboard on a detached worker thread, pushing
 /// the outcome message into `messages` (drained into the status line by the
 /// event-loop tick). Never blocks the caller.
+///
+/// # Arguments
+/// * `text` - the content to place on the clipboard.
+/// * `messages` - shared queue the worker (or a failed spawn) reports into.
 pub(in crate::tui) fn spawn_clipboard_copy(
     text: String,
     messages: Arc<parking_lot::Mutex<Vec<String>>>,
@@ -716,6 +845,11 @@ pub(in crate::tui) fn spawn_clipboard_copy(
 
 /// Run the platform clipboard helper (pbcopy/xclip) with a bounded wait so
 /// a wedged helper is killed instead of leaking. Worker-thread only.
+///
+/// # Returns
+/// A human-readable outcome for the status line: the success message, or
+/// a "Clipboard: …" error (spawn/write failure, non-zero exit, or the
+/// 5-second timeout kill).
 fn clipboard_copy_bounded(text: &str) -> String {
     let cmd = if cfg!(target_os = "macos") {
         "pbcopy"
@@ -767,6 +901,17 @@ fn clipboard_copy_bounded(text: &str) -> String {
 /// Scroll the raw message view to the next/previous search-match line,
 /// wrapping at the ends. Uses the same display text the renderer builds so
 /// the jump target and the highlight always agree.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `forward` - `true` jumps to the next match (`n`), `false` to the
+///   previous (`N`).
+///
+/// # Side effects
+/// Sets `app.raw_msg_scroll` to the target match line and reports
+/// "Match i/n" on the status line; with no active query or no matches,
+/// only a status-line explanation is set. Briefly holds the dialog-store
+/// read lock while computing the match lines.
 fn jump_raw_search_match(app: &mut App, forward: bool) {
     if app.search_query.is_empty() {
         app.status_error = Some("No search active — press / to search".to_string());
@@ -817,27 +962,51 @@ fn jump_raw_search_match(app: &mut App, forward: bool) {
 /// Everything the raw message view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawMessageAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// Scroll the message text up one line.
     ScrollUp,
+    /// Scroll the message text down one line.
     ScrollDown,
+    /// Scroll the message text up 20 lines.
     PageUp,
+    /// Scroll the message text down 20 lines.
     PageDown,
+    /// Jump to the top of the message text.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
+    /// The configured search key — enter search-input mode (the existing
+    /// query is kept for refining).
     Search,
     /// Jump to the next search-match line (vim/less `n`).
     NextMatch,
     /// Jump to the previous search-match line (vim/less `N`).
     PrevMatch,
+    /// `s` — toggle SIP syntax highlighting.
     ToggleSyntaxHighlight,
+    /// `c` — cycle the color mode.
     CycleColorMode,
+    /// `h` — cycle the header-name display form.
     CycleHeaderForm,
+    /// Esc — return to the view the raw view was opened from.
     Back,
+    /// The configured help key — open the help view.
     Help,
+    /// The configured save key — open the save dialog.
     OpenSaveDialog,
 }
 
 /// Pure key→action mapping for the raw message view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/search/help/save keys
+///   are honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `RawMessageAction`, or `None` when the key is not bound in
+/// this view.
 pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction> {
     use RawMessageAction::*;
     Some(match key.code {
@@ -865,13 +1034,28 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
 }
 
 /// Handle keys in the raw message view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `raw_message_action`.
+///
+/// # Side effects
+/// Delegates to `execute_raw_message_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = raw_message_action(&app.keymap, key) {
         execute_raw_message_action(app, action);
     }
 }
 
-/// Apply one [`RawMessageAction`] to the application state.
+/// Apply one `RawMessageAction` to the application state.
+///
+/// # Side effects
+/// Scroll variants move `app.raw_msg_scroll`; the match jumps go through
+/// `jump_raw_search_match`; the toggles/cycles flip their flag or mode
+/// and announce it on the status line; `Search` sets `search_active`;
+/// `Back` restores `raw_msg_return_view` (call-flow fallback); `Help`
+/// switches the view; `OpenSaveDialog` opens the save popup; `Quit` sets
+/// `should_quit`.
 fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
     match action {
         RawMessageAction::Quit => app.should_quit = true,
@@ -923,6 +1107,10 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
 
 /// Cycle the header-name display form (as captured → expanded → compact),
 /// shared by every view that shows full message text.
+///
+/// # Side effects
+/// Advances `app.header_form` and announces the new form on the status
+/// line.
 fn cycle_header_form(app: &mut App) {
     app.header_form = app.header_form.next();
     app.status_error = Some(app.header_form.label().to_string());
@@ -931,19 +1119,37 @@ fn cycle_header_form(app: &mut App) {
 /// Everything the message diff view can do for a single key press.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageDiffAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// The configured help key — open the help view.
     Help,
+    /// Scroll the diff up one line.
     ScrollUp,
+    /// Scroll the diff down one line.
     ScrollDown,
+    /// Scroll the diff up 20 lines.
     PageUp,
+    /// Scroll the diff down 20 lines.
     PageDown,
+    /// Jump to the top of the diff.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
+    /// `h` — cycle the header-name display form.
     CycleHeaderForm,
+    /// Esc — return to the call flow of the diffed dialog.
     Back,
 }
 
 /// Pure key→action mapping for the message diff view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/help keys are honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `MessageDiffAction`, or `None` when the key is not bound
+/// in this view.
 pub fn message_diff_action(km: &Keymap, key: KeyEvent) -> Option<MessageDiffAction> {
     use MessageDiffAction::*;
     Some(match key.code {
@@ -962,13 +1168,26 @@ pub fn message_diff_action(km: &Keymap, key: KeyEvent) -> Option<MessageDiffActi
 }
 
 /// Handle keys in the message diff view: map, then execute.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `message_diff_action`.
+///
+/// # Side effects
+/// Delegates to `execute_message_diff_action`; unbound keys are ignored.
 pub(in crate::tui) fn handle_message_diff_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = message_diff_action(&app.keymap, key) {
         execute_message_diff_action(app, action);
     }
 }
 
-/// Apply one [`MessageDiffAction`] to the application state.
+/// Apply one `MessageDiffAction` to the application state.
+///
+/// # Side effects
+/// Scroll variants move `app.diff_scroll`; `CycleHeaderForm` advances the
+/// header form (status line updated); `Help` and `Back` switch
+/// `app.current_view` (`Back` returns to the diffed dialog's call flow);
+/// `Quit` sets `should_quit`.
 fn execute_message_diff_action(app: &mut App, action: MessageDiffAction) {
     match action {
         MessageDiffAction::Quit => app.should_quit = true,
@@ -1001,19 +1220,37 @@ fn execute_message_diff_action(app: &mut App, action: MessageDiffAction) {
 /// Everything the combined transaction/dialog detail view can do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombinedDetailAction {
+    /// The configured quit key — exit the application.
     Quit,
+    /// The configured help key — open the help view.
     Help,
+    /// Esc — return to the call flow of the detailed dialog.
     Back,
+    /// Scroll the stacked text up one line.
     ScrollUp,
+    /// Scroll the stacked text down one line.
     ScrollDown,
+    /// Scroll the stacked text up 20 lines.
     PageUp,
+    /// Scroll the stacked text down 20 lines.
     PageDown,
+    /// Jump to the top of the stacked text.
     ScrollTop,
+    /// Jump to the bottom (the render pass clamps to the content height).
     ScrollBottom,
+    /// `h` — cycle the header-name display form.
     CycleHeaderForm,
 }
 
 /// Pure key→action mapping for the combined detail view (keymap-aware).
+///
+/// # Arguments
+/// * `km` - the active keymap; the rebindable quit/help keys are honored.
+/// * `key` - the key event whose code is matched against the bindings.
+///
+/// # Returns
+/// The mapped `CombinedDetailAction`, or `None` when the key is not
+/// bound in this view.
 pub fn combined_detail_action(km: &Keymap, key: KeyEvent) -> Option<CombinedDetailAction> {
     use CombinedDetailAction::*;
     Some(match key.code {
@@ -1032,13 +1269,27 @@ pub fn combined_detail_action(km: &Keymap, key: KeyEvent) -> Option<CombinedDeta
 }
 
 /// Handle keys in the combined transaction/dialog detail view.
+///
+/// # Arguments
+/// * `app` - the application state to mutate.
+/// * `key` - the key event, mapped via `combined_detail_action`.
+///
+/// # Side effects
+/// Delegates to `execute_combined_detail_action`; unbound keys are
+/// ignored.
 pub(in crate::tui) fn handle_combined_detail_key(app: &mut App, key: KeyEvent) {
     if let Some(action) = combined_detail_action(&app.keymap, key) {
         execute_combined_detail_action(app, action);
     }
 }
 
-/// Apply one [`CombinedDetailAction`] to the application state.
+/// Apply one `CombinedDetailAction` to the application state.
+///
+/// # Side effects
+/// Scroll variants move `app.raw_msg_scroll` (shared with the raw view);
+/// `CycleHeaderForm` advances the header form (status line updated);
+/// `Help` and `Back` switch `app.current_view` (`Back` returns to the
+/// detailed dialog's call flow); `Quit` sets `should_quit`.
 fn execute_combined_detail_action(app: &mut App, action: CombinedDetailAction) {
     match action {
         CombinedDetailAction::Quit => app.should_quit = true,
@@ -1068,6 +1319,8 @@ fn execute_combined_detail_action(app: &mut App, action: CombinedDetailAction) {
     }
 }
 
+/// Unit tests for the call-flow ladder and its message-level views (raw
+/// message, message diff, combined detail).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1090,6 +1343,8 @@ mod tests {
         app
     }
 
+    /// `w` toggles detail-pane wrapping (status announced); re-enabling
+    /// wrap resets the horizontal scroll.
     #[test]
     fn w_toggles_detail_wrap_and_resets_hscroll() {
         let mut app = app_in_split_with_detail_focus();
@@ -1112,6 +1367,8 @@ mod tests {
         );
     }
 
+    /// With the detail pane focused and wrap off, ←/→ scroll horizontally
+    /// (4 columns per press, clamped at zero) without resizing the split.
     #[test]
     fn arrows_hscroll_the_focused_unwrapped_detail_pane() {
         let mut app = app_in_split_with_detail_focus();
@@ -1128,6 +1385,8 @@ mod tests {
         assert_eq!(app.flow.detail_hscroll, 0, "← clamps at column zero");
     }
 
+    /// ←/→ keep their split-resize meaning while wrapping is on or the
+    /// detail pane is unfocused.
     #[test]
     fn arrows_resize_the_split_when_wrapped_or_unfocused() {
         // Focused but wrapping (default): arrows keep resizing the split.
@@ -1149,6 +1408,8 @@ mod tests {
         assert_eq!(app.flow.detail_hscroll, 0);
     }
 
+    /// Home/End rewind and bottom-out the focused detail pane without
+    /// moving the ladder selection.
     #[test]
     fn home_and_end_drive_the_focused_detail_pane() {
         let mut app = app_in_split_with_detail_focus();
@@ -1244,6 +1505,7 @@ mod tests {
         );
     }
 
+    /// A rebound quit key maps in the raw view and the old key unbinds.
     #[test]
     fn raw_message_action_honors_remapped_quit() {
         let km = Keymap {
@@ -1257,6 +1519,8 @@ mod tests {
         assert_eq!(raw_message_action(&km, key(KeyCode::Char('q'))), None);
     }
 
+    /// Spot-check of the diff and combined-detail mappings (Esc → Back,
+    /// PageDown, and an unbound key).
     #[test]
     fn message_diff_and_combined_detail_actions_map() {
         let km = Keymap::default();
@@ -1271,6 +1535,7 @@ mod tests {
         );
     }
 
+    /// Down/Up move the ladder selection one row at a time.
     #[test]
     fn call_flow_down_up() {
         let mut app = app_with_dialogs();
@@ -1282,6 +1547,7 @@ mod tests {
         assert_eq!(app.flow.selected, 0);
     }
 
+    /// Home/End jump the ladder selection to the first/last message.
     #[test]
     fn call_flow_home_end() {
         let mut app = app_with_dialogs();
@@ -1292,6 +1558,7 @@ mod tests {
         assert_eq!(app.flow.selected, 0);
     }
 
+    /// PageDown/PageUp page the ladder selection, clamping at both ends.
     #[test]
     fn call_flow_page_up_down() {
         let mut app = app_with_dialogs();
@@ -1302,6 +1569,7 @@ mod tests {
         assert_eq!(app.flow.selected, 0);
     }
 
+    /// Tab toggles focus between the ladder and the detail pane.
     #[test]
     fn call_flow_tab_toggles_pane_focus() {
         let mut app = app_with_dialogs();
@@ -1314,6 +1582,7 @@ mod tests {
         assert!(!app.flow.detail_focused, "Tab toggles back to ladder");
     }
 
+    /// Tab is a no-op while the split preview is hidden.
     #[test]
     fn call_flow_tab_noop_without_split() {
         let mut app = app_with_dialogs();
@@ -1323,6 +1592,8 @@ mod tests {
         assert!(!app.flow.detail_focused, "no detail pane to focus");
     }
 
+    /// With the detail pane focused, Up/Down scroll the detail text and
+    /// leave the ladder selection alone.
     #[test]
     fn call_flow_detail_focus_scrolls_detail_not_selection() {
         let mut app = app_with_dialogs();
@@ -1340,6 +1611,7 @@ mod tests {
         assert_eq!(app.flow.detail_scroll, 0, "Up scrolls the detail pane back");
     }
 
+    /// With the (default) ladder focus, Down advances the selection.
     #[test]
     fn call_flow_ladder_focus_moves_selection() {
         let mut app = app_with_dialogs();
@@ -1350,6 +1622,7 @@ mod tests {
         assert_eq!(app.flow.detail_scroll, 0);
     }
 
+    /// Hiding the split with `R` also clears the detail focus.
     #[test]
     fn call_flow_toggle_split_off_clears_focus() {
         let mut app = app_with_dialogs();
@@ -1361,6 +1634,7 @@ mod tests {
         assert!(!app.flow.detail_focused, "focus reset when split is hidden");
     }
 
+    /// Enter on a message row opens the full-screen raw view.
     #[test]
     fn call_flow_enter_opens_raw() {
         let mut app = app_with_dialogs();
@@ -1369,6 +1643,8 @@ mod tests {
         assert!(matches!(app.current_view, View::RawMessage { .. }));
     }
 
+    /// Space selects the first diff message; a second Space on another
+    /// row opens the diff view.
     #[test]
     fn call_flow_space_diff_select() {
         let mut app = app_with_dialogs();
@@ -1383,8 +1659,9 @@ mod tests {
         assert!(matches!(app.current_view, View::MessageDiff { .. }));
     }
 
-    // R5a: `f` filters the ladder to the selected message's transaction and
-    // re-projects the selection; raw/diff/name still resolve original indices.
+    /// `f` filters the ladder to the selected message's transaction and
+    /// re-projects the selection; raw/diff/name still resolve original
+    /// indices, and toggling off restores the full-dialog selection.
     #[test]
     fn call_flow_f_filters_to_transaction_and_maps_back() {
         let t0 = base_ts();
@@ -1453,7 +1730,8 @@ mod tests {
         assert_eq!(app.flow.selected, 2);
     }
 
-    // R4: `a` opens the selected message's transaction; `A` the whole dialog.
+    /// `a` opens the combined detail scoped to the selected message's
+    /// transaction, and Esc returns to the ladder.
     #[test]
     fn call_flow_a_opens_transaction_combined_detail() {
         let mut app = app_with_dialogs();
@@ -1471,6 +1749,7 @@ mod tests {
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
+    /// `A` opens the combined detail scoped to the whole dialog.
     #[test]
     fn call_flow_shift_a_opens_dialog_combined_detail() {
         let mut app = app_with_dialogs();
@@ -1485,6 +1764,7 @@ mod tests {
         }
     }
 
+    /// The combined detail view scrolls by line, page, and Home.
     #[test]
     fn combined_detail_scrolls_and_pages() {
         let mut app = app_with_dialogs();
@@ -1499,6 +1779,7 @@ mod tests {
         assert_eq!(app.raw_msg_scroll, 0);
     }
 
+    /// `r` jumps from the flow to the RTP stream list.
     #[test]
     fn call_flow_r_jumps_to_stream_list() {
         let mut app = app_with_dialogs();
@@ -1507,6 +1788,8 @@ mod tests {
         assert_eq!(app.current_view, View::StreamList);
     }
 
+    /// `d`, `c`, and `R` cycle/toggle the SDP mode, color mode, and split
+    /// preview respectively.
     #[test]
     fn call_flow_display_toggles() {
         let mut app = app_with_dialogs();
@@ -1524,6 +1807,7 @@ mod tests {
         assert_ne!(app.flow.raw_preview, rp);
     }
 
+    /// `+`/`-` grow and shrink the detail panel by 5% per press.
     #[test]
     fn call_flow_panel_resize() {
         let mut app = app_with_dialogs();
@@ -1536,6 +1820,7 @@ mod tests {
         assert_eq!(app.flow.raw_preview_pct, pct);
     }
 
+    /// `]`/`[` scroll the detail pane regardless of focus.
     #[test]
     fn call_flow_detail_scroll_brackets() {
         let mut app = app_with_dialogs();
@@ -1546,6 +1831,7 @@ mod tests {
         assert_eq!(app.flow.detail_scroll, 0);
     }
 
+    /// `x` toggles extended (multi-leg) flow and F6 toggles RTP bars.
     #[test]
     fn call_flow_extended_and_rtp_toggle() {
         let mut app = app_with_dialogs();
@@ -1557,6 +1843,8 @@ mod tests {
         assert_ne!(app.flow.show_rtp, rtp);
     }
 
+    /// Ctrl+R is an F6 alias: both toggle the same RTP-in-flow flag
+    /// (F-keys are unreachable from some headless front-ends).
     #[test]
     fn call_flow_rtp_toggle_ctrl_r_alias() {
         // Ctrl+R is an alias for F6 (toggle RTP-in-flow). F-keys can't be
@@ -1575,6 +1863,8 @@ mod tests {
         assert!(app.flow.show_rtp, "F6 still toggles the same flag");
     }
 
+    /// Bare `r` keeps its jump-to-streams meaning; the Ctrl+R alias must
+    /// not shadow it.
     #[test]
     fn call_flow_plain_r_still_jumps_to_rtp_streams() {
         // The bare `r` (no modifier) must keep its existing meaning: jump to the
@@ -1586,6 +1876,7 @@ mod tests {
         assert!(!app.flow.show_rtp, "plain r does not toggle RTP-in-flow");
     }
 
+    /// `m` sets the timing mark on the selected row; `M` clears it.
     #[test]
     fn call_flow_mark_set_clear() {
         let mut app = app_with_dialogs();
@@ -1596,6 +1887,7 @@ mod tests {
         assert_eq!(app.flow.mark_index, None);
     }
 
+    /// `e` toggles fold expansion for the selected row's raw index.
     #[test]
     fn call_flow_fold_expand_toggle() {
         let mut app = app_with_dialogs();
@@ -1606,6 +1898,7 @@ mod tests {
         assert!(!app.flow.fold_expanded.contains(&0));
     }
 
+    /// Esc drops a pending diff selection and returns to the call list.
     #[test]
     fn call_flow_esc_clears_diff_and_returns() {
         let mut app = app_with_dialogs();
@@ -1616,6 +1909,7 @@ mod tests {
         assert_eq!(app.current_view, View::CallList);
     }
 
+    /// Quit, help, and save keys work from the flow view.
     #[test]
     fn call_flow_quit_help_save() {
         let mut app = app_with_dialogs();
@@ -1634,6 +1928,7 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
     }
 
+    /// F5 resets compare mode and F9 clears the active filter.
     #[test]
     fn call_flow_f5_resets_compare_and_f9_clears_filter() {
         let mut app = app_with_dialogs();
@@ -1648,6 +1943,7 @@ mod tests {
         assert!(app.active_filter.is_none());
     }
 
+    /// An unbound key leaves the flow view unchanged.
     #[test]
     fn call_flow_unhandled_noop() {
         let mut app = app_with_dialogs();
@@ -1658,6 +1954,7 @@ mod tests {
 
     // ── handle_raw_message_key ───────────────────────────────────────
 
+    /// App on the RawMessage view, reached through the flow's Enter path.
     fn app_in_raw_message() -> App {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
@@ -1707,6 +2004,8 @@ mod tests {
         assert_eq!(app.header_form, HeaderFormMode::Expanded);
     }
 
+    /// Line, page, Home, and End scrolling in the raw view (End requests
+    /// the bottom; the render pass clamps it).
     #[test]
     fn raw_message_scroll() {
         let mut app = app_in_raw_message();
@@ -1730,6 +2029,7 @@ mod tests {
         assert_eq!(app.raw_msg_scroll, 0);
     }
 
+    /// Esc returns from the raw view to the flow it was opened from.
     #[test]
     fn raw_message_esc_returns_to_flow() {
         let mut app = app_in_raw_message();
@@ -1737,6 +2037,8 @@ mod tests {
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
+    /// `s` toggles syntax highlighting, `c` cycles the color mode, and
+    /// `/` enters search mode in the raw view.
     #[test]
     fn raw_message_toggles_and_search() {
         let mut app = app_in_raw_message();
@@ -1752,6 +2054,7 @@ mod tests {
         assert!(app.search_active);
     }
 
+    /// Quit, help, and save keys work from the raw view.
     #[test]
     fn raw_message_quit_help_save() {
         let mut app = app_in_raw_message();
@@ -1767,6 +2070,7 @@ mod tests {
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
     }
 
+    /// An unbound key leaves the raw view unchanged.
     #[test]
     fn raw_message_unhandled_noop() {
         let mut app = app_in_raw_message();
@@ -1776,6 +2080,8 @@ mod tests {
 
     // ── handle_message_diff_key ──────────────────────────────────────
 
+    /// App on the MessageDiff view, reached through two Space presses in
+    /// the flow.
     fn app_in_message_diff() -> App {
         let mut app = app_with_dialogs();
         open_call_flow(&mut app);
@@ -1786,6 +2092,7 @@ mod tests {
         app
     }
 
+    /// The quit key exits the app from the diff view.
     #[test]
     fn message_diff_q_quits() {
         let mut app = app_in_message_diff();
@@ -1793,6 +2100,7 @@ mod tests {
         assert!(app.should_quit);
     }
 
+    /// Esc returns from the diff view to the dialog's flow.
     #[test]
     fn message_diff_esc_returns_to_flow() {
         let mut app = app_in_message_diff();
@@ -1800,6 +2108,7 @@ mod tests {
         assert!(matches!(app.current_view, View::CallFlow(_)));
     }
 
+    /// F1 opens the help view from the diff view.
     #[test]
     fn message_diff_f1_help() {
         let mut app = app_in_message_diff();
@@ -1807,6 +2116,7 @@ mod tests {
         assert_eq!(app.current_view, View::Help);
     }
 
+    /// An unbound key leaves the diff view unchanged.
     #[test]
     fn message_diff_unhandled_noop() {
         let mut app = app_in_message_diff();

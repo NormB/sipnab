@@ -14,11 +14,16 @@ use sipnab::net::TransportProto;
 use sipnab::sip::dialog_store::DialogStore;
 use sipnab::sip::parser::parse_sip;
 
+/// Parses a literal IP address string, panicking on invalid input.
 fn addr(s: &str) -> std::net::IpAddr {
     s.parse().expect("valid test address")
 }
 
 /// Build a two-message INVITE dialog (INVITE + 200 OK) in a store.
+///
+/// # Returns
+/// A `DialogStore` containing the single dialog
+/// `summary-consistency@test` with alice → bob parties.
 fn make_dialog_store() -> DialogStore {
     let invite = b"INVITE sip:bob@example.com SIP/2.0\r\n\
         Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bKsummary1\r\n\
@@ -50,6 +55,7 @@ fn make_dialog_store() -> DialogStore {
     ds
 }
 
+/// The canonical `DialogSummary` serializes the full shared key set, uses `msg_count` (not the drift key `message_count`), and formats the method as `INVITE`.
 #[test]
 fn canonical_summary_field_names_and_formats() {
     let ds = make_dialog_store();
@@ -88,6 +94,7 @@ fn canonical_summary_field_names_and_formats() {
     assert_eq!(obj["to_user"], "bob");
 }
 
+/// The MCP `DialogSummary` serializes byte-identically to the canonical one, pinning both shipped drift bugs (msg_count key, canonical method form).
 #[test]
 fn mcp_summary_is_the_canonical_summary() {
     let ds = make_dialog_store();
@@ -111,6 +118,7 @@ fn mcp_summary_is_the_canonical_summary() {
     assert_eq!(obj["method"], "INVITE", "MCP still Debug-formats methods");
 }
 
+/// The canonical `StreamSummary` exposes all shared stream keys and formats the SSRC as 0x-prefixed hex.
 #[test]
 fn stream_summary_canonical_keys() {
     // A stream summary must expose the canonical key set with the same

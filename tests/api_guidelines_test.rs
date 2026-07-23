@@ -45,6 +45,8 @@ fn enum_is_non_exhaustive(text: &str, name: &str) -> bool {
     head[block_start..].contains("#[non_exhaustive]")
 }
 
+/// Scans each source file in `NON_EXHAUSTIVE_ENUMS` and asserts every listed
+/// `pub enum` still exists and carries `#[non_exhaustive]` in its attribute block.
 #[test]
 fn growth_prone_public_enums_are_non_exhaustive() {
     let root = env!("CARGO_MANIFEST_DIR");
@@ -67,6 +69,8 @@ fn growth_prone_public_enums_are_non_exhaustive() {
     );
 }
 
+/// Compile-time check that `DialogStore` and `StreamStore` implement `Debug`
+/// (API guideline C-DEBUG) so embedders can log them.
 #[test]
 fn shared_stores_are_debug() {
     // Compile-time: both stores must implement Debug (C-DEBUG) so

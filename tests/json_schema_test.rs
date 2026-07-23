@@ -25,6 +25,15 @@ mod support;
 use support::schema::{assert_valid, load_validator};
 
 /// Run the built binary with the determinism contract and return stdout.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+///
+/// # Returns
+/// The process's stdout as UTF-8; panics on a non-zero exit.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary with the deterministic env applied.
 fn run_sipnab(args: &[&str]) -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
@@ -40,6 +49,8 @@ fn run_sipnab(args: &[&str]) -> String {
     String::from_utf8(out.stdout).expect("utf8 stdout")
 }
 
+/// Every `--json` NDJSON line from the fixture validates against
+/// `message.schema.json`, and at least 5 messages are produced.
 #[test]
 fn message_schema_validates_ndjson_output() {
     let v = load_validator("message.schema.json");
@@ -57,6 +68,8 @@ fn message_schema_validates_ndjson_output() {
     );
 }
 
+/// Negative test (spec §13.3): corrupting a real message line — wrong-typed
+/// src_port, missing/wrong schema_version, extra field — makes validation fail.
 #[test]
 fn message_schema_rejects_malformed() {
     let v = load_validator("message.schema.json");
@@ -86,6 +99,8 @@ fn message_schema_rejects_malformed() {
     assert!(!v.is_valid(&bad), "must reject unknown field");
 }
 
+/// `--call-report --json` output validates against `call_report.schema.json`
+/// for both a no-RTP call (empty timeline/streams) and an RTP G.711 call.
 #[test]
 fn call_report_schema_validates_output() {
     let v = load_validator("call_report.schema.json");
@@ -117,6 +132,8 @@ fn call_report_schema_validates_output() {
     assert_valid(&v, &inst, "call_report (rtp g711)");
 }
 
+/// Negative test: removing `diagnosis`, mistyping `timing.retransmits`, or
+/// adding an unknown top-level field makes the call-report schema reject.
 #[test]
 fn call_report_schema_rejects_malformed() {
     let v = load_validator("call_report.schema.json");
@@ -148,6 +165,8 @@ fn call_report_schema_rejects_malformed() {
     assert!(!v.is_valid(&bad), "must reject unknown top-level field");
 }
 
+/// `--json` (7 NDJSON lines) and `--json-pretty` (7-value concatenated JSON
+/// stream) both validate per message and agree on the message count.
 #[test]
 fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
     // --json emits compact NDJSON (one object per line); --json-pretty emits
@@ -176,6 +195,8 @@ fn json_and_json_pretty_streams_validate(/* M2 — T2.2 */) {
     }
 }
 
+/// All four schemas in `tests/schemas/` compile into validators (well-formed),
+/// including the two whose live-output validation lives in the API tests.
 #[test]
 fn all_schemas_compile() {
     // dialog + stream get live-output validation in M3; prove well-formed now.

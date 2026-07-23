@@ -2,8 +2,10 @@
 //!
 //! Extracts SRTP master key and salt material from SDP `a=crypto` attributes
 //! (SDES key exchange, RFC 4568) and from a manual key file format used with
-//! the `--srtp-keys` CLI option. Actual SRTP decryption is deferred to a
-//! [`CryptoBackend`](crate::crypto::CryptoBackend) implementation.
+//! the `--srtp-keys` CLI option. Also implements the RFC 3711 AES-CM key
+//! derivation, payload cipher, and stateful auth-tag verification;
+//! HMAC-SHA1 computation is deferred to a `crate::crypto::CryptoBackend`
+//! implementation.
 
 use std::path::Path;
 
@@ -36,6 +38,8 @@ pub struct SrtpKeyMaterial {
 }
 
 impl std::fmt::Debug for SrtpKeyMaterial {
+    /// Format the key material with the master key and salt redacted,
+    /// showing only their byte lengths alongside the non-secret fields.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Never print key material; show only its shape.
         f.debug_struct("SrtpKeyMaterial")
@@ -57,6 +61,8 @@ impl std::fmt::Debug for SrtpKeyMaterial {
 }
 
 impl Drop for SrtpKeyMaterial {
+    /// Zero the master key and salt bytes in place before the memory is
+    /// freed, so key material does not linger on the heap.
     fn drop(&mut self) {
         // Always wipe key material on drop (previously gated behind `tls`, so
         // non-tls builds leaked keys to freed heap). Best-effort manual zeroize
@@ -124,6 +130,16 @@ impl SrtpSuite {
 /// key and salt are concatenated and base64-encoded. Optional session
 /// parameters after a `|` separator are ignored.
 ///
+/// # Arguments
+///
+/// * `crypto` — a parsed SDP `a=crypto` attribute (tag, suite name, and
+///   key parameters).
+///
+/// # Returns
+///
+/// The extracted key material with `ssrc`, `media_addr`, and `media_port`
+/// unset (callers fill those from context).
+///
 /// # Errors
 ///
 /// Returns an error if the key_params format is invalid, the base64 is
@@ -166,6 +182,21 @@ pub fn extract_srtp_keys(crypto: &SdpCrypto) -> Result<SrtpKeyMaterial> {
 }
 
 /// Split concatenated key||salt bytes based on suite requirements.
+///
+/// # Arguments
+///
+/// * `suite` — determines the expected key/salt lengths; an unknown suite
+///   falls back to the SRTP defaults (16-byte key, 14-byte salt).
+/// * `material` — the decoded key||salt concatenation.
+///
+/// # Returns
+///
+/// `(master_key, master_salt)` as owned copies; trailing bytes beyond the
+/// expected lengths are ignored.
+///
+/// # Errors
+///
+/// Fails if `material` is shorter than the expected key+salt length.
 fn split_key_salt(suite: &SrtpSuite, material: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let key_len = suite.expected_key_len();
     let salt_len = suite.expected_salt_len();
@@ -234,6 +265,20 @@ pub fn parse_srtp_key_file(path: &Path) -> Result<Vec<SrtpKeyMaterial>> {
 }
 
 /// Parse a single line from the manual SRTP key file format.
+///
+/// Recognizes whitespace-separated `ssrc=`, `key=`, `salt=`, and `suite=`
+/// tokens; unknown tokens are ignored.
+///
+/// # Returns
+///
+/// Key material with `tag` fixed at 0 and `ssrc` set only when the line
+/// carried an `ssrc=` token.
+///
+/// # Errors
+///
+/// Fails on a missing `key=` token, an unparsable SSRC, invalid base64
+/// (reported by length only, never echoing the material), or key||salt
+/// material too short for the suite.
 fn parse_srtp_key_line(line: &str) -> Result<SrtpKeyMaterial> {
     let mut ssrc: Option<u32> = None;
     let mut key_b64: Option<&str> = None;
@@ -304,6 +349,23 @@ pub fn auth_tag_len(suite: &SrtpSuite) -> usize {
 /// counter mode keyed with the master key, taking the first `output_len` bytes.
 /// This is the spec PRF, so the derived session keys match any interoperable
 /// SRTP endpoint (validated against the RFC 3711 Appendix B.3 test vectors).
+///
+/// # Arguments
+///
+/// * `master_key` — 16-byte (AES-128) or 32-byte (AES-256) master key.
+/// * `master_salt` — up to 14 bytes of master salt, left-aligned.
+/// * `label` — RFC 3711 usage label (0x00 cipher, 0x01 auth, 0x02 salt).
+/// * `output_len` — number of PRF output bytes to return.
+///
+/// # Returns
+///
+/// The first `output_len` bytes of AES-CM keystream. Pure function — no
+/// side effects.
+///
+/// # Errors
+///
+/// Fails if the salt exceeds 14 bytes or the key is neither 16 nor 32
+/// bytes.
 fn aes_cm_prf(
     master_key: &[u8],
     master_salt: &[u8],
@@ -391,6 +453,10 @@ fn srtp_cipher_iv(session_salt: &[u8], ssrc: u32, packet_index: u64) -> [u8; 16]
 /// Generate `len` bytes of AES-CM keystream from `session_key`, starting at
 /// counter block `iv` and incrementing the full 128-bit block big-endian for
 /// each successive block (RFC 3711 §4.1.1). The session key is 16 or 32 bytes.
+///
+/// # Errors
+///
+/// Fails if `session_key` is neither 16 nor 32 bytes.
 fn srtp_aes_cm_keystream(session_key: &[u8], iv: [u8; 16], len: usize) -> Result<Vec<u8>> {
     use aes::cipher::{BlockCipherEncrypt, KeyInit};
 
@@ -450,14 +516,27 @@ fn incr_be_128(block: &mut [u8; 16]) {
 ///
 /// * `packet` — the full SRTP packet: RTP header ‖ encrypted payload ‖ auth tag.
 /// * `payload_offset` — byte offset where the encrypted payload starts (from
-///   [`crate::rtp::parser::parse_rtp_header`]).
+///   `crate::rtp::parser::parse_rtp_header`).
 /// * `key_material` — SRTP master key/salt and suite.
 /// * `roc` — rollover counter for this packet's SSRC (0 for short streams; use
-///   [`SrtpRocTracker`] for the authenticated ROC).
+///   `SrtpRocTracker` for the authenticated ROC).
+/// * `crypto` — crypto backend (currently unused here; AES-CM runs via the
+///   `aes` crate directly).
 ///
 /// This does NOT verify the auth tag — callers should verify first via
-/// [`verify_srtp_auth_tag`] / [`SrtpRocTracker::verify`] and only decrypt
+/// `verify_srtp_auth_tag` / `SrtpRocTracker::verify` and only decrypt
 /// authenticated packets.
+///
+/// # Returns
+///
+/// The decrypted payload bytes (auth tag excluded). Pure with respect to
+/// its inputs — no side effects.
+///
+/// # Errors
+///
+/// Fails if the packet is too short to hold the header, payload offset,
+/// and auth tag, or if the master key/salt lengths are invalid for the
+/// AES-CM key derivation.
 pub fn decrypt_srtp_payload(
     packet: &[u8],
     payload_offset: usize,
@@ -507,7 +586,7 @@ pub fn decrypt_srtp_payload(
 }
 
 /// Derive an SRTP session key (RFC 3711 §4.3.1) via the spec AES-CM PRF
-/// ([`aes_cm_prf`]), so the result interoperates with real SRTP endpoints.
+/// (`aes_cm_prf`), so the result interoperates with real SRTP endpoints.
 ///
 /// * `label` — 0x00 cipher, 0x01 auth, 0x02 salt (SRTP); 0x03/0x04/0x05 SRTCP.
 /// * `output_len` — desired key length in bytes (e.g. 20 for the auth key).
@@ -595,6 +674,23 @@ pub fn verify_srtp_auth_tag(
 
 /// Compute the SRTP auth tag over `auth_portion || roc` and constant-time
 /// compare it to `received_tag`.
+///
+/// # Arguments
+///
+/// * `auth_portion` — the authenticated bytes (header + encrypted payload).
+/// * `received_tag` — the tag carried by the packet.
+/// * `session_auth_key` — the derived 20-byte session auth key.
+/// * `roc` — the rollover counter appended big-endian to the HMAC input.
+/// * `tag_len` — suite tag length in bytes (truncates the HMAC output).
+/// * `crypto` — backend used to compute HMAC-SHA1.
+///
+/// # Returns
+///
+/// `Ok(true)` on a constant-time match, `Ok(false)` on a mismatch.
+///
+/// # Errors
+///
+/// Propagates a failure from the backend's HMAC computation.
 fn srtp_tag_matches(
     auth_portion: &[u8],
     received_tag: &[u8],
@@ -623,6 +719,10 @@ struct RocState {
 
 /// Estimate the ROC for an incoming sequence number (RFC 3711 §3.3.1), given
 /// the locally maintained `roc` and highest-seen sequence `s_l`.
+///
+/// Returns `roc` unchanged for in-epoch packets, `roc + 1` when the
+/// sequence has wrapped into the next epoch, and `roc - 1` for a late
+/// packet from the previous epoch (both wrapping). Pure function.
 fn estimate_roc(roc: u32, s_l: u16, seq: u16) -> u32 {
     let seq = seq as i32;
     let s_l = s_l as i32;
@@ -650,6 +750,7 @@ fn estimate_roc(roc: u32, s_l: u16, seq: u16) -> u32 {
 /// not verify — an inherent limitation of passive analysis).
 #[derive(Debug, Default)]
 pub struct SrtpRocTracker {
+    /// Per-SSRC ROC and highest-seen-sequence state, keyed by SSRC.
     per_ssrc: std::collections::HashMap<u32, RocState>,
 }
 
@@ -663,6 +764,11 @@ impl SrtpRocTracker {
     /// packet's SSRC. Returns `Ok(true)` on a valid tag, `Ok(false)` on a
     /// mismatch (state is left unchanged on mismatch), or `Err` on a crypto
     /// failure or a packet too short to contain header + tag.
+    ///
+    /// # Side effects
+    ///
+    /// On success, updates this tracker's per-SSRC ROC and highest-seen
+    /// sequence (via `verify_roc`).
     pub fn verify(
         &mut self,
         packet: &[u8],
@@ -672,10 +778,28 @@ impl SrtpRocTracker {
         Ok(self.verify_roc(packet, key_material, crypto)?.is_some())
     }
 
-    /// Like [`verify`](Self::verify), but on success returns `Some(roc)` — the
+    /// Like `verify`, but on success returns `Some(roc)` — the
     /// rollover counter that authenticated the packet — so the caller can
     /// decrypt the payload with the matching SRTP index. Returns `Ok(None)` on
     /// a tag mismatch (state untouched).
+    ///
+    /// # Arguments
+    ///
+    /// * `packet` — the full SRTP packet (header + payload + auth tag).
+    /// * `key_material` — master key/salt and suite used to derive the
+    ///   session auth key.
+    /// * `crypto` — backend used for HMAC-SHA1.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet is shorter than the 12-byte header plus the
+    /// suite's tag, or if key derivation / HMAC computation fails.
+    ///
+    /// # Side effects
+    ///
+    /// On a valid tag, records or advances the per-SSRC `RocState` (ROC
+    /// and highest-seen sequence); older in-window packets keep the
+    /// existing state. A failed tag leaves all state untouched.
     pub fn verify_roc(
         &mut self,
         packet: &[u8],
@@ -750,8 +874,11 @@ impl SrtpRocTracker {
 /// Authentication is the gate: a packet is only decrypted if a candidate key's
 /// HMAC-SHA1 tag verifies, so a wrong or unrelated key never yields plaintext.
 pub struct SrtpContext {
+    /// Candidate master keys, tried in SSRC-pinned-first order.
     keys: Vec<SrtpKeyMaterial>,
+    /// Per-SSRC rollover-counter state shared across all candidate keys.
     tracker: SrtpRocTracker,
+    /// Backend used for HMAC-SHA1 auth-tag verification.
     crypto: Box<dyn crate::crypto::CryptoBackend>,
     /// Number of packets successfully authenticated and decrypted.
     pub decrypted_count: u64,
@@ -769,6 +896,11 @@ impl SrtpContext {
     }
 
     /// Load key material from a manual `--srtp-keys` file.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the file cannot be read or contains an invalid key entry
+    /// (see `parse_srtp_key_file`).
     pub fn from_key_file(
         path: &Path,
         crypto: Box<dyn crate::crypto::CryptoBackend>,
@@ -819,7 +951,14 @@ impl SrtpContext {
     /// candidate key authenticates the packet, or `None` if none do.
     ///
     /// `payload_offset` is the RTP payload start from
-    /// [`crate::rtp::parser::parse_rtp_header`].
+    /// `crate::rtp::parser::parse_rtp_header`.
+    ///
+    /// # Side effects
+    ///
+    /// On success, advances the ROC tracker's per-SSRC state for the
+    /// authenticating key and increments `decrypted_count`. An
+    /// authenticated packet that then fails to decrypt logs at debug
+    /// level and returns `None`.
     pub fn decrypt(&mut self, packet: &[u8], payload_offset: usize) -> Option<Vec<u8>> {
         if self.keys.is_empty() || packet.len() < 12 || payload_offset < 12 {
             return None;
@@ -867,6 +1006,18 @@ pub(crate) mod test_support {
 
     /// Build a fully valid SRTP packet (AES-CM-encrypted payload + correct
     /// 80-bit HMAC-SHA1 auth tag) for the given master key/salt and identifiers.
+    ///
+    /// # Arguments
+    ///
+    /// * `master_key` / `master_salt` — SRTP master key material.
+    /// * `ssrc` / `seq` / `roc` — packet identity used for the cipher IV
+    ///   and the authenticated ROC.
+    /// * `plaintext` — the payload to encrypt.
+    ///
+    /// # Panics
+    ///
+    /// Panics (via `unwrap`) on invalid key/salt lengths — acceptable in
+    /// test code.
     pub fn build_srtp_packet(
         master_key: &[u8],
         master_salt: &[u8],
@@ -903,6 +1054,9 @@ pub(crate) mod test_support {
     }
 }
 
+/// Unit tests for SRTP key extraction (SDES and key files), the RFC 3711
+/// KDF/cipher known-answer vectors, auth-tag verification, ROC tracking,
+/// and the keyed decryption context.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +1074,8 @@ mod tests {
         (key, salt, b64)
     }
 
+    /// An AES_CM_128_HMAC_SHA1_80 a=crypto line yields the expected suite,
+    /// key, and salt.
     #[test]
     fn extract_aes_cm_128_hmac_sha1_80() {
         let (expected_key, expected_salt, b64) = make_test_key_material();
@@ -937,6 +1093,7 @@ mod tests {
         assert_eq!(material.master_salt, expected_salt);
     }
 
+    /// The 32-bit-tag suite variant extracts with the same key/salt split.
     #[test]
     fn extract_aes_cm_128_hmac_sha1_32() {
         let (expected_key, expected_salt, b64) = make_test_key_material();
@@ -953,6 +1110,8 @@ mod tests {
         assert_eq!(material.master_salt, expected_salt);
     }
 
+    /// Session parameters after the `|` separator are ignored during
+    /// extraction.
     #[test]
     fn extract_with_session_params_after_pipe() {
         let (_key, _salt, b64) = make_test_key_material();
@@ -968,6 +1127,7 @@ mod tests {
         assert_eq!(material.master_salt.len(), 14);
     }
 
+    /// Invalid base64 in the inline key parameters is an error.
     #[test]
     fn extract_invalid_base64() {
         let crypto = SdpCrypto {
@@ -982,6 +1142,8 @@ mod tests {
         );
     }
 
+    /// Base64 decode errors report only the input length — candidate key
+    /// or salt material never appears in error messages.
     #[test]
     fn invalid_base64_errors_do_not_leak_key_material() {
         // SDP a=crypto path.
@@ -1017,6 +1179,7 @@ mod tests {
         );
     }
 
+    /// Key parameters lacking the `inline:` prefix are rejected.
     #[test]
     fn extract_missing_inline_prefix() {
         let crypto = SdpCrypto {
@@ -1031,6 +1194,8 @@ mod tests {
         );
     }
 
+    /// A key file with comments and two entries parses both, honoring the
+    /// per-line suite override.
     #[test]
     fn parse_manual_key_file_entries() {
         let (_key, _salt, b64) = make_test_key_material();
@@ -1049,6 +1214,7 @@ mod tests {
         assert_eq!(entries[1].suite, SrtpSuite::AesCm128HmacSha1_32);
     }
 
+    /// A file of only comments and blank lines parses to zero entries.
     #[test]
     fn parse_empty_key_file() {
         let mut tmp = tempfile::NamedTempFile::new().expect("create tempfile");
@@ -1060,6 +1226,8 @@ mod tests {
         assert!(entries.is_empty());
     }
 
+    /// An explicit `salt=` token keeps key and salt separate instead of
+    /// splitting a concatenation.
     #[test]
     fn parse_key_file_with_explicit_salt() {
         let key = vec![0x01u8; 16];
@@ -1077,22 +1245,27 @@ mod tests {
         assert_eq!(entries[0].master_salt, salt);
     }
 
+    /// 80-bit suites report a 10-byte auth tag.
     #[test]
     fn auth_tag_len_80bit() {
         assert_eq!(auth_tag_len(&SrtpSuite::AesCm128HmacSha1_80), 10);
         assert_eq!(auth_tag_len(&SrtpSuite::AesCm256HmacSha1_80), 10);
     }
 
+    /// The 32-bit suite reports a 4-byte auth tag.
     #[test]
     fn auth_tag_len_32bit() {
         assert_eq!(auth_tag_len(&SrtpSuite::AesCm128HmacSha1_32), 4);
     }
 
+    /// An unknown suite falls back to the 10-byte (80-bit) tag default.
     #[test]
     fn auth_tag_len_unknown_defaults_to_80bit() {
         assert_eq!(auth_tag_len(&SrtpSuite::Unknown("CUSTOM".to_string())), 10);
     }
 
+    /// The hand-written Debug impl redacts key and salt bytes from its
+    /// output.
     #[test]
     fn debug_redacts_key_material() {
         let m = SrtpKeyMaterial {
@@ -1119,6 +1292,8 @@ mod tests {
         );
     }
 
+    /// The AES-CM KDF reproduces the RFC 3711 Appendix B.3 known-answer
+    /// vectors for the cipher, salt, and auth labels.
     #[test]
     fn aes_cm_prf_matches_rfc3711_b3_vectors() {
         // RFC 3711 Appendix B.3 known-answer test for the AES-CM KDF. Matching
@@ -1162,6 +1337,8 @@ mod tests {
         0xF0, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD,
     ];
 
+    /// The cipher IV matches RFC 3711 B.2 at SSRC=0/index=0 and XORs the
+    /// SSRC into octets 4..8 and the index into octets 8..14.
     #[test]
     fn srtp_cipher_iv_rfc3711_b2_and_xor_placement() {
         // B.2: SSRC=0, index=0 ⇒ IV = salt ‖ 0x0000.
@@ -1189,7 +1366,7 @@ mod tests {
     }
 
     /// Regression guard for CodeQL `rust/hard-coded-cryptographic-value`
-    /// (alert #87): the `[0u8; 16]` buffer inside [`srtp_cipher_iv`] is a
+    /// (alert #87): the `[0u8; 16]` buffer inside `srtp_cipher_iv` is a
     /// zero-initialized scratch block that is fully overwritten with the
     /// per-stream session salt and XOR'd with the per-packet SSRC and SRTP
     /// index (RFC 3711 §4.1.1). It is therefore NOT a hard-coded IV — the
@@ -1240,6 +1417,8 @@ mod tests {
         }
     }
 
+    /// The AES-CM keystream reproduces the RFC 3711 Appendix B.2
+    /// known-answer prefix, proving IV layout and counter increment.
     #[test]
     fn srtp_aes_cm_keystream_matches_rfc3711_b2() {
         // RFC 3711 Appendix B.2 known-answer test for AES-128 Counter Mode.
@@ -1259,6 +1438,8 @@ mod tests {
         assert_eq!(ks, expected, "AES-CM keystream must match RFC 3711 B.2");
     }
 
+    /// Encrypting then decrypting with the same derived session keys
+    /// recovers the original plaintext payload.
     #[test]
     fn decrypt_srtp_payload_roundtrip_recovers_plaintext() {
         use crate::crypto::RingCryptoBackend;
@@ -1320,6 +1501,8 @@ mod tests {
         super::test_support::build_srtp_packet(master_key, master_salt, ssrc, seq, roc, plaintext)
     }
 
+    /// SrtpContext with the right key authenticates, decrypts, strips the
+    /// tag, and counts the packet.
     #[test]
     fn srtp_context_authenticates_and_decrypts() {
         use crate::crypto::RingCryptoBackend;
@@ -1351,6 +1534,7 @@ mod tests {
         assert_eq!(ctx.decrypted_count, 1);
     }
 
+    /// SrtpContext holding only an unrelated key never yields plaintext.
     #[test]
     fn srtp_context_rejects_wrong_key() {
         use crate::crypto::RingCryptoBackend;
@@ -1371,6 +1555,8 @@ mod tests {
         assert_eq!(ctx.decrypted_count, 0);
     }
 
+    /// Keys ingested via add_sdes (with endpoint provenance) decrypt a
+    /// matching packet.
     #[test]
     fn srtp_context_add_sdes_then_decrypts() {
         use crate::crypto::RingCryptoBackend;
@@ -1397,6 +1583,8 @@ mod tests {
         assert_eq!(&out[12..], b"hello srtp");
     }
 
+    /// verify_roc returns the ROC that authenticated each packet across a
+    /// sequence wrap, and None for a forged tag.
     #[test]
     fn verify_roc_returns_authenticating_roc() {
         use crate::crypto::RingCryptoBackend;
@@ -1425,6 +1613,8 @@ mod tests {
         assert_eq!(tr.verify_roc(&bad, &material, &crypto).unwrap(), None);
     }
 
+    /// A packet with no room for header + tag errors instead of slicing
+    /// out of bounds.
     #[test]
     fn decrypt_srtp_payload_rejects_short_packet() {
         use crate::crypto::RingCryptoBackend;
@@ -1443,6 +1633,8 @@ mod tests {
         assert!(decrypt_srtp_payload(&packet, 12, &material, 0, &RingCryptoBackend).is_err());
     }
 
+    /// A correctly computed tag verifies, and flipping the tag's last byte
+    /// makes verification fail.
     #[test]
     fn verify_auth_tag_with_known_key() {
         use crate::crypto::RingCryptoBackend;
@@ -1495,6 +1687,7 @@ mod tests {
         assert!(!bad, "a tampered auth tag must not verify");
     }
 
+    /// A tag computed under a different master key does not verify.
     #[test]
     fn verify_auth_tag_wrong_key_fails() {
         use crate::crypto::RingCryptoBackend;
@@ -1531,6 +1724,8 @@ mod tests {
         assert!(!result, "Auth tag should fail with wrong key");
     }
 
+    /// estimate_roc keeps, advances, or rewinds the epoch correctly for
+    /// in-order, wrapped, and late packets.
     #[test]
     fn estimate_roc_handles_wrap_and_reorder() {
         // No state advance yet: within the first epoch, ROC stays 0.
@@ -1543,6 +1738,8 @@ mod tests {
         assert_eq!(estimate_roc(5, 40000, 41000), 5);
     }
 
+    /// The tracker follows a live rollover: verifies across the wrap,
+    /// rejects stale-ROC tags, and rejects tampered tags.
     #[test]
     fn roc_tracker_follows_sequence_rollover() {
         use crate::crypto::RingCryptoBackend;
@@ -1595,6 +1792,7 @@ mod tests {
         assert!(!tr.verify(&bad, &material, &crypto).unwrap());
     }
 
+    /// Cipher, auth, and salt labels each derive distinct session keys.
     #[test]
     fn derive_session_key_produces_different_keys_per_label() {
         let master_key = vec![0xAA; 16];
@@ -1622,6 +1820,8 @@ mod tests {
         );
     }
 
+    /// A 10-byte input (shorter than header + tag) errors out of
+    /// verification.
     #[test]
     fn verify_auth_tag_packet_too_short() {
         let material = SrtpKeyMaterial {
@@ -1639,6 +1839,7 @@ mod tests {
         assert!(result.is_err(), "Too-short packet should error");
     }
 
+    /// The derived session auth key differs from the master key itself.
     #[test]
     fn derive_session_key_not_equal_to_master_key() {
         let master_key = vec![0xAA; 16];
@@ -1654,6 +1855,8 @@ mod tests {
         );
     }
 
+    /// Equal-length derivations under labels 0x00/0x01/0x02 are pairwise
+    /// distinct.
     #[test]
     fn derive_different_labels_produce_different_keys() {
         let master_key = vec![0xCC; 16];
@@ -1677,6 +1880,8 @@ mod tests {
         );
     }
 
+    /// A tag computed with the KDF-derived session auth key verifies
+    /// end-to-end through verify_srtp_auth_tag.
     #[test]
     fn verify_auth_tag_with_derived_key() {
         use crate::crypto::{CryptoBackend, RingCryptoBackend};

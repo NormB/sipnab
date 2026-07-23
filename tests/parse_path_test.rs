@@ -15,10 +15,21 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+/// Absolute path to the `tests/fixtures` directory.
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+/// Runs the `sipnab` binary with `SIPNAB_LOG=warn`.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+///
+/// # Returns
+/// `(stdout, stderr, exit_code)`; exit code is -1 if killed by a signal.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_sipnab(args: &[&str]) -> (String, String, i32) {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let output = Command::new(binary)
@@ -36,6 +47,12 @@ fn run_sipnab(args: &[&str]) -> (String, String, i32) {
 /// Strip volatile JSON fields (timestamps, durations) so two runs of the same
 /// pcap produce comparable output. Each `event` line is parsed and a small
 /// allowlist of identifying fields is retained.
+///
+/// # Arguments
+/// * `s` — raw NDJSON stdout.
+///
+/// # Returns
+/// One canonical projected-JSON string per parseable input line.
 fn canonicalize_ndjson(s: &str) -> Vec<String> {
     s.lines()
         .filter(|line| !line.trim().is_empty())
@@ -108,6 +125,16 @@ fn batch_json_output_matches_batch_with_api_json_output() {
 
 /// Run sipnab with a wall-clock timeout. Sends SIGTERM first (graceful)
 /// to allow stdout flush; SIGKILLs as a last resort.
+///
+/// # Arguments
+/// * `args` — CLI arguments to pass.
+/// * `timeout` — wall-clock deadline before SIGTERM (then SIGKILL +3s).
+///
+/// # Returns
+/// `(stdout, stderr, exit_code)`; exit code is -9 when the child was killed.
+///
+/// # Side effects
+/// Spawns the compiled `sipnab` binary and may signal/kill it.
 fn run_sipnab_with_timeout(args: &[&str], timeout: std::time::Duration) -> (String, String, i32) {
     use std::io::Read;
 

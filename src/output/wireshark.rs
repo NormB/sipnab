@@ -38,6 +38,21 @@ fn is_field_char(c: char) -> bool {
 /// is a best-effort translation -- complex DSL expressions may need manual
 /// adjustment. Field names are only replaced at word boundaries to avoid
 /// corrupting longer identifiers.
+///
+/// # Arguments
+///
+/// * `filter` — The sipnab DSL expression.
+///
+/// # Returns
+///
+/// The translated display filter (`=~` becomes `matches`; `==`, `!=`,
+/// `AND`, `OR`, `NOT` pass through). Unmapped identifiers are left
+/// untouched.
+///
+/// # Errors
+///
+/// Currently never fails; the `Result` is kept for future strict
+/// validation.
 pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
     let mut result = filter.to_string();
 
@@ -80,6 +95,21 @@ pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
 }
 
 /// Generate a tshark command line from capture configuration.
+///
+/// # Arguments
+///
+/// * `device` — Capture interface (`-i`), used only when `input_file` is
+///   `None`.
+/// * `input_file` — Pcap file to read (`-r`); takes precedence over
+///   `device`.
+/// * `bpf_filter` — Capture filter (`-f`), if any.
+/// * `display_filter` — Display filter (`-Y`), if any.
+///
+/// # Returns
+///
+/// The assembled single-line command ending in `-V` (verbose decode).
+/// File and filter values are single-quoted for the shell; nothing is
+/// executed here.
 pub fn generate_tshark_command(
     device: Option<&str>,
     input_file: Option<&str>,
@@ -106,34 +136,42 @@ pub fn generate_tshark_command(
     parts.join(" ")
 }
 
+/// Tests for DSL→Wireshark field/operator translation and tshark command
+/// assembly.
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// `method` maps to `sip.Method` with the value untouched.
     #[test]
     fn translate_simple_field() {
         let result = dsl_to_wireshark("method == 'INVITE'").unwrap();
         assert_eq!(result, "sip.Method == 'INVITE'");
     }
 
+    /// Multiple fields in one AND expression each translate.
     #[test]
     fn translate_compound_filter() {
         let result = dsl_to_wireshark("from.user == '1001' AND src_ip == '10.0.0.1'").unwrap();
         assert_eq!(result, "sip.from.user == '1001' AND ip.src == '10.0.0.1'");
     }
 
+    /// The `=~` operator becomes Wireshark's `matches`.
     #[test]
     fn translate_regex_operator() {
         let result = dsl_to_wireshark("ua =~ 'friendly-scanner'").unwrap();
         assert_eq!(result, "sip.User-Agent matches 'friendly-scanner'");
     }
 
+    /// An unmapped identifier (`custom_field`) passes through unmangled —
+    /// the word-boundary guard keeps `to` from corrupting it.
     #[test]
     fn no_field_passthrough() {
         let result = dsl_to_wireshark("custom_field == 'value'").unwrap();
         assert_eq!(result, "custom_field == 'value'");
     }
 
+    /// File input yields `-r` plus the display filter and `-V`.
     #[test]
     fn tshark_from_file() {
         let cmd =
@@ -141,12 +179,14 @@ mod tests {
         assert_eq!(cmd, "tshark -r 'test.pcap' -Y 'sip.Method == INVITE' -V");
     }
 
+    /// Device capture yields `-i` plus the BPF filter and `-V`.
     #[test]
     fn tshark_from_device() {
         let cmd = generate_tshark_command(Some("eth0"), None, Some("port 5060"), None);
         assert_eq!(cmd, "tshark -i eth0 -f 'port 5060' -V");
     }
 
+    /// With no configuration the command is the bare `tshark -V`.
     #[test]
     fn tshark_no_args() {
         let cmd = generate_tshark_command(None, None, None, None);
