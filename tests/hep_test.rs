@@ -218,18 +218,36 @@ fn hep_listener_ingests_synthetic_hep3() {
     assert_eq!(msg["call_id"], CALL_ID);
 }
 
-/// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is dropped and
-/// never surfaces on stdout.
+/// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is rejected by
+/// the allowlist before it can surface on stdout — proven by the positive
+/// per-packet drop log, not by waiting out a window of stdout silence.
 #[test]
 fn hep_allowlist_rejects_source_outside_cidr() {
     // Loopback packets come from 127.0.0.1, which is NOT in 10.0.0.0/8, so the
-    // allowlist must drop them — no message should surface.
-    let srv = HepListener::spawn(&["--hep-allow", "10.0.0.0/8"]);
+    // allowlist must drop them. Run at debug so the per-packet allowlist drop is
+    // logged, and synchronize on that event instead of proving a negative by
+    // waiting for a fixed period of stdout silence.
+    let srv = HepListener::spawn_with_log("debug", &["--hep-allow", "10.0.0.0/8"]);
     srv.send(&hep3_sip(&invite_bytes()));
+
+    // Positive proof of the drop: the listener logs the allowlist rejection for
+    // this exact packet. That check runs before any pipeline output, so once we
+    // observe it the INVITE has been discarded and can never reach stdout.
     assert!(
-        srv.wait_for_stdout(CALL_ID, Duration::from_millis(1500))
+        srv.wait_for_stderr(
+            "Dropping HEP packet from non-allowed source",
+            Duration::from_secs(5),
+        ),
+        "a packet from a non-allowlisted source must be dropped by the allowlist"
+    );
+
+    // Having synchronized on the drop, confirm the Call-ID never surfaced. This
+    // is now a bounded check taken *after* the packet is fully handled, not a
+    // race against a timing window.
+    assert!(
+        srv.wait_for_stdout(CALL_ID, Duration::from_millis(200))
             .is_none(),
-        "packet from a non-allowlisted source must be dropped"
+        "a dropped packet must never surface on --json stdout"
     );
 }
 

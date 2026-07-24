@@ -389,21 +389,54 @@ fn invert_match() {
     assert_eq!(json_line_count(&stdout), 0);
 }
 
-/// `-w` is accepted and never yields more than the 7 total messages.
+/// `-w` enforces whole-word matching: `--from 100` matches as a substring of
+/// every `1001` From header without it, but `-w` demands a word boundary and
+/// so rejects `100` inside `1001`.
 #[test]
-fn word_match_flag_accepted() {
-    let (stdout, _, code) = run_json(&["-w", "--from", "1001"]);
+fn word_match_restricts_to_whole_words() {
+    // Substring semantics (default): "100" is inside every "1001".
+    let (loose, _, code) = run_json(&["--from", "100"]);
     assert_eq!(code, 0);
-    // Should not crash; word matching may or may not change result
-    assert!(json_line_count(&stdout) <= 7);
+    assert_eq!(
+        json_line_count(&loose),
+        7,
+        "without -w, substring '100' matches all 7 From: 1001 headers"
+    );
+    // Whole-word semantics: "100" is not a word inside "1001", so no match.
+    let (strict, _, code) = run_json(&["-w", "--from", "100"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        json_line_count(&strict),
+        0,
+        "-w requires a word boundary, so '100' no longer matches '1001' \
+         (this fails if -w is a no-op — it would still report 7)"
+    );
 }
 
-/// `--single-line` is accepted and never yields more than the 7 total messages.
+/// `--single-line` stops `.` in a match pattern from spanning header lines.
+/// A pattern crossing the request line and the User-Agent header matches by
+/// default (dot matches newline) but not under `--single-line`.
 #[test]
-fn single_line_flag_accepted() {
-    let (stdout, _, code) = run_json(&["--single-line", "--from", "1001"]);
+fn single_line_stops_dot_matching_newline() {
+    // "INVITE" is on the request line; "sipnab" is in the User-Agent header a
+    // few lines below. Matching the INVITE follows its dialog → all 7 messages.
+    let (spanning, _, code) = run_json(&["-e", "INVITE.*sipnab"]);
     assert_eq!(code, 0);
-    assert!(json_line_count(&stdout) <= 7);
+    assert_eq!(
+        json_line_count(&spanning),
+        7,
+        "by default '.' matches newlines, so the cross-line pattern hits the INVITE"
+    );
+    // With --single-line, '.' no longer crosses the newline between the
+    // request line and the User-Agent header, so the pattern misses entirely.
+    let (restricted, _, code) = run_json(&["--single-line", "-e", "INVITE.*sipnab"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        json_line_count(&restricted),
+        0,
+        "--single-line makes '.' stop at newlines (this fails if the flag is a \
+         no-op — the cross-line pattern would still match all 7)"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -487,47 +520,118 @@ fn color_never() {
     );
 }
 
-/// `--color always` is accepted and exits 0.
+/// `--color always` emits ANSI escape sequences — the counterpart to the
+/// `color_never` test, which asserts their absence. `--color` overrides TTY
+/// detection (and `NO_COLOR`), so this holds even when stdout is a pipe.
 #[test]
-fn color_always() {
+fn color_always_emits_ansi() {
     let fixture = sip_call_fixture();
-    let (_, _, code) = run(&["-N", "-I", fixture.to_str().unwrap(), "--color", "always"]);
+    let (stdout, _, code) = run(&["-N", "-I", fixture.to_str().unwrap(), "--color", "always"]);
     assert_eq!(code, 0);
+    // Fails if --color always is ignored (default piped output has no escapes).
+    assert!(
+        stdout.contains("\x1b["),
+        "color=always must emit ANSI escape sequences, got: {stdout:?}"
+    );
 }
 
-/// `-A 1 -n 1` still emits at least the matched message.
+/// `-A 2` includes the two messages that follow each match. `--ua sipnab-test`
+/// matches only the INVITE; adding `-A 2` pulls in the following 100 and 180,
+/// which would not appear otherwise.
 #[test]
-fn after_context() {
-    let (stdout, _, code) = run_json(&["-A", "1", "-n", "1"]);
+fn after_context_includes_following_messages() {
+    // Baseline: the UA filter matches exactly the INVITE (only message with a UA).
+    let (base, _, code) = run_json(&["--ua", "sipnab-test"]);
     assert_eq!(code, 0);
-    // -A 1 with -n 1 should show at most the matched message + 1 context
-    assert!(json_line_count(&stdout) >= 1);
+    assert_eq!(
+        json_line_count(&base),
+        1,
+        "only the INVITE carries the sipnab-test User-Agent"
+    );
+    // -A 2 appends the next two messages (100 Trying, 180 Ringing).
+    let (ctx, _, code) = run_json(&["--ua", "sipnab-test", "-A", "2"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        json_line_count(&ctx),
+        3,
+        "-A 2 must add the two following messages to the single match \
+         (this fails if -A is a no-op — it would still report 1)"
+    );
 }
 
-/// `--show-empty` is accepted and exits 0.
+/// `--show-empty` prints the full header block of bodyless messages; without
+/// it they collapse to a one-line summary. The `Via:` header line only appears
+/// in the expanded form, so its presence is a direct effect check.
 #[test]
-fn show_empty_flag() {
-    let (_, _, code) = run_json(&["--show-empty"]);
-    assert_eq!(code, 0);
-}
-
-/// `--payload-limit 50` truncates the dumped payload well below the full message size.
-#[test]
-fn payload_limit() {
+fn show_empty_expands_bodyless_messages() {
     let fixture = sip_call_fixture();
-    let (stdout, _, code) = run(&[
+    let f = fixture.to_str().unwrap();
+    // Default text output is one line per message — no header block, no Via.
+    let (compact, _, code) = run(&["-N", "-I", f]);
+    assert_eq!(code, 0);
+    assert!(
+        !compact.contains("Via:"),
+        "default output shows one-line summaries, not header blocks:\n{compact}"
+    );
+    // --show-empty expands every message to its full header block.
+    let (full, _, code) = run(&["-N", "-I", f, "--show-empty"]);
+    assert_eq!(code, 0);
+    assert!(
+        full.contains("Via:"),
+        "--show-empty must reveal the full header block (Via: header); \
+         fails if the flag is a no-op:\n{full}"
+    );
+    assert!(
+        full.len() > compact.len(),
+        "expanded output must be larger than the one-line summaries"
+    );
+}
+
+/// `--payload-limit N` truncates the printed raw message at N bytes and marks
+/// it `[truncated]`. `--show-empty` forces the raw block to print (the fixture
+/// messages have empty bodies), so a 50-byte limit cuts off every header past
+/// the first two lines — the late User-Agent header vanishes.
+#[test]
+fn payload_limit_truncates_raw_dump() {
+    let fixture = sip_call_fixture();
+    let f = fixture.to_str().unwrap();
+    // Baseline: --show-empty prints the whole INVITE, including the User-Agent
+    // header well past byte 50, and no truncation marker.
+    let (full, _, code) = run(&["-N", "-I", f, "--show-empty", "-n", "1"]);
+    assert_eq!(code, 0);
+    assert!(
+        full.contains("User-Agent"),
+        "full dump must include the late User-Agent header:\n{full}"
+    );
+    assert!(
+        !full.contains("[truncated]"),
+        "no truncation marker without a limit:\n{full}"
+    );
+    // A 50-byte limit cuts the dump short: late headers gone, marker appended.
+    let (limited, _, code) = run(&[
         "-N",
         "-I",
-        fixture.to_str().unwrap(),
+        f,
+        "--show-empty",
         "--payload-limit",
         "50",
-        "-T",
         "-n",
         "1",
     ]);
     assert_eq!(code, 0);
-    // With a 50-byte limit, output should be shorter than full message
-    assert!(stdout.len() < 500, "payload should be truncated");
+    assert!(
+        limited.contains("[truncated]"),
+        "--payload-limit must append a [truncated] marker:\n{limited}"
+    );
+    assert!(
+        !limited.contains("User-Agent"),
+        "--payload-limit 50 must cut off headers past byte 50 (fails if the \
+         flag is a no-op — the full message would still contain User-Agent):\n{limited}"
+    );
+    assert!(
+        limited.len() < full.len(),
+        "truncated dump must be shorter than the full one"
+    );
 }
 
 /// `-q` still emits all 7 JSON messages (quiet only affects logs).
@@ -608,19 +712,27 @@ fn call_report_markdown() {
     assert!(stdout.contains("test-call-1@10.0.0.1"));
 }
 
-/// `--call-report` for an unknown Call-ID exits 0 or 1 without crashing.
+/// `--call-report` for an unknown Call-ID exits 1 and explains the failure on
+/// stderr. Scripts checking a specific call must be able to trust the code, so
+/// the exit is pinned to 1 (not the looser 0|1) — consistent with
+/// `output_behavior_test::call_report_unknown_call_id_exits_nonzero`. The
+/// missing Call-ID path is `generate_reports` returning `false` →
+/// `std::process::exit(1)` (src/app/batch.rs).
 #[test]
 fn call_report_nonexistent_call() {
     let fixture = sip_call_fixture();
-    let (_, _, code) = run(&[
+    let (_, stderr, code) = run(&[
         "-N",
         "-I",
         fixture.to_str().unwrap(),
         "--call-report",
         "nonexistent@nowhere",
     ]);
-    // Should not crash — may exit 0 with no report or with all messages
-    assert!(code == 0 || code == 1);
+    assert_eq!(code, 1, "unknown Call-ID must exit 1; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("not found"),
+        "stderr must explain the missing Call-ID, got: {stderr}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════

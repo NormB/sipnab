@@ -126,6 +126,50 @@ mod tui_e2e {
             }
         }
 
+        /// Poll the screen until `pred` holds, returning the matching screen.
+        /// Panics with `desc` and the last captured screen on timeout. Used
+        /// for conditions a plain substring search can't express (e.g. an
+        /// element must *disappear*, or a count must reach a value).
+        ///
+        /// # Arguments
+        /// * `desc` - Human description of the awaited condition (for panics).
+        /// * `pred` - Predicate over the captured screen (50 ms interval, 5 s deadline).
+        fn wait_until(&self, desc: &str, pred: impl Fn(&str) -> bool) -> String {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let last = self.screen();
+                if pred(&last) {
+                    return last;
+                }
+                if Instant::now() >= deadline {
+                    panic!(
+                        "timed out waiting for {desc} in session {}.\nlast screen:\n{last}",
+                        self.name
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        /// Capture repeatedly until two consecutive captures match — i.e. the
+        /// render loop has settled after the last key — then return that
+        /// stable screen. This replaces guessing a fixed post-key delay when
+        /// the awaited content can't be named in advance (the assertion that
+        /// follows is the real check). Falls back to the latest capture at the
+        /// 5 s deadline.
+        fn stable_screen(&self) -> String {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut prev = self.screen();
+            loop {
+                std::thread::sleep(Duration::from_millis(50));
+                let cur = self.screen();
+                if cur == prev || Instant::now() >= deadline {
+                    return cur;
+                }
+                prev = cur;
+            }
+        }
+
         /// Send a named key (e.g. "Enter", "Tab", "Escape", "F1").
         fn key(&self, name: &str) {
             self.send(&[name]);
@@ -138,9 +182,13 @@ mod tui_e2e {
 
         /// Run `tmux send-keys` for this session with the given trailing args.
         ///
+        /// Keys queue in the PTY and are consumed by the app in order, so no
+        /// post-send sleep is needed for correctness; capture helpers
+        /// (`wait_for`, `wait_until`, `stable_screen`) poll the screen and are
+        /// what actually synchronise with the render loop.
+        ///
         /// # Side effects
-        /// Spawns tmux, then sleeps 120 ms so the app's render loop can process
-        /// the key before the next capture.
+        /// Spawns tmux to deliver the key(s) to the pane.
         fn send(&self, tail: &[&str]) {
             let mut args = vec!["send-keys", "-t", &self.name];
             args.extend_from_slice(tail);
@@ -149,8 +197,6 @@ mod tui_e2e {
                 .status()
                 .expect("tmux send-keys failed");
             assert!(status.success(), "tmux send-keys failed");
-            // Give the render loop a moment to process the key.
-            std::thread::sleep(Duration::from_millis(120));
         }
 
         /// True once the session has ended (the process exited).
@@ -324,7 +370,11 @@ mod tui_e2e {
         // Toggling name mode back to Off restores the raw IP (no name).
         s.literal("n"); // Static -> DNS
         s.literal("n"); // DNS -> Off
-        let off = s.screen();
+        // Wait for the name to actually disappear from the render rather than
+        // sampling a single frame that may still show the pre-toggle screen.
+        let off = s.wait_until("name hidden when mode is Off", |sc| {
+            !sc.contains("edge-proxy")
+        });
         assert!(
             !off.contains("edge-proxy"),
             "name should be hidden when Off:\n{off}"
@@ -352,7 +402,9 @@ mod tui_e2e {
         // Default mode + the three cycled modes: 4 presses of 't' walk the
         // full TimestampMode cycle back to the start.
         for step in 0..4 {
-            let screen = s.screen();
+            // Wait for the render to settle after the previous `t` press
+            // instead of sampling a possibly mid-render frame.
+            let screen = s.stable_screen();
             let arrows = screen
                 .lines()
                 .filter(|l| l.contains("OPTIONS") && l.contains("\u{25b6}"))

@@ -23,7 +23,7 @@ without you having to memorize CLI flags.
 The simplest way to drive sipnab from a local agent:
 
 ```bash
-sipnab --mcp -I capture.pcap            # stdio is the default transport
+sipnab -N --mcp -I capture.pcap            # stdio is the default transport
 ```
 
 Add this server to your MCP client. For Claude Desktop, the config block
@@ -34,7 +34,7 @@ looks like:
   "mcpServers": {
     "sipnab": {
       "command": "sipnab",
-      "args": ["--mcp", "-I", "/path/to/capture.pcap"]
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap"]
     }
   }
 }
@@ -43,7 +43,7 @@ looks like:
 For a live capture against an interface (root or `CAP_NET_RAW`):
 
 ```bash
-sudo sipnab --mcp -d eth0
+sudo sipnab -N --mcp -d eth0
 ```
 
 ## Quick start (HTTP — remote agent)
@@ -51,7 +51,7 @@ sudo sipnab --mcp -d eth0
 When the agent runs on a different host, switch to the HTTP transport:
 
 ```bash
-sipnab --mcp --mcp-transport http \
+sipnab -N --mcp --mcp-transport http \
        --mcp-bind 127.0.0.1:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        -I capture.pcap
@@ -74,7 +74,7 @@ clients reach sipnab via a hostname or non-loopback IP, add it to the
 allowlist:
 
 ```bash
-sipnab --mcp --mcp-transport http \
+sipnab -N --mcp --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        --mcp-allowed-host capture.example.com \
@@ -188,7 +188,7 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
   "mcpServers": {
     "sipnab": {
       "command": "sipnab",
-      "args": ["--mcp", "-I", "/path/to/capture.pcap", "--quiet"]
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
     }
   }
 }
@@ -201,7 +201,7 @@ For a live capture (requires `CAP_NET_RAW` or root — Claude Desktop won't gran
   "mcpServers": {
     "sipnab-live": {
       "command": "sudo",
-      "args": ["-n", "sipnab", "--mcp", "-d", "eth0", "--quiet"]
+      "args": ["-n", "sipnab", "-N", "--mcp", "-d", "eth0", "--quiet"]
     }
   }
 }
@@ -217,8 +217,8 @@ From your project directory:
 
 ```bash
 # Stdio against a fixed pcap (`--` ends `claude mcp add` flags so the
-# trailing `sipnab --mcp ...` is treated as the launched command)
-claude mcp add sipnab -- sipnab --mcp -I "$PWD/capture.pcap" --quiet
+# trailing `sipnab -N --mcp ...` is treated as the launched command)
+claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
 
 # HTTP against a remote sipnab — flags before the positional name + URL
 claude mcp add --transport http \
@@ -241,7 +241,7 @@ The simplest way to confirm the server is alive without an MCP client:
   sleep 0.1
   echo '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
   sleep 0.5
-} | sipnab --mcp -I capture.pcap --quiet | head -c 2000
+} | sipnab -N --mcp -I capture.pcap --quiet | head -c 2000
 ```
 
 Expected first line of response:
@@ -344,7 +344,7 @@ from mcp.client.stdio import stdio_client
 async def main(pcap: str) -> None:
     params = StdioServerParameters(
         command="sipnab",
-        args=["--mcp", "-I", pcap, "--quiet"],
+        args=["--mcp", "-N", "-I", pcap, "--quiet"],
     )
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
@@ -386,7 +386,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const transport = new StdioClientTransport({
   command: "sipnab",
-  args: ["--mcp", "-I", process.argv[2] ?? "capture.pcap", "--quiet"],
+  args: ["--mcp", "-N", "-I", process.argv[2] ?? "capture.pcap", "--quiet"],
 });
 
 const client = new Client({ name: "sipnab-demo", version: "0.1" });

@@ -19,30 +19,88 @@
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
-/// Long flags mentioned in README.md that belong to other tools
-/// (cargo, cross, xcode-select), not to sipnab itself.
-const FOREIGN_FLAGS: &[&str] = &[
-    // cargo / cross / xcode-select
-    "release",
-    "target",
-    "features",
-    "no-default-features",
-    "install",
-    // docker (docs/install.md)
-    "net",
-    "rm",
-    // apt (docs/install.md, website/install.md — noaudio .deb guidance)
-    "no-install-recommends",
-    // editcap (docs/cli-reference.md — `--strip-secrets` is the analog)
-    "discard-all-secrets",
-    // systemctl (docs/mcp.md)
-    "now",
-    // voipmonitor (docs/benchmarks.md comparison command lines)
-    "config-file",
-    // claude mcp add (website/mcp.md)
-    "transport",
-    "header",
+/// Long flags mentioned in the docs that belong to OTHER tools (cargo, docker,
+/// apt, editcap, systemctl, voipmonitor, `claude mcp add`), not to sipnab —
+/// each scoped to the exact doc label(s) where it legitimately appears.
+///
+/// Scoping (rather than a flat global allowlist) keeps a foreign name from
+/// masking a real sipnab-flag typo in an unrelated doc: e.g. `--target` is a
+/// cargo/xcode flag excused only in the build/install docs, so a stray
+/// `--target` written as if it were a sipnab flag in `docs/cli-reference.md`
+/// would still fail this guard instead of being silently whitelisted. The
+/// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
+const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // cargo / cross / xcode-select build & install recipes
+    (
+        "release",
+        &[
+            "README.md",
+            "docs/install.md",
+            "docs/mcp.md",
+            "docs/rest-api.md",
+            "website/cookbook.md",
+            "website/api.md",
+            "website/build.md",
+        ],
+    ),
+    (
+        "target",
+        &["README.md", "docs/install.md", "website/build.md"],
+    ),
+    (
+        "features",
+        &[
+            "README.md",
+            "docs/install.md",
+            "docs/mcp.md",
+            "docs/rest-api.md",
+            "website/cookbook.md",
+            "website/install.md",
+            "website/api.md",
+            "website/build.md",
+        ],
+    ),
+    (
+        "no-default-features",
+        &[
+            "README.md",
+            "docs/install.md",
+            "docs/mcp.md",
+            "website/cookbook.md",
+            "website/build.md",
+        ],
+    ),
+    ("install", &["README.md"]),
+    // docker run flags (install docs)
+    ("net", &["docs/install.md", "website/install.md"]),
+    ("rm", &["docs/install.md", "website/install.md"]),
+    // apt (noaudio .deb guidance)
+    (
+        "no-install-recommends",
+        &["docs/install.md", "website/install.md"],
+    ),
+    // editcap (`--strip-secrets` is sipnab's analog)
+    (
+        "discard-all-secrets",
+        &["docs/cli-reference.md", "website/cli.md"],
+    ),
+    // systemctl (mcp service management)
+    ("now", &["docs/mcp.md"]),
+    // voipmonitor (benchmark comparison command lines)
+    ("config-file", &["docs/benchmarks.md"]),
+    // claude mcp add (http-transport client wiring)
+    ("transport", &["docs/mcp.md", "website/mcp.md"]),
+    ("header", &["docs/mcp.md", "website/mcp.md"]),
 ];
+
+/// True when `flag` is a known foreign-tool flag excused in `doc` specifically.
+/// A foreign flag mentioned in a doc outside its scope is NOT excused, so it
+/// surfaces as drift.
+fn is_foreign_flag(flag: &str, doc: &str) -> bool {
+    FOREIGN_FLAGS
+        .iter()
+        .any(|(name, docs)| *name == flag && docs.contains(&doc))
+}
 
 /// All long flag names (including aliases) the real CLI accepts.
 ///
@@ -191,7 +249,7 @@ fn readme_long_flags_exist_in_cli() {
         let mentioned = extract_long_flags(text);
         let phantom: Vec<&String> = mentioned
             .iter()
-            .filter(|f| !known.contains(*f) && !FOREIGN_FLAGS.contains(&f.as_str()))
+            .filter(|f| !known.contains(*f) && !is_foreign_flag(f, name))
             .collect();
         if !phantom.is_empty() {
             failures.push(format!("{name}: {phantom:?}"));
@@ -211,7 +269,7 @@ fn readme_long_flags_exist_in_cli() {
         "docs advertise flags that do not exist in src/cli.rs:\n  {}\n\
          If a name is a --filter DSL alias, document it as `--filter <alias>`, \
          not as a standalone flag. If it belongs to a foreign tool (cargo etc.), \
-         add it to FOREIGN_FLAGS in tests/docs_drift_test.rs.",
+         add it to FOREIGN_FLAGS in tests/docs_drift_test.rs, scoped to this doc's label.",
         failures.join("\n  ")
     );
 }
@@ -274,11 +332,20 @@ fn fenced_blocks(md: &str) -> Vec<String> {
 /// mandatory `-N`/`--no-tui`, so copy-pasting ANY example hit a hard CLI
 /// error ("--mcp implies non-interactive mode"). Any fenced example that
 /// starts sipnab with `--mcp` must also pass `-N` or `--no-tui`.
+///
+/// Covers both the wiki-source docs (`docs/`) and the published website
+/// (`website/content/docs/`) — the website's mcp.md carries its own copy of
+/// these examples, so a broken example there must fail this test too.
 #[test]
 fn mcp_examples_always_pass_no_tui() {
     let mut offenders = Vec::new();
-    for entry in std::fs::read_dir("docs").expect("docs dir") {
-        let path = entry.expect("dir entry").path();
+    let doc_dirs = ["docs", "website/content/docs"];
+    let entries = doc_dirs.iter().flat_map(|dir| {
+        std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read doc dir {dir}: {e}"))
+            .map(|entry| entry.expect("dir entry").path())
+    });
+    for path in entries {
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }

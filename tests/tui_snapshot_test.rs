@@ -13,6 +13,13 @@
 //! one view (`stream_detail_view`) snapshots under per-feature names because
 //! the `audio` build renders an extra footer hint.
 
+// Low-level SIP fixture builders shared with `tui_state_test.rs` so the two
+// suites can't drift. Declared at file scope (not nested) so the `#[path]`
+// resolves against `tests/`.
+#[cfg(feature = "tui")]
+#[path = "support/tui_fixtures.rs"]
+mod fixtures;
+
 #[cfg(feature = "tui")]
 mod tui_snapshots {
     use std::net::{IpAddr, Ipv4Addr};
@@ -60,121 +67,13 @@ mod tui_snapshots {
     }
 
     // ── Helper: SIP message constructors ───────────────────────────────
-
-    /// A-side test endpoint address used as the source of requests.
-    ///
-    /// # Returns
-    /// `10.0.0.1` (note: not actually a loopback address despite the name).
-    fn localhost_a() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
-    }
-
-    /// B-side test endpoint address used as the destination of requests.
-    ///
-    /// # Returns
-    /// `10.0.0.2` (note: not actually a loopback address despite the name).
-    fn localhost_b() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
-    }
-
-    /// Fixed reference timestamp all fixture messages are offset from.
-    ///
-    /// # Returns
-    /// 2024-06-15 12:00:00 UTC, so snapshots are independent of wall-clock time.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
-    }
-
-    /// Assemble raw SIP wire bytes from a first line and header lines.
-    ///
-    /// # Arguments
-    /// * `first_line` - Request or status line, without CRLF.
-    /// * `headers` - Header lines, each without CRLF.
-    ///
-    /// # Returns
-    /// CRLF-terminated bytes ending in the blank header/body separator (no body).
-    fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg
-    }
-
-    /// Parse a minimal INVITE (A-side to B-side, UDP 5060/5060).
-    ///
-    /// # Arguments
-    /// * `call_id` - Call-ID header value.
-    /// * `from` / `to` - Users placed in the From/To display names and URIs.
-    /// * `ts` - Capture timestamp.
-    ///
-    /// # Returns
-    /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
-        let raw = build_sip(
-            &format!("INVITE sip:{to}@example.com SIP/2.0"),
-            &[
-                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
-                &format!("To: \"{to}\" <sip:{to}@example.com>"),
-                &format!("Call-ID: {call_id}"),
-                "CSeq: 1 INVITE",
-                "Content-Length: 0",
-            ],
-        );
-        parse_sip(
-            &raw,
-            ts,
-            localhost_a(),
-            localhost_b(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse INVITE")
-    }
-
-    /// Parse a SIP response (B-side to A-side) for Alice/Bob's dialog.
-    ///
-    /// # Arguments
-    /// * `call_id` - Call-ID header value.
-    /// * `status` / `reason` - Status line, e.g. 200 "OK".
-    /// * `cseq_method` - Method echoed in the CSeq header.
-    /// * `ts` - Capture timestamp.
-    ///
-    /// # Returns
-    /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_response(
-        call_id: &str,
-        status: u16,
-        reason: &str,
-        cseq_method: &str,
-        ts: DateTime<Utc>,
-    ) -> SipMessage {
-        let raw = build_sip(
-            &format!("SIP/2.0 {status} {reason}"),
-            &[
-                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
-                &format!("Call-ID: {call_id}"),
-                &format!("CSeq: 1 {cseq_method}"),
-                "Content-Length: 0",
-            ],
-        );
-        parse_sip(
-            &raw,
-            ts,
-            localhost_b(),
-            localhost_a(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse response")
-    }
+    //
+    // The low-level fixture builders (endpoint addresses, base timestamp,
+    // raw-wire assembly, minimal INVITE/response) are shared with
+    // `tui_state_test.rs` via the file-scoped `fixtures` module above so the
+    // two suites can't drift. Snapshot-specific builders (BYE, SDP variants,
+    // dialog assemblers) stay below.
+    use super::fixtures::{base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response};
 
     /// Parse a BYE (A-side to B-side, CSeq 2) that completes a dialog.
     ///
@@ -194,8 +93,8 @@ mod tui_snapshots {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -869,10 +768,11 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
-    /// Snapshot: call list after one `t` press. This lands on Delta-first
-    /// (Delta-prev is the default), so the name understates the cycle by one.
+    /// Snapshot: call list after one `t` press. Delta-prev is the default,
+    /// so one press lands on Delta-first — the test and its snapshot are
+    /// named for what they actually render.
     #[test]
-    fn call_list_timestamp_delta_prev() {
+    fn call_list_timestamp_delta_first() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
@@ -882,10 +782,11 @@ mod tui_snapshots {
         insta::assert_snapshot!(output);
     }
 
-    /// Snapshot: call list after two `t` presses. This lands on Scaled
-    /// (Delta-prev is the default), so the name understates the cycle by one.
+    /// Snapshot: call list after two `t` presses. Delta-prev is the default,
+    /// so two presses land on Scaled — the test and its snapshot are named
+    /// for what they actually render.
     #[test]
-    fn call_list_timestamp_delta_first() {
+    fn call_list_timestamp_scaled() {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();
@@ -1009,10 +910,11 @@ mod tui_snapshots {
 
     // ── Call Flow Rendering ───────────────────────────────────────────
 
-    /// Snapshot: call flow after one `t` press. This lands on Delta-first
-    /// (Delta-prev is the default), so the name understates the cycle by one.
+    /// Snapshot: call flow after one `t` press. Delta-prev is the default,
+    /// so one press lands on Delta-first — the test and its snapshot are
+    /// named for what they actually render.
     #[test]
-    fn call_flow_timestamp_delta_prev() {
+    fn call_flow_timestamp_delta_first() {
         let backend = TestBackend::new(100, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = test_app_with_dialogs();

@@ -1184,13 +1184,36 @@ mod tests {
             .process_rtp(&parsed, &rtp, base_ts());
     }
 
-    /// Path to `name` inside a fresh (leaked) temp directory, so the
-    /// destination stays valid for the whole test.
-    fn tmp_path(name: &str) -> std::path::PathBuf {
+    /// A temp-dir-backed path. Owns the `TempDir`, so the destination stays
+    /// valid for as long as the guard is held and the directory is removed on
+    /// drop — no per-call tempdir leak. Derefs to `Path` and is `AsRef<Path>`,
+    /// so callers use it exactly like the `PathBuf` it replaced.
+    struct TmpPath {
+        // Held only for its Drop, which deletes the temp directory.
+        _dir: tempfile::TempDir,
+        path: std::path::PathBuf,
+    }
+
+    impl std::ops::Deref for TmpPath {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl AsRef<std::path::Path> for TmpPath {
+        fn as_ref(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    /// Path to `name` inside a fresh temp directory. The returned guard owns
+    /// the directory and removes it on drop, so bind it for the test's
+    /// lifetime (`let p = tmp_path(...)`).
+    fn tmp_path(name: &str) -> TmpPath {
         let dir = tempfile::tempdir().expect("tempdir");
-        // leak the dir so the path stays valid for the test duration
-        let p = dir.keep();
-        p.join(name)
+        let path = dir.path().join(name);
+        TmpPath { _dir: dir, path }
     }
 
     // ── Happy-path: each format writes a file ────────────────────────

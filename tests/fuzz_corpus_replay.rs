@@ -128,24 +128,13 @@ fn sdp_seeds() -> Vec<Vec<u8>> {
     ]
 }
 
-/// A tiny deterministic xorshift PRNG so the mutation sweep is reproducible
-/// (no Math.random / wall-clock seeding — same bytes every CI run).
-struct Rng(u64);
-impl Rng {
-    /// Advances the xorshift state and returns the next 64-bit value.
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    /// Returns the low byte of the next PRNG value.
-    fn byte(&mut self) -> u8 {
-        (self.next() & 0xff) as u8
-    }
-}
+// Shared deterministic xorshift PRNG (see `smoke_fuzz_test.rs` for the mirror
+// consumer). The `mutate` helper below is a deliberately simpler 4-op strategy
+// than smoke's richer 6-op sweep, so it stays local: sharing it would change
+// the byte stream and break this file's corpus reproducibility.
+#[path = "support/fuzz.rs"]
+mod fuzz;
+use fuzz::Rng;
 
 /// Mutate a seed by flipping/overwriting/truncating bytes — deterministic.
 ///
@@ -160,19 +149,19 @@ fn mutate(seed: &[u8], rng: &mut Rng) -> Vec<u8> {
     if out.is_empty() {
         out.push(rng.byte());
     }
-    let ops = 1 + (rng.next() % 6);
+    let ops = 1 + (rng.next_u64() % 6);
     for _ in 0..ops {
-        match rng.next() % 4 {
+        match rng.next_u64() % 4 {
             0 if !out.is_empty() => {
-                let i = (rng.next() as usize) % out.len();
+                let i = (rng.next_u64() as usize) % out.len();
                 out[i] = rng.byte();
             }
             1 => out.push(rng.byte()),
             2 if out.len() > 1 => {
-                let i = (rng.next() as usize) % out.len();
+                let i = (rng.next_u64() as usize) % out.len();
                 out.truncate(i);
             }
-            _ => out.insert((rng.next() as usize) % (out.len() + 1), rng.byte()),
+            _ => out.insert((rng.next_u64() as usize) % (out.len() + 1), rng.byte()),
         }
     }
     out
@@ -227,7 +216,7 @@ fn parsers_never_panic_on_adversarial_seeds() {
 #[test]
 fn parsers_never_panic_on_mutation_sweep() {
     // ~20k deterministic mutations across all four parsers from the seed set.
-    let mut rng = Rng(0x9E3779B97F4A7C15);
+    let mut rng = Rng::new(0x9E3779B97F4A7C15);
     let seeds: Vec<Vec<u8>> = adversarial_seeds().into_iter().chain(sdp_seeds()).collect();
     let mut failures = Vec::new();
     for round in 0..5000u32 {

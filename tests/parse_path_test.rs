@@ -101,7 +101,7 @@ fn batch_json_output_matches_batch_with_api_json_output() {
     // after the pcap finishes (intentional — clients can query post-mortem).
     // To avoid hanging the test, we rely on the existence of `--api :0` to
     // bind a random port and we invoke with a timeout via `--autostop-duration`.
-    let (stdout_with_api, _stderr_b, _code_b) = run_sipnab_with_timeout(
+    let (stdout_with_api, stderr_b, code_b) = run_sipnab_with_timeout(
         &[
             "-N",
             "-I",
@@ -113,6 +113,15 @@ fn batch_json_output_matches_batch_with_api_json_output() {
             "duration:1",
         ],
         std::time::Duration::from_secs(15),
+    );
+    // The `--autostop duration:1` run must exit cleanly on its own. A
+    // non-zero code means it crashed (e.g. a panic after flushing stdout)
+    // or had to be SIGTERM/SIGKILLed at the timeout (-9) — either way the
+    // stdout comparison below would silently pass on a broken binary, so
+    // gate on the exit status explicitly.
+    assert_eq!(
+        code_b, 0,
+        "batch+API run exited non-zero ({code_b}); stderr:\n{stderr_b}"
     );
 
     let canon_a = canonicalize_ndjson(&stdout_no_api);

@@ -1203,11 +1203,7 @@ impl BatchRunner {
                 // exit instead of spinning forever (otherwise the process leaks
                 // until SIGINT). HTTP/API tasks only finish on a signal, so the
                 // flag stays unset there.
-                if servers
-                    .mcp_stdio_done
-                    .as_ref()
-                    .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
-                {
+                if mcp_stdio_client_gone(servers.mcp_stdio_done.as_ref()) {
                     tracing::info!("MCP client disconnected — shutting down");
                     break;
                 }
@@ -1216,6 +1212,22 @@ impl BatchRunner {
         }
     }
 }
+
+/// Whether the wait loop that keeps a batch run alive for its companion
+/// servers should stop because the stdio MCP client has closed its end.
+///
+/// A stdio MCP client owns the process lifetime: once its `mcp_stdio_done`
+/// flag flips (it closed stdin, so the serve task finished), there is no
+/// client left to serve and the process must exit rather than spin forever.
+/// The flag is `None` for HTTP/API-only runs — those finish on a signal
+/// instead — so this stays `false` there, and `false` while a stdio client is
+/// still connected (flag present but unset).
+fn mcp_stdio_client_gone(
+    mcp_stdio_done: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> bool {
+    mcp_stdio_done.is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+}
+
 // ── Packet processing ─────────────────────────────────────────────────
 
 /// Decide whether a SIP message should be emitted, updating dialog-follow and
@@ -1893,6 +1905,28 @@ mod tests {
         let mut cli = Cli::parse_from_args(["sipnab"]);
         cli.no_tui = true;
         cli
+    }
+
+    /// The companion-server wait loop exits only once a stdio MCP client has
+    /// actually closed its end — never for an HTTP/API-only run, and not while
+    /// a stdio client is still connected. Guards the exit path that stops a
+    /// finished-stdio run from spinning until SIGINT.
+    #[test]
+    fn mcp_stdio_client_gone_signals_exit_only_when_flag_set() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // No stdio MCP client (HTTP/API-only run): the loop keeps running and
+        // exits on a signal instead, so this must stay false.
+        assert!(!mcp_stdio_client_gone(None));
+
+        // A stdio client is connected but has not closed stdin yet: keep serving.
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(!mcp_stdio_client_gone(Some(&flag)));
+
+        // The client closed stdin -> the serve task flipped the flag -> exit.
+        flag.store(true, Ordering::Relaxed);
+        assert!(mcp_stdio_client_gone(Some(&flag)));
     }
 
     /// Raw bytes of a minimal but well-formed SIP INVITE for `call_id`.

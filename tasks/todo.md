@@ -247,42 +247,42 @@ Tiers:
 
 - [x] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing. **Done:** root cause was step 5 running `cargo test --features full` a SECOND time purely to count — that run could race a concurrent cargo, abort a binary's compile, drop its `test result:` line, and undercount. Step 5 now derives the count from step 2's already-captured `$TEST_OUTPUT`, and step 2 gates on the test exit code so a partial/aborted run fails there ("retry") instead of feeding a truncated sum downstream. Halves per-commit test time. Regression pinned by `scripts/test-pre-commit.sh` (asserts exactly one full-suite invocation + the exit-code gate).
 
-- [ ] src/capture/device.rs (test list_devices_returns_vec) — [test-quality] asserts only "does not panic".
-- [ ] src/tui/call_flow/mod.rs (ladder_split_width) — [test-coverage] no test pins `total < DETAIL_FLOOR` geometry.
-- [ ] src/tui/save.rs:1113 — [test-hygiene] `tmp_path` leaks a tempdir per call.
-- [ ] src/rtp/stream_store.rs:909 — [test-quality] dead first computation; `i % 64_000` aliasing.
-- [ ] src/app/batch.rs:1102 — [test-coverage] mcp_stdio_done exit path untested.
-- [ ] tests/tui_snapshot_test.rs:872,885,1012 — [naming] timestamp-mode tests/snapshots off-by-one vs DeltaPrev default; rename tests + snaps.
-- [ ] tests/tui_state_test.rs:3514 — [weak-assertion] enum tautology test can't fail.
-- [ ] tests/tui_state_test.rs:1951 — [weak-assertion] page-up assert vacuous when after_down==0.
-- [ ] tests/tui_state_test.rs:2206 — [weak-assertion] F9 test passes if F9 did nothing; assert ==3.
-- [ ] tests/tui_state_test.rs:2587 — [test-hygiene] writes /tmp/sipnab_test_save.pcap outside tempdir, never cleaned.
-- [ ] tests/tui_state_test.rs:3267,3293,3325 — [silent-skip] pcap tests pass vacuously when fixtures missing.
-- [ ] tui_state/tui_snapshot — [duplication] fixture builders duplicated across crates; `localhost_*` misnomer (10.0.0.x).
-- [ ] tests/tui_state_test.rs:4200 — [duplication] 40-line RTP feed block copy-pasted three times.
-- [ ] tests/tui_state_test.rs:4604 — [drift-risk] body_search tests re-implement production search predicate inline.
-- [ ] tests/tui_e2e_test.rs:151 — [flaky-pattern] fixed 120ms sleeps; raw screen() reads race render loop.
-- [ ] tests/docs_drift_test.rs:278 — [coverage-gap] website/content/docs/mcp.md examples unguarded.
-- [ ] tests/docs_drift_test.rs:14 — [weak-guard] FOREIGN_FLAGS whitelists broad names globally.
-- [ ] tests/site_journey_test.rs:1290 — [test-hygiene] unconditional eprintln of 30-row screen.
-- [ ] tests/cli_options_test.rs:392,401,490,498,507,514 — [weak-assertion] accepted-only / proxy assertions for -w, single-line, color, -A, show-empty, payload-limit and the exit-0-only flag group.
-- [ ] tests/cli_options_test.rs:611 — [coverage-contradiction] call_report_nonexistent_call accepts 0|1 while output_behavior pins 1.
-- [ ] tests/security_test.rs:467 — [weak-assertion] four H4 cap tests assert nothing (OOM-only failure); add size probes.
-- [ ] tests/security_test.rs:310 — [weak-assertion] injection path never fired.
-- [ ] tests/security_test.rs:1098 — [weak-assertion] path-traversal warning not captured.
-- [ ] tests/security_test.rs:1174 — [weak-assertion] rate-limiter cleanup unverified.
-- [ ] tests/security_test.rs:1285 — [flaky] process-global env mutation races concurrent tests (serial_test candidate).
-- [ ] tests/resource_bounds_test.rs:88 — [copy-paste] drop-new mode should assert exact cap, not rotate-mode range.
-- [ ] tests/parse_path_test.rs:102 — [weak-assertion] _code_b discarded; post-flush crash still passes.
-- [ ] tests/mcp_token_rotation_test.rs:364 — [slow] real 7s sleep per run.
-- [ ] tests/hep_test.rs:222 — [flaky-pattern] 1.5s absence-of-output negative proof.
-- [ ] tests/api_test.rs:169 — [weak-assertion] limiter can't be exhausted; sequential 200s only.
-- [ ] tests/integration_test.rs:257 — [environment-dependence] accepts exit 0|1 by capture permissions.
-- [ ] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent.
+- [x] src/capture/device.rs (test list_devices_returns_vec) — [test-quality] asserts only "does not panic". **Done (P4 test-quality wave, 2026-07-24).**
+- [x] src/tui/call_flow/mod.rs (ladder_split_width) — [test-coverage] no test pins `total < DETAIL_FLOOR` geometry. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] src/tui/save.rs:1113 — [test-hygiene] `tmp_path` leaks a tempdir per call. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] src/rtp/stream_store.rs:909 — [test-quality] dead first computation; `i % 64_000` aliasing. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] src/app/batch.rs:1102 — [test-coverage] mcp_stdio_done exit path untested. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_snapshot_test.rs:872,885,1012 — [naming] timestamp-mode tests/snapshots off-by-one vs DeltaPrev default; rename tests + snaps. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:3514 — [weak-assertion] enum tautology test can't fail. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:1951 — [weak-assertion] page-up assert vacuous when after_down==0. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:2206 — [weak-assertion] F9 test passes if F9 did nothing; assert ==3. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:2587 — [test-hygiene] writes /tmp/sipnab_test_save.pcap outside tempdir, never cleaned. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:3267,3293,3325 — [silent-skip] pcap tests pass vacuously when fixtures missing. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tui_state/tui_snapshot — [duplication] fixture builders duplicated across crates; `localhost_*` misnomer (10.0.0.x). **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:4200 — [duplication] 40-line RTP feed block copy-pasted three times. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_state_test.rs:4604 — [drift-risk] body_search tests re-implement production search predicate inline. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/tui_e2e_test.rs:151 — [flaky-pattern] fixed 120ms sleeps; raw screen() reads race render loop. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/docs_drift_test.rs:278 — [coverage-gap] website/content/docs/mcp.md examples unguarded. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/docs_drift_test.rs:14 — [weak-guard] FOREIGN_FLAGS whitelists broad names globally. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/site_journey_test.rs:1290 — [test-hygiene] unconditional eprintln of 30-row screen. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/cli_options_test.rs:392,401,490,498,507,514 — [weak-assertion] accepted-only / proxy assertions for -w, single-line, color, -A, show-empty, payload-limit and the exit-0-only flag group. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/cli_options_test.rs:611 — [coverage-contradiction] call_report_nonexistent_call accepts 0|1 while output_behavior pins 1. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/security_test.rs:467 — [weak-assertion] four H4 cap tests assert nothing (OOM-only failure); add size probes. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/security_test.rs:310 — [weak-assertion] injection path never fired. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/security_test.rs:1098 — [weak-assertion] path-traversal warning not captured. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/security_test.rs:1174 — [weak-assertion] rate-limiter cleanup unverified. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/security_test.rs:1285 — [flaky] process-global env mutation races concurrent tests (serial_test candidate). **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/resource_bounds_test.rs:88 — [copy-paste] drop-new mode should assert exact cap, not rotate-mode range. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/parse_path_test.rs:102 — [weak-assertion] _code_b discarded; post-flush crash still passes. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/mcp_token_rotation_test.rs:364 — [slow] real 7s sleep per run. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/hep_test.rs:222 — [flaky-pattern] 1.5s absence-of-output negative proof. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/api_test.rs:169 — [weak-assertion] limiter can't be exhausted; sequential 200s only. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/integration_test.rs:257 — [environment-dependence] accepts exit 0|1 by capture permissions. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent. **Done (P4 test-quality wave, 2026-07-24).**
 - [ ] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate.
-- [ ] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests.
-- [ ] fuzz_corpus_replay.rs:131 / smoke_fuzz_test.rs:20 — [duplicated-fixture] two independent xorshift Rng+mutate impls.
-- [ ] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else.
+- [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] fuzz_corpus_replay.rs:131 / smoke_fuzz_test.rs:20 — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Done (P4 test-quality wave, 2026-07-24).**
+- [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**
 
 ## P5 — features & long-term / exploratory
 

@@ -356,10 +356,10 @@ sipnab -I capture.pcap --dtls-keylog /tmp/dtls.keylog
 
 ```bash
 # One-shot, agent reads a pcap
-sipnab --mcp -I capture.pcap --quiet
+sipnab -N --mcp -I capture.pcap --quiet
 
 # Live capture
-sudo sipnab --mcp -d eth0 --quiet
+sudo sipnab -N --mcp -d eth0 --quiet
 ```
 
 **Claude Desktop config** (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
@@ -369,7 +369,7 @@ sudo sipnab --mcp -d eth0 --quiet
   "mcpServers": {
     "sipnab": {
       "command": "sipnab",
-      "args": ["--mcp", "-I", "/path/to/capture.pcap", "--quiet"]
+      "args": ["--mcp", "-N", "-I", "/path/to/capture.pcap", "--quiet"]
     }
   }
 }
@@ -378,7 +378,7 @@ sudo sipnab --mcp -d eth0 --quiet
 **Claude Code** (in your project directory):
 
 ```bash
-claude mcp add sipnab -- sipnab --mcp -I "$PWD/capture.pcap" --quiet
+claude mcp add sipnab -- sipnab -N --mcp -I "$PWD/capture.pcap" --quiet
 ```
 
 ### 8b. HTTP (remote agent, single user)
@@ -390,7 +390,7 @@ openssl rand -hex 32 > /etc/sipnab/mcp-token
 chmod 0600 /etc/sipnab/mcp-token
 
 # Run sipnab listening on a private network interface
-sipnab --mcp --mcp-transport http \
+sipnab -N --mcp --mcp-transport http \
        --mcp-bind 0.0.0.0:8731 \
        --mcp-token-file /etc/sipnab/mcp-token \
        --mcp-allowed-host capture.example.com \

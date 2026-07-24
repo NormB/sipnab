@@ -254,7 +254,46 @@ fn hexdump_shows_hex_output() {
 
 // ── Auto-detect device (no explicit source) ─────────────────────────
 
-/// With no source, sipnab auto-detects a device instead of printing the old "no capture source" error; exit 0 or 1 (permission denied) accepted.
+/// Whether this process can open a live capture device.
+///
+/// On Linux, opening the default `any` device via pcap/AF_PACKET requires
+/// either root or the `CAP_NET_RAW` capability in the effective set. Both are
+/// read from `/proc/self/status` (effective UID and effective capability
+/// bitmask) so the probe needs no extra crates and mirrors exactly what the
+/// binary needs to succeed — letting the exit-code assertion below be specific
+/// to the environment rather than accepting either code.
+///
+/// # Returns
+/// `Some(true)` if a live capture can be opened, `Some(false)` if it cannot,
+/// or `None` when the capability can't be determined (non-Linux / no `/proc`),
+/// in which case the caller falls back to an explicit skip.
+fn can_live_capture() -> Option<bool> {
+    // CAP_NET_RAW is capability bit 13 in the Linux capability bitmask.
+    const CAP_NET_RAW: u64 = 1 << 13;
+
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+
+    // Effective UID is the second field of the `Uid:` line (real eff saved fs).
+    let euid: u32 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())?;
+    if euid == 0 {
+        return Some(true); // root holds all capabilities.
+    }
+
+    let cap_eff: u64 = status
+        .lines()
+        .find_map(|l| l.strip_prefix("CapEff:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())?;
+    Some(cap_eff & CAP_NET_RAW != 0)
+}
+
+/// With no source, sipnab auto-detects a device instead of printing the old
+/// "no capture source" error, then exits 0 with capture privileges or 1
+/// (permission denied) without — the specific code is asserted per the
+/// probed capability, never "either is fine".
 #[test]
 fn no_source_auto_detects_device() {
     let (_stdout, stderr, code) = run_sipnab(&["-N", "-F"]);
@@ -264,12 +303,25 @@ fn no_source_auto_detects_device() {
         !stderr.contains("no capture source"),
         "Should auto-detect instead of complaining about no source"
     );
-    // In unprivileged CI/test environments, expect exit 1 (permission denied).
-    // With permissions (e.g., sudo), exit 0 is fine too.
-    assert!(
-        code == 0 || code == 1,
-        "Expected exit 0 (success) or 1 (permission denied), got {code}"
-    );
+
+    match can_live_capture() {
+        // Privileged: auto-detect must open the device and exit cleanly.
+        Some(true) => assert_eq!(
+            code, 0,
+            "with capture privileges, auto-detect should open a device and exit 0; stderr:\n{stderr}"
+        ),
+        // Unprivileged: opening the device must fail with permission denied.
+        Some(false) => assert_eq!(
+            code, 1,
+            "without capture privileges, auto-detect should fail permission-denied (exit 1); stderr:\n{stderr}"
+        ),
+        // Capability undeterminable (non-Linux / no /proc): skip loudly rather
+        // than silently accept whatever code came back.
+        None => eprintln!(
+            "skipping exit-code assertion: cannot determine capture capability \
+             (no /proc/self/status); observed exit {code}"
+        ),
+    }
 }
 
 // ── Original fixture backward compat ────────────────────────────────
