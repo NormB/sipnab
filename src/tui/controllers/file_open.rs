@@ -407,9 +407,9 @@ fn run_pcap_load(
             .packets
             .store(packet_count, std::sync::atomic::Ordering::Relaxed);
 
-        // Route through the shared, hardened converter: it clamps an
-        // out-of-range tv_usec (crafted or nanosecond-precision capture)
-        // before the µs→ns multiply instead of overflowing u32 here.
+        // Route through the shared, hardened converter: an out-of-range or
+        // unrepresentable tv_usec (crafted or nanosecond-precision capture)
+        // is rejected, counted, and warned rather than overflowing u32 here.
         let ts = crate::capture::file::pcap_ts_to_chrono(pkt.header.ts);
 
         let capture_pkt = crate::capture::Packet::new(
