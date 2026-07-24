@@ -105,6 +105,11 @@ pub struct SipDialog {
     pub src_addr: IpAddr,
     /// Destination IP address of the initial message.
     pub dst_addr: IpAddr,
+    /// Source port of the initial message (stable across message
+    /// compaction, unlike `messages.first()`).
+    pub src_port: u16,
+    /// Destination port of the initial message.
+    pub dst_port: u16,
     /// Transaction timing measurements.
     pub timing: DialogTiming,
     /// SDP offer/answer timeline.
@@ -251,6 +256,8 @@ impl SipDialog {
             updated_at: msg.timestamp,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
+            src_port: msg.src_port,
+            dst_port: msg.dst_port,
             tags: Vec::new(),
             timing: DialogTiming::default(),
             sdp_timeline: Vec::new(),
