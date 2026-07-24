@@ -24,6 +24,8 @@ pub enum DashboardAction {
     Bottom,
     /// Enter — open the stream detail view of the selected row's stream.
     OpenStreamDetail,
+    /// `L` — open the packet loss map of the selected row's stream.
+    OpenLossMap,
 }
 
 /// Pure key→action mapping for the quality dashboard (keymap-aware).
@@ -46,6 +48,7 @@ pub fn dashboard_action(km: &Keymap, key: KeyEvent) -> Option<DashboardAction> {
         KeyCode::Home => Top,
         KeyCode::End => Bottom,
         KeyCode::Enter => OpenStreamDetail,
+        KeyCode::Char('L') => OpenLossMap,
         _ => return None,
     })
 }
@@ -98,6 +101,21 @@ pub(in crate::tui) fn handle_dashboard_key(app: &mut App, key: KeyEvent) {
                 app.stream_detail_scroll = 0;
                 app.stream_detail_return_view = Some(View::QualityDashboard);
                 app.current_view = View::StreamDetail(k);
+            }
+        }
+        DashboardAction::OpenLossMap => {
+            let key = app
+                .dashboard_snapshot
+                .as_ref()
+                .and_then(|s| s.rows.get(app.dashboard_selected))
+                .map(|r| r.key.clone());
+            if let Some(k) = key {
+                // Esc in the loss map returns to this stream's detail; seed
+                // that detail's return view so a further Esc lands back on
+                // the dashboard the user opened it from.
+                app.stream_detail_scroll = 0;
+                app.stream_detail_return_view = Some(View::QualityDashboard);
+                app.current_view = View::StreamLossMap(k);
             }
         }
     }
@@ -153,6 +171,48 @@ mod tests {
         assert_eq!(app.current_view, View::QualityDashboard);
         app.handle_key(KeyCode::Esc);
         assert_eq!(app.current_view, View::CallList);
+    }
+
+    /// `L` on a selected dashboard row opens that stream's packet loss map;
+    /// Esc from the loss map returns to the stream's detail view.
+    #[test]
+    fn dashboard_l_opens_loss_map_of_selected_stream() {
+        use crate::rtp::parser::RtpHeader;
+        use crate::rtp::stream::{RtpStream, StreamKey};
+        use crate::rtp::stream_store::StreamStore;
+
+        let skey = StreamKey {
+            ssrc: 0x5151,
+            src: std::net::SocketAddr::new(addr_a(), 20000),
+            dst: std::net::SocketAddr::new(addr_b(), 30000),
+        };
+        let hdr = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 0,
+            ssrc: 0x5151,
+            payload_offset: 12,
+        };
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(RtpStream::new(skey.clone(), &hdr, chrono::Utc::now()));
+
+        let mut app = App::new_test();
+        app.current_view = View::QualityDashboard;
+        app.dashboard_snapshot = Some(crate::tui::dashboard::DashboardSnapshot::from_streams(
+            &store,
+        ));
+        app.dashboard_selected = 0;
+
+        handle_dashboard_key(&mut app, key(KeyCode::Char('L')));
+        assert_eq!(app.current_view, View::StreamLossMap(skey.clone()));
+
+        crate::tui::controllers::loss_map::handle_loss_map_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::StreamDetail(skey));
     }
 
     /// The dashboard remembers its opener: opened from the stream list,

@@ -12,6 +12,7 @@ pub mod call_list;
 pub mod dashboard;
 pub mod header_form;
 pub mod help;
+pub(crate) mod loss_map;
 pub mod msg_raw;
 pub mod stream_detail;
 pub mod stream_list;
@@ -58,10 +59,10 @@ use controllers::*;
 #[doc(hidden)]
 pub use controllers::{
     CallFlowAction, CallListAction, CombinedDetailAction, DashboardAction, HelpAction,
-    MessageDiffAction, RawMessageAction, StatisticsAction, StreamDetailAction, StreamListAction,
-    TimelineAction, call_flow_action, call_list_action, combined_detail_action, dashboard_action,
-    help_action, message_diff_action, raw_message_action, statistics_action, stream_detail_action,
-    stream_list_action, timeline_action,
+    LossMapAction, MessageDiffAction, RawMessageAction, StatisticsAction, StreamDetailAction,
+    StreamListAction, TimelineAction, call_flow_action, call_list_action, combined_detail_action,
+    dashboard_action, help_action, loss_map_action, message_diff_action, raw_message_action,
+    statistics_action, stream_detail_action, stream_list_action, timeline_action,
 };
 use render::*;
 use save::*;

@@ -12,6 +12,7 @@ mod call_list;
 mod dashboard;
 mod file_open;
 mod filter_dialog;
+pub(crate) mod loss_map;
 mod name_dialog;
 mod save_dialog;
 mod stream;
@@ -34,6 +35,7 @@ pub use call_list::{CallListAction, call_list_action};
 pub use dashboard::{DashboardAction, dashboard_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
+pub use loss_map::{LossMapAction, loss_map_action};
 pub(in crate::tui) use name_dialog::*;
 pub(in crate::tui) use save_dialog::*;
 #[cfg(test)]
@@ -170,6 +172,7 @@ fn dispatch_view_key(app: &mut App, key: KeyEvent) {
         View::Statistics => handle_statistics_key(app, key),
         View::QualityDashboard => dashboard::handle_dashboard_key(app, key),
         View::CallTimeline(_) => timeline::handle_timeline_key(app, key),
+        View::StreamLossMap(_) => loss_map::handle_loss_map_key(app, key),
     }
 }
 
@@ -594,6 +597,9 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
         // The timeline is a fixed single screen (no scroll, no selection),
         // so its wheel arm is intentionally empty.
         View::CallTimeline(_) => {}
+        // The loss map is likewise a fixed single screen (density strip +
+        // header + legend), so its wheel arm is intentionally empty too.
+        View::StreamLossMap(_) => {}
     }
 }
 

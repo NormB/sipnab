@@ -1,0 +1,22 @@
+---
+source: tests/tui_snapshot_test.rs
+expression: output
+---
+ Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
+ Match Expression:     BPF Filter:
+ Display Filter:
+┌ Packet Loss Map ─────────────────────────────────────────────────────────────────────────────────┐
+│  SSRC 0xAAAABBBB   10.0.0.1:20000 → 10.0.0.2:30000                                               │
+│  Loss 70.92%   100 lost / 141 packets                                                            │
+│  Bursts 1   Pattern Bursty   Avg burst 2000ms                                                    │
+│                                                                                                  │
+│             ▒▒█▒▒█▒█▒█▒▒█▒█▒█▒█▒▒█▒█▒█▒▒█▒█▒█▒█▒▒█▒█▒█▒█▒▒█▒█▒█▒▒█▒█▒█▒█▒▒█▒█▒█▒▒█               │
+│1000                                           1070                                           1140│
+│                                                                                                  │
+│  Density · clean  ░▒ light  ▓█ heavy   (left = oldest, right = newest sequence)                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+Esc Back

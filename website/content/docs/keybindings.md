@@ -178,6 +178,7 @@ without toggling anything.
 | PgUp | Page up |
 | PgDn | Page down |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| L | Open the packet loss map (RTP loss pattern) |
 | Esc | Back to RTP Streams list or Call Flow |
 
 The Stream Detail view shows comprehensive per-stream quality data: MOS score, jitter statistics, quality intervals, burst/gap analysis (RFC 3611), silence detection, and sparkline graphs for MOS and jitter trends over the stream's lifetime.

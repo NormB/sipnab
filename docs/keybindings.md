@@ -196,6 +196,7 @@ message of the selection rendered as one scrollable document.
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| L | Open the packet loss map (RTP loss pattern) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
 | Esc | Back to RTP Streams |
@@ -212,6 +213,7 @@ the Call List or RTP Streams view.
 | PgUp / PgDn | Page through streams |
 | Home / End | Jump to best/worst |
 | Enter | Open stream detail for the selection |
+| L | Open the packet loss map (RTP loss pattern) for the selection |
 | Esc / q / D | Close (returns to the opening view) |
 
 ## Statistics
