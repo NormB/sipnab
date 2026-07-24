@@ -301,6 +301,18 @@ struct TcpStream {
     pending_flush: bool,
 }
 
+/// Serial (modular) "less than" over the 2^32 TCP sequence space, per the
+/// RFC 793 SEQ comparison convention (RFC 1982 serial arithmetic): `a`
+/// precedes `b` iff the wrapping distance `a - b`, reinterpreted as a
+/// signed 32-bit value, is negative. This yields a total order within any
+/// window narrower than 2^31; two values exactly 2^31 apart are mutually
+/// "less than" and cannot be ordered. Raw `<` on the u32 values breaks for
+/// streams whose sequence numbers cross the 2^32 wrap.
+#[inline]
+fn seq_lt(a: u32, b: u32) -> bool {
+    (a.wrapping_sub(b) as i32) < 0
+}
+
 /// Reassembles TCP segments into ordered byte streams.
 ///
 /// Tracks individual TCP stream directions (src -> dst) and buffers
@@ -428,7 +440,7 @@ impl TcpReassembler {
         // the stream's initial expected_seq was a guess from the first segment
         // we received (which may not have been the lowest). Adjust downward so
         // we can assemble from the true beginning.
-        if !parsed.payload.is_empty() && seq < stream.expected_seq && !stream.syn_seen {
+        if !parsed.payload.is_empty() && seq_lt(seq, stream.expected_seq) && !stream.syn_seen {
             stream.expected_seq = seq;
         }
 
@@ -493,9 +505,9 @@ impl TcpReassembler {
     ///
     /// Returns the concatenated payload of all segments starting from
     /// `expected_seq`, advancing it past each drained segment. Duplicate /
-    /// retransmitted segments (sequence below `expected_seq`) are discarded;
-    /// draining stops at the first gap. Empty when `key` is untracked or
-    /// nothing is in order yet.
+    /// retransmitted segments (sequence serial-below `expected_seq`) are
+    /// discarded; draining stops at the first gap. Empty when `key` is
+    /// untracked or nothing is in order yet.
     ///
     /// # Side effects
     ///
@@ -509,26 +521,35 @@ impl TcpReassembler {
 
         let mut result = Vec::new();
 
-        while let Some((&next, _)) = stream.buffer.first_key_value() {
-            if next == stream.expected_seq {
-                // This is an in-order segment — consume it
-                let data = match stream.buffer.remove(&next) {
-                    Some(d) => d,
-                    None => break,
-                };
+        // The buffer's BTreeMap iteration order is numeric, which diverges
+        // from serial order once a stream crosses the 2^32 sequence wrap
+        // (post-wrap keys sort numerically first). Segments are therefore
+        // selected by serial position relative to `expected_seq` — direct
+        // lookup for the in-order segment, a serial-below scan for
+        // retransmits — never by key iteration order.
+        loop {
+            // In-order segment — consume it and advance.
+            if let Some(data) = stream.buffer.remove(&stream.expected_seq) {
                 stream.expected_seq = stream.expected_seq.wrapping_add(data.len() as u32);
                 stream.buffered_bytes = stream.buffered_bytes.saturating_sub(data.len());
                 result.extend_from_slice(&data);
-            } else if next < stream.expected_seq {
-                // Retransmit or duplicate — skip it
-                let data = match stream.buffer.remove(&next) {
-                    Some(d) => d,
-                    None => break,
-                };
-                stream.buffered_bytes = stream.buffered_bytes.saturating_sub(data.len());
-            } else {
-                // Gap — waiting for missing segment
+                continue;
+            }
+            // Retransmits / duplicates — anything serial-below expected_seq.
+            let stale: Vec<u32> = stream
+                .buffer
+                .keys()
+                .copied()
+                .filter(|&s| seq_lt(s, stream.expected_seq))
+                .collect();
+            if stale.is_empty() {
+                // Gap (or empty buffer) — waiting for the missing segment.
                 break;
+            }
+            for s in stale {
+                if let Some(data) = stream.buffer.remove(&s) {
+                    stream.buffered_bytes = stream.buffered_bytes.saturating_sub(data.len());
+                }
             }
         }
 
@@ -978,5 +999,177 @@ mod tests {
         let s3 = make_tcp_segment(5000, 6000, 300, default_tcp_flags(), b"c");
         r.insert(&s3);
         assert_eq!(r.len(), 2);
+    }
+
+    // ── TCP sequence-wrap (serial arithmetic) tests ──────────────────
+
+    /// Serial comparison sanity at the boundaries: total order at the wrap
+    /// and within a 2^31 window; exactly 2^31 apart is mutually "less".
+    #[test]
+    fn tcp_serial_seq_lt_boundaries() {
+        assert!(
+            seq_lt(0xFFFF_FFFF, 0),
+            "0xFFFFFFFF precedes 0 across the wrap"
+        );
+        assert!(!seq_lt(0, 0xFFFF_FFFF));
+        assert!(seq_lt(0, 1));
+        assert!(!seq_lt(1, 0));
+        assert!(!seq_lt(42, 42), "irreflexive");
+        // Largest ordered distance: 2^31 - 1.
+        assert!(seq_lt(0, 0x7FFF_FFFF));
+        assert!(!seq_lt(0x7FFF_FFFF, 0));
+        assert!(seq_lt(0x8000_0001, 0)); // distance 2^31 - 1 the other way
+        // Exactly 2^31 apart is unordered (both directions "less").
+        assert!(seq_lt(0, 0x8000_0000));
+        assert!(seq_lt(0x8000_0000, 0));
+    }
+
+    /// An in-order stream whose sequence numbers cross the 2^32 wrap must
+    /// reassemble contiguously: the post-wrap segment is in-order data,
+    /// not a retransmit.
+    #[test]
+    fn tcp_in_order_stream_across_seq_wrap() {
+        let mut r = TcpReassembler::new();
+        let mut syn = default_tcp_flags();
+        syn.syn = true;
+        // SYN at 0xFFFF_FEFF: data starts at 0xFFFF_FF00.
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 0xFFFF_FEFF, syn, b""))
+                .is_empty()
+        );
+        // Pre-wrap segment: 0x200 bytes from 0xFFFF_FF00, crossing to 0x100.
+        let pre = vec![0xAB; 0x200];
+        assert!(
+            r.insert(&make_tcp_segment(
+                5060,
+                5061,
+                0xFFFF_FF00,
+                default_tcp_flags(),
+                &pre
+            ))
+            .is_empty()
+        );
+        // Post-wrap segment at 0x100 with PSH flushes both, in order.
+        let mut psh = default_tcp_flags();
+        psh.psh = true;
+        let result = r.insert(&make_tcp_segment(5060, 5061, 0x100, psh, b"tail"));
+        let mut expected = pre.clone();
+        expected.extend_from_slice(b"tail");
+        assert_eq!(
+            result,
+            vec![expected],
+            "post-wrap segment is in-order data, not a retransmit"
+        );
+    }
+
+    /// Out-of-order delivery across the wrap: the post-wrap segment (the
+    /// numerically SMALLEST buffer key) arrives first and must be held,
+    /// then drained in serial order once the pre-wrap segment fills the gap.
+    #[test]
+    fn tcp_out_of_order_across_seq_wrap_drains_serially() {
+        let mut r = TcpReassembler::new();
+        let mut syn = default_tcp_flags();
+        syn.syn = true;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 0xFFFF_FEFF, syn, b""))
+                .is_empty()
+        );
+        // Post-wrap segment arrives FIRST.
+        let mut psh = default_tcp_flags();
+        psh.psh = true;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 0x100, psh, b"world"))
+                .is_empty(),
+            "gap before the wrap point - nothing drains yet"
+        );
+        // Pre-wrap segment fills the gap; drain runs serially across the wrap.
+        let pre = vec![0xCD; 0x200];
+        let result = r.insert(&make_tcp_segment(
+            5060,
+            5061,
+            0xFFFF_FF00,
+            default_tcp_flags(),
+            &pre,
+        ));
+        let mut expected = pre.clone();
+        expected.extend_from_slice(b"world");
+        assert_eq!(
+            result,
+            vec![expected],
+            "buffer must drain in serial order across the wrap"
+        );
+    }
+
+    /// A genuine retransmit just after the wrap (serial-below the advanced
+    /// `expected_seq`) is still classified as a retransmit and discarded.
+    #[test]
+    fn tcp_genuine_retransmit_after_wrap_discarded() {
+        let mut r = TcpReassembler::new();
+        let mut syn = default_tcp_flags();
+        syn.syn = true;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 0xFFFF_FEFF, syn, b""))
+                .is_empty()
+        );
+        let mut psh = default_tcp_flags();
+        psh.psh = true;
+        // Pre-wrap segment flushes; expected advances across the wrap to 0x100.
+        let pre = vec![0xEF; 0x200];
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 0xFFFF_FF00, psh, &pre)),
+            vec![pre.clone()]
+        );
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 0x100, psh, b"abcde")),
+            vec![b"abcde".to_vec()]
+        );
+        // Retransmit of the post-wrap segment (serial-below expected 0x105).
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 0x100, psh, b"abcde"))
+                .is_empty(),
+            "retransmit just after the wrap must still be discarded"
+        );
+        // Stream continues normally.
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 0x105, psh, b"xyz")),
+            vec![b"xyz".to_vec()]
+        );
+    }
+
+    /// Regression guard: a normal mid-range stream (no wrap) behaves exactly
+    /// as before - in-order flush, retransmit discard, out-of-order reorder.
+    #[test]
+    fn tcp_mid_range_stream_unchanged() {
+        let mut r = TcpReassembler::new();
+        let mut syn = default_tcp_flags();
+        syn.syn = true;
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 99, syn, b""))
+                .is_empty()
+        );
+        let mut psh = default_tcp_flags();
+        psh.psh = true;
+        assert_eq!(
+            r.insert(&make_tcp_segment(5060, 5061, 100, psh, b"hello")),
+            vec![b"hello".to_vec()]
+        );
+        // Genuine retransmit is discarded.
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 100, psh, b"hello"))
+                .is_empty()
+        );
+        // Out-of-order pair still reorders before the flush.
+        assert!(
+            r.insert(&make_tcp_segment(5060, 5061, 110, psh, b"world"))
+                .is_empty()
+        );
+        let result = r.insert(&make_tcp_segment(
+            5060,
+            5061,
+            105,
+            default_tcp_flags(),
+            b" big ",
+        ));
+        assert_eq!(result, vec![b" big world".to_vec()]);
     }
 }
