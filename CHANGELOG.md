@@ -5,6 +5,13 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- `GET /v1/streams/{ssrc}` now returns the most-active stream when several
+  streams share an SSRC (endpoint collision), deterministically, instead of
+  an arbitrary match that could let a colliding orphan shadow the real
+  media stream.
+- The event-exec engine now kills and reaps a child process whose status
+  check errors, instead of forgetting it — the child could previously
+  linger as a zombie.
 - A 200 OK to INVITE that races a CANCEL now correctly establishes the call
   (Cancelled → InCall) per RFC 3261, instead of leaving a call that was
   actually answered stuck in the Cancelled state.
