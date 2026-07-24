@@ -346,7 +346,19 @@ impl PcapWriter {
             }
         }
 
-        self.bytes_written += packet.caplen as u64;
+        // Count the on-disk record size (framing + payload), not just the
+        // payload, so `--split filesize:N` rotates at the real file size
+        // instead of systematically overshooting it.
+        let record_bytes = match &self.backend {
+            // Classic pcap: 16-byte record header + captured bytes.
+            WriterBackend::Pcap(_) => 16 + packet.data.len() as u64,
+            // pcapng EPB: 32 fixed bytes + data padded to a 4-byte boundary.
+            WriterBackend::PcapNg(_) => {
+                let padded = (packet.data.len() + 3) & !3;
+                32 + padded as u64
+            }
+        };
+        self.bytes_written += record_bytes;
         Ok(())
     }
 
@@ -1054,7 +1066,10 @@ mod tests {
             for i in 0..3u8 {
                 w.write(&pkt(i, 50)).unwrap();
             }
-            assert_eq!(w.bytes_written(), 150);
+            // Each classic-pcap record is a 16-byte header plus the 50-byte
+            // payload, so --split accounting must see 3 * 66 = 198, not the
+            // payload-only 150.
+            assert_eq!(w.bytes_written(), 198);
             w.finish().unwrap();
 
             // Re-open with libpcap and count the packets back.
@@ -1342,7 +1357,8 @@ mod tests {
             let path = dir.path().join("man.pcap");
             let mut w = PcapWriter::new(&path, 1, None, None).unwrap();
             w.write(&pkt(0, 50)).unwrap();
-            assert_eq!(w.bytes_written(), 50);
+            // 16-byte pcap record header + 50-byte payload.
+            assert_eq!(w.bytes_written(), 66);
             w.rotate().unwrap();
             assert_eq!(w.bytes_written(), 0, "rotate resets the byte counter");
             assert!(dir.path().join("man_00001.pcap").exists());

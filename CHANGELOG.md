@@ -5,6 +5,10 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- `--split filesize:N` now counts each record's on-disk framing (the pcap
+  record header or the pcap-ng EPB overhead), not just the payload, so
+  rotation fires at the intended file size instead of systematically
+  overshooting it.
 - HEP v3 packet building now truncates an oversized SIP payload to fit the
   protocol's 16-bit length fields instead of letting the total length wrap
   into a corrupt header a collector would misframe.
