@@ -2,6 +2,27 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.33] - 2026-07-24
+
+### Changed
+- P2 robustness/efficiency wave across the capture and SIP subsystems
+  (39 items). Capture: HEP timestamp clamping, once/second nonce
+  pruning, `0`-disables rate limits, `--count` counts received packets,
+  DNS-free loopback check, 6in4 tunneled IPv6, unknown-protocol
+  rejection (no more silent UDP mislabel), honest split backpressure
+  metering, buffered atomic writes, split-borrow clone elimination in
+  TLS decrypt, zero-copy TCP framing, interruptible replay sleeps,
+  unified timestamp-fallback counting, post-2106 saturation, and
+  multi-capture sibling teardown. SIP: dialog-merge state union, faster
+  correlation scan, no-rotate capacity-drop counter, DSL quoted-string
+  escapes + any-stream rtp matching + skip-unused-diagnosis + bytes
+  payload matching, anchored `SIP/2.0` detection, visible header/
+  Content-Length overflow flags, pre-copy validation, Request-URI
+  trimming, copy-free `regex::bytes` matcher with case-sensitive method
+  matching, 7-bit payload-type enforcement, delayed-offer SDP
+  classification, folded MIME headers, the RFC 7865 nameID `aor`
+  attribute, and an exact `terminated`-token transfer check.
+
 ## [0.5.32] - 2026-07-24
 
 ### Added

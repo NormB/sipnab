@@ -13,7 +13,7 @@ capture/packet path below unchanged (its numbers carry over), but rewrote
 the `-N --json` export sink: buffered batch writes plus direct JSON
 serialization cut wall-clock time ~29% and `write()` syscalls 98.5% on that
 path (same-toolchain A/B on this branch, byte-identical output; not yet
-re-measured on a released artifact). The current release 0.5.32 (warning cleanup —
+re-measured on a released artifact). The current release 0.5.33 (warning cleanup —
 a TUI display change, not a packet-path change) changes neither path. The comparison
 tools' numbers come from the 2026-06-24 session — same host, corpus, and
 method, and their versions are unchanged. Versus the 0.4.16 session, 0.5.18
