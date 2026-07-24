@@ -49,14 +49,19 @@ pub fn extract_sdp_links(
 
 /// Check if a UDP payload looks like RTCP.
 ///
-/// RTCP convention: odd destination port (RTP port + 1), version=2,
-/// and payload type in the 200-204 range.
+/// Two conventions are recognized:
+///
+/// - Classic separate-port RTCP (RTP port + 1): an ODD destination port with
+///   version=2 and a packet type in the 200-204 range.
+/// - RFC 5761 RTP/RTCP multiplexing: RTP and RTCP share ONE (typically even)
+///   port, so parity can no longer distinguish them. RTCP is then identified
+///   by content — version=2, the RTCP packet-type byte in 192-223 (RTP payload
+///   types are chosen to avoid this range precisely so the two demultiplex),
+///   and an RTCP length field that frames the packet consistently. The length
+///   check rejects an RTP packet whose marker+payload-type byte merely lands in
+///   192-223, so muxed RTP is never misread as RTCP.
 pub fn is_rtcp_packet(data: &[u8], dst_port: u16) -> bool {
     if data.len() < 8 {
-        return false;
-    }
-    // RTCP typically uses odd port (RTP+1)
-    if dst_port.is_multiple_of(2) {
         return false;
     }
     let version = (data[0] >> 6) & 0x03;
@@ -64,7 +69,28 @@ pub fn is_rtcp_packet(data: &[u8], dst_port: u16) -> bool {
         return false;
     }
     let pt = data[1];
-    (200..=204).contains(&pt)
+    if !dst_port.is_multiple_of(2) {
+        // Odd port: classic separate-port RTCP (RTP+1).
+        return (200..=204).contains(&pt);
+    }
+    // Even port: RFC 5761 mux. Require an RTCP packet-type byte and a
+    // self-consistent length field so muxed RTP is not swallowed.
+    (192..=223).contains(&pt) && rtcp_length_frames_packet(data)
+}
+
+/// Whether the first RTCP sub-packet's length field frames within `data`.
+///
+/// The RTCP header length (bytes 2-3) counts 32-bit words minus one, so the
+/// first packet occupies `(len + 1) * 4` bytes. A real RTCP packet (or the
+/// first element of a compound packet) declares at least one word beyond the
+/// header and fits inside the datagram; a misread RTP packet does not. This is
+/// the extra guard that keeps RFC 5761 demux from mistaking RTP for RTCP.
+fn rtcp_length_frames_packet(data: &[u8]) -> bool {
+    let word_len = ((data[2] as usize) << 8) | data[3] as usize;
+    if word_len == 0 {
+        return false;
+    }
+    (word_len + 1) * 4 <= data.len()
 }
 
 /// Try to unwrap a WebSocket frame from a TCP packet on common WS ports.
@@ -475,6 +501,32 @@ mod quiet_bad_parse_tests {
         let mut heur = crate::rtp::heuristic::RtpHeuristic::new();
         let mut decrypt = MediaDecrypt::default();
         classify_packet(pp, &mut heur, opts, &mut decrypt)
+    }
+
+    /// RFC 5761 RTP/RTCP multiplexing: a well-formed RTCP packet arriving on an
+    /// EVEN port (RTP and RTCP sharing one port) must be recognized as RTCP by
+    /// content, not rejected for port parity. A malformed RTCP-looking packet
+    /// whose length field does not frame the buffer stays rejected so muxed RTP
+    /// is never swallowed; the classic odd-port path is unchanged.
+    #[test]
+    fn muxed_rtcp_on_even_port_is_recognized() {
+        // RTCP Receiver Report: V=2, PT=201, length=1 word => 8 bytes total.
+        let rr = [0x80u8, 201, 0, 1, 0, 0, 0, 1];
+        assert!(
+            is_rtcp_packet(&rr, 5000),
+            "well-formed muxed RTCP on an even port must be recognized (RFC 5761)"
+        );
+        // Length field claims 28 bytes but only 8 are present: not real RTCP,
+        // so an even-port packet like this stays RTP (must not be swallowed).
+        assert!(
+            !is_rtcp_packet(&[0x80, 200, 0, 6, 0, 0, 0, 1], 5000),
+            "inconsistent length field on an even port is not RTCP"
+        );
+        // Zero-length header on an even port is also rejected.
+        assert!(!is_rtcp_packet(&[0x80, 200, 0, 0, 0, 0, 0, 0], 5000));
+        // Odd-port classic behavior is unchanged.
+        assert!(is_rtcp_packet(&rr, 5001));
+        assert!(is_rtcp_packet(&[0x80, 200, 0, 6, 0, 0, 0, 1], 30001));
     }
 
     /// By default a malformed SIP packet drops to `None` and emits the

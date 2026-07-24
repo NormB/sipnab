@@ -90,6 +90,25 @@ pub struct ReconResult {
     pub rtp_count: u64,
     /// Total parsed packets dispatched.
     pub total_count: u64,
+    /// Raw packets lost because a worker thread died mid-run (its receiver was
+    /// gone, so the shard send failed). Zero on a healthy run; nonzero means
+    /// the reconstruction is incomplete and was logged at `warn`.
+    pub dropped_count: u64,
+}
+
+/// Send one shard item to worker `s`'s channel, returning the number of raw
+/// packets LOST if the worker's receiver is gone (its thread died) — `0` on a
+/// live worker, else `weight` (1 for a single packet, the batch length for a
+/// batch). The bounded channel only errors on disconnect (it blocks, never
+/// errors, when merely full), so a nonzero return is unambiguously a dead
+/// worker. Callers fold the result into a run-total that is logged and
+/// surfaced on [`ReconResult::dropped_count`], instead of the old `let _ =`
+/// that swallowed the loss silently.
+fn shard_send<T>(tx: &crossbeam_channel::Sender<T>, item: T, weight: u64) -> u64 {
+    match tx.send(item) {
+        Ok(()) => 0,
+        Err(_) => weight,
+    }
 }
 
 /// Reconstruct ONE already-parsed packet into thread-local stores, using the
@@ -196,6 +215,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
 
     // Dispatcher: cheap host-pair peek, shard the RAW packet to a worker. A packet
     // the peek can't read routes to worker 0 (still correct via its own reassembly).
+    let mut dropped: u64 = 0;
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(packet) => {
@@ -203,13 +223,19 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
                     Some((a, b)) => shard_for(a, b, n),
                     None => 0,
                 };
-                let _ = txs[s].send(packet);
+                dropped += shard_send(&txs[s], packet, 1);
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
         }
     }
     drop(txs); // signal workers to finish
+    if dropped > 0 {
+        tracing::warn!(
+            "parallel reconstruction lost {dropped} packet(s): a worker thread \
+             died mid-run (its shard channel closed); results are incomplete"
+        );
+    }
 
     // Merge thread-local stores into one, then resolve cross-worker associations.
     let mut ds =
@@ -233,6 +259,7 @@ pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
         sip_count,
         rtp_count,
         total_count: total,
+        dropped_count: dropped,
     }
 }
 
@@ -311,6 +338,7 @@ pub fn run_offline_parallel_file(
     }
     let link_type = cap.get_datalink().0;
     let mut count: u64 = 0;
+    let mut dropped: u64 = 0;
     let mut batches: Vec<Vec<Packet>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
     loop {
         if let Some(max) = capture_config.count
@@ -335,7 +363,8 @@ pub fn run_offline_parallel_file(
                 batches[s].push(packet);
                 if batches[s].len() >= BATCH {
                     let full = std::mem::replace(&mut batches[s], Vec::with_capacity(BATCH));
-                    let _ = txs[s].send(full);
+                    let weight = full.len() as u64;
+                    dropped += shard_send(&txs[s], full, weight);
                 }
                 count += 1;
             }
@@ -351,10 +380,17 @@ pub fn run_offline_parallel_file(
     // Flush every partial batch so no tail packets are lost.
     for (s, b) in batches.into_iter().enumerate() {
         if !b.is_empty() {
-            let _ = txs[s].send(b);
+            let weight = b.len() as u64;
+            dropped += shard_send(&txs[s], b, weight);
         }
     }
     drop(txs);
+    if dropped > 0 {
+        tracing::warn!(
+            "parallel reconstruction lost {dropped} packet(s): a worker thread \
+             died mid-run (its shard channel closed); results are incomplete"
+        );
+    }
 
     let mut ds =
         DialogStore::new(cfg.max_dialogs, cfg.rotate).with_xcid_headers(cfg.xcid_headers.clone());
@@ -376,6 +412,7 @@ pub fn run_offline_parallel_file(
         sip_count,
         rtp_count,
         total_count: total,
+        dropped_count: dropped,
     })
 }
 
@@ -389,6 +426,27 @@ mod tests {
     /// Build an IPv4 `IpAddr` from four octets (test brevity helper).
     fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
+    }
+
+    /// A shard send to a DEAD worker (its receiver dropped) must be COUNTED
+    /// as a packet loss, not silently swallowed. A live worker counts zero;
+    /// after the receiver is gone every send returns its weight (1 for a
+    /// packet, the batch length for a batch).
+    #[test]
+    fn dead_worker_shard_send_is_counted() {
+        use crossbeam_channel::bounded;
+        let (tx, rx) = bounded::<u32>(4);
+        // Live worker: send succeeds, nothing lost.
+        assert_eq!(shard_send(&tx, 1u32, 1), 0, "live worker loses nothing");
+        // Simulate the worker thread dying: its receiver is dropped.
+        drop(rx);
+        // Now the loss must be reported, not hidden behind `let _ =`.
+        assert_eq!(shard_send(&tx, 2u32, 1), 1, "one lost packet is counted");
+        assert_eq!(
+            shard_send(&tx, 3u32, 128),
+            128,
+            "a lost batch counts every packet in it"
+        );
     }
 
     /// `jobs <= 1` always routes to worker 0 (the single-threaded path).

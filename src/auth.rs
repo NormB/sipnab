@@ -72,9 +72,17 @@ pub fn mint(signing_key: &[u8], id: &str, exp_unix: i64) -> String {
         id: id.to_string(),
         exp: exp_unix,
     };
-    // serde_json::to_string produces compact JSON (no spaces) by default.
-    let payload_json = serde_json::to_string(&payload)
-        .unwrap_or_else(|_| format!("{{\"id\":\"{id}\",\"exp\":{exp_unix}}}"));
+    // serde_json::to_string produces compact JSON (no spaces) by default, and
+    // serializing this concrete `{id: String, exp: i64}` into an in-memory
+    // String is infallible: serde_json only errors on a failing Serialize impl,
+    // a non-string map key, or non-UTF-8 output — none of which this type can
+    // produce. Handle the Result without unwrap/expect (production forbids
+    // them) by failing closed on the unreachable error path. An empty payload
+    // yields a token that cannot verify; the earlier hand-built fallback
+    // interpolated `id` UNESCAPED (`{"id":"<id>",...}`), so a crafted id
+    // carrying a quote/backslash/control char could break the JSON — that
+    // dead branch is removed rather than escaped.
+    let payload_json = serde_json::to_string(&payload).unwrap_or_default();
     let payload_b64 = URL_SAFE_NO_PAD.encode(payload_json.as_bytes());
     let signing_input = format!("{VERSION}.{payload_b64}");
     let sig = hmac_sha256(signing_key, signing_input.as_bytes());
@@ -319,6 +327,55 @@ mod tests {
     /// Build a `TokenVerifier` from a config (test-readability wrapper).
     fn verifier(cfg: VerifierConfig) -> TokenVerifier {
         TokenVerifier::new(cfg)
+    }
+
+    /// Failing-first evidence for the removed hand-built serialization
+    /// fallback: interpolating an unescaped `id` into `{"id":"<id>",...}`
+    /// yields INVALID JSON when the id carries a quote/backslash/control char.
+    /// The infallible serde path is now the only path, so this reproduction
+    /// documents why the branch was dead-code+latent-bug and was dropped.
+    #[test]
+    fn removed_hand_built_fallback_produced_invalid_json() {
+        let id = "a\"b\\c\u{0001}";
+        let exp = 0i64;
+        // Exactly what the removed `unwrap_or_else` branch built by hand.
+        let hand_built = format!("{{\"id\":\"{id}\",\"exp\":{exp}}}");
+        let parsed: Result<Payload, _> = serde_json::from_str(&hand_built);
+        assert!(
+            parsed.is_err(),
+            "the removed fallback embedded id unescaped and produced invalid \
+             JSON — proof it was a latent bug: {hand_built:?}"
+        );
+    }
+
+    /// A token id carrying JSON metacharacters and a control character must be
+    /// escaped in the payload so the token round-trips: the decoded payload
+    /// yields the exact id byte-for-byte and the token still verifies. Locks
+    /// in that the (now sole) serde serialization path escapes correctly.
+    #[test]
+    fn mint_escapes_hostile_id_in_payload() {
+        let hostile = "id\"with\\meta\tand\u{0001}control";
+        let exp = 4_000_000_000i64;
+        let token = mint(KEY_A, hostile, exp);
+
+        // The payload segment must be valid, escaped JSON decoding back to id.
+        let payload_b64 = token.split('.').nth(1).expect("payload segment");
+        let bytes = URL_SAFE_NO_PAD
+            .decode(payload_b64)
+            .expect("payload must be valid base64url");
+        let decoded: Payload =
+            serde_json::from_slice(&bytes).expect("payload must be valid, escaped JSON");
+        assert_eq!(decoded.id, hostile, "id must round-trip byte-for-byte");
+
+        // And the whole token must verify against the signing key.
+        let v = verifier(VerifierConfig {
+            signing_keys: vec![KEY_A.to_vec()],
+            ..Default::default()
+        });
+        assert!(
+            v.verify(&token, exp - 1),
+            "a token minted with a hostile id must still verify"
+        );
     }
 
     // ── constant_time_eq hardening tests (relocated from output::api) ──

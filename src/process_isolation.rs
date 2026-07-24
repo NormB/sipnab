@@ -398,6 +398,10 @@ impl RateLimiter {
 struct PerDstRateLimiter {
     /// Map of destination IP to (window start, count).
     buckets: HashMap<IpAddr, (Instant, u32)>,
+    /// When the O(n) sweep last ran, so it is amortized to at most once per
+    /// second instead of on every send (the same pattern as the HEP replay
+    /// cache's `HmacNonceCache::should_prune`). `None` until the first sweep.
+    last_cleanup: Option<Instant>,
 }
 
 /// Maximum responses per destination IP per minute.
@@ -408,6 +412,7 @@ impl PerDstRateLimiter {
     fn new() -> Self {
         Self {
             buckets: HashMap::new(),
+            last_cleanup: None,
         }
     }
 
@@ -429,11 +434,27 @@ impl PerDstRateLimiter {
         }
     }
 
-    /// Remove entries older than 2 minutes to prevent memory growth.
-    fn cleanup(&mut self) {
-        let now = Instant::now();
+    /// Remove entries older than 2 minutes to prevent memory growth. O(n) in
+    /// the number of tracked destinations; call via [`Self::cleanup_if_due`]
+    /// so it is not paid on every send.
+    fn cleanup(&mut self, now: Instant) {
         self.buckets
             .retain(|_, (start, _)| now.duration_since(*start).as_secs() < 120);
+    }
+
+    /// Run [`Self::cleanup`] at most once per second. Amortizing is
+    /// behavior-preserving: eviction only bounds memory — an entry that
+    /// outlives its 60s window is still reset by the window check in
+    /// [`Self::allow`], so a not-yet-swept stale bucket never over-limits or
+    /// under-limits a destination. The first call always sweeps.
+    fn cleanup_if_due(&mut self, now: Instant) {
+        match self.last_cleanup {
+            Some(prev) if now.duration_since(prev).as_secs() < 1 => {}
+            _ => {
+                self.last_cleanup = Some(now);
+                self.cleanup(now);
+            }
+        }
     }
 }
 
@@ -543,8 +564,9 @@ impl ScannerKillWorker {
             return KillResponse::RateLimited;
         }
 
-        // Periodic cleanup of per-dst limiter
-        self.per_dst_limiter.cleanup();
+        // Periodic cleanup of per-dst limiter (amortized to once per second so
+        // the O(n) sweep is not paid on every send).
+        self.per_dst_limiter.cleanup_if_due(Instant::now());
 
         // Prefer a source-spoofed raw send when a raw socket is available. The
         // forged source is the victim ip:port the scanner targeted, so the
@@ -718,6 +740,43 @@ mod tests {
     /// A minimal valid SIP 200 OK response body for kill-send tests.
     fn sample_response() -> Vec<u8> {
         b"SIP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n".to_vec()
+    }
+
+    /// The per-destination limiter's O(n) sweep is amortized to at most once
+    /// per second: a second `cleanup_if_due` within the same 1s window is a
+    /// no-op (it does not sweep), while a call ≥1s later sweeps again. Uses an
+    /// injected monotonic `now` so no wall-clock sleeping is needed.
+    #[test]
+    fn per_dst_cleanup_is_amortized_to_once_per_second() {
+        use std::time::Duration;
+        let t0 = Instant::now();
+        let mut lim = PerDstRateLimiter::new();
+        let stale_a: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 7));
+        let stale_b: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 8));
+
+        // A bucket whose window started >120s before `now` is sweep-eligible.
+        lim.buckets.insert(stale_a, (t0, 3));
+        lim.cleanup_if_due(t0 + Duration::from_secs(200));
+        assert!(
+            !lim.buckets.contains_key(&stale_a),
+            "first due cleanup must sweep the stale bucket"
+        );
+
+        // A second call <1s after the last sweep must NOT sweep — proof the
+        // O(n) work is amortized, not paid every call.
+        lim.buckets.insert(stale_b, (t0, 3));
+        lim.cleanup_if_due(t0 + Duration::from_secs(200) + Duration::from_millis(500));
+        assert!(
+            lim.buckets.contains_key(&stale_b),
+            "cleanup within the same 1s window must be skipped (amortized)"
+        );
+
+        // ≥1s after the last sweep it runs again and prunes the stale bucket.
+        lim.cleanup_if_due(t0 + Duration::from_secs(202));
+        assert!(
+            !lim.buckets.contains_key(&stale_b),
+            "cleanup must run again once ≥1s has elapsed"
+        );
     }
 
     /// Source-spoofed raw send: the datagram must arrive at the listener with
