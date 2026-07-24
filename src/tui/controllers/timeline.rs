@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Key handling for the call-timeline view.
 //!
 //! Scaffold only — the mapping and executor cover the close/back path so

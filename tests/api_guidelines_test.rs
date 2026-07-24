@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! API-guidelines drift nets (WS6.2).
 //!
 //! Growth-prone public enums must be `#[non_exhaustive]` so adding a

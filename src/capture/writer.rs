@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Pcap output writer with rotation support.
 //!
 //! [`PcapWriter`] writes classic pcap directly (buffered) or PCAP-NG via

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! TUI snapshot tests using ratatui's TestBackend and insta.
 //!
 //! Each test renders a specific view into an in-memory terminal buffer, then

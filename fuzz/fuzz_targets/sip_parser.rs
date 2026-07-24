@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fuzz the top-level SIP message parser — the primary network-facing
 //! decoder. Arbitrary bytes (parsed as a UDP datagram from loopback) must
 //! parse into a message or error cleanly, never panic or over-read.

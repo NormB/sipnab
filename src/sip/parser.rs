@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Core SIP message parser.
 //!
 //! Parses raw byte slices into [`SipMessage`] structs. Handles request and

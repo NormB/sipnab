@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end REST API tests (verification plan M3 — T3.2/T3.3).
 //!
 //! Unlike the in-process tower tests in `src/output/api.rs`, these spawn a real

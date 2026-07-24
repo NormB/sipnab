@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Result-shaping helpers for MCP tool responses.
 //!
 //! Every tool response is bounded by default to keep agent tool-call costs

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! G.711 mu-law and A-law audio codec decoders (ITU-T G.711).
 //!
 //! Pure-Rust implementation using hardcoded lookup tables for maximum

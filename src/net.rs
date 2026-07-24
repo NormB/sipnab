@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Leaf network vocabulary types shared across layers.
 //!
 //! `sip/`, `rtp/`, and `security/` all need to talk about transports, but

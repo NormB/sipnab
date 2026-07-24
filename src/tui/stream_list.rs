@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTP stream list view — color-coded stream table.
 //!
 //! Displays all tracked RTP streams with columns for SSRC, codec, source,

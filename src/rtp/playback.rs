@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Real-time audio playback from RTP stream payload buffers.
 //!
 //! Decodes G.711 and Opus audio (pure Rust, no ALSA dependency) and resamples

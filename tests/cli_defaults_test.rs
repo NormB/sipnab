@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Tests that verify the actual default value of every CLI parameter.
 //!
 //! Each test parses a minimal argument list (`["sipnab", "-N"]`) and asserts the

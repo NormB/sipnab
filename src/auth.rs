@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! HMAC self-describing bearer tokens with expiry, rotation, and revocation.
 //!
 //! Shared between the REST API (`output::api`) and the HTTP MCP transport

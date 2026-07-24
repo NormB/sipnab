@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Pure-Rust pcap/pcapng file reader for WASM compatibility.
 //! Reads both pcap and pcapng files from raw byte slices without libpcap.
 //!

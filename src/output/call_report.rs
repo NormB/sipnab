@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Comprehensive single-call diagnosis report.
 //!
 //! Generates a detailed report for a single SIP dialog including timing,

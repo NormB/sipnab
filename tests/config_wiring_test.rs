@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for config-wiring and schema-drift bugs.
 //!
 //! Verifies that config file values are properly used as fallbacks for CLI flags,

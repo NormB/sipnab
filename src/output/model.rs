@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Canonical output projections shared by every serialization surface.
 //!
 //! Before this module existed, "dialog summary" was implemented five times

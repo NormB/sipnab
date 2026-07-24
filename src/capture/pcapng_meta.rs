@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Read metadata blocks from a pcapng file so embedded names and TLS keys
 //! travel with the capture.
 //!

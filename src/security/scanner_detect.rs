@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP scanner and reconnaissance tool detection.
 //!
 //! Detects SIP scanning activity through two methods:

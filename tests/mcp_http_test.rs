@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #![cfg(all(unix, feature = "mcp-http"))]
 //! Phase 8.2 — end-to-end HTTP MCP integration test.
 //!

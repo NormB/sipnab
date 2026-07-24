@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The file-open dialog: directory browsing, manual path entry and
 //! pcap loading.
 

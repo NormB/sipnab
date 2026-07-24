@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP dialog type and state machine.
 //!
 //! A [`SipDialog`] tracks the lifecycle of a SIP conversation identified by

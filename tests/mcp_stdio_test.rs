@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #![cfg(all(unix, feature = "mcp"))]
 //! Phase 8.1 — end-to-end stdio MCP integration test.
 //!

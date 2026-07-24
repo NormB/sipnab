@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! REST API daemon mode for sipnab.
 //!
 //! Provides a read-only REST API over active SIP dialogs and RTP streams.

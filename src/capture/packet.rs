@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Core packet type for sipnab.
 //!
 //! [`Packet`] represents a single captured network packet with metadata

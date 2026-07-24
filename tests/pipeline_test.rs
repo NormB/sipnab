@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The per-packet protocol-routing pipeline must be a testable library
 //! API, not code buried in main.rs. These tests drive
 //! `sipnab::pipeline::process_packet` directly: SIP packets land in the

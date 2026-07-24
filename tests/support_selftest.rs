@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Self-tests for the shared test-support `normalize()` helper (M1/T1.1).
 //!
 //! TDD: these are written against a stubbed `normalize` (red), then the real

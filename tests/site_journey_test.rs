@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end journey guards for the website artifacts: walk what a visitor
 //! actually hits — nav links, docs pages, demo assets, and the VHS tapes that
 //! produce them — and fail on the classes of breakage that shipped before:

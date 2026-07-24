@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Network interface auto-detection for live capture.
 //!
 //! When no `-d` or `-I` flag is provided, sipnab auto-detects a suitable

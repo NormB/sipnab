@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! WebSocket frame unwrapping for SIP-over-WebSocket (RFC 7118).
 //!
 //! SIP messages transported via WebSocket are wrapped in WebSocket frames.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end pipeline benchmarks: `PacketProcessor::process` (the full
 //! link → IP → transport decap every captured frame walks, including the
 //! per-packet `Vec` return) and parse → `DialogStore::process_message`

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTP header parser (RFC 3550).
 //!
 //! Parses the fixed 12-byte RTP header plus variable-length CSRC list

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Pcap file reader.
 //!
 //! Reads packets from a pcap (or pcap-ng) file and sends them through a

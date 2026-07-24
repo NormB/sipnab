@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Deterministic, stable-toolchain robustness gate over the wire parsers.
 //!
 //! The `fuzz/` crate holds the real cargo-fuzz (libFuzzer) targets, but they

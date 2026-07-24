@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The library surface must return structured, matchable errors —
 //! not `Result<_, String>`. Callers (and these tests) match on variants;
 //! Display keeps the actionable message.

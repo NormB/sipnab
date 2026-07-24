@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Cryptographic backend abstraction for TLS/SRTP operations.
 //!
 //! Defines the `CryptoBackend` trait that abstracts over different crypto

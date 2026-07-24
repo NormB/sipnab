@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Structured library errors.
 //!
 //! The library surface used to return `Result<_, String>` in several

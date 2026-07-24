@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! TUI state machine tests.
 //!
 //! Tests App state transitions (view switching, key handling, filtering)

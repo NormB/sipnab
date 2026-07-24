@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Smoke-fuzz: every parser reachable from raw, attacker-controlled
 //! packet bytes must return a Result/Option, never panic.
 //!

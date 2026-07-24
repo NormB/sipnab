@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SDP negotiation timeline tracking for SIP dialogs.
 //!
 //! Records each SDP offer and answer as messages flow through a dialog,

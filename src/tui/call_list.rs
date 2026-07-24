@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Call list view — sortable, filterable dialog table.
 //!
 //! Displays all tracked SIP dialogs in a table with columns for index,

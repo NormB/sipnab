@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for the full sipnab capture-to-output pipeline.
 //!
 //! These tests exercise the binary end-to-end using file capture mode,

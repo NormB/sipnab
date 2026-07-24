@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! JSON-Schema contract tests (verification plan M1 — T1.3).
 //!
 //! Validates sipnab's machine-readable output against versioned schemas in

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! JSON/NDJSON structured output for SIP messages, dialogs, and RTP streams.
 //!
 //! All JSON output includes `"schema_version": 1` for forward compatibility.

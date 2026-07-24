@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Help view — keybinding reference overlay.
 //!
 //! Displays a categorized reference of all keyboard shortcuts available

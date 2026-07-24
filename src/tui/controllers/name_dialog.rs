@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The "Name Address" popup: manual IP-to-name mappings.
 
 use crate::tui::*;

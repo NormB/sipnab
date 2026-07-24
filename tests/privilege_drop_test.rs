@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Privilege-drop regression guard: capture must NEVER continue as root
 //! after a failed drop. main.rs treats a drop_privileges() error as
 //! fatal (exit 1) — these tests pin that wiring end-to-end so a future

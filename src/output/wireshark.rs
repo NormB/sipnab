@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Wireshark display filter translation and tshark command generation.
 //!
 //! Converts sipnab's filter DSL field names to Wireshark display filter

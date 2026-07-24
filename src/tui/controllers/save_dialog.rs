@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The save dialog popup: opening and key handling.
 
 use crate::tui::*;

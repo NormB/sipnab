@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Multi-core offline processing (`--jobs N`).
 //!
 //! sipnab's hot path is per-packet and was effectively single-threaded, so on a

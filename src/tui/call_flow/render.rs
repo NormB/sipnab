@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Rendering functions for call flow ladder diagrams.
 //!
 //! Contains both the direct buffer-painting path (used by the TUI) and

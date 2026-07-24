@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Harness token-rotation end-to-end tests.
 //!
 //! The diagnostic harness (`harness/`) no longer ships a static bearer secret.

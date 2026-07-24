@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Behavioral contracts of the machine-readable output flags: --json-pretty
 //! must actually differ from --json, and --call-report must fail with a
 //! non-zero exit when the requested Call-ID does not exist (a scripting

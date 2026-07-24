@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end HEP tests (verification plan M3 — T3.6).
 //!
 //! Drives the real `sipnab` HEP surfaces over UDP:

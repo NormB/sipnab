@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Prometheus exposition format metrics.
 //!
 //! Collects and formats sipnab operational metrics in the

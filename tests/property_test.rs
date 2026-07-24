@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Property-based tests (WS7.3).
 //!
 //! The fuzzers prove "no panic on hostile bytes"; these prove *semantic*

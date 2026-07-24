@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Heuristic RTP discovery without SDP.
 //!
 //! When sipnab sees UDP traffic that does not match any SDP-negotiated

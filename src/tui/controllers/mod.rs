@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Keyboard and mouse event handling for every view and popup — the
 //! controller layer of the TUI. Per-view/per-popup handlers live in the
 //! submodules; this module owns the top-level dispatchers plus the small

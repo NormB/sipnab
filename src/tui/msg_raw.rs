@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Raw SIP message viewer with syntax highlighting.
 //!
 //! Displays the full text of a SIP message with colorized method/status

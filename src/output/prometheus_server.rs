@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Standalone Prometheus metrics HTTP server.
 //!
 //! Provides a minimal HTTP/1.1 server that serves the `/metrics` endpoint

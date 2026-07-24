@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Buffered stdout sink for batch-mode per-message output.
 //!
 //! The batch receive loop used to emit every SIP message through `print!` /

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! sipnab — SIP & RTP capture, analysis, and security tool.
 //!
 //! The binary is a thin dispatcher (WS2): parse arguments, run the

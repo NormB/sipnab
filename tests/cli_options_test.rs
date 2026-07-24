@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Comprehensive integration tests for all sipnab CLI options.
 //!
 //! Every flag listed in `sipnab --help` is exercised here. Tests use the

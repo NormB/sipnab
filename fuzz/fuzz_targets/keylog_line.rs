@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fuzz the NSS-keylog line parser (`--tls-keylog` / `SSLKEYLOGFILE` input):
 //! any UTF-8 line must parse to a key entry or a clean error, never panic.
 #![no_main]

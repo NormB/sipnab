@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fuzz the WebSocket frame unwrapper (SIP-over-WS transport). Arbitrary
 //! bytes must be unwrapped to a payload or rejected without panicking or
 //! over-reading on a malformed length/mask field.

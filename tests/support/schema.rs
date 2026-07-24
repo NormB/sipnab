@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! JSON-Schema validation helpers (verification plan M1 — T1.3).
 //!
 //! Loads versioned schemas from `tests/schemas/` and validates serialized

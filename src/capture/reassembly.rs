@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! IP fragment and TCP segment reassembly.
 //!
 //! Provides [`FragmentReassembler`] for reassembling IP-fragmented packets and

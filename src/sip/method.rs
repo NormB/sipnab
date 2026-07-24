@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP request method enum.
 //!
 //! Replaces stringly-typed method fields with a proper enum that covers

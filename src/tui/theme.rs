@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Resolved theme and keymap types plus adaptive refresh constants.
 
 use super::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Companion-server startup must be a testable library facade (WS2), not
 //! three hand-rolled bootstraps in main.rs: one call starts every enabled
 //! async server (REST API, MCP stdio, MCP HTTP) on ONE shared tokio runtime,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Raw hex+ASCII packet dump.
 //!
 //! Provides a `hexdump` function that formats binary data in the classic

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for the capture subsystem.
 //!
 //! These tests exercise pcap file reading, packet count limits, BPF filtering,

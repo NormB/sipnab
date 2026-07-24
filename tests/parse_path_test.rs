@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 #![cfg(all(unix, feature = "api"))]
 //! Phase 8.0a regression tests — single-parse / shared-store invariants.
 //!

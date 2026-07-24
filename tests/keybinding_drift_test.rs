@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Guard against drift between the keybindings sipnab actually HANDLES and the
 //! in-TUI F1 help (`HELP_TEXT`). The help is the primary discovery surface, so a
 //! handled key that isn't documented there is a real bug.

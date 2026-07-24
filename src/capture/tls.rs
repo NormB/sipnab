@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! TLS record layer parser and SSLKEYLOGFILE support.
 //!
 //! Provides parsing of TLS records from TCP payloads, heuristic TLS detection,

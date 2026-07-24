@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Privilege separation for sipnab.
 //!
 //! After opening capture devices (which require root or `CAP_NET_RAW`),

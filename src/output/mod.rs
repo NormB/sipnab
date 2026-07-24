@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Output formatting for SIP/RTP analysis results.
 //!
 //! This module provides multiple output backends:
