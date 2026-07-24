@@ -389,8 +389,11 @@ pub(in crate::tui) fn clear_calls(app: &mut App) {
 
         let count = call_ids_to_remove.len();
         {
+            // O(n+m) membership: a Vec::contains inside retain is O(n·m).
+            let remove: std::collections::HashSet<&str> =
+                call_ids_to_remove.iter().map(String::as_str).collect();
             let mut ds = app.dialog_store.write();
-            ds.retain(|d| !call_ids_to_remove.contains(&d.call_id));
+            ds.retain(|d| !remove.contains(d.call_id.as_str()));
         }
         app.call_list.clear_selections();
         app.status_error = Some(format!("Cleared {} dialogs", count));
@@ -843,6 +846,21 @@ mod tests {
         handle_call_list_key(&mut app, key(KeyCode::F(9)));
         assert!(app.active_filter.is_none());
         assert!(app.active_filter_text.is_empty());
+    }
+
+    /// F9 also drops the persisted search query — the documented
+    /// "clear active filter **and** persisted search" behavior, and the
+    /// reference the call-flow F9 is aligned to (both views bind F9 to the
+    /// same "clear every narrowing input" action).
+    #[test]
+    fn call_list_f9_clears_persisted_search() {
+        let mut app = app_with_dialogs();
+        app.search_query = "5595".to_string();
+        handle_call_list_key(&mut app, key(KeyCode::F(9)));
+        assert!(
+            app.search_query.is_empty(),
+            "F9 must clear the persisted search query"
+        );
     }
 
     /// `s` opens the statistics view.

@@ -722,20 +722,23 @@ impl App {
                     // Merged multi-selection flow: every checked dialog's
                     // messages, chronological, with per-row provenance so
                     // drill-down opens the row's OWN dialog.
-                    let mut tagged: Vec<(crate::sip::SipMessage, (String, usize))> = Vec::new();
+                    let mut tagged: Vec<(&crate::sip::SipMessage, (String, usize))> = Vec::new();
                     for mcid in &self.flow.merged_calls {
                         if let Some(d) = store.get(mcid) {
                             tagged.extend(
                                 d.messages
                                     .iter()
                                     .enumerate()
-                                    .map(|(i, m)| (m.clone(), (mcid.clone(), i))),
+                                    .map(|(i, m)| (m, (mcid.clone(), i))),
                             );
                         }
                     }
+                    // Sort references (the timestamp key is Copy) and clone
+                    // each message once AFTER the sort, mirroring the extended
+                    // branch — the sort no longer shuffles full SipMessages.
                     tagged.sort_by_key(|(m, _)| m.timestamp);
                     let (owned, index_map): (Vec<crate::sip::SipMessage>, Vec<(String, usize)>) =
-                        tagged.into_iter().unzip();
+                        tagged.into_iter().map(|(m, t)| (m.clone(), t)).unzip();
                     self.flow.ladder.index_map = index_map;
                     if owned.is_empty() {
                         (Vec::new(), Vec::new())
@@ -971,6 +974,32 @@ impl App {
             Duration::from_millis(ACTIVE_POLL_MS)
         } else {
             Duration::from_millis(IDLE_POLL_MS)
+        }
+    }
+
+    /// Reconcile the adaptive poll cadence with a dialog-store read attempt.
+    ///
+    /// `count` is the store length from a non-blocking `try_read`, or `None`
+    /// when that read failed because a writer holds the lock. Both fresh data
+    /// (a changed count) and a failed read under contention mean the capture
+    /// is active, so both keep the fast poll cadence; only a successful,
+    /// unchanged read is genuinely idle and leaves the timer alone.
+    ///
+    /// Keeping this a pure function of the `try_read` outcome lets the busy
+    /// case be pinned without real timing: a `None` must never be conflated
+    /// with "no change / idle", or a sustained busy capture (which starves
+    /// the non-blocking read) would sink the UI into the slow idle poll.
+    fn reconcile_dialog_count(&mut self, count: Option<usize>) {
+        match count {
+            Some(count) => {
+                if count != self.last_known_dialog_count {
+                    self.last_known_dialog_count = count;
+                    self.mark_data_updated();
+                }
+            }
+            // try_read failed: a writer holds the lock → the capture is busy.
+            // Contention is activity, so stay in the responsive cadence.
+            None => self.mark_data_updated(),
         }
     }
 }
@@ -1291,15 +1320,12 @@ pub fn run_tui_with_pause(
             mouse_captured = app.mouse_capture_enabled;
         }
 
-        // Only mark data updated when store counts actually change
-        // (prevents the TUI from staying in active-poll mode on static pcaps)
+        // Feed the adaptive cadence: a changed count is fresh data, and a
+        // failed try_read means a writer holds the lock (busy capture) —
+        // both keep active polling. Only a successful, unchanged read is
+        // idle, so a static pcap still relaxes to the slow poll.
         let current_count = app.dialog_store.try_read().map(|ds| ds.len());
-        if let Some(count) = current_count
-            && count != app.last_known_dialog_count
-        {
-            app.last_known_dialog_count = count;
-            app.mark_data_updated();
-        }
+        app.reconcile_dialog_count(current_count);
     }
 
     Ok(())
@@ -2422,6 +2448,56 @@ mod tests {
         // Simulate idle by backdating the timestamp
         app.last_data_update = Instant::now() - Duration::from_secs(10);
         assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
+    }
+
+    /// A failed `try_read` (the store's write lock is held by a busy
+    /// capture) is activity, not idleness: the adaptive poll cadence must
+    /// stay fast. Previously a `None` read was treated like an unchanged
+    /// count, downgrading the loop to the slow idle poll under contention.
+    #[test]
+    fn contended_dialog_read_keeps_active_poll() {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut app = App::new(ds.clone(), ss, Theme::default(), Keymap::default());
+
+        // Backdate so, absent any activity signal, poll_timeout is idle.
+        app.last_data_update = Instant::now() - Duration::from_secs(10);
+        assert!(app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS));
+
+        // Hold the write lock so the event loop's non-blocking read fails,
+        // exactly as under a sustained busy capture.
+        let guard = ds.write();
+        let count = ds.try_read().map(|d| d.len());
+        assert!(count.is_none(), "held write lock must make try_read fail");
+        app.reconcile_dialog_count(count);
+        drop(guard);
+
+        assert!(
+            app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS),
+            "contention must keep the responsive poll cadence"
+        );
+    }
+
+    /// A successful, unchanged read is genuinely idle: the cadence is left
+    /// alone (no spurious activity signal on a static pcap).
+    #[test]
+    fn unchanged_dialog_count_stays_idle() {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let mut app = App::new(ds, ss, Theme::default(), Keymap::default());
+
+        app.last_data_update = Instant::now() - Duration::from_secs(10);
+        app.last_known_dialog_count = 0;
+        app.reconcile_dialog_count(Some(0));
+        assert!(
+            app.poll_timeout() >= Duration::from_millis(IDLE_POLL_MS),
+            "an unchanged count must not reset the idle timer"
+        );
+
+        // A changed count is fresh data → back to active.
+        app.reconcile_dialog_count(Some(3));
+        assert_eq!(app.last_known_dialog_count, 3);
+        assert!(app.poll_timeout() <= Duration::from_millis(ACTIVE_POLL_MS));
     }
 
     /// When config sets both `selected` and its legacy alias `highlight`,

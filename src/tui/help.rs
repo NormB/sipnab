@@ -129,8 +129,10 @@ COPY & PASTE:
   F12              Toggle mouse capture for native drag-to-select \u{2014} global
 
 Copies use OSC 52, which works over SSH (most modern terminals support it).
-Mouse wheel scrolls every view while capture is on; with capture off (F12),
-drag selects text natively. Shift+drag bypasses capture in many terminals.
+Mouse wheel scrolls or moves the selection in the scrollable views while
+capture is on (the call timeline is a single fixed screen — nothing to
+scroll); with capture off (F12), drag selects text natively.
+Shift+drag bypasses capture in many terminals.
 
 Press Esc or F1 to close this help.";
 

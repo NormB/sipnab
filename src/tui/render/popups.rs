@@ -612,7 +612,10 @@ pub(in crate::tui) fn render_filter_text_field(
     // Paint field content with cursor. All byte offsets below are kept on
     // char boundaries so no slice can split a multibyte UTF-8 sequence.
     let content_x = field_x + 1;
-    let inner_width = (field_width - 2) as usize; // subtract brackets
+    // On a very narrow field the bracket pair alone can exceed the width;
+    // saturating keeps `inner_width` at 0 instead of underflowing (which
+    // panics in debug builds and wraps to a huge value in release).
+    let inner_width = field_width.saturating_sub(2) as usize; // subtract brackets
     let cursor = crate::text::floor_char_boundary(value, cursor_pos);
     // End of the display window, backed up to a boundary.
     let visible_end = crate::text::floor_char_boundary(value, inner_width);
@@ -673,8 +676,13 @@ pub(in crate::tui) fn render_filter_text_field(
         }
     }
 
-    // Closing bracket
-    buf.set_string(field_x + field_width - 1, y, "]", bracket_style);
+    // Closing bracket (saturating so a zero-width field cannot underflow)
+    buf.set_string(
+        field_x + field_width.saturating_sub(1),
+        y,
+        "]",
+        bracket_style,
+    );
 }
 
 /// Render the filter dialog as a centered popup overlay (sngrep-style).
@@ -766,7 +774,9 @@ pub(in crate::tui) fn render_filter_popup(
 
     // ── Separator line ─────────────────────────────────────────────
     let sep_y = iy + 1 + labels.len() as u16;
-    let sep = "\u{2500}".repeat((iw - 4) as usize);
+    // Saturating: on a sub-6-column popup the 4-column margin exceeds `iw`
+    // and a plain `iw - 4` would underflow (debug panic / release wrap).
+    let sep = "\u{2500}".repeat(iw.saturating_sub(4) as usize);
     buf.set_string(ix + 2, sep_y, &sep, Style::default().fg(theme.muted));
 
     // ── "All" master checkbox — ABOVE the method grid it governs ──
@@ -1239,6 +1249,50 @@ mod tests {
         };
         render_filter_text_field(&mut buf, 0, 0, &field, &theme);
         // Renders block cursor at end without panic.
+    }
+
+    /// A field narrower than its two brackets must not underflow
+    /// `field_width - 2` (which panics in debug, wraps in release). Covers
+    /// `field_width` values below 2, including a focused zero-width field
+    /// that also exercises the closing-bracket position arithmetic.
+    #[test]
+    fn render_filter_text_field_narrow_no_underflow() {
+        let theme = Theme::default();
+        for field_width in [0u16, 1, 2] {
+            for focused in [false, true] {
+                let mut buf = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 20, 1));
+                let field = FilterTextField {
+                    label: "F: ",
+                    value: "abc",
+                    field_width,
+                    focused,
+                    cursor_pos: 1,
+                };
+                // Would panic with "attempt to subtract with overflow" before
+                // the saturating guard.
+                render_filter_text_field(&mut buf, 0, 0, &field, &theme);
+            }
+        }
+    }
+
+    /// The whole filter popup must render without underflowing `iw - 4`
+    /// (the separator width) on a sub-6-column terminal, where
+    /// `centered_popup` clamps the popup to a tiny inner width.
+    #[test]
+    fn render_filter_popup_narrow_terminal_no_underflow() {
+        let theme = Theme::default();
+        let state = FilterDialogState::default();
+        for w in [1u16, 3, 5, 6] {
+            let mut terminal = Terminal::new(TestBackend::new(w, 24)).unwrap();
+            // Would panic in `iw - 4` (and the text fields' `field_width - 2`)
+            // before the saturating guards.
+            terminal
+                .draw(|frame| {
+                    let area = frame.area();
+                    render_filter_popup(frame, area, &state, &theme);
+                })
+                .unwrap();
+        }
     }
 
     // ── centered_popup geometry ────────────────────────────────────

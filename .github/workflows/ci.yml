@@ -30,6 +30,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux'
+        # GitHub-hosted runners ship ~20GB of preinstalled SDKs a Rust build
+        # never touches (dotnet/android/ghc/CodeQL). A full --all-features
+        # build has run the root partition out of space ("No space left on
+        # device", failing a job before it compiled). Reclaim it up front —
+        # plain directory removals, a few seconds; `|| true` so a missing
+        # path can't fail the job.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
+
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
         # --all-features pulls in `audio` -> alsa-sys, which needs the ALSA headers.
@@ -129,6 +142,17 @@ jobs:
           - wasm
     steps:
       - uses: actions/checkout@v7
+
+      - name: Free disk space
+        # Reclaim ~20GB of preinstalled SDKs a Rust build never uses
+        # (dotnet/android/ghc/CodeQL) — a full --all-features build across
+        # this matrix has run the root partition out of space ("No space
+        # left on device"). Plain removals, seconds; `|| true` tolerates a
+        # missing path.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost || true
+          df -h /
 
       - name: Install system deps
         # `|| true`: don't let a flaky preconfigured third-party apt repo

@@ -6,7 +6,7 @@ expression: output
  Match Expression:     BPF Filter:
  Mark set
              10.0.0.1:5060                    10.0.0.2:5060 ┌ [2/4] 180 Ringing ───────────────────┐
-             │                                   Δ +1.000s│ │SIP/2.0 180 Ringing                   │
+             │                                    Δ +1.000s │SIP/2.0 180 Ringing                   │
      +0.000s │───────────────── INVITE ──────────────────▶│ │From: "Alice" <sip:1001@example.com>;t│
      +1.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 180 Ringing ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │ag=t1                                 │
      +1.000s │◀╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌ 200 OK ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌│ │To: "Bob" <sip:1002@example.com>;tag=t│

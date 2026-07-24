@@ -210,6 +210,17 @@ pub fn render_stream_detail(
     if !stream.quality_intervals.is_empty() {
         lines.push(section_header("Quality Over Time", theme));
 
+        // Cap the number of sparkline glyphs to the pane width: reserve room
+        // for the row label and the trailing "(avg: …)" annotation, then draw
+        // only the most recent intervals. Without this a long history emits one
+        // glyph per interval and overflows (and truncates) the pane, hiding the
+        // newest data and the average.
+        const SPARK_LABEL_W: usize = 13; // "  MOS Trend: " / "  Jitter:    "
+        const SPARK_SUFFIX_W: usize = 18; // worst-case "  (avg: 1234.5ms)"
+        let spark_budget = (area.width as usize)
+            .saturating_sub(SPARK_LABEL_W + SPARK_SUFFIX_W)
+            .max(1);
+
         // Sparkline: MOS trend
         let mos_values: Vec<f64> = stream
             .quality_intervals
@@ -221,7 +232,8 @@ pub fn render_stream_detail(
             "  MOS Trend: ",
             Style::default().fg(theme.muted),
         )];
-        for &m in &mos_values {
+        let mos_start = mos_values.len().saturating_sub(spark_budget);
+        for &m in &mos_values[mos_start..] {
             let ch = mos_to_block(m);
             let color = if m >= 4.0 {
                 theme.good
@@ -249,7 +261,8 @@ pub fn render_stream_detail(
             "  Jitter:    ",
             Style::default().fg(theme.muted),
         )];
-        for &j in &jitter_values {
+        let jitter_start = jitter_values.len().saturating_sub(spark_budget);
+        for &j in &jitter_values[jitter_start..] {
             let ch = jitter_to_block(j);
             let color = if j < 20.0 {
                 theme.good
@@ -808,5 +821,86 @@ mod tests {
         assert!(out.contains("Loss:"));
         assert!(out.contains("Lost pkts:"), "lost pkts line missing: {out}");
         let _ = Color::Reset; // keep Color import used regardless of assertions
+    }
+
+    /// Edge case: a long quality history must not emit one sparkline glyph per
+    /// interval — that overflows the pane, truncating both the newest glyphs
+    /// and the trailing "(avg: …)" annotation off-screen. Downsampling to the
+    /// most recent, pane-width-bounded intervals keeps the full row (label +
+    /// glyphs + average) inside the pane, so the average stays visible.
+    #[test]
+    fn long_history_sparkline_stays_within_pane_width() {
+        use crate::rtp::stream::{QualityInterval, RtpStream};
+
+        let ssrc = 0x4444_4444u32;
+        let key = StreamKey {
+            ssrc,
+            src: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 20000),
+            dst: std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
+        };
+        let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut stream = RtpStream::new(key.clone(), &rtp_header(ssrc, 1, 0), t0);
+        // Far more intervals than any terminal is wide.
+        for i in 0..500u32 {
+            stream.quality_intervals.push(QualityInterval {
+                timestamp: t0 + TimeDelta::seconds(5 * i64::from(i)),
+                jitter_ms: 10.0,
+                loss_pct: 1.0,
+                packets: 250,
+            });
+        }
+        let mut store = StreamStore::new(16);
+        store.insert_for_test(stream);
+
+        let width: u16 = 100;
+        let theme = Theme::default();
+        let backend = TestBackend::new(width, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                render_stream_detail(
+                    frame,
+                    area,
+                    &key,
+                    &store,
+                    0,
+                    &StreamDetailDisplay {
+                        theme: &theme,
+                        resolver: &crate::names::NameResolver::new(),
+                        name_mode: crate::names::NameMode::Off,
+                    },
+                );
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let area = buf.area;
+        let find_row = |pred: &dyn Fn(&str) -> bool| -> Option<String> {
+            for y in 0..area.height {
+                let mut line = String::new();
+                for x in 0..area.width {
+                    line.push_str(buf.cell((x, y)).unwrap().symbol());
+                }
+                if pred(&line) {
+                    return Some(line);
+                }
+            }
+            None
+        };
+
+        // The MOS sparkline row keeps its trailing average visible — only
+        // possible if the glyph run was bounded to the pane width.
+        let mos_row =
+            find_row(&|l| l.contains("MOS Trend:")).expect("MOS trend sparkline row missing");
+        assert!(
+            mos_row.contains("avg:"),
+            "MOS trend average pushed off-pane by an unbounded sparkline: {mos_row:?}"
+        );
+        // The jitter sparkline row carries the only "(avg: …ms)" annotation;
+        // its presence proves the jitter average also stayed within the pane.
+        let jitter_row = find_row(&|l| l.contains("avg:") && l.contains("ms)"))
+            .expect("jitter trend average pushed off-pane by an unbounded sparkline");
+        assert!(jitter_row.contains("avg:"));
     }
 }

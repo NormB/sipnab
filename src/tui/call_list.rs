@@ -635,58 +635,6 @@ pub fn render_call_list(
                 "[ ]"
             };
 
-            // Date column formatting based on timestamp mode
-            let date_str = match timestamp_mode {
-                TimestampMode::Absolute => dialog.created_at.format("%H:%M:%S").to_string(),
-                TimestampMode::DeltaPrev => {
-                    // Delta from previous dialog in the sorted list
-                    let full_idx = scroll_offset + vis_idx;
-                    let prev_ts = if full_idx > 0 {
-                        row_ids
-                            .get(full_idx - 1)
-                            .and_then(|id| store.get(id))
-                            .map(|d| d.created_at)
-                    } else {
-                        None
-                    };
-                    match prev_ts {
-                        Some(prev) => format_delta(dialog.created_at - prev),
-                        None => "+0.000s".to_string(),
-                    }
-                }
-                TimestampMode::DeltaFirst => match first_ts {
-                    Some(first) => format_delta(dialog.created_at - first),
-                    None => "+0.000s".to_string(),
-                },
-                TimestampMode::Scaled => {
-                    // Scaled mode uses delta-prev in the call list
-                    let full_idx = scroll_offset + vis_idx;
-                    let prev_ts = if full_idx > 0 {
-                        row_ids
-                            .get(full_idx - 1)
-                            .and_then(|id| store.get(id))
-                            .map(|d| d.created_at)
-                    } else {
-                        None
-                    };
-                    match prev_ts {
-                        Some(prev) => format_delta(dialog.created_at - prev),
-                        None => "+0.000s".to_string(),
-                    }
-                }
-            };
-
-            let pdd = dialog
-                .timing
-                .pdd_ms()
-                .map(|ms| format!("{}ms", ms))
-                .unwrap_or_default();
-
-            // Dialog duration (first to last message) — distinct from PDD,
-            // which is only INVITE→first 18x provisional.
-            let duration =
-                format_duration_ms((dialog.updated_at - dialog.created_at).num_milliseconds());
-
             // Method cell colors (sngrep style)
             let method_style = match dialog.method.as_str() {
                 "INVITE" => Style::default().fg(theme.good),
@@ -696,44 +644,104 @@ pub fn render_call_list(
                 _ => Style::default(),
             };
 
-            let all_cells = [
-                Cell::from(Span::raw(format!("{}{}", checkbox, idx + 1))),
-                Cell::from(Span::styled(dialog.method.as_str(), method_style)),
-                Cell::from(Span::raw(format_from_to(
-                    display.from_to_mode,
-                    dialog.from_user.as_deref(),
-                    dialog.from_host.as_deref(),
-                    display.resolver,
-                    display.name_mode,
-                ))),
-                Cell::from(Span::raw(format_from_to(
-                    display.from_to_mode,
-                    dialog.to_user.as_deref(),
-                    dialog.to_host.as_deref(),
-                    display.resolver,
-                    display.name_mode,
-                ))),
-                Cell::from(Span::raw(
-                    display
-                        .resolver
-                        .label_ip(dialog.src_addr, display.name_mode),
-                )),
-                Cell::from(Span::raw(
-                    display
-                        .resolver
-                        .label_ip(dialog.dst_addr, display.name_mode),
-                )),
-                Cell::from(Span::styled(
-                    state_display_str(dialog.state()),
-                    state_style(dialog.state(), theme),
-                )),
-                Cell::from(Span::raw(dialog.messages.len().to_string())),
-                Cell::from(Span::raw(date_str)),
-                Cell::from(Span::raw(pdd)),
-                Cell::from(Span::raw(duration)),
-            ];
-            let visible_cells: Vec<Cell> =
-                vis_indices.iter().map(|&i| all_cells[i].clone()).collect();
+            // Date column formatting based on timestamp mode. Deferred into a
+            // closure so the delta lookups run only when the Date column is
+            // actually one of the visible columns.
+            let date_str = || -> String {
+                match timestamp_mode {
+                    TimestampMode::Absolute => dialog.created_at.format("%H:%M:%S").to_string(),
+                    TimestampMode::DeltaPrev => {
+                        // Delta from previous dialog in the sorted list
+                        let full_idx = scroll_offset + vis_idx;
+                        let prev_ts = if full_idx > 0 {
+                            row_ids
+                                .get(full_idx - 1)
+                                .and_then(|id| store.get(id))
+                                .map(|d| d.created_at)
+                        } else {
+                            None
+                        };
+                        match prev_ts {
+                            Some(prev) => format_delta(dialog.created_at - prev),
+                            None => "+0.000s".to_string(),
+                        }
+                    }
+                    TimestampMode::DeltaFirst => match first_ts {
+                        Some(first) => format_delta(dialog.created_at - first),
+                        None => "+0.000s".to_string(),
+                    },
+                    TimestampMode::Scaled => {
+                        // Scaled mode uses delta-prev in the call list
+                        let full_idx = scroll_offset + vis_idx;
+                        let prev_ts = if full_idx > 0 {
+                            row_ids
+                                .get(full_idx - 1)
+                                .and_then(|id| store.get(id))
+                                .map(|d| d.created_at)
+                        } else {
+                            None
+                        };
+                        match prev_ts {
+                            Some(prev) => format_delta(dialog.created_at - prev),
+                            None => "+0.000s".to_string(),
+                        }
+                    }
+                }
+            };
+
+            // Build cells for the visible columns only. Each match arm does its
+            // own formatting/allocation on demand, so hidden columns cost
+            // nothing and there is no all-columns array to clone per row.
+            let visible_cells: Vec<Cell> = vis_indices
+                .iter()
+                .map(|&i| match i {
+                    0 => Cell::from(Span::raw(format!("{}{}", checkbox, idx + 1))),
+                    1 => Cell::from(Span::styled(dialog.method.as_str(), method_style)),
+                    2 => Cell::from(Span::raw(format_from_to(
+                        display.from_to_mode,
+                        dialog.from_user.as_deref(),
+                        dialog.from_host.as_deref(),
+                        display.resolver,
+                        display.name_mode,
+                    ))),
+                    3 => Cell::from(Span::raw(format_from_to(
+                        display.from_to_mode,
+                        dialog.to_user.as_deref(),
+                        dialog.to_host.as_deref(),
+                        display.resolver,
+                        display.name_mode,
+                    ))),
+                    4 => Cell::from(Span::raw(
+                        display
+                            .resolver
+                            .label_ip(dialog.src_addr, display.name_mode),
+                    )),
+                    5 => Cell::from(Span::raw(
+                        display
+                            .resolver
+                            .label_ip(dialog.dst_addr, display.name_mode),
+                    )),
+                    6 => Cell::from(Span::styled(
+                        state_display_str(dialog.state()),
+                        state_style(dialog.state(), theme),
+                    )),
+                    7 => Cell::from(Span::raw(dialog.messages.len().to_string())),
+                    8 => Cell::from(Span::raw(date_str())),
+                    9 => Cell::from(Span::raw(
+                        dialog
+                            .timing
+                            .pdd_ms()
+                            .map(|ms| format!("{}ms", ms))
+                            .unwrap_or_default(),
+                    )),
+                    // Dialog duration (first to last message) — distinct from
+                    // PDD, which is only INVITE→first 18x provisional.
+                    10 => Cell::from(Span::raw(format_duration_ms(
+                        (dialog.updated_at - dialog.created_at).num_milliseconds(),
+                    ))),
+                    _ => unreachable!("column index {i} out of range"),
+                })
+                .collect();
             let row = Row::new(visible_cells);
 
             // Row style based on state
@@ -834,7 +842,12 @@ fn compute_column_widths(total_width: u16) -> Vec<Constraint> {
         // Method is 9 so the longest common method (SUBSCRIBE) never truncates.
         let fixed: u16 = 49 + overhead;
         let flex = total_width.saturating_sub(fixed);
-        let addr_each = (flex * 2 / 5).max(11);
+        // Src/Dst each prefer 2/5 of the flex pool (min 11), but below ~83
+        // cols `flex` is too small for two 11-wide address columns, so the
+        // `.max(11)` floor would push `addr_each * 2` past `flex` and overflow
+        // the pool. Clamp to `flex / 2` so the two address columns together
+        // never exceed the available flex width.
+        let addr_each = (flex * 2 / 5).max(11).min(flex / 2);
         let from_to_pool = flex.saturating_sub(addr_each * 2);
         let from_w = (from_to_pool / 2).max(4);
         let to_w = from_to_pool.saturating_sub(from_w).max(4);
@@ -1139,6 +1152,38 @@ mod tests {
                 "Method column at {width} cols must be >= 9 to fit SUBSCRIBE, \
                  got {:?}",
                 widths[1]
+            );
+        }
+    }
+
+    /// Edge case: on narrow terminals (below ~83 cols) the flex pool is too
+    /// small for two 11-wide address columns, so the `.max(11)` floor used to
+    /// push the two Source/Destination columns past the shared flex budget.
+    /// They must never together exceed the available flex width.
+    #[test]
+    fn narrow_layout_address_columns_fit_flex_budget() {
+        // Column-spacing + highlight-symbol overhead the layout reserves.
+        const OVERHEAD: u16 = 12;
+        let len = |c: &Constraint| match c {
+            Constraint::Length(n) => *n,
+            _ => 0,
+        };
+        // Fixed (non-flex) columns in the narrow layout: #, Method, State,
+        // Msgs, Date, PDD, Duration (indices 0,1,6,7,8,9,10).
+        const FIXED_COLS: [usize; 7] = [0, 1, 6, 7, 8, 9, 10];
+        // Widths spanning the narrow branch, including ones where the old
+        // `.max(11)` floor overflowed the pool (61..=82).
+        for width in [61u16, 66, 70, 72, 78, 80, 82] {
+            let widths = compute_column_widths(width);
+            let fixed_sum: u16 = FIXED_COLS.iter().map(|&i| len(&widths[i])).sum();
+            let flex = width.saturating_sub(fixed_sum + OVERHEAD);
+            // Indices 4 and 5 are Source/Destination.
+            let addr_sum = len(&widths[4]) + len(&widths[5]);
+            assert!(
+                addr_sum <= flex,
+                "at {width} cols the address columns ({addr_sum}) must fit the \
+                 flex budget ({flex}), got widths {:?}",
+                widths
             );
         }
     }

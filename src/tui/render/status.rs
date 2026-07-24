@@ -4,6 +4,53 @@
 //! F-key bar.
 
 use crate::tui::*;
+use unicode_width::UnicodeWidthStr;
+
+/// Fixed leading label of status line 1.
+const L1_PREFIX: &str = " Current Mode: ";
+/// Paused indicator appended to status line 1 (leading spacer included).
+const L1_PAUSED: &str = "  PAUSED";
+/// Autoscroll indicator appended to status line 1 (leading spacer included).
+const L1_AUTOSCROLL: &str = "  [A]";
+/// Fixed leading label of status line 2.
+const L2_PREFIX: &str = " Match Expression: ";
+/// Fixed separator label between the match expression and the BPF filter.
+const L2_MID: &str = "    BPF Filter: ";
+
+/// Rendered column span of `s`.
+///
+/// Thin wrapper over `unicode-width` so status-line fill and offset math is
+/// measured by the columns a terminal actually paints, not by UTF-8 byte
+/// length. The two diverge for non-ASCII text — an accented or CJK pcap
+/// filename shown as the capture-mode label, or multibyte filter text — and
+/// byte length would then mis-size the trailing fill.
+fn display_cols(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+/// Display columns consumed by status line 1 for the given capture-mode
+/// label, counts segment and active indicators. Drives the trailing fill so
+/// the status background stays solid regardless of the label's script.
+fn line1_used_cols(mode: &str, counts: &str, paused: bool, autoscroll: bool) -> usize {
+    display_cols(L1_PREFIX)
+        + display_cols(mode)
+        + display_cols(counts)
+        + if paused { display_cols(L1_PAUSED) } else { 0 }
+        + if autoscroll {
+            display_cols(L1_AUTOSCROLL)
+        } else {
+            0
+        }
+}
+
+/// Display columns consumed by status line 2's fixed labels plus the
+/// variable match-expression and BPF texts. Drives the trailing fill.
+fn line2_used_cols(filter_text: &str, bpf_text: &str) -> usize {
+    display_cols(L2_PREFIX)
+        + display_cols(filter_text)
+        + display_cols(L2_MID)
+        + display_cols(bpf_text)
+}
 
 /// Render status line 1 (sngrep-style): `Current Mode: Online (any)    Dialogs: N (N displayed)`
 ///
@@ -30,49 +77,41 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         Style::default().fg(app.theme.bad)
     };
 
-    // Build status indicators for paused/autoscroll
-    let mut indicators = String::new();
-    if app.paused {
-        indicators.push_str("  PAUSED");
-    }
-    if app.call_list.autoscroll {
-        indicators.push_str("  [A]");
-    }
+    let counts = format!("    Dialogs: {total_count} ({displayed_count} displayed)");
 
-    let content = format!(
-        " Current Mode: {}    Dialogs: {} ({} displayed){}",
-        app.capture_mode, total_count, displayed_count, indicators
-    );
-    let padded = format!("{:<width$}", content, width = area.width as usize);
-
-    // Build spans with styling for the mode portion
-    let mode_start = " Current Mode: ".len();
-    let mode_end = mode_start + app.capture_mode.len();
-
-    // Find indicator positions for coloring
-    let paused_start = if app.paused {
-        padded.find("PAUSED")
-    } else {
-        None
-    };
-
+    // Assemble the line from discrete spans so the styled capture-mode
+    // segment is placed by rendered width. The previous approach sliced a
+    // char-count-padded string with byte offsets and located `PAUSED` with
+    // `str::find`, mixing byte and char indexing — brittle for a non-ASCII
+    // capture-mode label (an offline pcap with an accented/CJK filename).
     let mut spans = vec![
-        Span::raw(&padded[..mode_start]),
-        Span::styled(padded[mode_start..mode_end].to_string(), mode_style),
+        Span::raw(L1_PREFIX),
+        Span::styled(app.capture_mode.clone(), mode_style),
+        Span::raw(counts.clone()),
     ];
-
-    if let Some(ps) = paused_start {
-        spans.push(Span::raw(padded[mode_end..ps].to_string()));
+    if app.paused {
+        spans.push(Span::raw("  "));
         spans.push(Span::styled(
-            "PAUSED".to_string(),
+            "PAUSED",
             Style::default()
                 .fg(app.theme.bad)
                 .add_modifier(Modifier::BOLD),
         ));
-        spans.push(Span::raw(padded[ps + 6..].to_string()));
-    } else {
-        spans.push(Span::raw(padded[mode_end..].to_string()));
-    };
+    }
+    if app.call_list.autoscroll {
+        spans.push(Span::raw(L1_AUTOSCROLL));
+    }
+
+    // Fill the remaining columns so the status background stays solid.
+    let used = line1_used_cols(
+        &app.capture_mode,
+        &counts,
+        app.paused,
+        app.call_list.autoscroll,
+    );
+    spans.push(Span::raw(
+        " ".repeat((area.width as usize).saturating_sub(used)),
+    ));
 
     let line1 = Paragraph::new(Line::from(spans)).style(Style::default().bg(app.theme.status_bg));
     frame.render_widget(line1, area);
@@ -90,22 +129,19 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
 pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let yellow = Style::default().fg(app.theme.selected);
 
-    // Build styled spans with trailing padding for solid background
-    let prefix1 = " Match Expression: ";
+    // Build styled spans with trailing padding for solid background. The
+    // fill is sized by display width (via `line2_used_cols`): filter/BPF
+    // text can be multibyte or wide, and byte length would over-count and
+    // under-fill the row.
     let filter_text = &app.active_filter_text;
-    let mid = "    BPF Filter: ";
     let bpf_text = &app.bpf_filter;
-    let styled_len = prefix1.len() + filter_text.len() + mid.len() + bpf_text.len();
-    let trailing_pad = if styled_len < area.width as usize {
-        " ".repeat(area.width as usize - styled_len)
-    } else {
-        String::new()
-    };
+    let used = line2_used_cols(filter_text, bpf_text);
+    let trailing_pad = " ".repeat((area.width as usize).saturating_sub(used));
 
     let spans = vec![
-        Span::raw(prefix1),
+        Span::raw(L2_PREFIX),
         Span::styled(filter_text.clone(), yellow),
-        Span::raw(mid),
+        Span::raw(L2_MID),
         Span::styled(bpf_text.clone(), yellow),
         Span::raw(trailing_pad),
     ];
@@ -458,6 +494,90 @@ mod tests {
     use super::*;
     use crate::tui::render::test_support::*;
 
+    /// The fill accounting for status line 2 measures the filter and BPF
+    /// text by rendered columns, not UTF-8 bytes. `"日本語"` is 9 bytes but
+    /// 6 columns; a byte-based count over-sizes the used width and would
+    /// under-fill the row.
+    #[test]
+    fn line2_used_cols_is_display_width_not_bytes() {
+        assert_eq!(display_cols("日本語"), 6);
+        assert_eq!("日本語".len(), 9); // pins the byte/column divergence
+        // 19 (prefix) + 6 (filter cols) + 16 (mid) + 3 (bpf) = 44.
+        assert_eq!(
+            line2_used_cols("日本語", "udp"),
+            L2_PREFIX.len() + 6 + L2_MID.len() + 3
+        );
+    }
+
+    /// The fill accounting for status line 1 measures the capture-mode
+    /// label (which for offline captures is a filename that may be
+    /// non-ASCII) by rendered columns, not bytes.
+    #[test]
+    fn line1_used_cols_is_display_width_not_bytes() {
+        let mode = "Offline (日本語.pcap)"; // 9 + 6 + 6 = 21 columns, 24 bytes
+        let counts = "    Dialogs: 0 (0 displayed)"; // ASCII: bytes == columns
+        assert_eq!(display_cols(mode), 21);
+        assert_eq!(mode.len(), 24); // pins the byte/column divergence
+        assert_eq!(
+            line1_used_cols(mode, counts, false, false),
+            L1_PREFIX.len() + 21 + counts.len()
+        );
+        // Active indicators add their own rendered width.
+        assert_eq!(
+            line1_used_cols(mode, counts, true, true),
+            L1_PREFIX.len() + 21 + counts.len() + L1_PAUSED.len() + L1_AUTOSCROLL.len()
+        );
+    }
+
+    /// A non-ASCII offline filename renders intact and the styled
+    /// capture-mode span lands on the mode text (offline "bad" color at the
+    /// first mode column), proving the styled segment is not shifted by
+    /// byte/char index skew.
+    #[test]
+    fn render_status_line1_non_ascii_filename_alignment() {
+        let mut app = App::new_test();
+        app.set_capture_mode("Offline (café.pcap)".to_string());
+        let w = 80u16;
+        let mut terminal = Terminal::new(TestBackend::new(w, 4)).unwrap();
+        terminal
+            .draw(|frame| render_status_line1(frame, Rect::new(0, 0, w, 1), &app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..w)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
+            .collect();
+        assert!(row.contains("café.pcap"), "filename missing: {row:?}");
+        let mode_col = L1_PREFIX.len() as u16;
+        let cell = buf.cell((mode_col, 0)).unwrap();
+        assert_eq!(cell.symbol(), "O", "mode span misaligned: {row:?}");
+        assert_eq!(cell.fg, app.theme.bad, "mode span not styled");
+    }
+
+    /// A wide-character (CJK) match expression renders intact under status
+    /// line 2 without truncation or panic.
+    #[test]
+    fn render_status_line2_wide_char_filter() {
+        let mut app = App::new_test();
+        app.active_filter_text = "日本語".to_string();
+        app.bpf_filter = "udp".to_string();
+        let w = 80u16;
+        let mut terminal = Terminal::new(TestBackend::new(w, 4)).unwrap();
+        terminal
+            .draw(|frame| render_status_line2(frame, Rect::new(0, 0, w, 1), &app))
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let row: String = (0..w)
+            .map(|x| buf.cell((x, 0)).unwrap().symbol().to_string())
+            .collect();
+        // Reading per cell interleaves the wide-grapheme skip cells, so
+        // assert each ideograph is present rather than the joined string.
+        assert!(
+            ['日', '本', '語'].iter().all(|c| row.contains(*c)),
+            "wide filter text missing: {row:?}"
+        );
+        assert!(row.contains("BPF Filter:"), "bpf label missing: {row:?}");
+    }
+
     /// Outside call flow, status line 3 shows the display filter.
     #[test]
     fn render_status_line3_display_filter_default() {
@@ -588,6 +708,4 @@ mod tests {
         }
         assert!(row.contains("Format"));
     }
-
-    // ── render_filter_text_field direct ────────────────────────────
 }

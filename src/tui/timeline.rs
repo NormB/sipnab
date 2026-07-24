@@ -8,6 +8,14 @@
 //! ordered list of colored phase segments; the renderer draws a proportional
 //! bar, per-phase labels with units, a derived-metric summary, a color legend
 //! and the total call duration, degrading gracefully in narrow terminals.
+//!
+//! This is a static, single-screen view of one call: the bar is scaled to
+//! the available width (no horizontal overflow), the labels always list
+//! every phase with its exact duration (no information is hidden behind
+//! proportions), and the whole view is a fixed handful of lines. There is
+//! nothing to scroll and no list to select, so the view is intentionally
+//! non-navigable — see the timeline controller for the matching key/wheel
+//! contract.
 
 use ratatui::Frame;
 use ratatui::layout::Rect;

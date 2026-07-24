@@ -1529,6 +1529,56 @@ mod tui_state {
         assert!(app.help_scroll() > 0, "wheel must scroll the help view");
     }
 
+    /// The call timeline is a single-screen, single-call view with no
+    /// scrollable or selectable content: the mouse wheel is intentionally
+    /// a no-op there. This pins the static contract — wheeling neither
+    /// panics nor leaves the timeline view.
+    #[test]
+    fn mouse_wheel_is_noop_on_timeline() {
+        use crossterm::event::MouseEventKind;
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('T'));
+        assert!(
+            matches!(app.current_view(), View::CallTimeline(_)),
+            "Shift+T must open the timeline"
+        );
+        let before = app.current_view().clone();
+        app.handle_mouse_kind(MouseEventKind::ScrollDown);
+        app.handle_mouse_kind(MouseEventKind::ScrollUp);
+        assert_eq!(
+            *app.current_view(),
+            before,
+            "wheel must not change the static timeline view"
+        );
+    }
+
+    /// Navigation keys on the timeline are intentionally inert: the view is
+    /// static, so arrows/paging/Enter do nothing and only Esc closes back to
+    /// the call list.
+    #[test]
+    fn navigation_keys_are_inert_on_timeline() {
+        let mut app = app_with_three_dialogs();
+        app.handle_key(KeyCode::Char('T'));
+        let before = app.current_view().clone();
+        for code in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Enter,
+        ] {
+            app.handle_key(code);
+            assert_eq!(
+                *app.current_view(),
+                before,
+                "{code:?} must leave the static timeline unchanged"
+            );
+        }
+        app.handle_key(KeyCode::Esc);
+        assert_eq!(*app.current_view(), View::CallList);
+    }
+
     // Left/Right in call flow silently did nothing with the split pane off.
     /// Left with the split pane off shows a status hint mentioning `R` instead of silently doing nothing.
     #[test]
