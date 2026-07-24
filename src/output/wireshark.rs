@@ -119,21 +119,41 @@ pub fn generate_tshark_command(
     let mut parts = vec!["tshark".to_string()];
 
     if let Some(file) = input_file {
-        parts.push(format!("-r '{}'", file));
+        parts.push(format!("-r {}", shell_single_quote(file)));
     } else if let Some(dev) = device {
-        parts.push(format!("-i {}", dev));
+        parts.push(format!("-i {}", shell_single_quote(dev)));
     }
 
     if let Some(bpf) = bpf_filter {
-        parts.push(format!("-f '{}'", bpf));
+        parts.push(format!("-f {}", shell_single_quote(bpf)));
     }
 
     if let Some(df) = display_filter {
-        parts.push(format!("-Y '{}'", df));
+        parts.push(format!("-Y {}", shell_single_quote(df)));
     }
 
     parts.push("-V".to_string());
     parts.join(" ")
+}
+
+/// POSIX-quote an arbitrary string for safe inclusion in a `/bin/sh` command
+/// line. Wraps the value in single quotes and renders any embedded single
+/// quote as the `'\''` idiom (close quote, escaped literal quote, reopen), so
+/// the value is always exactly one shell word and cannot inject additional
+/// commands. A crafted filename or filter (e.g. `evil'; rm -rf ~; '`) is
+/// neutralized to inert data.
+fn shell_single_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for ch in s.chars() {
+        if ch == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Tests for DSL→Wireshark field/operator translation and tshark command
@@ -183,7 +203,7 @@ mod tests {
     #[test]
     fn tshark_from_device() {
         let cmd = generate_tshark_command(Some("eth0"), None, Some("port 5060"), None);
-        assert_eq!(cmd, "tshark -i eth0 -f 'port 5060' -V");
+        assert_eq!(cmd, "tshark -i 'eth0' -f 'port 5060' -V");
     }
 
     /// With no configuration the command is the bare `tshark -V`.
@@ -191,5 +211,24 @@ mod tests {
     fn tshark_no_args() {
         let cmd = generate_tshark_command(None, None, None, None);
         assert_eq!(cmd, "tshark -V");
+    }
+
+    /// The POSIX single-quote escaper wraps in quotes and renders embedded
+    /// quotes via the `'\''` idiom.
+    #[test]
+    fn shell_single_quote_escapes_embedded_quotes() {
+        assert_eq!(shell_single_quote("abc"), "'abc'");
+        assert_eq!(shell_single_quote(""), "''");
+        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
+    }
+
+    /// A filename containing a single quote cannot break out of the quoting
+    /// to inject additional shell words.
+    #[test]
+    fn tshark_command_escapes_single_quote_in_filename() {
+        let cmd = generate_tshark_command(None, Some("evil'.pcap"), None, None);
+        // The embedded quote is rendered as the escaped idiom, so the shell
+        // sees one argument, not a quote-break followed by injected text.
+        assert_eq!(cmd, "tshark -r 'evil'\\''.pcap' -V");
     }
 }
