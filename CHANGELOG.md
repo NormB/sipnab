@@ -2,6 +2,45 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.32] - 2026-07-24
+
+### Added
+- TUI clipboard copy that works over SSH: OSC 52 (emitted to the
+  controlling terminal, 72 KiB bound) with silent pbcopy/xclip
+  belt-and-suspenders; `y` yanks the displayed raw message; F12 toggles
+  mouse capture so native drag-to-select works in any view; help and
+  keybindings docs gained a Copying-text section (including the
+  Shift+drag bypass tip).
+- Per-interface pcapng: the writer emits one IDB per source interface
+  (mid-stream discovery, per-device link types, if_name, self-contained
+  split files) and the reader keeps a per-section interface table so
+  every EPB decodes with its own interface's timestamp resolution and
+  link type; malformed interface ids are skipped, never default-decoded.
+
+### Fixed
+- P1 correctness wave (15 fixes): deterministic least-recently-updated
+  eviction for the TCP/SIP leftover map; IP-reassembled fragmented TCP
+  datagrams re-enter the TCP reassembler so spanning SIP messages frame
+  correctly; TLS 1.2 keylog entries bind to the handshake with the exact
+  matching ClientHello random; HEP forwarding to IPv6 collectors binds
+  the right address family; SIPp export substitutes host/port
+  structurally instead of digit string-replace; Mermaid export skips RTP
+  bars and never silently drops RTP segments under lock contention; the
+  call-flow ladder gives every endpoint its true column (6-endpoint cap
+  removed); message-diff scroll reaches the wrapped bottom; MCP
+  tail_dialogs pages losslessly via a compound cursor; DNS name caches
+  and the resolver queue are bounded; the crash hook can no longer panic
+  on a closed stderr; per-peer auto rate limits floor at 1; stream-store
+  clear() drops stale SDP correlations; the wangiri threshold matches
+  its documented minimum of 3.
+- Deferred P1 completions: per-connection TLS ClientHello/ServerHello
+  pairing (bounded, direction-normalized) and serial TCP sequence
+  arithmetic across the 2^32 wrap with serial-order buffer draining.
+
+### Changed
+- Every Rust source file now carries an SPDX license header
+  (MIT OR Apache-2.0); LICENSE-MIT year range aligned to 2024-2026.
+
 ## [0.5.31] - 2026-07-24
 
 ### Fixed
