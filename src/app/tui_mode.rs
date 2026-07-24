@@ -19,6 +19,26 @@ use crate::sip::dialog_store::DialogStore;
 
 use super::batch::CapturePolicy;
 
+/// Account for one received packet against the `--count` limit, honoring the
+/// pause state.
+///
+/// A paused capture still writes packets to the output pcap (so the on-disk
+/// capture stays complete) and still advances reassembly, but its packets are
+/// NOT analyzed. They must therefore NOT count toward `--count`: if they did,
+/// `--count N` could stop the capture mid-pause with packets that were
+/// received but never processed. Paused packets leave `total_count` untouched
+/// and never trip the limit.
+///
+/// Returns `true` when, after counting a non-paused packet, `total_count` has
+/// reached `max_count` (the caller then stops the capture).
+fn count_and_check_limit(paused: bool, total_count: &mut u64, max_count: Option<u64>) -> bool {
+    if paused {
+        return false;
+    }
+    *total_count += 1;
+    matches!(max_count, Some(max) if *total_count >= max)
+}
+
 /// Build the TUI name-resolution setup from CLI flags and config:
 /// construct the resolver (with a reverse-DNS worker when requested), load the
 /// system hosts file plus any operator mapping files, and pick the initial mode.
@@ -264,41 +284,41 @@ pub fn run_tui_mode(
                     break;
                 }
 
-                total_count += 1;
+                // Load the pause state once per packet. A paused capture keeps
+                // writing to the pcap and advancing reassembly (to prevent
+                // buffer overflow and keep TCP reassembly consistent), but its
+                // packets are neither analyzed nor counted toward --count.
+                let is_paused = paused_for_thread.load(std::sync::atomic::Ordering::Relaxed);
 
                 let parsed_packets = processor.process(&packet);
-                for pp in &parsed_packets {
-                    // Skip processing when paused (capture continues to prevent buffer overflow)
-                    if paused_for_thread.load(std::sync::atomic::Ordering::Relaxed) {
-                        continue;
+                if !is_paused {
+                    for pp in &parsed_packets {
+                        #[cfg(feature = "tls")]
+                        let mut media_decrypt = crate::pipeline::MediaDecrypt {
+                            srtp: srtp_context.as_mut(),
+                            dtls: dtls_extractor.as_mut(),
+                        };
+                        #[cfg(not(feature = "tls"))]
+                        let mut media_decrypt = crate::pipeline::MediaDecrypt::default();
+                        crate::pipeline::process_packet(
+                            pp,
+                            &ds,
+                            &ss,
+                            &mut rtp_heuristic,
+                            &crate::pipeline::PipelineOptions {
+                                no_dialog: cli_clone.no_dialog,
+                                no_rtp,
+                                // Live capture: BPF (auto-generated from
+                                // --portrange) already filtered; no SIP port gate.
+                                sip_portrange: None,
+                                quiet_bad_parse: cli_clone.quiet_bad_parse,
+                            },
+                            &mut media_decrypt,
+                        );
                     }
-                    #[cfg(feature = "tls")]
-                    let mut media_decrypt = crate::pipeline::MediaDecrypt {
-                        srtp: srtp_context.as_mut(),
-                        dtls: dtls_extractor.as_mut(),
-                    };
-                    #[cfg(not(feature = "tls"))]
-                    let mut media_decrypt = crate::pipeline::MediaDecrypt::default();
-                    crate::pipeline::process_packet(
-                        pp,
-                        &ds,
-                        &ss,
-                        &mut rtp_heuristic,
-                        &crate::pipeline::PipelineOptions {
-                            no_dialog: cli_clone.no_dialog,
-                            no_rtp,
-                            // Live capture: BPF (auto-generated from
-                            // --portrange) already filtered; no SIP port gate.
-                            sip_portrange: None,
-                            quiet_bad_parse: cli_clone.quiet_bad_parse,
-                        },
-                        &mut media_decrypt,
-                    );
                 }
 
-                if let Some(max_count) = capture_config.count
-                    && total_count >= max_count
-                {
+                if count_and_check_limit(is_paused, &mut total_count, capture_config.count) {
                     break;
                 }
 
@@ -388,4 +408,49 @@ pub fn run_tui_mode(
     }
 
     drop(handle);
+}
+
+/// Unit tests for the pause/`--count` accounting seam.
+#[cfg(test)]
+mod tests {
+    use super::count_and_check_limit;
+
+    /// An unpaused packet advances the count and trips the limit on the Nth.
+    #[test]
+    fn unpaused_packets_count_and_trip_limit() {
+        let mut total = 0u64;
+        // First two are below the limit of 3.
+        assert!(!count_and_check_limit(false, &mut total, Some(3)));
+        assert_eq!(total, 1);
+        assert!(!count_and_check_limit(false, &mut total, Some(3)));
+        assert_eq!(total, 2);
+        // The third reaches the limit.
+        assert!(count_and_check_limit(false, &mut total, Some(3)));
+        assert_eq!(total, 3);
+    }
+
+    /// Paused packets must NOT advance the count nor trip the limit, even when
+    /// the count already sits one short of the limit — otherwise a `--count N`
+    /// capture could stop mid-pause with packets never processed.
+    #[test]
+    fn paused_packets_do_not_count_or_trip_limit() {
+        let mut total = 2u64; // one short of the limit of 3
+        // A flurry of paused packets changes nothing and never trips.
+        for _ in 0..100 {
+            assert!(!count_and_check_limit(true, &mut total, Some(3)));
+        }
+        assert_eq!(total, 2, "paused packets must not advance the count");
+        // Resuming, the next processed packet trips the limit as expected.
+        assert!(count_and_check_limit(false, &mut total, Some(3)));
+        assert_eq!(total, 3);
+    }
+
+    /// With no `--count` set, the limit is never reached regardless of pause.
+    #[test]
+    fn no_count_limit_never_trips() {
+        let mut total = 0u64;
+        assert!(!count_and_check_limit(false, &mut total, None));
+        assert!(!count_and_check_limit(true, &mut total, None));
+        assert_eq!(total, 1, "only the unpaused packet advanced the count");
+    }
 }
