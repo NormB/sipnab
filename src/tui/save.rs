@@ -267,22 +267,12 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
 /// Format a `DialogState` as a display string for export (pure mapping
 /// to a `&'static str`; unlike the call list it renders Failed as
 /// `"Failed"`, not `"FAILED"`).
+///
+/// Shares the 12-arm mapping with the call list via
+/// [`crate::tui::call_list::state_display_labeled`], passing the
+/// export-flavored `"Failed"` label.
 pub(super) fn format_dialog_state(state: &crate::sip::dialog::DialogState) -> &'static str {
-    use crate::sip::dialog::DialogState;
-    match state {
-        DialogState::Trying => "Trying",
-        DialogState::Ringing => "Ringing",
-        DialogState::InCall => "InCall",
-        DialogState::Completed => "Completed",
-        DialogState::Cancelled => "Cancelled",
-        DialogState::Failed => "Failed",
-        DialogState::Registered => "Registered",
-        DialogState::Expired => "Expired",
-        DialogState::Pending => "Pending",
-        DialogState::Active => "Active",
-        DialogState::Terminated => "Terminated",
-        DialogState::Transferring => "Transferring",
-    }
+    crate::tui::call_list::state_display_labeled(state, "Failed")
 }
 
 /// Escape a field for CSV output: if it contains commas, quotes, or newlines,

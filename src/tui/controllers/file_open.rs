@@ -272,6 +272,14 @@ pub(in crate::tui) fn handle_file_open_manual_key(app: &mut App, key: KeyEvent) 
                 app.file_open.cursor = prev;
             }
         }
+        KeyCode::Delete => {
+            // Remove the whole char at the cursor (the cursor is kept on a
+            // char boundary), leaving the cursor put — the forward-delete
+            // counterpart to Backspace, matching the filter dialog.
+            if app.file_open.cursor < app.file_open.path.len() {
+                app.file_open.path.remove(app.file_open.cursor);
+            }
+        }
         KeyCode::Left => {
             if app.file_open.cursor > 0 {
                 app.file_open.cursor = app.file_open.path[..app.file_open.cursor]
@@ -816,6 +824,48 @@ mod tests {
         assert!(!is_rtcp_packet(&[0x00, 200, 0, 0, 0, 0, 0, 0], 5001));
         // pt out of range -> false
         assert!(!is_rtcp_packet(&[0x80, 100, 0, 0, 0, 0, 0, 0], 5001));
+    }
+
+    /// Manual-path mode: Delete removes the char AT the cursor (leaving the
+    /// cursor put), and Delete at end-of-line is a no-op — the forward-delete
+    /// counterpart to Backspace that the filter dialog already had.
+    #[test]
+    fn manual_path_delete_removes_char_at_cursor() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let del = || KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE);
+
+        let mut app = App::new_test();
+        app.file_open.manual_mode = true;
+        app.file_open.path = "/tmp/x".to_string();
+        app.file_open.cursor = 0; // before the leading '/'
+
+        handle_file_open_manual_key(&mut app, del());
+        assert_eq!(
+            app.file_open.path, "tmp/x",
+            "Delete drops the char at cursor"
+        );
+        assert_eq!(
+            app.file_open.cursor, 0,
+            "cursor stays put on forward-delete"
+        );
+
+        // Delete at end-of-line changes nothing.
+        app.file_open.cursor = app.file_open.path.len();
+        handle_file_open_manual_key(&mut app, del());
+        assert_eq!(app.file_open.path, "tmp/x", "Delete at EOL is a no-op");
+    }
+
+    /// Manual-path Delete stays on char boundaries for multibyte input (no
+    /// mid-character `String::remove` panic).
+    #[test]
+    fn manual_path_delete_is_char_boundary_safe() {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let mut app = App::new_test();
+        app.file_open.manual_mode = true;
+        app.file_open.path = "éx".to_string();
+        app.file_open.cursor = 0; // before 'é' (2 bytes)
+        handle_file_open_manual_key(&mut app, KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(app.file_open.path, "x");
     }
 
     /// `~` expands to `$HOME`; absolute paths pass through unchanged.

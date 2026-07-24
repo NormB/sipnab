@@ -1216,11 +1216,10 @@ pub fn format_sdp_codecs(session: &sdp::SdpSession) -> String {
 /// actually use, so the RTP-in-flow bar prefers it over the full offer list.
 /// `None` when the SDP carries no codec.
 fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
-    format_sdp_codecs(session)
-        .split(", ")
+    extract_codec_list(session)
+        .into_iter()
         .next()
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
 }
 
 /// The codec carried by the RTP segment that flows *from* ladder time `ts` — the

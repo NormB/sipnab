@@ -184,6 +184,50 @@ impl FromToMode {
     }
 }
 
+// ── Session wiring passed in from CLI/config ────────────────────────
+
+/// Name-resolution wiring passed into the TUI from CLI/config.
+pub struct NameSetup {
+    /// Shared resolver (already populated with hosts / manual mappings).
+    pub resolver: Arc<NameResolver>,
+    /// Initial name-resolution display mode.
+    pub mode: NameMode,
+    /// Where the TUI persists manual mappings edited via the `N` dialog.
+    pub save_path: Option<PathBuf>,
+    /// When `Some`, `N`-dialog edits are ALSO written into the `[names.manual]`
+    /// table of this sipnabrc (opt-in via `[names] persist_to_config`).
+    pub config_path: Option<PathBuf>,
+}
+
+impl Default for NameSetup {
+    /// Empty wiring: a fresh resolver, name display off, no persistence
+    /// paths.
+    fn default() -> Self {
+        Self {
+            resolver: Arc::new(NameResolver::new()),
+            mode: NameMode::Off,
+            save_path: None,
+            config_path: None,
+        }
+    }
+}
+
+/// Presentation and naming options for a TUI session, resolved from
+/// config/CLI by the caller.
+#[derive(Default)]
+pub struct TuiOptions {
+    /// Resolved color theme.
+    pub theme: Theme,
+    /// Resolved key bindings.
+    pub keymap: Keymap,
+    /// Call-list columns to show (config `[display] visible_columns`).
+    pub visible_columns: Option<Vec<String>>,
+    /// Name-resolution wiring (resolver, mode, persistence paths).
+    pub name_setup: NameSetup,
+    /// Initial From/To column display mode.
+    pub from_to_mode: FromToMode,
+}
+
 /// A single entry in the file-open browser's directory listing.
 #[derive(Debug, Clone)]
 pub(in crate::tui) struct FileEntry {
@@ -964,6 +1008,15 @@ impl FilterDialogState {
     }
 
     /// Whether all fields are empty and no methods are checked.
+    ///
+    /// Retained as the completing predicate of the filter-dialog API (the
+    /// inverse of "has the user entered any filter criteria?"), symmetric
+    /// with [`Self::clear`] and [`Self::build_filter_expression`]. No caller
+    /// gates on it today — the apply path calls `build_filter_expression`,
+    /// which already returns `None` for an all-empty dialog, so no separate
+    /// emptiness check is needed — hence `dead_code` is allowed rather than
+    /// deleting a correct, self-contained predicate that a future empty-
+    /// state guard would only have to re-add.
     #[allow(dead_code)]
     pub(in crate::tui) fn is_empty(&self) -> bool {
         self.sip_from.is_empty()

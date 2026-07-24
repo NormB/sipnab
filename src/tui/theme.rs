@@ -99,6 +99,7 @@ impl Theme {
         apply_color(&mut t.bad, &config.bad);
         apply_color(&mut t.muted, &config.muted);
         apply_color(&mut t.border, &config.border);
+        apply_color(&mut t.status_bg, &config.status_bg);
         t
     }
 
@@ -468,5 +469,36 @@ mod no_color_tests {
         let t = Theme::from_config_with_no_color(&config, false);
         assert_eq!(t.good, Color::Green, "without NO_COLOR config still wins");
         assert_eq!(t.status_bg, Color::Rgb(48, 48, 64));
+    }
+}
+
+#[cfg(test)]
+mod status_bg_config_tests {
+    use super::*;
+
+    /// `status_bg` must be user-configurable like every sibling color: a
+    /// value set in `[theme]` has to survive a TOML serialize→deserialize
+    /// round trip AND reach the resolved [`Theme`] via
+    /// [`Theme::from_config`]. Guards against a future config refactor
+    /// silently dropping the one theme color that used to be hardcoded.
+    #[test]
+    fn status_bg_round_trips_through_config() {
+        let config = crate::config::ThemeConfig {
+            status_bg: Some("#0a1e28".to_string()),
+            ..Default::default()
+        };
+        // Serialize to TOML and read it back: the field must survive both.
+        let serialized = toml::to_string(&config).expect("serialize ThemeConfig");
+        assert!(
+            serialized.contains("status_bg"),
+            "status_bg must serialize into config TOML, got:\n{serialized}"
+        );
+        let restored: crate::config::ThemeConfig =
+            toml::from_str(&serialized).expect("deserialize ThemeConfig");
+        assert_eq!(restored.status_bg.as_deref(), Some("#0a1e28"));
+
+        // And the parsed config must reach the resolved theme.
+        let theme = Theme::from_config_with_no_color(&restored, false);
+        assert_eq!(theme.status_bg, Color::Rgb(10, 30, 40));
     }
 }

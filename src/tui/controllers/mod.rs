@@ -324,6 +324,50 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
     }
 }
 
+/// The rows of the settings popup, in top-to-bottom render order.
+///
+/// This enum is the controller's single source of truth for which toggle
+/// each row activates. The renderer (`render_settings_popup`) lists the
+/// same items in the same order, and `ALL` is length-checked against
+/// `SETTINGS_ITEM_COUNT` at compile time — so a reorder that desyncs the
+/// controller from the row count fails to build instead of silently
+/// activating the wrong toggle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tui) enum SettingsItem {
+    /// Row 0 — cycle the message color mode.
+    ColorMode,
+    /// Row 1 — cycle the timestamp display mode.
+    TimestampMode,
+    /// Row 2 — toggle call-list autoscroll.
+    Autoscroll,
+    /// Row 3 — toggle the call-flow raw preview.
+    RawPreview,
+    /// Row 4 — cycle the SDP display mode.
+    SdpDisplay,
+    /// Row 5 — toggle syntax highlighting.
+    SyntaxHighlight,
+}
+
+impl SettingsItem {
+    /// Every settings row in render order; the array index is the row's
+    /// `focused_item`. The fixed length ties the enum to
+    /// `SETTINGS_ITEM_COUNT` so the two can never drift apart.
+    pub(in crate::tui) const ALL: [SettingsItem; SETTINGS_ITEM_COUNT] = [
+        SettingsItem::ColorMode,
+        SettingsItem::TimestampMode,
+        SettingsItem::Autoscroll,
+        SettingsItem::RawPreview,
+        SettingsItem::SdpDisplay,
+        SettingsItem::SyntaxHighlight,
+    ];
+
+    /// The settings row currently focused at `index`, or `None` when the
+    /// index is out of range.
+    pub(in crate::tui) fn from_index(index: usize) -> Option<SettingsItem> {
+        Self::ALL.get(index).copied()
+    }
+}
+
 /// Handle keys in the settings popup.
 ///
 /// # Arguments
@@ -334,7 +378,8 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
 /// Esc closes the popup. Up/Down (or k/j) move `focused_item` within
 /// `SETTINGS_ITEM_COUNT`. Enter/Space activates the focused item: color
 /// mode, timestamp mode, call-list autoscroll, raw preview, SDP display
-/// mode, or syntax highlighting (in that order).
+/// mode, or syntax highlighting (in that order) — resolved through
+/// `SettingsItem` so the row→toggle mapping stays named.
 pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Esc => {
@@ -350,15 +395,21 @@ pub(in crate::tui) fn handle_settings_popup_key(app: &mut App, key: KeyEvent) {
                 app.settings_dialog.focused_item += 1;
             }
         }
-        KeyCode::Enter | KeyCode::Char(' ') => match app.settings_dialog.focused_item {
-            0 => app.color_mode = app.color_mode.next(),
-            1 => app.timestamp_mode = app.timestamp_mode.next(),
-            2 => app.call_list.autoscroll = !app.call_list.autoscroll,
-            3 => app.flow.raw_preview = !app.flow.raw_preview,
-            4 => app.sdp_display_mode = app.sdp_display_mode.next(),
-            5 => app.syntax_highlight = !app.syntax_highlight,
-            _ => {}
-        },
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            match SettingsItem::from_index(app.settings_dialog.focused_item) {
+                Some(SettingsItem::ColorMode) => app.color_mode = app.color_mode.next(),
+                Some(SettingsItem::TimestampMode) => app.timestamp_mode = app.timestamp_mode.next(),
+                Some(SettingsItem::Autoscroll) => {
+                    app.call_list.autoscroll = !app.call_list.autoscroll
+                }
+                Some(SettingsItem::RawPreview) => app.flow.raw_preview = !app.flow.raw_preview,
+                Some(SettingsItem::SdpDisplay) => {
+                    app.sdp_display_mode = app.sdp_display_mode.next()
+                }
+                Some(SettingsItem::SyntaxHighlight) => app.syntax_highlight = !app.syntax_highlight,
+                None => {}
+            }
+        }
         _ => {}
     }
 }
@@ -475,14 +526,12 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
             }
         }
         View::QualityDashboard => {
-            let rows = app.dashboard_snapshot.as_ref().map_or(0, |s| s.rows.len());
-            if down {
-                if rows > 0 {
-                    app.dashboard_selected = (app.dashboard_selected + 1).min(rows - 1);
-                }
-            } else {
-                app.dashboard_selected = app.dashboard_selected.saturating_sub(1);
-            }
+            // One wheel step = one row, exactly like Down/Up. Rather than
+            // re-implement the row clamp (which the renderer's centering
+            // window and the keyboard handler already own), replay the wheel
+            // as the equivalent nav key so the clamp lives in one place.
+            let code = if down { KeyCode::Down } else { KeyCode::Up };
+            dashboard::handle_dashboard_key(app, KeyEvent::new(code, KeyModifiers::NONE));
         }
         View::StreamList => {
             if down {
@@ -1273,6 +1322,56 @@ mod tests {
         let cm = app.color_mode;
         handle_settings_popup_key(&mut app, key(KeyCode::Enter));
         assert_ne!(app.color_mode, cm);
+    }
+
+    /// `SettingsItem::ALL` is the render-ordered source of truth: its length
+    /// equals `SETTINGS_ITEM_COUNT` (compile-time), `from_index` maps each row
+    /// to the matching variant, and out-of-range indexes are `None`.
+    #[test]
+    fn settings_item_index_mapping_matches_render_order() {
+        assert_eq!(SettingsItem::ALL.len(), SETTINGS_ITEM_COUNT);
+        assert_eq!(SettingsItem::from_index(0), Some(SettingsItem::ColorMode));
+        assert_eq!(
+            SettingsItem::from_index(1),
+            Some(SettingsItem::TimestampMode)
+        );
+        assert_eq!(SettingsItem::from_index(2), Some(SettingsItem::Autoscroll));
+        assert_eq!(SettingsItem::from_index(3), Some(SettingsItem::RawPreview));
+        assert_eq!(SettingsItem::from_index(4), Some(SettingsItem::SdpDisplay));
+        assert_eq!(
+            SettingsItem::from_index(5),
+            Some(SettingsItem::SyntaxHighlight)
+        );
+        assert_eq!(SettingsItem::from_index(SETTINGS_ITEM_COUNT), None);
+    }
+
+    /// Each settings row activates exactly its named toggle (via
+    /// `SettingsItem`), row for row.
+    #[test]
+    fn settings_popup_each_row_toggles_its_named_item() {
+        let mut app = App::new_test();
+        app.active_popup = Some(Popup::SettingsDialog);
+
+        // Row 2 = call-list autoscroll.
+        app.settings_dialog.focused_item = 2;
+        let before = app.call_list.autoscroll;
+        handle_settings_popup_key(&mut app, key(KeyCode::Enter));
+        assert_ne!(app.call_list.autoscroll, before, "row 2 toggles autoscroll");
+
+        // Row 3 = call-flow raw preview.
+        app.settings_dialog.focused_item = 3;
+        let before = app.flow.raw_preview;
+        handle_settings_popup_key(&mut app, key(KeyCode::Char(' ')));
+        assert_ne!(app.flow.raw_preview, before, "row 3 toggles raw preview");
+
+        // Row 5 = syntax highlighting.
+        app.settings_dialog.focused_item = 5;
+        let before = app.syntax_highlight;
+        handle_settings_popup_key(&mut app, key(KeyCode::Enter));
+        assert_ne!(
+            app.syntax_highlight, before,
+            "row 5 toggles syntax highlight"
+        );
     }
 
     /// Esc closes the settings popup.

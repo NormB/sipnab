@@ -520,19 +520,12 @@ pub fn render_call_list(
     } else {
         " \u{25bc}"
     };
-    let base_labels = [
-        " # ",
-        "Method",
-        "From",
-        "To",
-        "Source",
-        "Destination",
-        "State",
-        "Msgs",
-        "Date",
-        "PDD",
-        "Duration",
-    ];
+    // Header labels are exactly COLUMN_LABELS, except the index column is
+    // padded (" # " vs "#") so its lone glyph isn't cramped against the
+    // checkbox in the first cell. Derive from COLUMN_LABELS so the two lists
+    // can't drift apart.
+    let mut base_labels = COLUMN_LABELS;
+    base_labels[0] = " # ";
     let header_cells: Vec<Cell> = vis_indices
         .iter()
         .map(|&i| {
@@ -650,7 +643,11 @@ pub fn render_call_list(
             let date_str = || -> String {
                 match timestamp_mode {
                     TimestampMode::Absolute => dialog.created_at.format("%H:%M:%S").to_string(),
-                    TimestampMode::DeltaPrev => {
+                    // Scaled has no distinct call-list rendering: its spacer-row
+                    // stretching is a call-flow concern, so here it falls
+                    // through to the same delta-from-previous-dialog display as
+                    // DeltaPrev (see `TimestampMode::Scaled`).
+                    TimestampMode::DeltaPrev | TimestampMode::Scaled => {
                         // Delta from previous dialog in the sorted list
                         let full_idx = scroll_offset + vis_idx;
                         let prev_ts = if full_idx > 0 {
@@ -670,22 +667,6 @@ pub fn render_call_list(
                         Some(first) => format_delta(dialog.created_at - first),
                         None => "+0.000s".to_string(),
                     },
-                    TimestampMode::Scaled => {
-                        // Scaled mode uses delta-prev in the call list
-                        let full_idx = scroll_offset + vis_idx;
-                        let prev_ts = if full_idx > 0 {
-                            row_ids
-                                .get(full_idx - 1)
-                                .and_then(|id| store.get(id))
-                                .map(|d| d.created_at)
-                        } else {
-                            None
-                        };
-                        match prev_ts {
-                            Some(prev) => format_delta(dialog.created_at - prev),
-                            None => "+0.000s".to_string(),
-                        }
-                    }
                 }
             };
 
@@ -882,15 +863,24 @@ fn format_duration_ms(ms: i64) -> String {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Format a `DialogState` as a short display string (&'static str, zero-alloc).
-pub fn state_display_str(state: &DialogState) -> &'static str {
+/// Format a `DialogState` as a short display string, with the caller
+/// supplying the label for the `Failed` state (`&'static str`, zero-alloc).
+///
+/// Every state maps to a fixed label except `Failed`: the call list shouts
+/// it as `"FAILED"` while the export path renders a plain `"Failed"`. That
+/// one divergence is parameterized so the full 12-arm mapping lives in a
+/// single place (shared with [`crate::tui::save::format_dialog_state`]).
+pub(in crate::tui) fn state_display_labeled(
+    state: &DialogState,
+    failed_label: &'static str,
+) -> &'static str {
     match state {
         DialogState::Trying => "Trying",
         DialogState::Ringing => "Ringing",
         DialogState::InCall => "InCall",
         DialogState::Completed => "Completed",
         DialogState::Cancelled => "Cancelled",
-        DialogState::Failed => "FAILED",
+        DialogState::Failed => failed_label,
         DialogState::Registered => "Registered",
         DialogState::Expired => "Expired",
         DialogState::Pending => "Pending",
@@ -898,6 +888,12 @@ pub fn state_display_str(state: &DialogState) -> &'static str {
         DialogState::Terminated => "Terminated",
         DialogState::Transferring => "Transferring",
     }
+}
+
+/// Format a `DialogState` as a short display string (&'static str, zero-alloc).
+/// The call list renders a failed dialog as `"FAILED"`.
+pub fn state_display_str(state: &DialogState) -> &'static str {
+    state_display_labeled(state, "FAILED")
 }
 
 /// Sort a list of dialog references by the given column and direction.

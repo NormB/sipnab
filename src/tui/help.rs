@@ -358,6 +358,19 @@ mod tests {
         assert!(HELP_TEXT.contains("Esc"));
     }
 
+    /// The number of rendered help lines MUST equal [`help_line_count`],
+    /// which the scroll clamp trusts. This ties the hardcoded `+1` for the
+    /// synthesized version line to the actual builder: any future
+    /// `HELP_TEXT` edit (or builder change) that adds or drops a line the
+    /// count does not account for — e.g. a second synthesized line, or the
+    /// version line being removed — desyncs the two and fails here.
+    #[test]
+    fn rendered_help_line_count_matches_help_line_count() {
+        let theme = crate::tui::Theme::default();
+        let lines = build_help_lines(&theme, "1.2.3", 78);
+        assert_eq!(lines.len(), help_line_count());
+    }
+
     /// The styled-line builder produces a substantial number of lines.
     #[test]
     fn build_help_lines_non_empty() {

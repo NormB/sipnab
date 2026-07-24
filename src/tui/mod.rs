@@ -650,18 +650,7 @@ impl App {
                     // generation at the churn floor. A different dialog
                     // (user navigation) refreshes immediately.
                     if !same && (!same_cid || self.flow.ladder.churn.ready()) {
-                        let mut segs: Vec<call_flow::RtpCodecSegment> = ss
-                            .streams_for(&cid)
-                            .filter_map(|s| {
-                                s.codec.clone().map(|codec| call_flow::RtpCodecSegment {
-                                    codec,
-                                    start: s.first_seen,
-                                    end: s.last_seen,
-                                })
-                            })
-                            .collect();
-                        segs.sort_by_key(|s| s.start);
-                        self.flow.ladder.rtp_segs = segs;
+                        self.flow.ladder.rtp_segs = Self::rtp_codec_segments_from(&ss, &cid);
                         self.flow.ladder.segs_key = Some((cid.clone(), g));
                         self.flow.ladder.churn.mark();
                     }
@@ -938,6 +927,17 @@ impl App {
         // the segments cached by `sync_caches`.) Acquired dialog→stream,
         // the same order as every other multi-lock site.
         let store = self.stream_store.read();
+        Self::rtp_codec_segments_from(&store, call_id)
+    }
+
+    /// Build sorted RTP codec segments for `call_id` from an already-acquired
+    /// stream store. Shared by [`Self::rtp_codec_segments`] (the blocking
+    /// export path) and the `sync_caches` ladder cache, which holds a
+    /// non-blocking read guard and must not re-lock the store.
+    fn rtp_codec_segments_from(
+        store: &StreamStore,
+        call_id: &str,
+    ) -> Vec<call_flow::RtpCodecSegment> {
         let mut segs: Vec<call_flow::RtpCodecSegment> = store
             .streams_for(call_id)
             .filter_map(|s| {
@@ -1092,32 +1092,6 @@ impl Drop for TerminalGuard {
 
 // ── Public entry point ──────────────────────────────────────────────
 
-/// Name-resolution wiring passed into the TUI from CLI/config.
-pub struct NameSetup {
-    /// Shared resolver (already populated with hosts / manual mappings).
-    pub resolver: Arc<NameResolver>,
-    /// Initial name-resolution display mode.
-    pub mode: NameMode,
-    /// Where the TUI persists manual mappings edited via the `N` dialog.
-    pub save_path: Option<PathBuf>,
-    /// When `Some`, `N`-dialog edits are ALSO written into the `[names.manual]`
-    /// table of this sipnabrc (opt-in via `[names] persist_to_config`).
-    pub config_path: Option<PathBuf>,
-}
-
-impl Default for NameSetup {
-    /// Empty wiring: a fresh resolver, name display off, no persistence
-    /// paths.
-    fn default() -> Self {
-        Self {
-            resolver: Arc::new(NameResolver::new()),
-            mode: NameMode::Off,
-            save_path: None,
-            config_path: None,
-        }
-    }
-}
-
 /// Run the interactive TUI event loop with default options and no shared
 /// pause flag — a thin wrapper over `run_tui_with_pause`.
 ///
@@ -1138,22 +1112,6 @@ pub fn run_tui(
     stream_store: Arc<RwLock<StreamStore>>,
 ) -> Result<()> {
     run_tui_with_pause(dialog_store, stream_store, None, TuiOptions::default())
-}
-
-/// Presentation and naming options for a TUI session, resolved from
-/// config/CLI by the caller.
-#[derive(Default)]
-pub struct TuiOptions {
-    /// Resolved color theme.
-    pub theme: Theme,
-    /// Resolved key bindings.
-    pub keymap: Keymap,
-    /// Call-list columns to show (config `[display] visible_columns`).
-    pub visible_columns: Option<Vec<String>>,
-    /// Name-resolution wiring (resolver, mode, persistence paths).
-    pub name_setup: NameSetup,
-    /// Initial From/To column display mode.
-    pub from_to_mode: FromToMode,
 }
 
 /// Run the TUI with an optional shared pause flag.
@@ -2251,7 +2209,6 @@ mod tests {
     }
 
     /// Render one frame and return the given buffer row as a string.
-    #[cfg(test)]
     fn rendered_row(app: &mut App, width: u16, height: u16, y: u16) -> String {
         use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
