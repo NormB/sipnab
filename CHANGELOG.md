@@ -2,6 +2,33 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.36] - 2026-07-24
+
+### Changed
+- Standardized the whole project on **Rust 1.97.1**. CI had pinned 1.94.1
+  while local dev used 1.97.1 with no rust-toolchain.toml to force
+  agreement, so a clippy lint (manual_is_multiple_of, warn-by-default in
+  1.94.1 only) failed CI while passing locally. Bumped every pin — CI
+  workflows, the Cargo.toml/sub-crate MSRV, the Dockerfiles
+  (rust:1.97-slim-trixie), and the "Rust 1.97+" claims in the README,
+  CONTRIBUTING, docs, and download page — so local `cargo clippy` now
+  matches CI exactly.
+- P3 code-health tier (57 items): dead-code removal, deduplication
+  (shared bind-address parser, resamplers, loss-%, state-display,
+  find_crlf, correlated-legs/header/pipe builders), naming corrections
+  (mint_token, max_bytes, in-flight-request semaphore, ReDoS→memory-cap
+  comment, fixed-window doc), API hygiene (Packet::new assert, checked
+  RSA-KE bounds, SrtpProfile consts, injectable clocks for is_active/
+  STIR iat), a MediaMode enum replacing a magic string, configurable
+  theme status_bg, and small edge-case fixes (Delete key in
+  manual-path/save dialogs, dual-error status line, crash-report partial
+  cleanup).
+
+### Fixed
+- Flaky privilege_drop_test: the two tests shared a fixed /tmp fixture
+  path and race under cargo's parallel test execution; each now uses a
+  distinct per-test path.
+
 ## [0.5.35] - 2026-07-24
 
 ### Added
