@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! `SipnabMcp` server: the read-only MCP tools backed by the existing
 //! dialog/stream stores (plus the optional alert engine).
 //!
@@ -171,13 +173,20 @@ pub struct SearchMessagesParams {
     pub limit: Option<u32>,
 }
 
+/// Separator between the timestamp and Call-ID halves of a compound
+/// `tail_dialogs` cursor. `|` appears in neither an RFC 3339 timestamp
+/// nor a valid Call-ID (RFC 3261 `word`), so the split is unambiguous.
+const TAIL_CURSOR_SEP: char = '|';
+
 /// Parameters for `tail_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct TailDialogsParams {
-    /// Cursor: an RFC 3339 timestamp; only dialogs updated strictly after
-    /// this are returned. Omit on the first call to start from the
-    /// beginning.
+    /// Cursor: pass back the previous response's `next_cursor` verbatim
+    /// (`<RFC 3339>|<Call-ID>`); only dialogs updated after that position
+    /// are returned. A bare RFC 3339 timestamp (the pre-compound format)
+    /// is also accepted and filters strictly after it. Omit on the first
+    /// call to start from the beginning.
     pub cursor: Option<String>,
     /// Maximum dialogs to return (default 50, max 1000).
     pub limit: Option<u32>,
@@ -199,10 +208,11 @@ pub struct SearchHit {
 #[schemars(crate = "rmcp::schemars")]
 /// Response for `tail_dialogs`: a page of updated dialogs plus a continuation cursor.
 pub struct TailDialogsResponse {
-    /// Dialogs updated since the request cursor, oldest first.
+    /// Dialogs updated since the request cursor, oldest first (ties broken
+    /// by Call-ID).
     pub dialogs: Vec<DialogSummary>,
-    /// Cursor to pass to the next call. Empty when no more updates exist
-    /// at the moment.
+    /// Opaque cursor (`<RFC 3339>|<Call-ID>` of the last dialog returned)
+    /// to pass to the next call. Null when no dialogs matched.
     pub next_cursor: Option<String>,
     /// True when the underlying capture source has been fully consumed
     /// (e.g., pcap EOF). Subsequent calls will keep returning empty
@@ -768,58 +778,88 @@ impl SipnabMcp {
     ///
     /// # Returns
     ///
-    /// A `TailDialogsResponse`: matching dialogs sorted oldest-first, a
-    /// `next_cursor` (the newest `updated_at` returned; null when no dialogs
-    /// matched), and the `source_exhausted` flag.
+    /// A `TailDialogsResponse`: matching dialogs sorted oldest-first
+    /// (ties broken by Call-ID), a `next_cursor` derived from the last
+    /// dialog returned (null when no dialogs matched), and the
+    /// `source_exhausted` flag.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `cursor` is not RFC 3339.
+    /// `invalid_params` (-32602) when `cursor`'s timestamp half is not
+    /// RFC 3339.
     #[tool(
         name = "tail_dialogs",
-        description = "Returns dialogs whose updated_at is strictly after \
-                       `cursor` (an RFC 3339 timestamp, omit for first call). \
-                       Used for polling-based change tracking. The response \
-                       carries source_exhausted=true after a pcap source has \
-                       been fully consumed."
+        description = "Returns dialogs updated strictly after `cursor` \
+                       (omit for first call, then pass back next_cursor \
+                       verbatim; a bare RFC 3339 timestamp is also \
+                       accepted). Used for polling-based change tracking. \
+                       The response carries source_exhausted=true after a \
+                       pcap source has been fully consumed."
     )]
     pub async fn tail_dialogs(
         &self,
         Parameters(params): Parameters<TailDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit(params.limit);
-        let cursor: Option<chrono::DateTime<chrono::Utc>> = match params.cursor {
-            Some(s) => match chrono::DateTime::parse_from_rfc3339(&s) {
-                Ok(dt) => Some(dt.with_timezone(&chrono::Utc)),
-                Err(e) => {
-                    return Err(rmcp::ErrorData::invalid_params(
-                        format!("cursor must be RFC 3339: {e}"),
-                        None,
-                    ));
+        // The cursor is `<RFC 3339>` (legacy) or `<RFC 3339>|<Call-ID>`
+        // (compound, what next_cursor emits). `|` cannot appear in an
+        // RFC 3339 timestamp or a valid Call-ID (RFC 3261 `word` has no
+        // `|`), so splitting on the first `|` is unambiguous.
+        let cursor: Option<(chrono::DateTime<chrono::Utc>, Option<String>)> = match params.cursor {
+            Some(s) => {
+                let (ts_part, id_part) = match s.split_once(TAIL_CURSOR_SEP) {
+                    Some((ts, id)) => (ts, Some(id.to_string())),
+                    None => (s.as_str(), None),
+                };
+                match chrono::DateTime::parse_from_rfc3339(ts_part) {
+                    Ok(dt) => Some((dt.with_timezone(&chrono::Utc), id_part)),
+                    Err(e) => {
+                        return Err(rmcp::ErrorData::invalid_params(
+                            format!("cursor must be RFC 3339: {e}"),
+                            None,
+                        ));
+                    }
                 }
-            },
+            }
             None => None,
         };
 
         let response: TailDialogsResponse = {
             let ds = self.dialog_store.read();
-            let mut summaries: Vec<DialogSummary> = Vec::new();
-            for d in ds.iter() {
-                if let Some(c) = cursor
-                    && d.updated_at <= c
-                {
-                    continue;
-                }
-                summaries.push(DialogSummary::from(d));
-                if summaries.len() >= limit {
-                    break;
-                }
-            }
-            // Sort ascending by updated_at so the next_cursor is the latest
-            // updated_at returned, which establishes a clean "fetch >cursor"
-            // contract.
-            summaries.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-            let next_cursor = summaries.last().map(|s| s.updated_at.clone());
+            // Collect EVERY dialog past the cursor, sort by the cursor's
+            // ordering key (updated_at, Call-ID tie-break), and only then
+            // truncate to `limit`. Truncating first (store order is
+            // insertion order, not update order) would let next_cursor
+            // jump past dialogs that were never returned. A compound
+            // cursor keeps a legacy bare-timestamp cursor's strictly-after
+            // filter, and resumes after (updated_at, call_id) so a tie
+            // group split across a page boundary is neither dropped nor
+            // duplicated.
+            let mut changed: Vec<&crate::sip::dialog::SipDialog> = ds
+                .iter()
+                .filter(|d| match &cursor {
+                    None => true,
+                    Some((ts, None)) => d.updated_at > *ts,
+                    Some((ts, Some(id))) => {
+                        d.updated_at > *ts || (d.updated_at == *ts && d.call_id > *id)
+                    }
+                })
+                .collect();
+            changed.sort_by(|a, b| {
+                a.updated_at
+                    .cmp(&b.updated_at)
+                    .then_with(|| a.call_id.cmp(&b.call_id))
+            });
+            changed.truncate(limit);
+            let next_cursor = changed.last().map(|d| {
+                format!(
+                    "{}{TAIL_CURSOR_SEP}{}",
+                    d.updated_at.to_rfc3339(),
+                    d.call_id
+                )
+            });
+            let summaries: Vec<DialogSummary> =
+                changed.into_iter().map(DialogSummary::from).collect();
             drop(ds);
             TailDialogsResponse {
                 dialogs: summaries,
@@ -1541,6 +1581,108 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
         assert!(v["dialogs"].as_array().unwrap().is_empty());
         assert!(v["next_cursor"].is_null(), "no dialogs → null cursor");
+    }
+
+    /// Follow `next_cursor` pages to exhaustion and return every call_id
+    /// seen, in arrival order. Bounded so a broken cursor cannot loop
+    /// forever.
+    async fn drain_tail_pages(server: &SipnabMcp, limit: u32) -> Vec<String> {
+        let mut seen: Vec<String> = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..20 {
+            let result = server
+                .tail_dialogs(Parameters(TailDialogsParams {
+                    cursor: cursor.clone(),
+                    limit: Some(limit),
+                }))
+                .await
+                .expect("tail should succeed");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            let dialogs = v["dialogs"].as_array().unwrap();
+            if dialogs.is_empty() {
+                break;
+            }
+            for d in dialogs {
+                seen.push(d["call_id"].as_str().unwrap().to_string());
+            }
+            cursor = v["next_cursor"].as_str().map(str::to_string);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        seen
+    }
+
+    /// Paging with a small limit must eventually visit every dialog exactly
+    /// once, even when store insertion order disagrees with `updated_at`
+    /// order (regression: truncating before sorting let `next_cursor` jump
+    /// past dialogs that were never returned).
+    #[tokio::test]
+    async fn tail_dialogs_paging_visits_every_dialog_exactly_once() {
+        let mut ds = DialogStore::new(100, false);
+        // Insertion order is the reverse of updated_at order: the first
+        // inserted dialog has the newest timestamp. A pass that takes the
+        // first `limit` dialogs in store order and only then sorts would
+        // return the newest ones first and advance the cursor past the
+        // older ones forever.
+        for i in 0..5u32 {
+            let ts = base_ts() + chrono::Duration::seconds(i64::from(50 - 10 * i));
+            ds.process_message(invite(&format!("page{i}@x"), ts));
+        }
+        let ds = Arc::new(RwLock::new(ds));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let server = SipnabMcp::new(ds, ss);
+
+        let seen = drain_tail_pages(&server, 2).await;
+
+        let mut sorted = seen.clone();
+        sorted.sort();
+        let expected: Vec<String> = (0..5).map(|i| format!("page{i}@x")).collect();
+        assert_eq!(
+            sorted, expected,
+            "every dialog must be seen exactly once; saw {seen:?}"
+        );
+    }
+
+    /// Dialogs sharing the same `updated_at` must not be lost when a page
+    /// boundary splits the tie group (regression: a bare-timestamp cursor
+    /// with a strict `>` filter dropped the unreturned half forever).
+    #[tokio::test]
+    async fn tail_dialogs_tied_updated_at_survives_page_boundary() {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite("tie-a@x", base_ts()));
+        ds.process_message(invite("tie-b@x", base_ts()));
+        let ds = Arc::new(RwLock::new(ds));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let server = SipnabMcp::new(ds, ss);
+
+        let mut seen = drain_tail_pages(&server, 1).await;
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec!["tie-a@x".to_string(), "tie-b@x".to_string()],
+            "both tied dialogs must be seen exactly once"
+        );
+    }
+
+    /// A bare RFC 3339 cursor (the pre-compound format) is still accepted
+    /// and keeps its strictly-after semantics.
+    #[tokio::test]
+    async fn tail_dialogs_bare_timestamp_cursor_still_supported() {
+        let server = server_with_dialog("bare@x");
+        // Equal to the dialog's updated_at → strictly-after excludes it.
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams {
+                cursor: Some(base_ts().to_rfc3339()),
+                limit: None,
+            }))
+            .await
+            .expect("tail should succeed");
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+        assert!(
+            v["dialogs"].as_array().unwrap().is_empty(),
+            "bare timestamp cursor keeps strictly-after semantics"
+        );
     }
 
     // ── security_findings ────────────────────────────────────────────
