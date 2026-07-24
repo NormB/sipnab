@@ -827,9 +827,14 @@ async fn get_stream(
     let needle = id.strip_prefix("0x").unwrap_or(&id);
     let ssrc = u32::from_str_radix(needle, 16).map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    // SSRC is not unique (the stream key is ssrc + src + dst), so several
+    // streams can share it. Return the most-active one deterministically
+    // instead of an arbitrary first match, so a colliding orphan doesn't
+    // shadow the real media stream.
     let stream = ss
         .iter()
-        .find(|s| s.key.ssrc == ssrc)
+        .filter(|s| s.key.ssrc == ssrc)
+        .max_by_key(|s| s.packet_count)
         .ok_or(StatusCode::NOT_FOUND)?;
 
     let json_str = output::json::stream_to_json(stream);
@@ -1722,6 +1727,68 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert!(parsed.is_object());
+    }
+
+    /// When several streams share an SSRC (endpoint collision), the detail
+    /// endpoint returns the most-active one deterministically, not the
+    /// arbitrary first-inserted stream.
+    #[tokio::test]
+    async fn get_stream_ssrc_collision_returns_most_active() {
+        use crate::capture::parse::TransportProto;
+        use crate::rtp::parser::RtpHeader;
+
+        let state = make_state();
+        // Stream A: same SSRC, one packet, inserted first.
+        add_stream(&state, 0x1234, 20000, 30000);
+        // Stream B: same SSRC, different endpoint, five packets.
+        {
+            let mut ss = state.stream_store.write();
+            for seq in 1..=5u16 {
+                let parsed = crate::capture::ParsedPacket {
+                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                    src_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1)),
+                    dst_addr: IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                    src_port: 20001,
+                    dst_port: 30001,
+                    transport: TransportProto::Udp,
+                    payload: vec![0u8; 12 + 160].into(),
+                    ip_id: None,
+                    tcp_seq: None,
+                    tcp_flags: None,
+                    fragment_offset: None,
+                    more_fragments: false,
+                    ip_protocol: 17,
+                    from_hep: false,
+                };
+                let rtp = RtpHeader {
+                    version: 2,
+                    padding: false,
+                    extension: false,
+                    csrc_count: 0,
+                    marker: false,
+                    payload_type: 0,
+                    sequence: seq,
+                    timestamp: seq as u32 * 160,
+                    ssrc: 0x1234,
+                    payload_offset: 12,
+                };
+                ss.process_rtp(&parsed, &rtp, parsed.timestamp);
+            }
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/v1/streams/0x1234"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let v: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(
+            v["packets"].as_u64().expect("packets"),
+            5,
+            "collision must resolve to the most-active (5-packet) stream, not the 1-packet one"
+        );
     }
 
     /// A bare hex SSRC (no `0x` prefix) also resolves (200).

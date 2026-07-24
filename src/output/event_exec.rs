@@ -49,6 +49,28 @@ pub struct EventExecEngine {
     children: Vec<std::process::Child>,
 }
 
+/// What to do with a tracked child after a `try_wait` status check.
+enum ReapAction {
+    /// Still running — keep tracking it.
+    Keep,
+    /// Exited and already reaped by `try_wait` — just drop it.
+    Remove,
+    /// The status check errored — kill and wait before dropping so the child
+    /// is reaped rather than leaked as a zombie.
+    Cleanup,
+}
+
+/// Decide a child's disposition from its `try_wait` result. Pure, so the
+/// error-path decision is testable without forcing an OS-level `try_wait`
+/// failure.
+fn reap_action(status: &std::io::Result<Option<std::process::ExitStatus>>) -> ReapAction {
+    match status {
+        Ok(Some(_)) => ReapAction::Remove,
+        Ok(None) => ReapAction::Keep,
+        Err(_) => ReapAction::Cleanup,
+    }
+}
+
 impl EventExecEngine {
     /// Create a new event exec engine.
     ///
@@ -220,20 +242,24 @@ impl EventExecEngine {
     ///
     /// # Side effects
     ///
-    /// Calls `try_wait` on every tracked child, dropping completed ones;
-    /// a child whose status check errors is dropped too (after a warning
-    /// log), which can leave it unreaped.
+    /// Calls `try_wait` on every tracked child: completed ones are removed,
+    /// running ones kept, and a child whose status check errors is killed and
+    /// reaped before removal so it does not linger as a zombie.
     fn reap_children(&mut self) {
-        self.children.retain_mut(|child| {
-            match child.try_wait() {
-                Ok(Some(_status)) => false, // completed, remove
-                Ok(None) => true,           // still running, keep
-                Err(e) => {
-                    warn!("Error checking child process: {e}");
-                    false // remove on error
+        self.children
+            .retain_mut(|child| match reap_action(&child.try_wait()) {
+                ReapAction::Keep => true,
+                ReapAction::Remove => false,
+                ReapAction::Cleanup => {
+                    // Dropping a Child neither kills nor waits, so a check error
+                    // (were the child simply forgotten) would leak a zombie.
+                    // Best-effort kill + wait reaps it before we drop it.
+                    warn!("Error checking child process; killing to reap it");
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    false
                 }
-            }
-        });
+            });
     }
 
     /// Spawn a shell command non-blocking with environment variables.
@@ -330,6 +356,23 @@ fn migrate_template_vars(template: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A child whose status check errors must be cleaned up (killed and
+    /// reaped), not silently forgotten — dropping a `Child` without waiting
+    /// leaves a zombie. A still-running child is kept.
+    #[test]
+    fn reap_action_on_error_cleans_up() {
+        use std::io;
+        use std::process::ExitStatus;
+        assert!(matches!(
+            reap_action(&Err(io::Error::other("boom"))),
+            ReapAction::Cleanup
+        ));
+        assert!(matches!(
+            reap_action(&Ok::<Option<ExitStatus>, io::Error>(None)),
+            ReapAction::Keep
+        ));
+    }
 
     // The per-RTP-packet hot path guards the quality-event work on this; it must
     // be true iff a command is configured (else fire_quality_event no-ops and the
