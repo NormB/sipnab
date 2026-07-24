@@ -1284,19 +1284,6 @@ impl Cli {
         Ok(())
     }
 
-    /// Warn on stderr about CLI flags that are accepted but not yet
-    /// implemented, so the user knows a flag has no effect. Called from
-    /// `main` after parsing and validation.
-    ///
-    /// Currently a no-op: every flag is implemented, and feature-gated
-    /// flags instead produce startup errors in `main.rs` when the
-    /// required feature is not compiled in. The call site is kept for
-    /// flags that may land ahead of their implementation.
-    pub fn warn_unimplemented_flags(&self) {
-        // All flags are now implemented. Feature-gated flags produce errors
-        // at startup in main.rs when the required feature is not compiled in.
-    }
-
     /// Resolve the metrics Basic-auth credential, preferring
     /// `--metrics-auth-file` over the inline `--metrics-auth` so the secret
     /// can be kept out of the process argument list.

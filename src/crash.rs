@@ -298,7 +298,6 @@ fn ensure_safe_report_dir(_dir: &Path) -> std::io::Result<()> {
 /// Creates `dir` (0700 when fresh, on Unix), creates the report file
 /// (0600 on Unix), and advances the process-wide report sequence counter.
 pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf> {
-    use std::io::Write as _;
     ensure_safe_report_dir(dir)?;
     create_report_dir(dir)?;
 
@@ -313,7 +312,7 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
         let path = dir.join(name);
         match open_new_report_file(&path) {
             Ok(mut file) => {
-                file.write_all(contents.as_bytes())?;
+                finish_report(&path, &mut file, contents)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -329,6 +328,21 @@ pub fn write_crash_report(dir: &Path, contents: &str) -> std::io::Result<PathBuf
             "exhausted crash-report name attempts",
         )
     }))
+}
+
+/// Write `contents` into the freshly-created report `file` at `path`.
+///
+/// On any write failure (e.g. `ENOSPC` surfacing mid-report) the partial
+/// file is removed before the error is propagated, so a caller never finds
+/// a truncated crash report on disk. Best-effort cleanup: a failed removal
+/// is ignored in favour of surfacing the original write error.
+fn finish_report(path: &Path, file: &mut std::fs::File, contents: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if let Err(e) = file.write_all(contents.as_bytes()) {
+        let _ = std::fs::remove_file(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 // ── Terminal state flag ─────────────────────────────────────────────
@@ -576,6 +590,27 @@ mod tests {
             "got {name}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "the-contents");
+    }
+
+    /// A write failure while filling the report must not leave a partial
+    /// (truncated) file on disk. Simulated by handing `finish_report` a
+    /// read-only handle to the target, so `write_all` fails with `EBADF`;
+    /// the cleanup path must then remove the file.
+    #[test]
+    fn finish_report_removes_partial_on_write_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sipnab-crash-probe.log");
+        // Create the target the way write_crash_report would, then reopen it
+        // read-only so the subsequent write_all is guaranteed to fail.
+        std::fs::write(&path, b"").unwrap();
+        let mut ro = std::fs::File::open(&path).unwrap();
+
+        finish_report(&path, &mut ro, "backtrace-contents")
+            .expect_err("write to a read-only handle must fail");
+        assert!(
+            !path.exists(),
+            "a failed write must not leave a partial report behind"
+        );
     }
 
     /// Two reports written by the same process within the same second
