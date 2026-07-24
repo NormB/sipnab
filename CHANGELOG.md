@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.29] - 2026-07-23
 
 ### Security
 - The REST API now rate-limits **before** authenticating, so a flood of
