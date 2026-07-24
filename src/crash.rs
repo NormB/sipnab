@@ -135,15 +135,45 @@ fn open_new_report_file(path: &Path) -> std::io::Result<std::fs::File> {
 /// Create `dir` (and parents) if missing, restricting a freshly created
 /// leaf to owner-only (`0700`) on Unix so a crash report written into it
 /// is not exposed to other users on the host.
+///
+/// The `exists()` → `create_dir_all()` sequence is itself a TOCTOU window
+/// (CWE-367): between the pre-flight [`ensure_safe_report_dir`] check and the
+/// create, a co-tenant could swap a symlink or a directory they own into the
+/// path, and `create_dir_all`/`set_permissions` would follow it. To close that
+/// window this re-`lstat`s the leaf *after* creating it and fails closed if it
+/// is now a symlink or not owned by us — mirroring the `write_crash_report`
+/// ownership checks, applied to the post-mutation state.
 fn create_report_dir(dir: &Path) -> std::io::Result<()> {
     let existed = dir.exists();
     std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
-    if !existed {
-        use std::os::unix::fs::PermissionsExt;
-        // Best-effort: tightening our own new directory. A pre-existing
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // Tighten a freshly created leaf to 0700 BEFORE the safety re-check, so
+        // a permissive umask cannot leave the new directory momentarily
+        // world-writable and trip the classification below. A pre-existing
         // directory's mode is the operator's responsibility (documented).
-        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        if !existed {
+            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        }
+        // Re-lstat the leaf and reject a symlink or foreign-owned directory that
+        // appeared during the create — the TOCTOU/symlink-swap guard.
+        let meta = std::fs::symlink_metadata(dir)?;
+        // SAFETY: geteuid() takes no arguments, never fails, and only reads the
+        // caller's effective UID — it has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        classify_report_dir(meta.file_type().is_symlink(), meta.uid(), euid, meta.mode()).map_err(
+            |reason| {
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "refusing to use crash-report directory {}: {}",
+                        dir.display(),
+                        reason.describe()
+                    ),
+                )
+            },
+        )?;
     }
     let _ = existed;
     Ok(())
@@ -678,6 +708,43 @@ mod tests {
         // membership is the operator's responsibility.
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40775), Ok(()));
         assert_eq!(classify_report_dir(false, 1000, 1000, 0o40770), Ok(()));
+    }
+
+    /// `create_report_dir` itself must fail closed on a symlinked leaf, not
+    /// just the pre-flight `ensure_safe_report_dir`: this closes the
+    /// `exists()`→`create_dir_all()` TOCTOU (CWE-367) where a co-tenant swaps a
+    /// symlink into the path during creation. The post-create re-`lstat`
+    /// catches it, so nothing is created through the link.
+    #[test]
+    #[cfg(unix)]
+    fn create_report_dir_refuses_symlinked_dir() {
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim_dir");
+        std::fs::create_dir(&victim).unwrap();
+        let link = root.path().join("reports");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        let err = create_report_dir(&link).expect_err("must refuse a symlinked report dir");
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read_dir(&victim).unwrap().count(),
+            0,
+            "nothing may be created through the link"
+        );
+    }
+
+    /// The safe path is unaffected: `create_report_dir` creates a fresh nested
+    /// leaf owned by us at 0700 and returns Ok.
+    #[test]
+    #[cfg(unix)]
+    fn create_report_dir_accepts_fresh_nested_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let leaf = root.path().join("nested").join("reports");
+        create_report_dir(&leaf).expect("fresh nested dir must be created");
+        assert!(leaf.is_dir());
+        let mode = std::fs::metadata(&leaf).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "fresh leaf must be owner-only, got {mode:o}");
     }
 
     /// A symlinked report directory is refused end to end — nothing is

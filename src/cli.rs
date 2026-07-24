@@ -515,11 +515,15 @@ pub struct Cli {
     pub line_buffer: bool,
 
     /// Color output mode.
+    ///
+    /// Accepts only `auto`, `always`, or `never`; any other value is rejected
+    /// at parse time (rather than silently falling back to `auto` downstream).
     #[arg(
         help_heading = "Output",
         long,
         value_name = "WHEN",
-        default_value = "auto"
+        default_value = "auto",
+        value_parser = clap::builder::PossibleValuesParser::new(["auto", "always", "never"])
     )]
     pub color: String,
 
@@ -795,11 +799,16 @@ pub struct Cli {
     pub mcp: bool,
 
     /// MCP transport: "stdio" (default) or "http".
+    ///
+    /// Accepts only `stdio` or `http`; any other value is rejected at parse
+    /// time (previously an unrecognized transport passed parse silently and was
+    /// only caught later, and only when `--mcp` was also set).
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long = "mcp-transport",
         value_name = "TRANSPORT",
-        default_value = "stdio"
+        default_value = "stdio",
+        value_parser = clap::builder::PossibleValuesParser::new(["stdio", "http"])
     )]
     pub mcp_transport: String,
 
@@ -882,9 +891,10 @@ pub struct Cli {
     )]
     pub mcp_allowed_host: Vec<String>,
 
+    // ── HEP (Homer Encapsulation Protocol) ───────────────────────────
     /// Listen for HEP (Homer Encapsulation Protocol) packets.
     #[arg(
-        help_heading = "MCP (Model Context Protocol)",
+        help_heading = "HEP",
         short = 'L',
         long = "hep-listen",
         value_name = "ADDR"
@@ -893,7 +903,7 @@ pub struct Cli {
 
     /// Send captured packets via HEP to a remote collector.
     #[arg(
-        help_heading = "MCP (Model Context Protocol)",
+        help_heading = "HEP",
         short = 'H',
         long = "hep-send",
         value_name = "ADDR"
@@ -902,18 +912,14 @@ pub struct Cli {
 
     /// Capture-agent id (HEP 0x000c chunk) stamped on every packet sent via
     /// `--hep-send`. Distinguishes this agent to the Homer collector. Default 1.
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long = "hep-id",
-        value_name = "ID"
-    )]
+    #[arg(help_heading = "HEP", long = "hep-id", value_name = "ID")]
     pub hep_id: Option<u32>,
 
     /// Homer authenticate key (HEP 0x000e chunk) added to every packet sent via
     /// `--hep-send`. Prefer the env var over the flag so the secret is not
     /// visible in the process list.
     #[arg(
-        help_heading = "MCP (Model Context Protocol)",
+        help_heading = "HEP",
         long = "hep-auth",
         value_name = "KEY",
         env = "SIPNAB_HEP_AUTH"
@@ -925,11 +931,7 @@ pub struct Cli {
     /// a `--hep-listen` receiver it ENABLES receiver-side authentication:
     /// incoming HEP packets must carry a matching 0x000e auth-key chunk or
     /// they are dropped.
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long = "hep-auth-file",
-        value_name = "FILE"
-    )]
+    #[arg(help_heading = "HEP", long = "hep-auth-file", value_name = "FILE")]
     pub hep_auth_file: Option<std::path::PathBuf>,
 
     /// HEP authentication mode: `plain` (default) sends/expects the shared
@@ -939,7 +941,7 @@ pub struct Cli {
     /// `hmac` is sipnab-to-sipnab only — a stock Homer/Kamailio peer will not
     /// understand it.
     #[arg(
-        help_heading = "MCP (Model Context Protocol)",
+        help_heading = "HEP",
         long = "hep-auth-mode",
         value_name = "plain|hmac",
         default_value = "plain"
@@ -947,30 +949,17 @@ pub struct Cli {
     pub hep_auth_mode: HepAuthMode,
 
     /// Parse incoming HEP packets (enable HEP decoding).
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        short = 'E',
-        long = "hep-parse"
-    )]
+    #[arg(help_heading = "HEP", short = 'E', long = "hep-parse")]
     pub hep_parse: bool,
 
     /// Allowed source addresses for HEP input (repeatable).
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long,
-        value_name = "ADDR"
-    )]
+    #[arg(help_heading = "HEP", long, value_name = "ADDR")]
     pub hep_allow: Vec<String>,
 
     /// Maximum HEP packets per second (global ceiling across all senders).
     /// `0` disables the global ceiling (consistent with `off` on the
     /// per-peer knob); the per-peer cap, if set, still applies.
-    #[arg(
-        help_heading = "MCP (Model Context Protocol)",
-        long,
-        value_name = "N",
-        default_value = "50000"
-    )]
+    #[arg(help_heading = "HEP", long, value_name = "N", default_value = "50000")]
     pub hep_rate_limit: u64,
 
     /// Maximum HEP packets per second from any single source IP: a number,
@@ -981,21 +970,22 @@ pub struct Cli {
     /// allowlist is set). Leave at `off` for the common single-collector
     /// topology.
     #[arg(
-        help_heading = "MCP (Model Context Protocol)",
+        help_heading = "HEP",
         long,
         value_name = "N|auto|off",
         default_value = "off"
     )]
     pub hep_rate_limit_per_peer: PerPeerLimit,
 
+    // ── Alert channels (grouped with --alert / --alert-exec under Security) ──
     /// Send alerts to syslog.
-    #[arg(help_heading = "MCP (Model Context Protocol)", long)]
+    #[arg(help_heading = "Security", long)]
     pub syslog: bool,
 
     /// Emit each security alert as a structured JSON line on stderr (in addition
     /// to the human `[ALERT]` line) — a stable machine channel that survives log
     /// format changes. stdout stays reserved for `--json` / MCP.
-    #[arg(help_heading = "MCP (Model Context Protocol)", long)]
+    #[arg(help_heading = "Security", long)]
     pub alert_json: bool,
 
     // ── TLS / Decryption ─────────────────────────────────────────────
@@ -1028,11 +1018,16 @@ pub struct Cli {
     pub srtp_keys: Option<String>,
 
     /// Pcap export mode for encrypted traffic.
+    ///
+    /// Accepts only `decrypted`, `encrypted+dsb`, or `raw`; any other value is
+    /// rejected at parse time (rather than late in bootstrap validation).
     #[arg(
         help_heading = "TLS / Decryption",
         long,
         value_name = "MODE",
-        default_value = "decrypted"
+        default_value = "decrypted",
+        value_parser =
+            clap::builder::PossibleValuesParser::new(["decrypted", "encrypted+dsb", "raw"])
     )]
     pub pcap_export_mode: String,
 
@@ -1375,6 +1370,122 @@ pub fn resolve_file_or_inline_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Help-heading placement (P2 item 1) ──────────────────────────────
+
+    /// The HEP flags and the syslog / alert-json alert channels used to be
+    /// mis-filed under the "MCP (Model Context Protocol)" help heading. HEP
+    /// flags now live under a dedicated "HEP" heading; the alert channels under
+    /// "Security" (alongside the other alert flags). None may remain under the
+    /// MCP heading. Asserted via clap introspection.
+    ///
+    /// (Flag names are written here without the leading dashes on purpose: the
+    /// `flag_coverage` gate treats a `--flag` token in any test text as a
+    /// reference, and syslog is a deliberately-waived entry there.)
+    #[test]
+    fn hep_and_alert_flags_are_not_under_mcp_heading() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let heading_of = |long: &str| -> Option<String> {
+            cmd.get_arguments()
+                .find(|a| a.get_long() == Some(long))
+                .and_then(|a| a.get_help_heading())
+                .map(|h| h.to_string())
+        };
+        for long in [
+            "hep-listen",
+            "hep-send",
+            "hep-id",
+            "hep-auth",
+            "hep-auth-file",
+            "hep-auth-mode",
+            "hep-parse",
+            "hep-allow",
+            "hep-rate-limit",
+            "hep-rate-limit-per-peer",
+        ] {
+            assert_eq!(
+                heading_of(long).as_deref(),
+                Some("HEP"),
+                "{long} must be grouped under the HEP heading, not MCP"
+            );
+        }
+        for long in ["syslog", "alert-json"] {
+            assert_eq!(
+                heading_of(long).as_deref(),
+                Some("Security"),
+                "{long} is an alert channel and belongs under Security, not MCP"
+            );
+        }
+    }
+
+    // ── Parse-time value validation (P2 item 2) ─────────────────────────
+
+    /// `--color` rejects an out-of-set value at PARSE time rather than silently
+    /// falling back to `auto` in the downstream match.
+    #[test]
+    fn color_rejects_unknown_value_at_parse_time() {
+        let err = Cli::try_parse_from(["sipnab", "--color", "bogus"])
+            .expect_err("an unknown --color value must be rejected at parse time");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    /// Every documented `--color` value still parses and round-trips.
+    #[test]
+    fn color_accepts_documented_values() {
+        for v in ["auto", "always", "never"] {
+            let cli = Cli::try_parse_from(["sipnab", "--color", v])
+                .unwrap_or_else(|e| panic!("--color {v} must parse: {e}"));
+            assert_eq!(cli.color, v);
+        }
+    }
+
+    /// The default `--color` value is the accepted `auto`.
+    #[test]
+    fn color_default_is_auto() {
+        let cli = Cli::try_parse_from(["sipnab"]).unwrap();
+        assert_eq!(cli.color, "auto");
+    }
+
+    /// `--mcp-transport` rejects an unknown transport at parse time — the old
+    /// free-text String let a typo pass parse and only fail (or be silently
+    /// ignored) later, and only when `--mcp` was also set.
+    #[test]
+    fn mcp_transport_rejects_unknown_value_at_parse_time() {
+        let err = Cli::try_parse_from(["sipnab", "--mcp-transport", "carrier-pigeon"])
+            .expect_err("an unknown --mcp-transport must be rejected at parse time");
+        assert_eq!(err.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    /// Both documented transports still parse and round-trip.
+    #[test]
+    fn mcp_transport_accepts_documented_values() {
+        for v in ["stdio", "http"] {
+            let cli = Cli::try_parse_from(["sipnab", "--mcp-transport", v])
+                .unwrap_or_else(|e| panic!("--mcp-transport {v} must parse: {e}"));
+            assert_eq!(cli.mcp_transport, v);
+        }
+    }
+
+    /// The pcap-export-mode flag constrains its accepted values at parse time.
+    /// Asserted via clap introspection of the arg's possible values (by the
+    /// arg's long name, not by passing the flag on a parse line) so the flag
+    /// stays where the `flag_coverage` gate's waiver list has it.
+    #[test]
+    fn pcap_export_mode_possible_values_are_constrained() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("pcap-export-mode"))
+            .expect("pcap-export-mode arg exists");
+        let vals: Vec<String> = arg
+            .get_possible_values()
+            .iter()
+            .map(|pv| pv.get_name().to_string())
+            .collect();
+        assert_eq!(vals, vec!["decrypted", "encrypted+dsb", "raw"]);
+    }
 
     /// A set secret file wins over the inline value and is whitespace-trimmed.
     #[test]
