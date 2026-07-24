@@ -312,22 +312,12 @@ fn decode_opus_to_f32(stream: &RtpStream) -> Result<Vec<f32>> {
 }
 
 /// Resample f32 PCM using linear interpolation.
+///
+/// Thin wrapper over the shared [`resample_linear`](crate::rtp::audio_export::resample_linear)
+/// core, which the i16 WAV-export path also uses; the f32 per-sample
+/// arithmetic is unchanged.
 fn resample_f32(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-    if from_rate == to_rate || samples.is_empty() {
-        return samples.to_vec();
-    }
-    let ratio = to_rate as f64 / from_rate as f64;
-    let output_len = (samples.len() as f64 * ratio) as usize;
-    let mut out = Vec::with_capacity(output_len);
-    for i in 0..output_len {
-        let src_pos = i as f64 / ratio;
-        let src_idx = src_pos as usize;
-        let frac = (src_pos - src_idx as f64) as f32;
-        let s0 = samples.get(src_idx).copied().unwrap_or(0.0);
-        let s1 = samples.get(src_idx + 1).copied().unwrap_or(s0);
-        out.push(s0 + (s1 - s0) * frac);
-    }
-    out
+    crate::rtp::audio_export::resample_linear(samples, from_rate, to_rate)
 }
 
 // Tests cover the device-free DSP helpers (decode + resample) and the plugin

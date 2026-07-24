@@ -64,6 +64,54 @@ pub enum OfferAnswer {
     Answer,
 }
 
+/// The media-direction mode recorded for a timeline exchange.
+///
+/// The first four variants mirror the SDP `a=` direction attributes. The
+/// fifth, [`MediaMode::Transfer`], is a dedicated marker for the synthetic
+/// exchange emitted by [`track_transfer`]: a REFER carries no media of its
+/// own, so it has no real direction — this variant replaces the former magic
+/// `"transfer"` string that was stuffed into the mode field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaMode {
+    /// Bidirectional media (`a=sendrecv`, the SDP default).
+    SendRecv,
+    /// Send-only (`a=sendonly`); one hold form.
+    SendOnly,
+    /// Receive-only (`a=recvonly`).
+    RecvOnly,
+    /// No media flowing either way (`a=inactive`); the other hold form.
+    Inactive,
+    /// A REFER-initiated call transfer — not a real SDP direction.
+    Transfer,
+}
+
+impl MediaMode {
+    /// The stable lowercase token used in output and event detection.
+    ///
+    /// The first four match the SDP `a=` attribute names; `Transfer` renders
+    /// as `"transfer"` to preserve the existing serialized form.
+    fn as_str(self) -> &'static str {
+        match self {
+            MediaMode::SendRecv => "sendrecv",
+            MediaMode::SendOnly => "sendonly",
+            MediaMode::RecvOnly => "recvonly",
+            MediaMode::Inactive => "inactive",
+            MediaMode::Transfer => "transfer",
+        }
+    }
+}
+
+impl From<&MediaDirection> for MediaMode {
+    fn from(direction: &MediaDirection) -> Self {
+        match direction {
+            MediaDirection::SendRecv => MediaMode::SendRecv,
+            MediaDirection::SendOnly => MediaMode::SendOnly,
+            MediaDirection::RecvOnly => MediaMode::RecvOnly,
+            MediaDirection::Inactive => MediaMode::Inactive,
+        }
+    }
+}
+
 /// Track SDP from a SIP message and append to the timeline.
 ///
 /// If the message contains an `application/sdp` body, parses it and creates
@@ -90,7 +138,14 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     let direction = determine_offer_answer(timeline, msg);
     let (codecs, media_addr, media_port, mode, is_t38) = extract_media_info(&sdp);
 
-    let event = detect_event(timeline, &codecs, &media_addr, media_port, &mode, is_t38);
+    let event = detect_event(
+        timeline,
+        &codecs,
+        &media_addr,
+        media_port,
+        mode.as_str(),
+        is_t38,
+    );
 
     timeline.push(SdpExchange {
         timestamp: msg.timestamp,
@@ -98,7 +153,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         codecs,
         media_addr,
         media_port,
-        mode,
+        mode: mode.as_str().to_string(),
         is_t38,
         event,
     });
@@ -116,7 +171,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
 ///
 /// # Side effects
 ///
-/// Appends a synthetic `SdpExchange` (mode `"transfer"`, no media fields)
+/// Appends a synthetic `SdpExchange` marked as a transfer (no media fields)
 /// to `timeline` for REFER requests; the `Refer-To` header value becomes
 /// the transfer target (`"unknown"` when absent).
 pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
@@ -130,7 +185,7 @@ pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         codecs: Vec::new(),
         media_addr: None,
         media_port: None,
-        mode: "transfer".to_string(),
+        mode: MediaMode::Transfer.as_str().to_string(),
         is_t38: false,
         event: Some(SdpEvent::Transfer { target }),
     });
@@ -179,10 +234,10 @@ fn determine_offer_answer(timeline: &[SdpExchange], msg: &SipMessage) -> OfferAn
 /// call leg that hold/resume/anchor-change detection tracks.
 fn extract_media_info(
     sdp: &SdpSession,
-) -> (Vec<String>, Option<String>, Option<u16>, String, bool) {
+) -> (Vec<String>, Option<String>, Option<u16>, MediaMode, bool) {
     let first_media = match sdp.media.first() {
         Some(m) => m,
-        None => return (Vec::new(), None, None, "sendrecv".to_string(), false),
+        None => return (Vec::new(), None, None, MediaMode::SendRecv, false),
     };
 
     let mut codecs: Vec<String> = Vec::new();
@@ -197,13 +252,7 @@ fn extract_media_info(
     let media_addr = sdp::effective_address(first_media, sdp);
     let media_port = Some(first_media.port);
 
-    let mode = match first_media.direction {
-        MediaDirection::SendRecv => "sendrecv",
-        MediaDirection::SendOnly => "sendonly",
-        MediaDirection::RecvOnly => "recvonly",
-        MediaDirection::Inactive => "inactive",
-    }
-    .to_string();
+    let mode = MediaMode::from(&first_media.direction);
 
     let is_t38 = first_media.media_type == "image";
 

@@ -4,8 +4,14 @@
 //!
 //! Parses compound RTCP packets from a single UDP payload. Handles
 //! Sender Reports (SR, PT=200), Receiver Reports (RR, PT=201), and
-//! BYE (PT=203). Unknown packet types are preserved as `RtcpPacket::Unknown`
-//! so the parser never silently drops data.
+//! BYE (PT=203). An unrecognized packet *type* is preserved as
+//! `RtcpPacket::Unknown` rather than dropped.
+//!
+//! One class of data is dropped, however: a sub-packet whose type is known
+//! but whose body fails to parse (e.g. a truncated SR) is skipped — it is
+//! neither returned as its typed variant nor as `Unknown`. This is a silent
+//! drop; `parse_rtcp` does not count or surface it. See [`parse_rtcp`] for the
+//! per-type behavior.
 
 use anyhow::{Result, ensure};
 

@@ -85,6 +85,16 @@ impl Packet {
         interface: Option<String>,
         link_type: i32,
     ) -> Self {
+        // `data` holds exactly the captured bytes, so `caplen` must equal
+        // `data.len()` (snap-length truncation shortens `data` too; only
+        // `origlen` may exceed it). Catch a desynced caller in debug builds
+        // without changing release behavior.
+        debug_assert_eq!(
+            caplen,
+            data.len(),
+            "Packet::new: caplen ({caplen}) must equal data.len() ({})",
+            data.len(),
+        );
         Self {
             timestamp,
             data: data.into(),

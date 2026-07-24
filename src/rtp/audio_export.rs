@@ -181,10 +181,62 @@ fn decode_stream_pcm(stream: &RtpStream) -> Result<(Vec<i16>, u32, &'static str)
     }
 }
 
-/// Resample PCM i16 samples using linear interpolation.
+/// A PCM sample type that a [`resample_linear`] pass can interpolate.
+///
+/// Factors the per-sample arithmetic out of the shared resampling loop so a
+/// single implementation serves both the integer export path (`i16`, rounded
+/// and clamped) and the floating-point playback path (`f32`). Each impl keeps
+/// the exact numeric behavior its call site had before the two loops were
+/// merged.
+pub(crate) trait LinearResampleSample: Copy {
+    /// The value substituted for samples read past the end of the input
+    /// (out-of-range indices during interpolation).
+    fn zero() -> Self;
+
+    /// Linearly interpolate between neighbors `a` and `b` at fractional
+    /// position `frac` in `[0, 1)`.
+    fn lerp(a: Self, b: Self, frac: f64) -> Self;
+}
+
+impl LinearResampleSample for i16 {
+    fn zero() -> Self {
+        0
+    }
+
+    fn lerp(a: Self, b: Self, frac: f64) -> Self {
+        // Interpolate in f64, then round and clamp back into i16 range.
+        let a = a as f64;
+        let b = b as f64;
+        (a + (b - a) * frac)
+            .round()
+            .clamp(i16::MIN as f64, i16::MAX as f64) as i16
+    }
+}
+
+impl LinearResampleSample for f32 {
+    fn zero() -> Self {
+        0.0
+    }
+
+    fn lerp(a: Self, b: Self, frac: f64) -> Self {
+        // Interpolate in f32; the fractional position narrows to f32 first.
+        let frac = frac as f32;
+        a + (b - a) * frac
+    }
+}
+
+/// Resample PCM samples using linear interpolation.
 ///
 /// Adequate quality for voice audio upsampling (e.g., 8 kHz to 48 kHz).
-fn resample_linear(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+/// Shared by the i16 WAV-export path and the f32 playback path via
+/// [`LinearResampleSample`]; the per-sample arithmetic (rounding/clamping for
+/// i16, plain f32 math for f32) lives in that trait so both paths keep their
+/// original numeric behavior.
+pub(crate) fn resample_linear<T: LinearResampleSample>(
+    samples: &[T],
+    from_rate: u32,
+    to_rate: u32,
+) -> Vec<T> {
     if from_rate == to_rate || samples.is_empty() {
         return samples.to_vec();
     }
@@ -195,10 +247,9 @@ fn resample_linear(samples: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
         let src_pos = i as f64 / ratio;
         let src_idx = src_pos as usize;
         let frac = src_pos - src_idx as f64;
-        let s0 = samples.get(src_idx).copied().unwrap_or(0) as f64;
-        let s1 = samples.get(src_idx + 1).copied().unwrap_or(s0 as i16) as f64;
-        let interpolated = s0 + (s1 - s0) * frac;
-        out.push(interpolated.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16);
+        let s0 = samples.get(src_idx).copied().unwrap_or_else(T::zero);
+        let s1 = samples.get(src_idx + 1).copied().unwrap_or(s0);
+        out.push(T::lerp(s0, s1, frac));
     }
     out
 }

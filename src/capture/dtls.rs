@@ -38,6 +38,17 @@ pub enum SrtpProfile {
 }
 
 impl SrtpProfile {
+    /// SRTP master key length in bytes. Both supported profiles are AES-128-CM,
+    /// so the master key is always 16 bytes; the `_80`/`_32` suffix is the
+    /// HMAC-SHA1 auth-tag length and does not affect the master key or salt.
+    /// This is an associated const (not a per-value method) precisely because
+    /// the length does not vary across the supported profiles.
+    const KEY_LEN: usize = 16;
+
+    /// SRTP master salt length in bytes — always 14 for AES-CM (RFC 3711 §8.2),
+    /// independent of profile (see [`SrtpProfile::KEY_LEN`]).
+    const SALT_LEN: usize = 14;
+
     /// Map a `use_srtp` protection-profile code point to a supported profile,
     /// or `None` for codes this tool cannot decrypt (non-AES-CM profiles).
     fn from_code(code: u16) -> Option<Self> {
@@ -46,16 +57,6 @@ impl SrtpProfile {
             0x0002 => Some(Self::Aes128CmHmacSha1_32),
             _ => None,
         }
-    }
-
-    /// SRTP master key length in bytes.
-    fn key_len(self) -> usize {
-        16
-    }
-
-    /// SRTP master salt length in bytes.
-    fn salt_len(self) -> usize {
-        14
     }
 
     /// Map this DTLS-SRTP profile to the corresponding `SrtpSuite` used by the
@@ -168,8 +169,8 @@ pub fn derive_srtp_keys(
     server_random: &[u8; 32],
     profile: SrtpProfile,
 ) -> Result<(SrtpKeyMaterial, SrtpKeyMaterial)> {
-    let key_len = profile.key_len();
-    let salt_len = profile.salt_len();
+    let key_len = SrtpProfile::KEY_LEN;
+    let salt_len = SrtpProfile::SALT_LEN;
     let total = 2 * key_len + 2 * salt_len;
 
     // RFC 5705: seed = client_random ‖ server_random (no context for dtls_srtp).

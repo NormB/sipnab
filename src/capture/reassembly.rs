@@ -284,9 +284,6 @@ struct TcpStream {
     expected_seq: u32,
     /// Out-of-order segment buffer, keyed by sequence number.
     buffer: BTreeMap<u32, bytes::Bytes>,
-    /// When this stream was first seen.
-    #[allow(dead_code)]
-    created: Instant,
     /// When the last segment was received.
     last_seen: Instant,
     /// Total buffered bytes (for overflow detection).
@@ -406,7 +403,6 @@ impl TcpReassembler {
             .or_insert_with(|| TcpStream {
                 expected_seq: seq,
                 buffer: BTreeMap::new(),
-                created: Instant::now(),
                 last_seen: Instant::now(),
                 buffered_bytes: 0,
                 initialized: false,
