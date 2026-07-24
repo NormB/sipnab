@@ -339,6 +339,22 @@ mod ladder_split_tests {
         assert_eq!(arrow_gap_for_label(0, 1), 5);
     }
 
+    /// When the terminal is narrower than the detail-pane floor, the widening
+    /// math must not underflow or over-widen: `cap` collapses back to
+    /// `default_ladder`, so the ladder stays at its configured share and the
+    /// (already sub-floor) detail pane simply gets the remainder.
+    #[test]
+    fn sub_detail_floor_total_keeps_default_split() {
+        // total (20) < DETAIL_FLOOR (24), 3 legs, demanding 27-col gap.
+        // default_ladder = 20 * (100-40)/100 = 12. The widening demand
+        // (needed = 13 + 2 + 2*27 = 69) is clamped by `cap`, which for a
+        // sub-floor total saturates to 0 then `.max(default_ladder)` -> 12.
+        // The result is exactly 12: not 0 (the underflow the `.max` guards
+        // against) and not an over-wide pane.
+        let w = ladder_split_width(3, 27, 40, 20);
+        assert_eq!(w, 12, "sub-floor total must fall back to the default split");
+    }
+
     /// Even a demanding 6-leg ladder leaves the detail pane its minimum width.
     #[test]
     fn detail_pane_keeps_a_floor() {

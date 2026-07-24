@@ -17,36 +17,12 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-/// Tiny deterministic xorshift PRNG — no rand dependency, reproducible
-/// across runs so a failure is always replayable from the seed.
-struct Rng(u64);
-impl Rng {
-    /// Seeds the PRNG; forces the low bit so the state is never zero.
-    fn new(seed: u64) -> Self {
-        Rng(seed | 1)
-    }
-    /// Advances the xorshift state and returns the next 64-bit value.
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.0 = x;
-        x
-    }
-    /// Returns the low byte of the next PRNG value.
-    fn byte(&mut self) -> u8 {
-        (self.next_u64() & 0xff) as u8
-    }
-    /// Returns a value in `0..n` (0 when `n` is 0).
-    fn below(&mut self, n: usize) -> usize {
-        if n == 0 {
-            0
-        } else {
-            (self.next_u64() % n as u64) as usize
-        }
-    }
-}
+// Shared deterministic xorshift PRNG (see `fuzz_corpus_replay.rs` for the
+// mirror consumer). The `mutate` helper below is a deliberately different,
+// richer 6-op strategy than corpus-replay's, so it stays local.
+#[path = "support/fuzz.rs"]
+mod fuzz;
+use fuzz::Rng;
 
 /// A random buffer up to `max` bytes (including empty).
 fn random_bytes(rng: &mut Rng, max: usize) -> Vec<u8> {

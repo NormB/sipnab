@@ -1007,11 +1007,13 @@ a=rtpmap:96 H264/90000\r\n";
         let overflow = 3_000usize;
         let mut store = StreamStore::new(cap);
         for i in 0..(cap + overflow) as u32 {
-            // distinct 5-tuple per stream (unique src port) so each is a new key.
-            let parsed = make_parsed(20_000 + (i % 40_000) as u16, 30_000, 160);
-            let mut p = parsed;
-            // force uniqueness beyond the 16-bit port via the ssrc-keyed StreamKey
-            p.src_port = 1_024 + (i % 64_000) as u16;
+            // Each iteration is a genuinely new stream: a unique ssrc AND a
+            // unique src port, so no two iterations collide onto one StreamKey
+            // (which would UPDATE rather than insert, understating cap
+            // pressure). i < cap + overflow (= 4_000 < 64_512), so 1_024 + i
+            // neither aliases another iteration nor overflows u16.
+            let mut p = make_parsed(20_000, 30_000, 160);
+            p.src_port = 1_024 + i as u16;
             store.process_rtp(&p, &make_rtp_header(0x0100_0000 + i, 1), ts(0));
         }
         // Store stayed bounded by the cap (batch eviction may dip just under).

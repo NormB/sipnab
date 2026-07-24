@@ -152,14 +152,28 @@ pub fn parse_device_list(spec: &str) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// `list_devices` must never panic; the result may be empty in
-    /// sandboxed CI environments.
+    /// `list_devices` returns well-formed, deterministic device names. The
+    /// list may be empty in sandboxed CI (no pcap privileges), but whatever it
+    /// returns must honor the contract.
     #[test]
     fn list_devices_returns_vec() {
-        // Should not panic; may be empty in sandboxed CI environments.
         let devs = list_devices();
-        // On most systems there is at least a loopback device.
         tracing::info!("Available devices: {:?}", devs);
+
+        // Contract: libpcap never yields an empty interface name; an empty
+        // name would silently open the default/"any" device. Vacuously true on
+        // a deviceless CI box, but catches a real regression on a host with
+        // NICs (e.g. a mapping bug that emitted a blank name).
+        for name in &devs {
+            assert!(!name.is_empty(), "device name must not be empty: {devs:?}");
+        }
+
+        // The list is a pure query of the OS device table: two back-to-back
+        // calls must agree. This fails if `list_devices` ever became
+        // non-idempotent (e.g. draining a shared iterator so the second call
+        // came back empty on a host that has interfaces).
+        let again = list_devices();
+        assert_eq!(devs, again, "list_devices must be deterministic");
     }
 
     /// `find_default_device` yields a non-empty name, or one of the known

@@ -1286,11 +1286,20 @@ mod multileg_demo_ladder {
         term.draw(|f| app.render(f)).unwrap();
 
         let rows = buffer_rows(&term);
-        eprintln!("--- extended flow at {DEMO_COLS}x{DEMO_ROWS} ---");
-        for (y, r) in rows.iter().enumerate() {
-            eprintln!("{y:2} |{r}|");
-        }
         (app, rows)
+    }
+
+    /// Render the demo screen as a labeled dump for inclusion in failure
+    /// messages only. `assert!`/`panic!` evaluate their format arguments
+    /// lazily, so calling this inside a failure message keeps a passing run
+    /// silent while still surfacing the full screen when something breaks.
+    fn screen_dump(rows: &[String]) -> String {
+        use std::fmt::Write as _;
+        let mut s = format!("--- extended flow at {DEMO_COLS}x{DEMO_ROWS} ---\n");
+        for (y, r) in rows.iter().enumerate() {
+            let _ = writeln!(s, "{y:2} |{r}|");
+        }
+        s
     }
 
     /// The ladder's columns: everything left of the detail pane, whose top
@@ -1313,7 +1322,8 @@ mod multileg_demo_ladder {
         let labels = app.ladder_participant_labels_for_test();
         assert!(
             labels.len() >= 3,
-            "expected a multi-leg (3+ participant) ladder, got {labels:?}"
+            "expected a multi-leg (3+ participant) ladder, got {labels:?}\n{}",
+            screen_dump(&rows)
         );
         let split = ladder_split_col(&rows);
 
@@ -1336,7 +1346,8 @@ mod multileg_demo_ladder {
                 tokens.len(),
                 labels.len(),
                 "each participant must render exactly one label token, \
-                 got {tokens:?} for participants {labels:?}"
+                 got {tokens:?} for participants {labels:?}\n{}",
+                screen_dump(&rows)
             );
             let mut used = vec![false; labels.len()];
             for tok in &tokens {
@@ -1351,7 +1362,8 @@ mod multileg_demo_ladder {
                     Some((i, _)) => used[i] = true,
                     None => panic!(
                         "label token {tok:?} matches no participant of {labels:?} \
-                         — labels collided/overwrote each other in {ladder_txt:?}"
+                         — labels collided/overwrote each other in {ladder_txt:?}\n{}",
+                        screen_dump(&rows)
                     ),
                 }
             }
@@ -1379,14 +1391,16 @@ mod multileg_demo_ladder {
             assert!(
                 all.contains(full),
                 "expected the full arrow label {full:?} somewhere in the \
-                 ladder at demo width; ladder:\n{}",
-                ladder.join("\n")
+                 ladder at demo width; ladder:\n{}\n{}",
+                ladder.join("\n"),
+                screen_dump(&rows)
             );
         }
         for row in &ladder {
             assert!(
                 !row.contains("..."),
-                "truncated label in the ladder at demo width: {row:?}"
+                "truncated label in the ladder at demo width: {row:?}\n{}",
+                screen_dump(&rows)
             );
         }
     }

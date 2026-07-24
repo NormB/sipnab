@@ -13,25 +13,17 @@
 //! * every rotation publishes a *distinct* token and leaves no temp file,
 //! * a rotated token expires (401) and the next rotation restores access (200).
 //!
-//! Mirrors the spawn/post helpers in `tests/mcp_token_test.rs` (kept
-//! self-contained per the existing per-file convention).
+//! Reuses the shared spawn/post helpers in `tests/support/mcp.rs`.
 #![cfg(all(unix, feature = "mcp-http"))]
 
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpStream;
-use std::process::{Command, Stdio};
+#[path = "support/mcp.rs"]
+mod mcp;
+
+use std::process::Command;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Absolute path to a file under `tests/fixtures/`.
-///
-/// # Arguments
-/// * `path` — filename relative to the fixtures directory.
-fn fixture(path: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures")
-        .join(path)
-}
+use mcp::{initialize_status, shutdown, spawn_http_loopback as spawn_http};
 
 /// Absolute path to the harness rotation script under test.
 fn rotate_script() -> std::path::PathBuf {
@@ -64,145 +56,25 @@ fn rotate(key_file: &std::path::Path, token_file: &std::path::Path, ttl: i64) ->
     )
 }
 
-/// Spawn sipnab with HTTP MCP + the given args; return child + bind address.
+/// Poll `cond` every 100 ms until it returns `true` or `timeout` elapses.
 ///
 /// # Returns
-/// `Some((child, addr))` once the "listening on" line appears; `None` if the
-/// server refuses to start or times out after 5s (child is reaped).
+/// `true` if the condition became true within the deadline, else `false`.
 ///
-/// # Side effects
-/// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
-/// reader thread.
-fn spawn_http(extra_args: &[&str]) -> Option<(std::process::Child, String)> {
-    let binary = env!("CARGO_BIN_EXE_sipnab");
-    let pcap = fixture("sip_call.pcap");
-    let pcap_str = pcap.to_string_lossy().to_string();
-
-    let mut cmd = Command::new(binary);
-    cmd.args([
-        "-N",
-        "-I",
-        &pcap_str,
-        "--mcp",
-        "--mcp-transport",
-        "http",
-        "--mcp-bind",
-        "127.0.0.1:0",
-        "--quiet",
-    ]);
-    for a in extra_args {
-        cmd.arg(a);
-    }
-    cmd.env("SIPNAB_LOG", "info");
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = cmd.spawn().expect("spawn sipnab");
-    let stderr = child.stderr.take().expect("stderr");
-
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            let _ = tx.send(line);
+/// Used instead of a fixed multi-second sleep: a token's `exp` is stamped at
+/// mint time, so once it elapses the rejection is permanent — polling returns
+/// as soon as the condition flips rather than always burning a worst-case wait.
+fn poll_until<F: FnMut() -> bool>(timeout: Duration, mut cond: F) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cond() {
+            return true;
         }
-    });
-
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
-            if let Some(addr) = line.split("listening on ").nth(1) {
-                return Some((child, addr.trim().to_string()));
-            }
-            if line.contains("refuses to start") {
-                // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-                unsafe {
-                    libc::kill(child.id() as i32, libc::SIGTERM);
-                }
-                let _ = child.wait();
-                return None;
-            }
-        } else if let Ok(Some(_)) = child.try_wait() {
-            return None;
+        if Instant::now() >= deadline {
+            return false;
         }
+        thread::sleep(Duration::from_millis(100));
     }
-    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
-    let _ = child.wait();
-    None
-}
-
-/// SIGTERMs a spawned sipnab child and waits for it to exit.
-///
-/// # Side effects
-/// Sends SIGTERM to the child process and reaps it.
-fn shutdown(mut child: std::process::Child) {
-    // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGTERM);
-    }
-    let _ = child.wait();
-}
-
-/// POSTs a JSON-RPC `initialize` to `http://addr/mcp` with an optional bearer
-/// token and returns the HTTP status code.
-fn initialize_status(addr: &str, bearer: Option<&str>) -> u16 {
-    let payload = serde_json::json!({
-        "jsonrpc": "2.0", "id": 1, "method": "initialize",
-        "params": {"protocolVersion": "2024-11-05", "capabilities": {},
-                   "clientInfo": {"name": "test", "version": "0"}}
-    });
-    post_status(&format!("http://{addr}/mcp"), bearer, &payload)
-}
-
-/// Issues a raw-TCP HTTP POST of `body` as JSON and returns the status code
-/// (0 if the status line is unparsable).
-///
-/// # Arguments
-/// * `url` — plain `http://host:port/path` URL.
-/// * `bearer` — optional bearer token for the Authorization header.
-/// * `body` — JSON payload to serialize and send.
-///
-/// # Side effects
-/// Opens a TCP connection with a 5s read timeout.
-fn post_status(url: &str, bearer: Option<&str>, body: &serde_json::Value) -> u16 {
-    let parsed = url.strip_prefix("http://").expect("http url");
-    let (authority, path) = parsed.split_once('/').unwrap_or((parsed, ""));
-    let (host, port_str) = authority.rsplit_once(':').expect("host:port");
-    let port: u16 = port_str.parse().expect("port");
-
-    let mut stream = TcpStream::connect((host, port)).expect("connect");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .expect("read timeout");
-
-    let body_str = serde_json::to_string(body).expect("serialize");
-    let mut req = format!(
-        "POST /{path} HTTP/1.1\r\n\
-         Host: {host}:{port}\r\n\
-         Content-Type: application/json\r\n\
-         Accept: application/json, text/event-stream\r\n\
-         Content-Length: {}\r\n\
-         Connection: close\r\n",
-        body_str.len(),
-    );
-    if let Some(b) = bearer {
-        req.push_str(&format!("Authorization: Bearer {b}\r\n"));
-    }
-    req.push_str("\r\n");
-    req.push_str(&body_str);
-    stream.write_all(req.as_bytes()).expect("write");
-
-    let mut resp = Vec::new();
-    stream.read_to_end(&mut resp).expect("read");
-    let s = String::from_utf8_lossy(&resp);
-    s.lines()
-        .next()
-        .and_then(|l| l.split_whitespace().nth(1))
-        .and_then(|c| c.parse().ok())
-        .unwrap_or(0)
 }
 
 /// Write a signing-key file and return (tempdir, key_path, token_path).
@@ -377,10 +249,8 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
     // teardown, a file read, and an HTTP round-trip. Under the full suite's load
     // that window was occasionally exceeding a 1s TTL, expiring the token before
     // the immediate check and flaking the 200. Use a TTL with ample headroom for
-    // the "valid" check, and sleep comfortably past it for the "expired" check —
-    // `thread::sleep` guarantees *at least* its duration, so once SHORT_TTL has
-    // elapsed the rejection is deterministic.
-    const SHORT_TTL: i64 = 5;
+    // the "valid" check.
+    const SHORT_TTL: i64 = 3;
     let (ok, e) = rotate(&key, &token_path, SHORT_TTL);
     assert!(ok, "short-TTL rotation should succeed; stderr: {e}");
     let short = std::fs::read_to_string(&token_path)
@@ -393,12 +263,17 @@ fn expired_rotated_token_is_rejected_then_rotation_restores_access() {
         "freshly rotated short-TTL token → 200"
     );
 
-    // …expires once its TTL elapses (sleep > SHORT_TTL, with margin).
-    thread::sleep(Duration::from_secs(SHORT_TTL as u64 + 2));
-    assert_eq!(
-        initialize_status(&addr, Some(&short)),
-        401,
-        "expired rotated token → 401"
+    // …expires once its TTL elapses. Rather than sleeping a fixed span past the
+    // TTL, poll for the rejection: the token's `exp` is fixed at mint time, so
+    // once it passes the 401 is permanent. Polling flips to a pass as soon as
+    // the token expires (≈ SHORT_TTL), with a generous bound to absorb suite
+    // load, instead of always burning a worst-case fixed sleep.
+    let expired = poll_until(Duration::from_secs(SHORT_TTL as u64 + 15), || {
+        initialize_status(&addr, Some(&short)) == 401
+    });
+    assert!(
+        expired,
+        "rotated short-TTL token must be rejected (401) once its TTL elapses"
     );
 
     // The next rotation restores access without restarting the server.

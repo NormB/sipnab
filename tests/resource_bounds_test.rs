@@ -99,13 +99,14 @@ fn dialog_flood_bounded_without_rotate() {
             i
         );
     }
-    // The security property is the UPPER bound, asserted at every step
-    // above. Rotate-mode eviction is batched (cap/100 at a time) for
-    // amortized O(1) inserts under flood, so the final length may sit up
-    // to one batch below the cap (drop-new mode stays exactly at it).
-    assert!(
-        store.len() > CAP - CAP / 100 - 1 && store.len() <= CAP,
-        "store should be saturated to within one eviction batch of the cap: len={}",
+    // Drop-new mode never evicts: once the table fills, every later
+    // distinct Call-ID is dropped, so the final length is deterministically
+    // pinned at exactly the cap (unlike rotate mode's batched-eviction
+    // range).
+    assert_eq!(
+        store.len(),
+        CAP,
+        "drop-new store should be saturated at exactly the cap: len={}",
         store.len()
     );
 }

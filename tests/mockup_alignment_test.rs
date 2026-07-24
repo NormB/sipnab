@@ -185,11 +185,25 @@ fn check_block(lines: &[String]) -> Vec<String> {
         .collect();
     let pipe_lines = pipe_cols.iter().filter(|c| !c.is_empty()).count();
     if !has_box_art && pipe_lines >= 3 {
-        let reference = pipe_cols
+        // Consensus lifelines: a column counts as a lifeline only if a pipe
+        // lands on it on at least two distinct lines. A real lifeline is a
+        // persistent vertical (present on many rows); a single misaligned
+        // pipe lands on its stray column exactly once. Deriving the reference
+        // from cross-line agreement — rather than from the single line with
+        // the most pipes — means one misaligned line can neither invent a
+        // phantom lifeline nor, by being picked as the reference, cascade
+        // false positives onto every correctly-aligned line.
+        let mut freq: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+        for cols in &pipe_cols {
+            for &c in cols {
+                *freq.entry(c).or_default() += 1;
+            }
+        }
+        let reference: Vec<usize> = freq
             .iter()
-            .max_by_key(|c| c.len())
-            .cloned()
-            .unwrap_or_default();
+            .filter(|&(_, &n)| n >= 2)
+            .map(|(&c, _)| c)
+            .collect();
         for (j, cols) in pipe_cols.iter().enumerate() {
             for col in cols {
                 if !reference.contains(col) {

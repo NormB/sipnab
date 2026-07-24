@@ -16,6 +16,13 @@
 //! (`tui_snapshot_test.rs` owns those). Everything is gated on the `tui`
 //! feature.
 
+// Low-level SIP fixture builders shared with `tui_snapshot_test.rs` so the
+// two suites can't drift. Declared at file scope (not nested) so the
+// `#[path]` resolves against `tests/`.
+#[cfg(feature = "tui")]
+#[path = "support/tui_fixtures.rs"]
+mod fixtures;
+
 #[cfg(feature = "tui")]
 mod tui_state {
     use std::net::{IpAddr, Ipv4Addr};
@@ -29,121 +36,13 @@ mod tui_state {
     use sipnab::tui::{App, ColorMode, Popup, SaveFormat, SdpDisplayMode, TimestampMode, View};
 
     // ── Helper: SIP message constructors ───────────────────────────────
-
-    /// A-side test endpoint address used as the source of requests.
-    ///
-    /// # Returns
-    /// `10.0.0.1` (note: not actually a loopback address despite the name).
-    fn localhost_a() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))
-    }
-
-    /// B-side test endpoint address used as the destination of requests.
-    ///
-    /// # Returns
-    /// `10.0.0.2` (note: not actually a loopback address despite the name).
-    fn localhost_b() -> IpAddr {
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
-    }
-
-    /// Fixed reference timestamp all fixture messages are offset from.
-    ///
-    /// # Returns
-    /// 2024-06-15 12:00:00 UTC, so tests are independent of wall-clock time.
-    fn base_ts() -> DateTime<Utc> {
-        chrono::TimeZone::with_ymd_and_hms(&Utc, 2024, 6, 15, 12, 0, 0).unwrap()
-    }
-
-    /// Assemble raw SIP wire bytes from a first line and header lines.
-    ///
-    /// # Arguments
-    /// * `first_line` - Request or status line, without CRLF.
-    /// * `headers` - Header lines, each without CRLF.
-    ///
-    /// # Returns
-    /// CRLF-terminated bytes ending in the blank header/body separator (no body).
-    fn build_sip(first_line: &str, headers: &[&str]) -> Vec<u8> {
-        let mut msg = Vec::new();
-        msg.extend_from_slice(first_line.as_bytes());
-        msg.extend_from_slice(b"\r\n");
-        for h in headers {
-            msg.extend_from_slice(h.as_bytes());
-            msg.extend_from_slice(b"\r\n");
-        }
-        msg.extend_from_slice(b"\r\n");
-        msg
-    }
-
-    /// Parse a minimal INVITE (A-side to B-side, UDP 5060/5060).
-    ///
-    /// # Arguments
-    /// * `call_id` - Call-ID header value.
-    /// * `from` / `to` - Users placed in the From/To display names and URIs.
-    /// * `ts` - Capture timestamp.
-    ///
-    /// # Returns
-    /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_invite(call_id: &str, from: &str, to: &str, ts: DateTime<Utc>) -> SipMessage {
-        let raw = build_sip(
-            &format!("INVITE sip:{to}@example.com SIP/2.0"),
-            &[
-                &format!("From: \"{from}\" <sip:{from}@example.com>;tag=t1"),
-                &format!("To: \"{to}\" <sip:{to}@example.com>"),
-                &format!("Call-ID: {call_id}"),
-                "CSeq: 1 INVITE",
-                "Content-Length: 0",
-            ],
-        );
-        parse_sip(
-            &raw,
-            ts,
-            localhost_a(),
-            localhost_b(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse INVITE")
-    }
-
-    /// Parse a SIP response (B-side to A-side) for Alice/Bob's dialog.
-    ///
-    /// # Arguments
-    /// * `call_id` - Call-ID header value.
-    /// * `status` / `reason` - Status line, e.g. 200 "OK".
-    /// * `cseq_method` - Method echoed in the CSeq header.
-    /// * `ts` - Capture timestamp.
-    ///
-    /// # Returns
-    /// The parsed `SipMessage`; panics if parsing fails.
-    fn make_response(
-        call_id: &str,
-        status: u16,
-        reason: &str,
-        cseq_method: &str,
-        ts: DateTime<Utc>,
-    ) -> SipMessage {
-        let raw = build_sip(
-            &format!("SIP/2.0 {status} {reason}"),
-            &[
-                "From: \"Alice\" <sip:1001@example.com>;tag=t1",
-                "To: \"Bob\" <sip:1002@example.com>;tag=t2",
-                &format!("Call-ID: {call_id}"),
-                &format!("CSeq: 1 {cseq_method}"),
-                "Content-Length: 0",
-            ],
-        );
-        parse_sip(
-            &raw,
-            ts,
-            localhost_b(),
-            localhost_a(),
-            5060,
-            5060,
-            TransportProto::Udp,
-        )
-        .expect("parse response")
-    }
+    //
+    // The low-level fixture builders (endpoint addresses, base timestamp,
+    // raw-wire assembly, minimal INVITE/response) are shared with
+    // `tui_snapshot_test.rs` via the file-scoped `fixtures` module above so
+    // the two suites can't drift. File-specific higher-level builders stay
+    // below.
+    use super::fixtures::{base_ts, build_sip, endpoint_a, endpoint_b, make_invite, make_response};
 
     /// Build an `App` preloaded with three INVITE dialogs: `call-1@test`
     /// completed (200 OK), `call-2@test` failed (503), `call-3@test` active
@@ -1207,8 +1106,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -1709,8 +1608,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -1999,13 +1898,27 @@ mod tui_state {
     }
 
     /// PageUp after PageDown moves the selection back toward the top.
+    ///
+    /// Dialog 1 has two messages (INVITE + 200 OK), so PageDown lands on the
+    /// last visible row (index 1) and PageUp returns to the first (index 0).
+    /// Asserting the concrete positions makes this fail if either paging key
+    /// is a no-op — the old `< after_down || after_down == 0` form passed
+    /// vacuously whenever PageDown happened not to move.
     #[test]
     fn call_flow_page_up_after_page_down() {
         let mut app = app_with_call_flow_open();
         app.handle_key(KeyCode::PageDown);
         let after_down = app.selected_msg_index();
+        assert_eq!(
+            after_down, 1,
+            "PageDown must advance to the last of the two messages"
+        );
         app.handle_key(KeyCode::PageUp);
-        assert!(app.selected_msg_index() < after_down || after_down == 0);
+        assert_eq!(
+            app.selected_msg_index(),
+            0,
+            "PageUp must return to the first message"
+        );
     }
 
     /// Home selects the first message and resets the ladder scroll.
@@ -2265,11 +2178,23 @@ mod tui_state {
         }
         app.handle_key(KeyCode::Enter);
         let filtered_count = app.visible_dialog_count();
+        // The "1001" filter matches only dialog 1 (From=1001).
+        assert_eq!(
+            filtered_count, 1,
+            "filter should narrow to the one 1001 dialog"
+        );
         // Re-enter call flow and clear filter
         app.handle_key(KeyCode::Enter);
         app.handle_key(KeyCode::F(9));
         app.handle_key(KeyCode::Esc); // back to list to check count
-        assert!(app.visible_dialog_count() >= filtered_count);
+        // F9 must restore all three dialogs; the old `>= filtered_count`
+        // form passed even if F9 did nothing (1 >= 1). Assert the concrete
+        // cleared state so a no-op F9 fails.
+        assert_eq!(
+            app.visible_dialog_count(),
+            3,
+            "F9 must clear the filter and restore all dialogs"
+        );
     }
 
     // ── Raw message: navigation ──────────────────────────────────────
@@ -2634,12 +2559,15 @@ mod tui_state {
     }
 
     /// Enter performs the save, closes the popup, and reports a status
-    /// message. Writes `/tmp/sipnab_test_save.pcap` as a side effect.
+    /// message. Writes into a tempdir that is removed when the test ends, so
+    /// nothing leaks into `/tmp`.
     #[test]
     fn save_popup_enter_closes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sipnab_test_save.pcap");
         let mut app = app_with_three_dialogs();
         app.handle_key(KeyCode::F(2));
-        app.set_save_path("/tmp/sipnab_test_save.pcap");
+        app.set_save_path(path.to_str().expect("utf-8 tempdir path"));
         app.handle_key(KeyCode::Enter);
         assert_eq!(app.active_popup(), None);
         assert!(app.status_error().is_some()); // save result message
@@ -3322,9 +3250,12 @@ mod tui_state {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/pcap-samples/sip-rtp-g711.pcap"
         );
-        if !std::path::Path::new(pcap_path).exists() {
-            return; // Skip if test pcaps not available
-        }
+        // The fixture is committed; a missing one is a broken checkout, not a
+        // reason to pass silently. Fail loudly instead of skipping.
+        assert!(
+            std::path::Path::new(pcap_path).exists(),
+            "missing committed test fixture: {pcap_path}"
+        );
 
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
@@ -3350,9 +3281,10 @@ mod tui_state {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/pcap-samples/speech_8k_ulaw.pcap"
         );
-        if !std::path::Path::new(pcap_path).exists() {
-            return;
-        }
+        assert!(
+            std::path::Path::new(pcap_path).exists(),
+            "missing committed test fixture: {pcap_path}"
+        );
 
         let mut app = App::new_test();
         open_manual_file_dialog(&mut app);
@@ -3384,9 +3316,10 @@ mod tui_state {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/pcap-samples/sip-sdp-example.pcap"
         );
-        if !std::path::Path::new(pcap_path).exists() {
-            return;
-        }
+        assert!(
+            std::path::Path::new(pcap_path).exists(),
+            "missing committed test fixture: {pcap_path}"
+        );
 
         open_manual_file_dialog(&mut app);
         for c in pcap_path.chars() {
@@ -3561,18 +3494,76 @@ mod tui_state {
 
     // ── Swimlane selection default ───────────────────────────────────
 
-    /// `SelectionState` variants are distinct and a fresh app stays in the call list.
+    /// With no selection, `prepare_messages` marks every row `Normal`; with a
+    /// selection it marks the chosen row `Selected` and same-leg peers
+    /// `Related`.
+    ///
+    /// This drives the real production selection-assignment predicate
+    /// (`prepare_messages` → `style`) rather than asserting `Normal == Normal`,
+    /// which was a tautology that could never fail. It falls back to `Normal`
+    /// as the default state, so a broken default (or broken Selected/Related
+    /// assignment) now fails here.
     #[test]
     fn default_selection_state_is_normal() {
-        use sipnab::tui::call_flow::SelectionState;
-        let app = App::new_test();
-        // A new app with no messages should not have any specific selection state;
-        // verify the enum default variant.
-        assert_eq!(SelectionState::Normal, SelectionState::Normal);
-        assert_ne!(SelectionState::Normal, SelectionState::Selected);
-        assert_ne!(SelectionState::Normal, SelectionState::Related);
-        // App without call flow open: no swimlane state to inspect beyond the enum itself.
-        assert_eq!(*app.current_view(), View::CallList);
+        use sipnab::tui::call_flow::prepare::prepare_messages;
+        use sipnab::tui::call_flow::{FlowDisplayOptions, SelectionState};
+        use sipnab::tui::{ColorMode, SdpDisplayMode, Theme, TimestampMode};
+        use std::collections::HashSet;
+
+        let t0 = base_ts();
+        // A two-message dialog on one leg: INVITE A->B, then 200 OK B->A.
+        let messages = vec![
+            make_invite("sel-state@test", "1001", "1002", t0),
+            make_response(
+                "sel-state@test",
+                200,
+                "OK",
+                "INVITE",
+                t0 + TimeDelta::seconds(1),
+            ),
+        ];
+        let theme = Theme::default();
+        let resolver = sipnab::names::NameResolver::new();
+        let fold_expanded = HashSet::new();
+        let opts = |selected_msg| FlowDisplayOptions {
+            sdp_mode: SdpDisplayMode::None,
+            ts_mode: TimestampMode::DeltaPrev,
+            color_mode: ColorMode::Method,
+            show_rtp: false,
+            selected_msg,
+            theme: &theme,
+            resolver: &resolver,
+            name_mode: sipnab::names::NameMode::Off,
+            rtp_segments: &[],
+        };
+
+        // No selection ⇒ default state is Normal for every rendered row.
+        let (_p, unselected) = prepare_messages(&messages, t0, None, &opts(None), &fold_expanded);
+        assert!(
+            unselected
+                .iter()
+                .filter(|m| !m.is_spacer)
+                .all(|m| m.selection_state == SelectionState::Normal),
+            "with no selection every row must default to Normal"
+        );
+
+        // Select the first row ⇒ it becomes Selected, its same-leg peer Related.
+        let (_p, selected) = prepare_messages(&messages, t0, None, &opts(Some(0)), &fold_expanded);
+        let states: Vec<SelectionState> = selected
+            .iter()
+            .filter(|m| !m.is_spacer)
+            .map(|m| m.selection_state)
+            .collect();
+        assert_eq!(
+            states[0],
+            SelectionState::Selected,
+            "the selected row must be marked Selected"
+        );
+        assert_eq!(
+            states[1],
+            SelectionState::Related,
+            "the same-leg peer must be marked Related, not Normal"
+        );
     }
 
     // ── Mermaid export key (E) ───────────────────────────────────────
@@ -4111,8 +4102,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4138,8 +4129,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_b(),
-            localhost_a(),
+            endpoint_b(),
+            endpoint_a(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4165,8 +4156,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_b(),
-            localhost_a(),
+            endpoint_b(),
+            endpoint_a(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4201,8 +4192,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_b(),
-            localhost_a(),
+            endpoint_b(),
+            endpoint_a(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4228,8 +4219,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4255,26 +4246,23 @@ mod tui_state {
         ]
     }
 
-    // ── Test 1: stream_detail_enter_from_stream_list ─────────────────
-
-    /// Enter on a populated stream list opens the `StreamDetail` view.
-    #[test]
-    fn stream_detail_enter_from_stream_list() {
+    /// Build an `App` whose stream store holds one PCMU stream, fed from five
+    /// synthetic RTP packets (10.0.0.1:20000 -> 10.0.0.2:30000, given `ssrc`).
+    ///
+    /// Shared by the stream-detail navigation tests below, which previously
+    /// copy-pasted this 40-line feed block and only differed in the SSRC.
+    fn app_with_one_rtp_stream(ssrc: u32) -> App {
         use sipnab::capture::parse::ParsedPacket;
         use sipnab::rtp::parser::parse_rtp_header;
         use sipnab::rtp::stream_store::StreamStore;
         use std::net::Ipv4Addr;
 
-        // Create an App with a stream in its store
         let ds = std::sync::Arc::new(parking_lot::RwLock::new(
             sipnab::sip::dialog_store::DialogStore::new(100, false),
         ));
         let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
-
-        // Feed some RTP packets so the stream store has a stream
         {
             let mut store = ss.write();
-            let ssrc = 0xDEADBEEF_u32;
             for i in 0u16..5 {
                 let mut payload = Vec::with_capacity(172);
                 payload.push(0x80);
@@ -4306,12 +4294,20 @@ mod tui_state {
             }
         }
 
-        let mut app = sipnab::tui::App::new(
+        sipnab::tui::App::new(
             ds,
             ss,
             sipnab::tui::Theme::default(),
             sipnab::tui::Keymap::default(),
-        );
+        )
+    }
+
+    // ── Test 1: stream_detail_enter_from_stream_list ─────────────────
+
+    /// Enter on a populated stream list opens the `StreamDetail` view.
+    #[test]
+    fn stream_detail_enter_from_stream_list() {
+        let mut app = app_with_one_rtp_stream(0xDEADBEEF);
 
         // Navigate to StreamList
         app.handle_key(KeyCode::Tab);
@@ -4331,57 +4327,7 @@ mod tui_state {
     /// Esc from stream detail returns to the stream list.
     #[test]
     fn stream_detail_escape_returns_to_stream_list() {
-        use sipnab::capture::parse::ParsedPacket;
-        use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::rtp::stream_store::StreamStore;
-        use std::net::Ipv4Addr;
-
-        let ds = std::sync::Arc::new(parking_lot::RwLock::new(
-            sipnab::sip::dialog_store::DialogStore::new(100, false),
-        ));
-        let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
-
-        // Feed RTP packets
-        {
-            let mut store = ss.write();
-            let ssrc = 0xCAFEBABE_u32;
-            for i in 0u16..5 {
-                let mut payload = Vec::with_capacity(172);
-                payload.push(0x80);
-                payload.push(0x00);
-                payload.extend_from_slice(&(100 + i).to_be_bytes());
-                payload.extend_from_slice(&((i as u32) * 160).to_be_bytes());
-                payload.extend_from_slice(&ssrc.to_be_bytes());
-                payload.extend_from_slice(&[0x7F; 160]);
-
-                let parsed = ParsedPacket {
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
-                        .unwrap(),
-                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
-                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-                    src_port: 20000,
-                    dst_port: 30000,
-                    transport: TransportProto::Udp,
-                    payload: payload.into(),
-                    ip_id: None,
-                    tcp_seq: None,
-                    tcp_flags: None,
-                    fragment_offset: None,
-                    more_fragments: false,
-                    ip_protocol: 17,
-                    from_hep: false,
-                };
-                let rtp = parse_rtp_header(&parsed.payload).unwrap();
-                store.process_rtp(&parsed, &rtp, parsed.timestamp);
-            }
-        }
-
-        let mut app = sipnab::tui::App::new(
-            ds,
-            ss,
-            sipnab::tui::Theme::default(),
-            sipnab::tui::Keymap::default(),
-        );
+        let mut app = app_with_one_rtp_stream(0xCAFEBABE);
 
         // Navigate to StreamList, then Enter to open StreamDetail
         app.handle_key(KeyCode::Tab);
@@ -4398,56 +4344,7 @@ mod tui_state {
     /// `j`/`k` scroll the stream detail down and up, clamping at 0.
     #[test]
     fn stream_detail_scroll_j_k() {
-        use sipnab::capture::parse::ParsedPacket;
-        use sipnab::rtp::parser::parse_rtp_header;
-        use sipnab::rtp::stream_store::StreamStore;
-        use std::net::Ipv4Addr;
-
-        let ds = std::sync::Arc::new(parking_lot::RwLock::new(
-            sipnab::sip::dialog_store::DialogStore::new(100, false),
-        ));
-        let ss = std::sync::Arc::new(parking_lot::RwLock::new(StreamStore::new(100)));
-
-        {
-            let mut store = ss.write();
-            let ssrc = 0x11223344_u32;
-            for i in 0u16..5 {
-                let mut payload = Vec::with_capacity(172);
-                payload.push(0x80);
-                payload.push(0x00);
-                payload.extend_from_slice(&(100 + i).to_be_bytes());
-                payload.extend_from_slice(&((i as u32) * 160).to_be_bytes());
-                payload.extend_from_slice(&ssrc.to_be_bytes());
-                payload.extend_from_slice(&[0x7F; 160]);
-
-                let parsed = ParsedPacket {
-                    timestamp: chrono::DateTime::from_timestamp(1_700_000_000 + i as i64, 0)
-                        .unwrap(),
-                    src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
-                    dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
-                    src_port: 20000,
-                    dst_port: 30000,
-                    transport: TransportProto::Udp,
-                    payload: payload.into(),
-                    ip_id: None,
-                    tcp_seq: None,
-                    tcp_flags: None,
-                    fragment_offset: None,
-                    more_fragments: false,
-                    ip_protocol: 17,
-                    from_hep: false,
-                };
-                let rtp = parse_rtp_header(&parsed.payload).unwrap();
-                store.process_rtp(&parsed, &rtp, parsed.timestamp);
-            }
-        }
-
-        let mut app = sipnab::tui::App::new(
-            ds,
-            ss,
-            sipnab::tui::Theme::default(),
-            sipnab::tui::Keymap::default(),
-        );
+        let mut app = app_with_one_rtp_stream(0x11223344);
 
         // Navigate to StreamDetail
         app.handle_key(KeyCode::Tab);
@@ -4626,8 +4523,8 @@ mod tui_state {
         parse_sip(
             &raw,
             ts,
-            localhost_a(),
-            localhost_b(),
+            endpoint_a(),
+            endpoint_b(),
             5060,
             5060,
             TransportProto::Udp,
@@ -4669,33 +4566,12 @@ mod tui_state {
         // state, call_id, src/dst).  Body search should still match.
         let app = app_with_user_agent_dialog();
         let store = app.dialog_store_ref().read();
+        // Drive the production search predicate directly so the test can't
+        // drift from what the call list actually filters on.
         let q = "freeswitch".to_ascii_lowercase();
         let matches: Vec<_> = store
             .iter()
-            .filter(|d| {
-                d.call_id.to_ascii_lowercase().contains(&q)
-                    || d.method.as_str().to_ascii_lowercase().contains(&q)
-                    || d.from_user
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.to_user
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.src_addr.to_string().contains(&q)
-                    || d.dst_addr.to_string().contains(&q)
-                    || sipnab::tui::call_list::state_display_str(d.state())
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.messages.iter().any(|msg| {
-                        String::from_utf8_lossy(&msg.raw)
-                            .to_ascii_lowercase()
-                            .contains(&q)
-                    })
-            })
+            .filter(|d| sipnab::tui::call_list::dialog_matches_search(d, &q))
             .collect();
         assert_eq!(
             matches.len(),
@@ -4712,30 +4588,7 @@ mod tui_state {
         let q = "nonexistent-xyz-string".to_ascii_lowercase();
         let matches: Vec<_> = store
             .iter()
-            .filter(|d| {
-                d.call_id.to_ascii_lowercase().contains(&q)
-                    || d.method.as_str().to_ascii_lowercase().contains(&q)
-                    || d.from_user
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.to_user
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.src_addr.to_string().contains(&q)
-                    || d.dst_addr.to_string().contains(&q)
-                    || sipnab::tui::call_list::state_display_str(d.state())
-                        .to_ascii_lowercase()
-                        .contains(&q)
-                    || d.messages.iter().any(|msg| {
-                        String::from_utf8_lossy(&msg.raw)
-                            .to_ascii_lowercase()
-                            .contains(&q)
-                    })
-            })
+            .filter(|d| sipnab::tui::call_list::dialog_matches_search(d, &q))
             .collect();
         assert_eq!(
             matches.len(),

@@ -30,6 +30,19 @@ fn health_returns_ok() {
     assert_eq!(resp.body.trim(), "ok");
 }
 
+/// The server accepts `--api-max-conn` (the in-flight-request cap) and still
+/// serves — keeps the flag under test coverage.
+#[test]
+fn api_max_conn_flag_accepted_and_serves() {
+    let srv = ApiServer::spawn(&["--api-max-conn", "8"]);
+    let resp = srv.get("/health");
+    assert_eq!(
+        resp.status, 200,
+        "server started with --api-max-conn should serve /health"
+    );
+    assert_eq!(resp.body.trim(), "ok");
+}
+
 /// `GET /v1/dialogs` returns the versioned list wrapper (schema_version/total/
 /// offset/limit) and each summary validates against `dialog.schema.json`.
 #[test]
@@ -165,17 +178,40 @@ fn auth_accepts_correct_bearer_and_rejects_everything_else() {
     );
 }
 
-/// A low `--api-max-conn` cap still serves sequential requests: five
-/// consecutive `/health` calls all return 200.
+/// The per-IP rate limiter rejects once a source IP exceeds its request budget:
+/// an initial burst of same-IP requests to a guarded endpoint is served (200),
+/// and past the 100 rps cap further requests are rejected (503). This assertion
+/// FAILS if the limiter is broken — with it removed every request would 200 and
+/// no rejection would ever appear.
 #[test]
-fn max_conn_limiter_active_still_serves() {
-    // A low connection cap must not break normal serving. (Deterministic
-    // exhaustion of the semaphore would need a slow endpoint, which the API
-    // does not expose; the limiter mechanism itself is library-level.)
-    let srv = ApiServer::spawn(&["--api-max-conn", "2"]);
-    for _ in 0..5 {
-        assert_eq!(srv.get("/health").status, 200);
+fn rate_limiter_rejects_when_per_ip_budget_exhausted() {
+    // `/v1/dialogs` runs the auth+rate-limit guard even when auth is
+    // unconfigured, so a same-IP burst is charged against the per-IP budget
+    // (RateLimiter::new(100), a one-second window). Fire a tight burst and stop
+    // at the first rejection — which lands just past the cap (~request 101),
+    // well inside the one-second window, keeping the test deterministic. The
+    // limiter rejects with 503 SERVICE_UNAVAILABLE (not 429).
+    let srv = ApiServer::spawn(&[]);
+    let mut served = false;
+    let mut rejected = false;
+    for _ in 0..250 {
+        match srv.get("/v1/dialogs").status {
+            200 => served = true,
+            503 => {
+                rejected = true;
+                break;
+            }
+            other => panic!("unexpected status {other} from /v1/dialogs during rate-limit burst"),
+        }
     }
+    assert!(
+        served,
+        "requests under the per-IP budget must be served (200)"
+    );
+    assert!(
+        rejected,
+        "the per-IP rate limiter must reject with 503 once the 100 rps budget is exhausted"
+    );
 }
 
 /// Passing `--api-tls-cert`/`--api-tls-key` fails fast with the documented

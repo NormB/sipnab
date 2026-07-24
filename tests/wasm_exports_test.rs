@@ -7,15 +7,20 @@
 //! new Rust functions were added but wasm-pack wasn't re-run.
 
 /// The generated `website/static/wasm/sipnab.js` contains every required
-/// public API function name; skips (with a note) when WASM is not built.
+/// public API function name. A missing WASM build is a hard failure: the
+/// bundle ships with the site and must exist for this guard to mean anything,
+/// so its absence fails loudly instead of silently skipping.
 #[test]
 fn wasm_js_exports_all_required_functions() {
     let js_path = std::path::Path::new("website/static/wasm/sipnab.js");
-    if !js_path.exists() {
-        // WASM not built — skip (CI may not have wasm-pack)
-        eprintln!("Skipping: website/static/wasm/sipnab.js not found (WASM not built)");
-        return;
-    }
+    assert!(
+        js_path.exists(),
+        "WASM build missing: {} not found. The website WASM bundle must be built and \
+         present — this export guard cannot run without it, and the published site would \
+         ship a stale/absent bundle. Build it with: wasm-pack build --target web \
+         --out-dir website/static/wasm --no-typescript -- --no-default-features --features wasm",
+        js_path.display()
+    );
 
     let js = std::fs::read_to_string(js_path).expect("Failed to read sipnab.js");
 
