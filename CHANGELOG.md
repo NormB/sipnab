@@ -5,6 +5,23 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- A 200 OK to INVITE that races a CANCEL now correctly establishes the call
+  (Cancelled → InCall) per RFC 3261, instead of leaving a call that was
+  actually answered stuck in the Cancelled state.
+- A 401/407 auth challenge to REGISTER no longer marks the registration
+  Failed: challenges are intermediate (the client re-registers with
+  credentials), so the dialog stays auth-pending until a genuine failure or
+  a 200 OK.
+- Call answer time (`answered_at`) is now pinned to the initial INVITE's
+  CSeq, so a re-INVITE's 200 OK can no longer be recorded as the call's
+  answer time and corrupt setup/ring metrics.
+- `cseq()` returns only the single RFC 3261 method token, dropping trailing
+  garbage (`1 INVITE extra` → `INVITE`) that previously defeated method
+  comparisons in timing.
+- The From/To user is now extracted from the actual addressable URI (inside
+  the `<...>` name-addr, or the bare addr-spec), never a quoted display
+  name — a crafted `"sip:evil@x"` display name can no longer spoof the user,
+  and a non-sip URI such as `tel:` yields no user.
 - `--split filesize:N` now counts each record's on-disk framing (the pcap
   record header or the pcap-ng EPB overhead), not just the payload, so
   rotation fires at the intended file size instead of systematically

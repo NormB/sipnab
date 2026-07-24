@@ -114,12 +114,13 @@ impl SipMessage {
     /// The method string borrows from the header value (zero allocation).
     pub fn cseq(&self) -> Option<(u32, &str)> {
         let val = self.header("CSeq")?;
-        let mut parts = val.trim().splitn(2, char::is_whitespace);
+        // RFC 3261: CSeq = 1*DIGIT LWS Method, where Method is a single
+        // token. Take the first two whitespace-separated tokens and ignore
+        // any trailing garbage (e.g. "1 INVITE extra") so method comparisons
+        // in timing.rs are not defeated.
+        let mut parts = val.split_whitespace();
         let num: u32 = parts.next()?.parse().ok()?;
-        let method = parts.next()?.trim();
-        if method.is_empty() {
-            return None;
-        }
+        let method = parts.next()?;
         Some((num, method))
     }
 
@@ -291,22 +292,27 @@ fn has_control_bytes(s: &str) -> bool {
 /// Returns `None` when no `sip:`/`sips:` URI is found, when the URI has no
 /// `@` (host-only), or when the user part is empty.
 pub(crate) fn extract_uri_user(header_value: &str) -> Option<String> {
-    // Try angle-bracket form first: <sip:user@host> or <sips:user@host>
-    // Fall back to bare form: sip:user@host or sips:user@host
-    let scheme_pos = header_value
-        .find("<sip:")
-        .or_else(|| header_value.find("<sips:"))
-        .or_else(|| header_value.find("sip:"))
-        .or_else(|| header_value.find("sips:"))?;
+    // The addressable URI is inside <...> for the name-addr form, otherwise
+    // the (trimmed) value up to the first header parameter is the bare
+    // addr-spec. A quoted/token display name must NEVER be scanned for the
+    // user, so a crafted `"sip:evil@x"` display name cannot spoof it.
+    let uri = match header_value.find('<') {
+        Some(lt) => {
+            let rest = &header_value[lt + 1..];
+            let gt = rest.find('>')?;
+            &rest[..gt]
+        }
+        None => header_value.trim().split(';').next().unwrap_or("").trim(),
+    };
 
-    let after_scheme = &header_value[scheme_pos..];
-    // Skip past the scheme (find ':' after sip/sips)
-    let colon_pos = after_scheme.find(':')?;
-    let after_colon = &after_scheme[colon_pos + 1..];
+    // The URI must itself be a sip/sips addr-spec (not tel:, etc.).
+    let after_scheme = uri
+        .strip_prefix("sip:")
+        .or_else(|| uri.strip_prefix("sips:"))?;
 
-    // User part ends at '@'
-    let at_pos = after_colon.find('@')?;
-    let user = &after_colon[..at_pos];
+    // User part ends at '@'.
+    let at_pos = after_scheme.find('@')?;
+    let user = &after_scheme[..at_pos];
 
     if user.is_empty() {
         return None;
@@ -440,6 +446,26 @@ mod tests {
             ],
             b"",
         )
+    }
+
+    /// `cseq()` returns only the single method token per RFC 3261, dropping
+    /// any trailing garbage after it (e.g. `1 INVITE extra` → method
+    /// `INVITE`), so downstream method comparisons in timing.rs still match.
+    #[test]
+    fn cseq_method_is_single_token() {
+        let msg = parse_msg(
+            "INVITE sip:b@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK9",
+                "From: <sip:a@example.com>;tag=1",
+                "To: <sip:b@example.com>",
+                "Call-ID: cseq@example.com",
+                "CSeq: 1 INVITE extra",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        assert_eq!(msg.cseq(), Some((1, "INVITE")));
     }
 
     /// A complete OPTIONS request reports zero malformations.
@@ -581,6 +607,23 @@ mod tests {
             msg.malformations().is_empty(),
             "tab is LWS, not malformed; got {:?}",
             msg.malformations()
+        );
+    }
+
+    /// A quoted display name containing a fake `sip:` URI must not be parsed
+    /// as the user: the addressable URI here is `tel:`, so there is no SIP
+    /// user, and the display name's `sip:evil@…` must be ignored.
+    #[test]
+    fn extract_user_ignores_spoofed_display_name() {
+        assert_eq!(
+            extract_uri_user(r#""sip:evil@attacker.com" <tel:+15551234>"#),
+            None
+        );
+        // With a real sip URI present, the angle-bracket URI wins over a
+        // spoofed display-name URI.
+        assert_eq!(
+            extract_uri_user(r#""sip:evil@attacker.com" <sip:real@example.com>"#),
+            Some("real".to_string())
         );
     }
 
