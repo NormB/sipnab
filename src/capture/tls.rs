@@ -186,24 +186,28 @@ pub struct KeyLogEntry {
     pub secret: Vec<u8>,
 }
 
+impl KeyLogEntry {
+    /// Overwrite all key material with zeros using the `zeroize` crate, whose
+    /// writes the compiler cannot elide.
+    ///
+    /// Clears the `secret`, the `client_random`, and the `label` — the label
+    /// echoes the key type (e.g. `CLIENT_TRAFFIC_SECRET_0`) and is worth
+    /// wiping alongside the bytes. The old implementation was a plain byte
+    /// loop (elidable) that also skipped the label.
+    fn zeroize_material(&mut self) {
+        use zeroize::Zeroize;
+        self.secret.zeroize();
+        self.client_random.zeroize();
+        self.label.zeroize();
+    }
+}
+
 /// Zeroize key material on drop to prevent secrets lingering in freed heap.
 impl Drop for KeyLogEntry {
-    /// Overwrite the `secret` and `client_random` byte buffers with zeros before
-    /// the allocation is freed.
-    ///
-    /// # Side effects
-    ///
-    /// Mutates `self.secret` and `self.client_random` in place, zeroing every
-    /// byte. Note this is a plain loop, not a `zeroize`-crate write, so the
-    /// compiler could in principle elide it; the label buffer is not cleared.
+    /// Wipe the secret, client random, and label before the allocation is
+    /// freed, via the private `zeroize_material` helper.
     fn drop(&mut self) {
-        // Zero out secret material byte-by-byte
-        for b in self.secret.iter_mut() {
-            *b = 0;
-        }
-        for b in self.client_random.iter_mut() {
-            *b = 0;
-        }
+        self.zeroize_material();
     }
 }
 
@@ -506,5 +510,25 @@ mod tests {
             // entry is dropped here
         }
         // If we got here, the Drop impl ran without panic
+    }
+
+    /// `zeroize_material` clears the secret, the client random, AND the label
+    /// via the `zeroize` crate. The crate's `Zeroize` empties the buffers
+    /// (len 0), unlike the old elidable plain loop that left them full of
+    /// zeroed-but-present bytes and never touched the label.
+    #[test]
+    fn keylog_entry_zeroize_material_clears_all_fields() {
+        let mut entry = KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: vec![0xAA; 32],
+            secret: vec![0xBB; 48],
+        };
+        entry.zeroize_material();
+        assert!(entry.secret.is_empty(), "secret not zeroized/cleared");
+        assert!(
+            entry.client_random.is_empty(),
+            "client_random not zeroized/cleared"
+        );
+        assert!(entry.label.is_empty(), "label not zeroized/cleared");
     }
 }

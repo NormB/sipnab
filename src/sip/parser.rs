@@ -383,7 +383,15 @@ fn parse_headers_and_body(
                     {
                         headers.push(hdr);
                     }
-                    current_line = Cow::Borrowed(line_str);
+                    // Bound the unfolded line too: without this a single
+                    // multi-MB header (no continuations) sails past the cap
+                    // that only guarded folded growth.
+                    if line_str.len() >= max_header_line {
+                        parse_error = true;
+                        current_line = Cow::Borrowed("");
+                    } else {
+                        current_line = Cow::Borrowed(line_str);
+                    }
                 }
             }
             None => {
@@ -405,7 +413,13 @@ fn parse_headers_and_body(
                         {
                             headers.push(hdr);
                         }
-                        current_line = Cow::Borrowed(remainder);
+                        // Same unfolded-line cap on the no-trailing-CRLF path:
+                        // drop an over-long remainder so it is not flushed as a
+                        // header. (parse_error is set unconditionally just below
+                        // for this truncated-message path.)
+                        if remainder.len() < max_header_line {
+                            current_line = Cow::Borrowed(remainder);
+                        }
                     }
                 }
                 parse_error = true;
@@ -957,6 +971,33 @@ Subject: first-part\r\n continued-tail";
             .find(|h| h.name == "Subject")
             .expect("subject parsed");
         assert_eq!(subject.value, "first-part continued-tail");
+    }
+
+    /// A single *unfolded* header line longer than `MAX_HEADER_LINE_LEN` is
+    /// rejected (parse_error set, header dropped), not accepted whole — the
+    /// cap must bound unfolded lines, not only folded continuations.
+    #[test]
+    fn oversized_unfolded_header_line_rejected() {
+        let big_value = "A".repeat(DEFAULT_MAX_HEADER_LINE_LEN + 100);
+        let raw = format!("Subject: {big_value}\r\nCall-ID: ok@example.com\r\n\r\n");
+        let (headers, _body, parse_error) = parse_headers_and_body(raw.as_bytes(), 0);
+        assert!(
+            parse_error,
+            "oversized unfolded header must set parse_error"
+        );
+        assert!(
+            !headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("Subject")),
+            "oversized unfolded header must not be stored"
+        );
+        // A normal header after the rejected one still parses.
+        assert!(
+            headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("Call-ID")),
+            "a following normal header must still parse"
+        );
     }
 
     /// A SP-folded Via header (RFC 3261 §7.3.1) is unfolded into one value.

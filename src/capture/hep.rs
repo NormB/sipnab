@@ -1141,10 +1141,22 @@ impl HepRateLimiter {
         }
 
         // Per-peer cap first, so one noisy peer's drops do not consume the
-        // global budget. Skipped once the tracking map is full (memory bound).
-        if self.per_peer_max > 0
-            && (self.per_peer.len() < HEP_MAX_TRACKED_PEERS || self.per_peer.contains_key(&peer))
-        {
+        // global budget.
+        if self.per_peer_max > 0 {
+            // Memory bound: the tracking map may not grow past
+            // HEP_MAX_TRACKED_PEERS. When it is full, a *new* peer cannot be
+            // accounted for — and letting it through is exactly the
+            // many-source-IP flood the per-peer cap exists to resist. Fail
+            // closed: drop the untracked newcomer rather than grant it free
+            // budget. Already-tracked peers keep being counted normally.
+            if self.per_peer.len() >= HEP_MAX_TRACKED_PEERS && !self.per_peer.contains_key(&peer) {
+                self.dropped_total += 1;
+                tracing::debug!(
+                    "HEP per-peer tracking full ({HEP_MAX_TRACKED_PEERS} peers); dropping new peer {peer} (total dropped: {})",
+                    self.dropped_total
+                );
+                return false;
+            }
             let peer_count = self.per_peer.entry(peer).or_insert(0);
             *peer_count += 1;
             if *peer_count > self.per_peer_max {
@@ -2068,6 +2080,29 @@ mod tests {
         assert!(lim.allow(noisy));
         assert!(!lim.allow(noisy), "noisy peer hit its per-peer cap");
         assert!(lim.allow(quiet), "quiet peer still gets its own allowance");
+    }
+
+    /// Once the per-peer tracking map is full, a brand-new peer is dropped
+    /// rather than bypassing the per-peer cap — a many-source-IP flood must
+    /// not get a free pass just because it exhausted the tracking table.
+    #[test]
+    fn per_peer_limiter_full_map_drops_new_peer() {
+        // Effectively unlimited global ceiling so only the per-peer path (and
+        // the map-full guard) can drop.
+        let mut lim = HepRateLimiter::new(u64::MAX, 1);
+        // Fill the tracking map with the maximum number of distinct peers;
+        // each fresh peer's first packet is allowed.
+        for i in 0..HEP_MAX_TRACKED_PEERS as u32 {
+            let ip = IpAddr::V4(Ipv4Addr::from(i));
+            assert!(lim.allow(ip), "first packet from fresh peer {i} allowed");
+        }
+        // A new peer beyond the tracking cap must be dropped, not waved
+        // through the (now-skipped) per-peer check.
+        let newcomer = IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255));
+        assert!(
+            !lim.allow(newcomer),
+            "new peer past the tracking cap must be dropped, not bypass the cap"
+        );
     }
 
     /// The startup summary renders per-peer 0 as "disabled" and non-zero
