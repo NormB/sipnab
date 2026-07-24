@@ -2,7 +2,7 @@
 # Build context is the sipnab repo root (see docker-compose.yml: context ../..).
 # Feature set: capture (native) + MCP HTTP (pulls mcp + api) + TLS/SRTP.
 # Deliberately excludes tui and audio so the runtime needs no libasound.
-FROM rust:1.94-slim-trixie AS builder
+FROM rust:1.97-slim-trixie AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpcap-dev pkg-config ca-certificates \
     && rm -rf /var/lib/apt/lists/*

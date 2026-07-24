@@ -1,5 +1,5 @@
 # Multi-stage build for minimal image
-FROM rust:1.94-slim-trixie AS builder
+FROM rust:1.97-slim-trixie AS builder
 RUN apt-get update && apt-get install -y libpcap-dev libasound2-dev pkg-config && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY . .

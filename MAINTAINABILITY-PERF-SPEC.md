@@ -638,7 +638,7 @@ Ordered by risk closed per unit effort:
    `test_utils::build_sip_message`), SDP round-trip, filter-DSL parse/eval
    total-function. Complements the fuzzers (which only prove "no panic", not
    "parsed correctly").
-4. **Latest-stable CI leg.** Everything pins 1.94.1 (good as an MSRV gate);
+4. **Latest-stable CI leg.** Everything pins 1.97.1 (good as an MSRV gate);
    add one `dtolnay/rust-toolchain@stable` job running
    `cargo test --all-features` (clippy on stable may be `continue-on-error`
    to absorb new-lint churn).

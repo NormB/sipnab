@@ -16,7 +16,7 @@ cargo install sipnab --features full
 
 ### Build prerequisites
 
-- **Rust 1.94+**
+- **Rust 1.97+**
 - **libpcap headers** (`libpcap-dev` on Debian/Ubuntu, `libpcap-devel` on RHEL/Fedora)
 - **pkg-config** (for libpcap detection during build)
 
