@@ -526,16 +526,21 @@ fn check_rate_limit(state: &ApiState, ip: IpAddr) -> Result<(), StatusCode> {
 ///
 /// # Returns
 ///
-/// `Ok(())` when both checks pass; `Err(401)` on auth failure (checked
-/// first, so unauthenticated requests never consume rate-limit budget) or
-/// `Err(503)` when the client IP is over its request budget.
+/// `Ok(())` when both checks pass; `Err(503)` when the client IP is over its
+/// request budget (checked first, so every request — including one that will
+/// fail auth — is charged, throttling brute-force of the Bearer token); or
+/// `Err(401)` on auth failure.
 ///
 /// # Side effects
 ///
 /// Mutates the shared rate limiter via `check_rate_limit`.
 fn guard(state: &ApiState, headers: &HeaderMap, client_ip: IpAddr) -> Result<(), StatusCode> {
-    check_auth(state, headers)?;
-    check_rate_limit(state, client_ip)
+    // Rate-limit BEFORE authenticating: if auth ran first, a wrong-token
+    // request would 401 without ever touching the limiter, letting an
+    // attacker brute-force the token at unlimited speed. Charging every
+    // request to the per-IP budget throttles that flood.
+    check_rate_limit(state, client_ip)?;
+    check_auth(state, headers)
 }
 
 // ── Handlers ────────────────────────────────────────────────────────
@@ -1527,6 +1532,37 @@ mod tests {
         let req2 = test_request("/v1/dialogs");
         let resp2 = app2.oneshot(req2).await.expect("oneshot");
         assert_eq!(resp2.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A flood of requests bearing a wrong token must eventually be
+    /// rate-limited (503), not answered with an unbounded stream of 401s —
+    /// otherwise the Bearer token can be brute-forced at unlimited speed
+    /// because failed auth never consumes the per-IP budget.
+    #[test]
+    fn guard_rate_limits_failed_auth_flood() {
+        let mut state = make_state_with_key("correct-secret");
+        // Tiny per-IP budget so the flood trips the limiter quickly.
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(3)));
+
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer wrong-token".parse().unwrap());
+
+        let mut saw_rate_limit = false;
+        for _ in 0..25 {
+            match guard(&state, &headers, ip) {
+                Err(StatusCode::SERVICE_UNAVAILABLE) => {
+                    saw_rate_limit = true;
+                    break;
+                }
+                Err(StatusCode::UNAUTHORIZED) => {} // still under budget
+                other => panic!("unexpected guard result: {other:?}"),
+            }
+        }
+        assert!(
+            saw_rate_limit,
+            "failed-auth flood must eventually be throttled with 503"
+        );
     }
 
     /// Percentile picks the rounded nearest-rank index for even- and

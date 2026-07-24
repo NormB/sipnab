@@ -5,6 +5,22 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Security
+- The REST API now rate-limits **before** authenticating, so a flood of
+  wrong-token requests is throttled per-IP (503) instead of returning an
+  unbounded stream of 401s — closing an unlimited-speed Bearer-token
+  brute-force window.
+- The SIP parser's per-line length cap now bounds a single *unfolded* header
+  line, not only folded continuations: a multi-megabyte header with no
+  continuation lines is rejected (parse_error, header dropped) instead of
+  being buffered whole.
+- The HEP receiver's per-peer rate limiter fails closed when its tracking
+  table is full: a brand-new source IP is dropped rather than bypassing the
+  per-peer cap, so a many-source-IP flood can no longer exhaust the table to
+  win a free pass. Already-tracked peers are unaffected.
+- TLS keylog entries now zeroize all key material on drop — secret, client
+  random, and the label — through the `zeroize` crate (a non-elidable write),
+  replacing a plain byte loop that the compiler could optimize away and that
+  never cleared the label.
 - The generated `tshark` command now POSIX-quotes every interpolated value
   (input file, device, BPF and display filters) with proper `'\''` escaping
   of embedded single quotes, so a crafted filename or filter can no longer
