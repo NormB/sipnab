@@ -256,8 +256,18 @@ impl StreamStore {
                     .and_then(|keys| keys.first())
                     .and_then(|key| self.streams.get_mut(key))
                 {
-                    stream.jitter = report.jitter as f64;
-                    stream.lost_packets = u64::from(report.cumulative_lost);
+                    // The report's jitter is in RTP timestamp units; convert
+                    // to milliseconds with the stream's clock rate so it is
+                    // comparable to the interarrival estimate (and feeds MOS
+                    // correctly). Guard against an unknown (0) clock rate.
+                    stream.jitter = if stream.clock_rate > 0 {
+                        report.jitter as f64 * 1000.0 / stream.clock_rate as f64
+                    } else {
+                        report.jitter as f64
+                    };
+                    // cumulative_lost is signed; a negative value means net
+                    // duplicates were received, which is zero real loss.
+                    stream.lost_packets = report.cumulative_lost.max(0) as u64;
                 }
             }
         }
@@ -1246,7 +1256,8 @@ a=rtpmap:96 H264/90000\r\n";
     }
 
     /// An RR block matching a stream's SSRC overwrites its jitter and
-    /// loss counters.
+    /// loss counters — the report's jitter (RTP timestamp units) is
+    /// converted to milliseconds using the stream's clock rate.
     #[test]
     fn process_rtcp_updates_stream() {
         let mut store = StreamStore::new(100);
@@ -1276,7 +1287,9 @@ a=rtpmap:96 H264/90000\r\n";
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
         let stream = store.get(&key).expect("stream should exist");
-        assert_eq!(stream.jitter, 42.0);
+        // PCMU stream is 8 kHz, so 42 RTP-timestamp units = 42 * 1000 / 8000
+        // = 5.25 ms; the raw 42 would feed MOS an 8x-too-large jitter.
+        assert_eq!(stream.jitter, 5.25);
         assert_eq!(stream.lost_packets, 10);
     }
 
@@ -1356,7 +1369,8 @@ a=rtpmap:96 H264/90000\r\n";
             src: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 21000),
             dst: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)), 30000),
         };
-        assert_eq!(store.get(&first).unwrap().jitter, 77.0);
+        // 77 RTP-ts units at 8 kHz → 77 * 1000 / 8000 = 9.625 ms.
+        assert_eq!(store.get(&first).unwrap().jitter, 9.625);
         assert_eq!(
             store.get(&second).unwrap().jitter,
             0.0,
@@ -1388,7 +1402,8 @@ a=rtpmap:96 H264/90000\r\n";
         };
         assert_eq!(
             store.get(&survivor).unwrap().jitter,
-            55.0,
+            // 55 RTP-ts units at 8 kHz → 55 * 1000 / 8000 = 6.875 ms.
+            6.875,
             "RTCP must reach the earliest surviving stream after eviction"
         );
     }

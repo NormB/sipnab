@@ -1219,8 +1219,10 @@ fn rtcp_updates_stream_jitter_and_loss() {
     };
     let stream = store.get(&key).unwrap();
     assert_eq!(
-        stream.jitter, 128.0,
-        "RTCP should update jitter to reported value"
+        // 128 RTP-timestamp units at 8 kHz → 128 * 1000 / 8000 = 16.0 ms.
+        stream.jitter,
+        16.0,
+        "RTCP should update jitter to the reported value, converted to ms"
     );
     assert_eq!(
         stream.lost_packets, 15,
