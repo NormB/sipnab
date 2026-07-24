@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Command-line argument parsing for sipnab.
 //!
 //! Uses clap derive to define the full unified flag set, combining sngrep and
@@ -50,9 +52,12 @@ impl PerPeerLimit {
     /// and the number of source-allowlist entries.
     ///
     /// `Auto` divides the global ceiling evenly across the allowed sources so
-    /// no single peer can exceed its fair share; with no allowlist there is no
-    /// sender count to divide by, so it stays disabled (only the global
-    /// ceiling applies). `Off` yields 0; `Fixed(n)` passes through.
+    /// no single peer can exceed its fair share, flooring at 1 pps — integer
+    /// division with more sources than the ceiling would otherwise yield 0,
+    /// which means DISABLED and would silently drop the cap. With no
+    /// allowlist there is no sender count to divide by, so it stays disabled
+    /// (only the global ceiling applies). `Off` yields 0; `Fixed(n)` passes
+    /// through.
     pub fn resolve(self, global: u64, allowlist_len: usize) -> u64 {
         match self {
             Self::Off => 0,
@@ -61,7 +66,7 @@ impl PerPeerLimit {
                 if allowlist_len == 0 {
                     0
                 } else {
-                    global / allowlist_len as u64
+                    (global / allowlist_len as u64).max(1)
                 }
             }
         }
@@ -1531,6 +1536,17 @@ mod tests {
         assert_eq!(PerPeerLimit::Auto.resolve(40000, 4), 10000);
         // Auto with no allowlist stays disabled (nothing to divide by).
         assert_eq!(PerPeerLimit::Auto.resolve(50000, 0), 0);
+    }
+
+    /// Auto with more allowlist entries than the global ceiling must floor
+    /// at 1 pps, not truncate to 0 — a 0 here means DISABLED, silently
+    /// removing the per-peer cap the operator asked for.
+    #[test]
+    fn per_peer_limit_auto_floors_at_one() {
+        assert_eq!(PerPeerLimit::Auto.resolve(5, 10), 1);
+        // Exact division and the normal case are unchanged.
+        assert_eq!(PerPeerLimit::Auto.resolve(10, 10), 1);
+        assert_eq!(PerPeerLimit::Auto.resolve(40000, 4), 10000);
     }
 
     /// `HepAuthMode::from_str` accepts plain/hmac case-insensitively,

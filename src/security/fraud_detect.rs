@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Toll fraud detection heuristics for SIP traffic.
 //!
 //! Analyzes call patterns to detect common telecom fraud techniques:
@@ -240,7 +242,7 @@ fn check_wangiri(src_ip: IpAddr, pattern: &CallPattern) -> Option<FraudAlert> {
     }
 
     for (prefix, count) in &prefix_counts {
-        if *count > WANGIRI_THRESHOLD {
+        if *count >= WANGIRI_THRESHOLD {
             return Some(FraudAlert {
                 src_ip,
                 alert_type: FraudType::Wangiri,
@@ -383,6 +385,41 @@ mod tests {
         let alert = alert.unwrap();
         assert_eq!(alert.alert_type, FraudType::Wangiri);
         assert!(alert.detail.contains("short calls to prefix"));
+    }
+
+    /// The two wangiri thresholds agree: `WANGIRI_THRESHOLD - 1` short calls
+    /// to one prefix raise no alert, the `WANGIRI_THRESHOLD`-th raises one.
+    /// (The entry gate and the per-prefix trigger both use the "minimum
+    /// short calls" semantics of `WANGIRI_THRESHOLD`.)
+    #[test]
+    fn wangiri_triggers_exactly_at_threshold() {
+        let mut detector = FraudDetector::new(None);
+        let src = attacker_ip();
+
+        // Same "+44900" prefix, deliberately non-consecutive numbers so
+        // sequential-scanning detection cannot fire instead.
+        let dests = ["+44900111", "+44900555", "+44900999"];
+        assert_eq!(dests.len(), WANGIRI_THRESHOLD as usize);
+
+        for (i, dest) in dests.iter().enumerate() {
+            let call_id = format!("wangiri-threshold-{i}@test");
+            let msg = make_invite(dest, src, &call_id);
+            let mut dialog = make_dialog_from_msg(&msg);
+            // Make it a short call (< 3s)
+            dialog.updated_at = dialog.created_at + TimeDelta::seconds(1);
+            let alert = detector.check(&msg, &dialog);
+            if i + 1 < WANGIRI_THRESHOLD as usize {
+                assert!(
+                    alert.is_none(),
+                    "{} short calls are below the threshold of {WANGIRI_THRESHOLD}",
+                    i + 1
+                );
+            } else {
+                let alert = alert
+                    .expect("the WANGIRI_THRESHOLD-th short call to a prefix must raise the alert");
+                assert_eq!(alert.alert_type, FraudType::Wangiri);
+            }
+        }
     }
 
     /// Calls to consecutive numbers trigger a sequential-scanning alert.

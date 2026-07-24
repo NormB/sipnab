@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTP stream storage and lifecycle management.
 //!
 //! `StreamStore` maintains an indexed collection of `RtpStream`s,
@@ -518,12 +520,15 @@ impl StreamStore {
     }
 
     /// Remove all streams from the store, clearing the SSRC and endpoint
-    /// indexes with them and bumping the generation. Remembered SDP
-    /// endpoints are kept.
+    /// indexes AND the remembered SDP endpoints with them, and bumping the
+    /// generation. Dropping `sdp_endpoints` matters: a stream created after
+    /// a clear must not resolve its dialog from a pre-clear endpoint,
+    /// resurrecting a dead association.
     pub fn clear(&mut self) {
         self.streams.clear();
         self.ssrc_index.clear();
         self.endpoint_index.clear();
+        self.sdp_endpoints.clear();
         self.generation += 1;
     }
 
@@ -895,6 +900,32 @@ a=rtpmap:96 H264/90000\r\n";
         );
         assert_eq!(s.clock_rate, 90000, "clock resolved from rtpmap");
         assert_eq!(s.associated_dialog.as_deref(), Some("call-1"), "associated");
+    }
+
+    /// clear() must drop remembered SDP endpoints along with the streams:
+    /// a stream created *after* a clear must not resolve its dialog from an
+    /// endpoint learned before the clear, resurrecting a dead association.
+    #[test]
+    fn clear_drops_remembered_sdp_endpoints() {
+        let mut store = StreamStore::new(100);
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let port = 20000u16;
+
+        // SDP endpoint learned for a dialog, then the session is cleared.
+        store.link_endpoint(addr, port, "old-call@test", &[]);
+        store.clear();
+
+        // A matching stream appearing after the clear must start unlinked.
+        store.process_rtp(
+            &make_parsed(port, 30000, 160),
+            &make_rtp_header(0xDEAD, 1),
+            ts(0),
+        );
+        let s = store.iter().next().expect("stream should exist");
+        assert_eq!(
+            s.associated_dialog, None,
+            "a post-clear stream must not re-link to a pre-clear dialog via a stale SDP endpoint"
+        );
     }
 
     // SNB-0015 (eviction): once the store is at capacity, evicting streams
