@@ -4,7 +4,18 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+- The standalone Prometheus `/metrics` server now has its own `metrics`
+  feature (enabled by default) instead of being gated behind `api`. It uses
+  a raw TCP listener with no axum/tokio, so `--metrics` now works in the
+  default build (which does not enable `api`); previously it silently did
+  nothing there.
+
 ### Fixed
+- `sipnab_messages_total` now reports the same value from the REST `/metrics`
+  endpoint and the standalone metrics server: both count SIP messages by
+  method. The REST endpoint previously counted one per dialog, undercounting
+  every multi-message dialog.
 - The synthetic packet builder (pcap export of SIP messages) truncates a
   SIP payload larger than a single IPv4 datagram can hold, so the IP/UDP
   length fields match the bytes written instead of saturating while the
