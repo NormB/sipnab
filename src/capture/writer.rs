@@ -176,8 +176,24 @@ pub struct PcapWriter {
     export_mode: PcapExportMode,
     /// Whether a DSB has already been written to the current file.
     dsb_written: bool,
-    /// Capture interface name embedded in pcapng IDBs (carried across rotation).
-    interface_name: Option<String>,
+    /// pcapng interface table: index = the `interface_id` stamped on EPBs.
+    /// Entry 0 is the constructor-supplied capture source; a further entry
+    /// is appended (with an IDB written mid-stream) the first time a packet
+    /// arrives tagged with a not-yet-seen interface name. Carried across
+    /// rotation so every split file re-emits the full set of IDBs.
+    interfaces: Vec<InterfaceEntry>,
+}
+
+/// One entry of the writer's pcapng interface table (index = interface_id):
+/// the source name recorded as the IDB `if_name` option (`None` for the
+/// unnamed default interface) and the link type its IDB declares. Devices
+/// can report different link types (e.g. `eth0` = Ethernet, `any` = Linux
+/// SLL), so each interface keeps the one its first packet carried.
+struct InterfaceEntry {
+    /// Interface name recorded in the IDB `if_name` option, if known.
+    name: Option<String>,
+    /// Pcap link-layer type declared by this interface's IDB.
+    link_type: i32,
 }
 
 impl PcapWriter {
@@ -254,12 +270,22 @@ impl PcapWriter {
             );
         }
 
-        let interface_name = interface.filter(|n| !n.is_empty()).map(|n| n.to_string());
+        let interfaces = vec![InterfaceEntry {
+            name: interface.filter(|n| !n.is_empty()).map(|n| n.to_string()),
+            link_type,
+        }];
 
-        let backend = if pcapng {
-            create_pcapng_backend(path, link_type, interface_name.as_deref())?
+        // Classic pcap keeps header bytes out of the `--split` accounting
+        // (its 24-byte global header has always been uncounted); pcapng
+        // counts the SHB + IDB header bytes so rotation fires at the real
+        // file size.
+        let (backend, header_bytes) = if pcapng {
+            create_pcapng_backend(path, &interfaces)?
         } else {
-            WriterBackend::Pcap(RawPcapWriter::create(path, link_type)?)
+            (
+                WriterBackend::Pcap(RawPcapWriter::create(path, link_type)?),
+                0,
+            )
         };
 
         tracing::info!(
@@ -279,13 +305,13 @@ impl PcapWriter {
             link_type_raw: link_type,
             use_pcapng: pcapng,
             sequence: 0,
-            bytes_written: 0,
+            bytes_written: header_bytes,
             file_opened_at: std::time::Instant::now(),
             max_file_bytes,
             max_file_duration,
             export_mode,
             dsb_written: false,
-            interface_name,
+            interfaces,
         })
     }
 
@@ -308,7 +334,11 @@ impl PcapWriter {
     /// # Side effects
     ///
     /// Appends to the (buffered) output file, may rotate to a new file, and
-    /// advances the `bytes_written` counter by the packet's captured length.
+    /// advances the `bytes_written` counter by the on-disk record size
+    /// (framing + payload, so `--split filesize:N` rotates at the real file
+    /// size). On the pcapng backend, the first packet from a not-yet-seen
+    /// source interface also appends that interface's IDB (and counts its
+    /// bytes) before the packet's EPB.
     pub fn write(&mut self, packet: &Packet) -> Result<()> {
         // Check if rotation is needed before writing
         if self.should_rotate() {
@@ -324,8 +354,43 @@ impl PcapWriter {
                     packet.origlen,
                     &packet.data,
                 )?;
+                // Classic pcap: 16-byte record header + captured bytes.
+                self.bytes_written += 16 + packet.data.len() as u64;
             }
             WriterBackend::PcapNg(writer) => {
+                // Resolve the packet's source interface to its pcapng
+                // interface_id, appending an IDB the first time an unseen
+                // interface name appears (the format allows IDBs interleaved
+                // with packet blocks). Packets with no interface identity
+                // (file replay, synthetic) map to interface 0, as does the
+                // constructor-named capture source. The table stays tiny
+                // (one entry per device), so a linear scan per packet is
+                // cheap — the common single-interface case matches entry 0.
+                let interface_id = match packet.interface.as_deref().filter(|n| !n.is_empty()) {
+                    None => 0,
+                    Some(name) => {
+                        match self
+                            .interfaces
+                            .iter()
+                            .position(|e| e.name.as_deref() == Some(name))
+                        {
+                            Some(id) => id as u32,
+                            None => {
+                                let idb = build_idb(packet.link_type, Some(name));
+                                let idb_bytes = writer
+                                    .write_pcapng_block(idb)
+                                    .map_err(|e| anyhow::anyhow!("PCAP-NG IDB write error: {e}"))?;
+                                self.bytes_written += idb_bytes as u64;
+                                self.interfaces.push(InterfaceEntry {
+                                    name: Some(name.to_string()),
+                                    link_type: packet.link_type,
+                                });
+                                (self.interfaces.len() - 1) as u32
+                            }
+                        }
+                    }
+                };
+
                 let ts = packet.timestamp;
                 // PCAP-NG timestamps are in nanoseconds since epoch
                 let nanos: u64 = ts
@@ -335,32 +400,20 @@ impl PcapWriter {
                 let timestamp = Duration::from_nanos(nanos);
 
                 let epb = EnhancedPacketBlock {
-                    interface_id: 0,
+                    interface_id,
                     timestamp,
                     original_len: packet.origlen as u32,
                     data: Cow::Borrowed(&packet.data),
                     options: vec![],
                 };
 
-                writer
+                let epb_bytes = writer
                     .write_pcapng_block(epb)
                     .map_err(|e| anyhow::anyhow!("PCAP-NG write error: {e}"))?;
+                self.bytes_written += epb_bytes as u64;
             }
         }
 
-        // Count the on-disk record size (framing + payload), not just the
-        // payload, so `--split filesize:N` rotates at the real file size
-        // instead of systematically overshooting it.
-        let record_bytes = match &self.backend {
-            // Classic pcap: 16-byte record header + captured bytes.
-            WriterBackend::Pcap(_) => 16 + packet.data.len() as u64,
-            // pcapng EPB: 32 fixed bytes + data padded to a 4-byte boundary.
-            WriterBackend::PcapNg(_) => {
-                let padded = (packet.data.len() + 3) & !3;
-                32 + padded as u64
-            }
-        };
-        self.bytes_written += record_bytes;
         Ok(())
     }
 
@@ -535,7 +588,9 @@ impl PcapWriter {
     /// Force rotation to a new output file.
     ///
     /// Closes the current file and opens a new one with an incremented
-    /// sequence number appended to the base filename.
+    /// sequence number appended to the base filename. A pcapng rotation
+    /// re-emits the SHB plus IDBs for every interface seen so far (in the
+    /// same id order), so each split file is self-contained.
     ///
     /// # Errors
     ///
@@ -544,8 +599,9 @@ impl PcapWriter {
     /// # Side effects
     ///
     /// Drops the old backend (flushing and closing its file), creates the new
-    /// file, resets `bytes_written`/`dsb_written`/`file_opened_at`, and logs
-    /// the rotation at info level.
+    /// file, resets `bytes_written` (to the new file's SHB+IDB header size for
+    /// pcapng, 0 for classic pcap), resets `dsb_written`/`file_opened_at`, and
+    /// logs the rotation at info level.
     pub fn rotate(&mut self) -> Result<()> {
         self.sequence += 1;
         let new_path = rotated_path(&self.base_path, self.sequence);
@@ -559,16 +615,16 @@ impl PcapWriter {
         );
 
         // Drop the old backend (flushes and closes) by replacing it
-        self.backend = if self.use_pcapng {
-            create_pcapng_backend(
-                &new_path,
-                self.link_type_raw,
-                self.interface_name.as_deref(),
-            )?
+        let (backend, header_bytes) = if self.use_pcapng {
+            create_pcapng_backend(&new_path, &self.interfaces)?
         } else {
-            WriterBackend::Pcap(RawPcapWriter::create(&new_path, self.link_type_raw)?)
+            (
+                WriterBackend::Pcap(RawPcapWriter::create(&new_path, self.link_type_raw)?),
+                0,
+            )
         };
-        self.bytes_written = 0;
+        self.backend = backend;
+        self.bytes_written = header_bytes;
         self.dsb_written = false;
         self.file_opened_at = std::time::Instant::now();
 
@@ -622,13 +678,18 @@ fn app_version() -> String {
 /// Create a PCAP-NG backend whose Section Header and Interface Description
 /// blocks carry self-describing metadata (SNB-0001): the producing application
 /// and OS in the SHB, and the OS, a human description, and — when known — the
-/// capture interface name in the IDB. Without this, `tshark` shows
+/// capture interface name in each IDB. Without this, `tshark` shows
 /// `Interface name: unknown` and `capinfos` reports no application/OS.
+///
+/// Writes one IDB per entry of `interfaces` in table order, so the block
+/// order matches the `interface_id`s the writer stamps on EPBs (a rotated
+/// file re-emits every interface seen so far and stays self-contained).
+/// Returns the backend plus the on-disk SHB+IDB header size, which counts
+/// toward `--split filesize:N` accounting.
 fn create_pcapng_backend(
     path: &Path,
-    link_type: i32,
-    interface: Option<&str>,
-) -> Result<WriterBackend> {
+    interfaces: &[InterfaceEntry],
+) -> Result<(WriterBackend, u64)> {
     let file = std::fs::File::create(path)
         .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
     let buf_writer = BufWriter::new(file);
@@ -642,11 +703,35 @@ fn create_pcapng_backend(
         ],
         ..Default::default()
     };
+
+    // Measure the SHB's serialized size by writing the same section into a
+    // throwaway Vec (the crate's constructor doesn't report it, and flushing
+    // the real BufWriter to seek would defeat its buffering).
+    let shb_bytes = PcapFileNgWriter::with_section_header(Vec::new(), section.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to measure PCAP-NG section header: {e}"))?
+        .into_inner()
+        .len() as u64;
+
     let mut writer = PcapFileNgWriter::with_section_header(buf_writer, section)
         .map_err(|e| anyhow::anyhow!("Failed to create PCAP-NG writer: {e}"))?;
 
-    // Interface Description Block: OS + description always, interface name when
-    // the caller knows it (capture device for live, input source for replay).
+    let mut header_bytes = shb_bytes;
+    for entry in interfaces {
+        let idb = build_idb(entry.link_type, entry.name.as_deref());
+        let idb_bytes = writer
+            .write_pcapng_block(idb)
+            .map_err(|e| anyhow::anyhow!("Failed to write PCAP-NG interface block: {e}"))?;
+        header_bytes += idb_bytes as u64;
+    }
+
+    Ok((WriterBackend::PcapNg(writer), header_bytes))
+}
+
+/// Build an Interface Description Block carrying self-describing metadata:
+/// a human description and the OS always, nanosecond timestamp resolution,
+/// and the interface name when known (capture device for live, input source
+/// for replay).
+fn build_idb(link_type: i32, name: Option<&str>) -> InterfaceDescriptionBlock<'static> {
     let mut options = vec![
         InterfaceDescriptionOption::IfDescription(Cow::Owned(format!("{} capture", app_version()))),
         InterfaceDescriptionOption::IfOs(Cow::Borrowed(std::env::consts::OS)),
@@ -656,21 +741,16 @@ fn create_pcapng_backend(
         // and every timestamp is inflated ×1000 (the "year 58484" files).
         InterfaceDescriptionOption::IfTsResol(9),
     ];
-    if let Some(name) = interface.filter(|n| !n.is_empty()) {
+    if let Some(name) = name.filter(|n| !n.is_empty()) {
         options.push(InterfaceDescriptionOption::IfName(Cow::Owned(
             name.to_string(),
         )));
     }
-    let idb = InterfaceDescriptionBlock {
+    InterfaceDescriptionBlock {
         linktype: DataLink::from(link_type as u32),
         snaplen: 0xFFFF,
         options,
-    };
-    writer
-        .write_pcapng_block(idb)
-        .map_err(|e| anyhow::anyhow!("Failed to write PCAP-NG interface block: {e}"))?;
-
-    Ok(WriterBackend::PcapNg(writer))
+    }
 }
 
 /// Generate a rotated filename from a base path and sequence number.
@@ -1403,6 +1483,279 @@ mod tests {
             // ...and a missing keylog path -> the Err arm (logged, still Ok).
             w2.maybe_write_keylog_dsb(dir.path().join("nope.txt").as_path())
                 .unwrap();
+        }
+
+        // ── Multi-interface pcapng (one IDB per source interface) ───────
+
+        /// A parsed pcapng block reduced to what the multi-interface tests
+        /// assert on: IDBs (name + link type) and EPBs (interface_id).
+        #[derive(Debug, PartialEq, Eq)]
+        enum NgBlock {
+            /// Interface Description Block: `if_name` option and link type.
+            Idb {
+                /// The `if_name` option, if present.
+                name: Option<String>,
+                /// The declared link-layer type.
+                linktype: u32,
+            },
+            /// Enhanced Packet Block: the interface it references.
+            Epb {
+                /// The `interface_id` field.
+                interface_id: u32,
+            },
+        }
+
+        /// Parse a written pcapng file into the ordered IDB/EPB sequence
+        /// (other block types are skipped).
+        fn read_ng_blocks(path: &Path) -> Vec<NgBlock> {
+            use pcap_file::pcapng::PcapNgReader;
+            use pcap_file::pcapng::blocks::interface_description::InterfaceDescriptionOption;
+
+            let bytes = std::fs::read(path).unwrap();
+            let mut reader = PcapNgReader::new(&bytes[..]).unwrap();
+            let mut blocks = Vec::new();
+            while let Some(block) = reader.next_block() {
+                let block = block.expect("valid pcapng block");
+                if let Some(idb) = block.clone().into_interface_description() {
+                    let name = idb.options.iter().find_map(|o| match o {
+                        InterfaceDescriptionOption::IfName(s) => Some(s.to_string()),
+                        _ => None,
+                    });
+                    blocks.push(NgBlock::Idb {
+                        name,
+                        linktype: u32::from(idb.linktype),
+                    });
+                } else if let Some(epb) = block.into_enhanced_packet() {
+                    blocks.push(NgBlock::Epb {
+                        interface_id: epb.interface_id,
+                    });
+                }
+            }
+            blocks
+        }
+
+        /// Build a `len`-byte packet tagged with a source `interface` name
+        /// and link type, stamped "now".
+        fn pkt_on(interface: &str, link_type: i32, len: usize) -> Packet {
+            Packet::new(
+                chrono::Utc::now(),
+                vec![0u8; len],
+                len,
+                len,
+                Some(interface.to_string()),
+                link_type,
+            )
+        }
+
+        /// Interleaved packets from two capture interfaces must produce two
+        /// IDBs (in first-appearance order, each carrying its own if_name
+        /// and link type) and EPBs that reference the correct interface_id —
+        /// not a single IDB with every EPB stamped 0.
+        #[test]
+        fn pcapng_multi_interface_writes_idb_per_interface_with_correct_epb_ids() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("multi.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                // eth1 uses LINKTYPE_LINUX_SLL (113) to prove the mid-stream
+                // IDB records the tagging packet's link type, not the
+                // writer-global one.
+                w.write(&pkt_on("eth0", 1, 40)).unwrap();
+                w.write(&pkt_on("eth1", 113, 40)).unwrap();
+                w.write(&pkt_on("eth0", 1, 40)).unwrap();
+                w.write(&pkt_on("eth1", 113, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            let blocks = read_ng_blocks(&path);
+            let idbs: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    NgBlock::Idb { name, linktype } => Some((name.clone(), *linktype)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                idbs,
+                vec![
+                    (Some("eth0".to_string()), 1),
+                    (Some("eth1".to_string()), 113),
+                ],
+                "one IDB per interface, in first-appearance order"
+            );
+            let epb_ids: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    NgBlock::Epb { interface_id } => Some(*interface_id),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(
+                epb_ids,
+                vec![0, 1, 0, 1],
+                "each EPB references its own interface's id"
+            );
+        }
+
+        /// pcapng allows IDBs interleaved with packet blocks: when a new
+        /// interface first appears mid-stream, its IDB must be written
+        /// before that packet's EPB — and the EPBs already written stay
+        /// untouched on interface 0.
+        #[test]
+        fn pcapng_new_interface_idb_written_before_its_first_epb() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("midstream.pcapng");
+            {
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    None,
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                w.write(&pkt_on("eth0", 1, 40)).unwrap();
+                w.write(&pkt_on("eth0", 1, 40)).unwrap();
+                w.write(&pkt_on("eth1", 1, 40)).unwrap();
+                w.finish().unwrap();
+            }
+
+            assert_eq!(
+                read_ng_blocks(&path),
+                vec![
+                    NgBlock::Idb {
+                        name: Some("eth0".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 0 },
+                    NgBlock::Epb { interface_id: 0 },
+                    NgBlock::Idb {
+                        name: Some("eth1".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Epb { interface_id: 1 },
+                ],
+                "eth1's IDB appears mid-stream, before its first EPB"
+            );
+        }
+
+        /// `--split filesize:N` with two interfaces: every rotated file must
+        /// be self-contained — it re-opens with an SHB plus IDBs for ALL
+        /// interfaces seen so far (same id order), and its EPBs reference
+        /// the correct ids.
+        #[test]
+        fn split_rotation_reemits_shb_and_all_interface_idbs() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("rot.pcapng");
+            {
+                // ~800-byte cap: headers + first eth0 EPB stay well under it,
+                // so both interfaces are registered before the first rotation.
+                let mut w = PcapWriter::with_interface(
+                    &path,
+                    1,
+                    Some(800),
+                    None,
+                    true,
+                    PcapExportMode::Raw,
+                    Some("eth0"),
+                )
+                .unwrap();
+                for _ in 0..20 {
+                    w.write(&pkt_on("eth0", 1, 200)).unwrap();
+                    w.write(&pkt_on("eth1", 1, 200)).unwrap();
+                }
+                w.finish().unwrap();
+            }
+
+            let rot = dir.path().join("rot_00001.pcapng");
+            assert!(rot.exists(), "size cap must trigger rotation");
+            let blocks = read_ng_blocks(&rot);
+            assert_eq!(
+                &blocks[..2],
+                &[
+                    NgBlock::Idb {
+                        name: Some("eth0".to_string()),
+                        linktype: 1,
+                    },
+                    NgBlock::Idb {
+                        name: Some("eth1".to_string()),
+                        linktype: 1,
+                    },
+                ],
+                "rotated file re-emits IDBs for all seen interfaces before any EPB"
+            );
+            let epb_ids: Vec<_> = blocks
+                .iter()
+                .filter_map(|b| match b {
+                    NgBlock::Epb { interface_id } => Some(*interface_id),
+                    _ => None,
+                })
+                .collect();
+            assert!(!epb_ids.is_empty(), "rotated file carries packets");
+            assert!(
+                epb_ids.contains(&1),
+                "rotated file's eth1 EPBs reference id 1: {epb_ids:?}"
+            );
+            assert!(
+                epb_ids.iter().all(|&id| id <= 1),
+                "no EPB references an unknown interface: {epb_ids:?}"
+            );
+        }
+
+        /// pcapng size accounting must count the SHB + IDB header bytes
+        /// (extending the record-framing fix): `bytes_written` equals the
+        /// real on-disk file size both before and after rotation.
+        #[test]
+        fn pcapng_size_accounting_includes_shb_and_idb_bytes() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("acct.pcapng");
+            let mut w = PcapWriter::with_interface(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+                Some("eth0"),
+            )
+            .unwrap();
+            // Registers eth1 → a second IDB in the first file.
+            w.write(&pkt_on("eth1", 1, 40)).unwrap();
+            let first_file_bytes = w.bytes_written();
+
+            // rotate() drops (flushes) the first backend, so its on-disk
+            // size is final and must equal the accounted bytes.
+            w.rotate().unwrap();
+            assert_eq!(
+                first_file_bytes,
+                std::fs::metadata(&path).unwrap().len(),
+                "first file: bytes_written == on-disk size (SHB+IDBs+EPB)"
+            );
+            assert!(
+                w.bytes_written() > 0,
+                "after rotation the re-emitted SHB+IDB bytes count toward the cap"
+            );
+
+            w.write(&pkt_on("eth1", 1, 40)).unwrap();
+            let rot_bytes = w.bytes_written();
+            w.finish().unwrap();
+            let rot = dir.path().join("acct_00001.pcapng");
+            assert_eq!(
+                rot_bytes,
+                std::fs::metadata(&rot).unwrap().len(),
+                "rotated file: bytes_written == on-disk size"
+            );
         }
     }
 }
