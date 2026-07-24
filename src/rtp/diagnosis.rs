@@ -194,7 +194,7 @@ pub fn diagnose_media(
 
     // NAT mismatch detection: compare SDP c= address against actual RTP source
     if let Some(sdp) = sdp_info {
-        for media in &sdp.media {
+        'media: for media in &sdp.media {
             if let Some(addr_str) = effective_address(media, sdp) {
                 diag.sdp_media = Some(addr_str.clone());
 
@@ -209,7 +209,10 @@ pub fn diagnose_media(
                                 "SDP c= address ({sdp_addr}) differs from actual RTP source ({actual_src}) \
                                  — likely NAT issue."
                             ));
-                            break;
+                            // Stop at the first mismatching media so the reported
+                            // sdp_media/actual_media reflect the media that actually
+                            // mismatched, not a later (matching) m= line.
+                            break 'media;
                         }
                     }
                 }
@@ -370,21 +373,33 @@ fn pick_leg_pair<'a>(streams: &[&'a RtpStream]) -> Option<(&'a RtpStream, &'a Rt
     None
 }
 
-/// Infer ptime in ms from a stream's RTP timestamp progression.
+/// Infer ptime in ms from a stream's wall-clock span and packet count.
 ///
-/// Each RTP packet's timestamp moves forward by `samples_per_frame`. With
-/// the stream's clock rate we get ms/frame = (samples_per_frame /
-/// clock_rate) * 1000. We need at least two timestamps to estimate.
+/// The wall-clock span between the first and last packet covers one
+/// packetization interval per frame that was *transmitted*, so dividing by
+/// the number of intervals yields ms/frame. Lost packets still occupy their
+/// slots on the wire, so the denominator must count them: using only the
+/// received packets would stretch each interval and inflate the inferred
+/// ptime in proportion to the loss. We therefore divide by
+/// `(received + lost − 1)` intervals. We need at least two packets to
+/// estimate.
 fn inferred_ptime_ms(s: &RtpStream) -> Option<u32> {
     if s.packet_count < 2 {
         return None;
     }
-    let total_packets = s.packet_count;
     let dur = (s.last_seen - s.first_seen).num_milliseconds() as f64;
     if dur <= 0.0 {
         return None;
     }
-    let avg_ms = dur / (total_packets - 1) as f64;
+    // Frames spanning the observed window = received + lost; intervals is one
+    // fewer. `lost_packets` comes from RTP sequence-gap accounting on the
+    // stream, so gaps read as their true multi-frame width rather than a
+    // single long inter-arrival interval.
+    let intervals = (s.packet_count + s.lost_packets).saturating_sub(1);
+    if intervals == 0 {
+        return None;
+    }
+    let avg_ms = dur / intervals as f64;
     if !(5.0..=200.0).contains(&avg_ms) {
         return None;
     }
@@ -824,6 +839,68 @@ mod tests {
             &AsymmetryThresholds::default(),
         );
         assert!(diag.late_media.is_none());
+    }
+
+    /// NAT mismatch must report the media that actually mismatched, not the
+    /// last-evaluated `m=` line. The first (audio) media's `c=` is a pre-NAT
+    /// private address that differs from the RTP source, while the second
+    /// (video) media falls back to the session address that matches it.
+    #[test]
+    fn nat_mismatch_reports_mismatching_media_not_last() {
+        let s1 = make_stream([10, 0, 0, 1], [10, 0, 0, 2], 20000, 30000);
+        let streams: Vec<&RtpStream> = vec![&s1];
+
+        let mk_media = |mtype: &str, port: u16, conn: Option<&str>| SdpMedia {
+            media_type: mtype.to_string(),
+            port,
+            proto: "RTP/AVP".to_string(),
+            formats: vec!["0".to_string()],
+            connection: conn.map(|a| SdpConnection {
+                addr: a.to_string(),
+            }),
+            direction: SdpDirection::SendRecv,
+            rtpmap: Vec::new(),
+            fmtp: Vec::new(),
+            ptime: None,
+            crypto: Vec::new(),
+            ice_candidates: Vec::new(),
+        };
+        let sdp = SdpSession {
+            origin: None,
+            session_name: None,
+            connection: Some(SdpConnection {
+                addr: "10.0.0.1".to_string(),
+            }),
+            media: vec![
+                // audio: media-level c= is a pre-NAT private address → mismatches src.
+                mk_media("audio", 20000, Some("192.168.1.100")),
+                // video: no media c=, falls back to session 10.0.0.1 → matches src.
+                mk_media("video", 20002, None),
+            ],
+        };
+
+        let diag = diagnose_media(&streams, Some(&sdp));
+        assert!(diag.nat_mismatch);
+        assert_eq!(
+            diag.sdp_media.as_deref(),
+            Some("192.168.1.100"),
+            "should report the address of the media that actually mismatched"
+        );
+        assert_eq!(diag.actual_media.as_deref(), Some("10.0.0.1"));
+    }
+
+    /// Inferred ptime must not be inflated by packet loss: lost packets still
+    /// occupy their packetization slots, so the wall-clock span must be
+    /// divided by all intervals (received + lost), not just received − 1.
+    #[test]
+    fn inferred_ptime_not_inflated_by_loss() {
+        // 100 frames of 20 ms were transmitted (99 intervals → 1980 ms span),
+        // but half were lost in transit; only 50 packets arrived.
+        let mut s = make_stream_with_pt([10, 0, 0, 1], [10, 0, 0, 2], 0, "PCMU", 8000, 20, 0, 50);
+        s.last_seen = s.first_seen + chrono::Duration::milliseconds(99 * 20);
+        s.lost_packets = 50;
+        // Naive span/(received − 1) = 1980/49 ≈ 40 ms; loss-aware = 20 ms.
+        assert_eq!(inferred_ptime_ms(&s), Some(20));
     }
 
     /// With only one stream, no asymmetry fields are computed.

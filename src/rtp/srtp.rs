@@ -556,12 +556,11 @@ pub fn decrypt_srtp_payload(
         );
     }
 
-    let seq = u16::from_be_bytes([packet[2], packet[3]]);
-    let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
-    let packet_index = ((roc as u64) << 16) | seq as u64;
-
     // Session cipher key (label 0x00) and session salt (label 0x02), RFC 3711
     // §4.3.1. The cipher key matches the master key length (16 or 32 bytes).
+    // Standalone callers derive per call; `SrtpContext` memoizes these once per
+    // key material and calls `decrypt_srtp_payload_with_session` directly, so
+    // the two AES-CM PRF runs below don't recur on every packet.
     let session_key = aes_cm_prf(
         &key_material.master_key,
         &key_material.master_salt,
@@ -575,9 +574,54 @@ pub fn decrypt_srtp_payload(
         14,
     )?;
 
+    decrypt_srtp_payload_with_session(
+        packet,
+        payload_offset,
+        tag_len,
+        &session_key,
+        &session_salt,
+        roc,
+    )
+}
+
+/// Decrypt an SRTP payload with already-derived session keys (RFC 3711 AES-CM),
+/// returning the recovered payload bytes (auth tag excluded).
+///
+/// This is the inner half of [`decrypt_srtp_payload`]: it takes the session
+/// cipher key and salt as inputs instead of re-running the AES-CM KDF, so a
+/// caller that caches the per-session derivation (see [`SessionKeyCache`]) pays
+/// the two PRF runs once per key material rather than on every packet.
+///
+/// * `tag_len` — the suite auth-tag length, stripped from the packet tail.
+/// * `session_key` — session cipher key (label 0x00), 16 or 32 bytes.
+/// * `session_salt` — session salt (label 0x02), 14 bytes.
+///
+/// # Errors
+///
+/// Fails if the packet is too short to hold the header, payload offset, and
+/// auth tag, or if the session key length is invalid for AES-CM.
+fn decrypt_srtp_payload_with_session(
+    packet: &[u8],
+    payload_offset: usize,
+    tag_len: usize,
+    session_key: &[u8],
+    session_salt: &[u8],
+    roc: u32,
+) -> Result<Vec<u8>> {
+    if packet.len() < payload_offset + tag_len || payload_offset < 12 {
+        anyhow::bail!(
+            "SRTP packet too short to decrypt: {} bytes (payload_offset={payload_offset}, tag_len={tag_len})",
+            packet.len()
+        );
+    }
+
+    let seq = u16::from_be_bytes([packet[2], packet[3]]);
+    let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+    let packet_index = ((roc as u64) << 16) | seq as u64;
+
     let ciphertext = &packet[payload_offset..packet.len() - tag_len];
-    let iv = srtp_cipher_iv(&session_salt, ssrc, packet_index);
-    let keystream = srtp_aes_cm_keystream(&session_key, iv, ciphertext.len())?;
+    let iv = srtp_cipher_iv(session_salt, ssrc, packet_index);
+    let keystream = srtp_aes_cm_keystream(session_key, iv, ciphertext.len())?;
 
     let plaintext: Vec<u8> = ciphertext
         .iter()
@@ -815,12 +859,6 @@ impl SrtpRocTracker {
                 packet.len()
             );
         }
-        let seq = u16::from_be_bytes([packet[2], packet[3]]);
-        let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
-
-        let auth_portion_len = packet.len() - tag_len;
-        let auth_portion = &packet[..auth_portion_len];
-        let received_tag = &packet[auth_portion_len..];
 
         let session_auth_key = derive_session_key(
             &key_material.master_key,
@@ -828,6 +866,39 @@ impl SrtpRocTracker {
             SRTP_LABEL_AUTH,
             SRTP_AUTH_KEY_LEN,
         )?;
+
+        self.verify_roc_with_auth_key(packet, tag_len, &session_auth_key, crypto)
+    }
+
+    /// Like [`verify_roc`](Self::verify_roc), but takes the already-derived
+    /// session authentication key instead of re-running the AES-CM KDF from the
+    /// master key material. `SrtpContext` caches the session auth key per key
+    /// material (see [`SessionKeyCache`]) and calls this directly, so the KDF
+    /// does not recur on every candidate key for every packet.
+    ///
+    /// # Errors
+    ///
+    /// Fails if the packet is shorter than the 12-byte header plus `tag_len`,
+    /// or if HMAC computation fails.
+    fn verify_roc_with_auth_key(
+        &mut self,
+        packet: &[u8],
+        tag_len: usize,
+        session_auth_key: &[u8],
+        crypto: &dyn crate::crypto::CryptoBackend,
+    ) -> Result<Option<u32>> {
+        if packet.len() < 12 + tag_len {
+            anyhow::bail!(
+                "SRTP packet too short for auth tag verification: {} bytes",
+                packet.len()
+            );
+        }
+        let seq = u16::from_be_bytes([packet[2], packet[3]]);
+        let ssrc = u32::from_be_bytes([packet[8], packet[9], packet[10], packet[11]]);
+
+        let auth_portion_len = packet.len() - tag_len;
+        let auth_portion = &packet[..auth_portion_len];
+        let received_tag = &packet[auth_portion_len..];
 
         // First packet for this SSRC starts at ROC 0; otherwise estimate.
         let existing = self.per_ssrc.get(&ssrc).copied();
@@ -839,7 +910,7 @@ impl SrtpRocTracker {
         if !srtp_tag_matches(
             auth_portion,
             received_tag,
-            &session_auth_key,
+            session_auth_key,
             roc,
             tag_len,
             crypto,
@@ -868,6 +939,137 @@ impl SrtpRocTracker {
     }
 }
 
+/// Session keys derived from one master key/salt (RFC 3711 §4.3.1), memoized so
+/// the AES-CM KDF runs once per key material instead of twice (cipher + salt)
+/// plus once (auth) on every packet.
+///
+/// The buffers hold secret session key material, so [`Drop`] zeroizes them in
+/// place — mirroring [`SrtpKeyMaterial`]'s wipe-on-drop.
+struct DerivedSessionKeys {
+    /// Fingerprint of the master key/salt/suite these were derived from; a
+    /// change invalidates the cache entry so stale keys are never reused.
+    fingerprint: u64,
+    /// Session cipher key (label 0x00), 16 or 32 bytes.
+    cipher_key: Vec<u8>,
+    /// Session salt (label 0x02), 14 bytes.
+    cipher_salt: Vec<u8>,
+    /// Session authentication key (label 0x01), 20 bytes.
+    auth_key: Vec<u8>,
+}
+
+impl DerivedSessionKeys {
+    /// Run the RFC 3711 AES-CM KDF for the cipher key, salt, and auth key of
+    /// one master key/salt, tagging the result with `fingerprint`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a KDF failure (invalid master key/salt length).
+    fn derive(key_material: &SrtpKeyMaterial, fingerprint: u64) -> Result<Self> {
+        let cipher_key = aes_cm_prf(
+            &key_material.master_key,
+            &key_material.master_salt,
+            0x00,
+            key_material.master_key.len(),
+        )?;
+        let cipher_salt = aes_cm_prf(
+            &key_material.master_key,
+            &key_material.master_salt,
+            0x02,
+            14,
+        )?;
+        let auth_key = derive_session_key(
+            &key_material.master_key,
+            &key_material.master_salt,
+            SRTP_LABEL_AUTH,
+            SRTP_AUTH_KEY_LEN,
+        )?;
+        Ok(Self {
+            fingerprint,
+            cipher_key,
+            cipher_salt,
+            auth_key,
+        })
+    }
+}
+
+impl Drop for DerivedSessionKeys {
+    /// Zero the derived session key material in place before the memory is
+    /// freed. Same best-effort manual wipe as [`SrtpKeyMaterial::drop`];
+    /// `black_box` blocks dead-store elimination of the writes.
+    fn drop(&mut self) {
+        for buf in [
+            &mut self.cipher_key,
+            &mut self.cipher_salt,
+            &mut self.auth_key,
+        ] {
+            for b in buf.iter_mut() {
+                *b = 0;
+            }
+            std::hint::black_box(buf.as_ptr());
+        }
+    }
+}
+
+/// Fingerprint the master key material so a change invalidates cached session
+/// keys. A collision cannot leak plaintext: a stale cipher key only survives if
+/// the stale auth key (also cached) still authenticates the packet, and the
+/// auth gate rejects any packet whose tag was not produced by that key.
+fn session_key_fingerprint(master_key: &[u8], master_salt: &[u8], suite: &SrtpSuite) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    master_key.hash(&mut hasher);
+    master_salt.hash(&mut hasher);
+    std::mem::discriminant(suite).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// Per-candidate-key cache of derived session keys, keyed by the key's index in
+/// [`SrtpContext::keys`]. Each entry stores a fingerprint of its source master
+/// key material; a mismatch re-derives so a changed key never serves stale
+/// session keys.
+#[derive(Default)]
+struct SessionKeyCache {
+    /// Cached derivations, keyed by candidate-key index.
+    entries: std::collections::HashMap<usize, DerivedSessionKeys>,
+    /// Count of actual KDF derivations performed (cache misses). Used by tests
+    /// to prove reuse (no re-derivation on a hit) and invalidation.
+    derive_count: u64,
+}
+
+impl SessionKeyCache {
+    /// Return the derived session keys for `key_material` at `index`, deriving
+    /// (and caching) them on a miss or when the key material changed. Reused
+    /// across packets so the KDF runs once per key material, not per packet.
+    ///
+    /// # Errors
+    ///
+    /// Propagates a KDF failure from [`DerivedSessionKeys::derive`].
+    fn get_or_derive(
+        &mut self,
+        index: usize,
+        key_material: &SrtpKeyMaterial,
+    ) -> Result<&DerivedSessionKeys> {
+        let fingerprint = session_key_fingerprint(
+            &key_material.master_key,
+            &key_material.master_salt,
+            &key_material.suite,
+        );
+        let stale = self
+            .entries
+            .get(&index)
+            .is_none_or(|cached| cached.fingerprint != fingerprint);
+        if stale {
+            let derived = DerivedSessionKeys::derive(key_material, fingerprint)?;
+            self.entries.insert(index, derived);
+            self.derive_count += 1;
+        }
+        // Present by construction: either just inserted or already fingerprint-matched.
+        self.entries
+            .get(&index)
+            .context("session key cache entry missing after insert")
+    }
+}
+
 /// A keyed SRTP decryption context: holds candidate master keys (from
 /// `--srtp-keys` and/or SDES `a=crypto` lines), the per-SSRC rollover-counter
 /// tracker, and a crypto backend. For each RTP packet it finds the key whose
@@ -882,6 +1084,9 @@ pub struct SrtpContext {
     tracker: SrtpRocTracker,
     /// Backend used for HMAC-SHA1 auth-tag verification.
     crypto: Box<dyn crate::crypto::CryptoBackend>,
+    /// Memoized session keys per candidate key, so the AES-CM KDF runs once per
+    /// key material instead of on every packet.
+    session_cache: SessionKeyCache,
     /// Number of packets successfully authenticated and decrypted.
     pub decrypted_count: u64,
 }
@@ -893,6 +1098,7 @@ impl SrtpContext {
             keys,
             tracker: SrtpRocTracker::new(),
             crypto,
+            session_cache: SessionKeyCache::default(),
             decrypted_count: 0,
         }
     }
@@ -974,12 +1180,29 @@ impl SrtpContext {
             .collect();
 
         for i in order {
-            // Clone the (small) key material so the tracker can borrow &mut self
-            // fields without aliasing the key slice.
-            let key = self.keys[i].clone();
-            match self.tracker.verify_roc(packet, &key, &*self.crypto) {
+            let tag_len = auth_tag_len(&self.keys[i].suite);
+            // Derive-or-fetch this candidate's session keys once and reuse them
+            // across packets (borrowing `self.keys[i]`, no per-packet clone); the
+            // tracker and cipher then run off the cached cipher/salt/auth keys.
+            let session = match self.session_cache.get_or_derive(i, &self.keys[i]) {
+                Ok(session) => session,
+                Err(_) => continue, // invalid key/salt length for the KDF
+            };
+            match self.tracker.verify_roc_with_auth_key(
+                packet,
+                tag_len,
+                &session.auth_key,
+                &*self.crypto,
+            ) {
                 Ok(Some(roc)) => {
-                    match decrypt_srtp_payload(packet, payload_offset, &key, roc, &*self.crypto) {
+                    match decrypt_srtp_payload_with_session(
+                        packet,
+                        payload_offset,
+                        tag_len,
+                        &session.cipher_key,
+                        &session.cipher_salt,
+                        roc,
+                    ) {
                         Ok(plaintext) => {
                             let mut out = packet[..payload_offset].to_vec();
                             out.extend_from_slice(&plaintext);
@@ -1924,6 +2147,61 @@ mod tests {
         assert!(
             result,
             "Auth tag computed with derived session key should verify"
+        );
+    }
+
+    /// The session-key cache derives once per key material and reuses the
+    /// result on a hit (no re-derivation), but a key-material change at the same
+    /// index invalidates the entry so a stale session key is never served.
+    #[test]
+    fn session_key_cache_reuses_then_invalidates_on_key_change() {
+        let km = |mk: u8| SrtpKeyMaterial {
+            tag: 1,
+            suite: SrtpSuite::AesCm128HmacSha1_80,
+            master_key: vec![mk; 16],
+            master_salt: vec![0x22u8; 14],
+            ssrc: None,
+            media_addr: None,
+            media_port: None,
+        };
+
+        let mut cache = SessionKeyCache::default();
+        let km_a = km(0x11);
+
+        // First lookup derives and caches.
+        let ck_a = cache.get_or_derive(0, &km_a).unwrap().cipher_key.clone();
+        assert_eq!(cache.derive_count, 1, "first lookup derives once");
+
+        // Same key material, same index → cache hit, no new derivation.
+        let ck_a2 = cache.get_or_derive(0, &km_a).unwrap().cipher_key.clone();
+        assert_eq!(cache.derive_count, 1, "cache hit must not re-derive");
+        assert_eq!(ck_a, ck_a2, "cache hit must return identical session key");
+
+        // Key material changes at the same index → fingerprint mismatch
+        // invalidates the entry and forces a fresh derivation.
+        let km_b = km(0x99);
+        let ck_b = cache.get_or_derive(0, &km_b).unwrap().cipher_key.clone();
+        assert_eq!(
+            cache.derive_count, 2,
+            "key-material change must invalidate the cache"
+        );
+        assert_ne!(
+            ck_a, ck_b,
+            "stale session key must never be served after a key change"
+        );
+
+        // The re-derived key matches a fresh KDF from the new material (proving
+        // it is the correct, non-stale value — not merely different).
+        let expected_b = aes_cm_prf(
+            &km_b.master_key,
+            &km_b.master_salt,
+            0x00,
+            km_b.master_key.len(),
+        )
+        .unwrap();
+        assert_eq!(
+            ck_b, expected_b,
+            "invalidated entry must re-derive correctly"
         );
     }
 }

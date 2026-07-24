@@ -40,7 +40,13 @@ pub struct DtmfEvent {
 ///
 /// - `event`: 0-9 = digits, 10 = `*`, 11 = `#`, 12-15 = A-D
 /// - `E` bit: 1 = end of event (only these are returned)
-/// - `duration`: in RTP timestamp units (typically 8000 Hz clock)
+/// - `duration`: in RTP timestamp units of the telephone-event clock
+///
+/// This is a convenience wrapper over [`extract_dtmf_with_clock`] that
+/// assumes the RFC 4733 default 8000 Hz telephone-event clock. Callers that
+/// know the negotiated clock rate — e.g. a `16000` Hz wideband
+/// telephone-event from `a=rtpmap:<pt> telephone-event/16000` — should call
+/// [`extract_dtmf_with_clock`] directly so the reported duration is correct.
 ///
 /// # Arguments
 ///
@@ -60,8 +66,46 @@ pub fn extract_dtmf(
     expected_pt: u8,
     timestamp: DateTime<Utc>,
 ) -> Option<DtmfEvent> {
+    extract_dtmf_with_clock(payload, payload_type, expected_pt, 8000, timestamp)
+}
+
+/// Extract a DTMF event using an explicit telephone-event clock rate.
+///
+/// The RFC 4733 `duration` field is expressed in RTP timestamp units of the
+/// telephone-event clock, which is negotiated in SDP as
+/// `a=rtpmap:<pt> telephone-event/<clock_rate>`. It is commonly 8000 Hz but
+/// is 16000 Hz for wideband; assuming 8000 Hz for a 16 kHz event reports
+/// double the true duration. Pass the negotiated `clock_rate` (in Hz) so the
+/// duration is scaled correctly.
+///
+/// # Arguments
+///
+/// * `payload` — the RTP payload bytes (after the RTP header).
+/// * `payload_type` — the PT from the RTP header for this packet.
+/// * `expected_pt` — the telephone-event PT negotiated via SDP.
+/// * `clock_rate` — the telephone-event clock rate in Hz (from the SDP
+///   rtpmap for `expected_pt`).
+/// * `timestamp` — capture timestamp for the resulting event.
+///
+/// # Returns
+///
+/// `Some(DtmfEvent)` if this is a complete telephone-event (E bit set)
+/// with a valid digit. `None` for intermediate packets, wrong payload
+/// type, payloads too short to decode, or a zero `clock_rate`.
+pub fn extract_dtmf_with_clock(
+    payload: &[u8],
+    payload_type: u8,
+    expected_pt: u8,
+    clock_rate: u32,
+    timestamp: DateTime<Utc>,
+) -> Option<DtmfEvent> {
     // Only process if the payload type matches the negotiated telephone-event PT
     if payload_type != expected_pt {
+        return None;
+    }
+
+    // A zero clock rate would divide by zero; a valid rtpmap never carries one.
+    if clock_rate == 0 {
         return None;
     }
 
@@ -79,8 +123,9 @@ pub fn extract_dtmf(
     }
 
     let duration_ts = u16::from_be_bytes([payload[2], payload[3]]);
-    // Convert from RTP timestamp units to milliseconds (assume 8kHz clock)
-    let duration_ms = (duration_ts as u32) / 8;
+    // Convert from RTP timestamp units to milliseconds using the negotiated
+    // clock rate: ms = ts_units * 1000 / clock_rate.
+    let duration_ms = (duration_ts as u64 * 1000 / clock_rate as u64) as u32;
 
     let digit = event_to_digit(event)?;
 
@@ -265,5 +310,30 @@ mod tests {
         let payload = build_event(5, true, 10, 3200);
         let event = extract_dtmf(&payload, 101, 101, ts()).expect("should extract");
         assert_eq!(event.duration_ms, 400);
+    }
+
+    /// A 16 kHz telephone-event yields the correct duration when the
+    /// negotiated clock rate is supplied, rather than the doubled value the
+    /// 8 kHz assumption produces.
+    #[test]
+    fn extract_dtmf_16khz_clock_correct_duration() {
+        // 3200 timestamp units at 16 kHz = 200 ms (the 8 kHz assumption
+        // would report 400 ms).
+        let payload = build_event(1, true, 10, 3200);
+        let event = extract_dtmf_with_clock(&payload, 101, 101, 16_000, ts())
+            .expect("should extract digit 1");
+        assert_eq!(event.digit, '1');
+        assert_eq!(event.duration_ms, 200);
+    }
+
+    /// The 8 kHz-default `extract_dtmf` remains equivalent to calling
+    /// `extract_dtmf_with_clock` with an 8000 Hz clock.
+    #[test]
+    fn extract_dtmf_defaults_to_8khz() {
+        let payload = build_event(1, true, 10, 1600); // 200 ms at 8 kHz
+        let default = extract_dtmf(&payload, 101, 101, ts());
+        let explicit = extract_dtmf_with_clock(&payload, 101, 101, 8000, ts());
+        assert_eq!(default, explicit);
+        assert_eq!(default.expect("extract").duration_ms, 200);
     }
 }
