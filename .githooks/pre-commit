@@ -25,11 +25,20 @@ fi
 echo -e "${GREEN}OK${NC}"
 
 # ── 2. Tests must pass ─────────────────────────────────────────────
+# Capture the full run once: step 5 reuses this exact output for the
+# homepage count. Running `cargo test` a second time there could race a
+# concurrent cargo on the target dir, abort a binary's compile, drop its
+# `test result:` line, and silently undercount. Gate on the exit code so
+# a partial/aborted run fails HERE (honestly, "retry") instead of passing
+# and feeding step 5 a truncated sum.
 echo -n "  Tests... "
+set +e
 TEST_OUTPUT=$(cargo test --features full 2>&1)
-if echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
+TEST_RC=$?
+set -e
+if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
     echo -e "${RED}FAIL${NC}"
-    echo "Tests are failing. Run: cargo test --features full"
+    echo "Tests are failing or the run did not complete. Run: cargo test --features full"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
@@ -98,7 +107,11 @@ fi
 # "N automated tests" in the feature table. Both must equal the real count.
 echo -n "  Homepage test count... "
 if [ -f "website/templates/index.html" ]; then
-    ACTUAL=$(cargo test --features full 2>&1 | grep "test result:" | awk '{sum += $4} END {print sum}')
+    # Reuse the validated step-2 run (TEST_RC==0 guarantees every binary
+    # reported), NOT a fresh `cargo test` — a second run can race a
+    # concurrent cargo and undercount. Sum the passed column of every
+    # `test result:` line (lib + integration + doctests).
+    ACTUAL=$(echo "$TEST_OUTPUT" | grep "test result:" | awk '{sum += $4} END {print sum}')
     STAT=$(grep -B1 'Automated tests' website/templates/index.html | grep -o 'data-count="[0-9]*"' | grep -o '[0-9]*' | head -1)
     PROSE=$(grep -oE '[0-9]+ automated tests' website/templates/index.html | grep -oE '[0-9]+' | sort -u)
     if [ -n "$ACTUAL" ]; then
