@@ -126,7 +126,7 @@ sipnab -d any --multi-device --delta-time
 | `--multi-device` | -- | off | Capture on all available interfaces |
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
-| `-n`, `--count` | `<N>` | -- | Stop after capturing N packets |
+| `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
 | `--autostop` | `<CONDITION>` | -- | Autostop condition (e.g., `filesize:100`, `duration:60`) |
 | `--split` | `<CONDITION>` | -- | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
@@ -417,7 +417,7 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode: `plain` sends/expects the secret verbatim (Homer-compatible, replayable); `hmac` sends/expects a per-message HMAC token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — sipnab-to-sipnab only. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). A non-loopback `--hep-listen` bind is **refused** unless this or `--hep-auth`/`--hep-auth-file` is set. Feature: `hep` |
-| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling) Feature: `hep` |
+| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep` |
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | Maximum HEP packets/second per source IP: a number, `off`, or `auto` (divide the global ceiling across `--hep-allow` sources); fairness against a single flooding peer. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | Allow scanner-kill active responses for HEP-received packets. **Off by default** (sender-asserted src/dst); only enable with authenticated HEP input. Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |

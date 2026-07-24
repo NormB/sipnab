@@ -302,7 +302,9 @@ pub struct Cli {
     #[arg(help_heading = "Capture", long, value_name = "FILE")]
     pub bpf_file: Option<String>,
 
-    /// Stop after capturing N packets.
+    /// Stop after receiving N packets. Counts every packet received from the
+    /// capture source; for a HEP listener that includes packets later dropped
+    /// by the source allowlist, rate limiter, or authentication.
     #[arg(
         help_heading = "Capture",
         short = 'n',
@@ -961,6 +963,8 @@ pub struct Cli {
     pub hep_allow: Vec<String>,
 
     /// Maximum HEP packets per second (global ceiling across all senders).
+    /// `0` disables the global ceiling (consistent with `off` on the
+    /// per-peer knob); the per-peer cap, if set, still applies.
     #[arg(
         help_heading = "MCP (Model Context Protocol)",
         long,

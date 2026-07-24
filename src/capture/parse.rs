@@ -5,7 +5,8 @@
 //! Parses raw packet bytes through the link, network, and transport layers
 //! using [`etherparse`] for zero-copy header parsing. Handles encapsulation
 //! stripping (IP-in-IP, GRE) and produces [`ParsedPacket`] structs ready for
-//! reassembly or direct consumption by upper-layer parsers.
+//! reassembly or direct consumption by upper-layer parsers. Encapsulation
+//! stripping covers IP-in-IP, 6in4 (IPv6-in-IPv4), and GRE.
 
 use std::net::IpAddr;
 
@@ -156,14 +157,15 @@ const ETHERTYPE_IPV6: u16 = 0x86DD;
 ///
 /// Used by the pre-parsed short-circuit path; HEP and similar sources
 /// carry the IP protocol number, not the application-level transport
-/// like TLS or WS — so this only handles UDP / TCP / SCTP. Anything
-/// else falls back to UDP, matching the most common HEP payload type.
-fn ip_protocol_to_transport(p: u8) -> TransportProto {
+/// like TLS or WS — so this only recognizes UDP / TCP / SCTP. Any other
+/// protocol number yields `None`: the caller rejects the packet rather
+/// than guessing a transport, so e.g. ESP is never mislabeled as UDP.
+fn ip_protocol_to_transport(p: u8) -> Option<TransportProto> {
     match p {
-        6 => TransportProto::Tcp,
-        17 => TransportProto::Udp,
-        132 => TransportProto::Sctp,
-        _ => TransportProto::Udp,
+        6 => Some(TransportProto::Tcp),
+        17 => Some(TransportProto::Udp),
+        132 => Some(TransportProto::Sctp),
+        _ => None,
     }
 }
 
@@ -328,7 +330,8 @@ pub(crate) fn reparse_transport(
 /// - Ethernet II (DLT_EN10MB), including VLAN / QinQ
 /// - Linux cooked capture (DLT_LINUX_SLL / SLL2)
 /// - Raw IP (DLT_RAW)
-/// - Encapsulation stripping: IP-in-IP (protocol 4) and GRE (protocol 47)
+/// - Encapsulation stripping: IP-in-IP (protocol 4), 6in4 (protocol 41),
+///   and GRE (protocol 47)
 ///
 /// # Errors
 ///
@@ -367,13 +370,18 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     // skip link/IP/transport parsing and produce a ParsedPacket
     // directly. `data` is the transport-layer payload only.
     if let Some(meta) = &packet.pre_parsed {
+        // A non-SIP transport (not UDP/TCP/SCTP) carries no message we can
+        // label without guessing; reject it so downstream never sees a
+        // mislabeled transport (e.g. ESP silently reported as UDP).
+        let transport = ip_protocol_to_transport(meta.ip_protocol)
+            .ok_or(CaptureError::UnsupportedIpProtocol(meta.ip_protocol))?;
         return Ok(ParsedPacket {
             timestamp: packet.timestamp,
             src_addr: meta.src_addr,
             dst_addr: meta.dst_addr,
             src_port: meta.src_port,
             dst_port: meta.dst_port,
-            transport: ip_protocol_to_transport(meta.ip_protocol),
+            transport,
             payload: packet.data.clone(),
             ip_id: None,
             tcp_seq: None,
@@ -458,9 +466,11 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
 
     let ip_number = ip_payload.ip_number;
 
-    // IP-in-IP (protocol 4) or GRE (protocol 47) — strip and re-parse
-    if ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
-        // IP-in-IP encapsulation: inner packet is IPv4
+    // IP-in-IP (protocol 4), 6in4 (protocol 41), or GRE (protocol 47) —
+    // strip and re-parse. `parse_inner_ip` uses `SlicedPacket::from_ip`,
+    // which detects the inner IP version, so it handles an inner IPv4
+    // (IP-in-IP) and an inner IPv6 (6in4) alike.
+    if (ip_number == IpNumber::IPV4 || ip_number == IpNumber::IPV6) && !ip_payload.fragmented {
         return parse_inner_ip(packet.timestamp, &packet.data, ip_payload.payload, 0);
     }
     if ip_number == IpNumber::GRE && !ip_payload.fragmented {
@@ -525,7 +535,9 @@ fn parse_inner_ip(
         what: "inner packet",
     })?;
 
-    if ip_payload.ip_number == IpNumber::IPV4 && !ip_payload.fragmented {
+    if (ip_payload.ip_number == IpNumber::IPV4 || ip_payload.ip_number == IpNumber::IPV6)
+        && !ip_payload.fragmented
+    {
         return parse_inner_ip(timestamp, data, ip_payload.payload, depth + 1);
     }
     if ip_payload.ip_number == IpNumber::GRE && !ip_payload.fragmented {
@@ -647,19 +659,30 @@ fn extract_parsed_packet(
             // the base header — pull its offset / MF / 32-bit id so fragments
             // are reassembled (otherwise each fragment is mis-parsed as a whole
             // datagram and the SIP message is silently dropped).
-            let (foff, more, id) = {
-                let mut found = (None, false, None);
-                for ext in v6.extensions().clone() {
-                    if let Ipv6ExtensionSlice::Fragment(f) = ext {
-                        found = (
+            //
+            // The overwhelmingly common case is no extension headers at all, so
+            // short-circuit on the empty chain: that path allocates nothing and
+            // walks nothing. Only when extension headers are actually present do
+            // we scan for the Fragment header. `etherparse`'s `IntoIterator` is
+            // by value only (there is no by-reference iterator), so scanning
+            // needs an owned `Ipv6ExtensionsSlice`; `.clone()` there is a
+            // field-wise copy of a slice reference plus two small fields — no
+            // heap allocation — and now happens off the hot path.
+            let exts = v6.extensions();
+            let (foff, more, id) = if exts.is_empty() {
+                (None, false, None)
+            } else {
+                exts.clone()
+                    .into_iter()
+                    .find_map(|ext| match ext {
+                        Ipv6ExtensionSlice::Fragment(f) => Some((
                             Some(f.fragment_offset().value()),
                             f.more_fragments(),
                             Some(f.identification()),
-                        );
-                        break;
-                    }
-                }
-                found
+                        )),
+                        _ => None,
+                    })
+                    .unwrap_or((None, false, None))
             };
             (
                 IpAddr::V6(hdr.source_addr()),
@@ -1543,5 +1566,135 @@ mod tests {
 
         assert_eq!(parsed.transport, TransportProto::Tcp);
         assert_eq!(parsed.payload[..], payload[..]);
+    }
+
+    /// A 6in4 tunnel — an outer IPv4 packet with protocol 41 carrying an
+    /// inner IPv6 datagram — is stripped to the inner IPv6/UDP flow so
+    /// tunneled SIP is delivered rather than dropped.
+    #[test]
+    fn parse_6in4_ipv6_in_ipv4() {
+        let sip = b"OPTIONS sip:bob@example.com SIP/2.0\r\n\r\n";
+
+        // Inner raw IPv6 + UDP (no Ethernet): 2001::1 -> 2001::2, 5060 -> 5062.
+        let mut src = [0u8; 16];
+        src[0] = 0x20;
+        src[1] = 0x01;
+        src[15] = 1;
+        let mut dst = [0u8; 16];
+        dst[0] = 0x20;
+        dst[1] = 0x01;
+        dst[15] = 2;
+        let udp_len: u16 = 8 + sip.len() as u16;
+        let mut inner = Vec::new();
+        inner.push(0x60); // version=6
+        inner.extend_from_slice(&[0x00, 0x00, 0x00]); // traffic class + flow label
+        inner.extend_from_slice(&udp_len.to_be_bytes()); // payload length
+        inner.push(17); // next header: UDP
+        inner.push(64); // hop limit
+        inner.extend_from_slice(&src);
+        inner.extend_from_slice(&dst);
+        inner.extend_from_slice(&5060u16.to_be_bytes());
+        inner.extend_from_slice(&5062u16.to_be_bytes());
+        inner.extend_from_slice(&udp_len.to_be_bytes());
+        inner.extend_from_slice(&[0x00, 0x00]); // checksum
+        inner.extend_from_slice(sip);
+
+        // Outer IPv4 header, protocol 41 (IPv6 encapsulation).
+        let outer_total: u16 = 20 + inner.len() as u16;
+        let mut outer = Vec::new();
+        outer.push(0x45);
+        outer.push(0x00);
+        outer.extend_from_slice(&outer_total.to_be_bytes());
+        outer.extend_from_slice(&[0x00, 0x09]); // identification
+        outer.extend_from_slice(&[0x40, 0x00]); // DF
+        outer.push(64);
+        outer.push(41); // protocol: IPv6-in-IPv4 (6in4)
+        outer.extend_from_slice(&[0x00, 0x00]); // checksum
+        outer.extend_from_slice(&[10, 0, 0, 1]); // outer src
+        outer.extend_from_slice(&[10, 0, 0, 2]); // outer dst
+        outer.extend_from_slice(&inner);
+
+        // Wrap in Ethernet.
+        let mut eth = Vec::new();
+        eth.extend_from_slice(&[0xAA; 6]);
+        eth.extend_from_slice(&[0xBB; 6]);
+        eth.extend_from_slice(&[0x08, 0x00]); // EtherType: IPv4
+        eth.extend_from_slice(&outer);
+
+        let pkt = make_packet(eth, DLT_EN10MB);
+        let parsed = parse_packet(&pkt).expect("should parse 6in4 tunnel");
+
+        // Inner IPv6 endpoints, not the outer IPv4 ones.
+        assert_eq!(parsed.src_addr, "2001::1".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.dst_addr, "2001::2".parse::<IpAddr>().unwrap());
+        assert_eq!(parsed.src_port, 5060);
+        assert_eq!(parsed.dst_port, 5062);
+        assert_eq!(parsed.transport, TransportProto::Udp);
+        assert_eq!(parsed.payload[..], sip[..]);
+    }
+
+    /// A pre-parsed (HEP) packet whose IP protocol is neither UDP, TCP, nor
+    /// SCTP (here ESP = 50) is rejected rather than silently mislabeled as
+    /// UDP.
+    #[test]
+    fn parse_packet_rejects_unknown_ip_protocol_pre_parsed() {
+        let pkt = Packet::with_pre_parsed(
+            Utc.with_ymd_and_hms(2024, 1, 15, 12, 0, 0).unwrap(),
+            b"not-sip".to_vec(),
+            Some("hep:0.0.0.0:9060".to_string()),
+            super::super::packet::PreParsed {
+                src_addr: "192.0.2.10".parse().unwrap(),
+                dst_addr: "192.0.2.20".parse().unwrap(),
+                src_port: 5060,
+                dst_port: 5060,
+                ip_protocol: 50, // ESP — not a SIP transport
+            },
+        );
+        let result = parse_packet(&pkt);
+        assert!(
+            matches!(result, Err(CaptureError::UnsupportedIpProtocol(50))),
+            "ESP must be rejected, not mislabeled as UDP; got {result:?}"
+        );
+    }
+
+    /// An IPv6 packet carrying a Fragment extension header (first fragment)
+    /// surfaces the fragment offset, the More-Fragments flag, and the 32-bit
+    /// identification. Characterizes the extension-header walk so the
+    /// hot-path clone removal cannot change fragmented-IPv6 behavior.
+    #[test]
+    fn parse_ipv6_fragment_header_extracts_frag_fields() {
+        let body = b"first-fragment-body";
+        let mut src = [0u8; 16];
+        src[15] = 1;
+        let mut dst = [0u8; 16];
+        dst[15] = 2;
+
+        let frag_payload_len = 8 + body.len(); // fragment header (8) + body
+        let mut pkt = Vec::new();
+        // Ethernet
+        pkt.extend_from_slice(&[0xAA; 6]);
+        pkt.extend_from_slice(&[0xBB; 6]);
+        pkt.extend_from_slice(&[0x86, 0xDD]); // EtherType: IPv6
+        // IPv6 header (40 bytes)
+        pkt.push(0x60);
+        pkt.extend_from_slice(&[0x00, 0x00, 0x00]);
+        pkt.extend_from_slice(&(frag_payload_len as u16).to_be_bytes());
+        pkt.push(44); // next header: Fragment
+        pkt.push(64); // hop limit
+        pkt.extend_from_slice(&src);
+        pkt.extend_from_slice(&dst);
+        // Fragment header (8 bytes): next=UDP, res, offset 0 + MF=1, identification
+        pkt.push(17); // next header: UDP
+        pkt.push(0); // reserved
+        pkt.extend_from_slice(&0x0001u16.to_be_bytes()); // offset 0, MF=1
+        pkt.extend_from_slice(&0xDEAD_BEEFu32.to_be_bytes()); // identification
+        pkt.extend_from_slice(body);
+
+        let p = make_packet(pkt, DLT_EN10MB);
+        let parsed = parse_packet(&p).expect("should parse IPv6 fragment");
+        assert_eq!(parsed.ip_id, Some(0xDEAD_BEEF));
+        assert_eq!(parsed.fragment_offset, Some(0));
+        assert!(parsed.more_fragments);
+        assert_eq!(parsed.ip_protocol, 17); // UDP, after the fragment header
     }
 }

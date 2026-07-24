@@ -16,6 +16,7 @@ use super::channel::PacketTx;
 #[cfg(feature = "hep")]
 use super::hep;
 use super::{device, file, live};
+use crate::signals;
 
 /// Describes where packets come from.
 #[derive(Debug, Clone)]
@@ -232,6 +233,13 @@ pub fn start_capture(
 /// capture threads have successfully opened their devices, or `Err(msg)` if
 /// any device fails to open.
 ///
+/// A multi-device capture is one logical session: if **any** device fails to
+/// open, the siblings that did open are signaled to stop (via the global
+/// shutdown flag their capture loops poll), and a single error naming the
+/// failed device is surfaced — on `ready_tx` (when provided) and as the
+/// coordinator thread's result — matching how a single-device open failure
+/// surfaces. No partial capture is left running.
+///
 /// # Arguments
 ///
 /// * `devices` - comma-separated interface list (validated before any
@@ -242,9 +250,10 @@ pub fn start_capture(
 ///
 /// # Errors
 ///
-/// Fails on a malformed device spec or when a thread cannot be spawned. The
-/// coordinator thread's result (joined via the handle) carries the first
-/// per-device capture error, if any.
+/// Fails on a malformed device spec or when the coordinator thread cannot be
+/// spawned. The coordinator thread's result (joined via the handle) carries
+/// the device-open error (after tearing the siblings down, see above) or,
+/// once running, the first per-device capture error, if any.
 ///
 /// # Side effects
 ///
@@ -289,86 +298,146 @@ pub fn start_multi_capture(
     let thread = thread::Builder::new()
         .name("capture-multi".to_string())
         .spawn(move || {
-            let mut handles = Vec::new();
-            let mut per_device_ready_rxs = Vec::new();
-
-            for dev in &device_list {
-                let dev_name = dev.clone();
-                let config = config.clone();
-                let tx = tx.clone();
-
-                // Each sub-thread gets its own ready signal so we can
-                // aggregate them before signaling the caller.
-                let (dev_ready_tx, dev_ready_rx) =
-                    crossbeam_channel::bounded::<Result<(), String>>(1);
-                per_device_ready_rxs.push((dev.clone(), dev_ready_rx));
-
-                let dev_ctx = dev.clone(); // for error context
-                let h = thread::Builder::new()
-                    .name(format!("capture-{dev_name}"))
-                    .spawn(move || {
-                        live::capture_live(&dev_name, &config, tx, Some(dev_ready_tx))
-                    })
-                    .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))?;
-
-                handles.push(h);
-            }
-
-            // Wait for all sub-threads to report ready (or failure).
-            if let Some(ready) = ready_tx {
-                let mut first_err: Option<String> = None;
-                for (dev_name, dev_rx) in &per_device_ready_rxs {
-                    match dev_rx.recv() {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            if first_err.is_none() {
-                                first_err =
-                                    Some(format!("Device '{dev_name}' failed to open: {e}"));
-                            }
-                        }
-                        Err(_) => {
-                            if first_err.is_none() {
-                                first_err = Some(format!(
-                                    "Device '{dev_name}' capture thread exited before signaling ready"
-                                ));
-                            }
-                        }
-                    }
-                }
-                let _ = ready.send(match first_err {
-                    Some(e) => Err(e),
-                    None => Ok(()),
-                });
-            }
-
-            // Drop our copy of tx so the channel closes when all capture
-            // threads finish.
-            drop(tx);
-
-            let mut first_error = None;
-            for h in handles {
-                match h.join() {
-                    Ok(Ok(())) => {}
-                    Ok(Err(e)) => {
-                        tracing::warn!("Capture thread error: {e}");
-                        if first_error.is_none() {
-                            first_error = Some(e);
-                        }
-                    }
-                    Err(_) => {
-                        tracing::error!("Capture thread panicked");
-                    }
-                }
-            }
-
-            if let Some(e) = first_error {
-                return Err(e);
-            }
-            Ok(())
+            run_multi_capture(
+                &device_list,
+                &config,
+                tx,
+                ready_tx,
+                spawn_live_device,
+                signals::request_shutdown,
+            )
         })
         .context("Failed to spawn multi-capture coordinator thread")?;
 
     Ok(CaptureHandle { thread, source })
+}
+
+/// One-shot readiness signal a per-device capture thread reports through.
+type DeviceReadyTx = crossbeam_channel::Sender<Result<(), String>>;
+
+/// Spawn the real per-device live-capture thread (production `spawn_device`
+/// for [`run_multi_capture`]).
+fn spawn_live_device(
+    device: String,
+    config: CaptureConfig,
+    tx: PacketTx,
+    ready: DeviceReadyTx,
+) -> Result<thread::JoinHandle<Result<()>>> {
+    let dev_ctx = device.clone(); // for error context
+    thread::Builder::new()
+        .name(format!("capture-{device}"))
+        .spawn(move || live::capture_live(&device, &config, tx, Some(ready)))
+        .with_context(|| format!("Failed to spawn capture thread for '{dev_ctx}'"))
+}
+
+/// Body of the multi-capture coordinator thread: spawn one capture thread per
+/// device (via `spawn_device`), aggregate their readiness, then reap them.
+///
+/// Parameterized over the device spawner and the sibling-stop signal so the
+/// startup/teardown logic is testable without capture privileges; production
+/// passes [`spawn_live_device`] and [`signals::request_shutdown`].
+fn run_multi_capture<S, K>(
+    device_list: &[String],
+    config: &CaptureConfig,
+    tx: PacketTx,
+    ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
+    spawn_device: S,
+    stop_siblings: K,
+) -> Result<()>
+where
+    S: Fn(String, CaptureConfig, PacketTx, DeviceReadyTx) -> Result<thread::JoinHandle<Result<()>>>,
+    K: Fn(),
+{
+    let mut handles = Vec::new();
+    let mut per_device_ready_rxs = Vec::new();
+    let mut first_err: Option<String> = None;
+
+    for dev in device_list {
+        // Each sub-thread gets its own ready signal so we can
+        // aggregate them before signaling the caller.
+        let (dev_ready_tx, dev_ready_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+        per_device_ready_rxs.push((dev.clone(), dev_ready_rx));
+
+        match spawn_device(dev.clone(), config.clone(), tx.clone(), dev_ready_tx) {
+            Ok(h) => handles.push(h),
+            Err(e) => {
+                // A failed spawn dooms the session like a failed open: stop
+                // spawning, tear the started siblings down below.
+                first_err = Some(format!("{e:#}"));
+                break;
+            }
+        }
+    }
+
+    // Drop our copy of tx so the channel closes when all capture
+    // threads finish.
+    drop(tx);
+
+    // Aggregate readiness from every spawned device — even when the caller
+    // did not ask for a ready signal, because a failed open must still tear
+    // the sibling captures down rather than leave a partial capture running.
+    // (`handles` may be shorter than the rx list after a spawn failure; a
+    // dropped ready sender then surfaces as a disconnect, which the spawn
+    // error already outranks via `first_err`.)
+    for (dev_name, dev_rx) in per_device_ready_rxs.iter().take(handles.len()) {
+        match dev_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("Device '{dev_name}' failed to open: {e}"));
+                }
+            }
+            Err(_) => {
+                if first_err.is_none() {
+                    first_err = Some(format!(
+                        "Device '{dev_name}' capture thread exited before signaling ready"
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_err {
+        // One device failing dooms the whole multi-capture: a capture that
+        // silently covers only some of the requested interfaces would be
+        // worse than an error (matching single-capture, where the open
+        // failure is THE error). Signal the siblings that did open to stop
+        // (their capture loops poll the shutdown flag), unblock the caller
+        // with the one aggregated error naming the failed device, then reap
+        // the threads instead of blocking on them forever.
+        stop_siblings();
+        if let Some(ready) = ready_tx {
+            let _ = ready.send(Err(err.clone()));
+        }
+        for h in handles {
+            let _ = h.join();
+        }
+        return Err(anyhow::anyhow!(err));
+    }
+    if let Some(ready) = ready_tx {
+        let _ = ready.send(Ok(()));
+    }
+
+    let mut first_error = None;
+    for h in handles {
+        match h.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!("Capture thread error: {e}");
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+            Err(_) => {
+                tracing::error!("Capture thread panicked");
+            }
+        }
+    }
+
+    if let Some(e) = first_error {
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Tests for capture configuration defaults, channel-capacity derivation,
@@ -485,5 +554,153 @@ mod tests {
         let (tx, _rx) = channel::packet_channel(1 << 20);
         assert!(start_multi_capture("   ", CaptureConfig::default(), tx, None).is_err());
         // (Ok(_) is not Debug; .is_err() avoids unwrapping the handle.)
+    }
+
+    // ── multi-capture teardown on device-open failure ───────────────────
+    /// Teardown tests drive `run_multi_capture` with fake devices (no capture
+    /// privileges): a device named `bad*` fails its open; any other device
+    /// "opens" and then loops until the injected stop signal fires — exactly
+    /// how `capture_live` polls the global shutdown flag. Production wires
+    /// `stop_siblings` to `signals::request_shutdown`, which is not testable
+    /// here without real, openable devices.
+    mod multi_teardown {
+        use super::*;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+        /// Build a fake `spawn_device`: `bad*` devices signal an open error
+        /// and exit; others count into `opened`, signal ready, and loop until
+        /// `stop` is set.
+        fn fake_spawner(
+            stop: Arc<AtomicBool>,
+            opened: Arc<AtomicU64>,
+        ) -> impl Fn(
+            String,
+            CaptureConfig,
+            channel::PacketTx,
+            DeviceReadyTx,
+        ) -> Result<thread::JoinHandle<Result<()>>> {
+            move |dev, _config, _tx, ready| {
+                let stop = stop.clone();
+                let opened = opened.clone();
+                thread::Builder::new()
+                    .name(format!("fake-{dev}"))
+                    .spawn(move || {
+                        if dev.starts_with("bad") {
+                            let _ = ready.send(Err("no such device".to_string()));
+                            return Err(anyhow::anyhow!("no such device"));
+                        }
+                        opened.fetch_add(1, Ordering::SeqCst);
+                        let _ = ready.send(Ok(()));
+                        while !stop.load(Ordering::SeqCst) {
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Ok(())
+                    })
+                    .map_err(Into::into)
+            }
+        }
+
+        /// Run `run_multi_capture` over `devs` on a helper thread and return
+        /// (coordinator result rx, sibling-stop flag, opened counter,
+        /// caller-side ready rx).
+        #[allow(clippy::type_complexity)]
+        fn run(
+            devs: &[&str],
+            with_ready: bool,
+        ) -> (
+            crossbeam_channel::Receiver<Result<()>>,
+            Arc<AtomicBool>,
+            Arc<AtomicU64>,
+            Option<crossbeam_channel::Receiver<Result<(), String>>>,
+        ) {
+            let stop = Arc::new(AtomicBool::new(false));
+            let opened = Arc::new(AtomicU64::new(0));
+            let devs: Vec<String> = devs.iter().map(|d| d.to_string()).collect();
+            // The fakes never send packets, so the receiver half can drop.
+            let (tx, _rx) = channel::packet_channel(16);
+            let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+            let ready_tx = with_ready.then_some(ready_tx);
+            let (done_tx, done_rx) = crossbeam_channel::bounded(1);
+            let spawner = fake_spawner(stop.clone(), opened.clone());
+            let stop2 = stop.clone();
+            thread::Builder::new()
+                .name("test-coordinator".into())
+                .spawn(move || {
+                    let res = run_multi_capture(
+                        &devs,
+                        &CaptureConfig::default(),
+                        tx,
+                        ready_tx,
+                        spawner,
+                        move || stop2.store(true, Ordering::SeqCst),
+                    );
+                    let _ = done_tx.send(res);
+                })
+                .unwrap();
+            (done_rx, stop, opened, with_ready.then_some(ready_rx))
+        }
+
+        /// One failed device open must (a) surface ONE error naming that
+        /// device on the ready channel, (b) stop the sibling captures that
+        /// did open, and (c) let the coordinator finish with the same named
+        /// error instead of hanging on live siblings forever.
+        #[test]
+        fn open_failure_stops_siblings_and_surfaces_one_named_error() {
+            let (done_rx, stop, opened, ready_rx) = run(&["good0", "bad1", "good2"], true);
+            let msg = ready_rx
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .expect("aggregated ready signal must arrive")
+                .expect_err("a failed device open must surface as Err");
+            assert!(msg.contains("bad1"), "error must name the device: {msg}");
+            let res = done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("coordinator must reap stopped siblings, not hang");
+            let err = res.expect_err("coordinator must fail when a device fails");
+            assert!(err.to_string().contains("bad1"), "got: {err}");
+            assert!(stop.load(Ordering::SeqCst), "siblings must be told to stop");
+            assert_eq!(opened.load(Ordering::SeqCst), 2, "both good devices ran");
+        }
+
+        /// The same teardown must happen when the caller passed no ready
+        /// channel: the failure is still detected, siblings still stop, and
+        /// the coordinator still returns the named error.
+        #[test]
+        fn open_failure_without_ready_channel_still_tears_down() {
+            let (done_rx, stop, _opened, _none) = run(&["good0", "bad1"], false);
+            let res = done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("coordinator must finish without a ready channel too");
+            let err = res.expect_err("coordinator must fail when a device fails");
+            assert!(err.to_string().contains("bad1"), "got: {err}");
+            assert!(stop.load(Ordering::SeqCst), "siblings must be told to stop");
+        }
+
+        /// All devices opening cleanly must NOT trip the stop signal; the
+        /// caller gets `Ok(())` on ready and the siblings keep running.
+        #[test]
+        fn all_devices_ok_does_not_stop_anyone() {
+            let (done_rx, stop, opened, ready_rx) = run(&["good0", "good1"], true);
+            ready_rx
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .expect("ready signal must arrive")
+                .expect("all devices opened, ready must be Ok");
+            assert_eq!(opened.load(Ordering::SeqCst), 2);
+            assert!(!stop.load(Ordering::SeqCst), "no failure, no stop signal");
+            // Siblings are still capturing; the coordinator must still be
+            // waiting on them (nothing on done_rx yet).
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+                "coordinator must keep running while captures are healthy"
+            );
+            // Shut the fakes down so the test does not leak spinning threads.
+            stop.store(true, Ordering::SeqCst);
+            done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("coordinator finishes after siblings stop")
+                .expect("clean shutdown is Ok");
+        }
     }
 }

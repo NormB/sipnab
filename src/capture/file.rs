@@ -10,7 +10,7 @@ use std::path::Path;
 
 use super::channel::PacketTx;
 use anyhow::{Context, Result};
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
 use super::CaptureConfig;
 use super::packet::Packet;
@@ -187,14 +187,20 @@ pub fn capture_file(
             Ok(pkt) => {
                 let ts = pcap_ts_to_chrono(pkt.header.ts);
 
-                // Replay mode: sleep for the inter-packet delta
+                // Replay mode: reproduce the inter-packet gap, but sleep in
+                // bounded slices that poll the shutdown flag between them, so a
+                // large delta cannot delay shutdown by more than one slice.
                 if replay {
                     if let Some(prev) = prev_ts {
                         let delta = ts.signed_duration_since(prev);
                         if let Ok(dur) = delta.to_std()
                             && !dur.is_zero()
+                            && sleep_interruptible(dur, signals::shutdown_requested)
                         {
-                            std::thread::sleep(dur);
+                            tracing::debug!(
+                                "Shutdown requested during replay delay, stopping file reader"
+                            );
+                            break;
                         }
                         // Negative deltas (out-of-order timestamps) are skipped
                     }
@@ -235,20 +241,45 @@ pub fn capture_file(
     Ok(())
 }
 
+/// Sleep for `total`, waking at least every 200 ms to poll `should_stop`.
+///
+/// Replaying a capture reproduces the original inter-packet timing, so a gap of
+/// minutes or hours between packets would otherwise be one blocking
+/// `thread::sleep` that ignores shutdown for its whole duration. Slicing the
+/// wait bounds the shutdown latency to a single slice regardless of the gap.
+///
+/// `should_stop` is the same signal the surrounding capture loop observes
+/// (`signals::shutdown_requested`); it is injectable so the slicing logic can
+/// be tested without touching the process-global flag.
+///
+/// Returns `true` if `should_stop` fired before `total` elapsed (the caller
+/// should then stop), `false` if the full duration was slept.
+fn sleep_interruptible(total: std::time::Duration, should_stop: impl Fn() -> bool) -> bool {
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(200);
+    let mut remaining = total;
+    while !remaining.is_zero() {
+        if should_stop() {
+            return true;
+        }
+        let nap = remaining.min(SLICE);
+        std::thread::sleep(nap);
+        remaining -= nap;
+    }
+    should_stop()
+}
+
 /// Convert a pcap `libc::timeval` to a chrono UTC datetime.
 ///
-/// `tv_usec` is clamped to `[0, 999_999]` before the microsecond→nanosecond
-/// multiply (a crafted capture can carry out-of-range values that would
-/// otherwise overflow). An unrepresentable `tv_sec` falls back to the current
-/// wall clock.
+/// Routes through the single hardened converter in
+/// [`super::live::pcap_ts_to_chrono`] so the file/replay path and live capture
+/// treat a corrupt timeval identically: an out-of-range `tv_usec` or an
+/// unrepresentable `tv_sec` falls back to the current wall clock, and — unlike
+/// the old silent fallback here — the event is counted in
+/// [`super::live::INVALID_PCAP_TIMESTAMPS`] and warned about (rate-limited),
+/// because a silently substituted timestamp corrupts every downstream timing
+/// computation.
 pub(crate) fn pcap_ts_to_chrono(ts: libc::timeval) -> DateTime<Utc> {
-    // tv_usec is attacker-controllable in a crafted capture; clamp to a valid
-    // microsecond before the µs→ns multiply so it can overflow neither u64 (the
-    // clamp bounds the operand) nor the resulting u32.
-    let nanos = ts.tv_usec.clamp(0, 999_999) as u32 * 1000;
-    Utc.timestamp_opt(ts.tv_sec, nanos)
-        .single()
-        .unwrap_or_else(Utc::now)
+    super::live::pcap_ts_to_chrono(ts)
 }
 
 /// Tests for file reading: timestamp hardening, fixture reads, and
@@ -283,6 +314,76 @@ mod tests {
             tv_sec: 0,
             tv_usec: -1, // as u32 → huge → overflow in old code
         });
+    }
+
+    /// A huge replay inter-packet delta must not delay shutdown: the sleep is
+    /// sliced and polls the stop signal between slices, so it returns promptly
+    /// once the signal fires instead of blocking for the full duration.
+    /// Regression for the "large delta delays shutdown arbitrarily" gap.
+    #[test]
+    fn sleep_interruptible_returns_promptly_on_stop() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_setter = Arc::clone(&stop);
+        // Fire the stop signal shortly after the (would-be hour-long) sleep starts.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            stop_setter.store(true, Ordering::SeqCst);
+        });
+
+        let started = std::time::Instant::now();
+        let interrupted = sleep_interruptible(std::time::Duration::from_secs(3600), || {
+            stop.load(Ordering::SeqCst)
+        });
+        let elapsed = started.elapsed();
+
+        assert!(
+            interrupted,
+            "must report that the stop signal interrupted the sleep"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "sliced sleep must react to the stop signal promptly, took {elapsed:?}"
+        );
+    }
+
+    /// Without a stop signal the sliced sleep runs to completion and reports
+    /// that it was not interrupted.
+    #[test]
+    fn sleep_interruptible_runs_to_completion_without_stop() {
+        let started = std::time::Instant::now();
+        let interrupted = sleep_interruptible(std::time::Duration::from_millis(120), || false);
+        assert!(!interrupted, "no stop signal → not interrupted");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(100),
+            "must actually sleep the requested duration"
+        );
+    }
+
+    /// A tv_sec/tv_usec that cannot be represented must fall back to the wall
+    /// clock *loudly*: like live capture, the file/replay path must count the
+    /// event in the shared `INVALID_PCAP_TIMESTAMPS` counter rather than
+    /// silently substituting "now". Regression for the consistency gap where
+    /// `file.rs` fell back without counting while `live.rs` counted+warned.
+    #[test]
+    fn fallback_to_now_is_counted_like_live() {
+        use std::sync::atomic::Ordering;
+        let counter = &crate::capture::live::INVALID_PCAP_TIMESTAMPS;
+        let before = counter.load(Ordering::Relaxed);
+        // i64::MAX seconds is unrepresentable → fallback to now().
+        let dt = pcap_ts_to_chrono(libc::timeval {
+            tv_sec: i64::MAX,
+            tv_usec: 0,
+        });
+        let after = counter.load(Ordering::Relaxed);
+        assert!(
+            after > before,
+            "invalid pcap timestamp must be counted, not silently stamped with now()"
+        );
+        // The fallback stamps the current wall clock.
+        assert!((Utc::now() - dt).num_seconds().abs() < 60);
     }
 
     /// Helper: path to the test fixture pcap.

@@ -254,6 +254,12 @@ pub enum CaptureError {
     #[error("unsupported GRE inner protocol: 0x{0:04X}")]
     UnsupportedGreProtocol(u16),
 
+    /// A pre-parsed (e.g. HEP) packet asserts an IP protocol number that is
+    /// not a SIP transport (UDP/TCP/SCTP), so no transport can be labeled
+    /// without guessing. The packet is rejected rather than mislabeled.
+    #[error("unsupported IP protocol number: {0}")]
+    UnsupportedIpProtocol(u8),
+
     /// Microsoft Network Monitor capture format (convertible, not readable).
     #[error(
         "Microsoft Network Monitor (.cap) format is not supported. \

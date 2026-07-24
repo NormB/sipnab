@@ -156,8 +156,9 @@ pub fn hep_auth_ok(expected: Option<&str>, presented: Option<&[u8]>) -> bool {
 /// authentication (`has_auth`) or a non-empty source allowlist
 /// (`allowlist_len > 0`). A loopback bind is always permitted.
 ///
-/// An address that does not resolve to any socket address is treated as
-/// non-loopback (fail closed).
+/// Loopback is determined purely syntactically (`hep_bind_is_loopback`):
+/// a hostname is not resolved and counts as non-loopback, so an unguarded
+/// hostname bind is refused (fail closed).
 ///
 /// # Arguments
 ///
@@ -169,11 +170,6 @@ pub fn hep_auth_ok(expected: Option<&str>, presented: Option<&[u8]>) -> bool {
 ///
 /// Returns a human-readable refusal message when `bind_addr` is
 /// non-loopback and neither `has_auth` nor a non-empty allowlist applies.
-///
-/// # Side effects
-///
-/// Resolving `bind_addr` may perform a blocking DNS lookup when it is a
-/// hostname rather than a literal IP.
 pub fn enforce_hep_bind_policy(
     bind_addr: &str,
     has_auth: bool,
@@ -193,26 +189,26 @@ pub fn enforce_hep_bind_policy(
     ))
 }
 
-/// Whether every socket address `bind_addr` resolves to is loopback.
-/// Returns `false` if the address fails to resolve (fail closed).
+/// Whether `bind_addr` is a loopback address, decided **purely
+/// syntactically**. Only a literal IP (in `IP:port` form, including the
+/// bracketed IPv6 form) is classified; a hostname is *not* resolved.
 ///
-/// # Side effects
-///
-/// `to_socket_addrs` may perform a blocking DNS lookup when `bind_addr`
-/// is a hostname rather than a literal IP.
+/// A DNS lookup inside this security decision could block startup or be
+/// steered by a spoofed record, so a non-literal address is treated
+/// conservatively as non-loopback (fail closed). Callers that bind to a
+/// hostname get a startup warning suggesting a literal (see [`capture_hep`]).
 fn hep_bind_is_loopback(bind_addr: &str) -> bool {
-    use std::net::ToSocketAddrs;
-    match bind_addr.to_socket_addrs() {
-        Ok(mut addrs) => {
-            let mut any = false;
-            let all_loopback = addrs.all(|a| {
-                any = true;
-                a.ip().is_loopback()
-            });
-            any && all_loopback
-        }
+    match bind_addr.parse::<std::net::SocketAddr>() {
+        Ok(addr) => addr.ip().is_loopback(),
         Err(_) => false,
     }
+}
+
+/// Whether `bind_addr` is a literal socket address (`IP:port`, including the
+/// bracketed IPv6 form) rather than a hostname. Purely syntactic — it never
+/// performs name resolution.
+fn hep_bind_is_ip_literal(bind_addr: &str) -> bool {
+    bind_addr.parse::<std::net::SocketAddr>().is_ok()
 }
 
 // ── Per-peer rate-limit ergonomics ───────────────────────────────────
@@ -221,15 +217,21 @@ fn hep_bind_is_loopback(bind_addr: &str) -> bool {
 /// log, so an operator can see at a glance whether the per-peer cap is on.
 ///
 /// `global` is the packets/second ceiling across all peers; `per_peer` is
-/// the per-source cap (0 renders as "disabled"). Returns the formatted
-/// summary string.
+/// the per-source cap. Either knob renders as "disabled" when 0, so both read
+/// consistently. Returns the formatted summary string.
 pub fn describe_hep_limiters(global: u64, per_peer: u64) -> String {
-    let per_peer = if per_peer == 0 {
-        "disabled".to_string()
-    } else {
-        format!("{per_peer}/s")
+    let render = |limit: u64| {
+        if limit == 0 {
+            "disabled".to_string()
+        } else {
+            format!("{limit}/s")
+        }
     };
-    format!("HEP rate limiting: global {global}/s, per-peer {per_peer}")
+    format!(
+        "HEP rate limiting: global {}, per-peer {}",
+        render(global),
+        render(per_peer)
+    )
 }
 
 // ── HMAC authentication mode (opt-in, sipnab↔sipnab) ──────────────────
@@ -348,8 +350,9 @@ pub fn build_hmac_auth_token(key: &[u8], ts: u64, nonce: &[u8; 16], payload: &[u
 ///
 /// # Side effects
 ///
-/// On reaching the replay stage, prunes expired entries from `seen`, and on
-/// success records the token's nonce there.
+/// On reaching the replay stage, prunes expired entries from `seen` (at most
+/// once per second — see `HmacNonceCache::should_prune`), and on success
+/// records the token's nonce there.
 #[cfg(feature = "hep")]
 pub fn verify_hmac_auth_token(
     key: &[u8],
@@ -380,7 +383,13 @@ pub fn verify_hmac_auth_token(
         return Err(HmacAuthError::BadMac);
     }
 
-    seen.prune(now.saturating_sub(window));
+    // Amortize the O(n) prune to at most once per second. Correctness does
+    // not depend on it: any nonce old enough to prune is also old enough that
+    // its token fails the timestamp-window check above, so a lingering stale
+    // entry can never be replayed.
+    if seen.should_prune(Instant::now()) {
+        seen.prune(now.saturating_sub(window));
+    }
     if seen.contains(&nonce) {
         return Err(HmacAuthError::Replay);
     }
@@ -397,6 +406,10 @@ pub struct HmacNonceCache {
     /// Accepted nonces mapped to their token timestamps (epoch seconds),
     /// used both for replay lookups and for window-based pruning.
     seen: std::collections::HashMap<[u8; 16], u64>,
+    /// When the map was last pruned, so the O(n) sweep is amortized to at
+    /// most once per second instead of running on every accepted packet.
+    /// `None` until the first prune.
+    last_prune: Option<Instant>,
 }
 
 #[cfg(feature = "hep")]
@@ -421,6 +434,24 @@ impl HmacNonceCache {
     /// longer pass the timestamp check, so they cannot be replayed.
     fn prune(&mut self, min_ts: u64) {
         self.seen.retain(|_, ts| *ts >= min_ts);
+    }
+
+    /// Whether a prune is due at monotonic instant `now`. The first call
+    /// always returns `true`; afterwards it returns `true` at most once per
+    /// second, recording `now` as the last-prune marker each time it does.
+    ///
+    /// Amortizing is safe because pruning is a memory optimization only: an
+    /// expired nonce can never pass the timestamp-window check in
+    /// [`verify_hmac_auth_token`], so a not-yet-pruned stale entry cannot be
+    /// replayed.
+    fn should_prune(&mut self, now: Instant) -> bool {
+        match self.last_prune {
+            Some(prev) if now.duration_since(prev) < Duration::from_secs(1) => false,
+            _ => {
+                self.last_prune = Some(now);
+                true
+            }
+        }
     }
 }
 
@@ -932,8 +963,24 @@ pub fn build_hep_v3_bytes(
     append_chunk(&mut chunks, 0x0000, CHUNK_SRC_PORT, &src_port.to_be_bytes());
     append_chunk(&mut chunks, 0x0000, CHUNK_DST_PORT, &dst_port.to_be_bytes());
 
-    // Timestamp
-    let ts_sec = timestamp.timestamp() as u32;
+    // Timestamp. The HEP TS_SEC chunk is a fixed 32-bit seconds-since-epoch
+    // field on the wire, so capture times before 1970-01-01 or after
+    // 2106-02-07 06:28:15 UTC cannot be represented. Clamp into the u32 range
+    // rather than let `as u32` silently truncate a post-2106 time or wrap a
+    // pre-1970 one into a bogus far-future value, and log once (not per
+    // packet) so the wire-format constraint is visible without flooding logs.
+    let ts_raw = timestamp.timestamp();
+    let ts_sec = ts_raw.clamp(0, u32::MAX as i64) as u32;
+    if ts_raw != i64::from(ts_sec) {
+        static TS_CLAMP_WARNED: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if !TS_CLAMP_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(
+                "HEP TS_SEC is a fixed u32 seconds field; capture time {ts_raw}s is outside \
+                 1970-01-01..2106-02-07 and was clamped to {ts_sec}s (logged once)"
+            );
+        }
+    }
     let ts_usec = timestamp.timestamp_subsec_micros();
     append_chunk(&mut chunks, 0x0000, CHUNK_TS_SEC, &ts_sec.to_be_bytes());
     append_chunk(&mut chunks, 0x0000, CHUNK_TS_USEC, &ts_usec.to_be_bytes());
@@ -1107,7 +1154,7 @@ const HEP_MAX_TRACKED_PEERS: usize = 4096;
 /// other producers (a gap in the previous global-only limiter). Both counters
 /// reset once per elapsed second.
 struct HepRateLimiter {
-    /// Global ceiling: maximum packets/second across all peers.
+    /// Global ceiling: maximum packets/second across all peers (0 = disabled).
     global_max: u64,
     /// Per-peer cap: maximum packets/second per source IP (0 = disabled).
     per_peer_max: u64,
@@ -1123,9 +1170,11 @@ struct HepRateLimiter {
 }
 
 impl HepRateLimiter {
-    /// `global_max` caps total packets/second across all peers;
-    /// `per_peer_max` caps packets/second from any single source IP. A zero
-    /// `per_peer_max` disables the per-peer cap (global-only behavior).
+    /// `global_max` caps total packets/second across all peers; `per_peer_max`
+    /// caps packets/second from any single source IP. A zero value disables
+    /// the corresponding limiter: `per_peer_max == 0` leaves only the global
+    /// ceiling, and `global_max == 0` leaves only the per-peer cap (or no
+    /// limiting at all when both are 0).
     fn new(global_max: u64, per_peer_max: u64) -> Self {
         Self {
             global_max,
@@ -1185,7 +1234,9 @@ impl HepRateLimiter {
         }
 
         self.count_this_second += 1;
-        if self.count_this_second > self.global_max {
+        // A global ceiling of 0 means DISABLED (consistent with the per-peer
+        // knob), not "drop everything".
+        if self.global_max > 0 && self.count_this_second > self.global_max {
             self.dropped_total += 1;
             tracing::debug!(
                 "HEP global rate limit exceeded ({}/s), dropping packet (total dropped: {})",
@@ -1316,8 +1367,9 @@ pub struct HepListenerOpts<'a> {
 /// # Arguments
 ///
 /// * `bind_addr` — UDP address to bind (host:port; port 0 = ephemeral).
-/// * `config` — capture limits (`count` = max packets, `duration` = max
-///   runtime); either being reached stops the listener cleanly.
+/// * `config` — capture limits (`count` = max packets *received*, counted
+///   before allowlist/rate-limit/auth drops; `duration` = max runtime);
+///   either being reached stops the listener cleanly.
 /// * `tx` — pipeline channel each converted `Packet` is sent to; the loop
 ///   ends when the receiving side is dropped.
 /// * `opts` — allowlist, rate limits, and receiver-side auth settings.
@@ -1406,6 +1458,19 @@ pub fn capture_hep(
         tracing::info!("HEP allowlist active: {} CIDR range(s)", allowlist.len());
     }
     tracing::info!("{}", describe_hep_limiters(rate_limit, per_peer_rate_limit));
+    // Loopback classification is purely syntactic (no DNS in a security
+    // check), so a hostname bind cannot be verified as loopback and is
+    // treated as routable. enforce_hep_bind_policy already fail-closes it
+    // when no auth or allowlist is set; when it is allowed, warn and suggest a
+    // literal so the operator knows the loopback shortcut did not apply.
+    if !hep_bind_is_ip_literal(bind_addr) {
+        tracing::warn!(
+            "HEP listen address '{bind_addr}' is not a literal IP; sipnab does not resolve \
+             it to decide loopback vs routable (a DNS lookup in a security check could block \
+             or be spoofed) and treats it as non-loopback. Use a literal such as \
+             127.0.0.1:PORT or 0.0.0.0:PORT."
+        );
+    }
     if auth_key.is_some() {
         tracing::info!("HEP receiver authentication active: packets must carry a matching key");
     } else if !hep_bind_is_loopback(bind_addr) {
@@ -1475,6 +1540,13 @@ pub fn capture_hep(
             );
         }
 
+        // Count every datagram received off the socket, not only those
+        // ultimately forwarded to the pipeline: `--count N` means "stop after
+        // receiving N packets", so a run whose packets are dropped by the
+        // allowlist, rate limiter, parser, or auth still makes progress
+        // toward the limit rather than appearing to stall.
+        count += 1;
+
         // Check allowlist
         if !allowlist.is_empty() {
             let peer_ip = peer.ip();
@@ -1530,11 +1602,9 @@ pub fn capture_hep(
             tracing::debug!("Receiver dropped, stopping HEP listener");
             break;
         }
-
-        count += 1;
     }
 
-    tracing::info!("HEP listener on {bind_addr} finished: {count} packets");
+    tracing::info!("HEP listener on {bind_addr} finished: {count} packets received");
     Ok(())
 }
 
@@ -2110,6 +2180,38 @@ mod tests {
         );
     }
 
+    /// Loopback classification is purely syntactic: literal loopback IPs are
+    /// loopback; routable literals are not. No DNS resolution happens.
+    #[test]
+    fn hep_bind_loopback_classifies_literals() {
+        assert!(hep_bind_is_loopback("127.0.0.1:9060"));
+        assert!(hep_bind_is_loopback("[::1]:9060"));
+        assert!(!hep_bind_is_loopback("0.0.0.0:9060"));
+        assert!(!hep_bind_is_loopback("192.0.2.1:9060"));
+    }
+
+    /// A hostname is NOT resolved to decide loopback-ness (no blocking DNS in
+    /// a security check); it is treated conservatively as non-loopback, and
+    /// `enforce_hep_bind_policy` therefore fail-closes it without auth/allowlist.
+    #[test]
+    fn hep_bind_hostname_is_conservatively_non_loopback() {
+        assert!(
+            !hep_bind_is_loopback("localhost:9060"),
+            "a hostname must not be resolved and must count as non-loopback"
+        );
+        assert!(!hep_bind_is_ip_literal("localhost:9060"));
+        assert!(hep_bind_is_ip_literal("127.0.0.1:9060"));
+        // Unguarded hostname bind is refused (fail closed), same as any other
+        // non-loopback address.
+        assert!(
+            enforce_hep_bind_policy("localhost:9060", false, 0).is_err(),
+            "hostname bind without auth or allowlist must be refused"
+        );
+        // With auth it is permitted (the warning about the non-literal is a
+        // startup log, not a refusal).
+        assert!(enforce_hep_bind_policy("localhost:9060", true, 0).is_ok());
+    }
+
     /// The global ceiling drops the excess packet regardless of which peer
     /// sends it.
     #[test]
@@ -2172,6 +2274,32 @@ mod tests {
         assert_eq!(
             describe_hep_limiters(40000, 10000),
             "HEP rate limiting: global 40000/s, per-peer 10000/s"
+        );
+    }
+
+    /// A global ceiling of 0 means DISABLED (matching the per-peer knob),
+    /// not "drop everything": every packet passes when only the global limit
+    /// is 0.
+    #[test]
+    fn global_rate_limit_zero_disables_ceiling() {
+        let mut lim = HepRateLimiter::new(0, 0);
+        let p: IpAddr = "10.0.0.1".parse().unwrap();
+        for _ in 0..10_000 {
+            assert!(lim.allow(p), "global 0 must disable the ceiling, not drop");
+        }
+    }
+
+    /// The startup summary renders a global ceiling of 0 as "disabled" so the
+    /// knob reads consistently with the per-peer summary.
+    #[test]
+    fn describe_limiters_reports_global_disabled() {
+        assert_eq!(
+            describe_hep_limiters(0, 0),
+            "HEP rate limiting: global disabled, per-peer disabled"
+        );
+        assert_eq!(
+            describe_hep_limiters(0, 5000),
+            "HEP rate limiting: global disabled, per-peer 5000/s"
         );
     }
 
@@ -2327,6 +2455,53 @@ mod tests {
             );
         }
 
+        /// Pruning is amortized: the first call prunes, then at most once per
+        /// second, so an accepted-packet burst does not walk the whole nonce
+        /// map on every packet.
+        #[test]
+        fn nonce_cache_amortizes_pruning() {
+            let mut cache = HmacNonceCache::new();
+            let t0 = Instant::now();
+            assert!(cache.should_prune(t0), "first prune always runs");
+            assert!(
+                !cache.should_prune(t0 + Duration::from_millis(200)),
+                "no second prune within the same second"
+            );
+            assert!(
+                !cache.should_prune(t0 + Duration::from_millis(999)),
+                "still within a second of the last prune"
+            );
+            assert!(
+                cache.should_prune(t0 + Duration::from_millis(1000)),
+                "prune runs again once a full second has elapsed"
+            );
+            assert!(
+                !cache.should_prune(t0 + Duration::from_millis(1500)),
+                "the gate resets relative to the most recent prune"
+            );
+        }
+
+        /// An expired nonce that has not yet been pruned still cannot be
+        /// replayed: the timestamp-window check rejects it before the replay
+        /// cache is consulted, so amortized pruning preserves the semantics.
+        #[test]
+        fn expired_unpruned_nonce_still_rejected_by_window() {
+            let mut cache = HmacNonceCache::new();
+            // Accept a token now, seeding its nonce into the cache.
+            let token = build_hmac_auth_token(KEY, NOW, &NONCE, b"p");
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, b"p", NOW, HMAC_WINDOW_SECS, &mut cache),
+                Ok(())
+            );
+            // Far in the future the same token is out of window — rejected as
+            // stale regardless of whether its nonce is still cached.
+            let later = NOW + HMAC_WINDOW_SECS + 100;
+            assert_eq!(
+                verify_hmac_auth_token(KEY, &token, b"p", later, HMAC_WINDOW_SECS, &mut cache),
+                Err(HmacAuthError::TimestampOutOfWindow)
+            );
+        }
+
         /// A forged (bad-MAC) token must not record its nonce, so a later
         /// authentic token reusing that nonce still verifies.
         #[test]
@@ -2388,6 +2563,37 @@ mod tests {
         );
         // The packet is still a valid HEP3 message.
         assert!(parse_hep(&pkt).is_ok());
+    }
+
+    /// TS_SEC is a fixed u32 seconds-since-epoch wire field; a capture time
+    /// outside 1970-01-01..2106-02-07 clamps to the u32 range instead of
+    /// silently wrapping through `as u32`.
+    #[test]
+    fn hep_ts_sec_clamps_to_u32_range() {
+        // Post-2106: seconds beyond u32::MAX clamp to u32::MAX, not wrap.
+        let far_future = Utc.timestamp_opt(5_000_000_000, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), far_future, HepProtocol::Sip, 1, None, b"X");
+        assert_eq!(
+            find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
+            Some(&u32::MAX.to_be_bytes()[..]),
+            "post-2106 timestamp must clamp to u32::MAX"
+        );
+        // Pre-1970: negative seconds clamp to 0, not wrap to a huge u32.
+        let pre_epoch = Utc.timestamp_opt(-100, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), pre_epoch, HepProtocol::Sip, 1, None, b"X");
+        assert_eq!(
+            find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
+            Some(&0u32.to_be_bytes()[..]),
+            "pre-1970 timestamp must clamp to 0"
+        );
+        // A normal, in-range timestamp is unchanged.
+        let normal = Utc.timestamp_opt(1_700_000_000, 0).single().unwrap();
+        let pkt = build_hep_v3(&v4_endpoint(), normal, HepProtocol::Sip, 1, None, b"X");
+        assert_eq!(
+            find_hep_chunk(&pkt, 0x0000, CHUNK_TS_SEC).as_deref(),
+            Some(&1_700_000_000u32.to_be_bytes()[..]),
+            "in-range timestamp must pass through unchanged"
+        );
     }
 
     /// An IPv6 RTP packet built by `build_hep_v3` parses back with its
@@ -3014,5 +3220,79 @@ mod tests {
         let data = make_hep_v3(src, dst, 5060, 5061, 1_700_000_000, u32::MAX, 1, b"hello");
         let hep = parse_hep(&data).expect("packet with garbage ts_usec must still parse");
         assert_eq!(hep.src_addr, src);
+    }
+
+    /// The `--count` limit counts packets RECEIVED, not only those forwarded
+    /// to the pipeline: a listener whose packets are all dropped (here by the
+    /// source allowlist) still stops once `count` datagrams have arrived,
+    /// instead of running until the duration limit.
+    #[test]
+    fn count_limit_counts_received_not_only_forwarded() {
+        use std::sync::mpsc;
+        // Reserve an ephemeral loopback port, then hand it to the listener so
+        // the test knows where to send without scraping logs.
+        let probe = UdpSocket::bind("127.0.0.1:0").expect("reserve port");
+        let port = probe.local_addr().expect("local_addr").port();
+        drop(probe);
+        let bind = format!("127.0.0.1:{port}");
+
+        let (tx, rx) = crate::capture::channel::packet_channel(64);
+        let config = CaptureConfig {
+            count: Some(2),
+            // Safety net so a forward-only impl still terminates the thread
+            // instead of hanging the test.
+            duration: Some(Duration::from_secs(4)),
+            ..CaptureConfig::default()
+        };
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let (done_tx, done_rx) = mpsc::channel();
+        let bind_thread = bind.clone();
+        std::thread::spawn(move || {
+            // Allowlist excludes 127.0.0.1, so every received datagram is
+            // dropped before it can be forwarded — yet it must still count.
+            let allow = vec![CidrRange::parse("10.0.0.0/8").expect("cidr")];
+            let opts = HepListenerOpts {
+                allowlist: &allow,
+                rate_limit: 1_000_000,
+                per_peer_rate_limit: 0,
+                auth_key: None,
+                auth_mode: HepAuthMode::Plain,
+            };
+            let r = capture_hep(&bind_thread, &config, tx, &opts, Some(ready_tx));
+            let _ = done_tx.send(r.is_ok());
+        });
+
+        assert!(
+            matches!(ready_rx.recv_timeout(Duration::from_secs(5)), Ok(Ok(()))),
+            "listener must report a successful bind"
+        );
+
+        let sender = UdpSocket::bind("127.0.0.1:0").expect("bind sender");
+        let ts = Utc.timestamp_opt(1_700_000_000, 0).single().unwrap();
+        let pkt = build_hep_v3(
+            &v4_endpoint(),
+            ts,
+            HepProtocol::Sip,
+            1,
+            None,
+            b"INVITE sip:x SIP/2.0\r\n\r\n",
+        );
+        for _ in 0..2 {
+            sender.send_to(&pkt, &bind).expect("send datagram");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // Received-counting: the listener stops promptly after 2 datagrams,
+        // well before the 4s duration net.
+        let finished = done_rx.recv_timeout(Duration::from_secs(2));
+        assert!(
+            matches!(finished, Ok(true)),
+            "listener must stop after receiving `count` datagrams even when all are dropped"
+        );
+        // Confirm the drops really happened: nothing reached the pipeline.
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "allowlist drops everything; no packet should reach the pipeline"
+        );
     }
 }
