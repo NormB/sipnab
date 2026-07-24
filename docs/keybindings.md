@@ -116,7 +116,7 @@ active filter.
 | F5 | Reset message-compare selection **(configurable: `clear_calls`)** |
 | F6 / Ctrl+R | Toggle RTP display in flow |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter |
+| F9 | Clear active filter **and** persisted search |
 
 In the split view, `Tab` moves keyboard focus between the two panes; the
 focused pane is shown in the status line (`Focus: Ladder` / `Focus: Detail`)
