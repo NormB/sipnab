@@ -35,8 +35,8 @@ Tiers:
 
 ## P1 — wrong results in real use
 
-- [ ] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort.
-- [ ] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted.
+- [x] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort. **Done:** the call-list path now resolves the selection via `get_selected_call_id` (filter+search+sort display order), so the highlighted row's audio is exported.
+- [x] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted. **Done:** both clear ops gather each dialog's real streams (`streams_for`) under dialog-then-stream locks and pass them to `matches_dialog`, so stream-criteria filters classify correctly.
 - [x] src/rtp/stream_store.rs:259 — [correctness] RTCP jitter (RTP timestamp units) overwrites millisecond jitter; feeds MOS 8x off at 8kHz. **Done:** `process_rtcp` now converts the report jitter to ms via `jitter * 1000 / clock_rate` (guarded for clock_rate 0) before storing it.
 - [x] src/rtp/stream.rs:270 — [correctness] reordered packet inflates jitter (wrapping_sub as u64 → 4.29e9 spike); cast wrapped diff to i32 for RFC 3550 signed semantics. **Done:** wrapped diff cast `as i32 as f64` so a reordered packet yields a small signed transit delta, not a ~33M-ms jitter spike.
 - [x] src/rtp/rtcp.rs:284 — [correctness] 24-bit signed cumulative_lost zero-extended; negative becomes huge positive. **Done:** `cumulative_lost` is now `i32`, sign-extended from the 24-bit field (`(raw24 << 8) as i32 >> 8`); `stream_store` clamps negatives to 0 lost.

@@ -671,13 +671,11 @@ pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
     // Determine the current dialog's Call-ID (if viewing a call flow)
     let call_id = match &app.current_view {
         View::CallFlow(cid) => Some(cid.clone()),
-        _ => {
-            // Try to get the selected dialog from the call list
-            let store = app.dialog_store.read();
-            let dialogs: Vec<_> = store.iter().collect();
-            let idx = app.call_list.selected();
-            dialogs.get(idx).map(|d| d.call_id.clone())
-        }
+        // Resolve the call-list selection against the DISPLAYED order (filter
+        // + search + sort), the same list the renderer draws, so an export
+        // under an active filter/sort saves the highlighted row's audio and
+        // not a wrong dialog picked by raw store order.
+        _ => crate::tui::controllers::get_selected_call_id(app),
     };
 
     let stream_store = app.stream_store.read();
@@ -1345,6 +1343,39 @@ mod tests {
         // No call flow + no selected dialog -> "No RTP streams captured"
         let msg = save_to_wav_path(&app, "/tmp/x.wav");
         assert!(msg.contains("No RTP streams"), "got: {msg}");
+    }
+
+    /// Under a sort that reorders the call list, the WAV export must target
+    /// the DISPLAYED selected dialog, not the dialog at the same index in raw
+    /// store order.
+    #[test]
+    fn wav_export_follows_displayed_selection_not_store_order() {
+        // Store order: call-1, call-2. Default selection is row 0.
+        let mut app = app_with_dialogs();
+        add_rtp_stream(&app);
+        // Associate the one stream with call-2 (its media endpoint is
+        // 10.0.0.2:30000, matching add_rtp_stream's destination).
+        app.stream_store
+            .write()
+            .link_to_dialog(addr_b(), 30000, "call-2@test");
+
+        // Descending sort by index reverses the display to [call-2, call-1],
+        // so displayed row 0 is call-2 — the dialog that HAS the stream.
+        app.call_list
+            .set_sort(crate::tui::call_list::SortColumn::Index);
+        assert!(
+            !app.call_list.sort_ascending(),
+            "sort should now be descending"
+        );
+
+        let msg = save_to_wav_path(&app, tmp_path("out.wav").to_str().unwrap());
+        // Fixed: selects displayed row 0 = call-2 (has a stream) → export runs.
+        // Buggy: selects raw row 0 = call-1 (no stream) → "No RTP streams...".
+        assert!(
+            !msg.contains("No RTP streams"),
+            "WAV export must target the displayed selection (call-2, which has \
+             a stream), not raw store order; got: {msg}"
+        );
     }
 
     // ── Error paths: unwritable destinations ─────────────────────────
