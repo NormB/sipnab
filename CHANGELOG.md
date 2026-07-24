@@ -2,6 +2,33 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.31] - 2026-07-24
+
+### Fixed
+- SIP/DSL semantics batch (six P1 correctness fixes):
+  - A dialog at its per-dialog message cap that keeps receiving
+    retransmissions now counts as active — a dropped at-cap
+    retransmission still advances `updated_at`, so idle compaction no
+    longer evicts a dialog under a retransmission flood.
+  - SIPREC multipart bodies are split only on line-anchored
+    `--boundary` delimiters per RFC 2046; a boundary string occurring
+    mid-line inside part content (metadata XML, SDP) no longer
+    corrupts part extraction.
+  - Repeated T.38 re-INVITEs (session refresh) emit `T38Switch` once
+    at the genuine audio→T.38 transition instead of on every other
+    exchange; a real return to audio and back re-emits correctly.
+  - STIR/SHAKEN PASSporTs retain every `dest.tn` entry and the
+    previously-unparsed `dest.uri` array (RFC 8225 §5.2.1) instead of
+    keeping only the first TN.
+  - Filter-DSL numeric equality (`==`/`!=`) uses a domain-grounded
+    tolerance (5e-4, half the finest millisecond-derived step) instead
+    of `f64::EPSILON`, which was effectively exact-match for values
+    ≥ 2 — `duration == 5` now matches computed durations.
+  - `src.port`/`dst.port` in the filter DSL read ports captured at
+    dialog creation instead of the first *stored* message, which
+    silently swapped to a response's reversed ports after idle
+    compaction drained old messages.
+
 ## [0.5.30] - 2026-07-24
 
 ### Changed
