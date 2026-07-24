@@ -187,6 +187,12 @@ impl<'a> NgReader<'a> {
                         let bom = u32::from_le_bytes(bom_bytes.try_into().ok()?);
                         self.big_endian = bom == 0x4d3c2b1a;
                     }
+                    // A new section is independent: reset the interface-derived
+                    // resolution and link type to their defaults so a later
+                    // section whose IDB omits if_tsresol (or link type) does not
+                    // inherit the previous section's values.
+                    self.if_tsresol = 1_000_000;
+                    self.link_type = 1;
                     self.offset = block_end;
                 }
 
@@ -620,6 +626,38 @@ mod tests {
         let reader = PcapReader::new(&data).unwrap();
         // Just verify it doesn't panic
         let _packets: Vec<_> = reader.collect();
+    }
+
+    /// A new Section Header Block resets the timestamp resolution to the
+    /// microsecond default: a second section whose IDB omits `if_tsresol`
+    /// must not inherit the previous section's nanosecond resolution.
+    #[test]
+    fn new_section_resets_tsresol_to_default() {
+        // if_tsresol option: code 9, len 1, value 9 (10^9 = nanoseconds),
+        // padded, then opt_endofopt.
+        let ns_opts: &[u8] = &[
+            0x09, 0x00, 0x01, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut data = Vec::new();
+        // Section 1: nanosecond resolution.
+        data.extend(build_shb());
+        data.extend(build_idb(1, ns_opts));
+        data.extend(build_epb(0, 2_000_000, 4, 4, &[0xde, 0xad, 0xbe, 0xef]));
+        // Section 2: fresh SHB + IDB with NO tsresol option (default µs).
+        data.extend(build_shb());
+        data.extend(build_idb(1, &[]));
+        data.extend(build_epb(0, 1_000_000, 4, 4, &[0xca, 0xfe, 0xba, 0xbe]));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert_eq!(packets.len(), 2, "both sections' packets should be read");
+        // ts_low 1_000_000 at the µs default is 1 second; at the stale ns
+        // resolution it would read as 0 s / 1000 µs.
+        assert_eq!(
+            packets[1].timestamp_secs, 1,
+            "section-2 packet must use the reset µs resolution"
+        );
+        assert_eq!(packets[1].timestamp_usecs, 0);
     }
 
     /// A pcapng cut off right after the SHB yields (nearly) no packets and
