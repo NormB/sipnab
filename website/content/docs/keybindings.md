@@ -83,7 +83,7 @@ without toggling anything.
 | F3 | Search (same as `/`). Searches SIP headers and message bodies (SDP, multipart payloads) |
 | F5 | Clear all calls **(configurable: `clear_calls`)** |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter |
+| F9 | Clear active filter **and** persisted search |
 | F10 | Column selector **(configurable: `column_selector`)**. Opens a popup to show/hide columns in the Call List (e.g., PDD, Source IP, Destination). |
 
 > **Gotcha:** the `clear_calls` action binds `F5` in *both* views — in the Call List it clears all calls, in the Call Flow it starts compare mode. Rebinding `clear_calls` moves both.
@@ -123,7 +123,7 @@ without toggling anything.
 | r | Jump to RTP Streams list for this dialog |
 | F6 | Toggle RTP display in flow |
 | F7 | Open filter dialog **(configurable: `filter`)** |
-| F9 | Clear active filter |
+| F9 | Clear active filter **and** persisted search |
 
 ## Raw Message
 
