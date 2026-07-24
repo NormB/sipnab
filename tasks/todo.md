@@ -293,6 +293,25 @@ Tiers:
 - [ ] Distributed capture cluster management.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
+- [ ] **SIP problem diagnosis** — automated detection and explanation of SIP
+  signaling problems (the signaling-side complement to the existing RTP/NAT
+  `rtp/diagnosis.rs`). Candidate detections: failed/abandoned calls and their
+  cause (4xx/5xx/6xx final, CANCEL, no-answer timeout), registration failures,
+  retransmission storms / no-response transactions, auth loops (repeated
+  401/407 with no 2xx), CSeq/dialog anomalies, one-way-signaling and
+  ACK-not-received (RFC 3261 §17) cases, and delayed/absent provisional
+  responses (high PDD). Surface per-dialog with a plain-language explanation +
+  the evidence (which messages), consistent with how RTP diagnosis is
+  presented. Needs a brainstorm → spec first; scope the detection set and where
+  it renders (call list badge, call-flow annotation, and/or a diagnosis pane).
+- [ ] **Developer documentation** — expand the developer-facing docs beyond the
+  current ARCHITECTURE.md/CONTRIBUTING.md: a module/subsystem guide (capture →
+  parse → sip/rtp analysis → output/tui data flow), the feature-flag map and
+  what each gates, the test layout and the tests/support helpers, the
+  release/CI/toolchain conventions (Rust 1.97.1 lockstep, the gate suite,
+  snapshot regeneration), and an onboarding "how to add a new TUI view / a new
+  detector" walkthrough. Goal: a new contributor can find where things live and
+  the project's conventions without reverse-engineering the tree.
 
 ## Shipped (audit-period features, kept for context)
 
