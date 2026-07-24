@@ -24,6 +24,22 @@ const QUALITY_INTERVAL_SECS: i64 = 5;
 /// Oldest-out when full.
 const MAX_QUALITY_INTERVALS: usize = 720;
 
+/// Cap on the retained `lost_sequences` log (oldest-out when full). This is
+/// the only window over which loss/no-loss is known reliably, so burst/gap
+/// analysis must not reason about a wider span (see [`BURST_WINDOW_CAP`]).
+const LOST_SEQ_LOG_CAP: usize = 1000;
+
+/// Allocation ceiling for the burst/gap reconstruction bitmap. The analysis
+/// window is additionally bounded by the span the `lost_sequences` log
+/// actually covers, so it never exceeds `LOST_SEQ_LOG_CAP` losses' worth of
+/// reliable data.
+const BURST_WINDOW_CAP: usize = 10_000;
+
+/// Nominal duration charged for a single Comfort Noise frame when its true
+/// extent is not observable (the opening/closing frame of a silence period).
+/// Interior frames are measured from actual RTP-timestamp spacing instead.
+const NOMINAL_CN_FRAME_MS: u32 = 20;
+
 // ── Public types ─────────────────────────────────────────────────────
 
 /// Unique key for an RTP stream: SSRC combined with the 5-tuple direction.
@@ -53,6 +69,74 @@ pub struct QualityInterval {
     pub packets: u64,
 }
 
+/// Bounded, oldest-first log of [`QualityInterval`] snapshots.
+///
+/// Backed by a [`VecDeque`](std::collections::VecDeque) so evicting the
+/// oldest entry once the history reaches its cap is O(1) (`pop_front`),
+/// rather than the O(n) element shift a `Vec::remove(0)` incurs. The public
+/// surface mirrors the slice of `Vec` methods consumers rely on (`push`,
+/// `iter`, `first`, `last`, `len`, `is_empty`, `clear`, and by-reference
+/// iteration) so existing call sites are unaffected.
+#[derive(Debug, Clone, Default)]
+pub struct QualityHistory {
+    /// Snapshots in arrival order; `front` is oldest, `back` is newest.
+    inner: std::collections::VecDeque<QualityInterval>,
+}
+
+impl QualityHistory {
+    /// Append `interval` as the newest entry.
+    ///
+    /// Does not itself enforce the history cap; callers that need the bound
+    /// evict via [`pop_front`](QualityHistory::pop_front) first (see
+    /// `RtpStream::record_quality_interval`).
+    pub fn push(&mut self, interval: QualityInterval) {
+        self.inner.push_back(interval);
+    }
+
+    /// Remove and return the oldest entry, or `None` if empty. O(1).
+    pub fn pop_front(&mut self) -> Option<QualityInterval> {
+        self.inner.pop_front()
+    }
+
+    /// Number of snapshots currently retained.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// `true` when no snapshots are retained.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// The oldest retained snapshot, or `None` if empty.
+    pub fn first(&self) -> Option<&QualityInterval> {
+        self.inner.front()
+    }
+
+    /// The newest retained snapshot, or `None` if empty.
+    pub fn last(&self) -> Option<&QualityInterval> {
+        self.inner.back()
+    }
+
+    /// Iterate over retained snapshots, oldest first.
+    pub fn iter(&self) -> std::collections::vec_deque::Iter<'_, QualityInterval> {
+        self.inner.iter()
+    }
+
+    /// Drop all retained snapshots.
+    pub fn clear(&mut self) {
+        self.inner.clear();
+    }
+}
+
+impl<'a> IntoIterator for &'a QualityHistory {
+    type Item = &'a QualityInterval;
+    type IntoIter = std::collections::vec_deque::Iter<'a, QualityInterval>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.inner.iter()
+    }
+}
+
 /// A detected silence period from Comfort Noise packets.
 #[derive(Debug, Clone)]
 pub struct SilencePeriod {
@@ -60,7 +144,16 @@ pub struct SilencePeriod {
     pub start_seq: u16,
     /// Last sequence number in the silence period.
     pub end_seq: u16,
-    /// Estimated duration in milliseconds (20ms per CN frame).
+    /// Silence duration in milliseconds.
+    ///
+    /// Derived from the observed RTP-timestamp span between the first and
+    /// last Comfort Noise packet (converted to milliseconds via the stream
+    /// clock rate) plus one nominal final-frame interval
+    /// (`NOMINAL_CN_FRAME_MS`). This tracks the *actual* CN packet spacing
+    /// — including discontinuous transmission, where CN frames arrive far
+    /// more than 20 ms apart — rather than assuming a fixed 20 ms cadence.
+    /// It remains a slight lower bound: the final frame's true extent is not
+    /// observable, so it is charged one nominal frame.
     pub duration_ms: u32,
 }
 
@@ -105,10 +198,10 @@ pub struct RtpStream {
     pub orphaned: bool,
     /// `true` if this stream was discovered via heuristic (no SDP).
     pub heuristic: bool,
-    /// Periodic quality snapshots for trend analysis.
-    pub quality_intervals: Vec<QualityInterval>,
-    /// Sequence numbers of lost packets (capped at 1000 most recent entries).
-    /// Used for burst/gap analysis.
+    /// Periodic quality snapshots for trend analysis (bounded, oldest-out).
+    pub quality_intervals: QualityHistory,
+    /// Sequence numbers of lost packets, capped at `LOST_SEQ_LOG_CAP` most
+    /// recent entries (oldest-out). Used for burst/gap analysis.
     pub lost_sequences: std::collections::VecDeque<u16>,
     /// Count of Comfort Noise (PT=13) frames received.
     pub cn_frames: u32,
@@ -173,7 +266,7 @@ impl RtpStream {
             associated_dialog: None,
             orphaned: false,
             heuristic: false,
-            quality_intervals: Vec::new(),
+            quality_intervals: QualityHistory::default(),
             lost_sequences: std::collections::VecDeque::new(),
             cn_frames: 0,
             silence_periods: Vec::new(),
@@ -227,9 +320,10 @@ impl RtpStream {
             if gap < 32768 {
                 self.lost_packets += gap;
                 self.interval_lost += gap;
-                // Record lost sequence numbers for burst/gap analysis (capped at 1000)
-                for offset in 0..gap.min(1000) {
-                    if self.lost_sequences.len() >= 1000 {
+                // Record lost sequence numbers for burst/gap analysis
+                // (per-gap and total both capped at LOST_SEQ_LOG_CAP).
+                for offset in 0..gap.min(LOST_SEQ_LOG_CAP as u64) {
+                    if self.lost_sequences.len() >= LOST_SEQ_LOG_CAP {
                         self.lost_sequences.pop_front();
                     }
                     self.lost_sequences
@@ -239,25 +333,35 @@ impl RtpStream {
         }
         self.last_seq = header.sequence;
 
-        // Comfort Noise (PT=13) tracking for silence detection
+        // Comfort Noise (PT=13) tracking for silence detection.
+        //
+        // A silence period's duration is measured from the actual spacing of
+        // its CN packets rather than assuming a fixed 20 ms cadence: when a
+        // CN packet continues the current period, it extends the duration by
+        // the observed RTP-timestamp delta from the previous packet. This
+        // stays honest under discontinuous transmission, where CN frames can
+        // be many frames apart. `prev_rtp_ts` is the previous packet's RTP
+        // timestamp (still unmodified at this point in `update`).
         if header.payload_type == 13 {
             self.cn_frames += 1;
+            let prev_rtp_ts = self.last_timestamp;
+            let clock_rate = self.clock_rate;
             if let Some(last) = self.silence_periods.last_mut() {
                 if header.sequence == last.end_seq.wrapping_add(1) {
                     last.end_seq = header.sequence;
-                    last.duration_ms += 20;
+                    last.duration_ms += cn_gap_ms(prev_rtp_ts, header.timestamp, clock_rate);
                 } else if self.silence_periods.len() < 100 {
                     self.silence_periods.push(SilencePeriod {
                         start_seq: header.sequence,
                         end_seq: header.sequence,
-                        duration_ms: 20,
+                        duration_ms: NOMINAL_CN_FRAME_MS,
                     });
                 }
             } else {
                 self.silence_periods.push(SilencePeriod {
                     start_seq: header.sequence,
                     end_seq: header.sequence,
-                    duration_ms: 20,
+                    duration_ms: NOMINAL_CN_FRAME_MS,
                 });
             }
         }
@@ -312,7 +416,9 @@ impl RtpStream {
         };
 
         if self.quality_intervals.len() >= MAX_QUALITY_INTERVALS {
-            self.quality_intervals.remove(0);
+            // O(1) oldest-out eviction: QualityHistory is VecDeque-backed, so
+            // this is a pop_front rather than an O(n) Vec front-removal.
+            self.quality_intervals.pop_front();
         }
         self.quality_intervals.push(QualityInterval {
             timestamp,
@@ -328,46 +434,72 @@ impl RtpStream {
 
     /// Compute burst/gap analysis from recorded lost sequences.
     ///
-    /// Reconstructs a received/lost sequence from the first seen sequence
-    /// number through `last_seq` using the `lost_sequences` log, then
-    /// delegates to `super::quality::analyze_burst_gap` (assuming a 20 ms
-    /// packet interval, the window capped at 10000 packets).
+    /// Reconstructs a received/lost bitmap over the sequence range the
+    /// `lost_sequences` log actually covers — from its oldest to its newest
+    /// retained entry — and delegates to `super::quality::analyze_burst_gap`
+    /// (assuming a 20 ms packet interval).
+    ///
+    /// The window is deliberately bounded to that retained range rather than
+    /// to `last_seq` and the total packet count. The log keeps only its most
+    /// recent `LOST_SEQ_LOG_CAP` entries, so a wider window would mark
+    /// already-evicted losses as "received" and silently understate
+    /// burstiness once the log is full — for example, a long clean tail that
+    /// advances `last_seq` far past the loss region. Anchoring at the newest
+    /// retained loss keeps every loss inside the window known, so bursts are
+    /// not undercounted. Allocation is additionally capped at
+    /// `BURST_WINDOW_CAP`; if the retained span is wider, the most recent
+    /// `BURST_WINDOW_CAP` sequence numbers are analyzed.
+    ///
+    /// Note: a single gap larger than `LOST_SEQ_LOG_CAP` is itself
+    /// truncated at capture time, so an extreme lone burst remains a lower
+    /// bound; the eviction-driven undercount above is the case fixed here.
     ///
     /// Returns `None` if there are no lost packets to analyze.
     pub fn burst_gap_analysis(&self) -> Option<super::quality::BurstGapAnalysis> {
-        if self.lost_sequences.is_empty() {
-            return None;
-        }
-
         // Default ptime for common audio codecs (ms).
         let ptime_ms = 20.0;
 
-        // Build a received/lost bitmap over the range covered by lost_sequences.
-        // Use the min/max of lost_sequences to bound the window, then fill
-        // received=true for all sequence numbers in between, marking lost ones.
         let lost_set: std::collections::HashSet<u16> =
             self.lost_sequences.iter().copied().collect();
 
-        // Determine the window: from first_seq to last_seq we observed.
-        // For simplicity use the total received + lost count as the window size,
-        // capped at a reasonable maximum to avoid huge allocations.
-        let window_size = (self.packet_count + self.lost_packets).min(10_000) as usize;
-        if window_size == 0 {
-            return None;
-        }
+        // The retained log bounds the region we can reason about reliably.
+        // `front`/`back` are the oldest and newest retained lost sequences.
+        let (front, back) = match (self.lost_sequences.front(), self.lost_sequences.back()) {
+            (Some(&front), Some(&back)) => (front, back),
+            _ => return None,
+        };
 
-        // Walk backwards from last_seq for `window_size` packets.
+        // Reliable span [front, back], capped for allocation. When capped,
+        // keep the most recent losses (anchored at `back`).
+        let span = back.wrapping_sub(front) as usize + 1;
+        let window_size = span.min(BURST_WINDOW_CAP);
+
+        // Walk ascending from (back - window_size + 1) up to and including
+        // `back`. Every lost sequence in this range is still in the log, so
+        // the bitmap is accurate.
         let mut received = Vec::with_capacity(window_size);
         for i in 0..window_size {
-            let seq = self
-                .last_seq
-                .wrapping_sub(window_size as u16)
-                .wrapping_add(i as u16 + 1);
+            let seq = back.wrapping_sub((window_size - 1 - i) as u16);
             received.push(!lost_set.contains(&seq));
         }
 
         Some(super::quality::analyze_burst_gap(&received, ptime_ms))
     }
+}
+
+/// Milliseconds a Comfort Noise frame covers, from the RTP-timestamp delta
+/// between consecutive CN packets and the stream clock rate.
+///
+/// The wrapped subtraction is read as a signed (i32) delta per RFC 3550, so
+/// a reordered packet yields a small negative value; such deltas (and a zero
+/// clock rate) are clamped to `0` rather than corrupting the duration.
+fn cn_gap_ms(prev_rtp_ts: u32, rtp_ts: u32, clock_rate: u32) -> u32 {
+    if clock_rate == 0 {
+        return 0;
+    }
+    let delta_ts = rtp_ts.wrapping_sub(prev_rtp_ts) as i32;
+    let ms = (delta_ts as f64) * 1000.0 / clock_rate as f64;
+    ms.round().max(0.0) as u32
 }
 
 /// Map a static RTP payload type number to its codec name (RFC 3551).
@@ -477,6 +609,75 @@ mod tests {
     /// Fixed-epoch test clock: `secs` seconds past 1_700_000_000 UTC.
     fn ts(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_700_000_000 + secs, 0).expect("valid timestamp")
+    }
+
+    /// Burst/gap analysis must bound its window to the sequence range the
+    /// `lost_sequences` log still retains. When the log is full and a long
+    /// clean tail has advanced `last_seq` far past the loss region, the old
+    /// `last_seq`-anchored window walked past every retained loss and
+    /// reported NO burstiness — a silent undercount. Anchoring at the newest
+    /// retained loss keeps the retained bursts visible.
+    #[test]
+    fn burst_gap_window_bounded_to_retained_log() {
+        let mut stream = RtpStream::new(make_key(), &make_header(0, 0, 0), ts(0));
+
+        // Retained log: 250 bursts of 4 consecutive losses, each separated by
+        // a single received sequence — lost {1,2,3,4, 6,7,8,9, ...}. front=1,
+        // back=1249, exactly LOST_SEQ_LOG_CAP entries.
+        stream.lost_sequences.clear();
+        for g in 0..250u16 {
+            let base = g * 5 + 1;
+            for j in 0..4u16 {
+                stream.lost_sequences.push_back(base + j);
+            }
+        }
+        assert_eq!(stream.lost_sequences.len(), LOST_SEQ_LOG_CAP);
+        assert_eq!(stream.lost_sequences.front().copied(), Some(1));
+        assert_eq!(stream.lost_sequences.back().copied(), Some(1249));
+        stream.lost_packets = LOST_SEQ_LOG_CAP as u64;
+
+        // A long clean tail pushes last_seq past back + BURST_WINDOW_CAP, so a
+        // last_seq-anchored window of BURST_WINDOW_CAP would exclude the loss
+        // region entirely.
+        stream.last_seq = 1249 + BURST_WINDOW_CAP as u16 + 100;
+        stream.packet_count = 20_000;
+
+        let bga = stream.burst_gap_analysis().expect("losses present");
+        assert!(
+            bga.is_bursty,
+            "retained bursts must stay visible, not undercount to zero"
+        );
+        assert!(
+            bga.burst_count >= 100,
+            "expected the ~250 retained bursts, got {}",
+            bga.burst_count
+        );
+    }
+
+    /// Silence duration is derived from observed CN packet spacing, not a
+    /// fixed 20 ms cadence. Under discontinuous transmission the RTP
+    /// timestamp jumps between sparse CN frames, and the duration must follow
+    /// it rather than assuming one 20 ms frame per packet.
+    #[test]
+    fn silence_duration_derived_from_cn_spacing() {
+        // PCMU (8 kHz). CN frames arrive one sequence apart but 1600 RTP
+        // timestamp units (200 ms) apart.
+        let mut stream = RtpStream::new(make_key(), &make_header(100, 0, 0), ts(0));
+        for k in 0..4u32 {
+            let seq = 101 + k as u16;
+            let rtp_ts = 1600 * (k + 1);
+            stream.update(&make_header(seq, rtp_ts, 13), ts(1 + k as i64), 1);
+        }
+        let sp = stream.silence_periods.last().expect("a silence period");
+        // Span first→last = 3 × 200 ms = 600 ms, plus one nominal 20 ms
+        // frame. The old fixed-20 ms-per-frame estimate reported only 80 ms.
+        assert!(
+            sp.duration_ms >= 600,
+            "duration must track observed CN spacing, got {}ms",
+            sp.duration_ms
+        );
+        assert_eq!(sp.start_seq, 101);
+        assert_eq!(sp.end_seq, 104);
     }
 
     /// A fresh stream starts with packet_count 1, resolved PCMU codec, and

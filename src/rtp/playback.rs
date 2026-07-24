@@ -10,6 +10,7 @@
 //! `NEEDED libasound.so.2` ELF entry and starts fine without libasound.
 
 use std::ffi::OsString;
+use std::marker::PhantomData;
 use std::os::raw::c_void;
 use std::path::PathBuf;
 
@@ -39,6 +40,34 @@ type CloseFn = unsafe extern "C" fn(*mut c_void);
 ///
 /// The public API is unchanged from the previous rodio-linked implementation
 /// so TUI callers need no modification.
+///
+/// # Thread-safety invariant
+///
+/// `AudioPlayer` is deliberately **neither `Send` nor `Sync`** and must stay
+/// that way. `handle` is an opaque `*mut c_void` owning a live rodio/ALSA
+/// output stream inside the plugin; nothing in the plugin's C ABI
+/// (`sipnab_audio_{play,stop,is_playing,close}`) promises that handle is safe
+/// to touch from another thread or from two threads at once, and rodio's
+/// `OutputStream` is itself `!Send + !Sync`. Moving the player across threads
+/// or sharing `&self` between them would therefore be unsound.
+///
+/// Today the raw `handle` pointer already removes the auto `Send`/`Sync` impls,
+/// but that is fragile: wrapping `handle` in a `Send`/`Sync` type (an
+/// `AtomicPtr`, a `usize`, a newtype with a hand-written `unsafe impl`) would
+/// silently make the whole struct thread-shareable and reintroduce the
+/// unsoundness. The `_not_send_sync: PhantomData<*const c_void>` field pins the
+/// negative traits structurally so they survive such refactors, and the
+/// `compile_fail` doctests below fail the build if either trait ever appears:
+///
+/// ```compile_fail
+/// fn assert_send<T: Send>() {}
+/// assert_send::<sipnab::rtp::playback::AudioPlayer>();
+/// ```
+///
+/// ```compile_fail
+/// fn assert_sync<T: Sync>() {}
+/// assert_sync::<sipnab::rtp::playback::AudioPlayer>();
+/// ```
 pub struct AudioPlayer {
     // Raw function pointers resolved from `_lib`. They are only valid while
     // `_lib` is alive, so `_lib` is kept (and dropped last via field order).
@@ -52,6 +81,12 @@ pub struct AudioPlayer {
     close: CloseFn,
     /// Opaque device handle returned by `sipnab_audio_open`.
     handle: *mut c_void,
+    /// Pins `AudioPlayer: !Send + !Sync` structurally (see the type's
+    /// thread-safety invariant), independent of how `handle` is later
+    /// represented. `*const c_void` is itself `!Send + !Sync`, so this marker
+    /// keeps the negative traits even if the raw `handle` pointer is replaced
+    /// with a thread-shareable type.
+    _not_send_sync: PhantomData<*const c_void>,
     // The loaded plugin library. MUST outlive the function pointers above and
     // the handle; it is dropped last (struct fields drop in declaration order,
     // so `_lib` is listed last here).
@@ -106,6 +141,7 @@ impl AudioPlayer {
             is_playing,
             close,
             handle,
+            _not_send_sync: PhantomData,
             _lib: lib,
         })
     }

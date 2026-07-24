@@ -413,8 +413,17 @@ impl StreamStore {
                 }
             }
             None => {
+                // Batched oldest-out eviction (SNB-0015 pattern): `shift_remove_index(0)`
+                // is O(n), so evicting one entry per insert under a unique-endpoint flood
+                // paid a full-map shift on every insert → O(calls²) — the same cliff the
+                // stream and dialog caps already fixed. Drain the oldest ~10% in a single
+                // shift so the O(n) cost amortizes to O(1) per insertion (mirrors
+                // `ensure_capacity` and `DialogStore::evict_oldest`). `.max(1)` keeps small
+                // caps evicting singly; the cap stays a hard upper bound, though the map may
+                // briefly sit just under it.
                 if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {
-                    self.sdp_endpoints.shift_remove_index(0);
+                    let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len());
+                    self.sdp_endpoints.drain(0..batch);
                 }
                 self.sdp_endpoints.insert(
                     (addr, port),
@@ -925,6 +934,61 @@ a=rtpmap:96 H264/90000\r\n";
         assert_eq!(
             s.associated_dialog, None,
             "a post-clear stream must not re-link to a pre-clear dialog via a stale SDP endpoint"
+        );
+    }
+
+    /// Under a unique-endpoint flood, the `sdp_endpoints` cap must evict the
+    /// OLDEST endpoints and keep the NEWEST — a stream created for a
+    /// recently-seen endpoint still resolves its dialog, while one for an
+    /// evicted (oldest) endpoint does not. Guards the batched-eviction rewrite:
+    /// batching amortizes the O(n) `shift_remove_index(0)` but must not change
+    /// which endpoints survive (newest-in, oldest-out).
+    #[test]
+    fn sdp_endpoint_eviction_keeps_newest_drops_oldest() {
+        let cap = 100usize;
+        let flood = 300u16;
+        let addr = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)); // make_parsed src ip
+        let mut store = StreamStore::new(cap);
+
+        // Remember `flood` distinct endpoints (port i → "call-i"), overflowing
+        // the sdp_endpoints cap many times over. No streams exist yet, so
+        // link_endpoint only records the endpoint (its linking loop is a no-op).
+        for i in 0..flood {
+            store.link_endpoint(addr, 20_000 + i, &format!("call-{i}"), &[]);
+        }
+
+        // Newest endpoint (last inserted) must survive: a stream on it resolves
+        // its dialog at creation via resolve_from_sdp.
+        let newest = flood - 1;
+        store.process_rtp(
+            &make_parsed(20_000 + newest, 30_000, 160),
+            &make_rtp_header(0x0000_0001, 1),
+            ts(0),
+        );
+        let s_new = store
+            .iter()
+            .find(|s| s.key.src.port() == 20_000 + newest)
+            .expect("newest-endpoint stream exists");
+        assert_eq!(
+            s_new.associated_dialog.as_deref(),
+            Some(format!("call-{newest}").as_str()),
+            "the newest remembered endpoint must survive eviction and resolve its dialog"
+        );
+
+        // Oldest endpoint (first inserted) must have been evicted: a stream on
+        // it stays unassociated.
+        store.process_rtp(
+            &make_parsed(20_000, 31_000, 160),
+            &make_rtp_header(0x0000_0002, 1),
+            ts(0),
+        );
+        let s_old = store
+            .iter()
+            .find(|s| s.key.src.port() == 20_000 && s.key.dst.port() == 31_000)
+            .expect("oldest-endpoint stream exists");
+        assert_eq!(
+            s_old.associated_dialog, None,
+            "the oldest remembered endpoint must have been evicted (no stale resolution)"
         );
     }
 

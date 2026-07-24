@@ -123,11 +123,14 @@ pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<Strin
 }
 
 /// Check whether a codec name represents a decodable audio codec.
+///
+/// Opus is matched case-insensitively (SDP `a=rtpmap` casing is not
+/// normalized), consistent with `is_opus_codec` and `decode_stream_pcm` —
+/// otherwise a stream labelled e.g. `OpUs` would decode but be silently
+/// filtered out of export. G.711 (`PCMU`/`PCMA`) is matched exactly, matching
+/// what `decode_stream_pcm` accepts.
 fn is_exportable_codec(codec: Option<&str>) -> bool {
-    matches!(
-        codec,
-        Some("PCMU") | Some("PCMA") | Some("opus") | Some("OPUS") | Some("Opus")
-    )
+    matches!(codec, Some("PCMU") | Some("PCMA")) || codec.is_some_and(is_opus_codec)
 }
 
 /// Check if a codec name is Opus (case-insensitive per SDP convention).
@@ -327,6 +330,53 @@ mod tests {
 
         // Should fall back to mono since only one decodable stream
         assert!(result.contains("mu-law"));
+    }
+
+    /// `is_exportable_codec` must accept Opus case-insensitively, consistent
+    /// with `is_opus_codec` and the decoder — a mixed-case `OpUs` label decodes
+    /// but the exact-case filter used to drop it from export.
+    #[test]
+    fn is_exportable_codec_accepts_mixed_case_opus() {
+        // Canonical spellings still exportable.
+        assert!(is_exportable_codec(Some("opus")));
+        assert!(is_exportable_codec(Some("OPUS")));
+        assert!(is_exportable_codec(Some("Opus")));
+        // The bug: mixed case decoded (is_opus_codec is case-insensitive) but
+        // was filtered out of export. It must now be exportable, and the two
+        // predicates must agree.
+        assert!(is_exportable_codec(Some("OpUs")));
+        assert_eq!(
+            is_exportable_codec(Some("OpUs")),
+            is_opus_codec("OpUs"),
+            "export filter must agree with the opus detector"
+        );
+        // G.711 still accepted; unknown / none rejected.
+        assert!(is_exportable_codec(Some("PCMU")));
+        assert!(is_exportable_codec(Some("PCMA")));
+        assert!(!is_exportable_codec(Some("G729")));
+        assert!(!is_exportable_codec(None));
+    }
+
+    /// A mixed-case `OpUs` stream is not filtered out of dialog export: paired
+    /// with a G.711 stream it participates in stereo selection rather than
+    /// being silently dropped to a mono fallback.
+    #[test]
+    fn export_dialog_keeps_mixed_case_opus_stream() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mixed_case_opus.wav");
+
+        // Opus payloads here are undecodable garbage (skipped frame-by-frame),
+        // but the point is codec-name filtering, not audio content: the OpUs
+        // stream must survive is_exportable_codec so stereo is selected.
+        let g711 = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])]);
+        let opus = make_stream(Some("OpUs"), vec![(0, vec![0xFF; 8])]);
+        let result = export_dialog_to_wav(&[&g711, &opus], &path).unwrap();
+
+        assert!(
+            result.contains("stereo"),
+            "mixed-case Opus must count as exportable (stereo), got: {result}"
+        );
+        assert!(path.exists());
     }
 
     /// Exporting an empty stream list returns an error.

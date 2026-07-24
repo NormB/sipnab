@@ -174,18 +174,28 @@ pub fn analyze_burst_gap(received: &[bool], ptime_ms: f64) -> BurstGapAnalysis {
                 in_burst = true;
                 burst_count += 1;
                 // The previous consecutive losses are part of this burst;
-                // retroactively move them from gap to burst accounting.
-                // Those (consecutive_lost - 1) packets were already counted
-                // as gap_lost; move them to burst.
+                // retroactively move them from gap to burst accounting. Those
+                // (consecutive_lost - 1) packets were the immediately
+                // preceding losses, so by construction they are all still
+                // booked to the current gap in every gap counter at once:
+                // current_gap_len >= consecutive_lost > retroactive, and both
+                // gap_packets and gap_lost include this run's prior losses.
+                //
+                // Move them as a single unit under one combined guard so a
+                // partial subtraction can never desync the three counters
+                // (which would corrupt the gap/burst loss rates). The
+                // debug_assert pins the invariant in tests.
                 let retroactive = consecutive_lost - 1;
-                if gap_lost >= retroactive as u64 {
-                    gap_lost -= retroactive as u64;
-                }
-                if gap_packets >= retroactive as u64 {
-                    gap_packets -= retroactive as u64;
-                }
-                if current_gap_len >= retroactive {
+                let r64 = retroactive as u64;
+                debug_assert!(
+                    current_gap_len >= retroactive && gap_lost >= r64 && gap_packets >= r64,
+                    "gap counters desynced before burst reclassification: \
+                     len={current_gap_len} lost={gap_lost} packets={gap_packets} r={retroactive}"
+                );
+                if current_gap_len >= retroactive && gap_lost >= r64 && gap_packets >= r64 {
                     current_gap_len -= retroactive;
+                    gap_lost -= r64;
+                    gap_packets -= r64;
                 }
                 // Finalize the preceding gap
                 if current_gap_len > 0 {
@@ -563,6 +573,38 @@ mod tests {
             result.burst_loss_rate > 0.99,
             "burst_loss_rate should be ~1.0, got {}",
             result.burst_loss_rate
+        );
+    }
+
+    /// The retroactive gap→burst reclassification must move the same
+    /// packets out of every gap counter as one unit, keeping the partition
+    /// consistent. A gap that already holds an isolated loss (so the gap
+    /// counters exceed the reclassified count) followed by a 3+ burst
+    /// exercises the guard; burst and gap loss rates must stay coherent.
+    #[test]
+    fn retroactive_reclassification_keeps_accounting_consistent() {
+        let mut received = vec![true; 30];
+        received[5] = false; // isolated loss — stays in the gap
+        for i in 20..24 {
+            received[i] = false; // 4 consecutive losses — a burst
+        }
+
+        let a = analyze_burst_gap(&received, 20.0);
+        assert_eq!(a.burst_count, 1, "the 4-run is one burst");
+        assert!(a.is_bursty);
+        // Both rates are well-formed fractions, and the burst region carries
+        // heavier loss than the gap region (which holds only the lone loss).
+        assert!((0.0..=1.0).contains(&a.burst_loss_rate), "{a:?}");
+        assert!((0.0..=1.0).contains(&a.gap_loss_rate), "{a:?}");
+        assert!(
+            a.gap_loss_rate > 0.0,
+            "the isolated loss must register in the gap region: {a:?}"
+        );
+        assert!(
+            a.burst_loss_rate > a.gap_loss_rate,
+            "burst loss rate ({}) must exceed gap loss rate ({})",
+            a.burst_loss_rate,
+            a.gap_loss_rate
         );
     }
 
