@@ -187,18 +187,21 @@ name = "tui_derived"
 harness = false
 
 [features]
-default = ["native", "tui", "audio"]
+default = ["native", "tui", "audio", "metrics"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
 tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa"]
 hep = ["native", "dep:hmac", "dep:sha2"]
+# Standalone Prometheus /metrics server (raw TCP + threads; no axum/tokio,
+# so it is independent of the `api` feature). Needs base64 for Basic-auth.
+metrics = ["native", "dep:base64"]
 audio = ["dep:libloading", "dep:libc"]
 api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]
-full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http"]
+full = ["native", "tui", "tls", "hep", "api", "audio", "mcp", "mcp-http", "metrics"]
 
 [lib]
 name = "sipnab"

@@ -82,7 +82,7 @@ pub struct RunPlan {
     /// Top-level run mode (TUI vs batch vs multi-core file).
     pub mode: RunMode,
     /// Parsed `--metrics` bind address (TUI path only; batch handles its
-    /// own). Always `None` in builds without the `api` + `tui` features.
+    /// own). Always `None` in builds without the `metrics` + `tui` features.
     pub metrics_bind: Option<std::net::SocketAddr>,
 }
 
@@ -243,7 +243,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Parsed --metrics bind address (consumed by the TUI path only; batch
     // starts its own metrics server).
-    #[cfg(all(feature = "api", feature = "tui"))]
+    #[cfg(all(feature = "metrics", feature = "tui"))]
     let metrics_bind = match cli.metrics.as_deref() {
         Some(addr_str) => Some(
             crate::output::prometheus_server::parse_metrics_addr(addr_str)
@@ -251,7 +251,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
         ),
         None => None,
     };
-    #[cfg(not(all(feature = "api", feature = "tui")))]
+    #[cfg(not(all(feature = "metrics", feature = "tui")))]
     let metrics_bind = None;
 
     // Run mode. The multi-core offline file path outranks the TUI/batch

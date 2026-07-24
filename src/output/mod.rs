@@ -12,7 +12,7 @@
 //! - `api` — REST API daemon mode (feature-gated: `api`)
 //! - `prometheus` — Prometheus exposition-format metric data model/formatting
 //! - `prometheus_server` — standalone `/metrics` HTTP server (feature-gated:
-//!   `api`)
+//!   `metrics`; independent of `api` since it uses raw TCP, no axum/tokio)
 //! - `sink` — buffered stdout sink for batch-mode per-message output
 //! - `synthetic` — synthetic Ethernet/IPv4/UDP packet construction for pcap
 //!   export
@@ -33,7 +33,7 @@ pub mod hexdump;
 pub mod json;
 pub mod model;
 pub mod prometheus;
-#[cfg(feature = "api")]
+#[cfg(feature = "metrics")]
 pub mod prometheus_server;
 pub mod sink;
 pub mod synthetic;

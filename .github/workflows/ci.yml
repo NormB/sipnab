@@ -119,6 +119,8 @@ jobs:
           - api
           - mcp
           - hep
+          # Standalone metrics server must build without the `api` feature.
+          - metrics
           - "tls,api"
           - "native,tui,audio"
           - "native,tui,tls,hep,api"

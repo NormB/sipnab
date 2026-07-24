@@ -104,7 +104,7 @@ fn main() {
                 launched.handle,
                 launched.rx,
                 plan.policy,
-                #[cfg(feature = "api")]
+                #[cfg(feature = "metrics")]
                 plan.metrics_bind,
             );
         }

@@ -84,8 +84,8 @@ fn default_names_path() -> Option<std::path::PathBuf> {
 /// * `rx` — receiving side of the packet channel the processing thread
 ///   drains.
 /// * `policy` — output split policy applied to the optional `-O` writer.
-/// * `metrics_bind_addr` — parsed `--metrics` bind address (`api` feature
-///   builds only).
+/// * `metrics_bind_addr` — parsed `--metrics` bind address (`metrics`
+///   feature builds only).
 ///
 /// # Side effects
 ///
@@ -106,7 +106,7 @@ pub fn run_tui_mode(
     handle: capture::CaptureHandle,
     rx: capture::channel::PacketRx,
     policy: CapturePolicy,
-    #[cfg(feature = "api")] metrics_bind_addr: Option<std::net::SocketAddr>,
+    #[cfg(feature = "metrics")] metrics_bind_addr: Option<std::net::SocketAddr>,
 ) {
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
 
@@ -123,7 +123,7 @@ pub fn run_tui_mode(
     };
 
     // Start standalone metrics server with the REAL stores (not empty copies)
-    #[cfg(feature = "api")]
+    #[cfg(feature = "metrics")]
     let _metrics_handle = if let Some(bind_addr) = metrics_bind_addr {
         match crate::output::prometheus_server::start_metrics_server(
             bind_addr,

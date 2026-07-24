@@ -963,11 +963,14 @@ async fn get_metrics(
             metrics.pdd_histogram.push(pdd_ms as f64 / 1000.0);
         }
 
-        // Count messages by method
+        // Count SIP messages by dialog method (matching the standalone
+        // metrics server): the metric is named messages_total, so it counts
+        // messages, not dialogs — `+= 1` here undercounted every multi-message
+        // dialog and disagreed with the /metrics server's value.
         *metrics
             .messages_total
             .entry(d.method.to_string())
-            .or_insert(0) += 1;
+            .or_insert(0) += d.messages.len() as u64;
     }
     drop(ds);
 
@@ -1478,6 +1481,67 @@ mod tests {
 
         let resp = app.oneshot(req).await.expect("oneshot");
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// `sipnab_messages_total` counts SIP messages (matching the standalone
+    /// metrics server), not dialogs: one dialog with two messages reports 2.
+    #[tokio::test]
+    async fn metrics_messages_total_counts_messages_not_dialogs() {
+        let state = make_state();
+        {
+            let mut ds = state.dialog_store.write();
+            let ts =
+                chrono::TimeZone::with_ymd_and_hms(&chrono::Utc, 2024, 6, 15, 12, 0, 0).unwrap();
+            let lo = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+            let msgs = [
+                build_sip(
+                    "INVITE sip:bob@example.com SIP/2.0",
+                    &[
+                        "From: <sip:a@example.com>;tag=1",
+                        "To: <sip:bob@example.com>",
+                        "Call-ID: mt@test",
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                    b"",
+                ),
+                build_sip(
+                    "SIP/2.0 200 OK",
+                    &[
+                        "From: <sip:a@example.com>;tag=1",
+                        "To: <sip:bob@example.com>;tag=2",
+                        "Call-ID: mt@test",
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                    b"",
+                ),
+            ];
+            for raw in msgs {
+                let msg = crate::sip::parser::parse_sip(
+                    &raw,
+                    ts,
+                    lo,
+                    lo,
+                    5060,
+                    5060,
+                    TransportProto::Udp,
+                )
+                .expect("parse");
+                ds.process_message(msg);
+            }
+        }
+
+        let app = build_router(state);
+        let resp = app
+            .oneshot(test_request("/metrics"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        assert!(
+            body.contains("sipnab_messages_total{method=\"INVITE\"} 2"),
+            "expected 2 messages, got:\n{body}"
+        );
     }
 
     /// `GET /metrics` returns 200 with `sipnab_`-prefixed exposition text.
