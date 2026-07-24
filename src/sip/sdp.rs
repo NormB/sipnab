@@ -126,11 +126,11 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
     let text =
         std::str::from_utf8(body).map_err(|_| ParseError::InvalidUtf8 { what: "SDP body" })?;
 
-    let lines: Vec<&str> = text.lines().collect();
-
-    // Validate version line
-    let first_nonempty = lines
-        .iter()
+    // Validate version line. `str::lines()` is a lazy iterator that borrows
+    // `text` without allocating, so we can walk it here for validation and
+    // again below for the main parse loop.
+    let first_nonempty = text
+        .lines()
         .find(|l| !l.trim().is_empty())
         .ok_or(ParseError::SdpMissingVersion)?;
 
@@ -153,7 +153,7 @@ pub fn parse_sdp(body: &[u8]) -> Result<SdpSession, ParseError> {
     // Track whether we are inside a media section
     let mut in_media = false;
 
-    for line in &lines {
+    for line in text.lines() {
         let line = line.trim_end_matches('\r');
         if line.is_empty() {
             continue;
@@ -318,13 +318,19 @@ fn parse_attribute(value: &str, media: &mut SdpMedia) {
 
 /// Parse an `a=rtpmap` value (e.g., `"0 PCMU/8000"` or `"111 opus/48000/2"`).
 /// Returns `None` when the payload type, encoding, or clock rate is missing
-/// or non-numeric.
+/// or non-numeric, or when the payload type is outside the 7-bit RFC 3551
+/// range (0–127).
 fn parse_rtpmap(value: &str) -> Option<RtpMap> {
     let mut parts = value.splitn(2, ' ');
     let pt_str = parts.next()?.trim();
     let encoding_part = parts.next()?.trim();
 
     let payload_type: u8 = pt_str.parse().ok()?;
+    // RFC 3551: RTP payload types are 7-bit (0–127). Reject anything larger,
+    // matching the parser's convention of skipping malformed entries.
+    if payload_type > 127 {
+        return None;
+    }
 
     let mut slash_parts = encoding_part.splitn(3, '/');
     let encoding = slash_parts.next()?.to_string();
@@ -432,6 +438,43 @@ mod tests {
         assert_eq!(audio.rtpmap[2].encoding, "opus");
         assert_eq!(audio.rtpmap[2].clock_rate, 48000);
         assert_eq!(audio.rtpmap[2].channels, Some(2));
+    }
+
+    /// An rtpmap with a payload type above the 7-bit RFC 3551 range
+    /// (0–127) is rejected and not recorded.
+    #[test]
+    fn parse_rtpmap_rejects_payload_type_above_127() {
+        let sdp = b"v=0\r\n\
+            o=- 0 0 IN IP4 10.0.0.1\r\n\
+            s=-\r\n\
+            c=IN IP4 10.0.0.1\r\n\
+            t=0 0\r\n\
+            m=audio 20000 RTP/AVP 0 128\r\n\
+            a=rtpmap:0 PCMU/8000\r\n\
+            a=rtpmap:128 opus/48000/2\r\n";
+
+        let session = parse_sdp(sdp).expect("should parse SDP");
+        let audio = &session.media[0];
+        // The pt=128 rtpmap is out of the 7-bit range and must be skipped;
+        // only the valid pt=0 entry survives.
+        assert_eq!(audio.rtpmap.len(), 1);
+        assert_eq!(audio.rtpmap[0].payload_type, 0);
+    }
+
+    /// The maximum valid 7-bit payload type (127) is still accepted.
+    #[test]
+    fn parse_rtpmap_accepts_payload_type_127() {
+        let sdp = b"v=0\r\n\
+            o=- 0 0 IN IP4 10.0.0.1\r\n\
+            s=-\r\n\
+            c=IN IP4 10.0.0.1\r\n\
+            t=0 0\r\n\
+            m=audio 20000 RTP/AVP 127\r\n\
+            a=rtpmap:127 opus/48000/2\r\n";
+
+        let session = parse_sdp(sdp).expect("should parse SDP");
+        assert_eq!(session.media[0].rtpmap.len(), 1);
+        assert_eq!(session.media[0].rtpmap[0].payload_type, 127);
     }
 
     /// `a=crypto` lines are extracted correctly.

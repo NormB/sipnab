@@ -110,6 +110,12 @@ pub fn parse_sip(
     dst_port: u16,
     transport: TransportProto,
 ) -> Result<SipMessage, ParseError> {
+    // Validate the first line on the borrowed slice before paying for the
+    // copy. All hard-`Err` conditions (empty, missing CRLF, non-UTF-8 or
+    // non-SIP first line) are decidable without owning the bytes, so garbage
+    // and non-SIP inputs return their error with zero allocation; only inputs
+    // that will actually yield a message reach `copy_from_slice`.
+    precheck_first_line(data)?;
     parse_sip_bytes(
         &bytes::Bytes::copy_from_slice(data),
         timestamp,
@@ -119,6 +125,25 @@ pub fn parse_sip(
         dst_port,
         transport,
     )
+}
+
+/// Run the cheap, allocation-free first-line validation that gates whether a
+/// buffer can become a [`SipMessage`]. Returns the same `Err` variants
+/// `parse_sip_bytes` would, so pre-checking the borrowed slice is behaviorally
+/// identical to letting `parse_sip_bytes` reject a copy.
+fn precheck_first_line(data: &[u8]) -> Result<(), ParseError> {
+    if data.is_empty() {
+        return Err(ParseError::Empty {
+            what: "SIP message",
+        });
+    }
+    let first_crlf = find_crlf(data).ok_or(ParseError::MissingCrlf)?;
+    let first_line = &data[..first_crlf];
+    let first_line_str = std::str::from_utf8(first_line).map_err(|_| ParseError::InvalidUtf8 {
+        what: "SIP first line",
+    })?;
+    parse_first_line(first_line_str)?;
+    Ok(())
 }
 
 /// Like [`parse_sip`], but `raw` and `body` of the returned message are
@@ -239,8 +264,9 @@ fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
             reason: Some(reason),
             request_uri: None,
         })
-    } else if line.ends_with("SIP/2.0") {
-        // Request: "INVITE sip:bob@example.com SIP/2.0"
+    } else if line.ends_with(" SIP/2.0") {
+        // Request: "INVITE sip:bob@example.com SIP/2.0". The version token is
+        // anchored to a leading SP so a glued `...ASIP/2.0` is not accepted.
         let first_space = line.find(' ').ok_or_else(|| ParseError::InvalidFirstLine {
             line: line.to_string(),
             reason: "no space in request line",
@@ -254,7 +280,10 @@ fn parse_first_line(line: &str) -> Result<FirstLine, ParseError> {
                 line: line.to_string(),
                 reason: "no space before SIP version",
             })?;
-        let uri = rest[..last_space].to_string();
+        // RFC 3261 request-line grammar is single-SP-delimited, but tolerate
+        // sloppy multi-SP input (e.g. "INVITE  sip:x SIP/2.0") by trimming the
+        // extracted URI rather than rejecting the message.
+        let uri = rest[..last_space].trim().to_string();
 
         Ok(FirstLine {
             is_request: true,
@@ -324,6 +353,22 @@ fn parse_headers_and_body(
     data: &[u8],
     start: usize,
 ) -> (Vec<SipHeader>, Option<std::ops::Range<usize>>, bool) {
+    /// Push a parsed header unless the per-message cap is reached. Dropping a
+    /// header because the cap was hit sets `parse_error` so the truncation is
+    /// visible rather than a silent loss.
+    fn push_header_capped(
+        headers: &mut Vec<SipHeader>,
+        hdr: SipHeader,
+        max_headers: usize,
+        parse_error: &mut bool,
+    ) {
+        if headers.len() < max_headers {
+            headers.push(hdr);
+        } else {
+            *parse_error = true;
+        }
+    }
+
     let max_header_line = MAX_HEADER_LINE_LEN.load(std::sync::atomic::Ordering::Relaxed);
     let max_headers = MAX_HEADERS_PER_MESSAGE.load(std::sync::atomic::Ordering::Relaxed);
     // A typical SIP message carries ~10-15 headers; skip the growth reallocs.
@@ -347,10 +392,9 @@ fn parse_headers_and_body(
                 if line_bytes.is_empty() {
                     // Flush any pending header
                     if !current_line.is_empty()
-                        && headers.len() < max_headers
                         && let Some(hdr) = parse_header_line(&current_line)
                     {
-                        headers.push(hdr);
+                        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                     }
                     current_line = Cow::Borrowed("");
                     found_body_separator = true;
@@ -380,10 +424,9 @@ fn parse_headers_and_body(
                 } else {
                     // New header — flush the previous one
                     if !current_line.is_empty()
-                        && headers.len() < max_headers
                         && let Some(hdr) = parse_header_line(&current_line)
                     {
-                        headers.push(hdr);
+                        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                     }
                     // Bound the unfolded line too: without this a single
                     // multi-MB header (no continuations) sails past the cap
@@ -410,10 +453,9 @@ fn parse_headers_and_body(
                         // parse_error set below in the None→break path
                     } else {
                         if !current_line.is_empty()
-                            && headers.len() < max_headers
                             && let Some(hdr) = parse_header_line(&current_line)
                         {
-                            headers.push(hdr);
+                            push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
                         }
                         // Same unfolded-line cap on the no-trailing-CRLF path:
                         // drop an over-long remainder so it is not flushed as a
@@ -432,10 +474,9 @@ fn parse_headers_and_body(
 
     // Flush any remaining header
     if !current_line.is_empty()
-        && headers.len() < max_headers
         && let Some(hdr) = parse_header_line(&current_line)
     {
-        headers.push(hdr);
+        push_header_capped(&mut headers, hdr, max_headers, &mut parse_error);
     }
 
     // No \r\n\r\n found means the message is incomplete
@@ -447,11 +488,22 @@ fn parse_headers_and_body(
     let body = if found_body_separator && pos < data.len() {
         let body_bytes = &data[pos..];
 
-        // Validate against Content-Length if present
-        let content_length = headers
+        // Validate against Content-Length if present. A header that is present
+        // but non-numeric must not be silently treated as absent: flag it via
+        // parse_error so a garbage length carries a signal.
+        let content_length = match headers
             .iter()
             .find(|h| h.name.eq_ignore_ascii_case("Content-Length"))
-            .and_then(|h| h.value.trim().parse::<usize>().ok());
+        {
+            Some(h) => match h.value.trim().parse::<usize>() {
+                Ok(len) => Some(len),
+                Err(_) => {
+                    parse_error = true;
+                    None
+                }
+            },
+            None => None,
+        };
 
         if let Some(expected_len) = content_length {
             if body_bytes.len() < expected_len {
@@ -1501,6 +1553,110 @@ Content-Length: 0\r\n\
             sip.header("fake-header"),
             Some("injected"),
             "CRLF should split into a separate header, not embed in UA value"
+        );
+    }
+
+    /// Headers dropped past `MAX_HEADERS_PER_MESSAGE` must set parse_error so
+    /// the silent truncation is visible, not swallowed.
+    #[test]
+    fn header_count_overflow_sets_parse_error() {
+        let mut headers: Vec<String> = (1..=300)
+            .map(|i| format!("X-Junk-{i:03}: value-{i}"))
+            .collect();
+        headers.push("Content-Length: 0".to_string());
+        let header_refs: Vec<&str> = headers.iter().map(|s| s.as_str()).collect();
+        let msg = build_sip("INVITE sip:bob@example.com SIP/2.0", &header_refs, b"");
+
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        assert!(sip.headers.len() <= DEFAULT_MAX_HEADERS_PER_MESSAGE);
+        assert!(
+            sip.parse_error,
+            "dropping headers past the cap must set parse_error"
+        );
+    }
+
+    /// A present-but-non-numeric Content-Length must set parse_error rather
+    /// than being silently ignored (treated as absent), so a garbage length
+    /// carries a signal. The body bytes present are still retained.
+    #[test]
+    fn non_numeric_content_length_sets_parse_error() {
+        let msg = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &["Content-Length: abc"],
+            b"hello",
+        );
+
+        let sip = parse_sip(
+            &msg,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+
+        assert!(
+            sip.parse_error,
+            "non-numeric Content-Length must set parse_error"
+        );
+        assert_eq!(
+            sip.body[..],
+            b"hello"[..],
+            "present body bytes must be retained, not dropped"
+        );
+    }
+
+    /// A request line with a double space after the method (RFC 3261 grammar
+    /// is single-SP, but sloppy input is tolerated) must yield a trimmed
+    /// Request-URI, not one with a leading space.
+    #[test]
+    fn request_uri_with_double_space_is_trimmed() {
+        let raw = b"INVITE  sip:x SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+        let sip = parse_sip(
+            raw,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        assert!(sip.is_request);
+        assert_eq!(sip.request_uri.as_deref(), Some("sip:x"));
+    }
+
+    /// The version token must be SP-anchored: `ASIP/2.0` glued onto the URI is
+    /// not a valid `SIP/2.0` version and the line must be rejected as NotSip,
+    /// not accepted as a request via an unanchored `ends_with`.
+    #[test]
+    fn request_line_requires_space_before_version() {
+        let raw = b"INVITE sip:alice ASIP/2.0\r\nContent-Length: 0\r\n\r\n";
+        let err = parse_sip(
+            raw,
+            ts(),
+            localhost_v4(),
+            localhost_v4(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect_err("ASIP/2.0 must not parse as a SIP request");
+        assert!(
+            matches!(err, ParseError::NotSip { .. }),
+            "expected NotSip, got {err:?}"
         );
     }
 }

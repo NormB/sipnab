@@ -138,8 +138,12 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
                 timing.refer_sent_at = Some(msg.timestamp);
             }
             Some(SipMethod::Notify) => {
+                // Subscription-State = substate-value *(";" subexp-params)
+                // (RFC 6665 §8.4). Match the leading token exactly so a value
+                // like "terminatedfoo" is not mistaken for "terminated";
+                // "terminated;reason=noresource" still matches on its token.
                 if let Some(sub_state) = msg.header("Subscription-State")
-                    && sub_state.starts_with("terminated")
+                    && sub_state.split(';').next().unwrap_or("").trim() == "terminated"
                     && timing.transfer_completed_at.is_none()
                 {
                     timing.transfer_completed_at = Some(msg.timestamp);
@@ -510,5 +514,69 @@ mod tests {
         };
         update_timing(&mut timing, &notify, &SipMethod::Invite);
         assert_eq!(timing.transfer_completed_at, Some(t1));
+    }
+
+    /// Build a NOTIFY carrying the given `Subscription-State` value, captured
+    /// at `ts`.
+    fn make_notify_substate(sub_state: &str, ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "NOTIFY sip:alice@example.com SIP/2.0",
+            &[
+                "From: <sip:bob@example.com>;tag=t2",
+                "To: <sip:alice@example.com>;tag=t1",
+                "Call-ID: timing-test@example.com",
+                "CSeq: 4 NOTIFY",
+                &format!("Subscription-State: {sub_state}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse NOTIFY")
+    }
+
+    /// A `Subscription-State` value that merely *starts with* "terminated"
+    /// (e.g. "terminatedfoo") is a different token and must NOT complete the
+    /// transfer — the old `starts_with("terminated")` check false-matched it.
+    #[test]
+    fn notify_terminatedfoo_does_not_complete_transfer() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        let notify = make_notify_substate("terminatedfoo", t0);
+        update_timing(&mut timing, &notify, &SipMethod::Invite);
+        assert_eq!(
+            timing.transfer_completed_at, None,
+            "'terminatedfoo' is not the 'terminated' token and must not complete a transfer"
+        );
+    }
+
+    /// A bare `Subscription-State: terminated` token (no parameters)
+    /// completes the transfer — the token match must not require a `;`.
+    #[test]
+    fn notify_bare_terminated_completes_transfer() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        let notify = make_notify_substate("terminated", t0);
+        update_timing(&mut timing, &notify, &SipMethod::Invite);
+        assert_eq!(timing.transfer_completed_at, Some(t0));
+    }
+
+    /// `terminated;reason=noresource` (token plus parameters) still completes
+    /// the transfer — anchoring on the token must tolerate trailing params.
+    #[test]
+    fn notify_terminated_with_params_completes_transfer() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        let notify = make_notify_substate("terminated;reason=noresource", t0);
+        update_timing(&mut timing, &notify, &SipMethod::Invite);
+        assert_eq!(timing.transfer_completed_at, Some(t0));
     }
 }

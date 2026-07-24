@@ -87,7 +87,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         None => return,
     };
 
-    let direction = determine_offer_answer(msg);
+    let direction = determine_offer_answer(timeline, msg);
     let (codecs, media_addr, media_port, mode, is_t38) = extract_media_info(&sdp);
 
     let event = detect_event(timeline, &codecs, &media_addr, media_port, &mode, is_t38);
@@ -136,15 +136,36 @@ pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     });
 }
 
-/// Determine whether an SDP body is an offer or answer based on the SIP message type.
+/// Determine whether an SDP body is an offer or answer, using both the SIP
+/// message type and the dialog's offer/answer position so far.
 ///
-/// - Requests (INVITE, UPDATE) carry offers
-/// - Responses (200 OK, 183, etc.) carry answers
-fn determine_offer_answer(msg: &SipMessage) -> OfferAnswer {
+/// - Requests (INVITE, UPDATE) normally carry offers.
+/// - Responses (200 OK, 183, etc.) normally carry answers.
+///
+/// Two delayed-offer exceptions (RFC 3261 §13.2.1) override the type-based
+/// default, because an offerless INVITE carries no SDP and so never produces a
+/// timeline entry — the offer/answer roles then land on the response and ACK:
+///
+/// - An `ACK` request is always the **answer** (SDP in an ACK acknowledges an
+///   offer delivered in the 2xx, never an offer of its own).
+/// - A response bearing SDP with **no preceding offer** in the dialog is itself
+///   the **offer** (the delayed offer carried in the 2xx).
+fn determine_offer_answer(timeline: &[SdpExchange], msg: &SipMessage) -> OfferAnswer {
     if msg.is_request {
+        if msg.method.as_ref() == Some(&super::method::SipMethod::Ack) {
+            // ACK never offers; its SDP answers the offer from the 2xx.
+            return OfferAnswer::Answer;
+        }
         OfferAnswer::Offer
     } else {
-        OfferAnswer::Answer
+        // Delayed offer: the offerless INVITE left no exchange, so this 2xx's
+        // SDP is the first — and thus the offer — when nothing offered before.
+        let has_prior_offer = timeline.iter().any(|e| e.direction == OfferAnswer::Offer);
+        if has_prior_offer {
+            OfferAnswer::Answer
+        } else {
+            OfferAnswer::Offer
+        }
     }
 }
 
@@ -328,6 +349,57 @@ mod tests {
             TransportProto::Udp,
         )
         .expect("should parse 200 OK with SDP")
+    }
+
+    /// Build an ACK request carrying `sdp_body` captured at `ts`.
+    fn make_ack_with_sdp(sdp_body: &[u8], ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "ACK sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: sdp-test@example.com",
+                "CSeq: 1 ACK",
+                "Content-Type: application/sdp",
+                &format!("Content-Length: {}", sdp_body.len()),
+            ],
+            sdp_body,
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse ACK with SDP")
+    }
+
+    /// Build an INVITE with no message body (no SDP) captured at `ts`.
+    fn make_invite_no_sdp(ts: DateTime<Utc>) -> SipMessage {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>",
+                "Call-ID: sdp-test@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse INVITE without SDP")
     }
 
     /// Build a sendrecv audio SDP body with the given codec, address, and port.
@@ -616,6 +688,55 @@ a=sendrecv\r\n";
         assert!(
             codecs.iter().any(|c| c == "H264"),
             "video codec must appear in the timeline, got {codecs:?}"
+        );
+    }
+
+    /// Delayed-offer INVITE: the offerless INVITE creates no exchange, the
+    /// SDP first appears in the 200 OK (the offer), and the ACK carries the
+    /// answer. Roles must be labeled by offer/answer position, not by the
+    /// request/response type of the carrying message.
+    #[test]
+    fn delayed_offer_roles_labeled_by_position() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::milliseconds(200);
+        let t2 = t0 + TimeDelta::milliseconds(400);
+
+        // Offerless INVITE — no SDP, so no timeline entry.
+        let invite = make_invite_no_sdp(t0);
+        track_sdp(&mut timeline, &invite);
+        assert!(timeline.is_empty(), "offerless INVITE adds no exchange");
+
+        // 200 OK carries the delayed offer.
+        let offer_sdp = sendrecv_sdp("PCMU", "10.0.0.2", 30000);
+        let ok = make_200_with_sdp(&offer_sdp, t1);
+        track_sdp(&mut timeline, &ok);
+
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(
+            timeline[0].direction,
+            OfferAnswer::Offer,
+            "the SDP in the 200 OK is the delayed offer, not an answer"
+        );
+        assert!(
+            timeline[0].event.is_none(),
+            "first SDP in the dialog has no predecessor → no event"
+        );
+
+        // ACK carries the answer, matching the offer's anchor/codecs.
+        let answer_sdp = sendrecv_sdp("PCMU", "10.0.0.2", 30000);
+        let ack = make_ack_with_sdp(&answer_sdp, t2);
+        track_sdp(&mut timeline, &ack);
+
+        assert_eq!(timeline.len(), 2);
+        assert_eq!(
+            timeline[1].direction,
+            OfferAnswer::Answer,
+            "the SDP in the ACK is the answer to the delayed offer"
+        );
+        assert!(
+            timeline[1].event.is_none(),
+            "answer matching the offer's anchor/codecs is not a mid-call event"
         );
     }
 

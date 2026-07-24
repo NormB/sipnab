@@ -118,14 +118,16 @@ fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
             ("", segment)
         };
 
-        let content_type = headers_part.lines().find_map(|line| {
-            let lower = line.to_ascii_lowercase();
-            if lower.starts_with("content-type:") {
-                Some(line[13..].trim().to_string())
-            } else {
-                None
-            }
-        });
+        let content_type = unfold_header_lines(headers_part)
+            .into_iter()
+            .find_map(|line| {
+                let lower = line.to_ascii_lowercase();
+                if lower.starts_with("content-type:") {
+                    Some(line[13..].trim().to_string())
+                } else {
+                    None
+                }
+            });
 
         parts.push(MimePart {
             content_type,
@@ -134,6 +136,25 @@ fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
     }
 
     parts
+}
+
+/// Unfold RFC 5322 folded header lines within a MIME part's header block.
+///
+/// A line beginning with SP or HTAB is a continuation of the preceding header;
+/// unfolding removes the intervening line break while keeping the continuation's
+/// leading whitespace. Returns one string per logical header.
+fn unfold_header_lines(headers: &str) -> Vec<String> {
+    let mut logical: Vec<String> = Vec::new();
+    for raw in headers.lines() {
+        if raw.starts_with([' ', '\t'])
+            && let Some(last) = logical.last_mut()
+        {
+            last.push_str(raw);
+        } else {
+            logical.push(raw.to_string());
+        }
+    }
+    logical
 }
 
 /// Parse SIPREC metadata XML using simple string extraction.
@@ -168,7 +189,11 @@ fn parse_rs_metadata(xml: &str) -> Result<SirecMetadata> {
             let participant = SirecParticipant {
                 participant_id: extract_xml_attr(block, "participant_id")
                     .or_else(|| extract_xml_attr(block, "participantid")),
-                aor: extract_xml_content(block, "aor")
+                // RFC 7865 defines the AOR as an `aor` attribute on `<nameID>`;
+                // that canonical attribute form takes precedence over the
+                // non-standard `<aor>` child element and the nameID content.
+                aor: extract_nameid_aor(block)
+                    .or_else(|| extract_xml_content(block, "aor"))
                     .or_else(|| extract_xml_content(block, "nameID")),
                 name: extract_xml_content(block, "name"),
             };
@@ -233,6 +258,17 @@ fn extract_xml_content(xml: &str, tag: &str) -> Option<String> {
         };
     }
     None
+}
+
+/// Extract the RFC 7865 `aor` attribute from a participant's `<nameID>` opening
+/// tag (e.g. `<nameID aor="sip:alice@example.com">`).
+///
+/// Scoped to the `<nameID>` start tag so it cannot match an `aor` attribute
+/// that might appear elsewhere in the participant block.
+fn extract_nameid_aor(block: &str) -> Option<String> {
+    let start = block.find("<nameID")?;
+    let tag_end = block[start..].find('>')? + start;
+    extract_xml_attr(&block[start..tag_end], "aor")
 }
 
 /// Extract an attribute value from an XML element.
@@ -435,6 +471,96 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
 --b1--";
         let result = parse_siprec_body(ct, body).unwrap();
         assert_eq!(result.session_id.as_deref(), Some("xyz"));
+    }
+
+    /// A part whose `Content-Type` header is folded across lines
+    /// (RFC 5322 continuation lines starting with SP/HTAB) is unfolded
+    /// before parsing, so the full media type + parameters are recovered.
+    #[test]
+    fn test_split_multipart_unfolds_folded_content_type() {
+        // Note: the SP after `;\r\n` is written before the `\` line-continuation
+        // so it survives in the literal — the continuation line genuinely starts
+        // with a space (an RFC 5322 fold).
+        let body = "--b1\r\n\
+Content-Type: application/rs-metadata+xml;\r\n \
+charset=\"utf-8\"\r\n\r\n\
+<recording></recording>\r\n\
+--b1--";
+        assert!(
+            body.contains(";\r\n charset"),
+            "test fixture must contain a genuine folded (SP-prefixed) line"
+        );
+        let parts = split_multipart(body, "b1");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0].content_type.as_deref(),
+            Some("application/rs-metadata+xml; charset=\"utf-8\""),
+            "folded Content-Type must be unfolded to its full value"
+        );
+    }
+
+    /// A folded HTAB continuation is also unfolded.
+    #[test]
+    fn test_split_multipart_unfolds_htab_continuation() {
+        // HTAB written before the `\` line-continuation so the fold survives.
+        let body = "--b1\r\n\
+Content-Type: application/rs-metadata+xml;\r\n\t\
+charset=\"utf-8\"\r\n\r\n\
+<recording></recording>\r\n\
+--b1--";
+        assert!(
+            body.contains(";\r\n\tcharset"),
+            "test fixture must contain a genuine HTAB-folded line"
+        );
+        let parts = split_multipart(body, "b1");
+        assert_eq!(parts.len(), 1);
+        // Unfolding removes the line break but preserves the folding WSP, so the
+        // HTAB is retained in the joined value (RFC 5322 §2.2.3).
+        assert_eq!(
+            parts[0].content_type.as_deref(),
+            Some("application/rs-metadata+xml;\tcharset=\"utf-8\"")
+        );
+    }
+
+    /// RFC 7865 canonical participant AOR: the `aor` attribute on `<nameID>`.
+    #[test]
+    fn test_participant_aor_attribute_form() {
+        let xml = "<recording><participant participant_id=\"p1\">\
+<nameID aor=\"sip:alice@example.com\"><name>Alice</name></nameID>\
+</participant></recording>";
+        let md = parse_rs_metadata(xml).unwrap();
+        assert_eq!(md.participants.len(), 1);
+        assert_eq!(
+            md.participants[0].aor.as_deref(),
+            Some("sip:alice@example.com")
+        );
+    }
+
+    /// The non-standard `<aor>` child-element form remains supported.
+    #[test]
+    fn test_participant_aor_element_form_still_supported() {
+        let xml = "<recording><participant participant_id=\"p1\">\
+<nameID><aor>sip:bob@example.com</aor></nameID></participant></recording>";
+        let md = parse_rs_metadata(xml).unwrap();
+        assert_eq!(
+            md.participants[0].aor.as_deref(),
+            Some("sip:bob@example.com")
+        );
+    }
+
+    /// When both the RFC 7865 `aor` attribute and a non-standard `<aor>`
+    /// child element are present, the canonical attribute wins.
+    #[test]
+    fn test_participant_aor_attribute_wins_over_element() {
+        let xml = "<recording><participant participant_id=\"p1\">\
+<nameID aor=\"sip:attr@example.com\"><aor>sip:elem@example.com</aor></nameID>\
+</participant></recording>";
+        let md = parse_rs_metadata(xml).unwrap();
+        assert_eq!(
+            md.participants[0].aor.as_deref(),
+            Some("sip:attr@example.com"),
+            "RFC 7865 aor attribute takes precedence over the <aor> child element"
+        );
     }
 
     /// Malformed XML degrades to default metadata instead of failing.

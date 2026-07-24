@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use regex::{Regex, RegexBuilder};
 
 use super::SipMessage;
+use super::method::SipMethod;
 use crate::cli::Cli;
 
 /// Maximum compiled regex size in bytes, preventing ReDoS (D17).
@@ -30,8 +31,8 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 /// assert!(matcher.is_active());
 /// ```
 pub struct SipMatcher {
-    /// Regex applied to the full raw message bytes (lossy UTF-8).
-    payload_regex: Option<Regex>,
+    /// Regex applied to the full raw message bytes copy-free (`regex::bytes`).
+    payload_regex: Option<regex::bytes::Regex>,
     /// Regex applied to the From header value.
     from_regex: Option<Regex>,
     /// Regex applied to the To header value.
@@ -85,7 +86,7 @@ impl SipMatcher {
         let dot_matches_new_line = !cli.single_line;
 
         let payload_regex = payload_pattern
-            .map(|p| compile_pattern(p, case_insensitive, word, dot_matches_new_line))
+            .map(|p| compile_pattern_bytes(p, case_insensitive, word, dot_matches_new_line))
             .transpose()
             .context("invalid payload match expression")?;
 
@@ -128,7 +129,7 @@ impl SipMatcher {
     ///
     /// The evaluation order is:
     /// 1. `calls_only` — reject non-INVITE messages
-    /// 2. `payload_regex` — test against full raw message (lossy UTF-8)
+    /// 2. `payload_regex` — test against full raw message bytes (copy-free)
     /// 3. `from_regex` — test against the From header (full value, then user part)
     /// 4. `to_regex` — test against the To header (full value, then user part)
     /// 5. `contact_regex` — test against the Contact header
@@ -162,42 +163,50 @@ impl SipMatcher {
     /// `true` when every active criterion matches (vacuously true with no
     /// filters). Pure — `invert` is applied by the caller.
     fn matches_positive(&self, msg: &SipMessage) -> bool {
-        // calls_only: reject anything that isn't an INVITE request
+        // calls_only: reject anything that isn't an INVITE request. Method
+        // tokens are case-sensitive per RFC 3261 §7.1 (INVITE ≠ invite on the
+        // wire), matching SipMethod::parse — a lowercase "invite" parses to
+        // SipMethod::Custom and is correctly rejected here.
         if self.calls_only {
-            let is_invite = msg
-                .method
-                .as_ref()
-                .is_some_and(|m| m.as_str().eq_ignore_ascii_case("INVITE"));
+            let is_invite = msg.method.as_ref() == Some(&SipMethod::Invite);
             if !is_invite {
                 return false;
             }
         }
 
-        // payload_regex: test against full raw message as lossy UTF-8
-        if let Some(ref re) = self.payload_regex {
-            let text = String::from_utf8_lossy(&msg.raw);
-            if !re.is_match(&text) {
-                return false;
-            }
+        // payload_regex: test against full raw message bytes (copy-free — no
+        // lossy UTF-8 allocation, and non-UTF-8 payloads match faithfully)
+        if let Some(ref re) = self.payload_regex
+            && !re.is_match(&msg.raw)
+        {
+            return false;
         }
 
-        // from_regex: test against full From header, fallback to from_user()
+        // from_regex: test against full From header, falling back to
+        // from_user() only when the header did not match (from_user()
+        // allocates, so it is computed lazily).
         if let Some(ref re) = self.from_regex {
             let from_hdr = msg.from_header().unwrap_or("");
-            let from_user = msg.from_user();
-            let from_user_ref = from_user.as_deref().unwrap_or("");
-            if !re.is_match(from_hdr) && !re.is_match(from_user_ref) {
-                return false;
+            if !re.is_match(from_hdr) {
+                let from_user = msg.from_user();
+                let from_user_ref = from_user.as_deref().unwrap_or("");
+                if !re.is_match(from_user_ref) {
+                    return false;
+                }
             }
         }
 
-        // to_regex: test against full To header, fallback to to_user()
+        // to_regex: test against full To header, falling back to to_user()
+        // only when the header did not match (to_user() allocates, so it is
+        // computed lazily).
         if let Some(ref re) = self.to_regex {
             let to_hdr = msg.to_header().unwrap_or("");
-            let to_user = msg.to_user();
-            let to_user_ref = to_user.as_deref().unwrap_or("");
-            if !re.is_match(to_hdr) && !re.is_match(to_user_ref) {
-                return false;
+            if !re.is_match(to_hdr) {
+                let to_user = msg.to_user();
+                let to_user_ref = to_user.as_deref().unwrap_or("");
+                if !re.is_match(to_user_ref) {
+                    return false;
+                }
             }
         }
 
@@ -252,6 +261,49 @@ fn compile_pattern(
     };
 
     RegexBuilder::new(&effective)
+        .case_insensitive(case_insensitive)
+        .dot_matches_new_line(dot_matches_new_line)
+        .size_limit(REGEX_SIZE_LIMIT)
+        .build()
+        .with_context(|| format!("failed to compile pattern '{pattern}'"))
+}
+
+/// Compile a user-provided pattern into a [`regex::bytes::Regex`] for
+/// copy-free matching against raw message bytes.
+///
+/// Identical in options to [`compile_pattern`] (case-insensitivity,
+/// word-boundary wrapping, dot-matches-newline, and the [`REGEX_SIZE_LIMIT`]
+/// ReDoS guard) but targets `&[u8]` haystacks. The payload filter therefore
+/// matches the captured bytes directly instead of a lossy UTF-8 copy: it
+/// allocates nothing per message, and non-UTF-8 payloads (binary bodies)
+/// that lossy conversion would have mangled into U+FFFD replacement
+/// characters now match faithfully.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is invalid regex syntax or exceeds the
+/// size limit.
+///
+/// # Arguments
+///
+/// * `pattern` — user-supplied regex source text.
+/// * `case_insensitive` — compile with case-insensitive matching.
+/// * `word` — wrap the pattern in `\b...\b` for whole-word matching.
+/// * `dot_matches_new_line` — let `.` match `\n` so patterns can span
+///   header lines.
+fn compile_pattern_bytes(
+    pattern: &str,
+    case_insensitive: bool,
+    word: bool,
+    dot_matches_new_line: bool,
+) -> Result<regex::bytes::Regex> {
+    let effective = if word {
+        format!(r"\b{pattern}\b")
+    } else {
+        pattern.to_string()
+    };
+
+    regex::bytes::RegexBuilder::new(&effective)
         .case_insensitive(case_insensitive)
         .dot_matches_new_line(dot_matches_new_line)
         .size_limit(REGEX_SIZE_LIMIT)
@@ -521,6 +573,56 @@ mod tests {
         assert!(!matcher.matches(&msg));
     }
 
+    /// `-c` accepts a canonical uppercase INVITE (pins the case-SENSITIVE
+    /// behavior — the matching half that must keep working).
+    #[test]
+    fn calls_only_accepts_uppercase_invite() {
+        let cli = Cli::parse_from_args(["sipnab", "-c"]);
+        let matcher = SipMatcher::new(&cli, None).expect("should build");
+
+        let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
+        assert!(matcher.matches(&msg));
+    }
+
+    /// `-c` rejects a lowercase `invite` request line. SIP method tokens are
+    /// case-sensitive per RFC 3261 §7.1, so `invite` is NOT an INVITE — it
+    /// parses to `SipMethod::Custom("invite")`. This pins the matcher to the
+    /// same case-sensitive semantics as `SipMethod::parse`.
+    #[test]
+    fn calls_only_rejects_lowercase_invite() {
+        let cli = Cli::parse_from_args(["sipnab", "-c"]);
+        let matcher = SipMatcher::new(&cli, None).expect("should build");
+
+        let raw = build_sip(
+            "invite sip:1002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=lc1",
+                "To: <sip:1002@example.com>",
+                "Call-ID: lowercase-invite@example.com",
+                "CSeq: 1 invite",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        // Sanity: it really is a request whose method is not the INVITE variant.
+        assert!(msg.is_request);
+        assert_ne!(msg.method.as_ref(), Some(&SipMethod::Invite));
+        assert!(
+            !matcher.matches(&msg),
+            "lowercase 'invite' is not INVITE (RFC 3261 §7.1 case-sensitive)"
+        );
+    }
+
     // ── -i case insensitive ──────────────────────────────────────────
 
     /// `-i` makes `--from` match regardless of case.
@@ -647,6 +749,48 @@ mod tests {
 
         let msg = make_test_invite("1001", "1002", "TestUA/1.0", "10.0.0.5");
         assert!(!matcher.matches(&msg));
+    }
+
+    /// A payload pattern targeting a raw non-UTF-8 byte matches the captured
+    /// bytes directly. The old `String::from_utf8_lossy` path replaced the
+    /// stray `0xFF` with U+FFFD, so a byte-literal pattern could never match
+    /// (and `regex::Regex` cannot even compile `(?-u:\xff)` — it may match
+    /// invalid UTF-8). The `regex::bytes` engine both compiles and matches it.
+    #[test]
+    fn payload_regex_matches_non_utf8_byte() {
+        let cli = default_cli();
+        // `(?-u:\xff)` matches the literal byte 0xFF; unavailable on the
+        // Unicode-only str engine the old lossy path used.
+        let matcher = SipMatcher::new(&cli, Some(r"(?-u:\xff)")).expect("should build");
+
+        let raw = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=bin1",
+                "To: <sip:1002@example.com>",
+                "Call-ID: nonutf8-payload@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Type: application/octet-stream",
+                "Content-Length: 1",
+            ],
+            b"\xff",
+        );
+        let msg = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        // Confirm the fixture really carries the non-UTF-8 byte.
+        assert!(msg.raw.contains(&0xffu8));
+        assert!(
+            matcher.matches(&msg),
+            "bytes regex must match a raw 0xFF byte that lossy UTF-8 would mangle"
+        );
     }
 
     // ── -e / --match wiring (sngrep/sipgrep positional match-expression) ──
