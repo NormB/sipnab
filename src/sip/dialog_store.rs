@@ -305,16 +305,16 @@ impl DialogStore {
                 }
                 // Mark as retransmission but store it for ladder display (capped)
                 msg.is_retransmission = true;
+                let ts = msg.timestamp;
                 if dialog.messages.len()
                     < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
                 {
                     dialog.messages.push(msg);
                 }
-                dialog.updated_at = dialog
-                    .messages
-                    .last()
-                    .map(|m| m.timestamp)
-                    .unwrap_or(dialog.updated_at);
+                // Even a dropped (at-cap) retransmission is activity: use the
+                // arriving message's timestamp, not the stored tail's, so a
+                // retransmission flood keeps the dialog out of compact_idle.
+                dialog.updated_at = ts;
                 return;
             }
 
@@ -883,6 +883,41 @@ mod tests {
             last.is_retransmission,
             "retransmission of a compacted-away message must still be flagged"
         );
+    }
+
+    /// A dialog at its per-dialog message cap that keeps receiving
+    /// retransmissions is still ACTIVE: even a dropped retransmission
+    /// must advance `updated_at`, or compact_idle would wrongly treat a
+    /// retransmission-flooded dialog as idle and compact it.
+    #[test]
+    fn capped_retransmission_flood_still_counts_as_active() {
+        let cap = DEFAULT_MAX_MESSAGES_PER_DIALOG;
+        let mut store = store_with_messages("retx-cap", cap);
+        assert_eq!(
+            store.get("retx-cap").unwrap().messages.len(),
+            cap,
+            "dialog must start at the message cap"
+        );
+
+        // Retransmit the initial INVITE at the idle cutoff; at the cap
+        // the message itself is dropped, but it is still traffic.
+        let retx_ts = base_ts() + IDLE_COMPACT_AFTER;
+        store.process_message(make_invite_msg("retx-cap", retx_ts));
+        let d = store.get("retx-cap").unwrap();
+        assert_eq!(d.messages.len(), cap, "capped retransmission is not stored");
+        assert_eq!(
+            d.updated_at, retx_ts,
+            "a dropped retransmission must still advance updated_at"
+        );
+
+        // One second past the ORIGINAL traffic's idle cutoff: the dialog
+        // saw a retransmission 1s ago, so it must not be compacted.
+        let stats = store.compact_idle(idle_now());
+        assert_eq!(
+            stats.dialogs_compacted, 0,
+            "retransmission-flooded dialog is not idle"
+        );
+        assert_eq!(store.get("retx-cap").unwrap().messages.len(), cap);
     }
 
     /// Evictions from compaction sweeps accumulate into the lifetime

@@ -68,8 +68,11 @@ pub struct StirShakenInfo {
     pub attestation: Attestation,
     /// Originating telephone number from `orig.tn`.
     pub orig_tn: Option<String>,
-    /// Destination telephone number(s) from `dest.tn`.
-    pub dest_tn: Option<String>,
+    /// Destination telephone numbers from `dest.tn` (RFC 8225 Section 5.2.1
+    /// allows several; empty when the claim is absent).
+    pub dest_tn: Vec<String>,
+    /// Destination URIs from `dest.uri` (empty when the claim is absent).
+    pub dest_uri: Vec<String>,
     /// Origination identifier (UUID) from `origid`.
     pub orig_id: Option<String>,
     /// Issued-at timestamp (Unix epoch seconds) from `iat`.
@@ -87,12 +90,16 @@ struct OrigClaim {
     tn: Option<String>,
 }
 
-/// Intermediate struct for the `dest` claim which contains an array of `tn`.
+/// Intermediate struct for the `dest` claim which contains arrays of `tn`
+/// and/or `uri` (RFC 8225 Section 5.2.1).
 #[derive(Deserialize)]
 struct DestClaim {
     /// Destination telephone numbers (empty when absent).
     #[serde(default)]
     tn: Vec<String>,
+    /// Destination URIs (empty when absent).
+    #[serde(default)]
+    uri: Vec<String>,
 }
 
 /// The JWT payload claims relevant to STIR/SHAKEN.
@@ -168,7 +175,7 @@ pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
     };
 
     let orig_tn = claims.orig.and_then(|o| o.tn);
-    let dest_tn = claims.dest.and_then(|d| d.tn.into_iter().next());
+    let (dest_tn, dest_uri) = claims.dest.map(|d| (d.tn, d.uri)).unwrap_or_default();
 
     // RFC 8224 Section 4.4: the `iat` claim must be within 60 seconds of
     // the current time. If it is stale (or too far in the future), mark
@@ -190,10 +197,27 @@ pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
         attestation,
         orig_tn,
         dest_tn,
+        dest_uri,
         orig_id: claims.origid,
         iat: claims.iat,
         verified,
     })
+}
+
+impl StirShakenInfo {
+    /// All destinations (TNs then URIs) joined with commas for display;
+    /// `"-"` when the `dest` claim carried none.
+    pub fn dest_display(&self) -> String {
+        if self.dest_tn.is_empty() && self.dest_uri.is_empty() {
+            return "-".to_string();
+        }
+        self.dest_tn
+            .iter()
+            .chain(&self.dest_uri)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }
 
 // ── SipMessage extension ─────────────────────────────────────────────
@@ -249,7 +273,7 @@ mod tests {
 
         assert_eq!(info.attestation, Attestation::A);
         assert_eq!(info.orig_tn.as_deref(), Some("12125559876"));
-        assert_eq!(info.dest_tn.as_deref(), Some("12025551234"));
+        assert_eq!(info.dest_tn, ["12025551234"]);
         assert_eq!(
             info.orig_id.as_deref(),
             Some("550e8400-e29b-41d4-a716-446655440000")
@@ -257,6 +281,53 @@ mod tests {
         assert_eq!(info.iat, Some(1_700_000_000));
         // iat is from 2023 — well beyond the 60s freshness window
         assert_eq!(info.verified, VerificationStatus::Expired);
+    }
+
+    /// A dest claim with multiple `tn` entries (RFC 8225 Section 5.2.1)
+    /// retains every destination, not just the first.
+    #[test]
+    fn parse_multiple_dest_tns_all_retained() {
+        let payload = r#"{
+            "attest": "A",
+            "dest": {"tn": ["12025551000", "12025551001", "12025551002"]},
+            "iat": 1700000000,
+            "orig": {"tn": "12125559876"}
+        }"#;
+        let header = build_identity_header(payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert_eq!(
+            info.dest_tn,
+            ["12025551000", "12025551001", "12025551002"],
+            "every dest.tn entry must be retained"
+        );
+        assert!(info.dest_uri.is_empty());
+        assert_eq!(info.dest_display(), "12025551000,12025551001,12025551002");
+    }
+
+    /// A dest claim carrying `uri` entries (allowed alongside or instead of
+    /// `tn` per RFC 8225 Section 5.2.1) retains every URI.
+    #[test]
+    fn parse_dest_uris_all_retained() {
+        let payload = r#"{
+            "attest": "A",
+            "dest": {"tn": ["12025551000"], "uri": ["sip:bob@example.com", "sip:carol@example.net"]},
+            "iat": 1700000000,
+            "orig": {"tn": "12125559876"}
+        }"#;
+        let header = build_identity_header(payload);
+        let info = parse_identity_header(&header).expect("should parse");
+
+        assert_eq!(info.dest_tn, ["12025551000"]);
+        assert_eq!(
+            info.dest_uri,
+            ["sip:bob@example.com", "sip:carol@example.net"],
+            "every dest.uri entry must be retained"
+        );
+        assert_eq!(
+            info.dest_display(),
+            "12025551000,sip:bob@example.com,sip:carol@example.net"
+        );
     }
 
     /// `"attest": "B"` maps to Attestation::B.
@@ -340,7 +411,9 @@ mod tests {
 
         assert_eq!(info.attestation, Attestation::Unknown);
         assert!(info.orig_tn.is_none());
-        assert!(info.dest_tn.is_none());
+        assert!(info.dest_tn.is_empty());
+        assert!(info.dest_uri.is_empty());
+        assert_eq!(info.dest_display(), "-");
         assert!(info.orig_id.is_none());
         assert!(info.iat.is_none());
     }

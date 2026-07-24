@@ -25,6 +25,8 @@ pub struct SdpExchange {
     pub media_port: Option<u16>,
     /// Stream directionality: `"sendrecv"`, `"sendonly"`, `"recvonly"`, or `"inactive"`.
     pub mode: String,
+    /// Whether the first media description is T.38 fax (`m=image`).
+    pub is_t38: bool,
     /// Detected mid-call event, if any, compared to the previous exchange.
     pub event: Option<SdpEvent>,
 }
@@ -95,6 +97,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         media_addr,
         media_port,
         mode,
+        is_t38,
         event,
     });
 }
@@ -126,6 +129,7 @@ pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
         media_addr: None,
         media_port: None,
         mode: "transfer".to_string(),
+        is_t38: false,
         event: Some(SdpEvent::Transfer { target }),
     });
 }
@@ -214,13 +218,11 @@ fn detect_event(
 ) -> Option<SdpEvent> {
     let prev = timeline.last()?;
 
-    // T.38 switch takes priority
-    if is_t38 {
-        // Only emit if previous was not already T.38
-        let prev_not_t38 = prev.event.as_ref() != Some(&SdpEvent::T38Switch);
-        if prev_not_t38 {
-            return Some(SdpEvent::T38Switch);
-        }
+    // T.38 switch takes priority. Compare against the previous exchange's
+    // media *state*, not its event: repeated T.38 re-INVITEs (session
+    // refresh) leave `prev.event` as None, which must not re-trigger.
+    if is_t38 && !prev.is_t38 {
+        return Some(SdpEvent::T38Switch);
     }
 
     // Hold detection: was sendrecv, now sendonly or inactive
@@ -488,6 +490,81 @@ mod tests {
 
         assert_eq!(timeline.len(), 2);
         assert_eq!(timeline[1].event, Some(SdpEvent::T38Switch));
+    }
+
+    /// Repeated T.38 re-INVITE offer/answer exchanges (e.g. session refresh
+    /// while faxing) emit T38Switch exactly once, at the audio→T.38 transition.
+    #[test]
+    fn repeated_t38_reinvites_emit_single_switch() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+
+        // Initial audio offer/answer
+        let audio = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
+        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0));
+        track_sdp(
+            &mut timeline,
+            &make_200_with_sdp(&audio, t0 + TimeDelta::seconds(1)),
+        );
+
+        // Three consecutive T.38 offer/answer exchanges
+        let t38 = t38_sdp("10.0.0.1", 20000);
+        for i in 0..3 {
+            let ts = t0 + TimeDelta::seconds(10 * (i + 1));
+            track_sdp(&mut timeline, &make_invite_with_sdp(&t38, ts));
+            track_sdp(
+                &mut timeline,
+                &make_200_with_sdp(&t38, ts + TimeDelta::seconds(1)),
+            );
+        }
+
+        let switches = timeline
+            .iter()
+            .filter(|e| e.event == Some(SdpEvent::T38Switch))
+            .count();
+        assert_eq!(
+            switches,
+            1,
+            "T38Switch must fire once for a call that stays in T.38, got timeline {:?}",
+            timeline.iter().map(|e| &e.event).collect::<Vec<_>>()
+        );
+    }
+
+    /// A genuine T.38 → audio → T.38 sequence emits a new T38Switch for the
+    /// second audio→T.38 transition.
+    #[test]
+    fn t38_after_return_to_audio_emits_new_switch() {
+        let mut timeline = Vec::new();
+        let t0 = base_ts();
+
+        let audio = sendrecv_sdp("PCMU", "10.0.0.1", 20000);
+        let t38 = t38_sdp("10.0.0.1", 20000);
+
+        track_sdp(&mut timeline, &make_invite_with_sdp(&audio, t0));
+        track_sdp(
+            &mut timeline,
+            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(10)),
+        );
+        track_sdp(
+            &mut timeline,
+            &make_invite_with_sdp(&audio, t0 + TimeDelta::seconds(20)),
+        );
+        track_sdp(
+            &mut timeline,
+            &make_invite_with_sdp(&t38, t0 + TimeDelta::seconds(30)),
+        );
+
+        assert_eq!(timeline[1].event, Some(SdpEvent::T38Switch));
+        assert_ne!(
+            timeline[2].event,
+            Some(SdpEvent::T38Switch),
+            "returning to audio is not a T.38 switch"
+        );
+        assert_eq!(
+            timeline[3].event,
+            Some(SdpEvent::T38Switch),
+            "second audio→T.38 transition must emit a new switch"
+        );
     }
 
     /// A port change with identical codec/mode is a MediaAnchorChange.
