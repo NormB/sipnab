@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Verify that the WASM JS bindings export all required functions.
 //!
 //! This test reads the generated sipnab.js file and checks that every

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Behavioral coverage for CLI flags that were in the T6.2 `KNOWN_UNTESTED`
 //! debt baseline (verification plan M6 burn-down). Each test exercises the
 //! flag's real effect, not just its name.

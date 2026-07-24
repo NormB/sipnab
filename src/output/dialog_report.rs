@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Tabular dialog summary report.
 //!
 //! Generates a text-based summary table of SIP dialogs and associated

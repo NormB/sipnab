@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Scanner kill — SIP response construction for active scanner countermeasures.
 //!
 //! Builds minimal valid SIP responses to send back to detected scanners.

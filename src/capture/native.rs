@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Native-only capture surface: live device / pcap-file / HEP sources and
 //! the capture-thread orchestration.
 //!

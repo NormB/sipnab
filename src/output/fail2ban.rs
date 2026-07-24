@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fail2ban-compatible log output for security events.
 //!
 //! Generates log lines that can be parsed by fail2ban filter rules to

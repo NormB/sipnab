@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Documented config-sample validation (verification plan M-Docs — MD.4).
 //!
 //! Every ```toml fenced block in `docs/config-reference.md` is a configuration

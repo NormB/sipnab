@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTP stream detail view — full quality metrics for a single stream:
 //! header, quality summary, MOS/jitter sparklines, per-interval table,
 //! burst/gap analysis and silence detection.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Transports for the MCP server.
 //!
 //! Stdio mode wires the JSON-RPC stream over `stdin`/`stdout`. HTTP mode

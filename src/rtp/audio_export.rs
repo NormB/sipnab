@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Audio export from RTP streams to WAV files.
 //!
 //! Decodes G.711 (PCMU/PCMA) and Opus RTP payload buffers into 16-bit

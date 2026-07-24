@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTP/RTCP stream analysis, quality metrics, and audio export.
 //!
 //! This module provides RTP and RTCP packet parsing, stream lifecycle

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Rule-based alerting engine with cooldowns and external command execution.
 //!
 //! The alerting engine evaluates named rules with threshold/window/cooldown

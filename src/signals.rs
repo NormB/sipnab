@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Signal handling for sipnab.
 //!
 //! Installs handlers for SIGINT, SIGTERM (graceful shutdown) and SIGUSR1

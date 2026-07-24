@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! TOML configuration file loading with cascading search paths.
 //!
 //! Supports TOML configuration with cascading file search:

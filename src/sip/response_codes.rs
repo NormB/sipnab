@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP response code explanations.
 //!
 //! Provides human-readable descriptions and common causes for SIP response

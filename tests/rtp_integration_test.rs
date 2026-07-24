@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for the full RTP pipeline.
 //!
 //! These tests exercise RTP detection, parsing, stream tracking, quality

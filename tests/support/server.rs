@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! REST API spawn harness (verification plan M3 — T3.1).
 //!
 //! Spawns a real `sipnab --api 127.0.0.1:0` process against the canonical

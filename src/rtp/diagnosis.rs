@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Media path diagnosis for RTP streams.
 //!
 //! Analyzes RTP streams associated with a SIP dialog to detect common

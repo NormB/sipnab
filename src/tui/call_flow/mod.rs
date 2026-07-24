@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Call flow ladder diagram view.
 //!
 //! Renders a classic SIP ladder diagram for a single dialog, showing

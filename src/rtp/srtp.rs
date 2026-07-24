@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SRTP key extraction from SDP and manual key file parsing.
 //!
 //! Extracts SRTP master key and salt material from SDP `a=crypto` attributes

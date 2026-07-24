@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RSA private-key loading for TLS 1.2 RSA-key-exchange decryption.
 //!
 //! Loads a PEM-encoded RSA private key (PKCS#1 `RSA PRIVATE KEY` or PKCS#8

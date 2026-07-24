@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Per-packet protocol routing: the testable core of the capture
 //! pipeline.
 //!

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for configuration file loading.
 //!
 //! Spawns the real binary with `--dump-config` to verify config discovery:

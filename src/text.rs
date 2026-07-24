@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Small UTF-8 text helpers shared across output and TUI code.
 //!
 //! Byte-offset arithmetic (display truncation, cursor math, payload limits)

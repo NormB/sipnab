@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The three sngrep-style status lines and the context-sensitive
 //! F-key bar.
 

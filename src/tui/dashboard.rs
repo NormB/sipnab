@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Aggregation core for the live call-quality dashboard.
 //!
 //! Pure data layer: ranks every tracked RTP stream by current MOS and

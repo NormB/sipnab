@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Advanced RTP quality metrics.
 //!
 //! Extends sipnab's basic jitter/loss tracking with:

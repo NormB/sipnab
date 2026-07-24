@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Bootstrap planning must be a pure, unit-testable Cli+Config → RunPlan
 //! mapping (WS2c): given these arguments and this config, the plan is X —
 //! no process exits buried in main(), no CLI-only coverage.

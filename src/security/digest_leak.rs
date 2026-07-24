@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Digest authentication vulnerability detection.
 //!
 //! Analyzes SIP 401/407 challenges and Authorization/Proxy-Authorization

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Security regression tests for the sipnab security audit.
 //!
 //! Each test validates that a specific audit finding is fixed and cannot

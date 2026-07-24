@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Event exec hooks for triggering external commands.
 //!
 //! Fires shell commands when dialog state changes or RTP quality degrades

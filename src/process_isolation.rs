@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Process isolation for dangerous operations (D16).
 //!
 //! Provides thread-based isolation for scanner-kill and API operations.

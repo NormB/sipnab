@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Resource-exhaustion bounds: a remote attacker who invents unlimited
 //! unique Call-IDs (dialog table) or SSRCs (RTP stream table) must not
 //! be able to grow sipnab's memory without bound. Both stores cap +

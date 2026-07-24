@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP message type and header accessors.
 //!
 //! [`SipMessage`] holds a fully parsed SIP message with all headers extracted

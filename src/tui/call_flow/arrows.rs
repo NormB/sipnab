@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Arrow formatting for call flow ladder diagrams.
 //!
 //! Provides the unified `format_arrow` function that draws arrows between

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end REST API signed-token auth tests.
 //!
 //! Spawns a real `sipnab --api` process configured with an HMAC signing key

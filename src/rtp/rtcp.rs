@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RTCP packet parser (RFC 3550).
 //!
 //! Parses compound RTCP packets from a single UDP payload. Handles

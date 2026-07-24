@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Registration flood detection.
 //!
 //! Tracks REGISTER request rates and authentication failure rates per source

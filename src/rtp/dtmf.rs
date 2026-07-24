@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! RFC 4733 telephone-event (DTMF) extraction.
 //!
 //! Decodes DTMF digits carried as RTP telephone-event payloads rather

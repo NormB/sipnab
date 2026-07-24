@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIPREC metadata parsing (RFC 7866).
 //!
 //! Parses multipart/mixed SIP bodies to extract recording metadata

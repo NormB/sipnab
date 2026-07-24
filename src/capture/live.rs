@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Live network device capture.
 //!
 //! Opens a pcap handle on a network interface in promiscuous mode and sends

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! CLI golden tests (verification plan M1 — T1.4; M2 — T2.1–T2.11).
 //!
 //! Declarative process snapshots via `trycmd`, in two case groups:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Raw IPv4/IPv6 UDP datagram construction for source-spoofed scanner-kill
 //! responses.
 //!

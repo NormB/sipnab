@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! sipnab audio playback plugin.
 //!
 //! This crate is built as a `cdylib` (`libsipnab_audio.so` on Linux,

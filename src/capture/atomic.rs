@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Atomic file writes — the Wireshark "safe save" pattern.
 //!
 //! Write to a temporary file in the *destination directory*, fsync it, then

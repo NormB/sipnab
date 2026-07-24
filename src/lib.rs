@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! sipnab — SIP & RTP capture, analysis, and security library.
 //!
 //! Provides zero-copy SIP parsing, RTP quality metrics (MOS, jitter, loss),

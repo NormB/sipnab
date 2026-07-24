@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Application layer (WS2): the testable seams between the CLI binary and
 //! the library — companion-server startup, batch running, and bootstrap
 //! planning. `main.rs` should only parse arguments, build a plan, and

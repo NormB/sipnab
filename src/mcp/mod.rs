@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Model Context Protocol (MCP) server mode for sipnab.
 //!
 //! This module exposes sipnab's read-only analysis surface (dialogs, streams,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Feature-gate UX: a flag whose subsystem is not compiled in must fail fast
 //! with a clear error and exit code 2 — never degrade into a silent no-op.
 //! These tests run the real binary, so they exercise the same path a user

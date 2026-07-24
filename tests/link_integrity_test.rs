@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Static link-integrity / journey guards for BOTH documentation trees:
 //!
 //! - `website/content/docs/*.md` — Zola content. Internal links use the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Guards documentation against drift: every `--flag` README.md advertises
 //! must actually exist in the CLI (clap) definition.
 //!

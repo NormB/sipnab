@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Prometheus `/metrics` scrape tests (verification plan M3 — T3.4).
 //!
 //! Spawns the API against an RTP fixture (so RTP/MOS/jitter metrics are

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Key handling for the live call-quality dashboard view.
 
 use crate::tui::*;

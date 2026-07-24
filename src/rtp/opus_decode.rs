@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Opus audio codec decoder for RTP payloads.
 //!
 //! Uses the pure-Rust `opus-decoder` crate (RFC 8251 conformant, no FFI)

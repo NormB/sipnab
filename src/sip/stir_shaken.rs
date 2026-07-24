@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! STIR/SHAKEN Identity header parsing.
 //!
 //! Parses the SIP `Identity` header defined by RFC 8224 / ATIS-1000074.

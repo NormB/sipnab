@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Key handling for the call list view, its column selector and the
 //! clear-calls actions.
 

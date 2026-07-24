@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! WAV file writer (RIFF/WAVE PCM format).
 //!
 //! Writes 16-bit linear PCM WAV files with standard 44-byte headers.

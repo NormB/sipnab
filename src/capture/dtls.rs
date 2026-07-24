@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! DTLS-SRTP key extraction (RFC 5764).
 //!
 //! For SRTP keyed via DTLS-SRTP, the SRTP master keys are not on the wire — they

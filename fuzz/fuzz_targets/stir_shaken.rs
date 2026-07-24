@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fuzz the STIR/SHAKEN `Identity` header parser — decodes an attacker-
 //! supplied JWT-style header value. Any UTF-8 input must parse or error
 //! cleanly, never panic.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Batch (non-interactive) mode: the state and receive loop behind every
 //! headless run (`--no-tui`, `--mcp`, replay, `--cores`).
 //!

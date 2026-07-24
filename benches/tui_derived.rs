@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Per-frame derived-data benchmarks for the TUI (WS4.3).
 //!
 //! The CallList view recomputes its derived data every frame; `search_frame`

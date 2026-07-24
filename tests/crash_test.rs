@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end crash-handling tests: spawn the real binary with
 //! `--panic-selftest` and verify the `[crash]` policy — report file,
 //! backtrace content, and the exit-vs-core decision.

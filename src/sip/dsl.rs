@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Filter DSL expression parser and evaluator.
 //!
 //! Provides a declarative, non-Turing-complete filter language for matching

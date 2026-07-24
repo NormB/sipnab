@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SDP (Session Description Protocol) parser for SIP message bodies.
 //!
 //! Parses RFC 4566 SDP session descriptions extracted from SIP message

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Cross-surface consistency for the canonical dialog/stream summaries.
 //!
 //! Guards against the projection drift that shipped before WS3 (see

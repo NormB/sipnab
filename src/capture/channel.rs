@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Auto-grow, capped packet channel for the capture → processing pipeline.
 //!
 //! Replaces a fixed `crossbeam_channel::bounded(N)` (which preallocates its ring

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! End-to-end HTTP MCP signed-token auth tests.
 //!
 //! Spawns `sipnab --mcp --mcp-transport http` configured with an HMAC signing

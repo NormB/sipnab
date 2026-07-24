@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Criterion benchmarks for the SIP/RTP/SDP/DSL parsers and packet decap.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};

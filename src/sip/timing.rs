@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Transaction timing measurement for SIP dialogs.
 //!
 //! Tracks timestamps at each signaling milestone (INVITE sent, 100 Trying,

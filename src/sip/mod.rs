@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! SIP protocol parsing, dialog state tracking, and filter DSL.
 //!
 //! Provides zero-copy SIP message parsing, lazy header extraction,

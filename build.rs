@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Build script: embeds git/version metadata for `sipnab --version`.
 
 use std::path::Path;

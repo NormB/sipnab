@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Companion-server startup: REST API, MCP stdio, and MCP HTTP.
 //!
 //! Every enabled async server runs on ONE background thread driving ONE

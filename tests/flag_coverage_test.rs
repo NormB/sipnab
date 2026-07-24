@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! "No untested flag" governance gate (verification plan M6 — T6.2).
 //!
 //! Operationalizes the spec §15 mandate ("a new CLI flag cannot ship

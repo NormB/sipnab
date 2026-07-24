@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The structured filter dialog popup.
 
 use crate::tui::*;

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Throughput benchmarks for the per-packet store layer
 //! (`DialogStore`, `StreamStore`).
 //!

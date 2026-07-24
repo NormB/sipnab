@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! One-shot binary to generate test fixture pcap files.
 //!
 //! Run with: cargo run --bin gen_fixture

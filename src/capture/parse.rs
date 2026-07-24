@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Network header parsing for raw captured packets.
 //!
 //! Parses raw packet bytes through the link, network, and transport layers

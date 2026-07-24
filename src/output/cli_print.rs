@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! sipgrep-style colored terminal output for SIP messages.
 //!
 //! Formats SIP messages with ANSI color codes for method-based highlighting,

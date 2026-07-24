@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Modal popup rendering: save, name-address, file-open (browser +
 //! manual path), filter and settings dialogs.
 

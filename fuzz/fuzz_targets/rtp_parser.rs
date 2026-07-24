@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Fuzz the RTP header parser — a network-facing decoder. Arbitrary bytes
 //! must be rejected or parsed into a header without panicking or reading past
 //! the input (CSRC/extension length fields must be bounds-checked).

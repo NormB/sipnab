@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Integration tests for CLI argument parsing.
 //!
 //! Smoke-level checks that spawn the real `sipnab` binary: `--version` works,
