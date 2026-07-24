@@ -2,7 +2,7 @@
 
 All notable changes to sipnab will be documented in this file.
 
-## [Unreleased]
+## [0.5.30] - 2026-07-24
 
 ### Changed
 - The standalone Prometheus `/metrics` server now has its own `metrics`
