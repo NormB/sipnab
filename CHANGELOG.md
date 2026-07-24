@@ -2,6 +2,37 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.34] - 2026-07-24
+
+### Added
+- TUI HTML export is now fully self-contained (no CDN): the Mermaid
+  source is embedded in a copyable block with offline render
+  instructions and an inline Copy button.
+
+### Changed
+- P2 TUI wave (26 items): display-width correctness across the call-flow
+  ladder, arrows, and status lines (CJK/emoji, non-ASCII filenames);
+  narrow-terminal underflow guards; an LCS message diff (a single
+  inserted header highlights only that line); wrapped-row search-match
+  scrolling; centered dashboard scroll; blank save-path rejection; F9
+  clears filter+search consistently in both views; and efficiency work
+  (no per-frame view/popup clones, ref-sorted merged ladder, HashSet
+  clear_calls, cached wheel/flow counts, visible-only cell builds,
+  single SDP parse, O(n^2)->O(n) retransmit folding, bounded
+  sparklines). All buffer-then-write exporters are now atomic, so a
+  failed export can't clobber a good file; NDJSON uses the canonical
+  msg_count field. The call timeline is documented as an intentionally
+  static single-screen view.
+- Developer tooling: the pre-commit hook derives the homepage test count
+  from its single validated test run (fixing an intermittent
+  partial-count false failure), and CI reclaims runner disk before heavy
+  Linux builds to avoid "No space left on device".
+
+### Fixed
+- SIP: update_invite_state matches the exact `terminated`
+  Subscription-State token (RFC 6665 8.4), so `terminatedfoo` no longer
+  ends a transfer (twin of the 0.5.33 timing.rs fix).
+
 ## [0.5.33] - 2026-07-24
 
 ### Changed
