@@ -6,34 +6,22 @@
 //! user checking a specific call must be able to trust the exit code).
 #![cfg(feature = "native")]
 
-use std::process::Command;
+#[path = "support/run.rs"]
+mod run_support;
 
 /// Crate-root-relative path to the 7-message SIP call fixture.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
-/// Runs the `sipnab` binary from the crate root with quiet logs and no color.
+/// Runs the `sipnab` binary from the crate root under the shared test baseline
+/// (see [`run_support::run`]) with quiet logs (`SIPNAB_LOG=error`).
 ///
 /// # Arguments
 /// * `args` — CLI arguments to pass.
 ///
 /// # Returns
 /// `(stdout, stderr, exit_code)` of the finished process.
-///
-/// # Side effects
-/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .env("SIPNAB_LOG", "error")
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.code(),
-    )
+    run_support::run(args, Some("error"))
 }
 
 /// --json-pretty was byte-identical to --json on the message stream; it must

@@ -279,7 +279,7 @@ Tiers:
 - [x] tests/api_test.rs:169 — [weak-assertion] limiter can't be exhausted; sequential 200s only. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/integration_test.rs:257 — [environment-dependence] accepts exit 0|1 by capture permissions. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/wasm_exports_test.rs:10 — [silent-skip] silently never runs if wasm build absent. **Done (P4 test-quality wave, 2026-07-24).**
-- [ ] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate.
+- [x] eight binary-spawn run() helpers — [duplicated-fixture] inconsistent env across cli/config/output/integration test crates; tests/support candidate. **Done:** consolidated into `tests/support/run.rs` with a documented env baseline (cwd=MANIFEST_DIR, NO_COLOR=1, explicit SIPNAB_LOG per caller — fixing cli_help's shell-inherited log); 5 files migrated (pipeline_test's run() was a trait-method false positive). Also gated security_test's counting-allocator block behind `feature=api` (its only consumer) to fix reduced-feature builds.
 - [x] spawn_http/post_status/shutdown — [duplicated-fixture] triplicated across mcp token/http tests. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] fuzz_corpus_replay.rs:131 / smoke_fuzz_test.rs:20 — [duplicated-fixture] two independent xorshift Rng+mutate impls. **Done (P4 test-quality wave, 2026-07-24).**
 - [x] tests/mockup_alignment_test.rs — [heuristic-limit] lifeline reference = most-pipes line; misaligned reference flags everything else. **Done (P4 test-quality wave, 2026-07-24).**

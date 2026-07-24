@@ -5,30 +5,20 @@
 //! and --completions must emit a usable shell completion script.
 #![cfg(feature = "native")]
 
-use std::process::Command;
+#[path = "support/run.rs"]
+mod run_support;
 
-/// Runs the `sipnab` binary from the crate root with color disabled.
+/// Runs the `sipnab` binary from the crate root under the shared test baseline
+/// (see [`run_support::run`]); this surface asserts only on stdout and exit
+/// codes, so it leaves `SIPNAB_LOG` unset (`None`).
 ///
 /// # Arguments
 /// * `args` — CLI arguments to pass.
 ///
 /// # Returns
 /// `(stdout, stderr, exit_code)` of the finished process.
-///
-/// # Side effects
-/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, Option<i32>) {
-    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.code(),
-    )
+    run_support::run(args, None)
 }
 
 /// --help must render section headings, not one flat Options: wall.

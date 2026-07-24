@@ -8,7 +8,9 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+
+#[path = "support/run.rs"]
+mod run_support;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -20,21 +22,14 @@ fn sip_call_fixture() -> PathBuf {
         .join("sip_call.pcap")
 }
 
-/// Run sipnab with the given arguments and return (stdout, stderr, exit_code).
+/// Run sipnab under the shared test baseline (see [`run_support::run`]) with
+/// `SIPNAB_LOG=warn`, mapping the exit code to `i32` (`-1` on signal death).
 ///
 /// # Side effects
-/// Spawns the compiled `sipnab` binary as a subprocess with `SIPNAB_LOG=warn`.
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> (String, String, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(args)
-        .env("SIPNAB_LOG", "warn")
-        .output()
-        .expect("failed to execute sipnab");
-    (
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-        output.status.code().unwrap_or(-1),
-    )
+    let (stdout, stderr, code) = run_support::run(args, Some("warn"));
+    (stdout, stderr, code.unwrap_or(-1))
 }
 
 /// Write a temporary config file and return its path (kept alive by the tempdir).
