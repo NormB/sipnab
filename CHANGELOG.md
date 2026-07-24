@@ -2,6 +2,33 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.37] - 2026-07-24
+
+### Added
+- **Packet loss map** (P5.1): a new Stream Loss Map view (key `L` from
+  Stream Detail and the Quality Dashboard) showing WHERE RTP loss
+  occurred across a stream's retained sequence window as a density
+  strip, so bursty loss (a dark cluster) is distinguishable from diffuse
+  loss (scattered specks) at a glance — with a summary header (loss %,
+  burst count and pattern) and a sequence axis.
+
+### Changed
+- P4 test-quality tier (36 items): strengthened weak/vacuous assertions
+  into ones that fail on regression (each mutation-checked), made flaky
+  patterns deterministic (event-based E2E waits, synchronizing drop
+  events instead of fixed sleeps, poll-based token rotation, serial_test
+  for env-mutating tests), fixed test hygiene (tempdir guards,
+  failure-only diagnostics, loud fixture-missing/wasm-absent failures),
+  and consolidated duplicated fixtures into shared tests/support modules
+  (run helpers, spawn_http, xorshift Rng, TUI fixture builders).
+
+### Fixed
+- The new docs-drift guard for website MCP examples caught 17
+  invocations missing `-N`/`--no-tui` (copy-paste would fail) — fixed.
+- Restored `--api-max-conn` test coverage lost in a test refactor, and
+  gated security_test's counting allocator to the `api` feature so
+  reduced-feature CI builds compile.
+
 ## [0.5.36] - 2026-07-24
 
 ### Changed
