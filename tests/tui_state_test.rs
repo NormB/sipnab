@@ -3589,9 +3589,19 @@ mod tui_state {
             "Expected status message after Mermaid export"
         );
         let msg = status.unwrap();
+        // The status may be the synchronous "Copying … to clipboard…" or,
+        // if the detached clipboard worker has already reported back through
+        // the async drain, its outcome ("Copied N bytes (OSC 52)" /
+        // "Clipboard error: …"). Both are valid export statuses; accept any
+        // so the assertion isn't racing the worker (llvm-cov timing exposed
+        // this).
+        let lower = msg.to_lowercase();
         assert!(
-            msg.contains("clipboard") || msg.contains("Clipboard") || msg.contains("Mermaid"),
-            "Expected clipboard or Mermaid in status: {msg}"
+            lower.contains("clipboard")
+                || lower.contains("mermaid")
+                || lower.contains("osc 52")
+                || lower.contains("copied"),
+            "Expected a clipboard/Mermaid export status: {msg}"
         );
     }
 
