@@ -108,9 +108,9 @@ enum Field {
     SrcIp,
     /// `dst.ip` — destination IP of the initial message.
     DstIp,
-    /// `src.port` — source port of the first stored message.
+    /// `src.port` — source port of the initial message.
     SrcPort,
-    /// `dst.port` — destination port of the first stored message.
+    /// `dst.port` — destination port of the initial message.
     DstPort,
     /// `state` — current dialog state name (e.g. `'InCall'`).
     State,
@@ -962,16 +962,11 @@ fn eval_compare(
         }
 
         // ── Numeric fields ─────────────────────────────────────────
-        Field::SrcPort => compare_num(
-            f64::from(dialog.messages.first().map_or(0, |m| m.src_port)),
-            op,
-            value,
-        ),
-        Field::DstPort => compare_num(
-            f64::from(dialog.messages.first().map_or(0, |m| m.dst_port)),
-            op,
-            value,
-        ),
+        // Ports come from the dialog's captured initial-message values,
+        // not messages.first(): compact_idle drains oldest messages, so
+        // "first" can be a later (direction-reversed) message.
+        Field::SrcPort => compare_num(f64::from(dialog.src_port), op, value),
+        Field::DstPort => compare_num(f64::from(dialog.dst_port), op, value),
         Field::Duration => {
             let dur = (dialog.updated_at - dialog.created_at).num_milliseconds() as f64 / 1000.0;
             compare_num(dur, op, value)
@@ -1058,8 +1053,16 @@ fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
     }
 }
 
+/// Equality tolerance for numeric fields: every field is either integral
+/// (ports, counts, packets) or millisecond-derived (duration/pdd/setup in
+/// seconds, jitter in ms, MOS/loss quoted to ≥0.1), so half the finest
+/// domain step (0.5 ms = 5e-4) absorbs float-computation noise while
+/// keeping adjacent domain values distinct; `f64::EPSILON` was
+/// effectively exact-match for any value ≥ 2.
+const NUM_EQ_TOLERANCE: f64 = 5e-4;
+
 /// Compare a numeric field value `field_val` against the filter value.
-/// `==`/`!=` use an absolute `f64::EPSILON` tolerance; `=~` and
+/// `==`/`!=` use the absolute [`NUM_EQ_TOLERANCE`]; `=~` and
 /// non-numeric literals return `false`.
 fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
     let rhs = match value {
@@ -1067,8 +1070,8 @@ fn compare_num(field_val: f64, op: &Operator, value: &Value) -> bool {
         _ => return false,
     };
     match op {
-        Operator::Eq => (field_val - rhs).abs() < f64::EPSILON,
-        Operator::Ne => (field_val - rhs).abs() >= f64::EPSILON,
+        Operator::Eq => (field_val - rhs).abs() < NUM_EQ_TOLERANCE,
+        Operator::Ne => (field_val - rhs).abs() >= NUM_EQ_TOLERANCE,
         Operator::Lt => field_val < rhs,
         Operator::Gt => field_val > rhs,
         Operator::Le => field_val <= rhs,
@@ -1971,6 +1974,98 @@ mod tests {
     fn compare_num_type_mismatch_is_false() {
         assert!(!compare_num(3.0, &Operator::Eq, &Value::Str("3".into())));
         assert!(!compare_num(3.0, &Operator::Lt, &Value::Bool(false)));
+    }
+
+    /// Equality tolerates float-computation noise (a computed 5.0000001
+    /// equals a literal 5) but still rejects genuinely different values;
+    /// `!=` mirrors `==` exactly.
+    #[test]
+    fn compare_num_eq_tolerates_computed_float_noise() {
+        assert!(compare_num(5.000_000_1, &Operator::Eq, &Value::Num(5.0)));
+        assert!(!compare_num(5.000_000_1, &Operator::Ne, &Value::Num(5.0)));
+        assert!(!compare_num(5.6, &Operator::Eq, &Value::Num(5.0)));
+        assert!(compare_num(5.6, &Operator::Ne, &Value::Num(5.0)));
+        // Adjacent millisecond-domain values stay distinct.
+        assert!(!compare_num(5.001, &Operator::Eq, &Value::Num(5.0)));
+    }
+
+    /// `rtp.jitter == 30` matches a stream whose computed jitter carries
+    /// float noise (30 + 1e-7) — end-to-end through eval_compare.
+    #[test]
+    fn rtp_jitter_eq_matches_computed_float() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        let mut stream = make_rtp_stream(false);
+        stream.jitter = 30.0 + 1e-7;
+        let streams: Vec<&RtpStream> = vec![&stream];
+        let f = FilterExpr::parse("rtp.jitter == 30").expect("parse");
+        assert!(f.matches_dialog(&dialog, &streams));
+        stream.jitter = 30.6;
+        let streams: Vec<&RtpStream> = vec![&stream];
+        assert!(!f.matches_dialog(&dialog, &streams));
+    }
+
+    // ── src.port/dst.port: stable across idle compaction ────────────────
+
+    /// After compaction drains the dialog's oldest messages (as
+    /// DialogStore::compact_idle does), `src.port`/`dst.port` must still
+    /// evaluate to the initial message's ports — not the ports of whatever
+    /// message happens to be first now (a response has them swapped).
+    #[test]
+    fn src_dst_port_stable_after_compaction() {
+        let invite = build_sip(
+            "INVITE sip:2002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>",
+                "Call-ID: port-stability@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let msg = parse_sip(
+            &invite,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5080,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        let mut dialog = SipDialog::new(&msg).expect("should create dialog");
+
+        // 200 OK travels the reverse direction: ports swapped.
+        let ok = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>;tag=t2",
+                "Call-ID: port-stability@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let reply = parse_sip(
+            &ok,
+            base_ts() + TimeDelta::seconds(1),
+            localhost(),
+            localhost(),
+            5080,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        dialog.messages.push(reply);
+
+        // Simulate DialogStore::compact_idle evicting the oldest message.
+        dialog.messages.drain(..1);
+
+        let src = FilterExpr::parse("src.port == 5060").expect("parse");
+        let dst = FilterExpr::parse("dst.port == 5080").expect("parse");
+        assert!(src.matches_dialog(&dialog, &[]));
+        assert!(dst.matches_dialog(&dialog, &[]));
     }
 
     // ── compare_bool: operators + type mismatch ─────────────────────────
