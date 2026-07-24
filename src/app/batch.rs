@@ -1532,7 +1532,7 @@ fn process_parsed_packet<W: std::io::Write>(
                             "STIR/SHAKEN: attest={:?} orig={} dest={} verified={:?}",
                             info.attestation,
                             info.orig_tn.as_deref().unwrap_or("-"),
-                            info.dest_tn.as_deref().unwrap_or("-"),
+                            info.dest_display(),
                             info.verified,
                         );
                     }

@@ -80,7 +80,26 @@ fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
     let delimiter = format!("--{}", boundary);
     let mut parts = Vec::new();
 
-    for segment in body.split(&delimiter) {
+    // RFC 2046 §5.1.1: a delimiter only counts when it starts a line — at the
+    // very start of the body or preceded by a line break (CRLF, or bare LF for
+    // tolerance). Mid-line occurrences inside part content are literal text.
+    let mut segments = Vec::new();
+    let mut segment_start = 0;
+    let mut search_from = 0;
+    while let Some(rel) = body[search_from..].find(&delimiter) {
+        let pos = search_from + rel;
+        let line_anchored = pos == 0 || body.as_bytes()[pos - 1] == b'\n';
+        if !line_anchored {
+            search_from = pos + delimiter.len();
+            continue;
+        }
+        segments.push(&body[segment_start..pos]);
+        segment_start = pos + delimiter.len();
+        search_from = segment_start;
+    }
+    segments.push(&body[segment_start..]);
+
+    for segment in segments {
         let segment = segment.trim();
         if segment.is_empty() || segment == "--" {
             continue;
@@ -342,6 +361,78 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             result.err()
         );
         assert_eq!(result.unwrap().session_id.as_deref(), Some("abc"));
+    }
+
+    /// A boundary string occurring mid-line inside part content is NOT a
+    /// delimiter (RFC 2046 §5.1.1: delimiters must start a line); the part
+    /// content must survive intact.
+    #[test]
+    fn test_boundary_mid_line_content_not_split() {
+        let ct = "multipart/mixed; boundary=b1";
+        let body = b"--b1\r\n\
+Content-Type: application/rs-metadata+xml\r\n\r\n\
+<recording><session session_id=\"abc\"><participant participant_id=\"p1\">\
+<name>Acme--b1 Corp</name></participant></session></recording>\r\n\
+--b1--";
+        let result = parse_siprec_body(ct, body).unwrap();
+        assert_eq!(result.session_id.as_deref(), Some("abc"));
+        assert_eq!(result.participants.len(), 1);
+        assert_eq!(
+            result.participants[0].name.as_deref(),
+            Some("Acme--b1 Corp")
+        );
+    }
+
+    /// Direct split check: a mid-line boundary occurrence in an SDP part does
+    /// not create extra parts, while line-anchored delimiters (including the
+    /// closing `--b1--`) still split correctly.
+    #[test]
+    fn test_split_multipart_line_anchored_only() {
+        let body = "--b1\r\n\
+Content-Type: application/sdp\r\n\r\n\
+v=0\r\ns=call--b1session\r\n\
+--b1\r\n\
+Content-Type: text/plain\r\n\r\n\
+hello\r\n\
+--b1--";
+        let parts = split_multipart(body, "b1");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].content_type.as_deref(), Some("application/sdp"));
+        assert!(
+            parts[0].body.contains("s=call--b1session"),
+            "mid-line boundary must survive intact, got: {:?}",
+            parts[0].body
+        );
+        assert_eq!(parts[1].body.trim(), "hello");
+    }
+
+    /// Bare-LF line endings are still tolerated for delimiter anchoring.
+    #[test]
+    fn test_split_multipart_bare_lf_delimiters() {
+        let body = "--b1\n\
+Content-Type: application/sdp\n\n\
+v=0\n\
+--b1\n\
+Content-Type: text/plain\n\n\
+world\n\
+--b1--";
+        let parts = split_multipart(body, "b1");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1].body.trim(), "world");
+    }
+
+    /// Preamble text before the first delimiter does not break part
+    /// extraction (first delimiter anchored by the preamble's CRLF).
+    #[test]
+    fn test_split_multipart_with_preamble() {
+        let ct = "multipart/mixed; boundary=b1";
+        let body = b"preamble text\r\n\
+--b1\r\n\
+Content-Type: application/rs-metadata+xml\r\n\r\n\
+<recording><session session_id=\"xyz\"></session></recording>\r\n\
+--b1--";
+        let result = parse_siprec_body(ct, body).unwrap();
+        assert_eq!(result.session_id.as_deref(), Some("xyz"));
     }
 
     /// Malformed XML degrades to default metadata instead of failing.
