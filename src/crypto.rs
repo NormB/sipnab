@@ -2,20 +2,21 @@
 
 //! Cryptographic backend abstraction for TLS/SRTP operations.
 //!
-//! Defines the `CryptoBackend` trait that abstracts over different crypto
-//! implementations (pure-Rust via `ring`, wolfSSL, or OpenSSL). When the
-//! `tls` feature is enabled, `RingCryptoBackend` provides the real
-//! implementation using the `ring` crate. Without `tls`, only the
-//! `StubCryptoBackend` is available (returns errors for all operations).
+//! Defines the `CryptoBackend` trait that decouples the TLS/SRTP code from a
+//! concrete crypto implementation. When the `tls` feature is enabled,
+//! `RingCryptoBackend` provides the real implementation using the pure-Rust
+//! `ring` crate. Without `tls`, only the `StubCryptoBackend` is available
+//! (returns errors for all operations).
 
 use anyhow::Result;
 
 /// Trait abstracting cryptographic operations for TLS and SRTP decryption.
 ///
-/// Three implementations are planned:
-/// - **Pure-Rust** (`ring` crate) — the default when the `tls` feature is enabled.
-/// - **wolfSSL** — via `tls-wolfssl` feature for environments requiring FIPS.
-/// - **OpenSSL** — via `tls-openssl` feature for compatibility with existing deployments.
+/// Two implementations exist:
+/// - `RingCryptoBackend` (pure-Rust `ring` crate) — the real backend, compiled
+///   when the `tls` feature is enabled.
+/// - `StubCryptoBackend` — compiled without `tls`; every operation returns an
+///   error.
 ///
 /// All implementations must be `Send + Sync` to allow sharing across threads.
 pub trait CryptoBackend: Send + Sync {

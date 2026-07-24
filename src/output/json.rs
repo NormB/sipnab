@@ -7,7 +7,6 @@
 //! Dialog and stream output are complete JSON objects.
 
 use serde::Serialize;
-use serde_json;
 
 use crate::rtp::diagnosis::MediaDiagnosis;
 use crate::rtp::stream::RtpStream;

@@ -161,6 +161,32 @@ pub struct CapturePolicy {
     pub portrange: (u16, u16),
 }
 
+/// Build the `ParallelConfig` shared by both offline multi-core paths
+/// (`run_cores_file` and the `--cores N` arm of `run`) from the CLI, config,
+/// resolved port range, and `no_rtp` decision — keeping the two call sites in
+/// lockstep instead of duplicating the field-by-field construction.
+fn parallel_config(
+    cli: &Cli,
+    config: &Config,
+    portrange: (u16, u16),
+    no_rtp: bool,
+) -> crate::parallel::ParallelConfig {
+    crate::parallel::ParallelConfig {
+        cores: cli.cores,
+        max_streams: cli.max_streams as usize,
+        max_dialogs: cli.limit as usize,
+        rotate: cli.rotate_enabled(),
+        max_reassembly: cli.max_reassembly as usize,
+        portrange,
+        no_dialog: cli.no_dialog,
+        no_rtp,
+        quiet_bad_parse: cli.quiet_bad_parse,
+        xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
+        reassembly: !cli.no_reassembly,
+        parse_limit: cli.limitlen,
+    }
+}
+
 /// Multi-core offline file reconstruction (`--cores N` with `-I file`,
 /// single device): read the pcap directly and shard packets across N worker
 /// threads, fusing read+peek+shard into one stage — no capture reader
@@ -190,20 +216,7 @@ pub fn run_cores_file(
         return;
     };
     let no_rtp = cli.no_rtp || config.capture.no_rtp.unwrap_or(false);
-    let pcfg = crate::parallel::ParallelConfig {
-        cores: cli.cores,
-        max_streams: cli.max_streams as usize,
-        max_dialogs: cli.limit as usize,
-        rotate: cli.rotate_enabled(),
-        max_reassembly: cli.max_reassembly as usize,
-        portrange,
-        no_dialog: cli.no_dialog,
-        no_rtp,
-        quiet_bad_parse: cli.quiet_bad_parse,
-        xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
-        reassembly: !cli.no_reassembly,
-        parse_limit: cli.limitlen,
-    };
+    let pcfg = parallel_config(cli, config, portrange, no_rtp);
     match crate::parallel::run_offline_parallel_file(
         std::path::Path::new(input),
         capture_config,
@@ -272,20 +285,7 @@ pub fn run(
     // SRTP) use the single-threaded path below; this branch only triggers for an
     // offline input file.
     if cli.cores > 1 && cli.input.is_some() {
-        let pcfg = crate::parallel::ParallelConfig {
-            cores: cli.cores,
-            max_streams: cli.max_streams as usize,
-            max_dialogs: cli.limit as usize,
-            rotate: cli.rotate_enabled(),
-            max_reassembly: cli.max_reassembly as usize,
-            portrange,
-            no_dialog: cli.no_dialog,
-            no_rtp,
-            quiet_bad_parse: cli.quiet_bad_parse,
-            xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
-            reassembly: !cli.no_reassembly,
-            parse_limit: cli.limitlen,
-        };
+        let pcfg = parallel_config(&cli, config, portrange, no_rtp);
         let result = crate::parallel::run_offline_parallel(rx, pcfg);
         let _ = handle.thread.join();
         generate_reports(&cli, &result.dialog_store, &result.stream_store);

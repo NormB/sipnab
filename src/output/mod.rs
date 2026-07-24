@@ -49,3 +49,50 @@ pub use fail2ban::{format_reg_flood_event, format_scanner_event};
 pub use hexdump::hexdump;
 pub use json::{dialog_to_json, message_to_json, stream_to_json};
 pub use sink::BatchSink;
+
+/// Parse a CLI listen-address string into a `SocketAddr`, shared by the two
+/// output backends that open a TCP listener — the REST API server (`api`
+/// feature) and the standalone Prometheus metrics server (`metrics` feature).
+///
+/// Accepts a bare port (`"8080"`) or the `":port"` shorthand — both binding
+/// `127.0.0.1` (the D18 default) — or any full `addr:port` pair.
+///
+/// `what` names the address in the failure reason (e.g. `"bind address"` or
+/// `"metrics bind address"`) so each caller's diagnostics read naturally.
+///
+/// # Arguments
+///
+/// * `addr` — The listen-address string from the CLI.
+/// * `what` — Human-readable address label spliced into the error reason.
+///
+/// # Errors
+///
+/// Returns `crate::Error::InvalidBindAddr` (carrying the input and a reason
+/// string) when the input is neither a bare port, a `:port` shorthand, nor a
+/// valid `addr:port` pair.
+#[cfg(any(feature = "api", feature = "metrics"))]
+pub(crate) fn parse_listen_addr(
+    addr: &str,
+    what: &str,
+) -> Result<std::net::SocketAddr, crate::Error> {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    // Just a port number.
+    if let Ok(port) = addr.parse::<u16>() {
+        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+    }
+
+    // ":port" shorthand.
+    if let Some(stripped) = addr.strip_prefix(':')
+        && let Ok(port) = stripped.parse::<u16>()
+    {
+        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+    }
+
+    // Full addr:port.
+    addr.parse::<SocketAddr>()
+        .map_err(|e| crate::Error::InvalidBindAddr {
+            input: addr.to_string(),
+            reason: format!("invalid {what} '{addr}': {e}"),
+        })
+}

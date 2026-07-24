@@ -15,24 +15,24 @@ pub const HARD_LIMIT: usize = 1000;
 /// Maximum SIP body / snippet bytes returned in a single response.
 pub const MAX_BODY_BYTES: usize = 4096;
 
-/// Truncate a string to `max_chars` bytes (UTF-8 boundary aware), appending
+/// Truncate a string to `max_bytes` bytes (UTF-8 boundary aware), appending
 /// a marker on truncation. Used for SIP body and snippet returns.
 ///
 /// # Arguments
 ///
 /// * `s` — the string to bound.
-/// * `max_chars` — maximum length in **bytes** (despite the name); the cut
-///   point walks back to the nearest UTF-8 character boundary.
+/// * `max_bytes` — maximum length in bytes; the cut point walks back to the
+///   nearest UTF-8 character boundary.
 ///
 /// # Returns
 ///
 /// The input unchanged when it fits, otherwise the bounded prefix with an
 /// `…[truncated]` marker appended.
-pub fn truncate_string(s: &str, max_chars: usize) -> String {
-    if s.len() <= max_chars {
+pub fn truncate_string(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
         return s.to_string();
     }
-    let mut end = max_chars;
+    let mut end = max_bytes;
     // Walk back to a UTF-8 char boundary.
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;

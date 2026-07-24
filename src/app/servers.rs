@@ -176,7 +176,11 @@ pub fn start_servers(
     #[cfg(any(feature = "api", feature = "mcp"))]
     #[allow(unused_mut)]
     let mut source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>> = None;
-    let _ = (dialog_store, stream_store, alerts, &selection, cli);
+    // Every parameter below is consumed only inside the `api`/`mcp` cfg arms.
+    // With neither feature compiled those arms vanish and the arguments would
+    // read as dead; bind them to `_` so the build stays warning-free without a
+    // blanket `#[allow(unused_variables)]` on the whole function.
+    let _unused_without_server_features = (dialog_store, stream_store, alerts, &selection, cli);
 
     #[cfg(feature = "api")]
     if selection.api

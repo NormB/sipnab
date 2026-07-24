@@ -56,7 +56,6 @@ mod http {
     use std::sync::Arc;
 
     use axum::Router;
-    use axum::extract::ConnectInfo;
     use axum::http::{HeaderMap, StatusCode};
     use axum::middleware::{self, Next};
     use axum::response::Response;
@@ -84,8 +83,6 @@ mod http {
     /// # Arguments
     ///
     /// * `state` — shared verifier state installed on the router.
-    /// * `_addr` — peer address (unused; the loopback/auth policy is
-    ///   enforced once at startup in `serve_http`, not per connection).
     /// * `headers` — request headers searched for `Authorization: Bearer`.
     /// * `request` / `next` — the guarded request and the rest of the
     ///   middleware chain.
@@ -96,7 +93,6 @@ mod http {
     /// is required but missing, malformed, expired, or revoked.
     async fn auth_layer(
         axum::extract::State(state): axum::extract::State<McpHttpState>,
-        ConnectInfo(_addr): ConnectInfo<SocketAddr>,
         headers: HeaderMap,
         request: axum::extract::Request,
         next: Next,
