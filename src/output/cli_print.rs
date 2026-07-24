@@ -129,7 +129,12 @@ pub fn format_sip_message(
         if let Some(prev) = prev_timestamp {
             let delta = msg.timestamp.signed_duration_since(prev);
             let ms = delta.num_milliseconds();
-            format!("+{}.{:03}s", ms / 1000, ms.abs() % 1000)
+            // Derive the sign from the whole delta so sub-second negatives
+            // (where `ms / 1000` truncates to 0 and loses the sign) still
+            // render as e.g. `-0.500s`.
+            let sign = if ms < 0 { "-" } else { "+" };
+            let abs_ms = ms.unsigned_abs();
+            format!("{sign}{}.{:03}s", abs_ms / 1000, abs_ms % 1000)
         } else {
             "+0.000s".to_string()
         }
@@ -587,6 +592,26 @@ mod tests {
         let reset_pos = output.find(RESET).expect("reset present");
         let tag_pos = output.find("UDP(17)").expect("tag present");
         assert!(tag_pos > reset_pos, "transport tag must follow reset");
+    }
+
+    /// A negative sub-second delta (previous message is newer than the
+    /// current one, e.g. out-of-order capture) keeps its negative sign.
+    #[test]
+    fn delta_time_negative_sub_second_keeps_sign() {
+        let msg = make_invite();
+        // prev is 500 ms *after* msg.timestamp → delta is -500 ms.
+        let prev = ts() + chrono::TimeDelta::milliseconds(500);
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            delta_time: true,
+            ..Default::default()
+        };
+        let output = format_sip_message(&msg, &opts, Some(prev));
+
+        assert!(
+            output.contains("-0.500s"),
+            "negative sub-second delta must keep its sign: got {output}"
+        );
     }
 
     /// Delta-time with no previous message renders `+0.000s`.

@@ -69,11 +69,19 @@ pub fn dsl_to_wireshark(filter: &str) -> Result<String> {
             let abs_pos = search_from + pos;
             let end_pos = abs_pos + sipnab_field.len();
 
-            // Check word boundary: character before must not be a field char
-            let before_ok = abs_pos == 0 || !is_field_char(result.as_bytes()[abs_pos - 1] as char);
-            // Character after must not be a field char
-            let after_ok =
-                end_pos >= result.len() || !is_field_char(result.as_bytes()[end_pos] as char);
+            // Check word boundary on the adjacent *chars*, not raw bytes. The
+            // match is ASCII (so `abs_pos`/`end_pos` are char boundaries), but
+            // the neighbours may be multibyte: casting a single byte to `char`
+            // misreads a UTF-8 continuation/lead byte (e.g. 0x86 of 'φ') and
+            // misclassifies the boundary. Decode the actual neighbouring char.
+            let before_ok = result[..abs_pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_field_char(c));
+            let after_ok = result[end_pos..]
+                .chars()
+                .next()
+                .is_none_or(|c| !is_field_char(c));
 
             if before_ok && after_ok {
                 new_result.push_str(&result[search_from..abs_pos]);
@@ -191,6 +199,32 @@ mod tests {
     fn no_field_passthrough() {
         let result = dsl_to_wireshark("custom_field == 'value'").unwrap();
         assert_eq!(result, "custom_field == 'value'");
+    }
+
+    /// A multibyte char directly preceding a field name is a word boundary:
+    /// `φto` is one identifier, so `to` must NOT be replaced. The byte-cast
+    /// boundary check read the trailing UTF-8 continuation byte (0x86) as a
+    /// non-field char and wrongly substituted `sip.To`.
+    #[test]
+    fn multibyte_char_before_field_is_word_boundary_aware() {
+        let result = dsl_to_wireshark("φto == 'x'").unwrap();
+        assert_eq!(result, "φto == 'x'");
+    }
+
+    /// A multibyte char directly following a field name is likewise a word
+    /// boundary: `toφ` is one identifier, so `to` must NOT be replaced.
+    #[test]
+    fn multibyte_char_after_field_is_word_boundary_aware() {
+        let result = dsl_to_wireshark("toφ == 'x'").unwrap();
+        assert_eq!(result, "toφ == 'x'");
+    }
+
+    /// A standalone field surrounded by multibyte chars still translates:
+    /// `é to é` has `to` as its own word, so it maps to `sip.To`.
+    #[test]
+    fn field_between_multibyte_separators_translates() {
+        let result = dsl_to_wireshark("é to é").unwrap();
+        assert_eq!(result, "é sip.To é");
     }
 
     /// File input yields `-r` plus the display filter and `-V`.

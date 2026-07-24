@@ -265,9 +265,7 @@ fn handle_metrics_connection(
                 if trimmed.is_empty() {
                     break; // End of headers
                 }
-                if let Some(value) = trimmed.strip_prefix("Authorization: ") {
-                    auth_header = Some(value.to_string());
-                } else if let Some(value) = trimmed.strip_prefix("authorization: ") {
+                if let Some(value) = strip_authorization(trimmed) {
                     auth_header = Some(value.to_string());
                 }
             }
@@ -314,6 +312,37 @@ fn handle_metrics_connection(
     }
 }
 
+/// Extract the value of an `Authorization` request header line, or `None`
+/// if the line is not an Authorization header.
+///
+/// Per RFC 7230 the field name is case-insensitive and any amount of optional
+/// whitespace (OWS) may surround the field value, so the match is robust to
+/// odd-but-valid casings (`AUTHORIZATION:`) and spacing (`authorization:\t…`).
+fn strip_authorization(line: &str) -> Option<&str> {
+    let (name, value) = line.split_once(':')?;
+    if name.eq_ignore_ascii_case("Authorization") {
+        Some(value.trim())
+    } else {
+        None
+    }
+}
+
+/// Case-insensitively strip an auth-scheme token from a credentials value and
+/// return the remaining credentials with surrounding whitespace removed, or
+/// `None` if the scheme does not match.
+///
+/// Per RFC 7235 the scheme is case-insensitive and separated from the
+/// credentials by one or more spaces (or tabs); this tolerates arbitrary
+/// leading whitespace and multiple separators.
+fn strip_auth_scheme<'a>(value: &'a str, scheme: &str) -> Option<&'a str> {
+    let (found, rest) = value.trim_start().split_once(char::is_whitespace)?;
+    if found.eq_ignore_ascii_case(scheme) {
+        Some(rest.trim())
+    } else {
+        None
+    }
+}
+
 /// Check HTTP Basic authentication.
 ///
 /// `auth_value` is the value of the Authorization header (e.g., "Basic dXNlcjpwYXNz").
@@ -323,14 +352,19 @@ fn handle_metrics_connection(
 ///
 /// `true` only when the base64 payload decodes to valid UTF-8 equal to
 /// `expected_creds` (compared in constant time); `false` for a missing
-/// `Basic ` prefix, bad base64, or non-UTF-8.
+/// `Basic` scheme, bad base64, or non-UTF-8.
+///
+/// Per RFC 7235 the auth-scheme is case-insensitive and separated from the
+/// credentials by one or more spaces (or tabs), so `basic`, `BASIC` and extra
+/// inter-token whitespace are accepted. The token comparison itself is
+/// unchanged: exact and constant-time.
 fn check_basic_auth(auth_value: &str, expected_creds: &str) -> bool {
-    let Some(encoded) = auth_value.strip_prefix("Basic ") else {
+    let Some(encoded) = strip_auth_scheme(auth_value, "Basic") else {
         return false;
     };
 
     use base64::Engine;
-    let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(encoded.trim()) else {
+    let Ok(decoded_bytes) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
         return false;
     };
 
@@ -504,6 +538,50 @@ mod tests {
     #[test]
     fn basic_auth_missing_prefix() {
         assert!(!check_basic_auth("Bearer token", "user:pass"));
+    }
+
+    /// Odd-but-valid RFC 7235 scheme casings and inter-token whitespace are
+    /// accepted: the auth-scheme is case-insensitive and one-or-more spaces
+    /// (or tabs) may separate it from the credentials.
+    #[test]
+    fn basic_auth_accepts_odd_scheme_casing_and_spacing() {
+        // base64("user:pass") = "dXNlcjpwYXNz"
+        assert!(check_basic_auth("basic dXNlcjpwYXNz", "user:pass"));
+        assert!(check_basic_auth("BASIC dXNlcjpwYXNz", "user:pass"));
+        assert!(check_basic_auth("bAsIc dXNlcjpwYXNz", "user:pass"));
+        assert!(check_basic_auth("Basic    dXNlcjpwYXNz", "user:pass"));
+        assert!(check_basic_auth("Basic\tdXNlcjpwYXNz", "user:pass"));
+    }
+
+    /// A wrong token is still rejected even with an odd-but-valid scheme
+    /// casing and extra whitespace — the token comparison is not weakened.
+    #[test]
+    fn basic_auth_wrong_token_rejected_despite_odd_casing() {
+        // base64("user:wrong") = "dXNlcjp3cm9uZw=="
+        assert!(!check_basic_auth("basic   dXNlcjp3cm9uZw==", "user:pass"));
+    }
+
+    /// The Authorization header field name is matched case-insensitively
+    /// and tolerates arbitrary optional whitespace (OWS) after the colon.
+    #[test]
+    fn authorization_header_name_is_case_insensitive_and_ows_tolerant() {
+        assert_eq!(
+            strip_authorization("Authorization: Basic xyz"),
+            Some("Basic xyz")
+        );
+        assert_eq!(
+            strip_authorization("authorization: Basic xyz"),
+            Some("Basic xyz")
+        );
+        assert_eq!(
+            strip_authorization("AUTHORIZATION:    Basic xyz"),
+            Some("Basic xyz")
+        );
+        assert_eq!(
+            strip_authorization("AuThOrIzAtIoN:\tBasic xyz"),
+            Some("Basic xyz")
+        );
+        assert_eq!(strip_authorization("Content-Type: text/plain"), None);
     }
 
     // ── End-to-end server tests ────────────────────────────────────────

@@ -218,8 +218,16 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
-    if max_len <= 3 {
-        return s.chars().take(max_len).collect();
+    // Too small to fit the 3-byte "..." ellipsis plus any content: drop the
+    // ellipsis and keep as many whole chars as fit within `max_len` *bytes*,
+    // so the result never exceeds the byte budget (a single multi-byte char
+    // may be wider than `max_len`, in which case nothing is kept).
+    if max_len < 4 {
+        let mut end = max_len;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        return s[..end].to_string();
     }
     let mut end = max_len - 3;
     while end > 0 && !s.is_char_boundary(end) {
@@ -632,5 +640,25 @@ mod tests {
         // "日本語テスト" — each char is 3 bytes in UTF-8
         let result = truncate_str("日本語テスト", 6);
         assert!(!result.is_empty());
+    }
+
+    /// Tiny `max_len` values (0..=3, too small for the 3-byte "..." ellipsis)
+    /// must never produce a result exceeding `max_len` bytes, even for
+    /// multi-byte input where a single char is wider than the budget.
+    #[test]
+    fn truncate_str_tiny_max_len_respects_byte_contract() {
+        // Each CJK char is 3 bytes; 3 chars = 9 bytes total.
+        let s = "日本語";
+        for max_len in 0..=3 {
+            let out = truncate_str(s, max_len);
+            assert!(
+                out.len() <= max_len,
+                "max_len={max_len} produced {} bytes ({out:?})",
+                out.len()
+            );
+        }
+        // ASCII sanity: whole chars that fit, no ellipsis when there is no room.
+        assert_eq!(truncate_str("hello", 0), "");
+        assert_eq!(truncate_str("hello", 3), "hel");
     }
 }
