@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Crash handling: a process-wide panic hook driven by the `[crash]`
 //! config section.
 //!
@@ -367,6 +369,21 @@ where
     }));
 }
 
+/// Best-effort, never-panicking line write for the panic hook's stderr
+/// reporting: formats `args` followed by a newline and IGNORES write
+/// errors. `eprintln!` PANICS when stderr is closed/unwritable, and a
+/// panic while processing a panic aborts the process before any crash
+/// report can be written — so nothing in the hook path may use it.
+fn hook_write_line(out: &mut dyn std::io::Write, args: std::fmt::Arguments<'_>) {
+    writeln!(out, "{args}").ok();
+}
+
+/// Write one best-effort line to stderr from the panic hook. Never
+/// panics; a closed stderr is silently ignored (see [`hook_write_line`]).
+fn hook_eprintln(args: std::fmt::Arguments<'_>) {
+    hook_write_line(&mut std::io::stderr(), args);
+}
+
 /// The hook body: restore terminal, report to stderr and file, decide
 /// the post action and hand it to the terminator.
 ///
@@ -404,7 +421,7 @@ fn hook_body(
         .unwrap_or("unnamed")
         .to_string();
 
-    eprintln!("sipnab panicked at {location}:\n{message}");
+    hook_eprintln(format_args!("sipnab panicked at {location}:\n{message}"));
 
     // force_capture works regardless of RUST_BACKTRACE — the whole point
     // is a complete trace without the user having had to plan ahead.
@@ -415,16 +432,16 @@ fn hook_body(
     if policy.reports {
         let report = build_crash_report(&message, &location, &thread, backtrace.as_deref());
         match write_crash_report(&policy.report_dir, &report) {
-            Ok(path) => eprintln!("crash report written to {}", path.display()),
+            Ok(path) => hook_eprintln(format_args!("crash report written to {}", path.display())),
             Err(e) => {
-                eprintln!("failed to write crash report: {e}");
+                hook_eprintln(format_args!("failed to write crash report: {e}"));
                 if let Some(ref bt) = backtrace {
-                    eprintln!("Backtrace:\n{bt}");
+                    hook_eprintln(format_args!("Backtrace:\n{bt}"));
                 }
             }
         }
     } else if let Some(ref bt) = backtrace {
-        eprintln!("Backtrace:\n{bt}");
+        hook_eprintln(format_args!("Backtrace:\n{bt}"));
     }
 
     terminator(post_report_action(policy.core));
@@ -706,6 +723,43 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_crash_report(dir.path(), "ok-contents").unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "ok-contents");
+    }
+
+    /// The hook's stderr writes must swallow I/O errors: `eprintln!`
+    /// panics when stderr is closed, and a panic inside the panic hook
+    /// aborts the process before any report can be written. A writer that
+    /// always fails stands in for a closed stderr.
+    #[test]
+    fn hook_write_line_swallows_write_errors() {
+        struct AlwaysFails;
+        impl std::io::Write for AlwaysFails {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "stderr closed",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "stderr closed",
+                ))
+            }
+        }
+        // Must return normally — no panic, no abort.
+        hook_write_line(
+            &mut AlwaysFails,
+            format_args!("sipnab panicked at x:\nboom"),
+        );
+    }
+
+    /// The helper formats exactly one newline-terminated line, matching
+    /// what `eprintln!` used to emit.
+    #[test]
+    fn hook_write_line_formats_single_line() {
+        let mut out = Vec::new();
+        hook_write_line(&mut out, format_args!("crash report written to {}", "p"));
+        assert_eq!(out, b"crash report written to p\n");
     }
 
     /// End-to-end hook behavior in-process: a panicking thread triggers

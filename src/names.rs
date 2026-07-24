@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Name resolution for displayed addresses (Wireshark-style).
 //!
 //! A single [`NameResolver`] turns an IP address into a human-readable name
@@ -13,12 +15,13 @@
 //! reverse DNS. The resolver is cheap to share: wrap it in an `Arc` and hand
 //! clones to the TUI and the output writers.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
 
 /// How aggressively addresses are resolved to names for display.
@@ -65,13 +68,63 @@ struct Inner {
     /// Names read from a capture file's Name Resolution Block (untrusted hint).
     file: HashMap<IpAddr, String>,
     /// Reverse-DNS results: `Some(name)` resolved, `None` looked-up-but-no-name.
-    dns_cache: HashMap<IpAddr, Option<String>>,
+    /// Bounded to [`MAX_DNS_CACHE_ENTRIES`] with oldest-inserted-out eviction,
+    /// so a long-running capture seeing endless unique IPs cannot grow it
+    /// without limit.
+    dns_cache: IndexMap<IpAddr, Option<String>>,
     /// IPs already handed to the DNS worker, so we enqueue each at most once.
-    dns_requested: HashSet<IpAddr>,
+    /// The marker is cleared when the result lands (or when a full queue drops
+    /// the request), and the set itself is bounded to the same cap as the
+    /// cache, so in-flight tracking can never starve `dns_cache`.
+    dns_requested: IndexSet<IpAddr>,
     /// Mutation counter, bumped by every change that can alter a resolved
     /// label (manual/hosts/file edits, DNS results landing). Cache
     /// invalidation signal — see [`NameResolver::generation`].
     generation: u64,
+}
+
+/// Maximum reverse-DNS cache entries (positive and negative) retained; the
+/// in-flight `dns_requested` set is held to the same cap. At capacity the
+/// oldest-inserted entry is evicted (`IndexMap::shift_remove_index(0)` — the
+/// same oldest-out pattern as `StreamStore::sdp_endpoints`). Sized to the
+/// same order as `HEP_MAX_TRACKED_PEERS`: a few thousand IP→name entries
+/// covers any realistic active-host set.
+const MAX_DNS_CACHE_ENTRIES: usize = 4096;
+
+/// Capacity of the queue feeding the reverse-DNS worker. Lookups are enqueued
+/// with `try_send` and DROPPED when the queue is full — the capture/render
+/// path must never block on a slow resolver, and a dropped request is
+/// harmless: the IP just displays unresolved and is re-requested on a later
+/// lookup. PTR lookups can block for seconds each, so queueing more than this
+/// buys nothing.
+const DNS_QUEUE_CAPACITY: usize = 1024;
+
+impl Inner {
+    /// Record a completed reverse-DNS lookup, evicting the oldest cache entry
+    /// at capacity, and clear the in-flight marker so the set stays in step
+    /// with the cache. Bumps the generation counter (a label may change).
+    fn cache_dns_result(&mut self, ip: IpAddr, name: Option<String>) {
+        if self.dns_cache.len() >= MAX_DNS_CACHE_ENTRIES && !self.dns_cache.contains_key(&ip) {
+            self.dns_cache.shift_remove_index(0);
+        }
+        self.dns_cache.insert(ip, name);
+        self.dns_requested.shift_remove(&ip);
+        self.generation += 1;
+    }
+
+    /// Mark `ip` as handed to the DNS worker. Returns `false` when it is
+    /// already cached or already in flight (nothing to enqueue). Bounded: at
+    /// capacity the oldest marker is evicted — worst case that IP is looked
+    /// up twice, which is harmless.
+    fn mark_requested(&mut self, ip: IpAddr) -> bool {
+        if self.dns_cache.contains_key(&ip) {
+            return false;
+        }
+        if self.dns_requested.len() >= MAX_DNS_CACHE_ENTRIES && !self.dns_requested.contains(&ip) {
+            self.dns_requested.shift_remove_index(0);
+        }
+        self.dns_requested.insert(ip)
+    }
 }
 
 /// Maximum length (in bytes) of a name we will store/emit. DNS names are
@@ -93,8 +146,9 @@ pub fn is_valid_name(name: &str) -> bool {
 pub struct NameResolver {
     /// Shared name tables and caches, behind a read-write lock.
     inner: Arc<RwLock<Inner>>,
-    /// Channel to the reverse-DNS worker; `None` when reverse DNS is disabled.
-    dns_tx: Option<Sender<IpAddr>>,
+    /// Bounded channel to the reverse-DNS worker ([`DNS_QUEUE_CAPACITY`]
+    /// pending lookups); `None` when reverse DNS is disabled.
+    dns_tx: Option<SyncSender<IpAddr>>,
 }
 
 impl NameResolver {
@@ -110,14 +164,16 @@ impl NameResolver {
     /// # Side effects
     /// When enabled, spawns a detached `sipnab-dns` worker thread that
     /// serves PTR lookups until the resolver (the channel sender) is
-    /// dropped; each completed lookup writes the DNS cache and bumps the
-    /// generation counter.
+    /// dropped; each completed lookup writes the (bounded) DNS cache and
+    /// bumps the generation counter. The work queue holds at most
+    /// [`DNS_QUEUE_CAPACITY`] pending lookups; overflow is dropped, never
+    /// queued unbounded (see [`enqueue_dns`](Self::enqueue_dns)).
     pub fn with_reverse_dns(enabled: bool) -> Self {
         if !enabled {
             return Self::new();
         }
         let inner: Arc<RwLock<Inner>> = Arc::default();
-        let (tx, rx) = std::sync::mpsc::channel::<IpAddr>();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(DNS_QUEUE_CAPACITY);
         let worker_inner = Arc::clone(&inner);
         // Detached worker: it exits when the sender is dropped (resolver gone).
         let _ = std::thread::Builder::new()
@@ -125,9 +181,7 @@ impl NameResolver {
             .spawn(move || {
                 while let Ok(ip) = rx.recv() {
                     let name = reverse_dns(ip);
-                    let mut inner = worker_inner.write();
-                    inner.dns_cache.insert(ip, name);
-                    inner.generation += 1;
+                    worker_inner.write().cache_dns_result(ip, name);
                 }
             });
         Self {
@@ -199,17 +253,24 @@ impl NameResolver {
     ///
     /// No-op without a worker (`dns_tx` is `None`) or when the IP is
     /// already cached or already requested. Otherwise records the IP in
-    /// `dns_requested` and sends it to the worker; a send failure (worker
-    /// gone) is silently ignored.
+    /// `dns_requested` and hands it to the worker with a non-blocking
+    /// `try_send`: when the bounded queue is full (or the worker is gone)
+    /// the request is DROPPED and un-marked — the IP just displays
+    /// unresolved and a later lookup retries it. The capture/render path
+    /// must never block here.
     fn enqueue_dns(&self, ip: IpAddr) {
         let Some(tx) = &self.dns_tx else { return };
-        {
-            let mut inner = self.inner.write();
-            if inner.dns_cache.contains_key(&ip) || !inner.dns_requested.insert(ip) {
-                return;
+        if !self.inner.write().mark_requested(ip) {
+            return;
+        }
+        if let Err(err) = tx.try_send(ip) {
+            self.inner.write().dns_requested.shift_remove(&ip);
+            if matches!(err, std::sync::mpsc::TrySendError::Full(_)) {
+                tracing::debug!(
+                    "reverse-DNS queue full ({DNS_QUEUE_CAPACITY}); dropping lookup for {ip}"
+                );
             }
         }
-        let _ = tx.send(ip);
     }
 
     // ── Manual mappings ────────────────────────────────────────────────
@@ -867,6 +928,118 @@ mod tests {
         assert!(!out.contains("bad\tname"));
         // Exactly one valid record emitted.
         assert_eq!(out.lines().count(), 1);
+    }
+
+    // ── Resource bounds (DNS cache/queue must not grow forever) ────────
+
+    /// Test helper: the `i`-th unique IPv4 address (10.x.y.z range).
+    fn nth_ip(i: u32) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::from(0x0a00_0000 + i + 1))
+    }
+
+    /// The reverse-DNS cache is bounded: landing more results than
+    /// `MAX_DNS_CACHE_ENTRIES` evicts the oldest-inserted entries while the
+    /// most recent survive, so a long-running capture seeing endless unique
+    /// IPs cannot grow the cache without limit.
+    #[test]
+    fn dns_cache_bounded_evicts_oldest() {
+        let r = NameResolver::new();
+        let extra = 16u32;
+        let total = MAX_DNS_CACHE_ENTRIES as u32 + extra;
+        {
+            let mut inner = r.inner.write();
+            for i in 0..total {
+                inner.cache_dns_result(nth_ip(i), Some(format!("host-{i}")));
+            }
+            assert!(
+                inner.dns_cache.len() <= MAX_DNS_CACHE_ENTRIES,
+                "dns_cache grew past its cap: {} > {MAX_DNS_CACHE_ENTRIES}",
+                inner.dns_cache.len()
+            );
+        }
+        // The oldest entries were evicted (unresolved again)...
+        for i in 0..extra {
+            assert_eq!(
+                r.name(nth_ip(i), NameMode::Dns),
+                None,
+                "entry {i} should be evicted"
+            );
+        }
+        // ...and the most recently cached entries survive.
+        let last = total - 1;
+        let expect = format!("host-{last}");
+        assert_eq!(
+            r.name(nth_ip(last), NameMode::Dns).as_deref(),
+            Some(expect.as_str())
+        );
+        let mid = total - extra; // oldest survivor
+        let expect_mid = format!("host-{mid}");
+        assert_eq!(
+            r.name(nth_ip(mid), NameMode::Dns).as_deref(),
+            Some(expect_mid.as_str())
+        );
+    }
+
+    /// The in-flight `dns_requested` set is bounded too, and a landing result
+    /// clears its marker — so request tracking can neither grow forever nor
+    /// starve the cache.
+    #[test]
+    fn dns_requested_bounded_and_cleared_by_results() {
+        let r = NameResolver::new();
+        let mut inner = r.inner.write();
+        for i in 0..(MAX_DNS_CACHE_ENTRIES as u32 + 16) {
+            inner.mark_requested(nth_ip(i));
+        }
+        assert!(
+            inner.dns_requested.len() <= MAX_DNS_CACHE_ENTRIES,
+            "dns_requested grew past its cap: {} > {MAX_DNS_CACHE_ENTRIES}",
+            inner.dns_requested.len()
+        );
+        // A completed lookup clears the in-flight marker.
+        let ip = nth_ip(MAX_DNS_CACHE_ENTRIES as u32);
+        assert!(inner.dns_requested.contains(&ip));
+        inner.cache_dns_result(ip, Some("resolved".into()));
+        assert!(
+            !inner.dns_requested.contains(&ip),
+            "landing a result must clear the in-flight marker"
+        );
+        // A cached IP is never re-marked for lookup.
+        assert!(!inner.mark_requested(ip));
+    }
+
+    /// A burst of unique IPs beyond the DNS queue capacity must not block
+    /// the lookup path and must not queue unbounded work: overflow requests
+    /// are dropped (and un-marked, so they can be re-requested later).
+    #[test]
+    fn dns_queue_full_drops_instead_of_blocking() {
+        // A resolver wired to a bounded queue with NO consumer draining it.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<IpAddr>(DNS_QUEUE_CAPACITY);
+        let r = Arc::new(NameResolver {
+            inner: Arc::default(),
+            dns_tx: Some(tx),
+        });
+        let burst = {
+            let r = Arc::clone(&r);
+            std::thread::spawn(move || {
+                for i in 0..(DNS_QUEUE_CAPACITY as u32 + 64) {
+                    let _ = r.name(nth_ip(i), NameMode::Dns);
+                }
+            })
+        };
+        // The lookup path must finish promptly even though nothing reads rx.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !burst.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            burst.is_finished(),
+            "lookup path blocked on a full DNS queue"
+        );
+        burst.join().unwrap();
+        // Exactly the queue capacity was accepted; the overflow was dropped.
+        assert_eq!(rx.try_iter().count(), DNS_QUEUE_CAPACITY);
+        // Dropped IPs were un-marked so a later lookup can retry them.
+        assert_eq!(r.inner.read().dns_requested.len(), DNS_QUEUE_CAPACITY);
     }
 
     // ── Persistence (atomic, symlink-safe) ─────────────────────────────
