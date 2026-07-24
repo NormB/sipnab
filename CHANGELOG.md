@@ -4,7 +4,23 @@ All notable changes to sipnab will be documented in this file.
 
 ## [Unreleased]
 
+### Security
+- The generated `tshark` command now POSIX-quotes every interpolated value
+  (input file, device, BPF and display filters) with proper `'\''` escaping
+  of embedded single quotes, so a crafted filename or filter can no longer
+  break out of the quoting to inject shell words.
+- The Mermaid call-flow export escapes untrusted SIP-derived labels: message
+  and participant labels are neutralized for the Mermaid layer (newlines
+  become spaces; `#;<>` become Mermaid entity codes) and the standalone HTML
+  export additionally HTML-escapes the whole diagram, closing an XSS where a
+  crafted label could close the `<pre>` block and inject a live `<script>`.
+
 ### Fixed
+- pcap loading in the TUI now routes packet timestamps through the shared,
+  hardened `pcap_ts_to_chrono` converter, which clamps `tv_usec` before the
+  microsecond→nanosecond multiply; the previous raw `(tv_usec as u32) * 1000`
+  overflowed (panic in debug, wrong timestamp in release) on a crafted or
+  nanosecond-precision capture.
 - Four UTF-8 byte-boundary panics reachable from real input, all now going
   through a shared `text::floor_char_boundary` helper or whole-character
   slicing: `--payload-limit` truncation mid-character in CLI output; the

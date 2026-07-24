@@ -21,7 +21,13 @@ use super::{FormattedMessage, Participant};
 /// # Returns
 /// The complete HTML document as a string.
 pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMessage]) -> String {
-    let diagram = export_mermaid(participants, messages);
+    // HTML-escape the diagram before embedding it in the page: the same
+    // string appears both inside the rendered `.mermaid` div (mermaid.js
+    // reads it back via textContent) and in a raw `<pre>` source view, so a
+    // label that closed the block and injected `<script>` would otherwise
+    // execute. Labels are already neutralized at the Mermaid layer; this is
+    // the HTML-context defense.
+    let diagram = escape_html(&export_mermaid(participants, messages));
     format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -72,7 +78,11 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
 
     for p in participants {
         let id = sanitize_id(&p.addr);
-        out.push_str(&format!("    participant {} as {}\n", id, p.label));
+        out.push_str(&format!(
+            "    participant {} as {}\n",
+            id,
+            escape_mermaid_label(&p.label)
+        ));
     }
     out.push('\n');
 
@@ -89,7 +99,7 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
         let src = sanitize_id(&participants[msg.src_col].addr);
         let dst = sanitize_id(&participants[msg.dst_col].addr);
         let arrow = if msg.is_response { "-->>" } else { "->>" };
-        let label = &msg.label;
+        let label = escape_mermaid_label(&msg.label);
 
         out.push_str(&format!("    {}{}{}: {}\n", src, arrow, dst, label));
     }
@@ -101,6 +111,36 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
 /// replacing `:` and `.` with `_` (e.g. `10.0.0.1:5060` → `10_0_0_1_5060`).
 fn sanitize_id(s: &str) -> String {
     s.replace([':', '.'], "_")
+}
+
+/// Neutralize untrusted text (a SIP-derived message or participant label) for
+/// embedding in Mermaid source. Newlines and carriage returns — which would
+/// otherwise end the statement and let following text be parsed as diagram
+/// syntax — become spaces, and the characters Mermaid treats specially are
+/// replaced with its numeric entity codes (rendered back to the literal
+/// glyph). Removing raw `<`/`>` here also means the HTML wrapper can never
+/// receive label-injected markup.
+fn escape_mermaid_label(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\n' | '\r' => out.push(' '),
+            '#' => out.push_str("#35;"),
+            ';' => out.push_str("#59;"),
+            '<' => out.push_str("#60;"),
+            '>' => out.push_str("#62;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Minimal HTML text-context escaping (`&`, `<`, `>`) for embedding generated
+/// content in the exported HTML page.
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 /// Tests for the Mermaid export: participant/arrow emission, row skipping,
@@ -143,6 +183,68 @@ mod tests {
             is_rtp_bar: false,
             raw_index: None,
         }
+    }
+
+    /// A label carrying newlines and Mermaid metacharacters is neutralized:
+    /// the whole message stays on one arrow line and no raw `<`/`>`/newline
+    /// from the label can break the diagram structure.
+    #[test]
+    fn mermaid_label_metacharacters_are_neutralized() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "a<b>".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let messages = vec![test_msg(0, 1, "INVITE\nBYE;#<x>", false)];
+        let out = export_mermaid(&participants, &messages);
+
+        // No raw `<` survives anywhere (the arrow syntax uses only `>`), and
+        // the injected angle-bracketed spans are gone from both the message
+        // label and the participant label.
+        assert!(!out.contains('<'), "raw '<' must not survive: {out}");
+        assert!(!out.contains("<x>"), "message label markup survived: {out}");
+        assert!(
+            !out.contains("a<b>"),
+            "participant label markup survived: {out}"
+        );
+        // The injected newline must not split the label onto its own line —
+        // the arrow and the tail of the label share one line.
+        assert!(
+            out.lines().any(|l| l.contains("->>") && l.contains("BYE")),
+            "label newline must not break the arrow line: {out}"
+        );
+    }
+
+    /// The HTML export escapes markup so a crafted label cannot inject a live
+    /// `<script>` (or close the `<pre>`) in the generated page.
+    #[test]
+    fn mermaid_html_escapes_injected_markup() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let messages = vec![test_msg(0, 1, "x</pre><script>evil()</script>", false)];
+        let html = export_mermaid_html(&participants, &messages);
+
+        assert!(
+            !html.contains("<script>evil"),
+            "injected script tag must not appear live: {html}"
+        );
+        assert!(
+            !html.contains("</pre><script>"),
+            "must not be able to close the source block and inject: {html}"
+        );
     }
 
     /// A two-party INVITE/200 exchange emits both participants, a `->>`
