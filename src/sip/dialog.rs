@@ -359,8 +359,14 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
             }
             200..=299 => {
                 let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
+                // A 2xx to INVITE establishes the call. It also wins a race
+                // with a CANCEL (RFC 3261 §9/§15: once the UAS has sent a
+                // final 2xx the CANCEL has no effect), so Cancelled → InCall.
                 if cseq_method == "INVITE"
-                    && (dialog.state == DialogState::Trying || dialog.state == DialogState::Ringing)
+                    && matches!(
+                        dialog.state,
+                        DialogState::Trying | DialogState::Ringing | DialogState::Cancelled
+                    )
                 {
                     dialog.state = DialogState::InCall;
                 }
@@ -402,6 +408,11 @@ fn update_register_state(dialog: &mut SipDialog, msg: &SipMessage) {
             200..=299 => {
                 dialog.state = DialogState::Registered;
             }
+            // 401/407 are auth challenges: the client re-registers with
+            // credentials, so a challenge is intermediate, not a failure.
+            // Leave the state unchanged (auth pending); a genuine 4xx-6xx
+            // below marks Failed, and a later 2xx marks Registered.
+            401 | 407 => {}
             400..=699 => {
                 dialog.state = DialogState::Failed;
             }
@@ -664,7 +675,66 @@ mod tests {
         assert_eq!(dialog.state, DialogState::Registered);
     }
 
-    /// A 401 Unauthorized response moves a REGISTER dialog to Failed.
+    /// A 200 OK to INVITE that races a CANCEL — the UAS answered before the
+    /// CANCEL arrived — establishes the call per RFC 3261 (the CANCEL has no
+    /// effect once a final 2xx exists), overriding the Cancelled state.
+    #[test]
+    fn invite_200_after_cancel_becomes_incall() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        update_state(&mut dialog, &make_response(180, "Ringing", "INVITE"));
+        update_state(&mut dialog, &make_request("CANCEL"));
+        assert_eq!(dialog.state, DialogState::Cancelled);
+
+        // The 200 races the CANCEL and wins — the call was established.
+        update_state(&mut dialog, &make_response(200, "OK", "INVITE"));
+        assert_eq!(dialog.state, DialogState::InCall);
+    }
+
+    /// A 401/407 auth challenge to REGISTER is intermediate — the client
+    /// re-registers with credentials — so it must not mark the dialog Failed.
+    #[test]
+    fn register_auth_challenge_is_not_failure() {
+        let raw = build_sip(
+            "REGISTER sip:registrar.example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=r1",
+                "To: <sip:alice@example.com>",
+                "Call-ID: register-chal@example.com",
+                "CSeq: 1 REGISTER",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let register = parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse REGISTER");
+
+        for code in [401u16, 407] {
+            let mut dialog = SipDialog::new(&register).expect("should create dialog");
+            update_state(
+                &mut dialog,
+                &make_response(code, "Auth Required", "REGISTER"),
+            );
+            assert_ne!(
+                dialog.state,
+                DialogState::Failed,
+                "{code} auth challenge must not mark REGISTER Failed"
+            );
+        }
+    }
+
+    /// A genuine 4xx failure (403 Forbidden) moves a REGISTER dialog to
+    /// Failed. (401/407 auth challenges are intermediate — see
+    /// `register_auth_challenge_is_not_failure`.)
     #[test]
     fn register_failure() {
         let raw = build_sip(
@@ -691,7 +761,7 @@ mod tests {
 
         let mut dialog = SipDialog::new(&register).expect("should create dialog");
 
-        let error = make_response(401, "Unauthorized", "REGISTER");
+        let error = make_response(403, "Forbidden", "REGISTER");
         update_state(&mut dialog, &error);
         assert_eq!(dialog.state, DialogState::Failed);
     }

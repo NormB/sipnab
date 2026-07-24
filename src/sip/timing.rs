@@ -21,6 +21,11 @@ use super::method::SipMethod;
 pub struct DialogTiming {
     /// Timestamp of the initial INVITE request.
     pub invite_sent: Option<DateTime<Utc>>,
+    /// CSeq number of the initial INVITE. Responses (100/180/200) are pinned
+    /// to this number so a re-INVITE's responses are not mistaken for the
+    /// initial transaction's milestones. `None` when the INVITE request was
+    /// not captured (then responses fall back to first-match).
+    pub invite_cseq: Option<u32>,
     /// Timestamp of the first 100 Trying response.
     pub trying_at: Option<DateTime<Utc>>,
     /// Timestamp of the first 180 Ringing or 183 Session Progress response.
@@ -120,6 +125,9 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
                 if *dialog_method == SipMethod::Invite && timing.invite_sent.is_none() =>
             {
                 timing.invite_sent = Some(msg.timestamp);
+                // Remember which INVITE transaction this dialog began with so
+                // its responses can be told apart from later re-INVITEs.
+                timing.invite_cseq = msg.cseq().map(|(n, _)| n);
             }
             Some(SipMethod::Bye) if timing.bye_sent.is_none() => {
                 timing.bye_sent = Some(msg.timestamp);
@@ -138,17 +146,26 @@ pub fn update_timing(timing: &mut DialogTiming, msg: &SipMessage, dialog_method:
             _ => {}
         }
     } else if let Some(code) = msg.status_code {
-        // Determine which method this response belongs to via CSeq
-        let cseq_method = msg.cseq().map(|(_, m)| m).unwrap_or_default();
+        // Determine which transaction this response belongs to via CSeq.
+        let (cseq_num, cseq_method) = match msg.cseq() {
+            Some((n, m)) => (Some(n), m),
+            None => (None, ""),
+        };
+        // A response belongs to the dialog's initial INVITE when its CSeq
+        // number matches the recorded one; if the INVITE was never captured
+        // (invite_cseq is None) we cannot tell, so fall back to first-match.
+        let is_initial_invite = timing.invite_cseq.is_none() || cseq_num == timing.invite_cseq;
 
         match code {
-            100 if cseq_method == "INVITE" && timing.trying_at.is_none() => {
+            100 if cseq_method == "INVITE" && is_initial_invite && timing.trying_at.is_none() => {
                 timing.trying_at = Some(msg.timestamp);
             }
-            180 | 183 if cseq_method == "INVITE" && timing.ringing_at.is_none() => {
+            180 | 183
+                if cseq_method == "INVITE" && is_initial_invite && timing.ringing_at.is_none() =>
+            {
                 timing.ringing_at = Some(msg.timestamp);
             }
-            200 if cseq_method == "INVITE" && timing.answered_at.is_none() => {
+            200 if cseq_method == "INVITE" && is_initial_invite && timing.answered_at.is_none() => {
                 timing.answered_at = Some(msg.timestamp);
             }
             200 if cseq_method == "BYE" && timing.bye_answered.is_none() => {
@@ -278,6 +295,46 @@ mod tests {
         update_timing(&mut timing, &ringing, &SipMethod::Invite);
 
         assert_eq!(timing.pdd_ms(), Some(1500));
+    }
+
+    /// A 200 whose CSeq does not belong to the initial INVITE (e.g. a
+    /// re-INVITE's 200, when the original 200 was not captured) must not be
+    /// recorded as the call's answer time.
+    #[test]
+    fn reinvite_200_is_not_recorded_as_answer() {
+        let mut timing = DialogTiming::default();
+        let t0 = base_ts();
+        // Initial INVITE (CSeq 1); its 200 is never captured.
+        update_timing(&mut timing, &make_invite(t0), &SipMethod::Invite);
+
+        // A 200 belonging to a later re-INVITE (CSeq 2).
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: timing-test@example.com",
+                "CSeq: 2 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let reinvite_200 = parse_sip(
+            &raw,
+            t0 + TimeDelta::milliseconds(9000),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse re-INVITE 200");
+        update_timing(&mut timing, &reinvite_200, &SipMethod::Invite);
+
+        assert_eq!(
+            timing.answered_at, None,
+            "a re-INVITE's 200 must not be recorded as the answer time"
+        );
     }
 
     /// Setup time equals the INVITE→200 interval.
