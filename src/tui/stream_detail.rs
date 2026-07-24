@@ -617,7 +617,7 @@ mod tests {
     /// Build a store holding one PCMU stream, then inject RTCP-reported
     /// jitter/loss so the render path exercises the chosen style branch.
     /// Returns the store and the key of the inserted stream.
-    fn store_with_stream(ssrc: u32, jitter: u32, lost: u32) -> (StreamStore, StreamKey) {
+    fn store_with_stream(ssrc: u32, jitter: u32, lost: i32) -> (StreamStore, StreamKey) {
         let mut store = StreamStore::new(16);
         let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         // A few packets so packet_count > 0 and a duration exists.

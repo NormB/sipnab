@@ -2,6 +2,21 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- RTCP-reported jitter is now converted from RTP-timestamp units to
+  milliseconds (`jitter * 1000 / clock_rate`) before it overwrites a
+  stream's jitter estimate, instead of being stored raw — the old code fed
+  MOS a jitter 8x too large for an 8 kHz stream.
+- The RTCP cumulative-packets-lost field is now decoded as the 24-bit
+  *signed* value RFC 3550 specifies (sign-extended into an `i32`); a
+  negative count (net duplicates) previously zero-extended into a huge
+  positive loss total. Stream loss counters clamp a negative value to zero.
+- Interarrival jitter now interprets the RTP-timestamp difference as a
+  signed (`i32`) transit delta, so a reordered packet no longer produces a
+  ~4.29e9-unit spike that corrupted the estimate.
+
 ## [0.5.29] - 2026-07-23
 
 ### Security

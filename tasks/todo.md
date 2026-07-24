@@ -37,9 +37,9 @@ Tiers:
 
 - [ ] src/tui/save.rs:676 — [correctness] `save_to_wav_path` indexes raw store order, not displayed order — wrong dialog's audio exported under filter/sort.
 - [ ] src/tui/controllers/call_list.rs:324,342 — [missed-edge-case] clear_non_matching/matching pass `&[]` streams to matches_dialog; stream-criteria rows misclassified and deleted.
-- [ ] src/rtp/stream_store.rs:259 — [correctness] RTCP jitter (RTP timestamp units) overwrites millisecond jitter; feeds MOS 8x off at 8kHz.
+- [x] src/rtp/stream_store.rs:259 — [correctness] RTCP jitter (RTP timestamp units) overwrites millisecond jitter; feeds MOS 8x off at 8kHz. **Done:** `process_rtcp` now converts the report jitter to ms via `jitter * 1000 / clock_rate` (guarded for clock_rate 0) before storing it.
 - [x] src/rtp/stream.rs:270 — [correctness] reordered packet inflates jitter (wrapping_sub as u64 → 4.29e9 spike); cast wrapped diff to i32 for RFC 3550 signed semantics. **Done:** wrapped diff cast `as i32 as f64` so a reordered packet yields a small signed transit delta, not a ~33M-ms jitter spike.
-- [ ] src/rtp/rtcp.rs:284 — [correctness] 24-bit signed cumulative_lost zero-extended; negative becomes huge positive.
+- [x] src/rtp/rtcp.rs:284 — [correctness] 24-bit signed cumulative_lost zero-extended; negative becomes huge positive. **Done:** `cumulative_lost` is now `i32`, sign-extended from the 24-bit field (`(raw24 << 8) as i32 >> 8`); `stream_store` clamps negatives to 0 lost.
 - [ ] src/capture/hep.rs:959 — [potential-bug] `build_hep_v3_bytes`: total_length `as u16` wraps past 65535 → corrupt header (same in test helper at 1732).
 - [ ] src/capture/pcap_reader.rs:484 — [correctness] `if_tsresol` not reset at new SHB; multi-interface/multi-section pcapng gets wrong resolution/link type (EPB interface_id ignored).
 - [ ] src/capture/reassembly.rs:520 — [correctness] TCP sequence comparison is non-wrapping; streams crossing 2^32 misclassify in-order segments as retransmits (needs serial arithmetic).

@@ -72,8 +72,10 @@ pub struct ReceptionReport {
     pub ssrc: u32,
     /// Fraction of packets lost since last report (0-255).
     pub fraction_lost: u8,
-    /// Cumulative number of packets lost (24-bit signed, stored as u32).
-    pub cumulative_lost: u32,
+    /// Cumulative number of packets lost — a 24-bit *signed* value per
+    /// RFC 3550 §6.4.1 (negative when duplicates outnumber losses),
+    /// sign-extended into an `i32`.
+    pub cumulative_lost: i32,
     /// Extended highest sequence number received.
     pub highest_seq: u32,
     /// Interarrival jitter estimate.
@@ -280,8 +282,11 @@ fn parse_report_blocks(data: &[u8], offset: usize, count: usize) -> Result<Vec<R
 
         let ssrc = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
         let fraction_lost = data[pos + 4];
-        // Cumulative lost is 24-bit signed, stored in bytes 5..8
-        let cumulative_lost = u32::from_be_bytes([0, data[pos + 5], data[pos + 6], data[pos + 7]]);
+        // Cumulative lost is 24-bit signed, stored in bytes 5..8. Place the
+        // 24-bit value in the high bits then arithmetic-shift back down so the
+        // sign bit (bit 23) is extended into a proper negative i32.
+        let raw24 = u32::from_be_bytes([0, data[pos + 5], data[pos + 6], data[pos + 7]]);
+        let cumulative_lost = ((raw24 << 8) as i32) >> 8;
         let highest_seq =
             u32::from_be_bytes([data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11]]);
         let jitter = u32::from_be_bytes([
@@ -665,6 +670,37 @@ mod tests {
                 assert_eq!(r.highest_seq, 1000);
             }
             other => panic!("Expected ReceiverReport, got {other:?}"),
+        }
+    }
+
+    /// A 24-bit cumulative-lost field with its sign bit set (net duplicates)
+    /// decodes as a negative `i32` per RFC 3550, not a huge positive count
+    /// from zero-extension.
+    #[test]
+    fn parse_report_block_negative_cumulative_lost() {
+        let mut data = Vec::new();
+        data.push(0x81); // V=2, P=0, RC=1
+        data.push(201); // PT=RR
+        data.extend_from_slice(&7u16.to_be_bytes());
+        data.extend_from_slice(&0x1111_1111u32.to_be_bytes()); // reporter SSRC
+        // Report block
+        data.extend_from_slice(&0x2222_2222u32.to_be_bytes()); // source SSRC
+        data.push(0); // fraction lost
+        data.extend_from_slice(&[0xFF, 0xFF, 0xFF]); // cumulative lost = -1 (24-bit signed)
+        data.extend_from_slice(&1000u32.to_be_bytes()); // highest seq
+        data.extend_from_slice(&0u32.to_be_bytes()); // jitter
+        data.extend_from_slice(&0u32.to_be_bytes()); // last SR
+        data.extend_from_slice(&0u32.to_be_bytes()); // delay since SR
+
+        let packets = parse_rtcp(&data);
+        match &packets[0] {
+            RtcpPacket::ReceiverReport(rr) => {
+                assert_eq!(
+                    rr.reports[0].cumulative_lost, -1,
+                    "0xFFFFFF must sign-extend to -1, not 16777215"
+                );
+            }
+            other => panic!("expected ReceiverReport, got {other:?}"),
         }
     }
 
