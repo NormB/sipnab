@@ -80,7 +80,7 @@ Tiers:
 
 ## P2 — robustness, observability & efficiency
 
-- [ ] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip).
+- [x] **TUI copy/paste (user-reported 2026-07-24)** — mouse capture blocks the terminal's native drag-select on every view, and the only clipboard feature (call-flow `E` Mermaid export) shells out to pbcopy/xclip, which fails over SSH. Plan: OSC 52 as primary clipboard mechanism (terminal puts text on the local clipboard; works over SSH) with pbcopy/xclip fallback; `y` copy binding on the message-detail pane; a mouse-capture toggle key so native selection works everywhere; help + docs updated (including the Shift+drag bypass tip). **Done:** new `tui::clipboard` module — OSC 52 written to /dev/tty (72 KiB raw bound, char-boundary truncation, xterm-safe base64 size) with silent pbcopy/xclip belt-and-suspenders and honest status wording; `y` yanks the displayed raw message (detached worker + status line, same pattern as `E`); F12 toggles mouse capture (audited free across views; rebind wins; persistent status reminder while off); help view, keybindings docs and website mirror updated with a Copying-text section.
 
 - [ ] src/capture/hep.rs:934 — [edge-case] `build_hep_v3_bytes`: `timestamp.timestamp() as u32` silently truncates post-2106 / wraps pre-1970; no guard.
 - [ ] src/capture/hep.rs:381 — [efficiency] `verify_hmac_auth_token` prunes the whole nonce map per accepted packet; amortize (e.g. once/second).
@@ -242,6 +242,8 @@ Tiers:
 - [ ] src/crypto.rs:13 — [doc-staleness] CryptoBackend doc mentions wolfSSL/OpenSSL backends that don't exist (removed by decision).
 
 ## P4 — test quality
+
+- [ ] .githooks/pre-commit test-count check — [flaky] `cargo test --features full` intermittently reports a partial sum (2291/2308 vs true count) when run immediately after another cargo build, aborting the commit; self-heals on retry. Observed 4× on 2026-07-24 (never in 5 isolated back-to-back runs). Suspect a suite aborting under fingerprint invalidation from an interleaved build (wasm-pack/rustup activity correlated twice). Capture the failing suite's output from inside the hook before fixing.
 
 - [ ] src/capture/device.rs (test list_devices_returns_vec) — [test-quality] asserts only "does not panic".
 - [ ] src/tui/call_flow/mod.rs (ladder_split_width) — [test-coverage] no test pins `total < DETAIL_FLOOR` geometry.

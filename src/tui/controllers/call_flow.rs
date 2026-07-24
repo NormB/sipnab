@@ -814,88 +814,10 @@ fn export_mermaid_to_clipboard(app: &mut App) {
             // Copy on a detached worker: a wedged clipboard helper used to
             // hang the whole TUI on child.wait(). The worker's result lands
             // in the status line via the async_messages drain.
-            spawn_clipboard_copy(mermaid, Arc::clone(&app.async_messages));
+            crate::tui::clipboard::spawn_clipboard_copy(mermaid, Arc::clone(&app.async_messages));
             app.status_error = Some("Copying Mermaid diagram to clipboard…".to_string());
         } else {
             app.status_error = Some("No messages to export".to_string());
-        }
-    }
-}
-
-/// Copy `text` to the system clipboard on a detached worker thread, pushing
-/// the outcome message into `messages` (drained into the status line by the
-/// event-loop tick). Never blocks the caller.
-///
-/// # Arguments
-/// * `text` - the content to place on the clipboard.
-/// * `messages` - shared queue the worker (or a failed spawn) reports into.
-pub(in crate::tui) fn spawn_clipboard_copy(
-    text: String,
-    messages: Arc<parking_lot::Mutex<Vec<String>>>,
-) {
-    let worker_messages = Arc::clone(&messages);
-    let spawned = std::thread::Builder::new()
-        .name("clipboard".to_string())
-        .spawn(move || {
-            let msg = clipboard_copy_bounded(&text);
-            worker_messages.lock().push(msg);
-        });
-    if let Err(e) = spawned {
-        messages.lock().push(format!("Clipboard: {e}"));
-    }
-}
-
-/// Run the platform clipboard helper (pbcopy/xclip) with a bounded wait so
-/// a wedged helper is killed instead of leaking. Worker-thread only.
-///
-/// # Returns
-/// A human-readable outcome for the status line: the success message, or
-/// a "Clipboard: …" error (spawn/write failure, non-zero exit, or the
-/// 5-second timeout kill).
-fn clipboard_copy_bounded(text: &str) -> String {
-    let cmd = if cfg!(target_os = "macos") {
-        "pbcopy"
-    } else {
-        "xclip"
-    };
-    let args: Vec<&str> = if cfg!(target_os = "macos") {
-        vec![]
-    } else {
-        vec!["-selection", "clipboard"]
-    };
-    let mut child = match std::process::Command::new(cmd)
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => return format!("Clipboard: {e}"),
-    };
-    if let Some(mut stdin) = child.stdin.take() {
-        use std::io::Write;
-        if let Err(e) = stdin.write_all(text.as_bytes()) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return format!("Clipboard: {e}");
-        }
-        // Dropping stdin closes the pipe so the helper sees EOF and exits.
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => {
-                return "Mermaid diagram copied to clipboard".to_string();
-            }
-            Ok(Some(status)) => return format!("Clipboard helper exited with {status}"),
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return format!("Clipboard: {cmd} did not finish within 5s (killed)");
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            Err(e) => return format!("Clipboard: {e}"),
         }
     }
 }
@@ -991,6 +913,8 @@ pub enum RawMessageAction {
     CycleColorMode,
     /// `h` — cycle the header-name display form.
     CycleHeaderForm,
+    /// `y` — yank: copy the displayed message's raw text to the clipboard.
+    CopyMessage,
     /// Esc — return to the view the raw view was opened from.
     Back,
     /// The configured help key — open the help view.
@@ -1028,6 +952,7 @@ pub fn raw_message_action(km: &Keymap, key: KeyEvent) -> Option<RawMessageAction
         KeyCode::Char('s') => ToggleSyntaxHighlight,
         KeyCode::Char('c') => CycleColorMode,
         KeyCode::Char('h') => CycleHeaderForm,
+        KeyCode::Char('y') => CopyMessage,
         KeyCode::Esc => Back,
         k if k == km.help => Help,
         k if k == km.save => OpenSaveDialog,
@@ -1056,7 +981,8 @@ pub(in crate::tui) fn handle_raw_message_key(app: &mut App, key: KeyEvent) {
 /// `jump_raw_search_match`; the toggles/cycles flip their flag or mode
 /// and announce it on the status line; `Search` sets `search_active`;
 /// `Back` restores `raw_msg_return_view` (call-flow fallback); `Help`
-/// switches the view; `OpenSaveDialog` opens the save popup; `Quit` sets
+/// switches the view; `OpenSaveDialog` opens the save popup;
+/// `CopyMessage` spawns the detached clipboard worker; `Quit` sets
 /// `should_quit`.
 fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
     match action {
@@ -1095,6 +1021,7 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
             app.status_error = Some(app.color_mode.label().to_string());
         }
         RawMessageAction::CycleHeaderForm => cycle_header_form(app),
+        RawMessageAction::CopyMessage => copy_raw_message(app),
         RawMessageAction::Back => {
             if let View::RawMessage { ref call_id, .. } = app.current_view {
                 // Return to wherever the raw view was opened from.
@@ -1104,6 +1031,37 @@ fn execute_raw_message_action(app: &mut App, action: RawMessageAction) {
         }
         RawMessageAction::Help => app.current_view = View::Help,
         RawMessageAction::OpenSaveDialog => open_save_popup(app),
+    }
+}
+
+/// y — copy the displayed message's raw text to the clipboard on a
+/// detached worker (same pattern as the Mermaid export).
+///
+/// # Side effects
+/// Briefly holds the dialog-store read lock to snapshot the message text
+/// (the same header-form rewrite the viewer displays), spawns the
+/// detached clipboard worker, and paints a "Copying…" status — the
+/// worker's outcome lands later through the async-messages drain.
+fn copy_raw_message(app: &mut App) {
+    let View::RawMessage {
+        ref call_id,
+        message_index,
+    } = app.current_view
+    else {
+        return;
+    };
+    let text = app.dialog_store.try_read().and_then(|store| {
+        store
+            .get(call_id)
+            .and_then(|d| d.messages.get(message_index))
+            .map(|msg| crate::tui::msg_raw::raw_display_text(msg, app.header_form).1)
+    });
+    match text {
+        Some(text) => {
+            crate::tui::clipboard::spawn_clipboard_copy(text, Arc::clone(&app.async_messages));
+            app.status_error = Some("Copying message to clipboard…".to_string());
+        }
+        None => app.status_error = Some("Message not available".to_string()),
     }
 }
 
@@ -2070,6 +2028,43 @@ mod tests {
         let mut app = app_in_raw_message();
         handle_raw_message_key(&mut app, key(KeyCode::F(2)));
         assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+    }
+
+    /// `y` maps to the copy action in the raw view's key table.
+    #[test]
+    fn raw_message_action_maps_y_to_copy() {
+        let km = Keymap::default();
+        assert_eq!(
+            raw_message_action(&km, key(KeyCode::Char('y'))),
+            Some(RawMessageAction::CopyMessage)
+        );
+    }
+
+    /// `y` copies the displayed message: a "Copying…" status paints
+    /// immediately and the detached worker's outcome (success or error)
+    /// eventually lands in `async_messages` — same contract as the
+    /// Mermaid export worker.
+    #[test]
+    fn raw_message_y_copies_displayed_message() {
+        let mut app = app_in_raw_message();
+        handle_raw_message_key(&mut app, key(KeyCode::Char('y')));
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Copying message to clipboard…")
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while app.async_messages.lock().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "clipboard worker never reported"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let msg = app.async_messages.lock().remove(0);
+        assert!(
+            msg.starts_with("Copied "),
+            "unexpected worker report: {msg}"
+        );
     }
 
     /// An unbound key leaves the raw view unchanged.

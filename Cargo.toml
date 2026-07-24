@@ -190,7 +190,7 @@ harness = false
 default = ["native", "tui", "audio", "metrics"]
 # Native platform deps (not available in WASM)
 native = ["dep:pcap", "dep:clap", "dep:clap_complete", "dep:env_logger", "dep:crossbeam-channel", "dep:libc", "dep:pcap-file", "dep:tracing-subscriber", "dep:tracing-log", "dep:tempfile"]
-tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width"]
+tui = ["native", "dep:ratatui", "dep:crossterm", "dep:unicode-width", "dep:base64"]
 tls = ["dep:zeroize", "dep:ring", "dep:rustls", "dep:aes", "dep:cbc", "dep:base64", "dep:rsa"]
 hep = ["native", "dep:hmac", "dep:sha2"]
 # Standalone Prometheus /metrics server (raw TCP + threads; no axum/tokio,

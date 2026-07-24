@@ -33,7 +33,23 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 |-----|--------|
 | Ctrl+C | Force quit |
 | Ctrl+L | Clear all calls (same as F5) |
+| F12 | Toggle mouse capture — off enables the terminal's native drag-to-select (wheel scrolling pauses until re-enabled) |
 | Mouse wheel | Scroll (every view: lists move the selection, text views scroll) |
+
+## Copying text
+
+Clipboard copies (`y` in the Raw Message view, `E` in the Call Flow view) use
+**OSC 52**, an escape sequence the terminal maps to your system clipboard. It
+travels in-band over the pty, so it works across SSH with no X11 forwarding —
+your terminal must support it, and most modern ones (kitty, WezTerm, iTerm2,
+Windows Terminal, foot, recent xterm) do. On top of OSC 52, sipnab also feeds
+`pbcopy`/`xclip` silently when one is available. Copies are capped at 72 KiB
+(terminals limit OSC 52 payloads); the status line reports what was copied.
+
+To select arbitrary screen text with the mouse, press `F12` to turn mouse
+capture off and drag as usual, then `F12` again to get wheel scrolling back.
+In many terminals holding **Shift** while dragging bypasses mouse capture
+without toggling anything.
 
 ## Call List
 
@@ -123,6 +139,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | n / N | Jump to the next / previous search-match line (wraps) |
 | s | Toggle syntax highlighting |
 | c | Cycle color scheme |
+| y | Copy the displayed message's raw text to the clipboard (OSC 52, works over SSH — see [Copying text](#copying-text)) |
 | Esc | Back to the view it was opened from (call flow or call list) |
 
 ## Message Diff

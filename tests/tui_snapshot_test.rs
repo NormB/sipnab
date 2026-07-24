@@ -688,7 +688,8 @@ mod tui_snapshots {
         terminal.draw(|frame| app.render(frame)).unwrap();
         let scrolled = buffer_to_string(&terminal);
         assert!(
-            scrolled.contains("Mouse wheel scrolls every view."),
+            scrolled.contains("COPY & PASTE:")
+                && scrolled.contains("Shift+drag bypasses capture in many terminals."),
             "scrolling did not reveal the end of the help:\n{scrolled}"
         );
     }
