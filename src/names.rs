@@ -166,8 +166,8 @@ impl NameResolver {
     /// serves PTR lookups until the resolver (the channel sender) is
     /// dropped; each completed lookup writes the (bounded) DNS cache and
     /// bumps the generation counter. The work queue holds at most
-    /// [`DNS_QUEUE_CAPACITY`] pending lookups; overflow is dropped, never
-    /// queued unbounded (see [`enqueue_dns`](Self::enqueue_dns)).
+    /// `DNS_QUEUE_CAPACITY` pending lookups; overflow is dropped, never
+    /// queued unbounded (see `enqueue_dns`).
     pub fn with_reverse_dns(enabled: bool) -> Self {
         if !enabled {
             return Self::new();
