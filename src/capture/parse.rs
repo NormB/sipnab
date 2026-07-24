@@ -8,11 +8,13 @@
 //! reassembly or direct consumption by upper-layer parsers. Encapsulation
 //! stripping covers IP-in-IP, 6in4 (IPv6-in-IPv4), and GRE.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use crate::error::CaptureError;
+use ahash::RandomState;
 use chrono::{DateTime, Utc};
 use etherparse::{IpNumber, Ipv6ExtensionSlice, NetSlice, SlicedPacket, TransportSlice};
+use indexmap::IndexMap;
 
 use super::packet::Packet;
 
@@ -171,21 +173,36 @@ fn ip_protocol_to_transport(p: u8) -> Option<TransportProto> {
 
 // ── SCTP ──────────────────────────────────────────────────────────────
 
-/// A zero-copy reference to the SIP payload carried in an SCTP DATA chunk.
+/// A zero-copy reference to one SCTP DATA chunk's control fields and payload.
 ///
-/// `payload` is the byte range of the SIP message within the SCTP packet slice
-/// passed to [`parse_sctp_data_chunk`]; `src_port`/`dst_port` come from the
-/// SCTP common header.
-struct SctpDataRef {
+/// `payload` is the byte range of the chunk value (the user data — here, a SIP
+/// message or a fragment of one) within the SCTP packet slice passed to
+/// [`find_sctp_data_chunk`]; `src_port`/`dst_port` come from the SCTP common
+/// header. `begin`/`end` are the B/E fragment flags and `tsn`/`sid`/`ssn`
+/// identify the fragment's place in its stream for cross-packet reassembly.
+struct SctpDataChunkRef {
     /// Source port from the SCTP common header.
     src_port: u16,
     /// Destination port from the SCTP common header.
     dst_port: u16,
-    /// Byte range of the SIP payload within the SCTP packet slice.
+    /// Transmission Sequence Number of this DATA chunk (contiguous across the
+    /// fragments of one message).
+    tsn: u32,
+    /// Stream Identifier (shared by all fragments of one message).
+    sid: u16,
+    /// Stream Sequence Number (shared by all fragments of one message).
+    ssn: u16,
+    /// B (beginning) fragment flag.
+    begin: bool,
+    /// E (ending) fragment flag.
+    end: bool,
+    /// Byte range of the chunk's user data within the SCTP packet slice.
     payload: std::ops::Range<usize>,
 }
 
-/// Parse the first complete, unfragmented DATA chunk out of an SCTP packet.
+/// Find the first DATA chunk in an SCTP packet matching the requested
+/// completeness, returning its ports, fragment control fields, and payload
+/// range.
 ///
 /// `sctp` is the full SCTP packet: the 12-byte common header (src port, dst
 /// port, verification tag, checksum) followed by one or more chunks. Each chunk
@@ -194,19 +211,19 @@ struct SctpDataRef {
 /// boundary (the final chunk's padding may be absent).
 ///
 /// A DATA chunk (type 0) carries a 12-byte data header (TSN, stream id, stream
-/// seq, PPID); the application payload (here, the SIP message) is the chunk
-/// value after that data header. Only a chunk with both the B (beginning) and E
-/// (ending) flags set is a complete, unfragmented message; fragments are
-/// skipped. Returns the ports and the byte range of the first such chunk's
-/// non-empty payload.
+/// seq, PPID); the application payload is the chunk value after that data
+/// header. A chunk with both the B (beginning) and E (ending) flags set is a
+/// complete, unfragmented message; any other combination is a fragment of a
+/// message split across chunks/packets (RFC 4960 §3.3.1).
+///
+/// When `complete_only` is `true` this returns the first complete (B+E) chunk
+/// (the single-packet fast path); when `false` it returns the first *fragment*
+/// (a B-only, middle, or E-only chunk), the input to cross-packet reassembly.
+/// Only chunks with a non-empty payload are returned.
 ///
 /// Fails closed: any truncation, out-of-bounds, or malformed length yields
 /// `None`.
-///
-/// Reassembling DATA fragments (a B-only chunk, continuation chunks, and an
-/// E-only chunk) that span multiple packets by TSN/stream is not handled yet
-/// and is a follow-up; such fragments are currently dropped.
-fn parse_sctp_data_chunk(sctp: &[u8]) -> Option<SctpDataRef> {
+fn find_sctp_data_chunk(sctp: &[u8], complete_only: bool) -> Option<SctpDataChunkRef> {
     const COMMON_HEADER_LEN: usize = 12; // src+dst ports, verification tag, checksum
     const CHUNK_HEADER_LEN: usize = 4; // type(1) + flags(1) + length(2)
     const DATA_HEADER_LEN: usize = 12; // TSN, stream id, stream seq, PPID
@@ -238,19 +255,37 @@ fn parse_sctp_data_chunk(sctp: &[u8]) -> Option<SctpDataRef> {
         }
 
         if chunk_type == DATA_CHUNK_TYPE {
-            let complete = (flags & FLAG_B != 0) && (flags & FLAG_E != 0);
-            let payload_start = offset
-                .checked_add(CHUNK_HEADER_LEN)?
-                .checked_add(DATA_HEADER_LEN)?;
-            // Accept only a complete message with a non-empty payload.
-            if complete && payload_start < chunk_end {
-                return Some(SctpDataRef {
+            let begin = flags & FLAG_B != 0;
+            let end = flags & FLAG_E != 0;
+            let complete = begin && end;
+            let data_start = offset.checked_add(CHUNK_HEADER_LEN)?;
+            let payload_start = data_start.checked_add(DATA_HEADER_LEN)?;
+            // `payload_start < chunk_end` guarantees the full data header is
+            // present and the payload is non-empty. `complete == complete_only`
+            // selects complete chunks for the fast path and fragments for
+            // reassembly.
+            if complete == complete_only && payload_start < chunk_end {
+                let tsn = u32::from_be_bytes([
+                    sctp[data_start],
+                    sctp[data_start + 1],
+                    sctp[data_start + 2],
+                    sctp[data_start + 3],
+                ]);
+                let sid = u16::from_be_bytes([sctp[data_start + 4], sctp[data_start + 5]]);
+                let ssn = u16::from_be_bytes([sctp[data_start + 6], sctp[data_start + 7]]);
+                return Some(SctpDataChunkRef {
                     src_port,
                     dst_port,
+                    tsn,
+                    sid,
+                    ssn,
+                    begin,
+                    end,
                     payload: payload_start..chunk_end,
                 });
             }
-            // Otherwise it is a fragment or an empty DATA chunk — keep scanning.
+            // Otherwise it is the wrong kind of chunk or an empty DATA chunk —
+            // keep scanning.
         }
 
         // Advance past this chunk, rounding its length up to the next 4-byte
@@ -260,6 +295,208 @@ fn parse_sctp_data_chunk(sctp: &[u8]) -> Option<SctpDataRef> {
         offset = offset.checked_add(padded)?;
     }
     None
+}
+
+/// One SCTP DATA fragment recovered from a captured packet, ready to feed to
+/// [`SctpReassembler`]. `data` is a zero-copy view of the fragment's user data;
+/// `begin`/`end` are the B/E flags and `tsn`/`sid`/`ssn` place it in its stream.
+#[derive(Debug, Clone)]
+pub(crate) struct SctpFragment {
+    /// Source port from the SCTP common header.
+    pub(crate) src_port: u16,
+    /// Destination port from the SCTP common header.
+    pub(crate) dst_port: u16,
+    /// Transmission Sequence Number (contiguous across a message's fragments).
+    pub(crate) tsn: u32,
+    /// Stream Identifier (shared by a message's fragments).
+    pub(crate) sid: u16,
+    /// Stream Sequence Number (shared by a message's fragments).
+    pub(crate) ssn: u16,
+    /// B (beginning) fragment flag.
+    pub(crate) begin: bool,
+    /// E (ending) fragment flag.
+    pub(crate) end: bool,
+    /// The fragment's user data (zero-copy view of the packet buffer).
+    pub(crate) data: bytes::Bytes,
+}
+
+/// Recover the first SCTP DATA *fragment* (a B-only, middle, or E-only chunk)
+/// from a raw captured packet, for cross-packet reassembly.
+///
+/// Complements the stateless [`parse_packet`] path, which already emits the SIP
+/// payload of a single-packet complete (B+E) chunk. Only non-encapsulated SCTP
+/// over the recognized link types is handled; encapsulated SCTP and pre-parsed
+/// (HEP) sources are not reassembled here (fail-closed — such fragments are
+/// simply not reassembled). Returns `None` when the packet is not SCTP, carries
+/// no DATA fragment, or is malformed.
+pub(crate) fn parse_sctp_fragment(packet: &Packet) -> Option<SctpFragment> {
+    if packet.pre_parsed.is_some() {
+        return None;
+    }
+    let sliced = slice_link_layer(packet.link_type, &packet.data).ok()?;
+    let net = sliced.net.as_ref()?;
+    let ip_payload = net.ip_payload_ref()?;
+    // 132 = SCTP. Encapsulated SCTP (inside IP-in-IP / GRE) is out of scope for
+    // fragment reassembly and left unreassembled rather than mis-parsed.
+    if ip_payload.ip_number.0 != 132 {
+        return None;
+    }
+    let chunk = find_sctp_data_chunk(ip_payload.payload, false)?;
+    let bytes = ip_payload.payload.get(chunk.payload.clone())?;
+    Some(SctpFragment {
+        src_port: chunk.src_port,
+        dst_port: chunk.dst_port,
+        tsn: chunk.tsn,
+        sid: chunk.sid,
+        ssn: chunk.ssn,
+        begin: chunk.begin,
+        end: chunk.end,
+        data: slice_of(&packet.data, bytes),
+    })
+}
+
+/// Default cap on concurrently tracked SCTP reassembly streams. Mirrors the
+/// other reassemblers' session cap so a flood of incomplete fragment streams
+/// cannot grow memory without bound.
+const DEFAULT_MAX_SCTP_STREAMS: usize = 10_000;
+
+/// Upper bound on a single reassembled SCTP message (bytes). A fragment stream
+/// whose accumulated user data would exceed this is dropped, so a peer cannot
+/// pin memory with an unbounded run of B/middle fragments.
+const MAX_SCTP_REASSEMBLY: usize = 65_536;
+
+/// Reassembly key: the SCTP association (5-tuple; proto is implicitly SCTP)
+/// plus the Stream Identifier and Stream Sequence Number that all fragments of
+/// one user message share (RFC 4960 §3.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SctpStreamKey {
+    /// Source socket (association endpoint).
+    src: SocketAddr,
+    /// Destination socket (association endpoint).
+    dst: SocketAddr,
+    /// Stream Identifier.
+    sid: u16,
+    /// Stream Sequence Number.
+    ssn: u16,
+}
+
+/// In-progress reassembly of one fragmented SCTP user message.
+struct SctpPartial {
+    /// TSN expected on the next fragment; fragments of a message are contiguous.
+    next_tsn: u32,
+    /// User data accumulated so far, in TSN order (B, then middles).
+    buf: Vec<u8>,
+}
+
+/// Cross-packet SCTP DATA fragment reassembler (RFC 4960 §3.3.1).
+///
+/// A message split across DATA chunks — a B (beginning) fragment, zero or more
+/// middle fragments, then an E (ending) fragment sharing one (association, SID,
+/// SSN) with contiguous TSNs — is buffered here until the E fragment arrives,
+/// then emitted as the concatenated user data (the SIP message).
+///
+/// Fails closed, mirroring the single-chunk SCTP path: a middle/E fragment with
+/// no started stream, a TSN gap or reorder, or an over-cap message is dropped
+/// rather than emitting a corrupt payload. The stream table is bounded by
+/// `max_streams` with least-recently-updated eviction (map order is update
+/// recency), so incomplete fragment streams cannot grow memory unbounded.
+pub(crate) struct SctpReassembler {
+    /// In-progress reassemblies keyed by (association, SID, SSN). Map order is
+    /// update recency: index 0 is always the least-recently-updated stream.
+    streams: IndexMap<SctpStreamKey, SctpPartial, RandomState>,
+    /// Cap on tracked streams; at capacity the stalest entry is evicted.
+    max_streams: usize,
+}
+
+impl SctpReassembler {
+    /// Create a reassembler with the default stream cap.
+    pub(crate) fn new() -> Self {
+        Self::with_max_streams(DEFAULT_MAX_SCTP_STREAMS)
+    }
+
+    /// Create a reassembler tracking at most `max_streams` concurrent fragment
+    /// streams (clamped to at least 1).
+    pub(crate) fn with_max_streams(max_streams: usize) -> Self {
+        Self {
+            streams: IndexMap::default(),
+            max_streams: max_streams.max(1),
+        }
+    }
+
+    /// Feed one DATA fragment; returns the reassembled user message when this
+    /// fragment is the E (ending) one that completes it, otherwise `None`.
+    ///
+    /// `src`/`dst` are the association endpoints (from the packet's IP addresses
+    /// and the fragment's ports). A self-contained (B+E) fragment returns its
+    /// data immediately. Fail-closed drops (missing B, TSN gap, overflow) return
+    /// `None` and discard any partial for the stream.
+    pub(crate) fn insert(
+        &mut self,
+        src: SocketAddr,
+        dst: SocketAddr,
+        frag: &SctpFragment,
+    ) -> Option<bytes::Bytes> {
+        // A complete (B+E) chunk carries a whole message — no state needed.
+        if frag.begin && frag.end {
+            return Some(frag.data.clone());
+        }
+
+        let key = SctpStreamKey {
+            src,
+            dst,
+            sid: frag.sid,
+            ssn: frag.ssn,
+        };
+
+        if frag.begin {
+            // Beginning fragment: start (or restart) this stream's buffer.
+            // An over-cap opening fragment is refused outright.
+            if frag.data.len() > MAX_SCTP_REASSEMBLY {
+                self.streams.shift_remove(&key);
+                return None;
+            }
+            // Bound the stream count: evict the least-recently-updated entry
+            // (index 0) before admitting a genuinely new stream.
+            if !self.streams.contains_key(&key) && self.streams.len() >= self.max_streams {
+                self.streams.shift_remove_index(0);
+            }
+            // Remove any stale partial for this key, then insert so this stream
+            // becomes the most-recently-updated (map tail).
+            self.streams.shift_remove(&key);
+            self.streams.insert(
+                key,
+                SctpPartial {
+                    next_tsn: frag.tsn.wrapping_add(1),
+                    buf: frag.data.to_vec(),
+                },
+            );
+            return None;
+        }
+
+        // Middle or ending fragment: requires a started, TSN-contiguous stream.
+        // Taking it out first means every fail-closed exit already drops it.
+        let mut partial = self.streams.shift_remove(&key)?;
+        if frag.tsn != partial.next_tsn
+            || partial.buf.len().saturating_add(frag.data.len()) > MAX_SCTP_REASSEMBLY
+        {
+            // Gap / reorder / overflow — drop the partial, emit nothing.
+            return None;
+        }
+        partial.buf.extend_from_slice(&frag.data);
+        partial.next_tsn = frag.tsn.wrapping_add(1);
+        if frag.end {
+            return Some(bytes::Bytes::from(partial.buf));
+        }
+        // More fragments expected — re-insert as the most-recently-updated.
+        self.streams.insert(key, partial);
+        None
+    }
+
+    /// Number of in-progress reassembly streams (for tests / diagnostics).
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.streams.len()
+    }
 }
 
 // ── Public API ────────────────────────────────────────────────────────
@@ -320,6 +557,76 @@ pub(crate) fn reparse_transport(
             Some((sp, dp, TransportProto::Tcp, data_off))
         }
         _ => None,
+    }
+}
+
+/// Slice a raw link-layer frame into an [`SlicedPacket`] based on `link_type`.
+///
+/// Handles Ethernet II (with VLAN / QinQ via `etherparse`), Linux cooked
+/// capture v1 (`DLT_LINUX_SLL`, with a manual header-skip fallback for kernel
+/// SLL variants `etherparse` rejects) and v2 (`DLT_LINUX_SLL2`), and raw IP
+/// (`DLT_RAW`). Shared by [`parse_packet`] and the SCTP fragment recovery path
+/// so both reach the network layer the same way.
+///
+/// # Errors
+///
+/// Returns `UnsupportedLinkType` for an unrecognized `link_type`, `TooShort`
+/// for a truncated SLL/SLL2 header, or `PacketDecode` when the frame cannot be
+/// sliced.
+fn slice_link_layer(link_type: i32, data: &[u8]) -> Result<SlicedPacket<'_>, CaptureError> {
+    match link_type {
+        DLT_EN10MB => SlicedPacket::from_ethernet(data).map_err(|e| CaptureError::PacketDecode {
+            what: "Ethernet packet",
+            source: Box::new(e),
+        }),
+        DLT_LINUX_SLL => {
+            // Linux SLL (cooked capture v1) has a 16-byte header:
+            //   2 bytes: packet type
+            //   2 bytes: ARPHRD type
+            //   2 bytes: link-layer address length
+            //   8 bytes: link-layer address
+            //   2 bytes: protocol type (e.g., 0x0800 = IPv4)
+            // Try etherparse first; fall back to manual parsing if it fails
+            // (some kernel versions produce SLL variants etherparse doesn't handle).
+            match SlicedPacket::from_linux_sll(data) {
+                Ok(sliced) => Ok(sliced),
+                Err(_) => {
+                    if data.len() < 16 {
+                        return Err(CaptureError::TooShort {
+                            what: "Linux SLL packet",
+                            need: 16,
+                            got: data.len(),
+                        });
+                    }
+                    // Manual fallback: skip 16-byte SLL header, parse as IP
+                    SlicedPacket::from_ip(&data[16..]).map_err(|e| CaptureError::PacketDecode {
+                        what: "IP from Linux SLL packet (manual fallback)",
+                        source: Box::new(e),
+                    })
+                }
+            }
+        }
+        DLT_RAW => SlicedPacket::from_ip(data).map_err(|e| CaptureError::PacketDecode {
+            what: "raw IP packet",
+            source: Box::new(e),
+        }),
+        DLT_LINUX_SLL2 => {
+            // SLL2 has a 20-byte header; etherparse doesn't have a dedicated
+            // parser, but the IP packet starts at offset 20. Detect IP version
+            // from the first nibble of the IP header.
+            if data.len() < 20 {
+                return Err(CaptureError::TooShort {
+                    what: "Linux SLL2 packet",
+                    need: 20,
+                    got: data.len(),
+                });
+            }
+            SlicedPacket::from_ip(&data[20..]).map_err(|e| CaptureError::PacketDecode {
+                what: "IP from Linux SLL2 packet",
+                source: Box::new(e),
+            })
+        }
+        other => Err(CaptureError::UnsupportedLinkType(other)),
     }
 }
 
@@ -396,62 +703,7 @@ pub fn parse_packet(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
     let data = &packet.data;
 
     // First-pass parse based on link type
-    let sliced = match packet.link_type {
-        DLT_EN10MB => {
-            SlicedPacket::from_ethernet(data).map_err(|e| CaptureError::PacketDecode {
-                what: "Ethernet packet",
-                source: Box::new(e),
-            })?
-        }
-        DLT_LINUX_SLL => {
-            // Linux SLL (cooked capture v1) has a 16-byte header:
-            //   2 bytes: packet type
-            //   2 bytes: ARPHRD type
-            //   2 bytes: link-layer address length
-            //   8 bytes: link-layer address
-            //   2 bytes: protocol type (e.g., 0x0800 = IPv4)
-            // Try etherparse first; fall back to manual parsing if it fails
-            // (some kernel versions produce SLL variants etherparse doesn't handle).
-            match SlicedPacket::from_linux_sll(data) {
-                Ok(sliced) => sliced,
-                Err(_) => {
-                    if data.len() < 16 {
-                        return Err(CaptureError::TooShort {
-                            what: "Linux SLL packet",
-                            need: 16,
-                            got: data.len(),
-                        });
-                    }
-                    // Manual fallback: skip 16-byte SLL header, parse as IP
-                    SlicedPacket::from_ip(&data[16..]).map_err(|e| CaptureError::PacketDecode {
-                        what: "IP from Linux SLL packet (manual fallback)",
-                        source: Box::new(e),
-                    })?
-                }
-            }
-        }
-        DLT_RAW => SlicedPacket::from_ip(data).map_err(|e| CaptureError::PacketDecode {
-            what: "raw IP packet",
-            source: Box::new(e),
-        })?,
-        DLT_LINUX_SLL2 => {
-            // SLL2 has a 20-byte header; etherparse doesn't have a dedicated
-            // parser, but the IP packet starts at offset 20. Detect IP version
-            // from the first nibble of the IP header.
-            if data.len() < 20 {
-                return Err(CaptureError::TooShort {
-                    what: "Linux SLL2 packet",
-                    need: 20,
-                    got: data.len(),
-                });
-            }
-            SlicedPacket::from_ip(&data[20..]).map_err(|e| CaptureError::PacketDecode {
-                what: "IP from Linux SLL2 packet",
-                source: Box::new(e),
-            })?
-        }
-        other => return Err(CaptureError::UnsupportedLinkType(other)),
-    };
+    let sliced = slice_link_layer(packet.link_type, data)?;
 
     // Extract IP-layer information
     let net = sliced
@@ -741,7 +993,7 @@ fn extract_parsed_packet(
     // payload so downstream never misreads SCTP header bytes as a SIP message.
     if ip_protocol == 132 {
         let extracted = net.ip_payload_ref().and_then(|p| {
-            let data_ref = parse_sctp_data_chunk(p.payload)?;
+            let data_ref = find_sctp_data_chunk(p.payload, true)?;
             let sip = p.payload.get(data_ref.payload)?;
             Some((data_ref.src_port, data_ref.dst_port, slice_of(data, sip)))
         });
@@ -1034,18 +1286,19 @@ mod tests {
         h
     }
 
-    /// Build one SCTP DATA chunk (type 0) with the given `flags`, wrapping
-    /// `payload` after the 12-byte data header (TSN, stream id, stream seq,
-    /// PPID). The chunk is padded to the next 4-byte boundary.
-    fn sctp_data_chunk(flags: u8, payload: &[u8]) -> Vec<u8> {
+    /// Build one SCTP DATA chunk (type 0) with the given `flags`, TSN, stream
+    /// id, and stream seq, wrapping `payload` after the 12-byte data header
+    /// (TSN, stream id, stream seq, PPID). The chunk is padded to the next
+    /// 4-byte boundary.
+    fn sctp_data_chunk_full(flags: u8, tsn: u32, sid: u16, ssn: u16, payload: &[u8]) -> Vec<u8> {
         let length = 4 + 12 + payload.len(); // chunk header + data header + value
         let mut chunk = Vec::new();
         chunk.push(0); // type: DATA
         chunk.push(flags);
         chunk.extend_from_slice(&(length as u16).to_be_bytes());
-        chunk.extend_from_slice(&1u32.to_be_bytes()); // TSN
-        chunk.extend_from_slice(&0u16.to_be_bytes()); // stream id
-        chunk.extend_from_slice(&0u16.to_be_bytes()); // stream seq
+        chunk.extend_from_slice(&tsn.to_be_bytes()); // TSN
+        chunk.extend_from_slice(&sid.to_be_bytes()); // stream id
+        chunk.extend_from_slice(&ssn.to_be_bytes()); // stream seq
         chunk.extend_from_slice(&0u32.to_be_bytes()); // PPID
         chunk.extend_from_slice(payload);
         while chunk.len() % 4 != 0 {
@@ -1053,6 +1306,34 @@ mod tests {
         }
         chunk
     }
+
+    /// Build one SCTP DATA chunk with the given `flags` at TSN 1, stream 0,
+    /// stream seq 0 — the single-chunk shape used by the pre-existing tests.
+    fn sctp_data_chunk(flags: u8, payload: &[u8]) -> Vec<u8> {
+        sctp_data_chunk_full(flags, 1, 0, 0, payload)
+    }
+
+    /// Build an Ethernet/IPv4/SCTP packet (10.0.0.1 → 10.0.0.2, ports
+    /// 5060/5062) carrying a single DATA chunk with the given fragment `flags`,
+    /// TSN, stream id, and stream seq — one fragment of a message per packet.
+    fn sctp_frag_packet(flags: u8, tsn: u32, sid: u16, ssn: u16, payload: &[u8]) -> Packet {
+        let mut sctp = sctp_common_header(5060, 5062);
+        sctp.extend_from_slice(&sctp_data_chunk_full(flags, tsn, sid, ssn, payload));
+        let data = build_eth_ipv4_sctp_raw([10, 0, 0, 1], [10, 0, 0, 2], &sctp);
+        make_packet(data, DLT_EN10MB)
+    }
+
+    /// The association endpoints used by [`sctp_frag_packet`].
+    fn sctp_endpoints() -> (SocketAddr, SocketAddr) {
+        (
+            SocketAddr::new("10.0.0.1".parse().unwrap(), 5060),
+            SocketAddr::new("10.0.0.2".parse().unwrap(), 5062),
+        )
+    }
+
+    // SCTP DATA fragment flags (RFC 4960 §3.3.1): B = beginning, E = ending.
+    const SCTP_FLAG_E: u8 = 0x01;
+    const SCTP_FLAG_B: u8 = 0x02;
 
     /// Wrap raw SCTP bytes (common header + chunks) in Ethernet + IPv4 with
     /// IP protocol byte = 132.
@@ -1291,6 +1572,168 @@ mod tests {
         assert_eq!(parsed.src_port, 0);
         assert_eq!(parsed.dst_port, 0);
         assert!(parsed.payload.is_empty());
+    }
+
+    // ── SCTP cross-packet DATA fragment reassembly (RFC 4960 §3.3.1) ──────
+    // A SIP message can be split across DATA chunks: a B (beginning) fragment,
+    // zero or more middles, then an E (ending) fragment sharing one (SID, SSN)
+    // with contiguous TSNs. These drive `parse_sctp_fragment` + `SctpReassembler`
+    // — the cross-packet path the single-chunk `parse_packet` cannot cover.
+
+    /// (a) A SIP INVITE split across three DATA chunks (B / middle / E) in three
+    /// packets reassembles to the complete original message; only the E fragment
+    /// completes it.
+    #[test]
+    fn sctp_data_reassembles_across_three_packets() {
+        let sip: &[u8] =
+            b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\nContent-Length: 4\r\n\r\nbody";
+        let (p1, p2, p3) = (&sip[..24], &sip[24..56], &sip[56..]);
+        let (src, dst) = sctp_endpoints();
+        let mut r = SctpReassembler::new();
+
+        let f1 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, p1)).expect("B frag");
+        assert!(f1.begin && !f1.end, "first fragment is B, not E");
+        assert!(
+            r.insert(src, dst, &f1).is_none(),
+            "B fragment alone does not complete a message"
+        );
+
+        let f2 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, p2)).expect("middle frag");
+        assert!(
+            r.insert(src, dst, &f2).is_none(),
+            "middle fragment does not complete a message"
+        );
+
+        let f3 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, p3)).expect("E frag");
+        let done = r
+            .insert(src, dst, &f3)
+            .expect("E fragment completes the reassembled message");
+        assert_eq!(&done[..], sip, "reassembled INVITE matches the original");
+        assert_eq!(
+            r.len(),
+            0,
+            "the completed stream is removed from the buffer"
+        );
+    }
+
+    /// (b) Fragments of one (SID, SSN) reassemble correctly even when a fragment
+    /// of an unrelated stream (different SID) is interleaved between them.
+    #[test]
+    fn sctp_reassembly_is_isolated_per_stream() {
+        let msg: &[u8] = b"MESSAGE sip:a SIP/2.0\r\nCall-ID: split\r\n\r\nhello-world-body";
+        let (m1, m2, m3) = (&msg[..20], &msg[20..40], &msg[40..]);
+        let (src, dst) = sctp_endpoints();
+        let mut r = SctpReassembler::new();
+
+        // Stream (sid=0, ssn=0): B fragment.
+        let b0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, m1)).expect("b0");
+        assert!(r.insert(src, dst, &b0).is_none());
+
+        // An unrelated stream (sid=7) opens in between — must not disturb sid=0.
+        let other = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 100, 7, 0, b"unrelated"))
+            .expect("o");
+        assert!(r.insert(src, dst, &other).is_none());
+
+        // Stream (sid=0) middle then end.
+        let mid0 = parse_sctp_fragment(&sctp_frag_packet(0x00, 2, 0, 0, m2)).expect("mid0");
+        assert!(r.insert(src, dst, &mid0).is_none());
+        let e0 = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, m3)).expect("e0");
+        let done = r
+            .insert(src, dst, &e0)
+            .expect("sid=0 completes independently of sid=7");
+        assert_eq!(
+            &done[..],
+            msg,
+            "sid=0 reassembled from only its own fragments"
+        );
+        assert_eq!(r.len(), 1, "the unrelated sid=7 stream is still buffered");
+    }
+
+    /// (c) A missing middle TSN (a gap) fails closed: the ending fragment emits
+    /// nothing and the partial stream is dropped rather than corruptly joined.
+    #[test]
+    fn sctp_reassembly_fails_closed_on_tsn_gap() {
+        let (src, dst) = sctp_endpoints();
+        let mut r = SctpReassembler::new();
+
+        let b = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, 0, b"AAAA")).expect("b");
+        assert!(r.insert(src, dst, &b).is_none());
+        assert_eq!(r.len(), 1, "the B fragment started a stream");
+
+        // E arrives at TSN 3 — TSN 2 (a middle) was never seen: a gap.
+        let e = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_E, 3, 0, 0, b"CCCC")).expect("e");
+        assert!(
+            r.insert(src, dst, &e).is_none(),
+            "a TSN gap must not emit a corrupt reassembly"
+        );
+        assert_eq!(r.len(), 0, "the gapped partial stream is dropped");
+    }
+
+    /// (d) A flood of distinct incomplete fragment streams is bounded: the
+    /// stream table never exceeds its cap (oldest-out eviction) and never panics.
+    #[test]
+    fn sctp_reassembly_buffer_is_bounded() {
+        let (src, dst) = sctp_endpoints();
+        let mut r = SctpReassembler::with_max_streams(4);
+
+        // 32 distinct streams (distinct SSN), each only ever a B fragment, so
+        // none ever completes — memory must stay bounded by the cap.
+        for ssn in 0..32u16 {
+            let b = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 1, 0, ssn, b"frag"))
+                .expect("b frag");
+            assert!(r.insert(src, dst, &b).is_none());
+            assert!(r.len() <= 4, "stream table must stay within its cap");
+        }
+        assert_eq!(r.len(), 4, "exactly the cap remains after the flood");
+    }
+
+    /// (e, unit) A self-contained single-packet complete (B+E) fragment fed to
+    /// the reassembler returns its data immediately with no buffering — the
+    /// single-packet path never regresses. (The end-to-end `parse_packet`
+    /// regression is `parse_ethernet_ipv4_sctp_data_chunk_sip`.)
+    #[test]
+    fn sctp_reassembler_passes_complete_chunk_through() {
+        let sip: &[u8] = b"OPTIONS sip:h SIP/2.0\r\n\r\n";
+        let (src, dst) = sctp_endpoints();
+        let mut r = SctpReassembler::new();
+        // A B+E chunk is complete; `parse_sctp_fragment` only surfaces *incomplete*
+        // fragments, so build the fragment directly to exercise the reassembler.
+        let frag = SctpFragment {
+            src_port: 5060,
+            dst_port: 5062,
+            tsn: 1,
+            sid: 0,
+            ssn: 0,
+            begin: true,
+            end: true,
+            data: bytes::Bytes::copy_from_slice(sip),
+        };
+        let done = r
+            .insert(src, dst, &frag)
+            .expect("complete chunk returns its data");
+        assert_eq!(&done[..], sip);
+        assert_eq!(r.len(), 0, "a complete chunk needs no buffering");
+    }
+
+    /// `parse_sctp_fragment` surfaces an *incomplete* DATA fragment (B-only
+    /// here) with its ports, flags, TSN/SID/SSN, and user data — but returns
+    /// `None` for a complete (B+E) chunk, which the stateless `parse_packet`
+    /// path already handles.
+    #[test]
+    fn parse_sctp_fragment_extracts_fragment_but_skips_complete() {
+        let frag = parse_sctp_fragment(&sctp_frag_packet(SCTP_FLAG_B, 9, 3, 4, b"partial"))
+            .expect("B-only fragment surfaced");
+        assert_eq!((frag.src_port, frag.dst_port), (5060, 5062));
+        assert!(frag.begin && !frag.end);
+        assert_eq!((frag.tsn, frag.sid, frag.ssn), (9, 3, 4));
+        assert_eq!(&frag.data[..], b"partial");
+
+        // A complete B+E chunk is not a fragment for reassembly purposes.
+        let complete = sctp_frag_packet(SCTP_FLAG_B | SCTP_FLAG_E, 1, 0, 0, b"whole");
+        assert!(
+            parse_sctp_fragment(&complete).is_none(),
+            "complete chunks are handled by parse_packet, not reassembly"
+        );
     }
 
     /// A GRE-encapsulated IPv4/UDP packet is stripped to its inner

@@ -85,6 +85,10 @@ pub struct PacketProcessor {
     /// Cap on tracked `tcp_sip_leftover` sessions; when full, the
     /// least-recently-updated entry is evicted to keep memory bounded.
     max_sessions: usize,
+    /// Cross-packet SCTP DATA fragment reassembler (RFC 4960 §3.3.1): buffers a
+    /// SIP message split across B/middle/E DATA chunks until the E fragment
+    /// arrives. Bounded, least-recently-updated eviction.
+    sctp_reassembler: parse::SctpReassembler,
     /// When `false` (`--no-reassembly`), IP fragments and TCP segments pass
     /// through as individual packets instead of being reassembled/reframed.
     reassembly: bool,
@@ -110,6 +114,7 @@ impl PacketProcessor {
             tcp_reassembler: TcpReassembler::new(),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions: DEFAULT_MAX_SESSIONS,
+            sctp_reassembler: parse::SctpReassembler::new(),
             reassembly: true,
             parse_limit: None,
         }
@@ -144,6 +149,7 @@ impl PacketProcessor {
             ),
             tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions,
+            sctp_reassembler: parse::SctpReassembler::with_max_streams(max_sessions),
             reassembly: true,
             parse_limit: None,
         }
@@ -273,6 +279,30 @@ impl PacketProcessor {
         // into individual SIP messages (SNB-0008 — one segment can carry many).
         if parsed.transport == parse::TransportProto::Tcp {
             return self.process_tcp(&parsed);
+        }
+
+        // SCTP: `parse_packet` already emits the SIP payload of a single-packet
+        // complete (B+E) DATA chunk. An empty SCTP payload may instead be a DATA
+        // fragment of a message split across packets (RFC 4960 §3.3.1) — recover
+        // the fragment and feed it to the reassembler; the whole message emerges
+        // on the E fragment. Non-DATA / malformed SCTP falls through unchanged.
+        if parsed.transport == parse::TransportProto::Sctp
+            && parsed.payload.is_empty()
+            && let Some(frag) = parse::parse_sctp_fragment(packet)
+        {
+            let src = std::net::SocketAddr::new(parsed.src_addr, frag.src_port);
+            let dst = std::net::SocketAddr::new(parsed.dst_addr, frag.dst_port);
+            return match self.sctp_reassembler.insert(src, dst, &frag) {
+                Some(payload) => {
+                    let mut completed = parsed;
+                    completed.src_port = frag.src_port;
+                    completed.dst_port = frag.dst_port;
+                    completed.payload = payload;
+                    smallvec![completed]
+                }
+                // A buffered fragment (or a fail-closed drop) emits nothing yet.
+                None => SmallVec::new(),
+            };
         }
 
         // UDP (and other non-TCP, non-fragment): ready immediately
@@ -1026,6 +1056,108 @@ mod tests {
         let (ranges, consumed) = frame_tcp_sip(msg);
         assert_eq!(ranges.len(), 1);
         assert_eq!(consumed, msg.len(), "CL ' 007' == 7 body bytes consumed");
+    }
+
+    // ── SCTP cross-packet DATA reassembly through the pipeline ──────────
+    // End-to-end proof that `PacketProcessor::process` reassembles a SIP message
+    // split across SCTP DATA fragments (B/middle/E) and still passes a
+    // single-packet complete (B+E) chunk straight through.
+
+    /// Build an Ethernet/IPv4/SCTP frame (10.0.0.1 → 10.0.0.2, ports 5060/5062)
+    /// carrying one DATA chunk with the given fragment `flags`, TSN, and stream
+    /// seq (stream id 0).
+    fn sctp_frag_frame(flags: u8, tsn: u32, ssn: u16, payload: &[u8]) -> Packet {
+        // DATA chunk: type(0) flags len(2) TSN(4) SID(2) SSN(2) PPID(4) value.
+        let chunk_len = 4 + 12 + payload.len();
+        let mut chunk = vec![0u8, flags];
+        chunk.extend_from_slice(&(chunk_len as u16).to_be_bytes());
+        chunk.extend_from_slice(&tsn.to_be_bytes());
+        chunk.extend_from_slice(&0u16.to_be_bytes()); // stream id
+        chunk.extend_from_slice(&ssn.to_be_bytes()); // stream seq
+        chunk.extend_from_slice(&0u32.to_be_bytes()); // PPID
+        chunk.extend_from_slice(payload);
+        while chunk.len() % 4 != 0 {
+            chunk.push(0);
+        }
+
+        let mut sctp = Vec::new();
+        sctp.extend_from_slice(&5060u16.to_be_bytes()); // src port
+        sctp.extend_from_slice(&5062u16.to_be_bytes()); // dst port
+        sctp.extend_from_slice(&0x1234_5678u32.to_be_bytes()); // verification tag
+        sctp.extend_from_slice(&0u32.to_be_bytes()); // checksum
+        sctp.extend_from_slice(&chunk);
+
+        let ip_total = (20 + sctp.len()) as u16;
+        let mut ip = vec![0x45, 0x00];
+        ip.extend_from_slice(&ip_total.to_be_bytes());
+        ip.extend_from_slice(&[0, 0, 0x40, 0, 64, 132, 0, 0]); // id, DF, ttl, proto=SCTP
+        ip.extend_from_slice(&[10, 0, 0, 1]);
+        ip.extend_from_slice(&[10, 0, 0, 2]);
+        ip.extend_from_slice(&sctp);
+
+        let mut eth = vec![0u8; 12];
+        eth.extend_from_slice(&[0x08, 0x00]); // IPv4
+        eth.extend_from_slice(&ip);
+        let len = eth.len();
+        Packet::new(
+            chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            eth,
+            len,
+            len,
+            None,
+            1, // DLT_EN10MB
+        )
+    }
+
+    /// A SIP message split across three SCTP DATA chunks (B / middle / E) in
+    /// three packets is reassembled by `process`: nothing emerges until the E
+    /// fragment, which yields the complete message with its ports recovered.
+    #[test]
+    fn process_reassembles_sctp_data_fragments() {
+        let sip: &[u8] =
+            b"INVITE sip:bob@example.com SIP/2.0\r\nVia: SIP/2.0/SCTP\r\nContent-Length: 4\r\n\r\nbody";
+        let (p1, p2, p3) = (&sip[..24], &sip[24..56], &sip[56..]);
+        let mut proc = PacketProcessor::new();
+
+        assert!(
+            proc.process(&sctp_frag_frame(0x02, 1, 0, p1)).is_empty(),
+            "B fragment buffered, nothing emitted yet"
+        );
+        assert!(
+            proc.process(&sctp_frag_frame(0x00, 2, 0, p2)).is_empty(),
+            "middle fragment buffered, nothing emitted yet"
+        );
+        let out = proc.process(&sctp_frag_frame(0x01, 3, 0, p3));
+        assert_eq!(out.len(), 1, "E fragment completes the reassembled message");
+        assert_eq!(out[0].transport, parse::TransportProto::Sctp);
+        assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5062));
+        assert_eq!(&out[0].payload[..], sip, "full SIP message reassembled");
+    }
+
+    /// A single-packet complete (B+E) SCTP DATA chunk still passes straight
+    /// through `process` unchanged — the reassembler must not disturb it.
+    #[test]
+    fn process_passes_single_packet_sctp_through() {
+        let sip: &[u8] = b"OPTIONS sip:h SIP/2.0\r\nContent-Length: 0\r\n\r\n";
+        let mut proc = PacketProcessor::new();
+        let out = proc.process(&sctp_frag_frame(0x03, 1, 0, sip)); // B|E
+        assert_eq!(out.len(), 1, "complete chunk emitted immediately");
+        assert_eq!(out[0].transport, parse::TransportProto::Sctp);
+        assert_eq!((out[0].src_port, out[0].dst_port), (5060, 5062));
+        assert_eq!(&out[0].payload[..], sip);
+    }
+
+    /// With `--no-reassembly` SCTP DATA fragments are not reassembled: each
+    /// fragment passes through as its own (empty-payload) packet.
+    #[test]
+    fn no_reassembly_does_not_reassemble_sctp() {
+        let mut proc = PacketProcessor::new().with_reassembly(false);
+        let out = proc.process(&sctp_frag_frame(0x02, 1, 0, b"INVITE sip:h SIP/2.0"));
+        assert_eq!(out.len(), 1, "fragment passes through, not buffered");
+        assert!(
+            out[0].payload.is_empty(),
+            "no reassembly leaves the fragment payload unrecovered"
+        );
     }
 
     // ── PacketProcessor::process dispatch (device-free) ─────────────────
