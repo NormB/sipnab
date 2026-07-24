@@ -103,6 +103,7 @@ QUALITY DASHBOARD:
   PgUp/PgDn       Page through streams
   Home/End         Jump to best/worst
   Enter            Open stream detail
+  L                Packet loss map (RTP loss pattern)
   Esc, q, D        Close dashboard
 
 RTP STREAMS (Tab):
@@ -121,6 +122,7 @@ STREAM DETAIL:
   \u{2191}/\u{2193}             Scroll
   PgUp/PgDn, Home/End  Page / jump
   Shift+P          Play / stop audio (G.711, audio build)
+  L                Packet loss map (RTP loss pattern)
   Esc              Back to RTP Streams
 
 COPY & PASTE:

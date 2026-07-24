@@ -175,6 +175,8 @@ pub enum StreamDetailAction {
     OpenSaveDialog,
     /// Esc — return to the view the detail was opened from.
     Back,
+    /// `L` — open the packet loss map for this stream.
+    OpenLossMap,
     /// `P` — start or stop audio playback of the stream.
     #[cfg(feature = "audio")]
     TogglePlayback,
@@ -203,6 +205,7 @@ pub fn stream_detail_action(km: &Keymap, key: KeyEvent) -> Option<StreamDetailAc
         k if k == km.help => Help,
         k if k == km.save => OpenSaveDialog,
         KeyCode::Esc => Back,
+        KeyCode::Char('L') => OpenLossMap,
         #[cfg(feature = "audio")]
         KeyCode::Char('P') => TogglePlayback,
         _ => return None,
@@ -256,6 +259,13 @@ fn execute_stream_detail_action(app: &mut App, action: StreamDetailAction) {
                 Some(v) => v,
                 None => View::StreamList,
             };
+        }
+        StreamDetailAction::OpenLossMap => {
+            // Drill into the loss map of the stream currently on screen; Esc
+            // in that view returns to this same detail (its own StreamKey).
+            if let View::StreamDetail(key) = &app.current_view {
+                app.current_view = View::StreamLossMap(key.clone());
+            }
         }
         #[cfg(feature = "audio")]
         StreamDetailAction::TogglePlayback => handle_stream_detail_play(app),
@@ -475,6 +485,21 @@ mod tests {
         app.stream_detail_return_view = None;
         handle_stream_detail_key(&mut app, key(KeyCode::Esc));
         assert_eq!(app.current_view, View::StreamList);
+    }
+
+    /// `L` from stream detail opens the packet loss map of the same stream;
+    /// Esc from there returns to this stream's detail (its own StreamKey).
+    #[test]
+    fn stream_detail_l_opens_loss_map_and_esc_returns() {
+        let mut app = app_in_stream_detail();
+        let View::StreamDetail(k) = app.current_view.clone() else {
+            panic!("fixture is not on stream detail");
+        };
+        handle_stream_detail_key(&mut app, key(KeyCode::Char('L')));
+        assert_eq!(app.current_view, View::StreamLossMap(k.clone()));
+
+        crate::tui::controllers::loss_map::handle_loss_map_key(&mut app, key(KeyCode::Esc));
+        assert_eq!(app.current_view, View::StreamDetail(k));
     }
 
     /// Quit, help, and save keys work from the stream detail view.

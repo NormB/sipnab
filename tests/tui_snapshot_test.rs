@@ -244,7 +244,152 @@ mod tui_snapshots {
         )
     }
 
+    /// Feed one RTP packet (`ssrc`, `seq`) A→B into `store` at `ts`.
+    ///
+    /// Sequence gaps between successive calls register as packet loss, which
+    /// the packet-loss-map fixtures rely on to place clustered vs no loss.
+    fn push_rtp(store: &mut StreamStore, ssrc: u32, seq: u16, ts: DateTime<Utc>) {
+        let parsed = sipnab::capture::ParsedPacket {
+            timestamp: ts,
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: TransportProto::Udp,
+            payload: vec![0u8; 172].into(),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            from_hep: false,
+        };
+        let rtp = RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: seq,
+            timestamp: u32::from(seq) * 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        store.process_rtp(&parsed, &rtp, ts);
+    }
+
+    /// An App with a single PCMU stream whose loss is one contiguous burst
+    /// (a 100-packet sequence gap) surrounded by clean traffic — the
+    /// clustered signature the loss map draws as a dark run.
+    fn test_app_with_clustered_loss() -> App {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let ssrc = 0xAAAA_BBBB;
+        {
+            let mut store = ss.write();
+            let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            let mut tick = 0i64;
+            let mut at = || {
+                tick += 1;
+                t0 + TimeDelta::milliseconds(tick * 20)
+            };
+            // Clean lead-in.
+            for seq in 1000..1020u16 {
+                push_rtp(&mut store, ssrc, seq, at());
+            }
+            // One big gap: sequences 1020..1119 are lost (a burst).
+            push_rtp(&mut store, ssrc, 1120, at());
+            // Clean tail.
+            for seq in 1121..1141u16 {
+                push_rtp(&mut store, ssrc, seq, at());
+            }
+        }
+        App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        )
+    }
+
+    /// An App with a single loss-free PCMU stream — the loss map's
+    /// degraded, empty-window path.
+    fn test_app_with_clean_stream() -> App {
+        let ds = Arc::new(RwLock::new(DialogStore::new(100, false)));
+        let ss = Arc::new(RwLock::new(StreamStore::new(100)));
+        let ssrc = 0xAAAA_BBBB;
+        {
+            let mut store = ss.write();
+            let t0 = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+            for (i, seq) in (1..40u16).enumerate() {
+                push_rtp(
+                    &mut store,
+                    ssrc,
+                    seq,
+                    t0 + TimeDelta::milliseconds(i as i64 * 20),
+                );
+            }
+        }
+        App::new(
+            ds,
+            ss,
+            sipnab::tui::Theme::default(),
+            sipnab::tui::Keymap::default(),
+        )
+    }
+
+    /// Navigate an app holding one stream to that stream's packet loss map:
+    /// Call List → RTP Streams (Tab) → Stream Detail (Enter) → Loss Map (L).
+    fn open_loss_map(app: &mut App) {
+        app.handle_key(KeyCode::Tab); // CallList -> StreamList
+        app.handle_key(KeyCode::Enter); // -> StreamDetail of the one stream
+        app.handle_key(KeyCode::Char('L')); // -> StreamLossMap
+    }
+
     // ── Snapshot tests ────────────────────────────────────────────────
+
+    /// Snapshot: the packet loss map of a stream whose loss is one contiguous
+    /// burst — the strip must show a dark run of density glyphs.
+    #[test]
+    fn loss_map_clustered() {
+        let backend = TestBackend::new(100, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_clustered_loss();
+        open_loss_map(&mut app);
+        assert!(
+            matches!(app.current_view(), sipnab::tui::View::StreamLossMap(_)),
+            "expected the loss-map view, got {:?}",
+            app.current_view()
+        );
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains('\u{2588}') || output.contains('\u{2593}'),
+            "clustered loss must draw a heavy density glyph:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
+
+    /// Snapshot: the packet loss map of a loss-free stream — the centered
+    /// empty-window message replaces the density strip.
+    #[test]
+    fn loss_map_no_loss() {
+        let backend = TestBackend::new(100, 18);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = test_app_with_clean_stream();
+        open_loss_map(&mut app);
+
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        let output = buffer_to_string(&terminal);
+        assert!(
+            output.contains("No packet loss recorded in the retained window"),
+            "empty-window message missing:\n{output}"
+        );
+        insta::assert_snapshot!(output);
+    }
 
     /// Snapshot: empty call list at 80x24.
     #[test]

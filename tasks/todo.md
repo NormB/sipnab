@@ -286,7 +286,7 @@ Tiers:
 
 ## P5 — features & long-term / exploratory
 
-- [ ] **Packet loss map** — visual representation of RTP loss patterns.
+- [x] **Packet loss map** — visual representation of RTP loss patterns. **Done:** new `StreamLossMap` view (key `L` from Stream Detail / Quality Dashboard) rendering a sequence-space density strip from `RtpStream.lost_sequences` — bursty loss shows as a dark cluster, diffuse as scattered specks — with a summary header (loss %, burst count/pattern from `burst_gap_analysis`) and sequence axis. Pure wraparound-aware `build_loss_map` binning core in `src/rtp/loss_map.rs` (9 unit tests); spec at docs/superpowers/specs/2026-07-24-packet-loss-map-design.md.
 - [ ] WASM plugin API (design decision D7 rules out Lua; WASM is the path if
   plugins are ever needed).
 - [ ] Machine-learning anomaly detection over SIP/RTP patterns.

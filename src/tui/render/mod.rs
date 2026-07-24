@@ -485,6 +485,9 @@ pub(in crate::tui) fn render_app(
         View::CallTimeline(call_id) => {
             crate::tui::timeline::render_timeline(frame, app, main_area, call_id);
         }
+        View::StreamLossMap(key) => {
+            crate::tui::loss_map::render_loss_map(frame, app, main_area, key);
+        }
     }
 
     // F-key bar (sngrep-style, context-sensitive) at bottom

@@ -1076,6 +1076,11 @@ pub enum View {
     QualityDashboard,
     /// RTP stream detail (by StreamKey).
     StreamDetail(crate::rtp::stream::StreamKey),
+    /// Packet Loss Map for a stream (by StreamKey): a sequence-position
+    /// density strip of where the stream's retained packet loss occurred.
+    /// Opened with `L` from stream detail / the quality dashboard; Esc
+    /// returns to the stream's detail view.
+    StreamLossMap(crate::rtp::stream::StreamKey),
 }
 
 /// Modal popup dialogs that overlay the current view.
