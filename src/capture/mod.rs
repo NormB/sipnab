@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Network packet capture, pcap/pcapng file reading, TCP reassembly, HEP protocol,
 //! and TLS decryption.
 //!
@@ -73,11 +75,15 @@ pub struct PacketProcessor {
     tcp_reassembler: TcpReassembler,
     /// Per-direction leftover bytes of an incomplete trailing SIP message held
     /// across TCP flushes (SNB-0008). Keyed by (src, dst); bounded by
-    /// `max_sessions`.
-    tcp_sip_leftover:
-        std::collections::HashMap<(std::net::SocketAddr, std::net::SocketAddr), Vec<u8>>,
-    /// Cap on tracked `tcp_sip_leftover` sessions; when full, an arbitrary
-    /// entry is evicted to keep memory bounded.
+    /// `max_sessions`. Map order is update recency (every touch `shift_remove`s
+    /// and re-inserts), so index 0 is always the least-recently-updated entry.
+    tcp_sip_leftover: indexmap::IndexMap<
+        (std::net::SocketAddr, std::net::SocketAddr),
+        Vec<u8>,
+        ahash::RandomState,
+    >,
+    /// Cap on tracked `tcp_sip_leftover` sessions; when full, the
+    /// least-recently-updated entry is evicted to keep memory bounded.
     max_sessions: usize,
     /// When `false` (`--no-reassembly`), IP fragments and TCP segments pass
     /// through as individual packets instead of being reassembled/reframed.
@@ -102,7 +108,7 @@ impl PacketProcessor {
         Self {
             fragment_reassembler: FragmentReassembler::new(),
             tcp_reassembler: TcpReassembler::new(),
-            tcp_sip_leftover: std::collections::HashMap::new(),
+            tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions: DEFAULT_MAX_SESSIONS,
             reassembly: true,
             parse_limit: None,
@@ -136,7 +142,7 @@ impl PacketProcessor {
                 max_sessions,
                 std::time::Duration::from_secs(30),
             ),
-            tcp_sip_leftover: std::collections::HashMap::new(),
+            tcp_sip_leftover: indexmap::IndexMap::default(),
             max_sessions,
             reassembly: true,
             parse_limit: None,
@@ -189,8 +195,9 @@ impl PacketProcessor {
     /// # Side effects
     ///
     /// Mutates both reassemblers and the `tcp_sip_leftover` map (inserting,
-    /// removing, and — at the `max_sessions` cap — evicting an arbitrary held
-    /// partial); logs unparseable packets at debug level.
+    /// removing, and — at the `max_sessions` cap — evicting the
+    /// least-recently-updated held partial); logs unparseable packets at
+    /// debug level.
     fn process_inner(&mut self, packet: &Packet) -> ParsedPackets {
         let parsed = match parse_packet(packet) {
             Ok(p) => p,
@@ -226,6 +233,31 @@ impl PacketProcessor {
                         completed.dst_port = dp;
                         completed.transport = tp;
                         completed.payload = bytes::Bytes::copy_from_slice(&reassembled[hdr..]);
+                        if tp == parse::TransportProto::Tcp {
+                            // The reassembled datagram is one TCP segment of an
+                            // ongoing stream, not a complete unit: recover its
+                            // seq/flags (reparse validated >= 20 header bytes)
+                            // and feed it through the TCP reassembler + SIP
+                            // framer so a message spanning this segment and
+                            // its neighbors still completes.
+                            completed.tcp_seq = Some(u32::from_be_bytes([
+                                reassembled[4],
+                                reassembled[5],
+                                reassembled[6],
+                                reassembled[7],
+                            ]));
+                            let f = reassembled[13];
+                            completed.tcp_flags = Some(parse::TcpFlags {
+                                syn: f & 0x02 != 0,
+                                ack: f & 0x10 != 0,
+                                fin: f & 0x01 != 0,
+                                rst: f & 0x04 != 0,
+                                psh: f & 0x08 != 0,
+                            });
+                            completed.fragment_offset = Some(0);
+                            completed.more_fragments = false;
+                            return self.process_tcp(&completed);
+                        }
                     } else {
                         completed.payload = reassembled.into();
                     }
@@ -240,81 +272,91 @@ impl PacketProcessor {
         // TCP: feed into reassembler, then frame the reassembled byte stream
         // into individual SIP messages (SNB-0008 — one segment can carry many).
         if parsed.transport == parse::TransportProto::Tcp {
-            let flushed = self.tcp_reassembler.insert(&parsed);
-            let src = std::net::SocketAddr::new(parsed.src_addr, parsed.src_port);
-            let dst = std::net::SocketAddr::new(parsed.dst_addr, parsed.dst_port);
-            let key = (src, dst);
-            // `false` here means the connection ended on this packet (FIN/RST):
-            // a held partial will never complete, so flush it as a truncated tail.
-            let stream_open = self.tcp_reassembler.contains(src, dst);
-
-            if flushed.is_empty() {
-                // Connection ended (FIN/RST) with a partial message still held:
-                // surface it as a truncated tail so it is flagged malformed
-                // downstream rather than silently dropped.
-                if !stream_open
-                    && let Some(rem) = self.tcp_sip_leftover.remove(&key)
-                    && !rem.is_empty()
-                {
-                    let mut p = parsed.clone();
-                    p.payload = bytes::Bytes::from(rem);
-                    return smallvec![p];
-                }
-                return SmallVec::new();
-            }
-
-            // Prepend any partial message held from a previous flush.
-            let mut buf = self.tcp_sip_leftover.remove(&key).unwrap_or_default();
-            for chunk in &flushed {
-                buf.extend_from_slice(chunk);
-            }
-
-            // Only SIP-over-TCP is Content-Length framed. TLS, WebSocket, and any
-            // other binary TCP payload must pass through whole (downstream
-            // try_tls_decrypt / websocket unwrap handle them) — framing them as
-            // SIP would swallow them.
-            if !crate::sip::is_sip_message(&buf) {
-                let mut p = parsed.clone();
-                p.payload = bytes::Bytes::from(buf);
-                return smallvec![p];
-            }
-
-            let (ranges, consumed) = frame_tcp_sip(&buf);
-
-            let mut out: ParsedPackets = ranges
-                .into_iter()
-                .map(|r| {
-                    let mut p = parsed.clone();
-                    p.payload = bytes::Bytes::copy_from_slice(&buf[r]);
-                    p
-                })
-                .collect();
-
-            let remainder = &buf[consumed..];
-            if !remainder.is_empty() {
-                if stream_open && remainder.len() <= MAX_TCP_LEFTOVER {
-                    // More bytes may arrive — hold the partial for the next flush.
-                    if !self.tcp_sip_leftover.contains_key(&key)
-                        && self.tcp_sip_leftover.len() >= self.max_sessions
-                        && let Some(victim) = self.tcp_sip_leftover.keys().next().copied()
-                    {
-                        self.tcp_sip_leftover.remove(&victim);
-                    }
-                    self.tcp_sip_leftover.insert(key, remainder.to_vec());
-                } else {
-                    // Connection ended (or the partial is oversized): surface the
-                    // truncated tail so a downstream parser can flag it malformed
-                    // rather than silently dropping it.
-                    let mut p = parsed.clone();
-                    p.payload = bytes::Bytes::copy_from_slice(remainder);
-                    out.push(p);
-                }
-            }
-            return out;
+            return self.process_tcp(&parsed);
         }
 
         // UDP (and other non-TCP, non-fragment): ready immediately
         smallvec![parsed]
+    }
+
+    /// TCP arm of `process_inner`: feed the segment (fresh from capture or an
+    /// IP-reassembled datagram with recovered seq/flags) into the TCP
+    /// reassembler, then frame the flushed byte stream into individual SIP
+    /// messages, holding/prepending per-direction partials (SNB-0008).
+    fn process_tcp(&mut self, parsed: &ParsedPacket) -> ParsedPackets {
+        let flushed = self.tcp_reassembler.insert(parsed);
+        let src = std::net::SocketAddr::new(parsed.src_addr, parsed.src_port);
+        let dst = std::net::SocketAddr::new(parsed.dst_addr, parsed.dst_port);
+        let key = (src, dst);
+        // `false` here means the connection ended on this packet (FIN/RST):
+        // a held partial will never complete, so flush it as a truncated tail.
+        let stream_open = self.tcp_reassembler.contains(src, dst);
+
+        if flushed.is_empty() {
+            // Connection ended (FIN/RST) with a partial message still held:
+            // surface it as a truncated tail so it is flagged malformed
+            // downstream rather than silently dropped.
+            if !stream_open
+                && let Some(rem) = self.tcp_sip_leftover.shift_remove(&key)
+                && !rem.is_empty()
+            {
+                let mut p = parsed.clone();
+                p.payload = bytes::Bytes::from(rem);
+                return smallvec![p];
+            }
+            return SmallVec::new();
+        }
+
+        // Prepend any partial message held from a previous flush.
+        let mut buf = self.tcp_sip_leftover.shift_remove(&key).unwrap_or_default();
+        for chunk in &flushed {
+            buf.extend_from_slice(chunk);
+        }
+
+        // Only SIP-over-TCP is Content-Length framed. TLS, WebSocket, and any
+        // other binary TCP payload must pass through whole (downstream
+        // try_tls_decrypt / websocket unwrap handle them) — framing them as
+        // SIP would swallow them.
+        if !crate::sip::is_sip_message(&buf) {
+            let mut p = parsed.clone();
+            p.payload = bytes::Bytes::from(buf);
+            return smallvec![p];
+        }
+
+        let (ranges, consumed) = frame_tcp_sip(&buf);
+
+        let mut out: ParsedPackets = ranges
+            .into_iter()
+            .map(|r| {
+                let mut p = parsed.clone();
+                p.payload = bytes::Bytes::copy_from_slice(&buf[r]);
+                p
+            })
+            .collect();
+
+        let remainder = &buf[consumed..];
+        if !remainder.is_empty() {
+            if stream_open && remainder.len() <= MAX_TCP_LEFTOVER {
+                // More bytes may arrive — hold the partial for the next flush.
+                if !self.tcp_sip_leftover.contains_key(&key)
+                    && self.tcp_sip_leftover.len() >= self.max_sessions
+                {
+                    // Index 0 is the least-recently-updated held partial
+                    // (map order is update recency), so the stalest entry
+                    // goes — never an active session's partial data.
+                    self.tcp_sip_leftover.shift_remove_index(0);
+                }
+                self.tcp_sip_leftover.insert(key, remainder.to_vec());
+            } else {
+                // Connection ended (or the partial is oversized): surface the
+                // truncated tail so a downstream parser can flag it malformed
+                // rather than silently dropping it.
+                let mut p = parsed.clone();
+                p.payload = bytes::Bytes::copy_from_slice(remainder);
+                out.push(p);
+            }
+        }
+        out
     }
 
     /// Sweep stale entries from both reassemblers.
@@ -642,8 +684,14 @@ mod tests {
     /// Build an EN10MB frame (Ethernet+IPv4+TCP) carrying `payload`, so a raw
     /// `Packet` can be pushed through `PacketProcessor::process` end to end.
     fn tcp_frame(payload: &[u8], seq: u32, psh: bool, fin: bool) -> Packet {
+        tcp_frame_from(5230, payload, seq, psh, fin)
+    }
+
+    /// `tcp_frame` with a chosen source port, so tests can drive several
+    /// distinct TCP connections through one processor.
+    fn tcp_frame_from(src_port: u16, payload: &[u8], seq: u32, psh: bool, fin: bool) -> Packet {
         let mut tcp = Vec::new();
-        tcp.extend_from_slice(&[0x14, 0x6e]); // src port 5230
+        tcp.extend_from_slice(&src_port.to_be_bytes());
         tcp.extend_from_slice(&[0x13, 0xc4]); // dst port 5060
         tcp.extend_from_slice(&seq.to_be_bytes());
         tcp.extend_from_slice(&[0, 0, 0, 0]); // ack
@@ -804,6 +852,127 @@ mod tests {
             "the completed message is emitted once the body arrives"
         );
         assert!(String::from_utf8_lossy(&out2[0].payload).ends_with("abcde"));
+    }
+
+    /// Split the same TCP segment `tcp_frame` would build into two IPv4
+    /// fragments of one datagram (`ip_id`), cut `split` bytes into the IP
+    /// payload (`split` must be a multiple of 8, past the 20-byte TCP
+    /// header). Returns (first fragment MF=1, last fragment MF=0).
+    fn tcp_fragment_frames(
+        payload: &[u8],
+        seq: u32,
+        psh: bool,
+        ip_id: u16,
+        split: usize,
+    ) -> (Packet, Packet) {
+        assert_eq!(split % 8, 0, "IPv4 fragment offsets are 8-byte units");
+        let mut tcp = Vec::new();
+        tcp.extend_from_slice(&[0x14, 0x6e]); // src port 5230
+        tcp.extend_from_slice(&[0x13, 0xc4]); // dst port 5060
+        tcp.extend_from_slice(&seq.to_be_bytes());
+        tcp.extend_from_slice(&[0, 0, 0, 0]); // ack
+        let flags = 0x10 | if psh { 0x08 } else { 0 };
+        tcp.extend_from_slice(&[0x50, flags]);
+        tcp.extend_from_slice(&[0xff, 0xff, 0, 0, 0, 0]); // window, csum(0), urg
+        tcp.extend_from_slice(payload);
+
+        let frag = |chunk: &[u8], off_units: u16, mf: bool| -> Packet {
+            let total_len = (20 + chunk.len()) as u16;
+            let frag_field = off_units | if mf { 0x2000 } else { 0 };
+            let mut ip = vec![0x45, 0x00];
+            ip.extend_from_slice(&total_len.to_be_bytes());
+            ip.extend_from_slice(&ip_id.to_be_bytes());
+            ip.extend_from_slice(&frag_field.to_be_bytes());
+            ip.extend_from_slice(&[64, 6, 0, 0]); // ttl, proto=6, csum0
+            ip.extend_from_slice(&[127, 0, 0, 1]); // src
+            ip.extend_from_slice(&[127, 0, 0, 2]); // dst
+            ip.extend_from_slice(chunk);
+            let mut eth = vec![0u8; 12];
+            eth.extend_from_slice(&[0x08, 0x00]); // IPv4
+            eth.extend_from_slice(&ip);
+            let len = eth.len();
+            Packet::new(
+                chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+                eth,
+                len,
+                len,
+                None,
+                1, // DLT_EN10MB
+            )
+        };
+        (
+            frag(&tcp[..split], 0, true),
+            frag(&tcp[split..], (split / 8) as u16, false),
+        )
+    }
+
+    /// A SIP message spanning a normal TCP segment and an IP-fragmented TCP
+    /// segment must complete: the reassembled datagram has to re-enter the
+    /// TCP reassembler / SIP framer, not bypass them as a standalone unit.
+    #[test]
+    fn fragmented_tcp_segment_joins_stream_and_completes_spanning_message() {
+        let mut proc = PacketProcessor::new();
+        // Headers complete, body 5 of 10 bytes: held while the stream is open.
+        let head = b"MESSAGE sip:h SIP/2.0\r\nCall-ID: span\r\nContent-Length: 10\r\n\r\nabcde";
+        let out1 = proc.process(&tcp_frame(head, 1, true, false));
+        assert!(out1.is_empty(), "incomplete body held, nothing emitted yet");
+
+        // The rest of the body arrives as the next in-sequence TCP segment,
+        // itself split into two IP fragments (split 24 = TCP header + 4).
+        let (f1, f2) = tcp_fragment_frames(b"fghij", 1 + head.len() as u32, true, 7, 24);
+        assert!(proc.process(&f1).is_empty(), "first fragment is buffered");
+        let out2 = proc.process(&f2);
+        assert_eq!(out2.len(), 1, "one completed SIP message expected");
+        let msg = String::from_utf8_lossy(&out2[0].payload);
+        assert!(
+            msg.contains("Call-ID: span"),
+            "held head must be joined, got: {msg}"
+        );
+        assert!(
+            msg.ends_with("abcdefghij"),
+            "full body must span the fragmented segment, got: {msg}"
+        );
+    }
+
+    /// At the `max_sessions` cap the held-partial map must evict the
+    /// least-recently-updated connection, not an arbitrary one — an active
+    /// session's partial data must survive while the stalest entry goes.
+    #[test]
+    fn leftover_eviction_removes_least_recently_updated() {
+        // Body incomplete (2 of 5 bytes) so the whole message is held.
+        fn head(cid: &str) -> Vec<u8> {
+            format!("MESSAGE sip:h SIP/2.0\r\nCall-ID: {cid}\r\nContent-Length: 5\r\n\r\nab")
+                .into_bytes()
+        }
+        let mut proc = PacketProcessor::with_max_sessions(6);
+        let h = head("a");
+        for (i, port) in (6001..=6006).enumerate() {
+            let cid = ["a", "b", "c", "d", "e", "f"][i];
+            let out = proc.process(&tcp_frame_from(port, &head(cid), 1, true, false));
+            assert!(out.is_empty(), "partial on {port} is held, not emitted");
+        }
+        // Refresh the first connection: one more (still incomplete) body byte,
+        // making 6002 the least-recently-updated entry.
+        let out = proc.process(&tcp_frame_from(6001, b"c", 1 + h.len() as u32, true, false));
+        assert!(out.is_empty(), "refreshed partial still held");
+        // A seventh connection overflows the cap of 6.
+        let out = proc.process(&tcp_frame_from(6007, &head("g"), 1, true, false));
+        assert!(out.is_empty());
+
+        let ports: Vec<u16> = proc
+            .tcp_sip_leftover
+            .keys()
+            .map(|(s, _)| s.port())
+            .collect();
+        assert_eq!(ports.len(), 6, "cap respected after eviction");
+        assert!(
+            ports.contains(&6001),
+            "recently-updated entry must survive eviction: {ports:?}"
+        );
+        assert!(
+            !ports.contains(&6002),
+            "least-recently-updated entry is the eviction victim: {ports:?}"
+        );
     }
 
     /// Leading zeros and surrounding whitespace in a Content-Length value

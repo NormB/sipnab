@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! TLS session decryption engine.
 //!
 //! Manages TLS session state and decrypts ApplicationData records using
@@ -346,6 +348,10 @@ struct HandshakeInfo {
     server_random: Option<[u8; 32]>,
     /// The negotiated cipher suite code point.
     cipher_suite_code: Option<u16>,
+    /// The `client_random` of the ClientHello this ServerHello answers, paired
+    /// in wire order by [`TlsDecryptor::process_record`]. `None` when the
+    /// ClientHello was not observed (e.g. capture started mid-handshake).
+    client_random: Option<[u8; 32]>,
 }
 
 /// Parse a TLS Handshake record payload to extract ServerHello fields.
@@ -401,6 +407,7 @@ fn parse_server_hello(handshake_data: &[u8]) -> Option<HandshakeInfo> {
     Some(HandshakeInfo {
         server_random: Some(server_random),
         cipher_suite_code: Some(cipher_suite_code),
+        client_random: None,
     })
 }
 
@@ -457,11 +464,15 @@ pub struct TlsDecryptor {
     /// Last known size of the keylog file (for change detection).
     last_keylog_size: u64,
     /// All ServerHello infos (server_random + cipher) observed on the wire, in
-    /// arrival order. This is an unkeyed list: because there is no wire-level
-    /// correlation between a ClientHello's `client_random` and a later
-    /// ServerHello at this layer, TLS 1.2 `CLIENT_RANDOM` key derivation tries
-    /// each stored handshake until one yields a usable session.
+    /// arrival order. Each is paired with the `client_random` of the oldest
+    /// still-unanswered ClientHello (wire order), so TLS 1.2 `CLIENT_RANDOM`
+    /// key derivation can bind a keylog entry to the handshake whose
+    /// ClientHello random matches it exactly, falling back to unpaired
+    /// handshakes only when the ClientHello was never observed.
     observed_handshakes: Vec<HandshakeInfo>,
+    /// `client_random`s of observed ClientHellos not yet paired with a
+    /// ServerHello, in arrival order (FIFO).
+    pending_client_randoms: Vec<[u8; 32]>,
     /// Number of keylog entries already processed into sessions.
     /// Avoids rebuilding the group map on every ApplicationData record.
     keylog_processed_count: usize,
@@ -500,6 +511,7 @@ impl TlsDecryptor {
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
             last_keylog_size,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         })
@@ -643,17 +655,19 @@ impl TlsDecryptor {
         // parsed from offset 0 (tolerating trailing coalesced messages like
         // Certificate/ServerHelloDone), matching `parse_server_hello`.
         match record.payload.first() {
-            // ClientHello — capture client_random for RSA key exchange.
+            // ClientHello — capture client_random for ServerHello pairing and
+            // RSA key exchange.
             Some(1) => {
-                if let Some(cr) = parse_client_hello_random(&record.payload)
-                    && let Some(rsa) = self.rsa.as_mut()
-                {
-                    rsa.client_random = Some(cr);
+                if let Some(cr) = parse_client_hello_random(&record.payload) {
+                    self.pending_client_randoms.push(cr);
+                    if let Some(rsa) = self.rsa.as_mut() {
+                        rsa.client_random = Some(cr);
+                    }
                 }
             }
             // ServerHello — server_random + negotiated cipher.
             Some(2) => {
-                if let Some(info) = parse_server_hello(&record.payload) {
+                if let Some(mut info) = parse_server_hello(&record.payload) {
                     tracing::debug!(
                         "Observed ServerHello: cipher=0x{:04X}",
                         info.cipher_suite_code.unwrap_or(0)
@@ -661,6 +675,13 @@ impl TlsDecryptor {
                     if let Some(rsa) = self.rsa.as_mut() {
                         rsa.server_random = info.server_random;
                         rsa.cipher = info.cipher_suite_code;
+                    }
+                    // Pair with the oldest still-unanswered ClientHello (wire
+                    // order): per TCP connection the ClientHello precedes its
+                    // ServerHello, so a FIFO pairing binds each ServerHello to
+                    // its own handshake's client_random.
+                    if !self.pending_client_randoms.is_empty() {
+                        info.client_random = Some(self.pending_client_randoms.remove(0));
                     }
                     self.observed_handshakes.push(info);
                     // Clear sessions so they get re-derived with the new handshake info
@@ -867,10 +888,29 @@ impl TlsDecryptor {
                 .map(|e| &e.secret);
 
             if let Some(ms) = master_secret {
-                // Try to find a matching ServerHello from observed handshakes.
-                // We try all observed handshakes since we don't have a direct
-                // correlation between client_random and ServerHello at this layer.
-                for hs in &self.observed_handshakes.clone() {
+                // Bind the entry to the handshake whose ClientHello random
+                // matches this entry's client_random exactly. Only when no
+                // observed ServerHello was paired with this client_random
+                // (e.g. the ClientHello predates the capture) fall back to
+                // handshakes with an unknown client_random — never to a
+                // handshake bound to a DIFFERENT session, which would
+                // silently derive keys from the wrong server_random.
+                let exact: Vec<HandshakeInfo> = self
+                    .observed_handshakes
+                    .iter()
+                    .filter(|hs| hs.client_random == Some(*cr))
+                    .cloned()
+                    .collect();
+                let candidates = if exact.is_empty() {
+                    self.observed_handshakes
+                        .iter()
+                        .filter(|hs| hs.client_random.is_none())
+                        .cloned()
+                        .collect()
+                } else {
+                    exact
+                };
+                for hs in &candidates {
                     let Some(server_random) = hs.server_random else {
                         continue;
                     };
@@ -1285,6 +1325,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1313,6 +1354,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1350,6 +1392,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1385,6 +1428,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1597,6 +1641,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1643,6 +1688,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1686,6 +1732,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
+            pending_client_randoms: Vec::new(),
             keylog_processed_count: 0,
             rsa: None,
         }
@@ -1776,9 +1823,19 @@ mod tests {
     /// A minimal but well-formed ServerHello handshake payload advertising
     /// `cipher_code`, with a `session_id_len`-byte session id.
     fn server_hello(cipher_code: u16, session_id_len: u8) -> Vec<u8> {
+        server_hello_with_random(cipher_code, session_id_len, &[0x5Au8; 32])
+    }
+
+    /// Like [`server_hello`], but with an explicit `server_random` so tests can
+    /// distinguish concurrent handshakes.
+    fn server_hello_with_random(
+        cipher_code: u16,
+        session_id_len: u8,
+        server_random: &[u8; 32],
+    ) -> Vec<u8> {
         let mut hs = vec![2u8, 0, 0, 0]; // msg_type=ServerHello + 3-byte length
         hs.extend_from_slice(&[0x03, 0x03]); // legacy_version TLS 1.2
-        hs.extend_from_slice(&[0x5Au8; 32]); // server_random
+        hs.extend_from_slice(server_random);
         hs.push(session_id_len);
         hs.extend(std::iter::repeat_n(0xCDu8, session_id_len as usize));
         hs.extend_from_slice(&cipher_code.to_be_bytes());
@@ -1936,6 +1993,65 @@ mod tests {
         // TLS 1.2 AES-128-GCM: 16-byte key, 4-byte fixed (implicit) IV.
         assert_eq!(session.client_write_key.len(), 16);
         assert_eq!(session.client_write_iv.len(), 4);
+    }
+
+    /// With two concurrent handshakes observed on the wire, a `CLIENT_RANDOM`
+    /// keylog entry must bind to the handshake whose ClientHello random matches
+    /// the entry — not to the first observed ServerHello.
+    #[test]
+    fn tls12_client_random_binds_to_matching_handshake() {
+        let cr1 = [0x11u8; 32];
+        let sr1 = [0x5Au8; 32];
+        let cr2 = [0x22u8; 32];
+        let sr2 = [0xA5u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+
+        // Two interleaved TLS 1.2 handshakes (different connections) in wire
+        // order: CH1, SH1, CH2, SH2.
+        for payload in [
+            client_hello_record(&cr1).payload,
+            server_hello_with_random(0x009C, 0, &sr1),
+            client_hello_record(&cr2).payload,
+            server_hello_with_random(0x009C, 0, &sr2),
+        ] {
+            d.process_record(&TlsRecord {
+                content_type: TlsContentType::Handshake,
+                version: TlsVersion::Tls12,
+                length: 0,
+                payload,
+            });
+        }
+
+        // Keylog entry for the SECOND connection only.
+        let master_secret = vec![0x0Bu8; 48];
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: cr2.to_vec(),
+            secret: master_secret.clone(),
+        });
+
+        d.ensure_sessions_populated();
+        let session = d
+            .sessions
+            .get(&TlsSessionKey { client_random: cr2 })
+            .expect("TLS 1.2 session derived");
+
+        // The session keys must come from the SECOND handshake's server_random.
+        let (expected_ck, _, expected_civ, _) = derive_tls12_keys(
+            d.crypto.as_ref(),
+            &master_secret,
+            &cr2,
+            &sr2,
+            CipherSuite::Aes128Gcm,
+        )
+        .unwrap();
+        assert_eq!(
+            session.client_write_key, expected_ck,
+            "keys must derive from the matching handshake's server_random, not the first observed"
+        );
+        assert_eq!(session.client_write_iv, expected_civ);
     }
 
     /// A CBC ServerHello derives a session whose IV is the full 16-byte block.

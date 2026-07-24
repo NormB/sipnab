@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! HEP (Homer Encapsulation Protocol) v2/v3 receiver and sender.
 //!
 //! HEP is used by SIP servers (OpenSIPS, Kamailio, FreeSWITCH, etc.) to mirror
@@ -1575,22 +1577,38 @@ impl HepSender {
     ///
     /// # Errors
     ///
-    /// Returns an error if the socket cannot be created or connected.
+    /// Returns an error if the destination cannot be resolved or the socket
+    /// cannot be created or connected.
     ///
     /// # Side effects
     ///
-    /// Binds a UDP socket on `0.0.0.0:0` and connects it to `dest_addr`;
-    /// reads the system clock and process ID to derive the HMAC nonce salt.
+    /// Resolves `dest_addr` (may perform a blocking DNS lookup for a
+    /// hostname), binds a UDP socket on `[::]:0` for an IPv6 destination or
+    /// `0.0.0.0:0` for IPv4 — the bind family must follow the destination or
+    /// the connect fails with EAFNOSUPPORT — and connects it; reads the
+    /// system clock and process ID to derive the HMAC nonce salt.
     pub fn new(
         dest_addr: &str,
         capture_id: u32,
         auth_key: Option<String>,
         auth_mode: HepAuthMode,
     ) -> Result<Self> {
-        let socket = UdpSocket::bind("0.0.0.0:0")
-            .context("Failed to bind ephemeral UDP socket for HEP sender")?;
+        use std::net::ToSocketAddrs;
+        let dest = dest_addr
+            .to_socket_addrs()
+            .with_context(|| format!("Failed to resolve HEP destination '{dest_addr}'"))?
+            .next()
+            .with_context(|| format!("HEP destination '{dest_addr}' resolved to no addresses"))?;
+        let local = if dest.is_ipv6() {
+            "[::]:0"
+        } else {
+            "0.0.0.0:0"
+        };
+        let socket = UdpSocket::bind(local).with_context(|| {
+            format!("Failed to bind ephemeral UDP socket ({local}) for HEP sender")
+        })?;
         socket
-            .connect(dest_addr)
+            .connect(dest)
             .with_context(|| format!("Failed to connect HEP sender to '{dest_addr}'"))?;
         let nonce_salt = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2008,6 +2026,32 @@ mod tests {
         let ts = Utc.timestamp_opt(1700000000, 0).single().unwrap();
         let pkt = build_hep_v3(&v4_endpoint(), ts, HepProtocol::Sip, 1, None, b"INVITE");
         assert_eq!(parse_hep(&pkt).unwrap().auth_key, None);
+    }
+
+    /// A sender toward an IPv6 collector must bind an IPv6 local socket:
+    /// an unconditional `0.0.0.0:0` (IPv4-only) bind makes the connect to
+    /// an IPv6 destination fail, so `--hep-send [::1]:9060` cannot work.
+    #[test]
+    fn hep_sender_to_ipv6_dest_binds_ipv6_socket() {
+        let sender = HepSender::new("[::1]:9060", 1, None, HepAuthMode::Plain)
+            .expect("sender toward an IPv6 collector must construct");
+        let local = sender.socket.local_addr().unwrap();
+        assert!(
+            local.is_ipv6(),
+            "local bind family must be IPv6, got {local}"
+        );
+    }
+
+    /// The IPv4 destination path is unchanged: local bind stays IPv4.
+    #[test]
+    fn hep_sender_to_ipv4_dest_binds_ipv4_socket() {
+        let sender = HepSender::new("127.0.0.1:9060", 1, None, HepAuthMode::Plain)
+            .expect("sender toward an IPv4 collector must construct");
+        let local = sender.socket.local_addr().unwrap();
+        assert!(
+            local.is_ipv4(),
+            "local bind family must be IPv4, got {local}"
+        );
     }
 
     /// With no receiver secret configured, every packet passes auth.
