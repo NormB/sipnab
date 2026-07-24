@@ -87,6 +87,7 @@ RAW MESSAGE:
   s                Toggle syntax highlighting
   c                Cycle colors
   h                Header names (as captured / expanded / compact)
+  y                Copy displayed message to clipboard (OSC 52)
   Esc              Back to previous view
 
 MESSAGE DIFF / COMBINED DETAIL / STATISTICS:
@@ -122,7 +123,14 @@ STREAM DETAIL:
   Shift+P          Play / stop audio (G.711, audio build)
   Esc              Back to RTP Streams
 
-Mouse wheel scrolls every view.
+COPY & PASTE:
+  y                Copy displayed message to clipboard (Raw Message view)
+  E                Export Mermaid diagram to clipboard (Call Flow view)
+  F12              Toggle mouse capture for native drag-to-select \u{2014} global
+
+Copies use OSC 52, which works over SSH (most modern terminals support it).
+Mouse wheel scrolls every view while capture is on; with capture off (F12),
+drag selects text natively. Shift+drag bypasses capture in many terminals.
 
 Press Esc or F1 to close this help.";
 

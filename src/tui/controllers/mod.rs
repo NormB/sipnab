@@ -20,7 +20,7 @@ mod timeline;
 // Re-exported at `tui` scope so keybinding_drift_test can probe the
 // key→action mapping table directly (same exposure as Keymap/HELP_TEXT).
 #[cfg(test)]
-use call_flow::spawn_clipboard_copy;
+use crate::tui::clipboard::spawn_clipboard_copy;
 pub use call_flow::{
     CallFlowAction, CombinedDetailAction, MessageDiffAction, RawMessageAction, call_flow_action,
     combined_detail_action, message_diff_action, raw_message_action,
@@ -75,9 +75,10 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
-    // Global fallback keys ('v'/'V' version, 'n' name-mode cycle) apply in
-    // every view — but a key the user explicitly rebound in the keymap wins,
-    // so a rebind can never be shadowed by these built-ins.
+    // Global fallback keys ('v'/'V' version, 'n' name-mode cycle, '?' help,
+    // F12 mouse-capture toggle) apply in every view — but a key the user
+    // explicitly rebound in the keymap wins, so a rebind can never be
+    // shadowed by these built-ins.
     let km = &app.keymap;
     let keymap_bound = [
         km.quit,
@@ -117,9 +118,38 @@ pub(in crate::tui) fn handle_key_event(app: &mut App, key: KeyEvent) {
             dispatch_view_key(app, help);
             return;
         }
+        // F12 toggles mouse capture so the terminal's native drag-to-select
+        // (and copy) works while it is off. The event loop reconciles the
+        // terminal state with the flag after the input drain.
+        if key.code == KeyCode::F(12) {
+            toggle_mouse_capture(app);
+            return;
+        }
     }
 
     dispatch_view_key(app, key);
+}
+
+/// F12 — toggle terminal mouse capture.
+///
+/// With capture ON (the default) the TUI receives wheel/click events but
+/// the terminal's native drag-to-select cannot work; OFF restores native
+/// selection (for copy) at the cost of wheel scrolling. Only the state
+/// flag flips here — the event loop executes the crossterm
+/// `Enable`/`DisableMouseCapture` commands when it sees the flag change,
+/// keeping this handler free of terminal I/O (and unit-testable).
+///
+/// # Side effects
+/// Flips `app.mouse_capture_enabled` and announces the new state on the
+/// status line; while OFF the status line also shows a persistent
+/// reminder (see `render_status_line3`).
+fn toggle_mouse_capture(app: &mut App) {
+    app.mouse_capture_enabled = !app.mouse_capture_enabled;
+    app.status_error = Some(if app.mouse_capture_enabled {
+        "Mouse capture ON — wheel scrolling restored".to_string()
+    } else {
+        "Mouse capture OFF — drag selects text, F12 to re-enable".to_string()
+    });
 }
 
 /// Route a key to the handler of the current view.
@@ -1314,6 +1344,78 @@ mod async_feedback_tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+}
+
+/// Tests for the global F12 mouse-capture toggle and its rebind
+/// precedence.
+#[cfg(test)]
+mod mouse_capture_toggle_tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    /// F12 flips the mouse-capture flag and announces both directions on
+    /// the status line (the event loop reconciles the terminal state).
+    #[test]
+    fn f12_toggles_mouse_capture_flag_and_status() {
+        let mut app = App::new_test();
+        assert!(app.mouse_capture_enabled, "capture must start enabled");
+        handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(!app.mouse_capture_enabled);
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Mouse capture OFF"),
+            "got status {:?}",
+            app.status_error
+        );
+        handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert!(app.mouse_capture_enabled);
+        assert!(
+            app.status_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Mouse capture ON"),
+            "got status {:?}",
+            app.status_error
+        );
+    }
+
+    /// The toggle is global: it works outside the call list too.
+    #[test]
+    fn f12_toggles_from_other_views() {
+        for view in [
+            View::StreamList,
+            View::RawMessage {
+                call_id: "x".to_string(),
+                message_index: 0,
+            },
+            View::Help,
+        ] {
+            let mut app = App::new_test();
+            app.current_view = view;
+            handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+            assert!(
+                !app.mouse_capture_enabled,
+                "F12 must toggle in {:?}",
+                app.current_view
+            );
+        }
+    }
+
+    /// An F12 the user rebound in the keymap keeps its rebound meaning —
+    /// same precedence rule as the other global fallbacks.
+    #[test]
+    fn rebound_f12_wins_over_mouse_toggle() {
+        let mut app = App::new_test();
+        app.keymap.save = KeyCode::F(12);
+        handle_key_event(&mut app, KeyEvent::new(KeyCode::F(12), KeyModifiers::NONE));
+        assert_eq!(app.active_popup, Some(Popup::SaveDialog));
+        assert!(
+            app.mouse_capture_enabled,
+            "rebound F12 must not also toggle mouse capture"
+        );
     }
 }
 

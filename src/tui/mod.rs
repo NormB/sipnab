@@ -46,6 +46,7 @@ use stream_list::StreamListState;
 
 use crate::config::{KeybindingsConfig, ThemeConfig, parse_color, parse_keycode};
 
+mod clipboard;
 mod controllers;
 mod render;
 mod save;
@@ -170,6 +171,11 @@ pub struct App {
     /// Completion messages pushed by detached workers (clipboard export),
     /// drained into the status line each tick.
     async_messages: Arc<parking_lot::Mutex<Vec<String>>>,
+    /// Whether the terminal should capture mouse events (wheel scrolling).
+    /// Toggled with F12; while `false` the terminal's native drag-to-select
+    /// works, at the cost of wheel scrolling. The event loop reconciles the
+    /// terminal state with this flag after each input drain.
+    mouse_capture_enabled: bool,
 
     // ── Call flow display modes ────────────────────────────────────
     /// Header-name display form (as captured / expanded / compact) for
@@ -289,6 +295,7 @@ impl App {
             pcap_load: None,
             pending_save: None,
             async_messages: Arc::new(parking_lot::Mutex::new(Vec::new())),
+            mouse_capture_enabled: true,
             name_mode: NameMode::default(),
             resolver: Arc::new(NameResolver::new()),
             names_save_path: None,
@@ -1148,7 +1155,8 @@ pub struct TuiOptions {
 /// # Side effects
 ///
 /// * Terminal: enables raw mode, enters the alternate screen, enables
-///   mouse capture, hides the cursor; arms the crash hook
+///   mouse capture (F12 toggles it at runtime for native drag-to-select),
+///   hides the cursor; arms the crash hook
 ///   (`crate::crash::set_terminal_raw`) and an RAII guard so all of it is
 ///   undone on return or panic.
 /// * Logs keymap collision warnings via `tracing::warn` and surfaces the
@@ -1217,6 +1225,11 @@ pub fn run_tui_with_pause(
         app.status_error = Some(first.clone());
     }
 
+    // Terminal-side mouse-capture state, reconciled with the F12 toggle
+    // flag after each input drain (the controller layer only flips the
+    // flag; all terminal I/O stays here).
+    let mut mouse_captured = true;
+
     // Main event loop
     loop {
         if app.should_quit {
@@ -1262,6 +1275,20 @@ pub fn run_tui_with_pause(
                     break;
                 }
             }
+        }
+
+        // Apply an F12 mouse-capture toggle to the terminal. While capture
+        // is off the terminal's native drag-to-select works (wheel
+        // scrolling pauses); the restore paths (guard drop + crash hook)
+        // stay unconditional — crossterm's DisableMouseCapture just writes
+        // the reset sequences, harmless when capture is already off.
+        if app.mouse_capture_enabled != mouse_captured {
+            if app.mouse_capture_enabled {
+                execute!(io::stdout(), crossterm::event::EnableMouseCapture)?;
+            } else {
+                execute!(io::stdout(), crossterm::event::DisableMouseCapture)?;
+            }
+            mouse_captured = app.mouse_capture_enabled;
         }
 
         // Only mark data updated when store counts actually change

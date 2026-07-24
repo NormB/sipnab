@@ -118,9 +118,10 @@ pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect
 ///
 /// Priority order: an active search input (`/query`) wins; then a status
 /// message (error-colored when it contains "error"/"fail", info otherwise);
-/// then, in the call-flow view, the display-mode hints (time/SDP/color
-/// modes, split percentage, focused pane); otherwise the display filter
-/// plus any persisted search query.
+/// then the persistent mouse-capture-off reminder (F12 toggle); then, in
+/// the call-flow view, the display-mode hints (time/SDP/color modes,
+/// split percentage, focused pane); otherwise the display filter plus any
+/// persisted search query.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -152,6 +153,15 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
+        )]
+    } else if !app.mouse_capture_enabled {
+        // Persistent reminder while native drag-to-select is active:
+        // wheel scrolling is off until F12 re-enables capture, and the
+        // user must be able to rediscover the way back at any time.
+        let content = " Mouse capture OFF — drag selects text, F12 to re-enable";
+        vec![Span::styled(
+            format!("{:<width$}", content, width = w),
+            Style::default().fg(app.theme.selected),
         )]
     } else if let View::CallFlow(_) = app.current_view {
         // In call flow: show current display modes so user knows what t/d/c do
@@ -466,6 +476,30 @@ mod tests {
             row.push_str(buf.cell((x, 0)).unwrap().symbol());
         }
         assert!(row.contains("Display Filter"));
+    }
+
+    /// While mouse capture is toggled off (F12), status line 3 shows the
+    /// persistent re-enable reminder instead of the display filter.
+    #[test]
+    fn render_status_line3_mouse_capture_off_reminder() {
+        let mut app = App::new_test();
+        app.mouse_capture_enabled = false;
+        let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = Rect::new(0, 0, 80, 1);
+                render_status_line3(frame, area, &app);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut row = String::new();
+        for x in 0..buf.area.width {
+            row.push_str(buf.cell((x, 0)).unwrap().symbol());
+        }
+        assert!(
+            row.contains("Mouse capture OFF") && row.contains("F12"),
+            "missing persistent reminder: {row:?}"
+        );
     }
 
     /// In the call-flow view, status line 3 shows the mode hints
