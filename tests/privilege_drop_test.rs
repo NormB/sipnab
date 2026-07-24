@@ -26,14 +26,19 @@ fn sudo_available() -> bool {
 /// Copy the fixture somewhere a dropped-privilege process can read it
 /// (the repo may live under a 0700 home directory).
 ///
+/// `tag` makes the destination unique per test: the two tests here run
+/// in parallel (cargo's default), so a shared fixed path would let one
+/// test's `fs::copy` truncate the file mid-read of the other, surfacing
+/// as a spurious "truncated dump file" abort.
+///
 /// # Returns
 /// Path to the copied fixture in the system temp directory.
 ///
 /// # Side effects
-/// Writes `sipnab-priv-guard.pcap` into the system temp directory.
-fn world_readable_fixture() -> std::path::PathBuf {
+/// Writes `sipnab-priv-guard-<tag>.pcap` into the system temp directory.
+fn world_readable_fixture(tag: &str) -> std::path::PathBuf {
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
-    let dst = std::env::temp_dir().join("sipnab-priv-guard.pcap");
+    let dst = std::env::temp_dir().join(format!("sipnab-priv-guard-{tag}.pcap"));
     std::fs::copy(src, &dst).expect("copy fixture to temp");
     dst
 }
@@ -46,7 +51,7 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() {
         eprintln!("skipping: passwordless sudo not available");
         return;
     }
-    let fixture = world_readable_fixture();
+    let fixture = world_readable_fixture("drop-fail");
     let out = Command::new("sudo")
         .args([
             "-n",
@@ -77,7 +82,7 @@ fn successful_privilege_drop_still_processes_capture() {
         eprintln!("skipping: passwordless sudo not available");
         return;
     }
-    let fixture = world_readable_fixture();
+    let fixture = world_readable_fixture("drop-success");
     let out = Command::new("sudo")
         .args([
             "-n",
