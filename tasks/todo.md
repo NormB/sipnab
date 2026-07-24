@@ -45,8 +45,8 @@ Tiers:
 - [ ] src/capture/reassembly.rs:520 — [correctness] TCP sequence comparison is non-wrapping; streams crossing 2^32 misclassify in-order segments as retransmits (needs serial arithmetic). *Scope note:* the drain buffer is a raw-`u32`-keyed BTreeMap, so a fully correct cross-wrap fix needs a serial-ordered buffer (or serial-next scan), not just swapping the `<` comparison — larger than a one-liner; deferred until tackled properly.
 - [ ] src/capture/mod.rs:295 — [correctness] leftover-map eviction victim is arbitrary (`keys().next()`), not oldest; active session's partial can be evicted.
 - [ ] src/capture/mod.rs:210 — [missed-edge-case] reassembled fragmented TCP datagram bypasses TCP reassembler/SIP framer.
-- [ ] src/capture/writer.rs:348 — [correctness] `--split filesize:N` counts only payload bytes, not record framing; systematic underestimate.
-- [ ] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution.
+- [x] src/capture/writer.rs:348 — [correctness] `--split filesize:N` counts only payload bytes, not record framing; systematic underestimate. **Done:** `bytes_written` now adds the on-disk record framing (16-byte classic-pcap header, or the 32-byte-plus-padded EPB) so rotation fires at the real file size.
+- [ ] src/capture/writer.rs:335 — [missed-edge-case] every EPB written with interface_id 0; multi-device capture loses per-interface attribution. *Scope note:* the writer emits a single IDB by design, so proper per-interface attribution needs multi-IDB support (one IDB per source interface + mapping `Packet.interface` to an id) — a feature, not a one-liner; deferred.
 - [ ] src/capture/decrypt.rs:846 — [correctness] TLS 1.2 CLIENT_RANDOM derivation accepts first ServerHello that works; concurrent handshakes can mis-bind.
 - [ ] src/sip/dialog_store.rs:313 — [correctness] retransmission floods at message cap never advance `updated_at`; dialog can be wrongly compacted as idle.
 - [ ] src/sip/dialog.rs:369 — [missed-edge-case] CANCEL/200-OK race: 2xx after CANCEL leaves state Cancelled though the call was established per RFC 3261.
