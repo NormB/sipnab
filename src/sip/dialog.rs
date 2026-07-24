@@ -348,9 +348,13 @@ fn update_invite_state(dialog: &mut SipDialog, msg: &SipMessage) {
                 }
             }
             Some(SipMethod::Notify) => {
+                // Match the exact Subscription-State value token (RFC 6665
+                // §8.4: `substate-value *(";" subexp-params)`), not a prefix —
+                // `starts_with("terminated")` would also fire on
+                // `terminatedfoo`. Same fix as timing.rs.
                 if dialog.state == DialogState::Transferring
                     && let Some(sub_state) = msg.header("Subscription-State")
-                    && sub_state.starts_with("terminated")
+                    && sub_state.split(';').next().unwrap_or("").trim() == "terminated"
                 {
                     dialog.state = DialogState::InCall;
                 }
@@ -1064,5 +1068,55 @@ mod tests {
         let notify = make_notify_active();
         update_state(&mut dialog, &notify);
         assert_eq!(dialog.state, DialogState::Transferring);
+    }
+
+    /// Build a NOTIFY carrying an arbitrary `Subscription-State` value.
+    fn make_notify_sub_state(value: &str) -> SipMessage {
+        let sub_state = format!("Subscription-State: {value}");
+        let raw = build_sip(
+            "NOTIFY sip:alice@example.com SIP/2.0",
+            &[
+                "From: \"Bob\" <sip:bob@example.com>;tag=t2",
+                "To: \"Alice\" <sip:alice@example.com>;tag=t1",
+                "Call-ID: dialog-test@example.com",
+                "CSeq: 4 NOTIFY",
+                sub_state.as_str(),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        parse_sip(
+            &raw,
+            ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse NOTIFY")
+    }
+
+    /// A NOTIFY whose `Subscription-State` merely *starts with* "terminated"
+    /// (e.g. `terminatedfoo`) must NOT end the transfer — only the exact
+    /// `terminated` value token does (RFC 6665 §8.4).
+    #[test]
+    fn notify_terminatedfoo_does_not_return_to_incall() {
+        let invite = make_invite();
+        let mut dialog = SipDialog::new(&invite).expect("should create dialog");
+
+        let ok = make_response(200, "OK", "INVITE");
+        update_state(&mut dialog, &ok);
+        let refer = make_refer();
+        update_state(&mut dialog, &refer);
+        assert_eq!(dialog.state, DialogState::Transferring);
+
+        let notify = make_notify_sub_state("terminatedfoo");
+        update_state(&mut dialog, &notify);
+        assert_eq!(
+            dialog.state,
+            DialogState::Transferring,
+            "a Subscription-State prefixed with 'terminated' must not end the transfer"
+        );
     }
 }
