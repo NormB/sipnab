@@ -89,14 +89,17 @@ fn wait_for_file(path: &str) -> String {
 /// free of conflicts and gives the M7 test an *exact*, quantization-free view
 /// of a map's heap growth (an RSS probe cannot: the OS resident set is skewed
 /// by allocator arenas, page purging, and capacity rounding).
+#[cfg(feature = "api")]
 struct CountingAllocator;
 
 /// Net live bytes handed out by [`CountingAllocator`] (allocations minus frees).
+#[cfg(feature = "api")]
 static LIVE_BYTES: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 // SAFETY: every method forwards to the system allocator and only additionally
 // updates a relaxed atomic counter; the returned pointers and their validity
 // are exactly those of `std::alloc::System`.
+#[cfg(feature = "api")]
 unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
         // SAFETY: `layout` is forwarded unchanged to the system allocator.
@@ -126,10 +129,12 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     }
 }
 
+#[cfg(feature = "api")]
 #[global_allocator]
 static GLOBAL: CountingAllocator = CountingAllocator;
 
 /// Snapshot of net live heap bytes (see [`CountingAllocator`]).
+#[cfg(feature = "api")]
 fn live_bytes() -> i64 {
     LIVE_BYTES.load(std::sync::atomic::Ordering::Relaxed)
 }

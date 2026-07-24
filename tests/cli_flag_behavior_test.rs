@@ -6,39 +6,31 @@
 #![cfg(feature = "api")] // `api` implies `native` (pcap + mint + auth available)
 
 use std::io::Write;
-use std::process::Command;
 
 use sipnab::auth::{TokenVerifier, VerifierConfig};
+
+#[path = "support/run.rs"]
+mod run_support;
 
 /// Crate-root-relative path to the 7-message SIP call fixture used by most
 /// tests here.
 const FIXTURE: &str = "tests/fixtures/sip_call.pcap";
 
-/// Run the binary from the crate root with a quiet, deterministic env; return stdout.
+/// Run the binary under the shared test baseline (see [`run_support::run`])
+/// with `SIPNAB_LOG=off`; return stdout, asserting the process exited 0.
 ///
 /// # Arguments
 /// * `args` — CLI arguments passed to the `sipnab` binary.
 ///
 /// # Returns
-/// The process's stdout as UTF-8; panics if the process exits non-zero.
+/// The process's stdout; panics if the process exits non-zero.
 ///
 /// # Side effects
-/// Spawns the compiled `sipnab` binary as a subprocess with `SIPNAB_LOG=off`
-/// and `NO_COLOR=1`.
+/// Spawns the compiled `sipnab` binary as a subprocess.
 fn run(args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(args)
-        .env("SIPNAB_LOG", "off")
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("spawn sipnab");
-    assert!(
-        out.status.success(),
-        "sipnab {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8(out.stdout).expect("utf8")
+    let (stdout, stderr, code) = run_support::run(args, Some("off"));
+    assert!(code == Some(0), "sipnab {args:?} failed: {stderr}");
+    stdout
 }
 
 /// Parses every line of `s` that starts with `{` as a JSON value (NDJSON

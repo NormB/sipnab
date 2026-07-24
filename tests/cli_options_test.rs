@@ -7,7 +7,9 @@
 //! and the `udp_5060.pcap` fixture (10 bare 200 OK packets).
 
 use std::path::PathBuf;
-use std::process::Command;
+
+#[path = "support/run.rs"]
+mod run_support;
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -37,7 +39,8 @@ fn run(args: &[&str]) -> (String, String, i32) {
     run_with_log(args, "warn")
 }
 
-/// Runs the `sipnab` binary with an explicit `SIPNAB_LOG` level.
+/// Runs the `sipnab` binary under the shared test baseline (see
+/// [`run_support::run`]) with an explicit `SIPNAB_LOG` level.
 ///
 /// # Arguments
 /// * `args` — CLI arguments to pass.
@@ -49,16 +52,8 @@ fn run(args: &[&str]) -> (String, String, i32) {
 /// # Side effects
 /// Spawns the compiled `sipnab` binary as a subprocess.
 fn run_with_log(args: &[&str], level: &str) -> (String, String, i32) {
-    let output = Command::new(env!("CARGO_BIN_EXE_sipnab"))
-        .args(args)
-        .env("SIPNAB_LOG", level)
-        .output()
-        .expect("failed to execute sipnab");
-    (
-        String::from_utf8_lossy(&output.stdout).to_string(),
-        String::from_utf8_lossy(&output.stderr).to_string(),
-        output.status.code().unwrap_or(-1),
-    )
+    let (stdout, stderr, code) = run_support::run(args, Some(level));
+    (stdout, stderr, code.unwrap_or(-1))
 }
 
 /// Count JSON object lines (starting with '{').
