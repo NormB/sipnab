@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Data preparation for call flow ladder diagrams.
 //!
 //! Converts raw SIP messages into `FormattedMessage` structs with all
@@ -254,9 +256,11 @@ thread_local! {
 /// colors and selection, which `style` applies. Pure and theme-free, so
 /// the result is cacheable across frames.
 ///
-/// Endpoints are discovered in first-appearance order and capped at six to
-/// prevent layout overflow; messages referencing a truncated endpoint fall
-/// back to column 0 (source) / column 1 (destination).
+/// Endpoints are discovered in first-appearance order and every endpoint
+/// gets its own column, so a message is always attributed to its true
+/// participants. The renderer owns the geometry limit: when the columns
+/// cannot fit the available width it paints an explicit "Terminal too
+/// narrow for ladder" notice instead of drawing a misleading ladder.
 ///
 /// # Arguments
 /// * `messages` — the dialog's SIP messages in capture order.
@@ -301,11 +305,6 @@ pub fn layout(
             }
         }
     }
-    // Cap at 6 to prevent layout overflow
-    if endpoints.len() > 6 {
-        endpoints.truncate(6);
-    }
-
     let participants: Vec<Participant> = endpoints
         .iter()
         .map(|&(ip, port)| {
@@ -1572,6 +1571,62 @@ mod tests {
         assert_eq!(pdd_row.pdd_note.as_deref(), Some("  PDD: 500ms"));
         // Only one PDD note total.
         assert_eq!(prepared.iter().filter(|m| m.pdd_note.is_some()).count(), 1);
+    }
+
+    /// A call crossing seven distinct endpoints keeps every message on its
+    /// true participant columns. The old 6-endpoint cap silently remapped
+    /// messages touching the 7th endpoint onto columns 0/1 — drawn between
+    /// the WRONG participants. All endpoints become columns and no row is
+    /// dropped; when the geometry cannot fit them the renderer paints its
+    /// explicit "Terminal too narrow for ladder" notice instead.
+    #[test]
+    fn prepare_seven_endpoints_never_misattributes_columns() {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        // A proxied chain: hop i goes 10.0.0.i -> 10.0.0.(i+1), i = 1..=6,
+        // touching seven distinct endpoints in first-appearance order.
+        let msgs: Vec<SipMessage> = (1u8..=6)
+            .map(|i| {
+                let raw = build_raw(
+                    "INVITE sip:bob@10.0.0.7 SIP/2.0",
+                    &[
+                        "From: <sip:alice@10.0.0.1>;tag=t1",
+                        "To: <sip:bob@10.0.0.7>",
+                        "Call-ID: c7hops",
+                        "CSeq: 1 INVITE",
+                        "Content-Length: 0",
+                    ],
+                    "",
+                );
+                parse_sip(
+                    &raw,
+                    t0() + TimeDelta::milliseconds(i64::from(i) * 10),
+                    IpAddr::V4(Ipv4Addr::new(10, 0, 0, i)),
+                    IpAddr::V4(Ipv4Addr::new(10, 0, 0, i + 1)),
+                    5060,
+                    5060,
+                    TransportProto::Udp,
+                )
+                .expect("parse hop")
+            })
+            .collect();
+        let (parts, prepared) = prepare_messages(&msgs, t0(), None, &o, &HashSet::new());
+        assert_eq!(parts.len(), 7, "every endpoint gets its own column");
+        assert_eq!(prepared.len(), msgs.len(), "no row may be dropped");
+        for row in &prepared {
+            let ri = row.raw_index.expect("no synthetic rows in this fixture");
+            let m = &msgs[ri];
+            assert_eq!(
+                parts[row.src_col].addr,
+                format!("{}:{}", m.src_addr, m.src_port),
+                "row {ri} src column points at the wrong participant"
+            );
+            assert_eq!(
+                parts[row.dst_col].addr,
+                format!("{}:{}", m.dst_addr, m.dst_port),
+                "row {ri} dst column points at the wrong participant"
+            );
+        }
     }
 
     // ── prepare_messages: SDP summary → extract_codec_list path ───────

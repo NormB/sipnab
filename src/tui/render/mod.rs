@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! All TUI rendering: the main view dispatch plus the per-view renderers
 //! it owns (statistics, message diff). Status lines / f-key bar and popup
 //! rendering live in the submodules.
@@ -643,6 +645,22 @@ pub(in crate::tui) fn render_statistics(
     stats_scroll
 }
 
+/// Estimated rendered rows for `lines` wrapped to `width` columns: the
+/// ceil of each line's display width (the same accounting as the raw
+/// message view's `estimated_rows`). Word-wrap can add a stray row;
+/// close enough to clamp the scroll near the true bottom. Pure.
+fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
+    let w = (width.max(1)) as usize;
+    lines
+        .iter()
+        .map(|l| {
+            let lw = l.width();
+            if lw == 0 { 1 } else { lw.div_ceil(w) }
+        })
+        .sum::<usize>()
+        .min(u16::MAX as usize) as u16
+}
+
 /// Parameters for the side-by-side message diff view.
 pub(in crate::tui) struct MessageDiffView<'a> {
     /// Call-ID of the dialog holding both messages.
@@ -669,9 +687,10 @@ pub(in crate::tui) struct MessageDiffView<'a> {
 /// * `view` - Diff parameters (see `MessageDiffView`).
 ///
 /// # Returns
-/// The content height in rows (longest message plus the header line) so
-/// the caller can clamp its stored scroll offset; `0` when the dialog or
-/// either message is missing (a placeholder notice is drawn instead).
+/// The content height in rendered (wrapped) rows of the taller pane —
+/// header line included — so the caller can clamp its stored scroll
+/// offset to the true bottom; `0` when the dialog or either message is
+/// missing (a placeholder notice is drawn instead).
 ///
 /// # Side effects
 /// Draws to `frame` only; no state is mutated.
@@ -761,7 +780,15 @@ pub(in crate::tui) fn render_message_diff(
         .borders(Borders::ALL)
         .title(format!(" Message {} ", msg2_idx + 1));
 
-    let total_rows = (max_lines as u16).saturating_add(1); // + header line
+    // Both panes wrap, so the scroll clamp must count rendered (wrapped)
+    // rows — the unwrapped line count strands the wrapped tail of long
+    // headers below an unreachable bottom. Taller pane governs.
+    let left_rows = estimated_wrapped_rows(&left_lines, half_width.saturating_sub(2));
+    let right_rows = estimated_wrapped_rows(
+        &right_lines,
+        area.width.saturating_sub(half_width).saturating_sub(2),
+    );
+    let total_rows = left_rows.max(right_rows);
     let left_para = Paragraph::new(left_lines)
         .block(left_block)
         .scroll((scroll, 0))
@@ -1279,6 +1306,113 @@ mod tests {
             }
         }
         assert!(text.contains("Dialog not found"));
+    }
+
+    /// The diff panes wrap long lines (`Wrap { trim: false }`), but the
+    /// returned content height used to count UNWRAPPED lines — so the
+    /// caller's scroll clamp could never reach the true (wrapped) bottom
+    /// when a long header wraps to multiple rows.
+    #[test]
+    fn render_message_diff_scroll_reaches_the_wrapped_bottom() {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::parser::parse_sip;
+
+        let t0 = base_ts();
+        // The long header is one unbroken token so word-wrap and the
+        // ceil-of-width row estimate agree exactly.
+        let long = format!("X-Long:{}ZZZEND", "a".repeat(120));
+        let raw1 = build_sip(
+            "INVITE sip:1002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>",
+                "Call-ID: wrap@test",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        let raw2 = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:1002@example.com>",
+                "Call-ID: wrap@test",
+                "CSeq: 1 INVITE",
+                &long,
+            ],
+        );
+        let unwrapped_max = String::from_utf8_lossy(&raw1)
+            .lines()
+            .count()
+            .max(String::from_utf8_lossy(&raw2).lines().count()) as u16;
+        let msg1 = parse_sip(
+            &raw1,
+            t0,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE");
+        let msg2 = parse_sip(
+            &raw2,
+            t0 + chrono::TimeDelta::seconds(1),
+            addr_b(),
+            addr_a(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse 200 OK");
+        let app = App::with_processed_messages(vec![msg1, msg2]);
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+
+        // 64 cols → 32-wide panes (30 inner): the long header wraps to 5
+        // rows, so the content is taller than its unwrapped line count.
+        let mut terminal = Terminal::new(TestBackend::new(64, 12)).unwrap();
+        let view = |scroll| MessageDiffView {
+            call_id: "wrap@test",
+            msg1_idx: 0,
+            msg2_idx: 1,
+            scroll,
+            header_form: header_form::HeaderFormMode::AsCaptured,
+            theme: &theme,
+        };
+        let mut total_rows = 0;
+        terminal
+            .draw(|frame| {
+                total_rows = render_message_diff(frame, frame.area(), &store, &view(0));
+            })
+            .unwrap();
+        assert!(
+            total_rows > unwrapped_max + 1,
+            "content height must count wrapped rows: got {total_rows}, \
+             unwrapped max+header is {}",
+            unwrapped_max + 1
+        );
+
+        // The caller clamps to total_rows − viewport; at that offset the
+        // tail of the wrapped long header must actually be on screen.
+        let viewport = 12u16.saturating_sub(2);
+        let clamped = total_rows.saturating_sub(viewport);
+        terminal
+            .draw(|frame| {
+                render_message_diff(frame, frame.area(), &store, &view(clamped));
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut text = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                text.push_str(buf.cell((x, y)).unwrap().symbol());
+            }
+        }
+        assert!(
+            text.contains("ZZZEND"),
+            "clamped scroll must reach the wrapped bottom:\n{text}"
+        );
     }
 
     /// An out-of-range message index renders "Message not found".

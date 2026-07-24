@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Save/export: pcap, txt, mermaid, json, ndjson, csv, markdown,
 //! wav, sipp scenario, rtp-json.
 //!
@@ -701,6 +703,72 @@ pub(super) fn save_to_wav_path(app: &App, path_str: &str) -> String {
     }
 }
 
+/// Map the structural host and port of a SIP request-URI to the SIPp
+/// `[remote_ip]` / `[remote_port]` placeholders.
+///
+/// Substitutes only the structural host and port components of the URI
+/// (never digits that merely appear in the user part, parameters, or
+/// headers): the host is replaced when it equals `dst_addr`, the port
+/// when it equals `dst_port`. URI parameters/headers after the hostport
+/// and non-SIP(S) URIs are returned unchanged.
+fn sipp_placeholder_uri(ruri: &str, dst_addr: std::net::IpAddr, dst_port: u16) -> String {
+    // scheme ":" — only sip/sips URIs have the user@host:port shape we map.
+    let Some((scheme, rest)) = ruri.split_once(':') else {
+        return ruri.to_string();
+    };
+    if !scheme.eq_ignore_ascii_case("sip") && !scheme.eq_ignore_ascii_case("sips") {
+        return ruri.to_string();
+    }
+
+    // userinfo "@" hostport — '@' is not valid unescaped in userinfo or
+    // hostport, so the last '@' (if any) is the separator.
+    let (userinfo, hostpart) = match rest.rsplit_once('@') {
+        Some((user, host)) => (Some(user), host),
+        None => (None, rest),
+    };
+
+    // hostport ends at the first ';' (uri-parameters) or '?' (headers).
+    let hostport_end = hostpart.find([';', '?']).unwrap_or(hostpart.len());
+    let (hostport, tail) = hostpart.split_at(hostport_end);
+
+    // host [":" port], with IPv6 references in brackets.
+    let (host, port) = if hostport.starts_with('[') {
+        match hostport.find(']') {
+            Some(close) => match hostport[close + 1..].strip_prefix(':') {
+                Some(p) => (&hostport[..=close], Some(p)),
+                None => (hostport, None),
+            },
+            None => (hostport, None),
+        }
+    } else {
+        match hostport.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (hostport, None),
+        }
+    };
+
+    let host_matches = host.trim_start_matches('[').trim_end_matches(']') == dst_addr.to_string();
+
+    let mut out = String::with_capacity(ruri.len() + 24);
+    out.push_str(scheme);
+    out.push(':');
+    if let Some(user) = userinfo {
+        out.push_str(user);
+        out.push('@');
+    }
+    out.push_str(if host_matches { "[remote_ip]" } else { host });
+    if let Some(p) = port {
+        out.push(':');
+        if p.parse::<u16>() == Ok(dst_port) {
+            out.push_str("[remote_port]");
+        } else {
+            out.push_str(p);
+        }
+    }
+    out.push_str(tail);
+    out
+}
+
 /// Export a SIPp scenario XML from the current dialog's call flow.
 ///
 /// Exports exactly one dialog: the current call-flow dialog, else the
@@ -778,9 +846,7 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
                     .request_uri
                     .as_deref()
                     .unwrap_or("sip:[service]@[remote_ip]:[remote_port]");
-                let ruri_sipp = ruri
-                    .replace(&m.dst_addr.to_string(), "[remote_ip]")
-                    .replace(&m.dst_port.to_string(), "[remote_port]");
+                let ruri_sipp = sipp_placeholder_uri(ruri, m.dst_addr, m.dst_port);
 
                 xml.push_str("\n  <send>\n    <![CDATA[\n");
                 xml.push_str(&format!("      {} {} SIP/2.0\r\n", method, ruri_sipp));
@@ -1282,6 +1348,43 @@ mod tests {
         let content = std::fs::read_to_string(&p).unwrap();
         assert!(content.contains("<scenario"));
         assert!(content.contains("</scenario>"));
+    }
+
+    /// SIPp export substitutes only the structural host:port of the
+    /// request-URI: a user part that happens to contain the destination
+    /// port digits (user "15080", port 5080) must survive unchanged.
+    #[test]
+    fn sipp_port_substitution_leaves_user_part_intact() {
+        let raw = raw_sip(
+            "INVITE sip:15080@10.0.0.2:5080 SIP/2.0",
+            &[
+                "From: \"a\" <sip:a@example.com>;tag=t1",
+                "To: \"b\" <sip:15080@example.com>",
+                "Call-ID: call-port@test",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+        );
+        let invite = parse_sip(
+            &raw,
+            base_ts(),
+            addr_a(),
+            addr_b(),
+            5060,
+            5080,
+            TransportProto::Udp,
+        )
+        .expect("parse INVITE");
+        let app = App::with_processed_messages(vec![invite]);
+
+        let p = tmp_path("port.xml");
+        let msg = save_to_sipp_path(&app, p.to_str().unwrap());
+        assert!(msg.contains("Saved SIPp"), "got: {msg}");
+        let content = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            content.contains("INVITE sip:15080@[remote_ip]:[remote_port] SIP/2.0"),
+            "request-URI corrupted by port substitution:\n{content}"
+        );
     }
 
     /// RTP JSON export serializes the injected stream with its codec.

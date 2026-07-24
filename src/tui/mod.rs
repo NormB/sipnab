@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Interactive terminal UI for sipnab.
 //!
 //! Provides the sngrep-replacement mode: a full-screen TUI with call list,
@@ -916,13 +918,16 @@ impl App {
     ///
     /// # Returns
     ///
-    /// Codec segments sorted by start time; empty when no linked stream
-    /// carries a resolved codec, or when the stream-store read lock is
-    /// contended (`try_read` failure — callers treat it as "no data").
+    /// Codec segments sorted by start time; empty only when no linked
+    /// stream carries a resolved codec.
     fn rtp_codec_segments(&self, call_id: &str) -> Vec<call_flow::RtpCodecSegment> {
-        let Some(store) = self.stream_store.try_read() else {
-            return Vec::new();
-        };
+        // Blocking read: the only caller is the Mermaid export path, which
+        // is not frame-rate-critical — an export must never silently drop
+        // RTP segments because the processing thread transiently held the
+        // write lock. (The ladder render never calls this; it re-styles
+        // the segments cached by `sync_caches`.) Acquired dialog→stream,
+        // the same order as every other multi-lock site.
+        let store = self.stream_store.read();
         let mut segs: Vec<call_flow::RtpCodecSegment> = store
             .streams_for(call_id)
             .filter_map(|s| {
@@ -1530,6 +1535,52 @@ mod tests {
             app.stream_displayed.keys.len(),
             1,
             "search narrowed to SSRC BBBB0000"
+        );
+    }
+
+    /// E (Mermaid export) reads codec segments while the processing
+    /// thread may hold the stream-store write lock. A `try_read` miss
+    /// used to return an EMPTY segment list, silently exporting a
+    /// diagram without any RTP segments. The export path is not
+    /// frame-rate-critical: it must wait out transient contention and
+    /// never drop segments.
+    #[test]
+    fn rtp_codec_segments_survive_stream_store_write_contention() {
+        let app = App::new_test();
+        {
+            let ss = app.stream_store.clone();
+            let mut ss = ss.write();
+            push_rtp_stream(&mut ss, 0);
+            ss.link_to_dialog(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2)),
+                30000,
+                "contended@test",
+            );
+        }
+        assert_eq!(
+            app.rtp_codec_segments("contended@test").len(),
+            1,
+            "fixture sanity: one linked PCMU stream uncontended"
+        );
+
+        // Simulate the processing thread mid-ingest: hold the write lock
+        // on another thread for a bounded window spanning the export's
+        // read. The signal guarantees the lock is held when we read.
+        let ss = app.stream_store.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _w = ss.write();
+            locked_tx.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        locked_rx.recv().unwrap();
+        let segs = app.rtp_codec_segments("contended@test");
+        writer.join().unwrap();
+        assert_eq!(
+            segs.len(),
+            1,
+            "export must never silently drop RTP segments on transient \
+             stream-store lock contention"
         );
     }
 
