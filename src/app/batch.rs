@@ -1675,7 +1675,11 @@ fn try_tls_decrypt(
         // the decryptor can capture randoms + the RSA-encrypted pre-master for
         // the --tls-key path and the TLS 1.2 CLIENT_RANDOM keylog path.
         if record.content_type == tls::TlsContentType::Handshake {
-            decryptor.process_record(record);
+            decryptor.process_record(
+                record,
+                std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+                std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+            );
             continue;
         }
         if let Some(plaintext) = decryptor.try_decrypt(record, pp.src_addr, pp.dst_addr)

@@ -11,10 +11,11 @@
 //! `derive_tls12_keys()` — requires observing the ServerHello on the wire.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use indexmap::IndexMap;
 
 use super::tls::{KeyLogEntry, TlsContentType, TlsRecord, parse_keylog_file};
 use crate::capture::rsa_key::RsaKey;
@@ -443,6 +444,23 @@ fn parse_client_key_exchange_rsa(handshake_data: &[u8]) -> Option<&[u8]> {
 // TlsDecryptor
 // ---------------------------------------------------------------------------
 
+/// Cap on connections with pending (unanswered) ClientHellos. When full, the
+/// oldest-inserted connection is evicted so a peer opening many
+/// half-handshakes cannot pin memory. Matches the HEP peer-tracking /
+/// DNS-cache cap (see `MAX_DNS_CACHE_ENTRIES` in `names.rs`).
+const MAX_PENDING_HANDSHAKE_CONNS: usize = 4096;
+
+/// Cap on queued unanswered ClientHellos per connection (renegotiation-style
+/// repeats); the oldest is dropped so one connection cannot pin memory either.
+const MAX_PENDING_PER_CONN: usize = 32;
+
+/// Direction-normalized TCP connection key: the 4-tuple as an ordered
+/// (lower, higher) endpoint pair, so a ClientHello seen client→server and its
+/// ServerHello seen server→client map to the same connection.
+fn conn_key(src: SocketAddr, dst: SocketAddr) -> (SocketAddr, SocketAddr) {
+    if src <= dst { (src, dst) } else { (dst, src) }
+}
+
 /// Manages TLS session state and decrypts application data records.
 ///
 /// Constructed with an optional keylog file path; sessions are lazily
@@ -471,8 +489,11 @@ pub struct TlsDecryptor {
     /// handshakes only when the ClientHello was never observed.
     observed_handshakes: Vec<HandshakeInfo>,
     /// `client_random`s of observed ClientHellos not yet paired with a
-    /// ServerHello, in arrival order (FIFO).
-    pending_client_randoms: Vec<[u8; 32]>,
+    /// ServerHello, in arrival order (FIFO) per connection. Keyed by the
+    /// direction-normalized 4-tuple (`conn_key`) so a ServerHello pops only
+    /// its own connection's queue; bounded by `MAX_PENDING_HANDSHAKE_CONNS`
+    /// (oldest-inserted connection evicted, mirroring `names.rs`).
+    pending_client_randoms: IndexMap<(SocketAddr, SocketAddr), Vec<[u8; 32]>>,
     /// Number of keylog entries already processed into sessions.
     /// Avoids rebuilding the group map on every ApplicationData record.
     keylog_processed_count: usize,
@@ -511,7 +532,7 @@ impl TlsDecryptor {
             keylog_path: keylog_path.map(|p| p.to_path_buf()),
             last_keylog_size,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         })
@@ -647,10 +668,15 @@ impl TlsDecryptor {
     /// Handshake record (e.g., ServerHello). Call this for every TLS record
     /// observed on the wire so that TLS 1.2 CLIENT_RANDOM key derivation
     /// can find the server_random and negotiated cipher suite.
-    pub fn process_record(&mut self, record: &TlsRecord) {
+    ///
+    /// `src`/`dst` are the packet's transport endpoints as seen on the wire
+    /// (either direction); they identify the TCP connection so ClientHello /
+    /// ServerHello pairing never crosses connections.
+    pub fn process_record(&mut self, record: &TlsRecord, src: SocketAddr, dst: SocketAddr) {
         if record.content_type != TlsContentType::Handshake {
             return;
         }
+        let conn = conn_key(src, dst);
         // Dispatch on the first handshake message's type. Handshake messages are
         // parsed from offset 0 (tolerating trailing coalesced messages like
         // Certificate/ServerHelloDone), matching `parse_server_hello`.
@@ -659,7 +685,16 @@ impl TlsDecryptor {
             // RSA key exchange.
             Some(1) => {
                 if let Some(cr) = parse_client_hello_random(&record.payload) {
-                    self.pending_client_randoms.push(cr);
+                    if !self.pending_client_randoms.contains_key(&conn)
+                        && self.pending_client_randoms.len() >= MAX_PENDING_HANDSHAKE_CONNS
+                    {
+                        self.pending_client_randoms.shift_remove_index(0);
+                    }
+                    let queue = self.pending_client_randoms.entry(conn).or_default();
+                    if queue.len() >= MAX_PENDING_PER_CONN {
+                        queue.remove(0);
+                    }
+                    queue.push(cr);
                     if let Some(rsa) = self.rsa.as_mut() {
                         rsa.client_random = Some(cr);
                     }
@@ -676,12 +711,19 @@ impl TlsDecryptor {
                         rsa.server_random = info.server_random;
                         rsa.cipher = info.cipher_suite_code;
                     }
-                    // Pair with the oldest still-unanswered ClientHello (wire
-                    // order): per TCP connection the ClientHello precedes its
-                    // ServerHello, so a FIFO pairing binds each ServerHello to
-                    // its own handshake's client_random.
-                    if !self.pending_client_randoms.is_empty() {
-                        info.client_random = Some(self.pending_client_randoms.remove(0));
+                    // Pair with the oldest still-unanswered ClientHello of THIS
+                    // connection only (per TCP connection the ClientHello
+                    // precedes its ServerHello, so a per-connection FIFO binds
+                    // each ServerHello to its own handshake's client_random).
+                    // Cross-connection interleavings like CH1(A), CH2(B),
+                    // SH2(B), SH1(A) must never cross-pair.
+                    if let Some(queue) = self.pending_client_randoms.get_mut(&conn) {
+                        if !queue.is_empty() {
+                            info.client_random = Some(queue.remove(0));
+                        }
+                        if queue.is_empty() {
+                            self.pending_client_randoms.shift_remove(&conn);
+                        }
                     }
                     self.observed_handshakes.push(info);
                     // Clear sessions so they get re-derived with the new handshake info
@@ -1325,7 +1367,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1354,7 +1396,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1392,7 +1434,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1428,7 +1470,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1569,9 +1611,17 @@ mod tests {
         d.set_rsa_key(RsaKey::from_pem(RSA_KEY_PEM).unwrap());
         assert!(d.has_rsa_key());
 
-        d.process_record(&client_hello_record(&client_random));
-        d.process_record(&server_hello_record(0x009C));
-        d.process_record(&client_key_exchange_record(RSA_PREMASTER_CT));
+        d.process_record(
+            &client_hello_record(&client_random),
+            client_sock(),
+            server_sock(),
+        );
+        d.process_record(&server_hello_record(0x009C), server_sock(), client_sock());
+        d.process_record(
+            &client_key_exchange_record(RSA_PREMASTER_CT),
+            client_sock(),
+            server_sock(),
+        );
 
         // The RSA session must now decrypt the application data back to the SIP.
         let client = "10.0.0.1".parse().unwrap();
@@ -1641,7 +1691,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1688,7 +1738,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         };
@@ -1722,6 +1772,16 @@ mod tests {
 
     // ── helpers for the added tests ────────────────────────────────────
 
+    /// Client-side transport endpoint for single-connection tests.
+    fn client_sock() -> SocketAddr {
+        "10.0.0.1:51000".parse().unwrap()
+    }
+
+    /// Server-side transport endpoint for single-connection tests.
+    fn server_sock() -> SocketAddr {
+        "10.0.0.2:5061".parse().unwrap()
+    }
+
     /// A decryptor wrapping `crypto` with no keylog file and empty state.
     fn decryptor_with(crypto: Box<dyn CryptoBackend>) -> TlsDecryptor {
         TlsDecryptor {
@@ -1732,7 +1792,7 @@ mod tests {
             keylog_path: None,
             last_keylog_size: 0,
             observed_handshakes: Vec::new(),
-            pending_client_randoms: Vec::new(),
+            pending_client_randoms: IndexMap::new(),
             keylog_processed_count: 0,
             rsa: None,
         }
@@ -1824,6 +1884,16 @@ mod tests {
     /// `cipher_code`, with a `session_id_len`-byte session id.
     fn server_hello(cipher_code: u16, session_id_len: u8) -> Vec<u8> {
         server_hello_with_random(cipher_code, session_id_len, &[0x5Au8; 32])
+    }
+
+    /// Wrap a raw handshake payload in a TLS 1.2 Handshake record.
+    fn handshake_record(payload: Vec<u8>) -> TlsRecord {
+        TlsRecord {
+            content_type: TlsContentType::Handshake,
+            version: TlsVersion::Tls12,
+            length: 0,
+            payload,
+        }
     }
 
     /// Like [`server_hello`], but with an explicit `server_random` so tests can
@@ -1948,7 +2018,7 @@ mod tests {
             length: 0,
             payload: server_hello(0x009C, 0),
         };
-        d.process_record(&rec);
+        d.process_record(&rec, server_sock(), client_sock());
         assert_eq!(d.observed_handshakes.len(), 1);
 
         // A non-Handshake record is ignored.
@@ -1958,7 +2028,7 @@ mod tests {
             length: 0,
             payload: vec![0u8; 8],
         };
-        d.process_record(&rec);
+        d.process_record(&rec, server_sock(), client_sock());
         assert_eq!(d.observed_handshakes.len(), 1);
     }
 
@@ -1979,12 +2049,16 @@ mod tests {
         });
 
         // Observe a ServerHello negotiating an AES-128-GCM TLS 1.2 suite.
-        d.process_record(&TlsRecord {
-            content_type: TlsContentType::Handshake,
-            version: TlsVersion::Tls12,
-            length: 0,
-            payload: server_hello(0x009C, 0),
-        });
+        d.process_record(
+            &TlsRecord {
+                content_type: TlsContentType::Handshake,
+                version: TlsVersion::Tls12,
+                length: 0,
+                payload: server_hello(0x009C, 0),
+            },
+            server_sock(),
+            client_sock(),
+        );
 
         d.ensure_sessions_populated();
         let key = TlsSessionKey { client_random: cr };
@@ -2010,18 +2084,35 @@ mod tests {
 
         // Two interleaved TLS 1.2 handshakes (different connections) in wire
         // order: CH1, SH1, CH2, SH2.
-        for payload in [
-            client_hello_record(&cr1).payload,
-            server_hello_with_random(0x009C, 0, &sr1),
-            client_hello_record(&cr2).payload,
-            server_hello_with_random(0x009C, 0, &sr2),
+        let client2: SocketAddr = "10.0.0.3:51001".parse().unwrap();
+        for (payload, src, dst) in [
+            (
+                client_hello_record(&cr1).payload,
+                client_sock(),
+                server_sock(),
+            ),
+            (
+                server_hello_with_random(0x009C, 0, &sr1),
+                server_sock(),
+                client_sock(),
+            ),
+            (client_hello_record(&cr2).payload, client2, server_sock()),
+            (
+                server_hello_with_random(0x009C, 0, &sr2),
+                server_sock(),
+                client2,
+            ),
         ] {
-            d.process_record(&TlsRecord {
-                content_type: TlsContentType::Handshake,
-                version: TlsVersion::Tls12,
-                length: 0,
-                payload,
-            });
+            d.process_record(
+                &TlsRecord {
+                    content_type: TlsContentType::Handshake,
+                    version: TlsVersion::Tls12,
+                    length: 0,
+                    payload,
+                },
+                src,
+                dst,
+            );
         }
 
         // Keylog entry for the SECOND connection only.
@@ -2054,6 +2145,139 @@ mod tests {
         assert_eq!(session.client_write_iv, expected_civ);
     }
 
+    /// Cross-connection interleaving must not cross-pair: with the pathological
+    /// order CH1(A), CH2(B), SH2(B), SH1(A), each ServerHello pairs with its
+    /// OWN connection's ClientHello random.
+    #[test]
+    fn serverhello_pairs_with_own_connections_clienthello_only() {
+        let cr_a = [0x11u8; 32];
+        let sr_a = [0x5Au8; 32];
+        let cr_b = [0x22u8; 32];
+        let sr_b = [0xA5u8; 32];
+        let client_a = client_sock();
+        let client_b: SocketAddr = "10.0.0.3:51001".parse().unwrap();
+        let server = server_sock();
+
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.process_record(
+            &handshake_record(client_hello_record(&cr_a).payload),
+            client_a,
+            server,
+        );
+        d.process_record(
+            &handshake_record(client_hello_record(&cr_b).payload),
+            client_b,
+            server,
+        );
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &sr_b)),
+            server,
+            client_b,
+        );
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &sr_a)),
+            server,
+            client_a,
+        );
+
+        assert_eq!(d.observed_handshakes.len(), 2);
+        // observed_handshakes[0] is SH2 (connection B), [1] is SH1 (connection A).
+        assert_eq!(d.observed_handshakes[0].server_random, Some(sr_b));
+        assert_eq!(
+            d.observed_handshakes[0].client_random,
+            Some(cr_b),
+            "SH(B) must pair with connection B's ClientHello random"
+        );
+        assert_eq!(d.observed_handshakes[1].server_random, Some(sr_a));
+        assert_eq!(
+            d.observed_handshakes[1].client_random,
+            Some(cr_a),
+            "SH(A) must pair with connection A's ClientHello random"
+        );
+    }
+
+    /// One connection's records as seen on the wire — ClientHello
+    /// client→server, ServerHello server→client — normalize to the same
+    /// connection key and pair.
+    #[test]
+    fn clienthello_serverhello_pair_across_wire_directions() {
+        let cr = [0x33u8; 32];
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.process_record(
+            &handshake_record(client_hello_record(&cr).payload),
+            client_sock(),
+            server_sock(),
+        );
+        d.process_record(
+            &handshake_record(server_hello(0x009C, 0)),
+            server_sock(),
+            client_sock(),
+        );
+        assert_eq!(d.observed_handshakes.len(), 1);
+        assert_eq!(
+            d.observed_handshakes[0].client_random,
+            Some(cr),
+            "src/dst-swapped directions must normalize to one connection"
+        );
+    }
+
+    /// The pending-connection map is bounded: exceeding the cap evicts the
+    /// oldest connection's queued ClientHello (no panic) while the newest
+    /// connection still pairs.
+    #[test]
+    fn pending_connection_map_bounded_evicts_oldest() {
+        let server = server_sock();
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let conn_addr = |i: usize| -> SocketAddr {
+            format!("10.1.{}.{}:49152", i / 256, i % 256)
+                .parse()
+                .unwrap()
+        };
+        let conn_random = |i: usize| -> [u8; 32] {
+            let mut cr = [0u8; 32];
+            cr[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            cr
+        };
+
+        // One more connection than the cap admits.
+        for i in 0..=MAX_PENDING_HANDSHAKE_CONNS {
+            d.process_record(
+                &handshake_record(client_hello_record(&conn_random(i)).payload),
+                conn_addr(i),
+                server,
+            );
+        }
+
+        // Connection 0 was evicted: its ServerHello finds no queued ClientHello.
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &[0x5A; 32])),
+            server,
+            conn_addr(0),
+        );
+        assert_eq!(
+            d.observed_handshakes[0].client_random, None,
+            "oldest connection's pending ClientHello must be evicted at the cap"
+        );
+
+        // The newest connection still pairs.
+        let last = MAX_PENDING_HANDSHAKE_CONNS;
+        d.process_record(
+            &handshake_record(server_hello_with_random(0x009C, 0, &[0xA5; 32])),
+            server,
+            conn_addr(last),
+        );
+        assert_eq!(
+            d.observed_handshakes[1].client_random,
+            Some(conn_random(last))
+        );
+    }
+
     /// A CBC ServerHello derives a session whose IV is the full 16-byte block.
     #[test]
     fn tls12_client_random_derives_cbc_session() {
@@ -2067,12 +2291,16 @@ mod tests {
             secret: vec![0x02u8; 48],
         });
         // CBC suite: TLS_RSA_WITH_AES_128_CBC_SHA (0x002F).
-        d.process_record(&TlsRecord {
-            content_type: TlsContentType::Handshake,
-            version: TlsVersion::Tls12,
-            length: 0,
-            payload: server_hello(0x002F, 0),
-        });
+        d.process_record(
+            &TlsRecord {
+                content_type: TlsContentType::Handshake,
+                version: TlsVersion::Tls12,
+                length: 0,
+                payload: server_hello(0x002F, 0),
+            },
+            server_sock(),
+            client_sock(),
+        );
         d.ensure_sessions_populated();
         let session = d
             .sessions
@@ -2095,12 +2323,16 @@ mod tests {
             secret: vec![0x03u8; 48],
         });
         // 0x0000 is not a supported suite -> from_code_point returns None.
-        d.process_record(&TlsRecord {
-            content_type: TlsContentType::Handshake,
-            version: TlsVersion::Tls12,
-            length: 0,
-            payload: server_hello(0x0000, 0),
-        });
+        d.process_record(
+            &TlsRecord {
+                content_type: TlsContentType::Handshake,
+                version: TlsVersion::Tls12,
+                length: 0,
+                payload: server_hello(0x0000, 0),
+            },
+            server_sock(),
+            client_sock(),
+        );
         d.ensure_sessions_populated();
         assert!(d.sessions.is_empty());
     }
