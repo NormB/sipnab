@@ -53,10 +53,12 @@ pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
 /// YYYY-MM-DD HH:MM:SS sipnab[PID]: reg_flood src=<IP> count=<COUNT>
 /// ```
 ///
+/// The source IP is sanitized (CR/LF stripped) to prevent CRLF log
+/// injection, matching `format_scanner_event`.
+///
 /// # Arguments
 ///
-/// * `src_ip` — Source IP of the flood (not sanitized; callers pass a
-///   parsed IP's display form).
+/// * `src_ip` — Source IP of the flood; sanitized before formatting.
 /// * `count` — Number of REGISTERs observed in the detection window.
 ///
 /// # Returns
@@ -65,7 +67,8 @@ pub fn format_scanner_event(src_ip: &str, ua: &str, method: &str) -> String {
 pub fn format_reg_flood_event(src_ip: &str, count: u32) -> String {
     let now = Local::now().format("%Y-%m-%d %H:%M:%S");
     let pid = std::process::id();
-    format!("{now} sipnab[{pid}]: reg_flood src={src_ip} count={count}")
+    let safe_src = sanitize_log_value(src_ip);
+    format!("{now} sipnab[{pid}]: reg_flood src={safe_src} count={count}")
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -134,6 +137,24 @@ mod tests {
             event.contains("method=INVITE"),
             "sanitized method should be present"
         );
+    }
+
+    /// CR/LF embedded in the reg-flood source IP is stripped — a crafted
+    /// `src_ip` cannot forge additional log entries (mirrors the scanner
+    /// path's sanitization).
+    #[test]
+    fn reg_flood_event_sanitizes_src_ip() {
+        let event = format_reg_flood_event("10.0.0.1\r\nsipnab[1]: reg_flood src=fake", 7);
+
+        assert!(
+            !event.contains('\r') && !event.contains('\n'),
+            "output must not contain any CR or LF characters, got: {event:?}"
+        );
+        assert!(
+            event.contains("src=10.0.0.1"),
+            "sanitized IP should be present"
+        );
+        assert!(event.contains("count=7"), "count should be present");
     }
 
     /// Benign values pass through unmodified and newline-free.

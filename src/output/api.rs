@@ -566,8 +566,9 @@ async fn health_check() -> &'static str {
 /// # Returns
 ///
 /// 200 with `{schema_version, total, offset, limit, dialogs}` where
-/// `total` counts ALL dialogs in the store (unfiltered); 401/503 from the
-/// guard. `limit` is clamped to 1000.
+/// `total` is the FILTERED result-set size (the count the returned rows are
+/// drawn from, after `state`/`from` filters), so paging by `total`
+/// terminates correctly; 401/503 from the guard. `limit` is clamped to 1000.
 ///
 /// # Side effects
 ///
@@ -595,7 +596,11 @@ async fn list_dialogs(
     });
 
     let ds = state.dialog_store.read();
-    let dialogs: Vec<Value> = ds
+    // Materialize the FILTERED set first so `total` reflects what the page is
+    // drawn from. Reporting the unfiltered store size here would break
+    // pagination: a client paging by `total` over a narrower filtered result
+    // would request empty pages past the real end.
+    let filtered: Vec<&crate::sip::dialog::SipDialog> = ds
         .iter()
         .filter(|d| {
             if let Some(sf) = state_filter {
@@ -612,12 +617,15 @@ async fn list_dialogs(
             }
             true
         })
-        .skip(offset)
-        .take(limit)
-        .map(dialog_summary)
         .collect();
 
-    let total = ds.len();
+    let total = filtered.len();
+    let dialogs: Vec<Value> = filtered
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|&d| dialog_summary(d))
+        .collect();
     drop(ds);
 
     Ok(Json(json!({
@@ -743,8 +751,9 @@ async fn get_dialog_report(
 /// # Returns
 ///
 /// 200 with `{schema_version, total, offset, limit, streams}` where
-/// `total` counts ALL streams in the store (unfiltered); 401/503 from the
-/// guard. `limit` is clamped to 1000.
+/// `total` is the FILTERED result-set size (the count the returned rows are
+/// drawn from, after `orphaned`/`mos_below` filters), so paging by `total`
+/// terminates correctly; 401/503 from the guard. `limit` is clamped to 1000.
 ///
 /// # Side effects
 ///
@@ -764,7 +773,10 @@ async fn list_streams(
     let mos_threshold = params.mos_below;
 
     let ss = state.stream_store.read();
-    let streams: Vec<Value> = ss
+    // Materialize the FILTERED set first so `total` reflects what the page is
+    // drawn from (see `list_dialogs`); the unfiltered store size would break a
+    // client paging by `total`.
+    let filtered: Vec<&crate::rtp::stream::RtpStream> = ss
         .iter()
         .filter(|s| {
             if let Some(orphaned) = orphaned_filter
@@ -780,12 +792,15 @@ async fn list_streams(
             }
             true
         })
-        .skip(offset)
-        .take(limit)
-        .map(stream_summary)
         .collect();
 
-    let total = ss.len();
+    let total = filtered.len();
+    let streams: Vec<Value> = filtered
+        .iter()
+        .skip(offset)
+        .take(limit)
+        .map(|&s| stream_summary(s))
+        .collect();
     drop(ss);
 
     Ok(Json(json!({
@@ -1723,8 +1738,8 @@ mod tests {
         assert!(first["loss_pct"].is_number());
     }
 
-    /// `orphaned=true` filters out non-orphaned streams while `total` stays
-    /// unfiltered.
+    /// `orphaned=true` filters out non-orphaned streams and `total` reflects
+    /// the filtered result-set (0 here), not the store size.
     #[tokio::test]
     async fn list_streams_orphaned_filter_excludes_active() {
         let state = make_state();
@@ -1741,8 +1756,8 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
-        // total still counts all streams in the store
-        assert_eq!(parsed["total"], 1);
+        // total reflects the filtered result-set (0), not the store's 1.
+        assert_eq!(parsed["total"], 0);
     }
 
     /// `mos_below` excludes a clean high-MOS stream at 1.0 and includes it
@@ -1934,8 +1949,8 @@ mod tests {
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
     }
 
-    /// A `state` filter matching nothing returns an empty page but the
-    /// unfiltered total.
+    /// A `state` filter matching nothing returns an empty page and a filtered
+    /// total of 0 (so a client paging by `total` stops immediately).
     #[tokio::test]
     async fn list_dialogs_state_filter_excludes() {
         let state = make_state();
@@ -1949,8 +1964,8 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 0);
-        // total is unfiltered
-        assert_eq!(parsed["total"], 3);
+        // total reflects the filtered result-set (0), not the store's 3.
+        assert_eq!(parsed["total"], 0);
     }
 
     /// A `from` regex filter selects the single matching dialog and the
@@ -1988,6 +2003,96 @@ mod tests {
         let body = body_to_string(resp.into_body()).await;
         let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 3);
+    }
+
+    // ── list_* filtered-total (pagination correctness) ────────────────
+
+    /// With a filter applied, `total` reflects the FILTERED result-set size
+    /// (what the returned rows are drawn from), not the unfiltered store, so
+    /// a client paging by `total` terminates instead of over-paging.
+    #[tokio::test]
+    async fn list_dialogs_total_reflects_filtered_count() {
+        let state = make_state();
+        populate_dialogs(&state); // 3 dialogs: user0, user1, user2
+        let app = build_router(state);
+
+        // from=user1 matches exactly one dialog.
+        let resp = app
+            .oneshot(test_request("/v1/dialogs?from=user1"))
+            .await
+            .expect("oneshot");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["dialogs"].as_array().expect("array").len(), 1);
+        assert_eq!(
+            parsed["total"], 1,
+            "total must be the filtered count, not 3"
+        );
+    }
+
+    /// An `orphaned` filter that excludes every stream yields `total` 0, so a
+    /// client paging by `total` stops immediately rather than requesting
+    /// empty pages up to the unfiltered store size.
+    #[tokio::test]
+    async fn list_streams_total_reflects_filtered_count() {
+        let state = make_state();
+        add_stream(&state, 0x9999_0001, 40000, 50000);
+        add_stream(&state, 0x9999_0002, 40002, 50002);
+        let app = build_router(state);
+
+        // Freshly-created streams are not orphaned; orphaned=true excludes all.
+        let resp = app
+            .oneshot(test_request("/v1/streams?orphaned=true"))
+            .await
+            .expect("oneshot");
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: Value = serde_json::from_str(&body).expect("valid JSON");
+        assert_eq!(parsed["streams"].as_array().expect("array").len(), 0);
+        assert_eq!(
+            parsed["total"], 0,
+            "total must be the filtered count, not 2"
+        );
+    }
+
+    /// Paging by `total`/`limit` over a filtered dialog list visits exactly
+    /// the filtered rows once and then terminates (no over-paging past the
+    /// filtered set).
+    #[tokio::test]
+    async fn list_dialogs_filtered_paging_terminates() {
+        let state = make_state();
+        populate_dialogs(&state); // user0, user1, user2
+
+        // Filter "user[12]" (URL-encoded) matches user1 and user2 => 2 rows.
+        let filter = "/v1/dialogs?from=user%5B12%5D";
+        let first = build_router(state.clone())
+            .oneshot(test_request(&format!("{filter}&offset=0&limit=1")))
+            .await
+            .expect("oneshot");
+        let parsed: Value =
+            serde_json::from_str(&body_to_string(first.into_body()).await).expect("json");
+        let total = parsed["total"].as_u64().expect("total");
+        assert_eq!(total, 2, "filtered total should be 2, not the store's 3");
+
+        // Walk pages of size 1 by `total` and collect exactly `total` rows.
+        let limit = 1u64;
+        let mut collected = 0u64;
+        let mut offset = 0u64;
+        while offset < total {
+            let uri = format!("{filter}&offset={offset}&limit={limit}");
+            let r = build_router(state.clone())
+                .oneshot(test_request(&uri))
+                .await
+                .expect("oneshot");
+            let p: Value =
+                serde_json::from_str(&body_to_string(r.into_body()).await).expect("json");
+            collected += p["dialogs"].as_array().expect("array").len() as u64;
+            offset += limit;
+        }
+        assert_eq!(
+            collected, total,
+            "paging by total must visit exactly the filtered rows"
+        );
     }
 
     // ── metrics with stream data ──────────────────────────────────────
