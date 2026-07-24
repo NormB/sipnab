@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! Mermaid sequence diagram export.
 //!
 //! Turns a prepared call flow (participants + formatted messages) into
@@ -64,8 +66,8 @@ pub fn export_mermaid_html(participants: &[Participant], messages: &[FormattedMe
 /// Each participant becomes a `participant <id> as <label>` line (id from
 /// `sanitize_id`); each message becomes an arrow line, `->>` for requests
 /// and `-->>` for responses, labeled with the message label. Synthetic
-/// spacer rows, rows with empty labels, and rows whose column indices fall
-/// outside `participants` are skipped.
+/// spacer and RTP-bar rows, rows with empty labels, and rows whose column
+/// indices fall outside `participants` are skipped.
 ///
 /// # Arguments
 /// * `participants` — endpoint columns; `src_col`/`dst_col` index into this.
@@ -87,7 +89,7 @@ pub fn export_mermaid(participants: &[Participant], messages: &[FormattedMessage
     out.push('\n');
 
     for msg in messages {
-        if msg.is_spacer {
+        if msg.is_spacer || msg.is_rtp_bar {
             continue;
         }
         if msg.label.is_empty() {
@@ -296,6 +298,38 @@ mod tests {
         // Should have exactly 2 message lines (INVITE + 200 OK), no spacer
         let msg_lines: Vec<&str> = out.lines().filter(|l| l.contains("->>")).collect();
         assert_eq!(msg_lines.len(), 2);
+    }
+
+    /// RTP-bar rows are synthetic media bars whose columns are meaningless
+    /// (src == dst == 0): they must not export as self-arrows, while the
+    /// real message arrows around them survive.
+    #[test]
+    fn mermaid_skips_rtp_bars() {
+        let participants = vec![
+            Participant {
+                addr: "10.0.0.1:5060".to_string(),
+                label: "alice".to_string(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".to_string(),
+                label: "bob".to_string(),
+            },
+        ];
+        let mut bar = test_msg(0, 0, " RTP \u{00B7} PCMU ", false);
+        bar.is_rtp_bar = true;
+        let messages = vec![
+            test_msg(0, 1, "INVITE", false),
+            bar,
+            test_msg(1, 0, "200 OK", true),
+        ];
+        let out = export_mermaid(&participants, &messages);
+        assert!(
+            !out.contains("RTP"),
+            "RTP bar must not become an arrow: {out}"
+        );
+        // Only the two real messages export as arrows.
+        let msg_lines: Vec<&str> = out.lines().filter(|l| l.contains("->>")).collect();
+        assert_eq!(msg_lines.len(), 2, "expected 2 arrows: {out}");
     }
 
     /// A three-party (proxied) flow lists all participants and one arrow
