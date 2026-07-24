@@ -5,6 +5,15 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- WAV export from the call list now saves the audio of the row the user has
+  highlighted: the selection is resolved against the displayed order
+  (filter + search + sort) instead of raw store order, which under an active
+  filter or sort exported a different dialog's audio.
+- The "clear matching / clear non-matching" call-list actions now evaluate
+  each dialog against its real RTP streams. Previously they passed an empty
+  stream slice to the filter, so a dialog that matched only via a stream
+  criterion (`rtp.codec`/`rtp.mos`/`rtp.jitter`/`rtp.loss`) was misclassified
+  — and, in "clear non-matching," wrongly deleted.
 - RTCP-reported jitter is now converted from RTP-timestamp units to
   milliseconds (`jitter * 1000 / clock_rate`) before it overwrites a
   stream's jitter estimate, instead of being stored raw — the old code fed

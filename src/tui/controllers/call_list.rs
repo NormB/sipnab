@@ -409,9 +409,17 @@ pub(in crate::tui) fn clear_non_matching(app: &mut App) {
     };
 
     let removed = {
+        // Judge each dialog against its real RTP streams so stream-criteria
+        // filters (rtp.codec/mos/jitter/loss) classify correctly; the empty
+        // slice made a stream-matching dialog look non-matching and deleted
+        // it. Lock order is dialog-then-stream, matching the rest of the app.
         let mut ds = app.dialog_store.write();
+        let ss = app.stream_store.read();
         let before = ds.len();
-        ds.retain(|d| filter.matches_dialog(d, &[]));
+        ds.retain(|d| {
+            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
+            filter.matches_dialog(d, &streams)
+        });
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -433,9 +441,16 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
     };
 
     let removed = {
+        // Judge each dialog against its real RTP streams (see
+        // clear_non_matching): the empty slice made a stream-matching dialog
+        // look non-matching, so it wrongly survived a "clear matching".
         let mut ds = app.dialog_store.write();
+        let ss = app.stream_store.read();
         let before = ds.len();
-        ds.retain(|d| !filter.matches_dialog(d, &[]));
+        ds.retain(|d| {
+            let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&d.call_id).collect();
+            !filter.matches_dialog(d, &streams)
+        });
         before - ds.len()
     };
     app.call_list.clear_selections();
@@ -449,6 +464,60 @@ pub(in crate::tui) fn clear_matching(app: &mut App) {
 mod tests {
     use super::*;
     use crate::tui::controllers::test_support::*;
+
+    /// A filter with stream criteria must judge dialogs using their real RTP
+    /// streams: `clear_non_matching` must not delete a dialog that matches
+    /// only via its stream. The old `&[]` shortcut evaluated `rtp.codec` with
+    /// no streams, so the dialog was misclassified as non-matching and wiped.
+    #[test]
+    fn clear_non_matching_uses_dialog_streams_not_empty_slice() {
+        use crate::capture::parse::{ParsedPacket, TransportProto};
+        let t0 = base_ts();
+        let mut app = App::with_processed_messages(vec![
+            make_invite("call-1@test", "1001", "1002", t0),
+            make_ok("call-1@test", t0 + chrono::TimeDelta::seconds(1)),
+        ]);
+
+        // Inject a PCMU (PT 0) RTP stream and associate it with call-1.
+        let mut data = vec![
+            0x80, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x12, 0x34, 0x56, 0x78,
+        ];
+        data.extend_from_slice(&[0xAA; 160]);
+        let rtp = crate::rtp::parser::parse_rtp_header(&data).unwrap();
+        let parsed = ParsedPacket {
+            timestamp: t0,
+            src_addr: addr_a(),
+            dst_addr: addr_b(),
+            src_port: 20000,
+            dst_port: 30000,
+            transport: TransportProto::Udp,
+            payload: bytes::Bytes::from(data),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            from_hep: false,
+        };
+        {
+            let mut ss = app.stream_store.write();
+            ss.process_rtp(&parsed, &rtp, t0);
+            ss.link_to_dialog(addr_b(), 30000, "call-1@test");
+        }
+
+        // Filter that matches ONLY via the stream's codec.
+        app.active_filter =
+            Some(crate::sip::dsl::FilterExpr::parse("rtp.codec == 'PCMU'").unwrap());
+
+        clear_non_matching(&mut app);
+
+        assert_eq!(
+            app.dialog_store.read().len(),
+            1,
+            "a dialog matching only via its RTP stream must survive clear_non_matching"
+        );
+    }
 
     /// Saving columns with no config path closes the selector and reports
     /// an error instead of writing anywhere.
