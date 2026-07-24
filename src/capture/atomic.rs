@@ -22,7 +22,9 @@ use std::path::Path;
 /// * `path` — final destination file; replaced atomically on success. A bare
 ///   filename (no parent directory) is treated as relative to `.`.
 /// * `write` — closure that produces the new contents by writing to the
-///   supplied (unbuffered) writer.
+///   supplied writer. The writer is internally buffered ([`io::BufWriter`])
+///   and flushed before the fsync, so the closure may make many small writes
+///   without paying one syscall each.
 ///
 /// # Errors
 ///
@@ -50,9 +52,16 @@ where
         .prefix(".sipnab-tmp-")
         .tempfile_in(&dir)?;
 
-    // Write the new contents; on any error the NamedTempFile is dropped here,
-    // removing the partial file and leaving `path` untouched.
-    write(tmp.as_file_mut())?;
+    // Write the new contents through a buffer (small closure writes coalesce
+    // instead of costing a syscall each); on any error — from the closure or
+    // from the final flush (e.g. ENOSPC surfacing on buffered bytes) — the
+    // NamedTempFile is dropped here, removing the partial file and leaving
+    // `path` untouched.
+    {
+        let mut buffered = io::BufWriter::new(tmp.as_file_mut());
+        write(&mut buffered)?;
+        buffered.flush()?;
+    }
 
     // Durable temp contents before the rename.
     tmp.as_file_mut().sync_all()?;
@@ -119,6 +128,53 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+    }
+
+    /// The writer handed to the closure must be buffered: a small write must
+    /// not land in the temp file immediately (an unbuffered `File` writes
+    /// through to disk on every call, one syscall per write).
+    #[test]
+    fn closure_writer_is_buffered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bin");
+        let dir_path = dir.path().to_path_buf();
+        write_atomic(&path, |w| {
+            w.write_all(b"tiny")?;
+            // With an unbuffered File these 4 bytes are already in the temp
+            // file; a buffered writer holds them until flush.
+            let tmp_bytes_on_disk: u64 = std::fs::read_dir(&dir_path)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
+                .map(|e| e.metadata().unwrap().len())
+                .sum();
+            assert_eq!(
+                tmp_bytes_on_disk, 0,
+                "small writes must be buffered, not written through per call"
+            );
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"tiny");
+    }
+
+    /// Byte-at-a-time writes spanning several buffer fills (and ending with a
+    /// partial buffer) must all land in the final file — i.e. the buffer is
+    /// flushed before the fsync + rename.
+    #[test]
+    fn buffered_contents_are_flushed_before_rename() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.bin");
+        // > 8 KiB (the default BufWriter capacity) and not a multiple of it.
+        let data: Vec<u8> = (0..100_000u32).map(|i| (i % 251) as u8).collect();
+        write_atomic(&path, |w| {
+            for b in &data {
+                w.write_all(std::slice::from_ref(b))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), data);
     }
 
     /// A failed write to a path that never existed must not create the

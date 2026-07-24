@@ -22,7 +22,7 @@ CLI flags always override config file values (see [config-reference.md](config-r
 | `--no-rtp` | -- | off | Disable RTP capture and analysis |
 | `-p`, `--no-promisc` | -- | off | Do not put the interface into promiscuous mode (sipgrep `-p`). Promisc is on by default for a named device; the `any` pseudo-device is never promiscuous |
 | `--bpf-file` | `<FILE>` | -- | Read BPF filter from a file |
-| `-n`, `--count` | `<N>` | -- | Stop after capturing N packets |
+| `-n`, `--count` | `<N>` | -- | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth) |
 | `--duration` | `<DURATION>` | -- | Stop after duration (e.g., `30s`, `5m`, `1h`) |
 | `--autostop` | `<CONDITION>` | -- | Autostop condition (e.g., `filesize:100`, `duration:60`) |
 | `--split` | `<CONDITION>` | -- | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
@@ -354,7 +354,7 @@ sipnab -N -I capture.pcap --stir-shaken --digest-leak --alert-json
 | `--hep-auth-mode` | `<plain\|hmac>` | `plain` | HEP auth mode. `plain` sends/expects the shared secret verbatim in the 0x000e chunk (Homer-compatible, but replayable by an on-path sniffer). `hmac` sends/expects a per-message token (timestamp + nonce + HMAC-SHA256 over the payload) that resists replay — **sipnab-to-sipnab only**; a stock Homer/Kamailio peer will not understand it. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | Parse incoming HEP packets (enable HEP decoding). Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | Allowed source addresses for HEP input (repeatable). A non-loopback `--hep-listen` bind is **refused** unless either this or `--hep-auth`/`--hep-auth-file` is set. Feature: `hep` |
-| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders) Feature: `hep` |
+| `--hep-rate-limit` | `<N>` | `50000` | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob Feature: `hep` |
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | Maximum HEP packets/second from any single source IP: a number, `off` (the default), or `auto`. Adds fairness so one flooding peer cannot exhaust the global `--hep-rate-limit`. `auto` divides the global ceiling evenly across the `--hep-allow` sources (stays off when no allowlist is set). The active limiters are logged when the listener starts. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | Allow scanner-kill to send active responses for packets received via HEP. **Off by default**: a HEP sender asserts the inner src/dst, so absent `--hep-auth` an attacker could aim the kill at a victim of their choosing. Only enable with authenticated, trusted HEP input. Feature: `hep` |
 | `--syslog` | -- | off | Send alerts to syslog |

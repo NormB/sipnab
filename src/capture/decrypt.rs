@@ -817,22 +817,30 @@ impl TlsDecryptor {
         // Lazily populate sessions from keylog entries
         self.ensure_sessions_populated();
 
-        // NOTE: Collects session keys to avoid borrow conflict with try_decrypt_with_session's &mut self.
-        // In practice, session count is 1-3 per capture, making this negligible.
-        let session_keys: Vec<TlsSessionKey> = self.sessions.keys().cloned().collect();
-        for key in &session_keys {
-            // Read cipher suite before mutable borrow in try_decrypt_with_session
-            let cipher = self.sessions.get(key).map(|s| s.cipher_suite);
-            if let Some(plaintext) = self.try_decrypt_with_session(key, record, src_addr, dst_addr)
+        // Split the whole-`self` borrow into disjoint field references so each
+        // session can be mutated in place while iterating. This replaces the
+        // previous `self.sessions.keys().cloned().collect()` (a fresh Vec of
+        // session keys per ApplicationData record, purely to dodge the borrow
+        // checker) — `try_decrypt_with_session` now borrows one `TlsSession`
+        // directly, so no key clone and no redundant map lookups remain.
+        let Self {
+            sessions,
+            crypto,
+            decrypted_count,
+            ..
+        } = self;
+        let crypto = crypto.as_ref();
+        for (key, session) in sessions.iter_mut() {
+            let cipher = session.cipher_suite;
+            if let Some(plaintext) =
+                try_decrypt_with_session(session, crypto, record, src_addr, dst_addr)
             {
-                self.decrypted_count += 1;
-                if let Some(suite) = cipher {
-                    tracing::info!(
-                        "TLS session decrypted [session={}, cipher={}]",
-                        hex_id(&key.client_random),
-                        suite,
-                    );
-                }
+                *decrypted_count += 1;
+                tracing::info!(
+                    "TLS session decrypted [session={}, cipher={}]",
+                    hex_id(&key.client_random),
+                    cipher,
+                );
                 return Some(plaintext);
             }
         }
@@ -848,11 +856,25 @@ impl TlsDecryptor {
         {
             return;
         }
-        self.keylog_processed_count = self.keylog_entries.len();
+        // Split the borrow into disjoint field references so the TLS 1.2
+        // handshake-matching path can iterate `observed_handshakes` by reference
+        // while inserting into `sessions`, without cloning the observed-handshake
+        // vector on every pass (the borrow checker would otherwise reject an
+        // immutable iterator over `observed_handshakes` alongside `sessions`
+        // mutation while `self` is borrowed whole).
+        let Self {
+            keylog_entries,
+            sessions,
+            crypto,
+            observed_handshakes,
+            keylog_processed_count,
+            ..
+        } = self;
+        *keylog_processed_count = keylog_entries.len();
 
         // Group entries by client_random
         let mut grouped: HashMap<[u8; 32], Vec<&KeyLogEntry>> = HashMap::new();
-        for entry in &self.keylog_entries {
+        for entry in keylog_entries.iter() {
             if entry.client_random.len() == 32 {
                 let mut cr = [0u8; 32];
                 cr.copy_from_slice(&entry.client_random);
@@ -862,7 +884,7 @@ impl TlsDecryptor {
 
         for (cr, entries) in &grouped {
             let session_key = TlsSessionKey { client_random: *cr };
-            if self.sessions.contains_key(&session_key) {
+            if sessions.contains_key(&session_key) {
                 continue;
             }
 
@@ -893,8 +915,8 @@ impl TlsDecryptor {
                 };
 
                 match (
-                    derive_key_iv(self.crypto.as_ref(), cs, suite),
-                    derive_key_iv(self.crypto.as_ref(), ss, suite),
+                    derive_key_iv(crypto.as_ref(), cs, suite),
+                    derive_key_iv(crypto.as_ref(), ss, suite),
                 ) {
                     (Ok((ck, civ)), Ok((sk, siv))) => {
                         tracing::info!(
@@ -902,7 +924,7 @@ impl TlsDecryptor {
                             hex_id(cr),
                             suite
                         );
-                        self.sessions.insert(
+                        sessions.insert(
                             session_key.clone(),
                             TlsSession {
                                 version: SessionVersion::Tls13,
@@ -937,22 +959,17 @@ impl TlsDecryptor {
                 // handshakes with an unknown client_random — never to a
                 // handshake bound to a DIFFERENT session, which would
                 // silently derive keys from the wrong server_random.
-                let exact: Vec<HandshakeInfo> = self
-                    .observed_handshakes
+                let has_exact = observed_handshakes
                     .iter()
-                    .filter(|hs| hs.client_random == Some(*cr))
-                    .cloned()
-                    .collect();
-                let candidates = if exact.is_empty() {
-                    self.observed_handshakes
-                        .iter()
-                        .filter(|hs| hs.client_random.is_none())
-                        .cloned()
-                        .collect()
-                } else {
-                    exact
-                };
-                for hs in &candidates {
+                    .any(|hs| hs.client_random == Some(*cr));
+                let candidates = observed_handshakes.iter().filter(|hs| {
+                    if has_exact {
+                        hs.client_random == Some(*cr)
+                    } else {
+                        hs.client_random.is_none()
+                    }
+                });
+                for hs in candidates {
                     let Some(server_random) = hs.server_random else {
                         continue;
                     };
@@ -968,14 +985,14 @@ impl TlsDecryptor {
                         continue;
                     };
 
-                    match derive_tls12_keys(self.crypto.as_ref(), ms, cr, &server_random, suite) {
+                    match derive_tls12_keys(crypto.as_ref(), ms, cr, &server_random, suite) {
                         Ok((ck, sk, civ, siv)) => {
                             tracing::info!(
                                 "TLS 1.2 session ready [session={}, cipher={}]",
                                 hex_id(cr),
                                 suite
                             );
-                            self.sessions.insert(
+                            sessions.insert(
                                 session_key.clone(),
                                 TlsSession {
                                     version: SessionVersion::Tls12,
@@ -1002,110 +1019,111 @@ impl TlsDecryptor {
             }
         }
     }
+}
 
-    /// Try to decrypt a record using a specific session's keys.
-    fn try_decrypt_with_session(
-        &mut self,
-        session_key: &TlsSessionKey,
-        record: &TlsRecord,
-        src_addr: IpAddr,
-        dst_addr: IpAddr,
-    ) -> Option<Vec<u8>> {
-        let session = self.sessions.get_mut(session_key)?;
+/// Try to decrypt a record using a specific session's keys.
+///
+/// Borrows a single [`TlsSession`] and the crypto backend directly (rather than
+/// re-looking-up the session by key), so the caller can iterate `sessions` in
+/// place without cloning session keys. Key material stays owned by `session`;
+/// its `Drop`/zeroize behaviour is unaffected.
+fn try_decrypt_with_session(
+    session: &mut TlsSession,
+    crypto: &dyn CryptoBackend,
+    record: &TlsRecord,
+    src_addr: IpAddr,
+    dst_addr: IpAddr,
+) -> Option<Vec<u8>> {
+    // Determine direction: try both if we haven't established client_addr yet
+    let directions: Vec<bool> = if let Some(client) = session.client_addr {
+        // Known direction
+        vec![src_addr == client]
+    } else {
+        // Unknown: try client->server first, then server->client
+        vec![true, false]
+    };
 
-        // Determine direction: try both if we haven't established client_addr yet
-        let directions: Vec<bool> = if let Some(client) = session.client_addr {
-            // Known direction
-            vec![src_addr == client]
+    // Refuse TLS 1.2 CBC: those suites are MAC-then-encrypt and we do not
+    // verify the record MAC, so emitting CBC plaintext would surface
+    // unauthenticated data — a crafted capture could inject forged
+    // "decrypted" SIP. AEAD suites (AES-GCM), which are authenticated by
+    // `ring`'s `open_in_place`, remain fully supported.
+    if session.cipher_suite.is_cbc() {
+        tracing::debug!(
+            "TLS 1.2 CBC record not decrypted (suite {:?}): MAC verification \
+             unsupported; refusing to emit unauthenticated plaintext",
+            session.cipher_suite
+        );
+        return None;
+    }
+
+    let version = session.version;
+
+    for is_client_to_server in directions {
+        let (write_key, write_iv, seq) = if is_client_to_server {
+            (
+                &session.client_write_key,
+                &session.client_write_iv,
+                session.sequence_client,
+            )
         } else {
-            // Unknown: try client->server first, then server->client
-            vec![true, false]
+            (
+                &session.server_write_key,
+                &session.server_write_iv,
+                session.sequence_server,
+            )
         };
 
-        // Refuse TLS 1.2 CBC: those suites are MAC-then-encrypt and we do not
-        // verify the record MAC, so emitting CBC plaintext would surface
-        // unauthenticated data — a crafted capture could inject forged
-        // "decrypted" SIP. AEAD suites (AES-GCM), which are authenticated by
-        // `ring`'s `open_in_place`, remain fully supported.
-        if session.cipher_suite.is_cbc() {
-            tracing::debug!(
-                "TLS 1.2 CBC record not decrypted (suite {:?}): MAC verification \
-                 unsupported; refusing to emit unauthenticated plaintext",
-                session.cipher_suite
-            );
-            return None;
-        }
-
-        let version = session.version;
-
-        for is_client_to_server in directions {
-            let (write_key, write_iv, seq) = if is_client_to_server {
-                (
-                    &session.client_write_key,
-                    &session.client_write_iv,
-                    session.sequence_client,
-                )
-            } else {
-                (
-                    &session.server_write_key,
-                    &session.server_write_iv,
-                    session.sequence_server,
-                )
-            };
-
-            // Decrypt with the per-version AEAD framing. On success both paths
-            // return (plaintext, matched_seq) so the per-direction counter can
-            // resync — important for TLS 1.2, where the encrypted Finished is a
-            // Handshake record we never see, leaving the app-data counter offset.
-            let decrypted: Option<(Vec<u8>, u64)> = match version {
-                SessionVersion::Tls13 => {
-                    let mut nonce = write_iv.clone();
-                    let seq_bytes = seq.to_be_bytes();
-                    let offset = nonce.len().saturating_sub(seq_bytes.len());
-                    for (i, &b) in seq_bytes.iter().enumerate() {
-                        if offset + i < nonce.len() {
-                            nonce[offset + i] ^= b;
-                        }
+        // Decrypt with the per-version AEAD framing. On success both paths
+        // return (plaintext, matched_seq) so the per-direction counter can
+        // resync — important for TLS 1.2, where the encrypted Finished is a
+        // Handshake record we never see, leaving the app-data counter offset.
+        let decrypted: Option<(Vec<u8>, u64)> = match version {
+            SessionVersion::Tls13 => {
+                let mut nonce = write_iv.clone();
+                let seq_bytes = seq.to_be_bytes();
+                let offset = nonce.len().saturating_sub(seq_bytes.len());
+                for (i, &b) in seq_bytes.iter().enumerate() {
+                    if offset + i < nonce.len() {
+                        nonce[offset + i] ^= b;
                     }
-                    let aad = build_record_aad(record);
-                    self.crypto
-                        .aes_gcm_decrypt(write_key, &nonce, &aad, &record.payload)
-                        .ok()
-                        .map(|mut pt| {
-                            // TLS 1.3: strip inner content type and zero padding.
-                            strip_tls13_padding(&mut pt);
-                            (pt, seq)
-                        })
                 }
-                SessionVersion::Tls12 => {
-                    decrypt_tls12_gcm_record(self.crypto.as_ref(), write_key, write_iv, seq, record)
-                }
-            };
-
-            if let Some((plaintext, used_seq)) = decrypted {
-                // Update direction tracking and sequence number
-                if session.client_addr.is_none() {
-                    session.client_addr = Some(if is_client_to_server {
-                        src_addr
-                    } else {
-                        dst_addr
-                    });
-                }
-
-                if is_client_to_server {
-                    if let Some(s) = self.sessions.get_mut(session_key) {
-                        s.sequence_client = used_seq + 1;
-                    }
-                } else if let Some(s) = self.sessions.get_mut(session_key) {
-                    s.sequence_server = used_seq + 1;
-                }
-
-                return Some(plaintext);
+                let aad = build_record_aad(record);
+                crypto
+                    .aes_gcm_decrypt(write_key, &nonce, &aad, &record.payload)
+                    .ok()
+                    .map(|mut pt| {
+                        // TLS 1.3: strip inner content type and zero padding.
+                        strip_tls13_padding(&mut pt);
+                        (pt, seq)
+                    })
             }
-        }
+            SessionVersion::Tls12 => {
+                decrypt_tls12_gcm_record(crypto, write_key, write_iv, seq, record)
+            }
+        };
 
-        None
+        if let Some((plaintext, used_seq)) = decrypted {
+            // Update direction tracking and sequence number
+            if session.client_addr.is_none() {
+                session.client_addr = Some(if is_client_to_server {
+                    src_addr
+                } else {
+                    dst_addr
+                });
+            }
+
+            if is_client_to_server {
+                session.sequence_client = used_seq + 1;
+            } else {
+                session.sequence_server = used_seq + 1;
+            }
+
+            return Some(plaintext);
+        }
     }
+
+    None
 }
 
 /// Decrypt a TLS 1.2 AES-GCM record (RFC 5246 §6.2.3.3, RFC 5288).

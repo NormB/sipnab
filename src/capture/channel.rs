@@ -27,14 +27,30 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError, bounde
 
 use super::packet::Packet;
 
+/// Minimum wait before a fall-back blocking send counts as a genuine
+/// backpressure block in [`CaptureMeter::backpressure_blocks`].
+///
+/// A failed `try_send` often races a receiver that frees the slot within the
+/// same instant; the follow-up blocking send then completes in microseconds
+/// (an uncontended crossbeam handoff is sub-microsecond). Counting those
+/// races would overstate blocking by orders of magnitude. 1 ms is ~1000× the
+/// instant-recovery timescale yet far below the capture loop's own 100 ms
+/// idle-poll granularity: a sender that waited this long was genuinely
+/// parked behind a saturated pipeline.
+const GENUINE_BLOCK_THRESHOLD: Duration = Duration::from_millis(1);
+
 /// Lock-free, cheaply-clonable view of the channel's load, for metrics. Read it
 /// off the hot path (e.g. from the metrics thread); never gated on a lock.
 #[derive(Clone)]
 pub struct CaptureMeter {
     /// Packets sent but not yet received (shared across all handles).
     in_flight: Arc<AtomicUsize>,
-    /// Cumulative count of sends that had to block at the capacity cap.
+    /// Cumulative count of sends that genuinely blocked at the capacity cap
+    /// (waited ≥ [`GENUINE_BLOCK_THRESHOLD`]).
     backpressure_blocks: Arc<AtomicU64>,
+    /// Cumulative count of sends that found the channel at capacity
+    /// (`try_send` failed), including instant recoveries.
+    capacity_hits: Arc<AtomicU64>,
 }
 
 impl CaptureMeter {
@@ -44,6 +60,7 @@ impl CaptureMeter {
         Self {
             in_flight: Arc::new(AtomicUsize::new(0)),
             backpressure_blocks: Arc::new(AtomicU64::new(0)),
+            capacity_hits: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -52,9 +69,22 @@ impl CaptureMeter {
         self.in_flight.load(Ordering::Relaxed)
     }
 
-    /// Total times a send had to block because the cap was reached.
+    /// Total times a send genuinely blocked because the cap was reached —
+    /// i.e. it waited at least the genuine-block threshold (1 ms;
+    /// `GENUINE_BLOCK_THRESHOLD`) for a slot. A
+    /// failed `try_send` whose fall-back send completed instantly (the
+    /// receiver freed a slot within the same moment) is *not* counted here;
+    /// see [`capacity_hits`](Self::capacity_hits) for that raw contention
+    /// signal.
     pub fn backpressure_blocks(&self) -> u64 {
         self.backpressure_blocks.load(Ordering::Relaxed)
+    }
+
+    /// Total times a send found the channel at capacity (`try_send` failed),
+    /// whether or not the fall-back blocking send then had to wait
+    /// meaningfully. Always ≥ [`backpressure_blocks`](Self::backpressure_blocks).
+    pub fn capacity_hits(&self) -> u64 {
+        self.capacity_hits.load(Ordering::Relaxed)
     }
 }
 
@@ -127,22 +157,30 @@ impl PacketTx {
     /// # Side effects
     ///
     /// May block the calling thread until a permit frees up. Increments the
-    /// shared meter's `backpressure_blocks` counter when it has to block and
-    /// its `in_flight` counter once a slot is claimed (decremented again if
+    /// shared meter's `capacity_hits` counter whenever the cap is found full,
+    /// its `backpressure_blocks` counter only when the fall-back send then
+    /// waited ≥ the 1 ms `GENUINE_BLOCK_THRESHOLD` (a failed `try_send` instantly
+    /// rescued by a concurrent receive is a hit, not a block), and its
+    /// `in_flight` counter once a slot is claimed (decremented again if
     /// the receiver disappears before the packet is enqueued).
     pub fn send(&self, packet: Packet) -> Result<(), Closed> {
         // Claim an in-flight slot (one per packet). Fast path is a non-blocking
-        // try_send; only when the cap is reached do we count a backpressure
-        // block and wait. A dropped receiver drops `slot_rx`, so the wait/try
-        // ends in `Disconnected` and we surface `Err` (capture loop breaks).
+        // try_send; only when the cap is reached do we count a capacity hit,
+        // wait, and time the wait to decide whether it was a genuine block.
+        // A dropped receiver drops `slot_rx`, so the wait/try ends in
+        // `Disconnected` and we surface `Err` (capture loop breaks).
         match self.slot_tx.try_send(()) {
             Ok(()) => {}
             Err(TrySendError::Full(())) => {
-                self.meter
-                    .backpressure_blocks
-                    .fetch_add(1, Ordering::Relaxed);
+                self.meter.capacity_hits.fetch_add(1, Ordering::Relaxed);
+                let wait_start = std::time::Instant::now();
                 if self.slot_tx.send(()).is_err() {
                     return Err(Closed);
+                }
+                if wait_start.elapsed() >= GENUINE_BLOCK_THRESHOLD {
+                    self.meter
+                        .backpressure_blocks
+                        .fetch_add(1, Ordering::Relaxed);
                 }
             }
             Err(TrySendError::Disconnected(())) => return Err(Closed),
@@ -238,7 +276,9 @@ mod tests {
     }
 
     /// A send beyond `capacity` blocks and only completes after a receive
-    /// returns a permit; the backpressure counter records the block.
+    /// returns a permit; the backpressure counter records the completed
+    /// block (a stall is counted once its duration is known — while the
+    /// sender is still parked, `capacity_hits` is the live signal).
     #[test]
     fn capacity_blocks_until_a_credit_is_returned() {
         let (tx, rx) = packet_channel(2);
@@ -251,7 +291,7 @@ mod tests {
         let h = std::thread::spawn(move || tx2.send(pkt(64)));
         std::thread::sleep(Duration::from_millis(100));
         assert!(!h.is_finished(), "send should block at capacity");
-        assert!(tx.meter().backpressure_blocks() >= 1);
+        assert!(tx.meter().capacity_hits() >= 1, "cap hit is visible live");
 
         // Receiving one packet returns a credit and unblocks the sender.
         rx.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -260,6 +300,8 @@ mod tests {
             "send should unblock after a recv"
         );
         assert_eq!(tx.meter().in_flight(), 2);
+        // The ~100ms stall is recorded once the send completed.
+        assert!(tx.meter().backpressure_blocks() >= 1);
     }
 
     /// Receiving every queued packet restores the full permit pool so a
@@ -376,6 +418,64 @@ mod tests {
         assert!(rx.is_empty(), "drained channel is empty again");
         drop(tx);
         assert!(rx.is_empty(), "disconnected channel reads as empty");
+    }
+
+    /// A failed `try_send` whose fall-back blocking send completes almost
+    /// immediately (the receiver freed a slot within the same instant) is a
+    /// capacity hit, not a genuine block. With cap=1 and an eagerly-draining
+    /// receiver the sender trips the cap constantly but essentially never
+    /// waits, so `backpressure_blocks` must stay (near) zero — one count per
+    /// cap hit would overstate blocking by orders of magnitude.
+    #[test]
+    fn instant_recovery_cap_hit_is_not_a_genuine_block() {
+        const N: u64 = 10_000;
+        let (tx, rx) = packet_channel(1);
+        let consumer = std::thread::spawn(move || {
+            for _ in 0..N {
+                rx.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        });
+        for _ in 0..N {
+            tx.send(pkt(8)).unwrap();
+        }
+        consumer.join().unwrap();
+        let blocks = tx.meter().backpressure_blocks();
+        let hits = tx.meter().capacity_hits();
+        assert!(
+            blocks < 100,
+            "instant recoveries must not count as genuine blocks, got {blocks}"
+        );
+        assert!(hits > 0, "a cap-1 ping-pong must hit the cap");
+        assert!(
+            blocks * 2 < hits,
+            "genuine blocks ({blocks}) must be far rarer than raw capacity hits ({hits})"
+        );
+    }
+
+    /// A send that stalls for tens of milliseconds behind a slow receiver is
+    /// a genuine backpressure block and must be counted (as must the raw
+    /// capacity hit).
+    #[test]
+    fn sustained_stall_is_counted_as_genuine_block() {
+        let (tx, rx) = packet_channel(1);
+        tx.send(pkt(8)).unwrap(); // cap reached, no cap hit yet
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            rx // keep the receiver alive until the parked send completes
+        });
+        tx.send(pkt(8)).unwrap(); // waits ~50ms for the freed slot
+        let _rx = h.join().unwrap();
+        assert_eq!(
+            tx.meter().backpressure_blocks(),
+            1,
+            "a ~50ms stall is a genuine block"
+        );
+        assert_eq!(
+            tx.meter().capacity_hits(),
+            1,
+            "the stall also counts as a capacity hit"
+        );
     }
 
     /// `packet_channel(0)` clamps the cap to 1 so one send still succeeds.

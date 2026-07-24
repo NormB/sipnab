@@ -325,36 +325,49 @@ impl PacketProcessor {
 
         let (ranges, consumed) = frame_tcp_sip(&buf);
 
+        // A held partial must be an owned, growable Vec (the next flush is
+        // appended to it), so copy just the tail out — before `buf` is frozen
+        // into `Bytes` below. This is the same single tail copy as before.
+        let held_tail =
+            (consumed < buf.len() && stream_open && buf.len() - consumed <= MAX_TCP_LEFTOVER)
+                .then(|| buf[consumed..].to_vec());
+
+        // Freeze the stream buffer once: every framed message (and an
+        // end-of-stream tail) becomes a zero-copy view into this single
+        // allocation, instead of one fresh copy per message. The payloads
+        // share the allocation, which stays alive until the last downstream
+        // consumer drops its packet — the framed ranges cover (nearly) all
+        // of it, so nothing meaningful is pinned beyond its use.
+        let total = buf.len();
+        let frozen = bytes::Bytes::from(buf);
+
         let mut out: ParsedPackets = ranges
             .into_iter()
             .map(|r| {
                 let mut p = parsed.clone();
-                p.payload = bytes::Bytes::copy_from_slice(&buf[r]);
+                p.payload = frozen.slice(r);
                 p
             })
             .collect();
 
-        let remainder = &buf[consumed..];
-        if !remainder.is_empty() {
-            if stream_open && remainder.len() <= MAX_TCP_LEFTOVER {
-                // More bytes may arrive — hold the partial for the next flush.
-                if !self.tcp_sip_leftover.contains_key(&key)
-                    && self.tcp_sip_leftover.len() >= self.max_sessions
-                {
-                    // Index 0 is the least-recently-updated held partial
-                    // (map order is update recency), so the stalest entry
-                    // goes — never an active session's partial data.
-                    self.tcp_sip_leftover.shift_remove_index(0);
-                }
-                self.tcp_sip_leftover.insert(key, remainder.to_vec());
-            } else {
-                // Connection ended (or the partial is oversized): surface the
-                // truncated tail so a downstream parser can flag it malformed
-                // rather than silently dropping it.
-                let mut p = parsed.clone();
-                p.payload = bytes::Bytes::copy_from_slice(remainder);
-                out.push(p);
+        if let Some(tail) = held_tail {
+            // More bytes may arrive — hold the partial for the next flush.
+            if !self.tcp_sip_leftover.contains_key(&key)
+                && self.tcp_sip_leftover.len() >= self.max_sessions
+            {
+                // Index 0 is the least-recently-updated held partial
+                // (map order is update recency), so the stalest entry
+                // goes — never an active session's partial data.
+                self.tcp_sip_leftover.shift_remove_index(0);
             }
+            self.tcp_sip_leftover.insert(key, tail);
+        } else if consumed < total {
+            // Connection ended (or the partial is oversized): surface the
+            // truncated tail so a downstream parser can flag it malformed
+            // rather than silently dropping it.
+            let mut p = parsed.clone();
+            p.payload = frozen.slice(consumed..);
+            out.push(p);
         }
         out
     }
@@ -747,6 +760,34 @@ mod tests {
         assert!(
             out.iter()
                 .all(|p| p.transport == parse::TransportProto::Tcp)
+        );
+    }
+
+    /// TCP framing must be zero-copy: every message emitted from one segment
+    /// is a view into one shared buffer, so consecutive payloads are exactly
+    /// contiguous in memory. Per-message `copy_from_slice` would put each
+    /// payload in its own heap allocation (never contiguous — allocator
+    /// chunk headers/alignment sit between them).
+    #[test]
+    fn tcp_framing_emits_zero_copy_slices_of_one_buffer() {
+        let mut payload = opts("a");
+        payload.extend(opts("b"));
+        payload.extend(opts("c"));
+        let mut proc = PacketProcessor::new();
+        let out = proc.process(&tcp_frame(&payload, 1000, true, false));
+        assert_eq!(out.len(), 3);
+        let p0 = out[0].payload.as_ptr() as usize;
+        let p1 = out[1].payload.as_ptr() as usize;
+        let p2 = out[2].payload.as_ptr() as usize;
+        assert_eq!(
+            p1,
+            p0 + out[0].payload.len(),
+            "second message must be a view directly after the first"
+        );
+        assert_eq!(
+            p2,
+            p1 + out[1].payload.len(),
+            "third message must be a view directly after the second"
         );
     }
 

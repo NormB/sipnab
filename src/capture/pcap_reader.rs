@@ -13,6 +13,11 @@ use crate::error::CaptureError;
 /// A single packet read from a pcap/pcapng file.
 pub struct PcapPacket {
     /// Capture timestamp, whole seconds since the epoch.
+    ///
+    /// `u32` to match the classic pcap record header's on-the-wire field. A
+    /// pcapng packet whose 64-bit tick counter resolves to a seconds value
+    /// beyond `u32::MAX` (after 2106-02-07 06:28:15 UTC) saturates to
+    /// `u32::MAX` rather than silently wrapping to a small value.
     pub timestamp_secs: u32,
     /// Sub-second microseconds of the capture timestamp.
     pub timestamp_usecs: u32,
@@ -281,7 +286,12 @@ impl<'a> NgReader<'a> {
 
                     let ts64 = ((ts_high as u64) << 32) | (ts_low as u64);
                     let resol = iface.tsresol.max(1); // guard against zero
-                    let ts_sec = (ts64 / resol) as u32;
+                    // pcapng carries a 64-bit tick counter, so the derived
+                    // whole-seconds value can exceed `u32::MAX` (timestamps past
+                    // 2106-02-07). `timestamp_secs` is `u32` to match the classic
+                    // pcap wire format; saturate rather than silently wrap, the
+                    // same guard the pcap writer applies (`writer.rs`).
+                    let ts_sec = u32::try_from(ts64 / resol).unwrap_or(u32::MAX);
                     let ts_usec = ((ts64 % resol).saturating_mul(1_000_000) / resol) as u32;
 
                     let link_type = iface.link_type;
@@ -1339,6 +1349,29 @@ mod tests {
         assert_eq!(packets[0].data.len(), 16);
         // Timestamp may be clamped/weird, but must be finite and not cause panic
         // (the division by u64::MAX yields 0 for ts_sec, which is fine)
+    }
+
+    /// A pcapng packet whose 64-bit tick counter resolves to more than
+    /// `u32::MAX` whole seconds (timestamps after 2106-02-07) saturates to
+    /// `u32::MAX` rather than silently wrapping to a small value.
+    #[test]
+    fn pcapng_timestamp_past_2106_saturates_not_wraps() {
+        // Default microsecond resolution (no if_tsresol option). A full 64-bit
+        // tick counter (u64::MAX ticks) resolves to ~1.8e13 seconds, far beyond
+        // u32::MAX (~4.29e9). Truncating `as u32` would wrap to a small value;
+        // the guard must saturate to u32::MAX instead.
+        let mut data = build_shb();
+        data.extend_from_slice(&build_idb(1, &[]));
+        let pkt_payload = [0xAAu8; 16];
+        data.extend_from_slice(&build_epb(0xFFFF_FFFF, 0xFFFF_FFFF, 16, 16, &pkt_payload));
+
+        let packets: Vec<_> = PcapReader::new(&data).unwrap().collect();
+        assert_eq!(packets.len(), 1, "the EPB must still parse");
+        assert_eq!(
+            packets[0].timestamp_secs,
+            u32::MAX,
+            "seconds beyond u32::MAX must saturate, not wrap"
+        );
     }
 
     // ── Gzip-compressed captures ─────────────────────────────────────
