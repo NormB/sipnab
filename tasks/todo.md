@@ -184,64 +184,64 @@ Tiers:
 
 ## P3 — code health
 
-- [ ] src/capture/packet.rs:81 — [api-hygiene] `Packet::new` allows `caplen != data.len()`; debug assert or derive caplen.
-- [ ] src/capture/hep.rs:~1408 — [style] mixed `Instant::now()` vs fully-qualified in same fn.
-- [ ] src/capture/decrypt.rs:263 — [dead-code] `hmac_sha256` takes unused `_crypto: &dyn CryptoBackend` param.
-- [ ] src/capture/decrypt.rs:414 — [robustness] `parse_client_key_exchange_rsa` couples length guard and indexing implicitly; fragile to edits.
-- [ ] src/capture/dtls.rs:48 — [minor] `SrtpProfile::key_len`/`salt_len` ignore `self`, always 16/14.
+- [x] src/capture/packet.rs:81 — [api-hygiene] `Packet::new` allows `caplen != data.len()`; debug assert or derive caplen. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/capture/hep.rs:~1408 — [style] mixed `Instant::now()` vs fully-qualified in same fn. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/capture/decrypt.rs:263 — [dead-code] `hmac_sha256` takes unused `_crypto: &dyn CryptoBackend` param. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/capture/decrypt.rs:414 — [robustness] `parse_client_key_exchange_rsa` couples length guard and indexing implicitly; fragile to edits. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/capture/dtls.rs:48 — [minor] `SrtpProfile::key_len`/`salt_len` ignore `self`, always 16/14. **Done (P3 code-health wave, 2026-07-24).**
 - [x] src/capture/pcap_reader.rs:299 — [dead-code] `opt_data_end` computed then discarded. **Done:** resolved as a side effect of the per-interface table work — `opt_data_end` now bounds the `if_name` option read, so the `let _ =` suppression is gone.
-- [ ] src/capture/reassembly.rs:286 — [dead-code] `TcpStream.created` never read.
-- [ ] src/sip/dialog_store.rs:617 — [dead-code] `.filter(score >= 50)` can never filter (min emitted score is 50).
-- [ ] src/sip/dsl.rs:685 — [missed-edge-case] quoting-hint keyword exclusion is lowercase-only while parser is case-insensitive; `method == TRUE` gets misleading hint.
-- [ ] src/sip/mod.rs:84 — [duplication] `find_crlf` duplicated verbatim in parser.rs.
-- [ ] src/sip/matcher.rs:13 — [naming] REGEX_SIZE_LIMIT comment says "ReDoS"; regex crate is linear-time — limit bounds memory/compile cost.
-- [ ] src/sip/sdp_timeline.rs:103 — [modeling] REFER transfers reuse Offer + magic `mode: "transfer"`; dedicated variant cleaner.
-- [ ] src/sip/stir_shaken.rs:160 — [testability] `parse_identity_header` reads Utc::now() internally; inject clock for deterministic iat tests.
-- [ ] src/sip/stir_shaken.rs:278 — [naming] test `malformed_jwt_too_few_parts` actually exercises too many parts.
-- [ ] src/cli.rs:1291 — [dead-code] `warn_unimplemented_flags` is an empty no-op still called from main.rs:38.
-- [ ] src/config.rs:19 — [efficiency] `known_keys()` rebuilds HashMap per call; LazyLock static.
-- [ ] src/config.rs:749 — [efficiency] `parse_toml` parses TOML twice; deserialize Config from parsed Value.
-- [ ] src/names.rs:229 — [nit] `remove_manual` bumps generation even when nothing removed.
-- [ ] src/crash.rs (write_crash_report) — [nit] write_all failure leaves partial report file behind.
-- [ ] src/tui/call_flow/render.rs:1239 — [dead-code] `format_ladder` `_first_ts` unused.
-- [ ] src/tui/call_flow/render.rs:291 — [dead-code] `render_call_flow_lines` `_call_id` unused.
-- [ ] src/tui/call_flow/render.rs:1503 — [simplification] pointless `let fsty = sty;` alias.
-- [ ] src/tui/call_flow/render.rs — [duplication] Correlated-Legs section + arrow-width math duplicated across builders; header/pipe builders duplicated across format_ladder variants.
-- [ ] src/tui/call_flow/prepare.rs:1184 — [simplification] `first_sdp_codec` round-trips through format+re-split; duplicates payload-type table.
-- [ ] src/tui/mod.rs:645 — [duplication] sync_caches CallFlow branch inlines what `rtp_codec_segments` implements.
-- [ ] src/tui/mod.rs:2149 — [dead-attribute] redundant nested `#[cfg(test)]`.
-- [ ] src/tui/mod.rs:1055 — [organization] NameSetup/TuiOptions defined in mod.rs; siblings live in state.rs.
-- [ ] src/tui/theme.rs:37 — [missing-config] `status_bg` is the only theme color users cannot configure.
-- [ ] src/tui/help.rs:169 — [fragile-coupling] `help_line_count()` hardcodes +1 for the synthesized version line; no test ties them.
-- [ ] src/tui/state.rs:966 — [unclear-naming] `FilterDialogState::is_empty` dead_code-allow rationale undocumented.
-- [ ] src/tui/controllers/mod.rs:254 — [fragility] settings popup hardcodes item indexes 0-5 in sync with renderer order.
-- [ ] src/tui/controllers/file_open.rs:206 — [missed-edge-case] manual-path mode lacks Delete key handling (filter dialog has it); same in save dialog.
-- [ ] src/tui/controllers/name_dialog.rs:174 — [missed-edge-case] second failure overwrites first on status line.
-- [ ] src/tui/controllers/name_dialog.rs:34 — [efficiency] de-dupe allocates String per (target × ip).
-- [ ] src/tui/controllers/mod.rs:341 — [duplication] dashboard wheel handler re-implements dashboard.rs row clamp.
-- [ ] src/tui/render/mod.rs:206 — [refactor] fold-label duplicates "(+N retx)" format knowledge owned by prepare.
-- [ ] src/tui/stream_detail.rs:109 — [naming] MOS label/color band boundaries inconsistent at 3.0–3.5.
-- [ ] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places.
-- [ ] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge.
-- [ ] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence.
-- [ ] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed").
-- [ ] src/tui/call_list.rs:659 — [naming] Scaled silently renders as delta-prev in call list; document on the enum.
-- [ ] src/rtp/stream.rs:134 — [testability] `is_active` uses Utc::now(); offline replay streams never active.
-- [ ] src/rtp/srtp.rs:547 — [dead-code] `decrypt_srtp_payload` unused crypto param.
-- [ ] src/rtp/rtcp.rs:1 — [doc/code gap] header claims no silent drops; known-type body parse failures are dropped.
-- [ ] audio_export.rs:182 / playback.rs:261 — [duplication] near-identical i16/f32 linear resamplers.
-- [ ] api.rs / prometheus_server.rs — [duplication] identical bind-address parsers in two files.
-- [ ] src/output/json.rs:8 — [dead-code] redundant `use serde_json;`.
-- [ ] src/output/api.rs (serve_on) — [naming] "max connections" semaphore actually caps in-flight requests.
-- [ ] src/app/bootstrap.rs:966 — [naming] `mint_token_and_exit` never exits.
-- [ ] src/app/bootstrap.rs:970 — [dead-code] duplicated #[cfg] attribute pair.
-- [ ] src/app/batch.rs:132 vs 193 — [simplification] ParallelConfig construction duplicated verbatim.
-- [ ] src/mcp/shape.rs:29 — [naming] `max_chars` is a byte cap; rename max_bytes.
-- [ ] src/app/servers.rs:158 — [clarity] tuple let _ suppression obscures intent.
-- [ ] src/mcp/transport.rs:96 — [dead-code] auth_layer extracts ConnectInfo it never uses.
-- [ ] src/process_isolation.rs:388 — [naming] "sliding window" doc vs fixed-window implementation.
-- [ ] src/wasm.rs:24 — [style] new() without Default (intentional; note).
-- [ ] src/crypto.rs:13 — [doc-staleness] CryptoBackend doc mentions wolfSSL/OpenSSL backends that don't exist (removed by decision).
+- [x] src/capture/reassembly.rs:286 — [dead-code] `TcpStream.created` never read. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/dialog_store.rs:617 — [dead-code] `.filter(score >= 50)` can never filter (min emitted score is 50). **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/dsl.rs:685 — [missed-edge-case] quoting-hint keyword exclusion is lowercase-only while parser is case-insensitive; `method == TRUE` gets misleading hint. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/mod.rs:84 — [duplication] `find_crlf` duplicated verbatim in parser.rs. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/matcher.rs:13 — [naming] REGEX_SIZE_LIMIT comment says "ReDoS"; regex crate is linear-time — limit bounds memory/compile cost. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/sdp_timeline.rs:103 — [modeling] REFER transfers reuse Offer + magic `mode: "transfer"`; dedicated variant cleaner. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/stir_shaken.rs:160 — [testability] `parse_identity_header` reads Utc::now() internally; inject clock for deterministic iat tests. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/sip/stir_shaken.rs:278 — [naming] test `malformed_jwt_too_few_parts` actually exercises too many parts. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/cli.rs:1291 — [dead-code] `warn_unimplemented_flags` is an empty no-op still called from main.rs:38. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/config.rs:19 — [efficiency] `known_keys()` rebuilds HashMap per call; LazyLock static. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/config.rs:749 — [efficiency] `parse_toml` parses TOML twice; deserialize Config from parsed Value. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/names.rs:229 — [nit] `remove_manual` bumps generation even when nothing removed. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/crash.rs (write_crash_report) — [nit] write_all failure leaves partial report file behind. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_flow/render.rs:1239 — [dead-code] `format_ladder` `_first_ts` unused. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_flow/render.rs:291 — [dead-code] `render_call_flow_lines` `_call_id` unused. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_flow/render.rs:1503 — [simplification] pointless `let fsty = sty;` alias. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_flow/render.rs — [duplication] Correlated-Legs section + arrow-width math duplicated across builders; header/pipe builders duplicated across format_ladder variants. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_flow/prepare.rs:1184 — [simplification] `first_sdp_codec` round-trips through format+re-split; duplicates payload-type table. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/mod.rs:645 — [duplication] sync_caches CallFlow branch inlines what `rtp_codec_segments` implements. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/mod.rs:2149 — [dead-attribute] redundant nested `#[cfg(test)]`. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/mod.rs:1055 — [organization] NameSetup/TuiOptions defined in mod.rs; siblings live in state.rs. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/theme.rs:37 — [missing-config] `status_bg` is the only theme color users cannot configure. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/help.rs:169 — [fragile-coupling] `help_line_count()` hardcodes +1 for the synthesized version line; no test ties them. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/state.rs:966 — [unclear-naming] `FilterDialogState::is_empty` dead_code-allow rationale undocumented. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/controllers/mod.rs:254 — [fragility] settings popup hardcodes item indexes 0-5 in sync with renderer order. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/controllers/file_open.rs:206 — [missed-edge-case] manual-path mode lacks Delete key handling (filter dialog has it); same in save dialog. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/controllers/name_dialog.rs:174 — [missed-edge-case] second failure overwrites first on status line. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/controllers/name_dialog.rs:34 — [efficiency] de-dupe allocates String per (target × ip). **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/controllers/mod.rs:341 — [duplication] dashboard wheel handler re-implements dashboard.rs row clamp. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/render/mod.rs:206 — [refactor] fold-label duplicates "(+N retx)" format knowledge owned by prepare. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/stream_detail.rs:109 — [naming] MOS label/color band boundaries inconsistent at 3.0–3.5. **Done (P3 code-health wave, 2026-07-24).**
+- [x] stream_list.rs:307 / stream_detail.rs:91 — [refactor] loss-% computation duplicated in three places. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_list.rs:637 — [simplification] DeltaPrev and Scaled arms byte-identical; merge. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_list.rs:521 — [duplication] `base_labels` restates COLUMN_LABELS with one divergence. **Done (P3 code-health wave, 2026-07-24).**
+- [x] call_list.rs:880 vs save.rs:206 — [duplication] near-identical 12-arm state-display matches ("FAILED" vs "Failed"). **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/tui/call_list.rs:659 — [naming] Scaled silently renders as delta-prev in call list; document on the enum. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/rtp/stream.rs:134 — [testability] `is_active` uses Utc::now(); offline replay streams never active. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/rtp/srtp.rs:547 — [dead-code] `decrypt_srtp_payload` unused crypto param. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/rtp/rtcp.rs:1 — [doc/code gap] header claims no silent drops; known-type body parse failures are dropped. **Done (P3 code-health wave, 2026-07-24).**
+- [x] audio_export.rs:182 / playback.rs:261 — [duplication] near-identical i16/f32 linear resamplers. **Done (P3 code-health wave, 2026-07-24).**
+- [x] api.rs / prometheus_server.rs — [duplication] identical bind-address parsers in two files. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/output/json.rs:8 — [dead-code] redundant `use serde_json;`. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/output/api.rs (serve_on) — [naming] "max connections" semaphore actually caps in-flight requests. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/app/bootstrap.rs:966 — [naming] `mint_token_and_exit` never exits. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/app/bootstrap.rs:970 — [dead-code] duplicated #[cfg] attribute pair. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/app/batch.rs:132 vs 193 — [simplification] ParallelConfig construction duplicated verbatim. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/mcp/shape.rs:29 — [naming] `max_chars` is a byte cap; rename max_bytes. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/app/servers.rs:158 — [clarity] tuple let _ suppression obscures intent. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/mcp/transport.rs:96 — [dead-code] auth_layer extracts ConnectInfo it never uses. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/process_isolation.rs:388 — [naming] "sliding window" doc vs fixed-window implementation. **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/wasm.rs:24 — [style] new() without Default (intentional; note). **Done (P3 code-health wave, 2026-07-24).**
+- [x] src/crypto.rs:13 — [doc-staleness] CryptoBackend doc mentions wolfSSL/OpenSSL backends that don't exist (removed by decision). **Done (P3 code-health wave, 2026-07-24).**
 
 ## P4 — test quality
 
