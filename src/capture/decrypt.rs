@@ -250,8 +250,14 @@ fn derive_key_iv(
 /// A(0) = seed
 /// A(i) = HMAC(secret, A(i-1))
 /// ```
+///
+/// `_crypto` is unused: the PRF's HMAC-SHA256 uses `ring` directly (the
+/// `CryptoBackend` trait only exposes SHA1). The parameter is retained because
+/// the backend is threaded from the public `DtlsSrtpExtractor` constructors and
+/// the TLS 1.2 derivation entry points down to here for API symmetry; those
+/// callers cannot be changed without touching their public signatures.
 pub(crate) fn tls12_prf(
-    crypto: &dyn CryptoBackend,
+    _crypto: &dyn CryptoBackend,
     secret: &[u8],
     label: &[u8],
     seed: &[u8],
@@ -261,16 +267,16 @@ pub(crate) fn tls12_prf(
     let mut result = Vec::with_capacity(output_len);
 
     // A(0) = seed (which is label + seed)
-    let mut a = hmac_sha256(crypto, secret, &label_seed)?;
+    let mut a = hmac_sha256(secret, &label_seed)?;
 
     while result.len() < output_len {
         // HMAC(secret, A(i) + seed)
         let input = [a.as_slice(), label_seed.as_slice()].concat();
-        let p = hmac_sha256(crypto, secret, &input)?;
+        let p = hmac_sha256(secret, &input)?;
         result.extend_from_slice(&p);
 
         // A(i+1) = HMAC(secret, A(i))
-        a = hmac_sha256(crypto, secret, &a)?;
+        a = hmac_sha256(secret, &a)?;
     }
 
     result.truncate(output_len);
@@ -279,7 +285,7 @@ pub(crate) fn tls12_prf(
 
 /// HMAC-SHA256 using ring (the hmac_sha1 method on CryptoBackend uses SHA1,
 /// so we use ring directly here for SHA256).
-fn hmac_sha256(_crypto: &dyn CryptoBackend, key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     use ring::hmac;
     let signing_key = hmac::Key::new(hmac::HMAC_SHA256, key);
     let tag = hmac::sign(&signing_key, data);
@@ -431,13 +437,17 @@ fn parse_client_hello_random(handshake_data: &[u8]) -> Option<[u8; 32]> {
 /// `EncryptedPreMasterSecret` is itself `uint16 length ‖ opaque[length]`
 /// (RFC 5246 §7.4.7.1). Returns the ciphertext bytes.
 fn parse_client_key_exchange_rsa(handshake_data: &[u8]) -> Option<&[u8]> {
-    if handshake_data.len() < 6 || handshake_data[0] != 16 {
+    if handshake_data.first() != Some(&16) {
         return None;
     }
-    let body = &handshake_data[4..];
-    let ct_len = u16::from_be_bytes([body[0], body[1]]) as usize;
-    let ct = body.get(2..2 + ct_len)?;
-    Some(ct)
+    // Body after the 4-byte handshake header (msg_type(1) + length(3)); its
+    // first two bytes are the ciphertext length. Each slice is fetched with a
+    // local, checked bound so the length guard and the indexing can't drift
+    // apart when either is edited.
+    let body = handshake_data.get(4..)?;
+    let len_bytes = body.get(0..2)?;
+    let ct_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+    body.get(2..2 + ct_len)
 }
 
 // ---------------------------------------------------------------------------
@@ -1324,6 +1334,38 @@ mod tests {
                 secret: vec![0x22u8; 32],
             },
         ]
+    }
+
+    /// `parse_client_key_exchange_rsa` extracts the ciphertext from a
+    /// well-formed ClientKeyExchange and returns `None` for inputs that are
+    /// too short at each bound (missing type, missing length field, and a
+    /// length field that claims more ciphertext than is present).
+    #[test]
+    fn parse_client_key_exchange_rsa_bounds() {
+        // Well-formed: type(16) ‖ len(3)=0x000004 ‖ ct_len(2)=2 ‖ ct(2).
+        let good = [16u8, 0, 0, 4, 0, 2, 0xAA, 0xBB];
+        assert_eq!(
+            parse_client_key_exchange_rsa(&good),
+            Some(&[0xAAu8, 0xBB][..])
+        );
+
+        // Empty / wrong message type.
+        assert_eq!(parse_client_key_exchange_rsa(&[]), None);
+        assert_eq!(
+            parse_client_key_exchange_rsa(&[17, 0, 0, 4, 0, 2, 0, 0]),
+            None
+        );
+
+        // Truncated before the 2-byte ciphertext length field (body < 2 bytes).
+        assert_eq!(parse_client_key_exchange_rsa(&[16, 0, 0, 1, 0xAA]), None);
+        // No body at all after the 4-byte header.
+        assert_eq!(parse_client_key_exchange_rsa(&[16, 0, 0, 0]), None);
+
+        // Length field claims 2 ciphertext bytes but only 1 is present.
+        assert_eq!(
+            parse_client_key_exchange_rsa(&[16, 0, 0, 3, 0, 2, 0xAA]),
+            None
+        );
     }
 
     /// Constructing a decryptor with no keylog path succeeds with zero entries.

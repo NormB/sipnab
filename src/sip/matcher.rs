@@ -13,7 +13,12 @@ use super::SipMessage;
 use super::method::SipMethod;
 use crate::cli::Cli;
 
-/// Maximum compiled regex size in bytes, preventing ReDoS (D17).
+/// Maximum size (in bytes) of a compiled regex program (D17).
+///
+/// The `regex` crate guarantees linear-time matching, so this is **not** a
+/// ReDoS guard — it caps the memory and compile-time cost of a pathological
+/// pattern (e.g. large bounded repetitions like `a{1000}{1000}`) so an
+/// untrusted CLI pattern cannot blow up compilation.
 const REGEX_SIZE_LIMIT: usize = 1_000_000;
 
 /// Compiled set of match criteria. All specified criteria must match (AND logic).

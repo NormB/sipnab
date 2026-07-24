@@ -617,7 +617,10 @@ fn canonical_header_name(name: &str) -> Option<&'static str> {
 }
 
 /// Find the position of the first `\r\n` in `data`, or `None` if absent.
-fn find_crlf(data: &[u8]) -> Option<usize> {
+///
+/// Canonical CRLF scanner for the `sip` module; also used by the first-line
+/// sniffer in [`super::is_sip_message`].
+pub(super) fn find_crlf(data: &[u8]) -> Option<usize> {
     // SIMD \r search, then verify the following \n — byte-identical to the old
     // windows(2) scan (bare \r is skipped; a trailing \r returns None).
     let mut start = 0;

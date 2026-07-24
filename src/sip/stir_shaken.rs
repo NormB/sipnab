@@ -148,6 +148,18 @@ struct ShakenPayload {
 /// Returns an error if the JWT cannot be split into its three parts or if
 /// base64 decoding / JSON parsing of the payload fails.
 pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
+    // Public entry point reads the wall clock; the iat freshness logic lives
+    // in `parse_identity_header_at` so it can be tested deterministically.
+    parse_identity_header_at(header_value, chrono::Utc::now().timestamp())
+}
+
+/// Clock-injected core of [`parse_identity_header`].
+///
+/// Identical to the public function except the "current time" used for the
+/// RFC 8224 §4.4 iat freshness check is passed in as `now_unix` (Unix epoch
+/// seconds) rather than read from the system clock, making the iat-window
+/// classification deterministic under test.
+fn parse_identity_header_at(header_value: &str, now_unix: i64) -> Result<StirShakenInfo> {
     // The Identity header may have parameters after the JWT, separated by ';'
     // The JWT itself is the first token (before any ';')
     let jwt_part = header_value.split(';').next().unwrap_or("").trim();
@@ -185,8 +197,7 @@ pub fn parse_identity_header(header_value: &str) -> Result<StirShakenInfo> {
     // as `None` — callers can treat absence as suspicious.
     let verified = match claims.iat {
         Some(iat) => {
-            let now = chrono::Utc::now().timestamp();
-            if (now - iat).abs() > 60 {
+            if (now_unix - iat).abs() > 60 {
                 VerificationStatus::Expired
             } else {
                 VerificationStatus::NotChecked
@@ -374,10 +385,9 @@ mod tests {
 
     /// A token with more than 3 dot-separated parts is rejected.
     #[test]
-    fn malformed_jwt_too_few_parts() {
+    fn malformed_jwt_too_many_parts() {
+        // "not.a.valid.jwt.with.too.many.parts" splits into 8 parts (> 3).
         let result = parse_identity_header("not.a.valid.jwt.with.too.many.parts");
-        // This has more than 3 parts before ';', should fail
-        // Actually: "not.a.valid.jwt.with.too.many.parts" has 7 parts
         assert!(result.is_err());
     }
 
@@ -466,6 +476,40 @@ mod tests {
 
         assert!(info.iat.is_none());
         assert_eq!(info.verified, VerificationStatus::NotChecked);
+    }
+
+    /// The iat freshness window is classified deterministically against an
+    /// injected clock: at exactly 60s from `now` the token is still fresh; at
+    /// 61s (past or future) it is Expired. No dependency on the wall clock.
+    #[test]
+    fn iat_window_boundary_with_injected_clock() {
+        // Fixed reference "now" so the test never depends on Utc::now().
+        let now: i64 = 1_700_000_000;
+
+        let header_at = |iat: i64| {
+            let payload = format!(r#"{{"attest": "A", "orig": {{"tn": "1001"}}, "iat": {iat}}}"#);
+            build_identity_header(&payload)
+        };
+
+        // Exactly on the 60s boundary (both directions) stays NotChecked.
+        for iat in [now - 60, now + 60] {
+            let info = parse_identity_header_at(&header_at(iat), now).expect("should parse");
+            assert_eq!(
+                info.verified,
+                VerificationStatus::NotChecked,
+                "iat {iat} at now {now} should be within the 60s window"
+            );
+        }
+
+        // One second past the boundary (both directions) is Expired.
+        for iat in [now - 61, now + 61] {
+            let info = parse_identity_header_at(&header_at(iat), now).expect("should parse");
+            assert_eq!(
+                info.verified,
+                VerificationStatus::Expired,
+                "iat {iat} at now {now} should be outside the 60s window"
+            );
+        }
     }
 
     /// `stir_shaken()` returns `None` when no Identity header is present.

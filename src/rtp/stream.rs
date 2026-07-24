@@ -225,10 +225,24 @@ pub struct RtpStream {
 }
 
 impl RtpStream {
-    /// Returns `true` if the stream has been active within the last 30 seconds.
+    /// Returns `true` if the stream has been active within the last 30 seconds
+    /// (relative to the current wall clock).
+    ///
+    /// Thin wrapper over [`is_active_at`](Self::is_active_at) that supplies
+    /// `Utc::now()`; the `_at` form takes the reference instant explicitly so
+    /// offline replay and tests can evaluate activity deterministically.
     pub fn is_active(&self) -> bool {
-        let thirty_secs_ago = Utc::now() - chrono::Duration::seconds(30);
-        self.last_seen > thirty_secs_ago
+        self.is_active_at(Utc::now())
+    }
+
+    /// Returns `true` if the stream was active within the 30 seconds preceding
+    /// `now`.
+    ///
+    /// The reference instant is injected rather than read from the wall clock,
+    /// so replaying a captured stream (whose `last_seen` is historical) and
+    /// unit tests can both get a deterministic answer.
+    pub fn is_active_at(&self, now: DateTime<Utc>) -> bool {
+        self.last_seen > now - chrono::Duration::seconds(30)
     }
 
     /// Create a new stream from its first observed RTP packet.
@@ -699,6 +713,26 @@ mod tests {
         assert!(!stream.orphaned);
         assert!(!stream.heuristic);
         assert!(stream.associated_dialog.is_none());
+    }
+
+    /// `is_active_at` decides activity relative to an injected instant, so it
+    /// is deterministic for offline replay: a stream is active within 30 s of
+    /// its `last_seen` and inactive once the reference instant moves past that
+    /// window. The 30 s boundary is exclusive.
+    #[test]
+    fn is_active_at_is_deterministic() {
+        let key = make_key();
+        let hdr = make_header(100, 0, 0);
+        // last_seen is seeded to ts(0) by RtpStream::new.
+        let stream = RtpStream::new(key, &hdr, ts(0));
+
+        // Within the 30 s window (and at last_seen itself) → active.
+        assert!(stream.is_active_at(ts(0)));
+        assert!(stream.is_active_at(ts(29)));
+        // Exactly 30 s later is the exclusive boundary → inactive.
+        assert!(!stream.is_active_at(ts(30)));
+        // Well past the window → inactive.
+        assert!(!stream.is_active_at(ts(120)));
     }
 
     /// Nine sequential updates accumulate packet, octet, and sequence

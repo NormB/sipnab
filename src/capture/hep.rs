@@ -1488,7 +1488,7 @@ pub fn capture_hep(
         .unwrap_or_else(|_| bind_addr.to_string());
     tracing::info!("HEP listener started on {actual_addr}");
 
-    let mut idle_watch = IdleWatch::new(HEP_IDLE_WARN_AFTER, std::time::Instant::now());
+    let mut idle_watch = IdleWatch::new(HEP_IDLE_WARN_AFTER, Instant::now());
 
     loop {
         if signals::shutdown_requested() {
@@ -1517,7 +1517,7 @@ pub fn capture_hep(
             // listener (the read-timeout poll makes EINTR routine here).
             Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(ref e) if is_transient_recv_error(e.kind()) => {
-                if let Some(idle) = idle_watch.check(std::time::Instant::now()) {
+                if let Some(idle) = idle_watch.check(Instant::now()) {
                     tracing::warn!(
                         "HEP listener on {bind_addr}: no packets for {}s — \
                          upstream sender may be down (UDP gives no error for \
@@ -1533,7 +1533,7 @@ pub fn capture_hep(
             }
         };
 
-        if let Some(outage) = idle_watch.on_packet(std::time::Instant::now()) {
+        if let Some(outage) = idle_watch.on_packet(Instant::now()) {
             tracing::info!(
                 "HEP listener on {bind_addr}: traffic resumed after {}s idle",
                 outage.as_secs()

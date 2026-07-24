@@ -522,8 +522,6 @@ fn incr_be_128(block: &mut [u8; 16]) {
 /// * `key_material` — SRTP master key/salt and suite.
 /// * `roc` — rollover counter for this packet's SSRC (0 for short streams; use
 ///   `SrtpRocTracker` for the authenticated ROC).
-/// * `crypto` — crypto backend (currently unused here; AES-CM runs via the
-///   `aes` crate directly).
 ///
 /// This does NOT verify the auth tag — callers should verify first via
 /// `verify_srtp_auth_tag` / `SrtpRocTracker::verify` and only decrypt
@@ -544,10 +542,7 @@ pub fn decrypt_srtp_payload(
     payload_offset: usize,
     key_material: &SrtpKeyMaterial,
     roc: u32,
-    crypto: &dyn crate::crypto::CryptoBackend,
 ) -> Result<Vec<u8>> {
-    let _ = crypto; // AES-CM uses the `aes` crate directly (tls feature).
-
     let tag_len = auth_tag_len(&key_material.suite);
     if packet.len() < payload_offset + tag_len || payload_offset < 12 {
         anyhow::bail!(
@@ -1667,9 +1662,6 @@ mod tests {
     /// recovers the original plaintext payload.
     #[test]
     fn decrypt_srtp_payload_roundtrip_recovers_plaintext() {
-        use crate::crypto::RingCryptoBackend;
-
-        let crypto = RingCryptoBackend;
         let master_key = vec![0x11u8; 16];
         let master_salt = vec![0x22u8; 14];
         let material = SrtpKeyMaterial {
@@ -1706,8 +1698,7 @@ mod tests {
         packet.extend_from_slice(&ciphertext);
         packet.extend_from_slice(&[0u8; 10]); // dummy auth tag (10-byte / 80-bit)
 
-        let recovered =
-            decrypt_srtp_payload(&packet, header.len(), &material, roc, &crypto).unwrap();
+        let recovered = decrypt_srtp_payload(&packet, header.len(), &material, roc).unwrap();
         assert_eq!(
             recovered, plaintext,
             "AES-CM decrypt must recover plaintext"
@@ -1842,7 +1833,6 @@ mod tests {
     /// out of bounds.
     #[test]
     fn decrypt_srtp_payload_rejects_short_packet() {
-        use crate::crypto::RingCryptoBackend;
         let material = SrtpKeyMaterial {
             tag: 1,
             suite: SrtpSuite::AesCm128HmacSha1_80, // tag_len = 10
@@ -1855,7 +1845,7 @@ mod tests {
         // 12-byte header + 10-byte tag region = 22; a 20-byte packet leaves no
         // room for header+tag and must error rather than panic-slice.
         let packet = vec![0x80u8; 20];
-        assert!(decrypt_srtp_payload(&packet, 12, &material, 0, &RingCryptoBackend).is_err());
+        assert!(decrypt_srtp_payload(&packet, 12, &material, 0).is_err());
     }
 
     /// A correctly computed tag verifies, and flipping the tag's last byte

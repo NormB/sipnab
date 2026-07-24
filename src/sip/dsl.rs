@@ -742,7 +742,9 @@ fn render_parse_error(expr: &str, pos: usize, problem: &str) -> String {
         .iter()
         .find(|op| before.ends_with(**op))
         && offending.chars().next().is_some_and(|c| c.is_alphabetic())
-        && !["and", "or", "true", "false"].contains(&offending.as_str())
+        && !["and", "or", "true", "false"]
+            .iter()
+            .any(|kw| offending.eq_ignore_ascii_case(kw))
     {
         out.push_str(&format!(
             "\nhint: string values must be quoted: {op} '{offending}'"
@@ -2061,6 +2063,17 @@ mod tests {
     fn render_parse_error_no_quote_hint_for_keyword_value() {
         // "true" after an operator is a valid boolean, so no quoting hint.
         let out = render_parse_error("one_way == true", 11, "x");
+        assert!(!out.contains("must be quoted"), "got: {out}");
+    }
+
+    /// Uppercase keyword values like `TRUE` after an operator do not trigger
+    /// the quoting hint — the parser matches booleans/`AND`/`OR`
+    /// case-insensitively, so the hint exclusion must be case-insensitive too.
+    #[test]
+    fn render_parse_error_no_quote_hint_for_uppercase_keyword() {
+        // `TRUE` parses as a boolean literal (tag_no_case), so a "quote this"
+        // hint would be misleading.
+        let out = render_parse_error("method == TRUE", 10, "x");
         assert!(!out.contains("must be quoted"), "got: {out}");
     }
 

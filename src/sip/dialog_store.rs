@@ -651,13 +651,13 @@ impl DialogStore {
     /// Find dialogs correlated to the given Call-ID via X-Call-ID headers,
     /// Via branch overlap, or timing heuristics.
     ///
-    /// Returns dialogs with a correlation score of at least 50 (currently
-    /// every strategy scores at least 50, so this keeps all scored
-    /// results); empty when the Call-ID is unknown or nothing correlates.
+    /// Returns every correlated dialog, regardless of score. All three
+    /// correlation strategies emit a score of at least 50 (X-Call-ID=100,
+    /// Via-branch=80, timing=50), so there is no sub-threshold tier to
+    /// discard here; empty when the Call-ID is unknown or nothing correlates.
     pub fn find_correlated(&self, call_id: &str) -> Vec<&SipDialog> {
         self.find_correlated_scored(call_id)
             .into_iter()
-            .filter(|r| r.score >= 50)
             .map(|r| r.dialog)
             .collect()
     }

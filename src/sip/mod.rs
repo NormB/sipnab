@@ -78,7 +78,7 @@ pub fn is_sip_message(data: &[u8]) -> bool {
         if data.len() > method.len() && data.starts_with(method) && data[method.len()] == b' ' {
             // Verify the SP-anchored " SIP/2.0" version token ends the first
             // line — anchoring on the leading SP rejects a glued `...ASIP/2.0`.
-            if let Some(line_end) = find_crlf(data) {
+            if let Some(line_end) = parser::find_crlf(data) {
                 let first_line = &data[..line_end];
                 if first_line.ends_with(b" SIP/2.0") {
                     return true;
@@ -89,21 +89,6 @@ pub fn is_sip_message(data: &[u8]) -> bool {
     }
 
     false
-}
-
-/// Find the position of the first `\r\n` in `data`, or `None` if absent.
-fn find_crlf(data: &[u8]) -> Option<usize> {
-    // SIMD \r search, then verify the following \n — byte-identical to the old
-    // windows(2) scan (bare \r is skipped; a trailing \r returns None).
-    let mut start = 0;
-    while let Some(i) = memchr::memchr(b'\r', &data[start..]) {
-        let abs = start + i;
-        if data.get(abs + 1) == Some(&b'\n') {
-            return Some(abs);
-        }
-        start = abs + 1;
-    }
-    None
 }
 
 /// Tests for the `is_sip_message` first-line sniffer.
