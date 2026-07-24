@@ -178,6 +178,23 @@ pub struct SearchMessagesParams {
 /// nor a valid Call-ID (RFC 3261 `word`), so the split is unambiguous.
 const TAIL_CURSOR_SEP: char = '|';
 
+/// Zero-allocation ASCII-case-insensitive substring test used by
+/// `search_messages`: is `needle` (already ASCII-lowercased by the caller)
+/// contained in `haystack`, folding ASCII upper-case bytes on the fly? This
+/// lets each SIP field be scanned in place — no per-message combined-string
+/// `format!` and no whole-message `to_lowercase` allocation.
+fn ascii_contains_ci(haystack: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let h = haystack.as_bytes();
+    if needle.len() > h.len() {
+        return false;
+    }
+    h.windows(needle.len())
+        .any(|w| w.iter().zip(needle).all(|(a, b)| a.eq_ignore_ascii_case(b)))
+}
+
 /// Parameters for `tail_dialogs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -735,23 +752,35 @@ impl SipnabMcp {
             ));
         }
         let limit = resolve_limit(params.limit);
-        let needle = params.query.to_lowercase();
+        // Lower-case the needle ONCE (ASCII-fold, matching the TUI search
+        // paths in `tui::msg_raw` / `tui::stream_list`). Each message is then
+        // scanned field-by-field with a zero-allocation case-insensitive
+        // substring test, short-circuiting on the first match — avoiding the
+        // per-message `format!` (a whole-message String) plus a second
+        // whole-message `to_lowercase` allocation the old code paid on every
+        // message of every call.
+        let needle = params.query.to_ascii_lowercase();
+        let needle_bytes = needle.as_bytes();
         let hits: Vec<SearchHit> = {
             let ds = self.dialog_store.read();
             let mut out: Vec<SearchHit> = Vec::new();
             'outer: for d in ds.iter() {
                 for (idx, msg) in d.messages.iter().enumerate() {
-                    let haystack = format!(
-                        "{} {} {} {} {} {}",
-                        msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
-                        msg.status_code.map(|s| s.to_string()).unwrap_or_default(),
-                        msg.from_header().unwrap_or(""),
-                        msg.to_header().unwrap_or(""),
-                        msg.user_agent().unwrap_or(""),
-                        String::from_utf8_lossy(&msg.body),
-                    )
-                    .to_lowercase();
-                    if haystack.contains(&needle) {
+                    // Cheap borrowed fields first; the body's lossy view (a
+                    // borrow for valid UTF-8) is scanned last and only if the
+                    // earlier fields miss.
+                    let status = msg.status_code.map(|s| s.to_string());
+                    let body = String::from_utf8_lossy(&msg.body);
+                    let matched =
+                        ascii_contains_ci(
+                            msg.method.as_ref().map(|m| m.as_str()).unwrap_or(""),
+                            needle_bytes,
+                        ) || ascii_contains_ci(status.as_deref().unwrap_or(""), needle_bytes)
+                            || ascii_contains_ci(msg.from_header().unwrap_or(""), needle_bytes)
+                            || ascii_contains_ci(msg.to_header().unwrap_or(""), needle_bytes)
+                            || ascii_contains_ci(msg.user_agent().unwrap_or(""), needle_bytes)
+                            || ascii_contains_ci(&body, needle_bytes);
+                    if matched {
                         let snippet = super::shape::truncate_string(
                             &String::from_utf8_lossy(&msg.raw),
                             super::shape::MAX_BODY_BYTES,
@@ -1529,6 +1558,38 @@ mod tests {
                 .to_lowercase()
                 .contains("alice")
         );
+    }
+
+    /// The field scan still matches each searchable field: the method
+    /// (case-insensitively), the numeric status code, and the User-Agent.
+    #[tokio::test]
+    async fn search_messages_matches_each_field() {
+        let server = server_with_dialog("srch3@x");
+        for q in ["InViTe", "200", "testua"] {
+            let result = server
+                .search_messages(Parameters(SearchMessagesParams {
+                    query: q.to_string(),
+                    limit: Some(10),
+                }))
+                .await
+                .expect("search should succeed");
+            let v: serde_json::Value = serde_json::from_str(&text_of(&result)).unwrap();
+            let hits = v.as_array().expect("hits array");
+            assert!(!hits.is_empty(), "query {q:?} should match a field");
+        }
+    }
+
+    // ── ascii_contains_ci ────────────────────────────────────────────
+
+    /// The zero-allocation matcher folds ASCII case, honors substrings, and
+    /// rejects a needle longer than the haystack (empty needle always hits).
+    #[test]
+    fn ascii_contains_ci_folds_case_and_bounds() {
+        assert!(ascii_contains_ci("INVITE", b"invite"));
+        assert!(ascii_contains_ci("User-Agent: TestUA/1.0", b"testua"));
+        assert!(ascii_contains_ci("anything", b""));
+        assert!(!ascii_contains_ci("abc", b"abcd"));
+        assert!(!ascii_contains_ci("hello", b"xyz"));
     }
 
     // ── tail_dialogs ─────────────────────────────────────────────────

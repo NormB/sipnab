@@ -91,10 +91,11 @@ pub struct RunPlan {
 /// Decide everything: capture source precedence, capture config, portrange
 /// (CLI > config > default), BPF auto-generation for live captures,
 /// autostop/split policy, matcher/filter/output/event-exec construction,
-/// and the run mode. No capture is started and no privileges change here;
-/// the only process exits are inside the `build_capture_config` /
-/// `build_filter_expr` helpers, which still exit directly on an unreadable
-/// `--bpf-file`, invalid `--duration`, or invalid filter expression.
+/// and the run mode. No capture is started and no privileges change here,
+/// and no path exits the process: every fatal misconfiguration — including
+/// an unreadable `--bpf-file`, invalid `--duration`, or invalid filter
+/// expression surfaced by the `build_capture_config` / `build_filter_expr`
+/// helpers — is returned as a `PlanError` for the caller to handle.
 ///
 /// # Arguments
 ///
@@ -108,8 +109,10 @@ pub struct RunPlan {
 /// # Errors
 ///
 /// Returns a `PlanError` (exit code 2) for an invalid `--hep-allow` CIDR,
-/// HEP auth misconfiguration, invalid `--portrange`, `--autostop`,
-/// `--split`, filter pattern, or `--metrics` address.
+/// HEP auth misconfiguration, an unreadable `--bpf-file`, invalid
+/// `--duration`, invalid `--portrange`, `--autostop`, `--split`, filter
+/// pattern, `--filter`/diagnostic/config filter expression, or `--metrics`
+/// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     // Capture source precedence: -I file > -d device > config device >
     // --hep-listen > auto-detect (deferred to launch()).
@@ -160,7 +163,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     };
 
     // Capture config from CLI + config file.
-    let mut capture_config = build_capture_config(cli, config);
+    let mut capture_config = build_capture_config(cli, config)?;
 
     // Portrange: CLI > config file > default "5060-5061".
     let portrange_str = cli
@@ -220,7 +223,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     // Filter DSL expression (--filter or diagnostic aliases), falling back
     // to config.filter.expression.
-    let filter_expr = build_filter_expr(cli, config);
+    let filter_expr = build_filter_expr(cli, config)?;
 
     // Output options.
     let output_opts = OutputOptions {
@@ -897,23 +900,21 @@ fn parse_autostop(s: &str) -> Result<(Option<std::time::Duration>, Option<u64>),
 ///
 /// The compiled expression, or `None` when no filter source is configured.
 ///
-/// # Side effects
+/// # Errors
 ///
-/// Logs and exits the process (code 2) when the `--filter` expression, an
+/// Returns a `PlanError` (exit code 2) when the `--filter` expression, an
 /// expanded diagnostic alias, or the config-file expression fails to parse.
-fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
+/// Returning (rather than exiting) keeps planning testable and composable.
+fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
     // Explicit --filter takes precedence. Try alias expansion first
     // (so `--filter codec-asym` works the same as MCP find_problems'
     // kinds shorthand); fall back to raw DSL parsing.
     if let Some(ref expr) = cli.filter {
         let resolved = crate::sip::dsl::expand_alias(expr).unwrap_or(expr.as_str());
-        match FilterExpr::parse(resolved) {
-            Ok(f) => return Some(f),
-            Err(e) => {
-                tracing::error!("Invalid --filter expression: {e}");
-                std::process::exit(2);
-            }
-        }
+        return match FilterExpr::parse(resolved) {
+            Ok(f) => Ok(Some(f)),
+            Err(e) => Err(PlanError::arg(format!("Invalid --filter expression: {e}"))),
+        };
     }
 
     // Diagnostic alias expansion
@@ -938,26 +939,24 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
     if !parts.is_empty() {
         let combined = parts.join(" OR ");
         return match FilterExpr::parse(&combined) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                tracing::error!("Internal error building diagnostic filter: {e}");
-                std::process::exit(2);
-            }
+            Ok(f) => Ok(Some(f)),
+            Err(e) => Err(PlanError::arg(format!(
+                "Internal error building diagnostic filter: {e}"
+            ))),
         };
     }
 
     // Fall back to config file expression
     if let Some(ref expr) = config.filter.expression {
-        match FilterExpr::parse(expr) {
-            Ok(f) => return Some(f),
-            Err(e) => {
-                tracing::error!("Invalid config filter expression: {e}");
-                std::process::exit(2);
-            }
-        }
+        return match FilterExpr::parse(expr) {
+            Ok(f) => Ok(Some(f)),
+            Err(e) => Err(PlanError::arg(format!(
+                "Invalid config filter expression: {e}"
+            ))),
+        };
     }
 
-    None
+    Ok(None)
 }
 
 // ── Capture config builder ──────────────────────────────────────────
@@ -967,9 +966,14 @@ fn build_filter_expr(cli: &Cli, config: &Config) -> Option<FilterExpr> {
 ///
 /// # Side effects
 ///
-/// Reads `--bpf-file` from disk when given; logs and exits the process
-/// (code 2) on an unreadable BPF file or invalid `--duration`.
-fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
+/// Reads `--bpf-file` from disk when given.
+///
+/// # Errors
+///
+/// Returns a `PlanError` (exit code 2) on an unreadable `--bpf-file` or an
+/// invalid `--duration`. Returning (rather than exiting) keeps planning
+/// testable and composable.
+fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, PlanError> {
     let snaplen = cli.snaplen.or(config.capture.snaplen).unwrap_or(65535);
 
     let buffer_mb = cli.buffer.or(config.capture.buffer).unwrap_or(2);
@@ -985,8 +989,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         match std::fs::read_to_string(bpf_file) {
             Ok(content) => Some(content.trim().to_string()),
             Err(e) => {
-                tracing::error!("Failed to read BPF filter file '{}': {e}", bpf_file);
-                std::process::exit(2);
+                return Err(PlanError::arg(format!(
+                    "Failed to read BPF filter file '{bpf_file}': {e}"
+                )));
             }
         }
     } else if !cli.bpf_filter.is_empty() {
@@ -997,16 +1002,13 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
 
     let count = cli.count;
 
-    let duration = cli
-        .duration
-        .as_ref()
-        .map(|d| match capture::parse_duration(d) {
-            Ok(dur) => dur,
-            Err(e) => {
-                tracing::error!("Invalid --duration: {e}");
-                std::process::exit(2);
-            }
-        });
+    let duration = match cli.duration.as_ref() {
+        Some(d) => Some(
+            capture::parse_duration(d)
+                .map_err(|e| PlanError::arg(format!("Invalid --duration: {e}")))?,
+        ),
+        None => None,
+    };
 
     // Promiscuous mode: on by default; `--no-promisc` (or `[capture] promisc`)
     // turns it off. The CLI flag wins over the config value.
@@ -1016,7 +1018,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         config.capture.promisc.unwrap_or(true)
     };
 
-    CaptureConfig {
+    Ok(CaptureConfig {
         snaplen,
         buffer_mb,
         bpf_filter,
@@ -1025,7 +1027,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> CaptureConfig {
         replay: cli.replay,
         buffer_budget_mb,
         promisc,
-    }
+    })
 }
 
 // ── Auth / token helpers ───────────────────────────────────────────
@@ -1168,7 +1170,39 @@ mod tests {
         let mut cli = base_cli();
         cli.filter = Some("retransmits > 0".to_string());
         let config = Config::default();
-        assert!(build_filter_expr(&cli, &config).is_some());
+        assert!(build_filter_expr(&cli, &config).unwrap().is_some());
+    }
+
+    /// A malformed `--filter` expression yields an `Err` (exit code 2),
+    /// NOT a process exit — so `plan()` stays testable and composable.
+    #[test]
+    fn build_filter_expr_invalid_filter_returns_err() {
+        let mut cli = base_cli();
+        // `from.user ==` is the documented invalid-DSL example.
+        cli.filter = Some("from.user ==".to_string());
+        let err = build_filter_expr(&cli, &Config::default())
+            .expect_err("a malformed --filter must return Err, not exit");
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.contains("Invalid --filter expression"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    /// A malformed config-file filter expression yields an `Err`, not an exit.
+    #[test]
+    fn build_filter_expr_invalid_config_expr_returns_err() {
+        let mut config = Config::default();
+        config.filter.expression = Some("from.user ==".to_string());
+        let err = build_filter_expr(&base_cli(), &config)
+            .expect_err("a malformed config filter must return Err, not exit");
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.contains("Invalid config filter expression"),
+            "got: {}",
+            err.message
+        );
     }
 
     /// Each diagnostic alias flag builds a filter; multiple flags OR together.
@@ -1186,25 +1220,29 @@ mod tests {
         for set in flags {
             let mut cli = base_cli();
             set(&mut cli);
-            assert!(build_filter_expr(&cli, &config).is_some());
+            assert!(build_filter_expr(&cli, &config).unwrap().is_some());
         }
         // Multiple flags combine with OR.
         let mut cli = base_cli();
         cli.problems = true;
         cli.one_way = true;
-        assert!(build_filter_expr(&cli, &config).is_some());
+        assert!(build_filter_expr(&cli, &config).unwrap().is_some());
     }
 
     /// No sources → `None`; a config-file expression is the fallback source.
     #[test]
     fn build_filter_expr_config_fallback_and_none() {
         // No flags, no config -> None.
-        assert!(build_filter_expr(&base_cli(), &Config::default()).is_none());
+        assert!(
+            build_filter_expr(&base_cli(), &Config::default())
+                .unwrap()
+                .is_none()
+        );
 
         // Config fallback expression is used when no CLI flag is set.
         let mut config = Config::default();
         config.filter.expression = Some("retransmits > 0".to_string());
-        assert!(build_filter_expr(&base_cli(), &config).is_some());
+        assert!(build_filter_expr(&base_cli(), &config).unwrap().is_some());
     }
 
     // ── build_capture_config ───────────────────────────────────────────
@@ -1212,7 +1250,7 @@ mod tests {
     /// With no flags or config, the hard-coded capture defaults apply.
     #[test]
     fn build_capture_config_defaults() {
-        let cc = build_capture_config(&base_cli(), &Config::default());
+        let cc = build_capture_config(&base_cli(), &Config::default()).unwrap();
         assert_eq!(cc.snaplen, 65535);
         assert_eq!(cc.buffer_mb, 2);
         assert_eq!(cc.bpf_filter, None);
@@ -1224,7 +1262,7 @@ mod tests {
     /// Promiscuous mode defaults to on.
     #[test]
     fn build_capture_config_promisc_default_on() {
-        let cc = build_capture_config(&base_cli(), &Config::default());
+        let cc = build_capture_config(&base_cli(), &Config::default()).unwrap();
         assert!(cc.promisc, "promiscuous mode should default to on");
     }
 
@@ -1233,7 +1271,7 @@ mod tests {
     fn build_capture_config_no_promisc_flag_disables() {
         let mut cli = base_cli();
         cli.no_promisc = true;
-        let cc = build_capture_config(&cli, &Config::default());
+        let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert!(!cc.promisc, "--no-promisc should disable promiscuous mode");
     }
 
@@ -1243,7 +1281,7 @@ mod tests {
         let mut config = Config::default();
         config.capture.promisc = Some(false);
         // CLI leaves --no-promisc unset -> config value wins.
-        let cc = build_capture_config(&base_cli(), &config);
+        let cc = build_capture_config(&base_cli(), &config).unwrap();
         assert!(
             !cc.promisc,
             "[capture] promisc=false should disable promisc"
@@ -1257,7 +1295,7 @@ mod tests {
         config.capture.promisc = Some(true);
         let mut cli = base_cli();
         cli.no_promisc = true;
-        let cc = build_capture_config(&cli, &config);
+        let cc = build_capture_config(&cli, &config).unwrap();
         assert!(
             !cc.promisc,
             "--no-promisc must override [capture] promisc=true"
@@ -1273,7 +1311,7 @@ mod tests {
         cli.count = Some(42);
         cli.replay = true;
         cli.bpf_filter = vec!["udp".to_string(), "port".to_string(), "5060".to_string()];
-        let cc = build_capture_config(&cli, &Config::default());
+        let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert_eq!(cc.snaplen, 1500);
         assert_eq!(cc.buffer_mb, 8);
         assert_eq!(cc.count, Some(42));
@@ -1291,7 +1329,7 @@ mod tests {
         cli.bpf_file = Some(path.to_string_lossy().into_owned());
         // positional filter present but --bpf-file wins
         cli.bpf_filter = vec!["tcp".to_string()];
-        let cc = build_capture_config(&cli, &Config::default());
+        let cc = build_capture_config(&cli, &Config::default()).unwrap();
         assert_eq!(cc.bpf_filter.as_deref(), Some("udp and port 5060"));
         let _ = std::fs::remove_file(&path);
     }
@@ -1303,8 +1341,44 @@ mod tests {
         config.capture.snaplen = Some(256);
         config.capture.buffer = Some(16);
         // CLI leaves snaplen/buffer unset -> config values used.
-        let cc = build_capture_config(&base_cli(), &config);
+        let cc = build_capture_config(&base_cli(), &config).unwrap();
         assert_eq!(cc.snaplen, 256);
         assert_eq!(cc.buffer_mb, 16);
+    }
+
+    /// A malformed `--duration` yields an `Err` (exit code 2), not a process
+    /// exit — the plan must stay composable and testable.
+    #[test]
+    fn build_capture_config_bad_duration_returns_err() {
+        let mut cli = base_cli();
+        cli.duration = Some("abc".to_string());
+        let err = build_capture_config(&cli, &Config::default())
+            .expect_err("a malformed --duration must return Err, not exit");
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.contains("Invalid --duration"),
+            "got: {}",
+            err.message
+        );
+    }
+
+    /// An unreadable `--bpf-file` yields an `Err` (exit code 2), not an exit.
+    #[test]
+    fn build_capture_config_unreadable_bpf_file_returns_err() {
+        let mut cli = base_cli();
+        cli.bpf_file = Some(
+            std::env::temp_dir()
+                .join("sipnab_no_such_bpf_file_xyzzy.txt")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        let err = build_capture_config(&cli, &Config::default())
+            .expect_err("an unreadable --bpf-file must return Err, not exit");
+        assert_eq!(err.exit_code, 2);
+        assert!(
+            err.message.contains("Failed to read BPF filter file"),
+            "got: {}",
+            err.message
+        );
     }
 }

@@ -71,6 +71,9 @@ struct PacketCounters {
     /// Call-IDs of dialogs "armed" by a `-e` payload match. Once a dialog is
     /// armed, every subsequent message of it is emitted (dialog-following).
     followed_dialogs: std::collections::HashSet<String>,
+    /// Completed RFC 4733 telephone-event (DTMF) digits decoded so far
+    /// (`--telephone-event`).
+    dtmf_count: u64,
 }
 
 /// Owned batch-mode processing components, built by the binary's
@@ -122,6 +125,26 @@ struct ProcessingState<'a> {
     /// DTLS handshakes and feeds them into `srtp`.
     #[cfg(feature = "tls")]
     dtls: Option<&'a mut crate::capture::dtls::DtlsSrtpExtractor>,
+}
+
+/// Resolve the pcap file a `--tshark-filter` / `--wireshark` command should
+/// reference. Precedence: the input file (`-I`, offline analysis), then the
+/// file the live capture was written to (`-O`).
+///
+/// # Errors
+///
+/// Returns a message when neither is set: a live capture that saves no pcap
+/// leaves nothing for `tshark -r` to read, so emitting a placeholder path
+/// (the old `capture.pcap`) would only produce a command that fails.
+fn tshark_input_file<'a>(
+    input: Option<&'a str>,
+    output: Option<&'a str>,
+) -> Result<&'a str, String> {
+    input.or(output).ok_or_else(|| {
+        "no pcap to read: pass -I <file> to analyze a capture file, or -O <file> \
+         to save the live capture so tshark has a file to read"
+            .to_string()
+    })
 }
 
 /// Capture split/stop policy resolved from the CLI.
@@ -810,6 +833,7 @@ impl BatchRunner {
             prev_timestamp: None,
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
         };
 
         // Autostop filesize in bytes (input is in MB)
@@ -1104,27 +1128,30 @@ impl BatchRunner {
             }
         }
 
-        // 21b. --tshark-filter: print full tshark command for matched dialogs
+        // 21b. --tshark-filter: print full tshark command for matched dialogs.
+        // The emitted `tshark -r <file>` must name a pcap that actually
+        // exists: the input file (`-I`), or the file the live capture was
+        // saved to (`-O`). A live capture with neither has no pcap for tshark
+        // to read, so emit a clear error instead of a bogus `capture.pcap`.
         if cli.tshark_filter.is_some() || (cli.wireshark && cli.input.is_some()) {
-            if let Some(ref _tshark_expr) = cli.tshark_filter {
-                // User provided a custom tshark filter expression
-                let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
-                println!("tshark -r {} -Y '{}' -V", input_file, _tshark_expr);
-            } else if cli.input.is_some() {
-                // Generate tshark command from tracked dialogs (only when --wireshark + -I)
+            let input_file = tshark_input_file(cli.input.as_deref(), cli.output.as_deref());
+            if let Some(ref tshark_expr) = cli.tshark_filter {
+                // User provided a custom tshark filter expression.
+                match &input_file {
+                    Ok(file) => println!("tshark -r {file} -Y '{tshark_expr}' -V"),
+                    Err(e) => tracing::error!("Cannot emit --tshark-filter command: {e}"),
+                }
+            } else if let Ok(file) = &input_file {
+                // Generate tshark command from tracked dialogs (only when
+                // --wireshark + -I; the outer guard ensures the input exists).
                 let ds_guard = dialog_store.read();
                 let call_ids: Vec<String> = ds_guard.iter().map(|d| d.call_id.clone()).collect();
                 if !call_ids.is_empty() {
-                    let input_file = cli.input.as_deref().unwrap_or("capture.pcap");
                     let filter_parts: Vec<String> = call_ids
                         .iter()
                         .map(|id| format!("sip.Call-ID == \"{}\"", id))
                         .collect();
-                    println!(
-                        "tshark -r {} -Y '{}' -V",
-                        input_file,
-                        filter_parts.join(" || ")
-                    );
+                    println!("tshark -r {} -Y '{}' -V", file, filter_parts.join(" || "));
                 }
             }
         }
@@ -1302,6 +1329,7 @@ fn process_parsed_packet<W: std::io::Write>(
     let kill_targets = &engines.kill_targets;
     let sip_count = &mut counters.sip_count;
     let rtp_count = &mut counters.rtp_count;
+    let dtmf_count = &mut counters.dtmf_count;
     let prev_timestamp = &mut counters.prev_timestamp;
     let trailing_remaining = &mut counters.trailing_remaining;
     let followed_dialogs = &mut counters.followed_dialogs;
@@ -1607,17 +1635,39 @@ fn process_parsed_packet<W: std::io::Write>(
             stream_store.process_rtp(rtp_pp, &rtp_hdr, rtp_pp.timestamp);
             *rtp_count += 1;
 
-            // DTMF extraction (I2): if --telephone-event is set and we
-            // have the RTP payload after the header, attempt DTMF decode.
-            // Uses a default telephone-event PT of 101 (common convention).
+            // DTMF extraction (I2): if --telephone-event is set and we have
+            // the RTP payload after the header, attempt DTMF decode. The
+            // telephone-event payload type and clock rate are negotiated in
+            // SDP (`a=rtpmap:<pt> telephone-event/<clock>`), not fixed at the
+            // PT 101 / 8000 Hz conventions. `process_rtp` above resolved this
+            // stream's codec, payload_type, and clock_rate from that rtpmap,
+            // so when the codec is telephone-event we use the stream's
+            // negotiated PT and clock; otherwise fall back to the conventions
+            // (e.g. a DTMF-only stream with no observed SDP).
             if cli.telephone_event && rtp_hdr.payload_offset < rtp_pp.payload.len() {
                 let rtp_payload = &rtp_pp.payload[rtp_hdr.payload_offset..];
-                if let Some(dtmf) = rtp::dtmf::extract_dtmf(
+                let key = crate::rtp::stream::StreamKey {
+                    ssrc: rtp_hdr.ssrc,
+                    src: std::net::SocketAddr::new(pp.src_addr, pp.src_port),
+                    dst: std::net::SocketAddr::new(pp.dst_addr, pp.dst_port),
+                };
+                let (expected_pt, clock_rate) = stream_store
+                    .get(&key)
+                    .filter(|s| {
+                        s.codec
+                            .as_deref()
+                            .is_some_and(|c| c.eq_ignore_ascii_case("telephone-event"))
+                    })
+                    .map(|s| (s.payload_type, s.clock_rate))
+                    .unwrap_or((101, 8000));
+                if let Some(dtmf) = rtp::dtmf::extract_dtmf_with_clock(
                     rtp_payload,
                     rtp_hdr.payload_type,
-                    101, // Default telephone-event PT
+                    expected_pt,
+                    clock_rate,
                     pp.timestamp,
                 ) {
+                    *dtmf_count += 1;
                     tracing::info!(
                         "DTMF digit='{}' duration={}ms ssrc=0x{:08x}",
                         dtmf.digit,
@@ -1888,6 +1938,215 @@ mod tests {
         }
     }
 
+    /// Raw bytes of an INVITE whose SDP negotiates a telephone-event codec at
+    /// payload type `pt` and `clock` Hz, with media at 10.0.0.2:`media_port`.
+    fn invite_with_te_sdp(call_id: &str, media_port: u16, pt: u8, clock: u32) -> Vec<u8> {
+        let sdp = format!(
+            "v=0\r\n\
+             o=- 1 1 IN IP4 10.0.0.2\r\n\
+             s=-\r\n\
+             c=IN IP4 10.0.0.2\r\n\
+             t=0 0\r\n\
+             m=audio {media_port} RTP/AVP {pt}\r\n\
+             a=rtpmap:{pt} telephone-event/{clock}\r\n"
+        );
+        let headers = [
+            "Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9hG4bK-te".to_string(),
+            "From: Alice <sip:alice@example.com>;tag=a1b2".to_string(),
+            "To: Bob <sip:bob@example.com>".to_string(),
+            format!("Call-ID: {call_id}"),
+            "CSeq: 1 INVITE".to_string(),
+            "Max-Forwards: 70".to_string(),
+            "Contact: <sip:alice@10.0.0.1:5060>".to_string(),
+            "Content-Type: application/sdp".to_string(),
+            format!("Content-Length: {}", sdp.len()),
+        ];
+        let mut msg = String::from("INVITE sip:bob@example.com SIP/2.0\r\n");
+        for h in headers {
+            msg.push_str(&h);
+            msg.push_str("\r\n");
+        }
+        msg.push_str("\r\n");
+        msg.push_str(&sdp);
+        msg.into_bytes()
+    }
+
+    /// A UDP RTP packet to 10.0.0.2:`dst_port` carrying a completed RFC 4733
+    /// telephone-event (E bit set) for `event` with `duration_ts` timestamp
+    /// units, using RTP payload type `pt` and the given `ssrc`.
+    fn rtp_dtmf_packet(
+        dst_port: u16,
+        pt: u8,
+        ssrc: u32,
+        event: u8,
+        duration_ts: u16,
+    ) -> ParsedPacket {
+        let mut payload: Vec<u8> = vec![
+            0x80,      // V=2, no padding/extension, 0 CSRC
+            pt & 0x7F, // marker=0 + payload type
+            0x00,
+            0x01, // sequence
+            0x00,
+            0x00,
+            0x00,
+            0x00, // RTP timestamp
+        ];
+        payload.extend_from_slice(&ssrc.to_be_bytes());
+        // telephone-event descriptor: event, E-bit(0x80)+volume, duration.
+        payload.push(event);
+        payload.push(0x80);
+        payload.extend_from_slice(&duration_ts.to_be_bytes());
+        ParsedPacket {
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)),
+            src_port: 40001,
+            dst_port,
+            transport: TransportProto::Udp,
+            payload: bytes::Bytes::from(payload),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 17,
+            from_hep: false,
+        }
+    }
+
+    /// Drive an ordered sequence of packets through one shared set of stores
+    /// (so an SDP offer seen in packet N informs stream resolution for a later
+    /// RTP packet) and return the number of DTMF digits decoded.
+    fn drive_packets_dtmf(cli: &Cli, packets: &[ParsedPacket], portrange: (u16, u16)) -> u64 {
+        let matcher = SipMatcher::new(cli, None).expect("matcher");
+        let filter_expr: Option<FilterExpr> = None;
+        let output_opts = OutputOptions::default();
+        let mut dialog_store = DialogStore::new(100, false);
+        let mut stream_store = StreamStore::new(100);
+        let mut rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
+        let mut event_exec = EventExecEngine::new(None, None, 0, 0.0);
+        let mut engines = DetectionEngines {
+            scanner: None,
+            fraud: None,
+            digest: None,
+            reg_flood: None,
+            alerts: Arc::new(RwLock::new(AlertEngine::new(Vec::new(), None))),
+            kill_handle: None,
+            kill_response_code: 0,
+            kill_targets: Vec::new(),
+        };
+        let mut counters = PacketCounters {
+            sip_count: 0,
+            rtp_count: 0,
+            prev_timestamp: None,
+            trailing_remaining: 0,
+            followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
+        };
+        let ctx = BatchContext {
+            matcher: &matcher,
+            filter_expr: &filter_expr,
+            output_opts: &output_opts,
+            cli,
+            no_rtp: false,
+            after_count: 0,
+            portrange,
+        };
+        let mut sink = output::BatchSink::new(Vec::new(), false);
+        for pp in packets {
+            let mut state = ProcessingState {
+                dialog_store: &mut dialog_store,
+                stream_store: &mut stream_store,
+                rtp_heuristic: &mut rtp_heuristic,
+                event_exec: &mut event_exec,
+                #[cfg(feature = "tls")]
+                srtp: None,
+                #[cfg(feature = "tls")]
+                dtls: None,
+            };
+            process_parsed_packet(pp, &ctx, &mut state, &mut engines, &mut counters, &mut sink);
+        }
+        counters.dtmf_count
+    }
+
+    /// A telephone-event stream negotiated at a non-101 payload type must be
+    /// decoded using the SDP-negotiated PT — not the hard-coded 101. Feeding
+    /// the SDP offer (PT 96) then an RTP DTMF packet with PT 96 yields one
+    /// decoded digit; the pre-fix code (expecting PT 101) decoded zero.
+    #[test]
+    fn dtmf_honors_negotiated_non_101_payload_type() {
+        let mut cli = base_cli();
+        cli.telephone_event = true;
+        let packets = [
+            parsed_sip_packet(invite_with_te_sdp("dtmf-96@x", 40000, 96, 8000), 5060, 5060),
+            rtp_dtmf_packet(40000, 96, 0x1111_2222, 5, 800),
+        ];
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        assert_eq!(dtmf, 1, "negotiated PT 96 telephone-event must decode");
+    }
+
+    /// The negotiated telephone-event clock rate is plumbed through alongside
+    /// the PT: a wideband (16000 Hz) rtpmap still decodes the completed event.
+    /// (Both PT and clock come from the same resolved-stream lookup, so a
+    /// non-default clock also exercises the clock-rate wiring.)
+    #[test]
+    fn dtmf_honors_negotiated_wideband_clock() {
+        let mut cli = base_cli();
+        cli.telephone_event = true;
+        let packets = [
+            parsed_sip_packet(
+                invite_with_te_sdp("dtmf-wb@x", 40000, 100, 16000),
+                5060,
+                5060,
+            ),
+            rtp_dtmf_packet(40000, 100, 0x3333_4444, 7, 320),
+        ];
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        assert_eq!(dtmf, 1, "negotiated 16 kHz telephone-event must decode");
+    }
+
+    /// With no SDP telephone-event negotiation seen, the PT 101 convention is
+    /// the fallback: a PT-101 DTMF packet still decodes.
+    #[test]
+    fn dtmf_falls_back_to_pt_101_without_sdp() {
+        let mut cli = base_cli();
+        cli.telephone_event = true;
+        let packets = [rtp_dtmf_packet(40000, 101, 0x5555_6666, 9, 800)];
+        let dtmf = drive_packets_dtmf(&cli, &packets, (5060, 5061));
+        assert_eq!(dtmf, 1, "PT 101 fallback must decode when no SDP is seen");
+    }
+
+    // ── tshark_input_file ──────────────────────────────────────────────
+
+    /// The input file (`-I`) is preferred, and wins over any output file.
+    #[test]
+    fn tshark_input_file_prefers_input() {
+        assert_eq!(
+            tshark_input_file(Some("in.pcap"), Some("out.pcap")).unwrap(),
+            "in.pcap"
+        );
+        assert_eq!(tshark_input_file(Some("in.pcap"), None).unwrap(), "in.pcap");
+    }
+
+    /// A custom `--tshark-filter` on a live capture WITHOUT `-I` references
+    /// the real saved pcap (`-O`) instead of the old `capture.pcap` placeholder.
+    #[test]
+    fn tshark_input_file_custom_filter_without_input_uses_output() {
+        let f = tshark_input_file(None, Some("saved.pcap"))
+            .expect("a saved output file is a valid tshark source");
+        assert_eq!(f, "saved.pcap");
+    }
+
+    /// A live capture with neither `-I` nor `-O` has no pcap for tshark to
+    /// read: error clearly rather than emitting a bogus `capture.pcap`.
+    #[test]
+    fn tshark_input_file_no_input_no_output_errors() {
+        let err = tshark_input_file(None, None)
+            .expect_err("no pcap source must be an error, not a placeholder");
+        assert!(!err.contains("capture.pcap"), "must not name a placeholder");
+        assert!(err.contains("-I") && err.contains("-O"), "got: {err}");
+    }
+
     // ── dispatch_sip_output ────────────────────────────────────────────
 
     /// Every output backend (default text, JSON, pretty JSON, fail2ban, raw
@@ -2041,6 +2300,7 @@ mod tests {
             prev_timestamp: None,
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
         };
 
         let ctx = BatchContext {
@@ -2108,6 +2368,7 @@ mod tests {
             prev_timestamp: None,
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
         };
         let ctx = BatchContext {
             matcher: &matcher,
@@ -2221,6 +2482,7 @@ mod tests {
             prev_timestamp: None,
             trailing_remaining: 0,
             followed_dialogs: std::collections::HashSet::new(),
+            dtmf_count: 0,
         };
         let ctx = BatchContext {
             matcher: &matcher,
