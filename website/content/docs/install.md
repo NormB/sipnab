@@ -72,7 +72,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
 docker build -t sipnab .
 ```
 
-The multi-stage Dockerfile uses `rust:1.94-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
+The multi-stage Dockerfile uses `rust:1.97-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image. The runtime image includes only `libpcap0.8t64` and runs as a non-root `sipnab` user.
 
 ## Cargo
 
