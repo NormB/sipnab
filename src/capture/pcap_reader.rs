@@ -20,6 +20,13 @@ pub struct PcapPacket {
     pub data: Vec<u8>,
     /// Original on-the-wire packet length.
     pub orig_len: u32,
+    /// Link-layer type of the interface this packet was captured on (pcap
+    /// DLT value): the file header's for classic pcap, the referenced
+    /// interface's IDB value for pcapng.
+    pub link_type: u32,
+    /// Capture interface name from the pcapng IDB `if_name` option, when
+    /// present (`None` for classic pcap and unnamed interfaces).
+    pub interface: Option<String>,
 }
 
 /// Unified reader for both pcap and pcapng formats.
@@ -27,7 +34,10 @@ pub struct PcapPacket {
 pub struct PcapReader<'a> {
     /// Format-specific reader state (classic pcap or pcapng).
     inner: ReaderInner<'a>,
-    /// Link-layer type from the file header (pcap DLT value).
+    /// Link-layer type (pcap DLT value): the file header's for classic pcap;
+    /// for pcapng, the link type of the most recently yielded packet's
+    /// interface (1 = Ethernet before the first packet). Multi-interface
+    /// captures can differ per packet — prefer [`PcapPacket::link_type`].
     pub link_type: u32,
 }
 
@@ -54,6 +64,9 @@ struct ClassicReader<'a> {
     /// Sub-second field is nanoseconds (magic `a1b23c4d`/`4d3cb2a1`), not
     /// microseconds.
     nanoseconds: bool,
+    /// Link-layer type from the global header (pcap DLT value), stamped on
+    /// every packet.
+    link_type: u32,
 }
 
 impl<'a> ClassicReader<'a> {
@@ -106,11 +119,26 @@ impl<'a> ClassicReader<'a> {
             timestamp_usecs: ts_usec,
             data,
             orig_len,
+            link_type: self.link_type,
+            interface: None,
         })
     }
 }
 
 // ── Pcapng ────────────────────────────────────────────────────────────
+
+/// One entry of the pcapng reader's per-section interface table (index =
+/// the `interface_id` EPBs reference), built from one IDB.
+#[derive(Debug)]
+struct NgInterface {
+    /// Link type from the IDB (pcap DLT value; defaults to 1, Ethernet).
+    link_type: u32,
+    /// Timestamp units per second from the IDB's `if_tsresol` option
+    /// (default 1_000_000 = microseconds).
+    tsresol: u64,
+    /// Interface name from the IDB's `if_name` option, if present.
+    name: Option<String>,
+}
 
 /// Cursor over the blocks of a pcapng file.
 #[derive(Debug)]
@@ -121,12 +149,10 @@ struct NgReader<'a> {
     offset: usize,
     /// Current section's byte order (updated at each SHB).
     big_endian: bool,
-    /// Timestamp units per second from the most recent IDB's `if_tsresol`
-    /// option (default 1_000_000 = microseconds).
-    if_tsresol: u64,
-    /// Link type from the most recent IDB (pcap DLT value; defaults to 1,
-    /// Ethernet).
-    link_type: u32,
+    /// Per-section interface table: one entry per IDB in order of
+    /// appearance (index = the `interface_id` EPBs reference). Cleared at
+    /// each new SHB — interfaces never leak across sections.
+    interfaces: Vec<NgInterface>,
 }
 
 impl<'a> NgReader<'a> {
@@ -154,21 +180,25 @@ impl<'a> NgReader<'a> {
 
     /// Walk blocks from the cursor until the next Enhanced Packet Block.
     ///
-    /// SHBs update the section byte order, IDBs update `link_type` and
-    /// `if_tsresol`, all other block types are skipped. EPB timestamps
-    /// (64-bit tick counts split across ts_high/ts_low) are converted to
-    /// seconds + microseconds using the interface's declared resolution.
+    /// SHBs update the section byte order and clear the interface table,
+    /// IDBs append an entry (link type, `if_tsresol`, `if_name`) to it, all
+    /// other block types are skipped. Each EPB resolves its `interface_id`
+    /// against the table: the timestamp (a 64-bit tick count split across
+    /// ts_high/ts_low) is converted to seconds + microseconds using THAT
+    /// interface's declared resolution, and the packet is stamped with that
+    /// interface's link type and name.
     ///
     /// # Returns
     ///
     /// The next packet, or `None` at end of data or when a block header is
     /// truncated/invalid (which permanently ends iteration). Truncated EPB
-    /// bodies are skipped, not fatal.
+    /// bodies and EPBs referencing an undeclared `interface_id` are
+    /// skipped, not fatal.
     ///
     /// # Side effects
     ///
-    /// Advances `self.offset` and updates `big_endian` / `link_type` /
-    /// `if_tsresol` as SHB/IDB blocks are encountered.
+    /// Advances `self.offset` and updates `big_endian` / `interfaces` as
+    /// SHB/IDB blocks are encountered.
     fn next_packet(&mut self) -> Option<PcapPacket> {
         loop {
             let block_type = self.read_u32(self.offset)?;
@@ -189,25 +219,34 @@ impl<'a> NgReader<'a> {
                         let bom = u32::from_le_bytes(bom_bytes.try_into().ok()?);
                         self.big_endian = bom == 0x4d3c2b1a;
                     }
-                    // A new section is independent: reset the interface-derived
-                    // resolution and link type to their defaults so a later
-                    // section whose IDB omits if_tsresol (or link type) does not
-                    // inherit the previous section's values.
-                    self.if_tsresol = 1_000_000;
-                    self.link_type = 1;
+                    // A new section is independent: clear the interface
+                    // table so a later section's EPBs cannot resolve against
+                    // (or inherit resolution/link type from) the previous
+                    // section's interfaces.
+                    self.interfaces.clear();
                     self.offset = block_end;
                 }
 
                 // Interface Description Block (IDB) — 0x00000001
                 0x00000001 => {
+                    // Every IDB occupies one interface_id slot in file order,
+                    // so even a runt IDB (too short to carry a link type)
+                    // appends a default entry — later interfaces' numbering
+                    // must stay aligned with the file's.
+                    let mut entry = NgInterface {
+                        link_type: 1,
+                        tsresol: 1_000_000,
+                        name: None,
+                    };
                     if block_total_len >= 20 {
                         if let Some(lt) = self.read_u16(self.offset + 8) {
-                            self.link_type = lt as u32;
+                            entry.link_type = lt as u32;
                         }
                         let opts_start = self.offset + 16;
                         let opts_end = self.offset + block_total_len.saturating_sub(4);
-                        self.parse_idb_options(opts_start, opts_end);
+                        self.parse_idb_options(opts_start, opts_end, &mut entry);
                     }
+                    self.interfaces.push(entry);
                     self.offset = block_end;
                 }
 
@@ -217,6 +256,15 @@ impl<'a> NgReader<'a> {
                         self.offset = block_end;
                         continue;
                     }
+                    // An EPB referencing an interface this section never
+                    // declared is malformed: skip it (the convention for
+                    // bounded malformed blocks) rather than misdecode the
+                    // timestamp/link type with defaults.
+                    let interface_id = self.read_u32(self.offset + 8)? as usize;
+                    let Some(iface) = self.interfaces.get(interface_id) else {
+                        self.offset = block_end;
+                        continue;
+                    };
                     let ts_high = self.read_u32(self.offset + 12)?;
                     let ts_low = self.read_u32(self.offset + 16)?;
                     let captured_len = self.read_u32(self.offset + 20)? as usize;
@@ -232,16 +280,20 @@ impl<'a> NgReader<'a> {
                     let pkt_data = self.data[data_start..data_end].to_vec();
 
                     let ts64 = ((ts_high as u64) << 32) | (ts_low as u64);
-                    let resol = self.if_tsresol.max(1); // guard against zero
+                    let resol = iface.tsresol.max(1); // guard against zero
                     let ts_sec = (ts64 / resol) as u32;
                     let ts_usec = ((ts64 % resol).saturating_mul(1_000_000) / resol) as u32;
 
+                    let link_type = iface.link_type;
+                    let interface = iface.name.clone();
                     self.offset = block_end;
                     return Some(PcapPacket {
                         timestamp_secs: ts_sec,
                         timestamp_usecs: ts_usec,
                         data: pkt_data,
                         orig_len,
+                        link_type,
+                        interface,
                     });
                 }
 
@@ -254,18 +306,18 @@ impl<'a> NgReader<'a> {
     }
 
     /// Scan an IDB's option list between byte offsets `pos` and `end` for
-    /// `if_tsresol` (code 9).
+    /// `if_name` (code 2) and `if_tsresol` (code 9), filling `entry`.
     ///
-    /// The option value is one byte: bit 7 clear means a power-of-10
+    /// The `if_tsresol` value is one byte: bit 7 clear means a power-of-10
     /// exponent, bit 7 set means a power-of-2 exponent. Overflowing
     /// exponents clamp to `u64::MAX` instead of panicking; `opt_endofopt`
     /// (code 0) or any malformed length terminates the scan.
     ///
     /// # Side effects
     ///
-    /// Updates `self.if_tsresol` (timestamp ticks per second) when a valid
-    /// option is found.
-    fn parse_idb_options(&mut self, mut pos: usize, end: usize) {
+    /// Updates `entry.name` and `entry.tsresol` (timestamp ticks per
+    /// second) when the corresponding valid options are found.
+    fn parse_idb_options(&self, mut pos: usize, end: usize, entry: &mut NgInterface) {
         while pos + 4 <= end {
             let opt_code = match self.read_u16(pos) {
                 Some(v) => v,
@@ -281,6 +333,15 @@ impl<'a> NgReader<'a> {
                 _ => break,
             };
 
+            // if_name option (code 2): UTF-8 interface name, not
+            // zero-terminated (invalid UTF-8 is replaced, not fatal).
+            if opt_code == 2
+                && opt_len >= 1
+                && let Some(bytes) = self.data.get(pos..opt_data_end)
+            {
+                entry.name = Some(String::from_utf8_lossy(bytes).into_owned());
+            }
+
             // if_tsresol option (code 9)
             if opt_code == 9
                 && opt_len >= 1
@@ -289,10 +350,10 @@ impl<'a> NgReader<'a> {
                 if tsresol & 0x80 != 0 {
                     let exp = (tsresol & 0x7f) as u32;
                     // Cap shift to prevent overflow (u64 max shift is 63)
-                    self.if_tsresol = if exp <= 63 { 1u64 << exp } else { u64::MAX };
+                    entry.tsresol = if exp <= 63 { 1u64 << exp } else { u64::MAX };
                 } else {
                     // Cap exponent to prevent 10^N overflow (10^19 fits in u64, 10^20 does not)
-                    self.if_tsresol = 10u64.checked_pow(tsresol as u32).unwrap_or(u64::MAX);
+                    entry.tsresol = 10u64.checked_pow(tsresol as u32).unwrap_or(u64::MAX);
                 }
             }
 
@@ -307,7 +368,6 @@ impl<'a> NgReader<'a> {
                 Some(p) => p,
                 None => break,
             };
-            let _ = opt_data_end; // used in guard above
         }
     }
 }
@@ -460,6 +520,7 @@ impl<'a> PcapReader<'a> {
                         offset: 24,
                         big_endian,
                         nanoseconds,
+                        link_type,
                     }),
                     link_type,
                 })
@@ -492,8 +553,7 @@ impl<'a> PcapReader<'a> {
                         data,
                         offset: start,
                         big_endian,
-                        if_tsresol: 1_000_000,
-                        link_type: 1,
+                        interfaces: Vec::new(),
                     }),
                     link_type: 1,
                 })
@@ -509,17 +569,16 @@ impl<'a> PcapReader<'a> {
 impl<'a> Iterator for PcapReader<'a> {
     type Item = PcapPacket;
 
-    /// Yield the next packet from the underlying format reader; for pcapng,
-    /// also refresh the public `link_type` (an IDB may appear mid-file).
+    /// Yield the next packet from the underlying format reader, refreshing
+    /// the public `link_type` to the yielded packet's (pcapng interfaces
+    /// can differ per packet).
     fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.inner {
+        let pkt = match &mut self.inner {
             ReaderInner::Classic(r) => r.next_packet(),
-            ReaderInner::Ng(r) => {
-                let pkt = r.next_packet();
-                self.link_type = r.link_type;
-                pkt
-            }
-        }
+            ReaderInner::Ng(r) => r.next_packet(),
+        }?;
+        self.link_type = pkt.link_type;
+        Some(pkt)
     }
 }
 
@@ -660,6 +719,204 @@ mod tests {
             "section-2 packet must use the reset µs resolution"
         );
         assert_eq!(packets[1].timestamp_usecs, 0);
+    }
+
+    /// Two IDBs with DIFFERENT `if_tsresol` in one section: each EPB must be
+    /// decoded with ITS interface's resolution (via `interface_id`), not the
+    /// last IDB's.
+    #[test]
+    fn per_interface_tsresol_decodes_each_epb_with_own_resolution() {
+        // if_tsresol option: code 9, len 1, value 9 (10^9 = nanoseconds),
+        // padded, then opt_endofopt.
+        let ns_opts: &[u8] = &[
+            0x09, 0x00, 0x01, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let mut data = build_shb();
+        // Interface 0: no tsresol option (default µs), interface 1: ns.
+        data.extend(build_idb(1, &[]));
+        data.extend(build_idb(1, ns_opts));
+        // Interface 0 at µs: 3_000_000 ticks = 3 s.
+        data.extend(build_epb_iface(0, 0, 3_000_000, 4, 4, &[1, 2, 3, 4]));
+        // Interface 1 at ns: 2_500_000_000 ticks = 2 s + 500_000 µs.
+        data.extend(build_epb_iface(1, 0, 2_500_000_000, 4, 4, &[5, 6, 7, 8]));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert_eq!(packets.len(), 2);
+        assert_eq!(
+            (packets[0].timestamp_secs, packets[0].timestamp_usecs),
+            (3, 0),
+            "interface 0 packet must decode at ITS microsecond resolution"
+        );
+        assert_eq!(
+            (packets[1].timestamp_secs, packets[1].timestamp_usecs),
+            (2, 500_000),
+            "interface 1 packet must decode at ITS nanosecond resolution"
+        );
+    }
+
+    /// Two IDBs with different link types: each packet is stamped with ITS
+    /// interface's link type, and the classic-pcap path keeps stamping the
+    /// file header's.
+    #[test]
+    fn per_interface_link_type_stamps_each_packet() {
+        let mut data = build_shb();
+        data.extend(build_idb(1, &[])); // interface 0: Ethernet
+        data.extend(build_idb(113, &[])); // interface 1: Linux SLL
+        data.extend(build_epb_iface(0, 0, 1_000_000, 4, 4, &[1, 2, 3, 4]));
+        data.extend(build_epb_iface(1, 0, 2_000_000, 4, 4, &[5, 6, 7, 8]));
+        data.extend(build_epb_iface(0, 0, 3_000_000, 4, 4, &[9, 10, 11, 12]));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert_eq!(packets.len(), 3);
+        let link_types: Vec<_> = packets.iter().map(|p| p.link_type).collect();
+        assert_eq!(
+            link_types,
+            vec![1, 113, 1],
+            "each packet carries its own interface's link type"
+        );
+        assert!(
+            packets.iter().all(|p| p.interface.is_none()),
+            "IDBs without if_name yield no interface name"
+        );
+
+        // Classic pcap: every packet carries the file header's link type.
+        let mut classic = build_pcap_header(113);
+        classic.extend(build_pcap_packet_header(1000, 0, 4, 4));
+        classic.extend_from_slice(&[1, 2, 3, 4]);
+        let packets: Vec<_> = PcapReader::new(&classic).unwrap().collect();
+        assert_eq!(packets.len(), 1);
+        assert_eq!(packets[0].link_type, 113);
+        assert_eq!(packets[0].interface, None);
+    }
+
+    /// Round-trip integration lock with `PcapWriter`'s multi-IDB output: a
+    /// two-interface pcapng (different link types, `if_name`s) written by the
+    /// writer reads back with per-packet interface names, link types, and
+    /// timestamps intact.
+    #[cfg(feature = "native")]
+    #[test]
+    fn round_trip_two_interface_pcapng_from_writer() {
+        use crate::capture::packet::Packet;
+        use crate::capture::writer::{PcapExportMode, PcapWriter};
+        use chrono::TimeZone;
+
+        /// A packet tagged with a source interface name, link type, and a
+        /// fixed timestamp (secs + µs).
+        fn pkt_on(interface: &str, link_type: i32, secs: i64, usecs: u32, len: usize) -> Packet {
+            let ts = chrono::Utc
+                .timestamp_opt(secs, usecs * 1000)
+                .single()
+                .unwrap();
+            Packet::new(
+                ts,
+                vec![0u8; len],
+                len,
+                len,
+                Some(interface.to_string()),
+                link_type,
+            )
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("two-iface.pcapng");
+        {
+            let mut w = PcapWriter::with_interface(
+                &path,
+                1,
+                None,
+                None,
+                true,
+                PcapExportMode::Raw,
+                Some("eth0"),
+            )
+            .unwrap();
+            // eth1 uses LINKTYPE_LINUX_SLL (113) so the reader must apply
+            // per-interface link types, not the writer-global one.
+            w.write(&pkt_on("eth0", 1, 1_000, 250_000, 40)).unwrap();
+            w.write(&pkt_on("eth1", 113, 1_001, 500_000, 60)).unwrap();
+            w.write(&pkt_on("eth0", 1, 1_002, 750_000, 40)).unwrap();
+            w.finish().unwrap();
+        }
+
+        let bytes = std::fs::read(&path).unwrap();
+        let packets: Vec<_> = PcapReader::new(&bytes).unwrap().collect();
+        assert_eq!(packets.len(), 3);
+
+        let got: Vec<_> = packets
+            .iter()
+            .map(|p| {
+                (
+                    p.interface.as_deref().map(str::to_owned),
+                    p.link_type,
+                    p.timestamp_secs,
+                    p.timestamp_usecs,
+                    p.data.len(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (Some("eth0".to_string()), 1, 1_000, 250_000, 40),
+                (Some("eth1".to_string()), 113, 1_001, 500_000, 60),
+                (Some("eth0".to_string()), 1, 1_002, 750_000, 40),
+            ],
+            "names, link types, and timestamps must survive the round-trip per packet"
+        );
+    }
+
+    /// An EPB whose `interface_id` is beyond the section's interface table is
+    /// malformed: skipped like other bounded malformed blocks (no panic, no
+    /// default-decoded packet); later valid EPBs are unaffected.
+    #[test]
+    fn epb_out_of_range_interface_id_is_skipped() {
+        let mut data = build_shb();
+        data.extend(build_idb(1, &[])); // only interface 0 exists
+        // interface_id 5 was never declared — must be skipped, not decoded
+        // with defaults.
+        data.extend(build_epb_iface(
+            5,
+            0,
+            7_000_000,
+            4,
+            4,
+            &[0xde, 0xad, 0xbe, 0xef],
+        ));
+        data.extend(build_epb_iface(
+            0,
+            0,
+            1_000_000,
+            4,
+            4,
+            &[0xca, 0xfe, 0xba, 0xbe],
+        ));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert_eq!(
+            packets.len(),
+            1,
+            "the out-of-range EPB is skipped, the valid one survives"
+        );
+        assert_eq!(packets[0].data, [0xca, 0xfe, 0xba, 0xbe]);
+        assert_eq!(packets[0].timestamp_secs, 1);
+    }
+
+    /// An EPB arriving before any IDB in its section has no interface to
+    /// resolve against — skipped, not decoded with defaults.
+    #[test]
+    fn epb_before_any_idb_is_skipped() {
+        let mut data = build_shb();
+        data.extend(build_epb_iface(0, 0, 1_000_000, 4, 4, &[1, 2, 3, 4]));
+
+        let reader = PcapReader::new(&data).unwrap();
+        let packets: Vec<_> = reader.collect();
+        assert!(
+            packets.is_empty(),
+            "an EPB with no declared interface must not yield a packet"
+        );
     }
 
     /// A pcapng cut off right after the SHB yields (nearly) no packets and
@@ -890,8 +1147,22 @@ mod tests {
         buf
     }
 
-    /// Helper: build a pcapng EPB (Enhanced Packet Block), little-endian.
+    /// Helper: build a pcapng EPB (Enhanced Packet Block), little-endian,
+    /// referencing interface 0.
     fn build_epb(
+        ts_high: u32,
+        ts_low: u32,
+        captured_len: u32,
+        orig_len: u32,
+        pkt_data: &[u8],
+    ) -> Vec<u8> {
+        build_epb_iface(0, ts_high, ts_low, captured_len, orig_len, pkt_data)
+    }
+
+    /// Helper: build a pcapng EPB (Enhanced Packet Block), little-endian,
+    /// referencing an explicit `interface_id`.
+    fn build_epb_iface(
+        interface_id: u32,
         ts_high: u32,
         ts_low: u32,
         captured_len: u32,
@@ -909,7 +1180,7 @@ mod tests {
         buf.extend_from_slice(&6u32.to_le_bytes());
         buf.extend_from_slice(&(total_len as u32).to_le_bytes());
         // Interface ID
-        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&interface_id.to_le_bytes());
         // Timestamp high + low
         buf.extend_from_slice(&ts_high.to_le_bytes());
         buf.extend_from_slice(&ts_low.to_le_bytes());

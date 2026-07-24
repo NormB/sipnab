@@ -85,7 +85,6 @@ impl SipnabSession {
                 JsError::new(&e.to_string())
             }
         })?;
-        let link_type = reader.link_type as i32;
 
         for pkt in reader {
             self.packet_count += 1;
@@ -98,7 +97,10 @@ impl SipnabSession {
 
             let caplen = pkt.data.len();
             let orig_len = pkt.orig_len as usize;
-            let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, None, link_type);
+            // Per-packet interface attribution: multi-interface pcapng
+            // captures carry differing link types and if_names per packet.
+            let link_type = pkt.link_type as i32;
+            let capture_pkt = Packet::new(ts, pkt.data, caplen, orig_len, pkt.interface, link_type);
 
             if let Ok(parsed) = parse_packet(&capture_pkt) {
                 if !parsed.payload.is_empty() {
