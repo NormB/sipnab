@@ -265,9 +265,12 @@ impl RtpStream {
             let arrival_diff = timestamp
                 .signed_duration_since(prev_arrival)
                 .num_milliseconds() as f64;
-            // Convert RTP timestamp difference to milliseconds.
-            // Use wrapping subtraction for RTP timestamp rollover.
-            let rtp_diff = header.timestamp.wrapping_sub(prev_rtp_ts) as f64;
+            // Convert RTP timestamp difference to milliseconds. Wrapping
+            // subtraction handles rollover; the result is interpreted as a
+            // *signed* (i32) transit delta per RFC 3550, so a reordered
+            // packet (timestamp lower than its predecessor) yields a small
+            // negative delta rather than a ~4.29e9 unsigned spike.
+            let rtp_diff = header.timestamp.wrapping_sub(prev_rtp_ts) as i32 as f64;
             let rtp_diff_ms = rtp_diff / (self.clock_rate as f64 / 1000.0);
             let d = (arrival_diff - rtp_diff_ms).abs();
             // J(i) = J(i-1) + (|D(i-1,i)| - J(i-1)) / 16
@@ -511,6 +514,31 @@ mod tests {
         assert_eq!(stream.packet_count, 10);
         assert_eq!(stream.octet_count, 160 * 9); // 9 updates
         assert_eq!(stream.last_seq, 109);
+    }
+
+    /// A reordered packet (RTP timestamp lower than its predecessor) must not
+    /// blow up the jitter estimate: the wrapped timestamp difference is a
+    /// signed (i32) transit delta per RFC 3550, not a ~4.29e9 unsigned spike.
+    #[test]
+    fn reordered_packet_does_not_inflate_jitter() {
+        let key = make_key();
+        // 8 kHz PCMU, first packet at RTP ts 16000.
+        let hdr = make_header(100, 16_000, 0);
+        let mut stream = RtpStream::new(key, &hdr, ts(0));
+
+        // Second packet arrives 20 ms later but carries an EARLIER RTP
+        // timestamp (reordered), one 20 ms frame back: 16000 - 160.
+        let reordered = make_header(101, 15_840, 0);
+        let arrival = ts(0) + chrono::Duration::milliseconds(20);
+        stream.update(&reordered, arrival, 160);
+
+        // Signed semantics keep the transit delta tiny; the old unsigned cast
+        // produced a jitter estimate in the tens of millions of ms.
+        assert!(
+            stream.jitter < 1000.0,
+            "reordered packet must not inflate jitter, got {}",
+            stream.jitter
+        );
     }
 
     /// Skipping sequence numbers 101-103 registers exactly 3 lost packets.
