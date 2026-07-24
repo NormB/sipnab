@@ -47,8 +47,13 @@ pub(in crate::tui) fn open_name_dialog_for(
 ) {
     let manual = app.resolver.manual_entries();
     let mut targets: Vec<super::NameTarget> = Vec::new();
+    // De-dupe on the parsed address (which hashes without allocating) rather
+    // than formatting every existing target's IP back into a String on each
+    // comparison — the old `t.ip == ip.to_string()` allocated once per
+    // (target × ip) and scanned quadratically.
+    let mut seen: std::collections::HashSet<std::net::IpAddr> = std::collections::HashSet::new();
     for ip in ips {
-        if targets.iter().any(|t| t.ip == ip.to_string()) {
+        if !seen.insert(ip) {
             continue; // de-dupe (e.g. loopback src == dst)
         }
         let existing = manual
@@ -211,10 +216,16 @@ fn apply_name_dialog(app: &mut App) -> bool {
         (0, c) => Some(format!("Cleared {c} name(s)")),
         (s, c) => Some(format!("Named {s}, cleared {c}")),
     };
+    // Collect every write failure instead of letting a later one overwrite an
+    // earlier one on the status line: when both the names file and the
+    // sipnabrc write fail, the operator must see both — otherwise the first
+    // failure (e.g. the names file the changes were meant to persist to)
+    // silently vanishes behind the second.
+    let mut write_errors: Vec<String> = Vec::new();
     if let Some(path) = app.names_save_path.clone()
         && let Err(e) = app.resolver.save_manual_file(&path)
     {
-        app.status_error = Some(format!("Named, but couldn't save {}: {e}", path.display()));
+        write_errors.push(format!("couldn't save {}: {e}", path.display()));
     }
     // Opt-in: also persist the full manual table into the user's sipnabrc,
     // preserving comments and other sections.
@@ -226,11 +237,11 @@ fn apply_name_dialog(app: &mut App) -> bool {
             .map(|(ip, n)| (ip.to_string(), n))
             .collect();
         if let Err(e) = crate::config::write_manual_mappings_file(&path, &entries) {
-            app.status_error = Some(format!(
-                "Named, but couldn't update {}: {e}",
-                path.display()
-            ));
+            write_errors.push(format!("couldn't update {}: {e}", path.display()));
         }
+    }
+    if !write_errors.is_empty() {
+        app.status_error = Some(format!("Named, but {}", write_errors.join("; ")));
     }
     true
 }
@@ -293,6 +304,38 @@ mod tests {
             app.resolver()
                 .label_ip(addr_b(), crate::names::NameMode::Names),
             "bob"
+        );
+    }
+
+    /// When BOTH the names-file save and the sipnabrc update fail, the
+    /// status line must report both — a second failure used to overwrite the
+    /// first, silently hiding the names-file error the operator most needs.
+    #[test]
+    fn both_write_failures_are_reported_together() {
+        let mut app = app_with_dialogs();
+        // A regular file used as a fake parent directory: any write beneath
+        // it fails (create_dir_all / open both refuse to treat a file as a
+        // directory), so both persistence paths error out.
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        app.names_save_path = Some(blocker.join("names.txt"));
+        app.names_config_path = Some(blocker.join("sipnabrc"));
+
+        open_name_dialog_for(&mut app, vec![addr_a()], 0);
+        for c in "sbc".chars() {
+            handle_name_popup_key(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_name_popup_key(&mut app, key(KeyCode::Enter));
+
+        let status = app.status_error.clone().unwrap_or_default();
+        assert!(
+            status.contains("couldn't save"),
+            "names-file failure must survive, got: {status}"
+        );
+        assert!(
+            status.contains("couldn't update"),
+            "sipnabrc failure must be reported too, got: {status}"
         );
     }
 

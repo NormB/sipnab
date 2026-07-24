@@ -107,33 +107,14 @@ pub fn render_stream_detail(
     lines.push(Line::raw(""));
 
     // ── Quality Metrics ─────────────────────────────────────────────
-    let total = stream.packet_count + stream.lost_packets;
-    let loss_pct = if total > 0 {
-        (stream.lost_packets as f64 / total as f64) * 100.0
-    } else {
-        0.0
-    };
+    let loss_pct = super::stream_list::loss_percent(stream);
     let mos = estimate_mos(stream.jitter, loss_pct, stream.codec.as_deref());
 
-    let mos_style = if mos >= 4.0 {
-        Style::default().fg(theme.good).add_modifier(Modifier::BOLD)
-    } else if mos >= 3.0 {
-        Style::default()
-            .fg(theme.warning)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.bad).add_modifier(Modifier::BOLD)
-    };
-
-    let mos_label = if mos >= 4.0 {
-        "Good"
-    } else if mos >= 3.5 {
-        "Fair"
-    } else if mos >= 3.0 {
-        "Poor"
-    } else {
-        "Bad"
-    };
+    let mos_band = MosBand::of(mos);
+    let mos_style = Style::default()
+        .fg(mos_band.color(theme))
+        .add_modifier(Modifier::BOLD);
+    let mos_label = mos_band.label();
 
     lines.push(section_header("Quality", theme));
 
@@ -235,13 +216,7 @@ pub fn render_stream_detail(
         let mos_start = mos_values.len().saturating_sub(spark_budget);
         for &m in &mos_values[mos_start..] {
             let ch = mos_to_block(m);
-            let color = if m >= 4.0 {
-                theme.good
-            } else if m >= 3.0 {
-                theme.warning
-            } else {
-                theme.bad
-            };
+            let color = MosBand::of(m).color(theme);
             mos_spans.push(Span::styled(String::from(ch), Style::default().fg(color)));
         }
         mos_spans.push(Span::styled(
@@ -309,13 +284,7 @@ pub fn render_stream_detail(
                 Span::raw(format!("{:<10} ", qi.packets)),
                 Span::styled(
                     format!("{qi_mos:.1}"),
-                    if qi_mos >= 4.0 {
-                        Style::default().fg(theme.good)
-                    } else if qi_mos >= 3.0 {
-                        Style::default().fg(theme.warning)
-                    } else {
-                        Style::default().fg(theme.bad)
-                    },
+                    Style::default().fg(MosBand::of(qi_mos).color(theme)),
                 ),
             ]));
         }
@@ -401,6 +370,66 @@ pub fn render_stream_detail(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Perceptual quality band for a MOS score.
+///
+/// Boundaries use closed lower bounds (`>=`), so a score sits in the
+/// highest band it reaches:
+///
+/// | Band | MOS range |
+/// |------|-----------|
+/// | Good | `>= 4.0`  |
+/// | Fair | `>= 3.5`  |
+/// | Poor | `>= 3.0`  |
+/// | Bad  | `<  3.0`  |
+///
+/// This single classification backs both the textual label and the color
+/// for every MOS the detail view renders (summary line, MOS-trend
+/// sparkline and per-interval table), so the label and its color can never
+/// drift out of agreement at a band boundary.
+#[derive(Clone, Copy)]
+enum MosBand {
+    Good,
+    Fair,
+    Poor,
+    Bad,
+}
+
+impl MosBand {
+    /// Classify a MOS score into its band (closed lower bounds).
+    fn of(mos: f64) -> Self {
+        if mos >= 4.0 {
+            Self::Good
+        } else if mos >= 3.5 {
+            Self::Fair
+        } else if mos >= 3.0 {
+            Self::Poor
+        } else {
+            Self::Bad
+        }
+    }
+
+    /// Short human-readable label for the band.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Good => "Good",
+            Self::Fair => "Fair",
+            Self::Poor => "Poor",
+            Self::Bad => "Bad",
+        }
+    }
+
+    /// Theme color for the band. Only three severity colors exist, so the
+    /// adjacent Fair and Poor bands share the warning color; the textual
+    /// label still tells them apart.
+    fn color(self, theme: &Theme) -> ratatui::style::Color {
+        match self {
+            Self::Good => theme.good,
+            Self::Fair | Self::Poor => theme.warning,
+            Self::Bad => theme.bad,
+        }
+    }
+}
 
 /// Build a section header line: `── <title> ` in bold accent followed by a
 /// horizontal rule in the border color. Pure.

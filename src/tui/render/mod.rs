@@ -201,11 +201,20 @@ pub(in crate::tui) fn render_app(
                                 && r.src_col != r.dst_col
                         })
                         .map(|r| {
+                            // Width of the arrow label exactly as
+                            // call_flow::render draws it: a collapsed retx fold
+                            // header appends its "(+N retx)" badge on the arrow.
+                            // Take that badge straight from prepare's fold_label
+                            // (dropping the trailing " - press e to expand" hint)
+                            // rather than re-encoding the retx format here, so
+                            // the wording lives in exactly one place.
                             let mut len = r.label.chars().count();
                             if r.folded_count > 0
-                                && r.fold_label.as_deref().is_some_and(|f| f.starts_with("(+"))
+                                && let Some(fold_label) = r.fold_label.as_deref()
+                                && fold_label.starts_with("(+")
                             {
-                                len += format!(" (+{} retx)", r.folded_count).chars().count();
+                                let badge = fold_label.split(" - ").next().unwrap_or(fold_label);
+                                len += 1 + badge.chars().count(); // leading space + badge
                             }
                             call_flow::arrow_gap_for_label(len, r.src_col.abs_diff(r.dst_col))
                         })

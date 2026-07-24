@@ -114,6 +114,14 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
                 app.save.cursor = prev;
             }
         }
+        KeyCode::Delete => {
+            // Forward-delete: drop the whole char at the cursor (kept on a
+            // char boundary) and leave the cursor in place — the same gap the
+            // filter dialog already filled.
+            if app.save.cursor < app.save.path.len() {
+                app.save.path.remove(app.save.cursor);
+            }
+        }
         KeyCode::Left => {
             if app.save.cursor > 0 {
                 app.save.cursor = app.save.path[..app.save.cursor]
@@ -192,6 +200,25 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+    }
+
+    /// Delete removes the char AT the cursor (cursor stays put) and is a
+    /// no-op at end-of-line — the same forward-delete the filter dialog had
+    /// but the save dialog was missing.
+    #[test]
+    fn delete_removes_char_at_cursor() {
+        let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+        app.active_popup = Some(Popup::SaveDialog);
+        app.save.path = "/tmp/x".to_string();
+        app.save.cursor = 0;
+
+        handle_save_popup_key(&mut app, key(KeyCode::Delete));
+        assert_eq!(app.save.path, "tmp/x");
+        assert_eq!(app.save.cursor, 0);
+
+        app.save.cursor = app.save.path.len();
+        handle_save_popup_key(&mut app, key(KeyCode::Delete));
+        assert_eq!(app.save.path, "tmp/x", "Delete at EOL is a no-op");
     }
 
     /// Enter on an empty or whitespace-only path must be rejected at the

@@ -14,6 +14,7 @@ use ratatui::widgets::{
 };
 
 use crate::sip::SipMessage;
+use crate::sip::dialog::SipDialog;
 use crate::sip::dialog_store::DialogStore;
 
 use crate::tui::ColorMode;
@@ -32,6 +33,93 @@ use super::{
 /// Background applied across the full width of the current (selected) message
 /// row — a subtle highlight that marks the cursor without shifting content.
 const SELECTION_BG: Color = Color::Rgb(40, 40, 60);
+
+/// Column span available for each ladder arrow at a given terminal width.
+///
+/// Subtracts the timestamp and both endpoint columns (plus fixed inter-column
+/// padding) from `term_width`, floored at `MIN_ARROW_WIDTH`. Single source of
+/// truth for the arrow sizing shared by all the line builders.
+fn arrow_width_for(term_width: usize) -> usize {
+    term_width
+        .saturating_sub(TS_COL_WIDTH + ENDPOINT_COL_WIDTH * 2 + 15)
+        .max(MIN_ARROW_WIDTH)
+}
+
+/// Append the "Correlated Legs" section for `correlated` to `lines`.
+///
+/// No-op when `correlated` is empty; otherwise emits a blank spacer, a bold
+/// " Correlated Legs:" header, and one `↔ Call-ID: … (METHOD)` row per leg,
+/// all in the theme accent color.
+fn push_correlated_legs(lines: &mut Vec<Line<'static>>, correlated: &[&SipDialog], theme: &Theme) {
+    if correlated.is_empty() {
+        return;
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Correlated Legs:",
+        Style::default()
+            .fg(theme.accent)
+            .add_modifier(Modifier::BOLD),
+    )));
+    for leg in correlated {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "   \u{2194} Call-ID: {} ({})",
+                truncate(&leg.call_id, 40),
+                leg.method
+            ),
+            Style::default().fg(theme.accent),
+        )));
+    }
+}
+
+/// Build the ladder header row: the left endpoint label ending at
+/// `left_pipe_col` and the right label ending at `right_pipe_col`, styled with
+/// the theme header color. Shared by both `format_ladder` variants.
+fn ladder_header(
+    left_label: &str,
+    right_label: &str,
+    left_pipe_col: usize,
+    right_pipe_col: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut header = String::new();
+    header.push_str(&format!(
+        "{:>width$}",
+        left_label,
+        width = left_pipe_col + left_label.len() / 2
+    ));
+    let gap = right_pipe_col.saturating_sub(header.len() + right_label.len() / 2);
+    header.push_str(&" ".repeat(gap));
+    header.push_str(right_label);
+    Line::from(Span::styled(
+        header,
+        Style::default()
+            .fg(theme.header)
+            .add_modifier(Modifier::BOLD),
+    ))
+}
+
+/// Build a ladder pipe row: `prefix`, padding to `left_pipe_col`, a `│`, more
+/// padding to `right_pipe_col`, and a closing `│`. Shared by both
+/// `format_ladder` variants.
+fn ladder_pipe(prefix: &str, left_pipe_col: usize, right_pipe_col: usize) -> String {
+    let mut s = String::new();
+    s.push_str(prefix);
+    let mut col = prefix.chars().count();
+    while col < left_pipe_col {
+        s.push(' ');
+        col += 1;
+    }
+    s.push('\u{2502}');
+    col += 1;
+    while col < right_pipe_col {
+        s.push(' ');
+        col += 1;
+    }
+    s.push('\u{2502}');
+    s
+}
 
 // ── Paragraph-based rendering (legacy path) ────────────────────────
 
@@ -83,43 +171,14 @@ pub fn build_call_flow_lines_with_width(
         return None;
     }
 
-    let arrow_width = term_width
-        .saturating_sub(TS_COL_WIDTH + ENDPOINT_COL_WIDTH * 2 + 15)
-        .max(MIN_ARROW_WIDTH);
+    let arrow_width = arrow_width_for(term_width);
 
     let msg_count = dialog.messages.len();
-    let first_ts = dialog.messages[0].timestamp;
-    let mut lines = format_ladder(
-        &dialog.messages,
-        first_ts,
-        dialog.timing.pdd_ms(),
-        arrow_width,
-        theme,
-    );
+    let mut lines = format_ladder(&dialog.messages, dialog.timing.pdd_ms(), arrow_width, theme);
 
     // Show correlated dialogs (multi-leg)
     let correlated = store.find_correlated(call_id);
-    if !correlated.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Correlated Legs:",
-            Style::default()
-                .fg(theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for leg in &correlated {
-            let label = format!(
-                "   {} Call-ID: {} ({})",
-                "\u{2194}", // ↔
-                truncate(&leg.call_id, 40),
-                leg.method,
-            );
-            lines.push(Line::from(Span::styled(
-                label,
-                Style::default().fg(theme.accent),
-            )));
-        }
-    }
+    push_correlated_legs(&mut lines, &correlated, theme);
 
     Some((msg_count, lines))
 }
@@ -149,34 +208,13 @@ pub fn build_call_flow_lines_with_options(
     if dialog.messages.is_empty() {
         return None;
     }
-    let tw = TS_COL_WIDTH;
-    let aw = term_width
-        .saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15)
-        .max(MIN_ARROW_WIDTH);
+    let aw = arrow_width_for(term_width);
     let mc = dialog.messages.len();
     let ft = dialog.messages[0].timestamp;
     let mut lines =
         format_ladder_with_options(&dialog.messages, ft, dialog.timing.pdd_ms(), aw, opts);
     let correlated = store.find_correlated(call_id);
-    if !correlated.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            " Correlated Legs:",
-            Style::default()
-                .fg(opts.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for leg in &correlated {
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "   \u{2194} Call-ID: {} ({})",
-                    truncate(&leg.call_id, 40),
-                    leg.method
-                ),
-                Style::default().fg(opts.theme.accent),
-            )));
-        }
-    }
+    push_correlated_legs(&mut lines, &correlated, opts.theme);
     Some((mc, lines))
 }
 
@@ -216,10 +254,7 @@ pub fn build_extended_flow_lines(
     if owned.is_empty() {
         return None;
     }
-    let tw = TS_COL_WIDTH;
-    let aw = term_width
-        .saturating_sub(tw + ENDPOINT_COL_WIDTH * 2 + 15)
-        .max(MIN_ARROW_WIDTH);
+    let aw = arrow_width_for(term_width);
     let mc = owned.len();
     let ft = owned[0].timestamp;
     let mut lines = vec![
@@ -268,7 +303,7 @@ pub fn render_call_flow(
     theme: &Theme,
 ) {
     let term_width = area.width as usize;
-    render_call_flow_lines(frame, area, call_id, scroll_offset, theme, || {
+    render_call_flow_lines(frame, area, scroll_offset, theme, || {
         build_call_flow_lines_with_width(store, call_id, term_width, theme)
     });
 }
@@ -278,7 +313,6 @@ pub fn render_call_flow(
 /// # Arguments
 /// * `frame` — frame to draw into.
 /// * `area` — target region for the paragraph.
-/// * `_call_id` — unused; kept for signature compatibility with callers.
 /// * `scroll_offset` — vertical paragraph scroll in lines.
 /// * `theme` — theme for the fallback message styling.
 /// * `build` — closure producing `(msg_count, lines)`; `None` means the
@@ -290,7 +324,6 @@ pub fn render_call_flow(
 pub fn render_call_flow_lines(
     frame: &mut Frame,
     area: Rect,
-    _call_id: &str,
     scroll_offset: usize,
     theme: &Theme,
     build: impl FnOnce() -> Option<(usize, Vec<Line<'static>>)>,
@@ -1232,7 +1265,6 @@ fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
 ///
 /// # Arguments
 /// * `messages` — the dialog's messages in capture order.
-/// * `_first_ts` — unused; kept for signature parity with the options path.
 /// * `pdd_ms` — post-dial delay to annotate on the first 180, if known.
 /// * `arrow_width` — column span available for each arrow.
 /// * `theme` — color theme for timestamps, pipes and arrows.
@@ -1242,7 +1274,6 @@ fn highlight_sip_detail(raw_text: &str, theme: &Theme) -> Vec<Line<'static>> {
 /// empty.
 pub fn format_ladder(
     messages: &[SipMessage],
-    _first_ts: chrono::DateTime<chrono::Utc>,
     pdd_ms: Option<i64>,
     arrow_width: usize,
     theme: &Theme,
@@ -1262,42 +1293,19 @@ pub fn format_ladder(
     let left_label = truncate(&left_addr, 25);
     let right_label = truncate(&right_addr, 25);
 
-    let mut header = String::new();
-    header.push_str(&format!(
-        "{:>width$}",
-        left_label,
-        width = left_pipe_col + left_label.len() / 2
+    lines.push(ladder_header(
+        &left_label,
+        &right_label,
+        left_pipe_col,
+        right_pipe_col,
+        theme,
     ));
-    let gap = right_pipe_col.saturating_sub(header.len() + right_label.len() / 2);
-    header.push_str(&" ".repeat(gap));
-    header.push_str(&right_label);
 
-    lines.push(Line::from(Span::styled(
-        header,
-        Style::default()
-            .fg(theme.header)
-            .add_modifier(Modifier::BOLD),
+    lines.push(Line::from(ladder_pipe(
+        &" ".repeat(TS_COL_WIDTH),
+        left_pipe_col,
+        right_pipe_col,
     )));
-
-    let pipe_line = |prefix: &str| -> String {
-        let mut s = String::new();
-        s.push_str(prefix);
-        let mut col = prefix.chars().count();
-        while col < left_pipe_col {
-            s.push(' ');
-            col += 1;
-        }
-        s.push('\u{2502}');
-        col += 1;
-        while col < right_pipe_col {
-            s.push(' ');
-            col += 1;
-        }
-        s.push('\u{2502}');
-        s
-    };
-
-    lines.push(Line::from(pipe_line(&" ".repeat(TS_COL_WIDTH))));
 
     let mut pdd_annotated = false;
 
@@ -1338,7 +1346,11 @@ pub fn format_ladder(
         ]));
     }
 
-    lines.push(Line::from(pipe_line(&" ".repeat(TS_COL_WIDTH))));
+    lines.push(Line::from(ladder_pipe(
+        &" ".repeat(TS_COL_WIDTH),
+        left_pipe_col,
+        right_pipe_col,
+    )));
 
     lines
 }
@@ -1390,41 +1402,20 @@ fn format_ladder_with_options(
     let left_label = truncate(&left_addr, 25);
     let right_label = truncate(&right_addr, 25);
 
-    let mut hdr = String::new();
-    hdr.push_str(&format!(
-        "{:>width$}",
-        left_label,
-        width = left_pipe_col + left_label.len() / 2
+    lines.push(ladder_header(
+        &left_label,
+        &right_label,
+        left_pipe_col,
+        right_pipe_col,
+        theme,
     ));
-    let g = right_pipe_col.saturating_sub(hdr.len() + right_label.len() / 2);
-    hdr.push_str(&" ".repeat(g));
-    hdr.push_str(&right_label);
-    lines.push(Line::from(Span::styled(
-        hdr,
-        Style::default()
-            .fg(theme.header)
-            .add_modifier(Modifier::BOLD),
-    )));
 
     let ts_prefix = " ".repeat(ts_width);
-    let mk_pipe = |pfx: &str| -> String {
-        let mut s = String::new();
-        s.push_str(pfx);
-        let mut col = pfx.chars().count();
-        while col < left_pipe_col {
-            s.push(' ');
-            col += 1;
-        }
-        s.push('\u{2502}');
-        col += 1;
-        while col < right_pipe_col {
-            s.push(' ');
-            col += 1;
-        }
-        s.push('\u{2502}');
-        s
-    };
-    lines.push(Line::from(mk_pipe(&ts_prefix)));
+    lines.push(Line::from(ladder_pipe(
+        &ts_prefix,
+        left_pipe_col,
+        right_pipe_col,
+    )));
 
     let mut pdd_done = false;
     let mut in_call = false;
@@ -1506,7 +1497,6 @@ fn format_ladder_with_options(
             }
         };
         let sel = selected_msg == Some(mi);
-        let fsty = sty;
 
         let src = format!("{}:{}", msg.src_addr, msg.src_port);
         let ltr = src == left_addr;
@@ -1533,7 +1523,7 @@ fn format_ladder_with_options(
             sp.push(Span::styled(ts_str, ts_style));
         }
         sp.push(Span::styled("\u{2502}", Style::default().fg(theme.muted)));
-        sp.push(Span::styled(al, fsty));
+        sp.push(Span::styled(al, sty));
         sp.push(Span::styled("\u{2502}", Style::default().fg(theme.muted)));
         if !pn.is_empty() {
             sp.push(Span::styled(pn, Style::default().fg(theme.accent)));
@@ -1597,7 +1587,11 @@ fn format_ladder_with_options(
         }
     }
 
-    lines.push(Line::from(mk_pipe(&ts_prefix)));
+    lines.push(Line::from(ladder_pipe(
+        &ts_prefix,
+        left_pipe_col,
+        right_pipe_col,
+    )));
     lines
 }
 
@@ -1681,7 +1675,7 @@ mod tests {
     #[test]
     fn format_ladder_empty_messages() {
         let theme = crate::tui::Theme::default();
-        let lines = format_ladder(&[], chrono::Utc::now(), None, 40, &theme);
+        let lines = format_ladder(&[], None, 40, &theme);
         assert_eq!(lines.len(), 1);
     }
 
@@ -1700,7 +1694,7 @@ mod tests {
             req("INVITE", "1 INVITE", "dir-call", base_ts()),
             resp(200, "OK", "1 INVITE", "dir-call", base_ts()),
         ];
-        let lines = format_ladder(&msgs, base_ts(), None, 48, &theme);
+        let lines = format_ladder(&msgs, None, 48, &theme);
         let text: Vec<String> = lines.iter().map(line_to_string).collect();
         let invite = text
             .iter()
@@ -1753,7 +1747,7 @@ mod tests {
         )
         .expect("parse");
         let msgs = vec![req("INVITE", "1 INVITE", "fwd-call", base_ts()), fwd_resp];
-        let lines = format_ladder(&msgs, base_ts(), None, 48, &theme);
+        let lines = format_ladder(&msgs, None, 48, &theme);
         let text: Vec<String> = lines.iter().map(line_to_string).collect();
         let ok = text.iter().find(|l| l.contains("200")).expect("200 OK row");
         // Same src→dst as the request ⇒ same (rightward) direction. Faithful to
@@ -1790,7 +1784,7 @@ mod tests {
         .expect("parse ok");
 
         let theme = crate::tui::Theme::default();
-        let lines = format_ladder(&[msg], ts, None, 50, &theme);
+        let lines = format_ladder(&[msg], None, 50, &theme);
         // Should have header + bar + message + closing bar
         assert!(lines.len() >= 4);
     }
@@ -2608,7 +2602,7 @@ mod tests {
         let area = Rect::new(0, 0, 100, 6);
         // Scroll past the header rows so later messages appear at the top.
         term.draw(|f| {
-            render_call_flow_lines(f, area, "scroll@test", 4, &theme, || {
+            render_call_flow_lines(f, area, 4, &theme, || {
                 build_call_flow_lines_with_width(&store, "scroll@test", 100, &theme)
             })
         })
@@ -2627,7 +2621,7 @@ mod tests {
         let theme = Theme::default();
         let mut term = terminal(60, 8);
         let area = Rect::new(0, 0, 60, 8);
-        term.draw(|f| render_call_flow_lines(f, area, "x@test", 0, &theme, || None))
+        term.draw(|f| render_call_flow_lines(f, area, 0, &theme, || None))
             .unwrap();
         assert!(buffer_text(&term).contains("Dialog not found or empty"));
     }
