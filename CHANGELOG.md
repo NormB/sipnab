@@ -5,6 +5,13 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- HEP v3 packet building now truncates an oversized SIP payload to fit the
+  protocol's 16-bit length fields instead of letting the total length wrap
+  into a corrupt header a collector would misframe.
+- The pcap-ng reader resets its timestamp resolution and link type to the
+  defaults at each Section Header Block, so a multi-section capture whose
+  later section omits `if_tsresol` no longer inherits the previous section's
+  resolution and misreads packet timestamps.
 - WAV export from the call list now saves the audio of the row the user has
   highlighted: the selection is resolved against the displayed order
   (filter + search + sort) instead of raw store order, which under an active

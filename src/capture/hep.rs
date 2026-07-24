@@ -952,10 +952,22 @@ pub fn build_hep_v3_bytes(
         append_chunk(&mut chunks, 0x0000, CHUNK_AUTH_KEY, key);
     }
 
-    // Payload
+    // Payload. HEP3 length fields (both the per-chunk length and the total)
+    // are u16, so the whole packet must fit in 65535 bytes. Truncate an
+    // oversized payload to what remains rather than emit a wrapped, corrupt
+    // length that the receiver would misframe. (HMAC auth over a truncated
+    // payload will fail verification on the receiver, which is the safe
+    // outcome — a dropped packet, not a mis-parsed one.)
+    let fixed = HEP3_HEADER_LEN + chunks.len() + CHUNK_HEADER_LEN;
+    let max_payload = (u16::MAX as usize).saturating_sub(fixed);
+    let payload = if payload.len() > max_payload {
+        &payload[..max_payload]
+    } else {
+        payload
+    };
     append_chunk(&mut chunks, 0x0000, CHUNK_PAYLOAD, payload);
 
-    // Build final packet: magic + total_length + chunks
+    // Build final packet: magic + total_length + chunks. total now fits u16.
     let total_len = (HEP3_HEADER_LEN + chunks.len()) as u16;
     let mut pkt = Vec::with_capacity(total_len as usize);
     pkt.extend_from_slice(HEP3_MAGIC);
@@ -2868,6 +2880,42 @@ mod tests {
             !built[HEP3_HEADER_LEN..].chunks(2).any(|w| w == v6_src),
             "IPv6 src chunk type must be absent for IPv4 endpoint"
         );
+    }
+
+    /// A payload larger than the HEP3 u16 length field is truncated so the
+    /// declared total length matches the actual packet size (and stays within
+    /// 65535) instead of wrapping into a corrupt header.
+    #[test]
+    fn build_hep_v3_oversized_payload_does_not_wrap_length() {
+        use std::net::IpAddr;
+        let endpoint = HepEndpoint {
+            src_addr: "10.0.0.1".parse::<IpAddr>().unwrap(),
+            dst_addr: "10.0.0.2".parse::<IpAddr>().unwrap(),
+            src_port: 5060,
+            dst_port: 5060,
+        };
+        let payload = vec![0x41u8; 70_000]; // > u16::MAX
+        let pkt = build_hep_v3_bytes(
+            &endpoint,
+            chrono::Utc::now(),
+            HepProtocol::Sip,
+            1,
+            None,
+            &payload,
+        );
+
+        let declared = u16::from_be_bytes([pkt[4], pkt[5]]) as usize;
+        assert_eq!(
+            declared,
+            pkt.len(),
+            "declared total_len must match the actual packet size"
+        );
+        assert!(
+            pkt.len() <= u16::MAX as usize,
+            "packet must fit the u16 length field"
+        );
+        // The truncated packet must still parse.
+        assert!(parse_hep(&pkt).is_ok(), "truncated HEP packet must parse");
     }
 
     /// `append_chunk` writes a 6-byte header (vendor, type, length) where
