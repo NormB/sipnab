@@ -840,6 +840,31 @@ pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<Stri
     Ok(doc.to_string())
 }
 
+/// Write `contents` to the sipnabrc at `path` atomically (native builds) so an
+/// interrupted or failing write never truncates the operator's existing config,
+/// and a symlink at `path` is replaced rather than followed onto a victim file.
+///
+/// Uses [`crate::capture::atomic::write_atomic`] (temp file in the same
+/// directory + `rename`, which replaces a symlink at the target rather than
+/// following it — CWE-59/CWE-377). That helper depends on `tempfile` (a
+/// `native` dep); non-native builds, which have no config-writing entry point,
+/// fall back to a plain write.
+fn write_sipnabrc_atomic(path: &Path, contents: &str) -> Result<(), crate::Error> {
+    let result = {
+        #[cfg(feature = "native")]
+        {
+            crate::capture::atomic::write_atomic(path, |w| {
+                std::io::Write::write_all(w, contents.as_bytes())
+            })
+        }
+        #[cfg(not(feature = "native"))]
+        {
+            std::fs::write(path, contents)
+        }
+    };
+    result.map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))
+}
+
 /// Write the current visible column layout into `[display] visible_columns` of
 /// the sipnabrc at `path`, preserving the rest of the file (see
 /// [`upsert_display_columns`]). Creates the file and parent directory if needed.
@@ -850,7 +875,8 @@ pub fn upsert_display_columns(existing: &str, columns: &[String]) -> Result<Stri
 ///
 /// # Side effects
 /// Reads `path` (missing file treated as empty), creates its parent
-/// directory, and rewrites the file in place (non-atomic).
+/// directory, and rewrites the file atomically (temp-in-dir + rename via
+/// [`crate::capture::atomic::write_atomic`] in native builds).
 pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(), crate::Error> {
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let updated = upsert_display_columns(&existing, columns)?;
@@ -859,9 +885,7 @@ pub fn write_display_columns_file(path: &Path, columns: &[String]) -> Result<(),
             crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
         })?;
     }
-    std::fs::write(path, updated)
-        .map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))?;
-    Ok(())
+    write_sipnabrc_atomic(path, &updated)
 }
 
 /// Return the default config file search paths (items 3-5 of the search
@@ -902,7 +926,8 @@ pub fn default_user_config_path() -> Option<PathBuf> {
 ///
 /// # Side effects
 /// Reads `path` (missing file treated as empty), creates its parent
-/// directory, and rewrites the file in place (non-atomic).
+/// directory, and rewrites the file atomically (temp-in-dir + rename via
+/// [`crate::capture::atomic::write_atomic`] in native builds).
 pub fn write_manual_mappings_file(
     path: &Path,
     entries: &[(String, String)],
@@ -914,9 +939,7 @@ pub fn write_manual_mappings_file(
             crate::Error::ConfigInvalid(format!("create {}: {e}", parent.display()))
         })?;
     }
-    std::fs::write(path, updated)
-        .map_err(|e| crate::Error::ConfigInvalid(format!("write {}: {e}", path.display())))?;
-    Ok(())
+    write_sipnabrc_atomic(path, &updated)
 }
 
 /// Unit tests for config loading, TOML parsing, surgical sipnabrc
@@ -925,6 +948,87 @@ pub fn write_manual_mappings_file(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    // ── Atomic, symlink-safe sipnabrc writes (P2 item 3) ────────────────
+
+    /// `write_display_columns_file` writes the requested columns and leaves no
+    /// `.sipnab-tmp-*` temp litter behind (the atomic helper's temp file is
+    /// renamed into place, not left in the directory).
+    #[test]
+    fn write_display_columns_file_is_atomic_no_temp_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sipnabrc");
+        write_display_columns_file(&path, &["method".into(), "from".into()]).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        let cfg: Config = toml::from_str(&written).unwrap();
+        assert_eq!(
+            cfg.display.visible_columns,
+            Some(vec!["method".to_string(), "from".to_string()])
+        );
+
+        let litter: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".sipnab-tmp-"))
+            .collect();
+        assert!(litter.is_empty(), "temp file left behind: {litter:?}");
+    }
+
+    /// A symlink at the target path must NOT be followed: the write replaces the
+    /// link with a real file (atomic temp-in-dir + rename) instead of writing
+    /// through it onto the victim (CWE-59). Native-only: the non-native fallback
+    /// is a plain `fs::write`, which has no atomic helper.
+    #[test]
+    #[cfg(all(unix, feature = "native"))]
+    fn write_display_columns_file_does_not_follow_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.toml");
+        std::fs::write(&victim, "# do not touch\n").unwrap();
+        let link = dir.path().join("sipnabrc");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        write_display_columns_file(&link, &["method".into()]).unwrap();
+
+        // The victim behind the link is untouched.
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "# do not touch\n",
+            "the symlink target must not be written through"
+        );
+        // The path itself is now a regular file (the link was replaced).
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(
+            meta.file_type().is_file(),
+            "target should be a regular file, not a symlink"
+        );
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&link).unwrap()).unwrap();
+        assert_eq!(
+            cfg.display.visible_columns,
+            Some(vec!["method".to_string()])
+        );
+    }
+
+    /// Same symlink-no-follow guarantee for the manual-mappings writer.
+    #[test]
+    #[cfg(all(unix, feature = "native"))]
+    fn write_manual_mappings_file_does_not_follow_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim.toml");
+        std::fs::write(&victim, "# do not touch\n").unwrap();
+        let link = dir.path().join("sipnabrc");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+
+        write_manual_mappings_file(&link, &[("10.0.0.1".into(), "pbx".into())]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "# do not touch\n",
+            "the symlink target must not be written through"
+        );
+        let meta = std::fs::symlink_metadata(&link).unwrap();
+        assert!(meta.file_type().is_file());
+    }
 
     /// `Config::default()` leaves every optional field unset.
     #[test]
