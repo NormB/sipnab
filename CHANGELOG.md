@@ -5,6 +5,11 @@ All notable changes to sipnab will be documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- The synthetic packet builder (pcap export of SIP messages) truncates a
+  SIP payload larger than a single IPv4 datagram can hold, so the IP/UDP
+  length fields match the bytes written instead of saturating while the
+  full oversized payload is appended (which left header and content
+  disagreeing).
 - `GET /v1/streams/{ssrc}` now returns the most-active stream when several
   streams share an SSRC (endpoint collision), deterministically, instead of
   an arbitrary match that could let a colliding orphan shadow the real

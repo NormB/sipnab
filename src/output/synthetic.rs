@@ -25,10 +25,19 @@ use std::net::IpAddr;
 /// length fields at `u16::MAX` rather than panicking or truncating the
 /// data. Pure — nothing is written to disk here.
 pub fn build_synthetic_packet(msg: &crate::sip::SipMessage) -> crate::capture::Packet {
-    let payload = &msg.raw;
-    // Saturate instead of silently truncating for large payloads
-    let udp_len: u16 = u16::try_from(8 + payload.len()).unwrap_or(u16::MAX);
-    let ip_total_len: u16 = 20u16.saturating_add(udp_len);
+    // A single non-fragmented IPv4 datagram can carry at most u16::MAX bytes
+    // (IP + UDP headers + payload). Truncate an oversized SIP payload to what
+    // fits so the IP/UDP length fields match the bytes actually appended — a
+    // saturated length with the full payload appended leaves the header and
+    // content disagreeing, and a reader would misframe the packet.
+    const MAX_IP_PAYLOAD: usize = u16::MAX as usize - 28; // 65535 - (20 IP + 8 UDP)
+    let payload: &[u8] = if msg.raw.len() > MAX_IP_PAYLOAD {
+        &msg.raw[..MAX_IP_PAYLOAD]
+    } else {
+        &msg.raw
+    };
+    let udp_len: u16 = (8 + payload.len()) as u16;
+    let ip_total_len: u16 = 20 + udp_len;
     let mut pkt = Vec::with_capacity(14 + ip_total_len as usize);
 
     // Ethernet header (14 bytes)
@@ -116,6 +125,15 @@ mod tests {
             ip_total,
             u16::MAX,
             "IP total length should saturate to u16::MAX"
+        );
+        // The IP total-length field must match the actual IP-layer bytes: an
+        // oversized payload is truncated to fit, not appended past the
+        // saturated length (which would leave the header and content
+        // disagreeing and a reader misframing the packet).
+        assert_eq!(
+            pkt.data.len() - 14,
+            ip_total as usize,
+            "IP total length must equal the actual IP packet size"
         );
     }
 }
