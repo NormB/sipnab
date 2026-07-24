@@ -122,7 +122,7 @@ pub(in crate::tui) fn render_app(
     // Render the current view from the store snapshot held by the caller
     // for this whole frame (see `draw_frame` — contended ticks were
     // skipped before we got here, so nothing below can half-render).
-    match &app.current_view.clone() {
+    match &app.current_view {
         View::CallList => {
             let store = ds;
             call_list::render_call_list(
@@ -488,7 +488,7 @@ pub(in crate::tui) fn render_app(
     );
 
     // Render popup overlay on top of everything (if active)
-    if let Some(popup) = &app.active_popup.clone() {
+    if let Some(popup) = &app.active_popup {
         match popup {
             Popup::SaveDialog => {
                 render_save_popup(frame, area, app);
@@ -661,6 +661,61 @@ fn estimated_wrapped_rows(lines: &[Line<'_>], width: u16) -> u16 {
         .min(u16::MAX as usize) as u16
 }
 
+/// Align two line sequences by their longest common subsequence, yielding
+/// side-by-side rows in order: `(Some, Some)` is a shared (unchanged) line,
+/// `(Some, None)` a line only on the left (removed), `(None, Some)` a line
+/// only on the right (inserted).
+///
+/// A positional diff pairs `left[i]` with `right[i]`, so a single inserted
+/// line shifts the whole tail out of alignment and flags every following
+/// line as changed. LCS alignment instead pairs the shared lines and emits
+/// the lone insertion/removal as a one-sided gap, so only that row differs.
+/// `O(n·m)` time and space — bounded by the two messages' line counts. Pure.
+fn lcs_line_alignment<'a>(
+    left: &[&'a str],
+    right: &[&'a str],
+) -> Vec<(Option<&'a str>, Option<&'a str>)> {
+    let (n, m) = (left.len(), right.len());
+    // lcs[i][j] = length of the LCS of left[i..] and right[j..].
+    let mut lcs = vec![vec![0u16; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            lcs[i][j] = if left[i] == right[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+
+    // Walk both sequences, preferring the shared line; otherwise advance the
+    // side whose skip keeps the longer remaining common subsequence.
+    let mut out = Vec::with_capacity(n.max(m));
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < n && j < m {
+        if left[i] == right[j] {
+            out.push((Some(left[i]), Some(right[j])));
+            i += 1;
+            j += 1;
+        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+            out.push((Some(left[i]), None));
+            i += 1;
+        } else {
+            out.push((None, Some(right[j])));
+            j += 1;
+        }
+    }
+    while i < n {
+        out.push((Some(left[i]), None));
+        i += 1;
+    }
+    while j < m {
+        out.push((None, Some(right[j])));
+        j += 1;
+    }
+    out
+}
+
 /// Parameters for the side-by-side message diff view.
 pub(in crate::tui) struct MessageDiffView<'a> {
     /// Call-ID of the dialog holding both messages.
@@ -678,7 +733,11 @@ pub(in crate::tui) struct MessageDiffView<'a> {
 }
 
 /// Render a side-by-side diff of two SIP messages: both texts split into
-/// halves, compared line-by-line by position, differing lines emphasized.
+/// halves and aligned by their longest common subsequence (see
+/// `lcs_line_alignment`), so a lone inserted/removed line highlights only
+/// that row instead of the whole shifted tail. Both panes always emit the
+/// same number of rows (one per aligned pair), keeping the shared scroll in
+/// step.
 ///
 /// # Arguments
 /// * `frame` - Frame to draw into.
@@ -733,7 +792,6 @@ pub(in crate::tui) fn render_message_diff(
 
     let lines1: Vec<&str> = raw1.lines().collect();
     let lines2: Vec<&str> = raw2.lines().collect();
-    let max_lines = lines1.len().max(lines2.len());
 
     // Split area into two halves
     let half_width = area.width / 2;
@@ -762,15 +820,21 @@ pub(in crate::tui) fn render_message_diff(
         .add_modifier(Modifier::BOLD);
     let normal_style = Style::default();
 
-    for i in 0..max_lines {
-        let l1 = lines1.get(i).copied().unwrap_or("");
-        let l2 = lines2.get(i).copied().unwrap_or("");
-
+    // LCS alignment pairs shared lines and isolates insertions/removals as
+    // one-sided gaps; a paired row (both sides present) is always equal, so
+    // any differing pair is a gap and highlights only that single line.
+    for (l1, l2) in lcs_line_alignment(&lines1, &lines2) {
         let is_diff = l1 != l2;
         let style = if is_diff { diff_style } else { normal_style };
 
-        left_lines.push(Line::from(Span::styled(l1.to_string(), style)));
-        right_lines.push(Line::from(Span::styled(l2.to_string(), style)));
+        left_lines.push(Line::from(Span::styled(
+            l1.unwrap_or("").to_string(),
+            style,
+        )));
+        right_lines.push(Line::from(Span::styled(
+            l2.unwrap_or("").to_string(),
+            style,
+        )));
     }
 
     let left_block = Block::default()
@@ -1449,5 +1513,108 @@ mod tests {
             }
         }
         assert!(text.contains("Message not found"));
+    }
+
+    /// A positional diff highlights every line after a single inserted
+    /// header (the tail all shifts by one), which is wrong: only the
+    /// inserted line actually changed. An LCS-based diff aligns the shared
+    /// lines so the lone insertion is the ONLY highlighted row.
+    #[test]
+    fn render_message_diff_single_insert_highlights_only_that_line() {
+        use crate::capture::parse::TransportProto;
+        use crate::sip::parser::parse_sip;
+
+        let t0 = base_ts();
+        // msg2 is msg1 with one extra header inserted after Via; every
+        // other line is byte-identical so an LCS diff isolates the insert.
+        let common_tail: &[&str] = &[
+            "From: <sip:1001@example.com>;tag=t1",
+            "To: <sip:1002@example.com>",
+            "Call-ID: diffins@test",
+            "CSeq: 1 INVITE",
+            "Content-Length: 0",
+        ];
+        let mut h1 = vec!["Via: SIP/2.0/UDP host:5060"];
+        h1.extend_from_slice(common_tail);
+        let mut h2 = vec!["Via: SIP/2.0/UDP host:5060", "X-Inserted: marker-line"];
+        h2.extend_from_slice(common_tail);
+        let raw1 = build_sip("INVITE sip:1002@example.com SIP/2.0", &h1);
+        let raw2 = build_sip("INVITE sip:1002@example.com SIP/2.0", &h2);
+
+        let msg1 = parse_sip(
+            &raw1,
+            t0,
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse msg1");
+        let msg2 = parse_sip(
+            &raw2,
+            t0 + chrono::TimeDelta::seconds(1),
+            addr_a(),
+            addr_b(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("parse msg2");
+        let app = App::with_processed_messages(vec![msg1, msg2]);
+        let store = app.dialog_store.read();
+        let theme = Theme::default();
+
+        // Wide enough that no line wraps (one row per display line).
+        let mut terminal = Terminal::new(TestBackend::new(120, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_message_diff(
+                    frame,
+                    frame.area(),
+                    &store,
+                    &MessageDiffView {
+                        call_id: "diffins@test",
+                        msg1_idx: 0,
+                        msg2_idx: 1,
+                        scroll: 0,
+                        header_form: header_form::HeaderFormMode::AsCaptured,
+                        theme: &theme,
+                    },
+                );
+            })
+            .unwrap();
+
+        // A diff-highlighted content row carries the warning fg + BOLD; the
+        // pane-title rows use the (cyan) header fg, so they don't count.
+        let buf = terminal.backend().buffer();
+        let mut highlighted_rows = 0usize;
+        let mut marker_row_highlighted = false;
+        for y in 0..buf.area.height {
+            let mut row_highlighted = false;
+            let mut row_text = String::new();
+            for x in 0..buf.area.width {
+                let cell = buf.cell((x, y)).unwrap();
+                row_text.push_str(cell.symbol());
+                if cell.fg == theme.warning && cell.modifier.contains(Modifier::BOLD) {
+                    row_highlighted = true;
+                }
+            }
+            if row_highlighted {
+                highlighted_rows += 1;
+                if row_text.contains("X-Inserted") {
+                    marker_row_highlighted = true;
+                }
+            }
+        }
+
+        assert_eq!(
+            highlighted_rows, 1,
+            "only the inserted line must be highlighted, not the shifted tail"
+        );
+        assert!(
+            marker_row_highlighted,
+            "the highlighted row must be the inserted X-Inserted header"
+        );
     }
 }

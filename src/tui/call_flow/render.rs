@@ -479,6 +479,7 @@ pub fn render_call_flow_direct(
     }
 
     // Mark + Delta badge (Feature 1): render in the top-right corner
+    use unicode_width::UnicodeWidthStr;
     if let Some(mi) = mark_index
         && mi != selected_index
         && mi < messages.len()
@@ -492,7 +493,10 @@ pub fn render_call_flow_direct(
         } else {
             format!("\u{0394} {:+}ms", delta_ms)
         };
-        let badge_len = badge.len() as u16;
+        // Display width, not byte length: the leading `Δ` (U+0394) is 2 bytes
+        // but occupies a single column, so byte length would shove the badge
+        // one column left of its flush-right position.
+        let badge_len = UnicodeWidthStr::width(badge.as_str()) as u16;
         let badge_x = (area.x + width).saturating_sub(badge_len + 1);
         let badge_style = Style::default()
             .fg(theme.accent)
@@ -2069,6 +2073,55 @@ mod tests {
         assert!(
             row.starts_with("12:00:00.000"),
             "ts at col 0, unshifted: {row:?}"
+        );
+    }
+
+    /// The mark/delta badge is right-aligned against the ladder's reserved
+    /// last column. Its leading glyph is the multibyte `Δ` (U+0394, 1 display
+    /// column but 2 bytes); positioning by byte length shoves the whole badge
+    /// one column left. The badge "Δ +100ms" is 8 display columns, so on an
+    /// 80-column area the `Δ` must sit at column 71 (= width - 9), landing the
+    /// badge's last glyph in the penultimate column.
+    #[test]
+    fn direct_render_delta_badge_right_aligned_with_multibyte_glyph() {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "10.0.0.1:5060".into(),
+                label: "10.0.0.1:5060".into(),
+            },
+            Participant {
+                addr: "10.0.0.2:5060".into(),
+                label: "10.0.0.2:5060".into(),
+            },
+        ];
+        let mut m0 = fmt_msg("12:00:00.000", SelectionState::Normal, 0, 1);
+        m0.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_000).unwrap();
+        let mut m1 = fmt_msg("12:00:00.100", SelectionState::Selected, 1, 0);
+        m1.raw_timestamp = DateTime::<Utc>::from_timestamp_millis(1_700_000_000_100).unwrap();
+        let msgs = vec![m0, m1];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: Some(0),
+            selected_index: 1,
+        };
+        let w = 80u16;
+        let mut term = terminal(w, 24);
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer().clone();
+
+        // The badge lives on the pipe row (area.y + 1 == row 1).
+        let dcol = (0..w)
+            .find(|&x| buf.cell((x, 1)).unwrap().symbol() == "\u{0394}")
+            .expect("Δ badge must be present on the pipe row");
+        assert_eq!(
+            dcol,
+            w - 9,
+            "badge must be flush-right (Δ at width-9), got column {dcol}"
         );
     }
 

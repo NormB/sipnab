@@ -330,12 +330,17 @@ pub fn layout(
     let mut last_bar_cseq: Option<u32> = None;
     let mut deferred_rtp_bar: Option<(chrono::DateTime<chrono::Utc>, String)> = None;
     let mut result = Vec::with_capacity(messages.len());
+    // Each message's parsed SDP, indexed by message position, retained so the
+    // SDP-delta-badge pass below reuses this parse instead of re-parsing every
+    // body a second time.
+    let mut msg_sdps: Vec<Option<sdp::SdpSession>> = Vec::with_capacity(messages.len());
     let mut prev_ts = first_ts;
 
     for (mi, msg) in messages.iter().enumerate() {
         // Parse this message's SDP once per iteration — the SDP-info line, the
         // early-media probe, and both codec lookups below all need it, and
-        // `SipMessage::sdp()` re-parses the body on every call.
+        // `SipMessage::sdp()` re-parses the body on every call. The parse is
+        // also stashed in `msg_sdps` for the delta-badge pass.
         let msg_sdp = msg.sdp();
         let (timestamp, ts_class) = match ts_mode {
             TimestampMode::Absolute => {
@@ -591,6 +596,9 @@ pub fn layout(
                 raw_index: None,
             });
         }
+
+        // Retain the parse for the delta-badge pass (one entry per message).
+        msg_sdps.push(msg_sdp);
     }
 
     // ── SDP delta badges (Feature 4) ──────────────────────────────
@@ -600,8 +608,9 @@ pub fn layout(
         let mut last_direction: HashMap<String, SdpDirection> = HashMap::new();
         for (ri, msg) in messages.iter().enumerate() {
             let cid = msg.call_id().unwrap_or("").to_string();
-            if let Some(ss) = msg.sdp() {
-                let codecs = extract_codec_list(&ss);
+            // Reuse the parse from the main loop instead of re-parsing.
+            if let Some(ss) = msg_sdps[ri].as_ref() {
+                let codecs = extract_codec_list(ss);
                 let dir = ss
                     .media
                     .first()
@@ -892,12 +901,36 @@ fn fold_messages(
     let mut source: Vec<Option<LayoutRow>> = formatted.into_iter().map(Some).collect();
     let mut i = 0;
 
+    // Index into `result` of the most recently emitted row that can act as a
+    // retransmission fold header — a real (non-synthetic) row whose raw
+    // message is itself NOT a retransmission. Maintained as rows are pushed
+    // (`push_row`) so a retransmission storm folds in a single forward pass:
+    // the old code re-scanned the whole emitted prefix per retransmission
+    // (O(n²) when a long retx run is expanded and visible), this is O(n).
+    let mut last_header_idx: Option<usize> = None;
+
+    // Push a row and, if it qualifies as a retx fold header, record its index.
+    fn push_row(
+        result: &mut Vec<LayoutRow>,
+        last_header_idx: &mut Option<usize>,
+        raw_msgs: &[SipMessage],
+        row: LayoutRow,
+    ) {
+        let is_header = row
+            .raw_index
+            .is_some_and(|h| raw_msgs.get(h).is_some_and(|m| !m.is_retransmission));
+        if is_header {
+            *last_header_idx = Some(result.len());
+        }
+        result.push(row);
+    }
+
     while i < source.len() {
         // Synthetic rows (RTP bars) pass through untouched and are never
         // fold headers or fold members.
         let Some(ri) = source[i].as_ref().and_then(|fm| fm.raw_index) else {
             if let Some(fm) = source[i].take() {
-                result.push(fm);
+                push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
             }
             i += 1;
             continue;
@@ -910,7 +943,7 @@ fn fold_messages(
                 // member rows follow normally on later iterations.
                 if let Some(mut fm) = source[i].take() {
                     fm.fold_label = Some("(auth retry expanded - press e to collapse)".to_string());
-                    result.push(fm);
+                    push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
                 }
                 i += 1;
                 continue;
@@ -928,7 +961,7 @@ fn fold_messages(
                 // demo's widest label to 25 chars, an un-satisfiable 30-col
                 // gap demand at the 98-col demo geometry.
                 fm.label = format!("{} (+auth)", fm.label);
-                result.push(fm);
+                push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
             }
             // Drop the member rows: every following row whose raw index is
             // inside the sequence.
@@ -951,31 +984,33 @@ fn fold_messages(
         if raw_msgs.get(ri).is_some_and(|m| m.is_retransmission) {
             // The fold header is the last emitted NON-retransmission row: a
             // whole retx run belongs to one header, even when earlier retx
-            // rows of the run are visible because the fold is expanded.
-            match result.iter_mut().rev().find(|fm| {
-                fm.raw_index
-                    .is_some_and(|h| raw_msgs.get(h).is_some_and(|m| !m.is_retransmission))
-            }) {
-                Some(prev) => {
-                    let header_raw = prev.raw_index.unwrap_or(usize::MAX);
+            // rows of the run are visible because the fold is expanded. That
+            // header's index in `result` is tracked in `last_header_idx`, so
+            // no back-scan is needed (the retx row itself never becomes a
+            // header, so pushing it leaves `last_header_idx` pointing at the
+            // run's header for every subsequent retx in the run).
+            match last_header_idx {
+                Some(idx) => {
+                    let header_raw = result[idx].raw_index.unwrap_or(usize::MAX);
                     if fold_expanded.contains(&header_raw) {
                         // Expanded: keep the retransmission visible; label
                         // the header so the fold can be re-collapsed.
-                        prev.fold_label = Some("(retx expanded - press e to collapse)".to_string());
+                        result[idx].fold_label =
+                            Some("(retx expanded - press e to collapse)".to_string());
                         if let Some(fm) = source[i].take() {
-                            result.push(fm);
+                            push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
                         }
                     } else {
-                        prev.folded_count += 1;
-                        prev.fold_label =
-                            Some(format!("(+{} retx) - press e to expand", prev.folded_count));
+                        result[idx].folded_count += 1;
+                        let n = result[idx].folded_count;
+                        result[idx].fold_label = Some(format!("(+{n} retx) - press e to expand"));
                         source[i].take();
                     }
                 }
                 None => {
                     // No previous message to fold into — emit normally.
                     if let Some(fm) = source[i].take() {
-                        result.push(fm);
+                        push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
                     }
                 }
             }
@@ -985,7 +1020,7 @@ fn fold_messages(
 
         // Not folded — emit normally
         if let Some(fm) = source[i].take() {
-            result.push(fm);
+            push_row(&mut result, &mut last_header_idx, raw_msgs, fm);
         }
         i += 1;
     }

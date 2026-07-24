@@ -448,10 +448,12 @@ pub(in crate::tui) fn handle_statistics_key(app: &mut App, key: KeyEvent) {
 ///
 /// # Side effects
 /// Ignored while a popup is open. Otherwise moves the current view's
-/// selection (call list, dashboard, stream list, call flow — briefly
-/// taking store read locks where the displayed count must be computed)
-/// or its scroll offset (raw/diff/stream-detail/help/statistics views).
-/// The timeline view is currently a no-op.
+/// selection (call list — briefly taking the dialog-store read lock to
+/// size the displayed count — dashboard, stream list, and call flow off
+/// their per-tick caches) or its scroll offset
+/// (raw/diff/stream-detail/help/statistics views). The timeline is a
+/// static single-screen view with nothing to scroll or select, so the
+/// wheel is intentionally a no-op there.
 pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::MouseEventKind) {
     use crossterm::event::MouseEventKind as MK;
     let down = match kind {
@@ -484,16 +486,10 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
         }
         View::StreamList => {
             if down {
-                let ss = app.stream_store.read();
-                let ds = app.dialog_store.try_read();
-                let count = crate::tui::stream_list::displayed_streams(
-                    ss.iter(),
-                    ds.as_deref(),
-                    app.active_filter.as_ref(),
-                    &app.search_query,
-                )
-                .len();
-                drop(ss);
+                // Navigate over the per-tick sync_caches-derived rows, the
+                // same cache the keyboard path uses — the wheel must never
+                // re-filter the store on every scroll event.
+                let count = app.stream_displayed.keys.len();
                 app.stream_list.move_down(count);
             } else {
                 app.stream_list.move_up();
@@ -546,7 +542,8 @@ pub(in crate::tui) fn handle_mouse_event(app: &mut App, kind: crossterm::event::
                 app.stats_scroll.saturating_sub(3)
             };
         }
-        // Wheel navigation lands here once the timeline layout exists.
+        // The timeline is a fixed single screen (no scroll, no selection),
+        // so its wheel arm is intentionally empty.
         View::CallTimeline(_) => {}
     }
 }

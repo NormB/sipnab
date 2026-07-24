@@ -29,6 +29,7 @@
 /// `(arrow, start_x)`: the rendered arrow string and the buffer column to
 /// start drawing it at (`min(src_x, dst_x) + 1`).
 pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (String, u16) {
+    use unicode_width::UnicodeWidthStr;
     let goes_right = dst_x > src_x;
     let start = src_x.min(dst_x) + 1; // after the source pipe
     let end = src_x.max(dst_x); // at the dest pipe (arrow head lands here)
@@ -50,8 +51,10 @@ pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (
     // entirely leaves a blank arrow that reads as an empty row (seen with
     // OpenSIPS' 42-char "100 trying -- your call is important to us").
     // Only a gap too narrow for any meaningful text falls back to a bare
-    // line. `width - 4` = pads + line char + arrow head.
-    let fit_label = if label.len() + 4 > width {
+    // line. `width - 4` = pads + line char + arrow head. All measurements
+    // are in DISPLAY COLUMNS (CJK/emoji are 2-wide), not bytes, so a wide
+    // label neither overflows nor under-pads the gap.
+    let fit_label = if label.width() + 4 > width {
         let avail = width.saturating_sub(4);
         (avail >= 8).then(|| truncate(label, avail))
     } else {
@@ -68,7 +71,7 @@ pub fn format_arrow(label: &str, src_x: u16, dst_x: u16, is_response: bool) -> (
             }
         }
         Some(label) => {
-            let label_with_pad = label.len() + 2;
+            let label_with_pad = label.width() + 2;
             let total_lines = width.saturating_sub(label_with_pad + 1);
             let left = total_lines / 2;
             let right = total_lines - left;
@@ -139,24 +142,37 @@ pub fn format_arrow_left(label: &str, width: usize, is_response: bool) -> String
     format!("{arrow_head}{left_str} {label} {right_str}")
 }
 
-/// Truncate a string to at most `max_len` bytes, appending "..." if truncated
-/// (for ASCII input this equals a character count). A `max_len` of 3 or less
-/// keeps the first `max_len` chars with no ellipsis. Walks back to a char
-/// boundary so multi-byte UTF-8 input never panics; the result may therefore
-/// come in under the limit. Returns the (possibly shortened) owned string.
+/// Truncate a string to at most `max_len` DISPLAY COLUMNS, appending "..."
+/// if truncated (for ASCII input one column equals one char). A `max_len` of
+/// 3 or less keeps the leading chars that fit in `max_len` columns with no
+/// ellipsis. Width is measured with `unicode-width`, so CJK/emoji glyphs
+/// (2 columns) are counted correctly and never split mid-codepoint — the
+/// result may come in under the limit when a wide glyph straddles the cut.
+/// Returns the (possibly shortened) owned string.
 pub fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max_len {
         return s.to_string();
     }
+    // Take leading whole chars up to a column budget (never splitting a glyph).
+    let take_cols = |budget: usize| -> String {
+        let mut cols = 0usize;
+        let mut out = String::new();
+        for ch in s.chars() {
+            let w = ch.width().unwrap_or(0);
+            if cols + w > budget {
+                break;
+            }
+            cols += w;
+            out.push(ch);
+        }
+        out
+    };
     if max_len <= 3 {
-        return s.chars().take(max_len).collect();
+        return take_cols(max_len);
     }
-    let mut end = max_len - 3;
-    // Walk back to a char boundary
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}...", &s[..end])
+    // Reserve 3 columns for the "..." ellipsis.
+    format!("{}...", take_cols(max_len - 3))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -294,5 +310,56 @@ mod tests {
         // Should not panic. The result length in bytes may be <= 6 or just the
         // chars that fit plus "...", depending on boundary walking.
         assert!(!result.is_empty());
+    }
+
+    /// Truncation is measured in DISPLAY COLUMNS, not bytes. Six wide CJK
+    /// chars (2 cols each, 3 bytes each) truncated to 8 columns must keep
+    /// exactly the two chars that fit before a 3-column ellipsis — byte
+    /// counting stopped after a single char ("日...").
+    #[test]
+    fn truncate_cjk_is_display_width_aware() {
+        use unicode_width::UnicodeWidthStr;
+        let out = truncate("日本語テスト", 8);
+        assert!(out.width() <= 8, "must fit the column budget: {out}");
+        assert!(
+            out.starts_with("日本"),
+            "display-width truncation keeps 2 CJK chars, got: {out}"
+        );
+        assert!(out.ends_with("..."), "ellipsis kept: {out}");
+    }
+
+    /// Width-2 emoji are truncated by columns, never split mid-codepoint,
+    /// and the result never overflows the column budget.
+    #[test]
+    fn truncate_emoji_is_display_width_aware() {
+        use unicode_width::UnicodeWidthStr;
+        let out = truncate("😀😀😀😀😀 x", 8);
+        assert!(out.width() <= 8, "must fit the column budget: {out}");
+        assert!(out.ends_with("..."), "ellipsis kept: {out}");
+        // No lone surrogate/half-codepoint: the string is valid UTF-8 by
+        // construction, and each retained glyph is a whole emoji.
+        assert!(
+            out.starts_with("😀😀"),
+            "two width-2 emoji fit in 8 - 3: {out}"
+        );
+    }
+
+    /// A wide CJK label must make the arrow span the FULL pipe gap so the
+    /// `▶` head lands on the destination pipe. Byte-based centering
+    /// under-pads (bytes > display columns) and the head falls short.
+    #[test]
+    fn format_arrow_cjk_label_spans_full_gap() {
+        use unicode_width::UnicodeWidthStr;
+        // Pipes at columns 10 and 30 → start = 11, head must land on col 30,
+        // so the arrow must occupy exactly 30 - 11 = 19 display columns.
+        let (arrow, start) = format_arrow("日本語", 10, 30, false);
+        assert_eq!(start, 11);
+        assert_eq!(
+            arrow.width(),
+            19,
+            "arrow must span the full gap so ▶ lands on the pipe: {arrow}"
+        );
+        assert!(arrow.contains("日本語"), "label kept: {arrow}");
+        assert!(arrow.ends_with('\u{25B6}'), "head kept: {arrow}");
     }
 }

@@ -10,7 +10,12 @@
 //! `"Saved ..."` on success, or a `"No ... to save"` / `"Save failed ..."`
 //! style message otherwise. None of these functions return `Result`; all
 //! error conditions are folded into the returned status text. Existing
-//! files at the target path are overwritten without prompting.
+//! files at the target path are overwritten without prompting; the
+//! buffer-then-write exporters (txt, mermaid, json, ndjson, csv,
+//! markdown, sipp, rtp-json) do so atomically via
+//! [`crate::capture::atomic::write_atomic`] — a failed write leaves any
+//! prior file intact — while the streaming pcap writer and the WAV
+//! exporter still write in place.
 
 use super::*;
 
@@ -109,12 +114,13 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
 ///
 /// `"Saved N messages (txt) to path"` on success; `"No messages to
 /// save"` when nothing is exportable; `"Save failed ..."` when the
-/// single `std::fs::write` fails.
+/// atomic write fails.
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -155,7 +161,7 @@ pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
         }
     }
 
-    match std::fs::write(&path, &output) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(output.as_bytes())) {
         Ok(()) => format!(
             "Saved {} messages (txt) to {}",
             messages.len(),
@@ -186,8 +192,9 @@ pub(super) fn save_to_txt_path(app: &App, path_str: &str) -> String {
 /// # Side effects
 ///
 /// Takes a read lock on `app.dialog_store`. Clones the exported
-/// messages out of the store, then creates or truncates the file at
-/// `path_str` in one write.
+/// messages out of the store, then atomically replaces the file at
+/// `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
     let path = std::path::PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -247,7 +254,7 @@ pub(super) fn save_to_mermaid_path(app: &App, path_str: &str) -> String {
 
     let mermaid = call_flow::export::export_mermaid_html(&participants, &msgs);
 
-    match std::fs::write(&path, &mermaid) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(mermaid.as_bytes())) {
         Ok(()) => format!(
             "Saved Mermaid diagram ({} messages) to {}",
             msgs.iter().filter(|m| !m.is_spacer).count(),
@@ -308,8 +315,9 @@ pub(super) fn csv_escape(field: &str) -> String {
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -353,14 +361,17 @@ pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
         .collect();
 
     match serde_json::to_string_pretty(&json_dialogs) {
-        Ok(json_str) => match std::fs::write(&path, &json_str) {
-            Ok(()) => format!(
-                "Saved {} dialogs (JSON) to {}",
-                dialogs.len(),
-                path.display()
-            ),
-            Err(e) => format!("Save failed: {e}"),
-        },
+        Ok(json_str) => {
+            match crate::capture::atomic::write_atomic(&path, |w| w.write_all(json_str.as_bytes()))
+            {
+                Ok(()) => format!(
+                    "Saved {} dialogs (JSON) to {}",
+                    dialogs.len(),
+                    path.display()
+                ),
+                Err(e) => format!("Save failed: {e}"),
+            }
+        }
         Err(e) => format!("JSON serialization failed: {e}"),
     }
 }
@@ -385,8 +396,9 @@ pub(super) fn save_to_json_path(app: &App, path_str: &str) -> String {
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write after all lines serialize cleanly.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename) after all lines serialize cleanly;
+/// a failed write leaves any prior file intact.
 pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -433,7 +445,9 @@ pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
             "src_addr": d.src_addr.to_string(),
             "dst_addr": d.dst_addr.to_string(),
             "created_at": d.created_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            "message_count": d.messages.len(),
+            // Canonical field name shared with the JSON exporter and
+            // `DialogSummary` (MCP/REST/filter DSL all say `msg_count`).
+            "msg_count": d.messages.len(),
             "timing": timing,
             "messages": messages,
         });
@@ -447,7 +461,7 @@ pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
         }
     }
 
-    match std::fs::write(&path, &output) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(output.as_bytes())) {
         Ok(()) => format!(
             "Saved {} dialogs (NDJSON) to {}",
             dialogs.len(),
@@ -476,8 +490,9 @@ pub(super) fn save_to_ndjson_path(app: &App, path_str: &str) -> String {
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -510,7 +525,7 @@ pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
         output.push_str(&row);
     }
 
-    match std::fs::write(&path, &output) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(output.as_bytes())) {
         Ok(()) => format!(
             "Saved {} dialogs (CSV) to {}",
             dialogs.len(),
@@ -540,8 +555,9 @@ pub(super) fn save_to_csv_path(app: &App, path_str: &str) -> String {
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -634,7 +650,7 @@ pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
         }
     }
 
-    match std::fs::write(&path, &md) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(md.as_bytes())) {
         Ok(()) => format!(
             "Saved {} dialogs (Markdown) to {}",
             dialogs.len(),
@@ -792,8 +808,9 @@ fn sipp_placeholder_uri(ruri: &str, dst_addr: std::net::IpAddr, dst_port: u16) -
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.dialog_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.dialog_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let store = app.dialog_store.read();
@@ -900,7 +917,7 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
 
     xml.push_str("\n</scenario>\n");
 
-    match std::fs::write(&path, &xml) {
+    match crate::capture::atomic::write_atomic(&path, |w| w.write_all(xml.as_bytes())) {
         Ok(()) => format!(
             "Saved SIPp scenario ({} messages) to {}",
             dialog.messages.len(),
@@ -930,8 +947,9 @@ pub(super) fn save_to_sipp_path(app: &App, path_str: &str) -> String {
 ///
 /// # Side effects
 ///
-/// Takes a read lock on `app.stream_store`. Creates or truncates the
-/// file at `path_str` in one write.
+/// Takes a read lock on `app.stream_store`. Atomically replaces the file
+/// at `path_str` (temp file + rename); a failed write leaves any prior
+/// file intact.
 pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
     let path = PathBuf::from(path_str);
     let stream_store = app.stream_store.read();
@@ -969,14 +987,17 @@ pub(super) fn save_to_rtp_json_path(app: &App, path_str: &str) -> String {
         .collect();
 
     match serde_json::to_string_pretty(&json_streams) {
-        Ok(json_str) => match std::fs::write(&path, &json_str) {
-            Ok(()) => format!(
-                "Saved {} RTP streams (JSON) to {}",
-                streams.len(),
-                path.display()
-            ),
-            Err(e) => format!("Save failed: {e}"),
-        },
+        Ok(json_str) => {
+            match crate::capture::atomic::write_atomic(&path, |w| w.write_all(json_str.as_bytes()))
+            {
+                Ok(()) => format!(
+                    "Saved {} RTP streams (JSON) to {}",
+                    streams.len(),
+                    path.display()
+                ),
+                Err(e) => format!("Save failed: {e}"),
+            }
+        }
         Err(e) => format!("JSON serialization failed: {e}"),
     }
 }
@@ -1328,13 +1349,17 @@ mod tests {
             "missing mermaid sequenceDiagram keyword"
         );
         assert!(content.contains("participant "), "missing participants");
+        // The HTML export is self-contained (no CDN): the Mermaid source is
+        // embedded verbatim in a copyable <pre id="src"> block with offline
+        // render instructions, rather than auto-rendered via a remote
+        // mermaid.min.js. See call_flow::export::export_mermaid_html.
         assert!(
-            content.contains("class=\"mermaid\""),
-            "missing mermaid render container"
+            !content.to_lowercase().contains("cdn."),
+            "export must not depend on a CDN"
         );
         assert!(
-            content.contains("mermaid.min.js"),
-            "missing mermaid renderer script"
+            content.contains("<pre id=\"src\">"),
+            "missing embedded Mermaid source block"
         );
     }
 
@@ -1399,6 +1424,78 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert_eq!(v.as_array().unwrap().len(), 1);
         assert_eq!(v[0]["codec"], "PCMU");
+    }
+
+    // ── Field-name consistency across JSON/NDJSON ────────────────────
+
+    /// Both the pretty-JSON and NDJSON exporters must name the per-dialog
+    /// message tally with the canonical `msg_count` (matching
+    /// `DialogSummary`, the MCP/REST payloads, and the filter DSL), never
+    /// the divergent `message_count`. Pins the two exporters together so
+    /// they cannot drift apart again.
+    #[test]
+    fn json_and_ndjson_agree_on_msg_count_field() {
+        let app = app_with_dialogs();
+
+        let jp = tmp_path("fields.json");
+        save_to_json_path(&app, jp.to_str().unwrap());
+        let jc = std::fs::read_to_string(&jp).unwrap();
+        assert!(jc.contains("\"msg_count\""), "JSON must use msg_count");
+        assert!(
+            !jc.contains("\"message_count\""),
+            "JSON must not use message_count"
+        );
+
+        let np = tmp_path("fields.ndjson");
+        save_to_ndjson_path(&app, np.to_str().unwrap());
+        let nc = std::fs::read_to_string(&np).unwrap();
+        assert!(nc.contains("\"msg_count\""), "NDJSON must use msg_count");
+        assert!(
+            !nc.contains("\"message_count\""),
+            "NDJSON must not use message_count"
+        );
+    }
+
+    // ── Atomic export: failure must not clobber a prior good file ─────
+
+    /// A String-based export that fails partway must not replace a prior
+    /// good file with a partial/truncated one: the exporter writes to a
+    /// temp file and atomically renames on success, so a failed write
+    /// leaves the original byte-identical. Simulated by making the target
+    /// directory read-only, so the atomic writer cannot create its temp
+    /// file and the export fails without touching the original.
+    #[test]
+    fn failed_export_leaves_prior_file_intact() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.json");
+        std::fs::write(&path, b"ORIGINAL GOOD CONTENT").unwrap();
+
+        // Read-only directory: the atomic writer's temp-file creation
+        // (needs directory write permission) fails, but the pre-existing
+        // file stays openable/untouched.
+        let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), perms.clone()).unwrap();
+
+        let app = app_with_dialogs();
+        let msg = save_to_json_path(&app, path.to_str().unwrap());
+
+        // Restore write permission before asserting so the tempdir can be
+        // cleaned up even if an assertion below panics.
+        perms.set_mode(0o700);
+        std::fs::set_permissions(dir.path(), perms).unwrap();
+
+        assert!(
+            msg.starts_with("Save failed"),
+            "a failing export must report failure, got: {msg}"
+        );
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"ORIGINAL GOOD CONTENT",
+            "a failed export must leave the prior good file untouched"
+        );
     }
 
     // ── Empty-store paths ────────────────────────────────────────────

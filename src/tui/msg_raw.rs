@@ -151,26 +151,55 @@ pub fn raw_display_text(
     (info, raw_text)
 }
 
-/// Display-line indices (info = 0, blank = 1, raw lines from 2 — the layout
-/// both `plain_sip_message` and `highlight_sip_message` build) whose text
-/// contains `query`, case-insensitively. Powers n/N match navigation.
+/// Wrapped-row scroll offsets of the display lines whose text contains
+/// `query`, case-insensitively. The display layout (shared by
+/// `plain_sip_message` and `highlight_sip_message`) is: info line, blank,
+/// then one line per raw line.
+///
+/// The raw view scrolls by wrapped rows (`Paragraph` with `Wrap`), so a
+/// match's offset is the cumulative wrapped height of every preceding
+/// display line — not its unwrapped index. Wrapped height is
+/// `ceil(display_width / wrap_width)` (min 1), the same accounting
+/// `estimated_rows` uses to clamp the scroll, so n/N lands exactly on the
+/// match even when earlier lines wrap. Powers n/N match navigation.
+///
+/// # Arguments
+/// * `wrap_width` - Content width the view wraps at (main-pane width minus
+///   the block borders); values below 1 are treated as 1.
 ///
 /// # Returns
-/// Ascending display-line indices of matching lines; empty when `query` is
+/// Ascending wrapped-row offsets of matching lines; empty when `query` is
 /// empty or nothing matches. Pure.
-pub fn search_match_lines(info: &str, raw_text: &str, query: &str) -> Vec<u16> {
+pub fn search_match_lines(info: &str, raw_text: &str, query: &str, wrap_width: u16) -> Vec<u16> {
     if query.is_empty() {
         return Vec::new();
     }
     let q = query.to_ascii_lowercase();
+    let w = (wrap_width.max(1)) as usize;
+    // Wrapped rows a single display line occupies (mirrors `estimated_rows`:
+    // an empty line still takes one row).
+    let wrapped_height = |text: &str| -> usize {
+        let dw = unicode_width::UnicodeWidthStr::width(text);
+        if dw == 0 { 1 } else { dw.div_ceil(w) }
+    };
+
     let mut out = Vec::new();
-    if info.to_ascii_lowercase().contains(&q) {
-        out.push(0);
-    }
-    for (i, line) in raw_text.lines().enumerate() {
-        if line.to_ascii_lowercase().contains(&q) {
-            out.push((i + 2).min(u16::MAX as usize) as u16);
+    let mut row: usize = 0;
+    let push_if_match = |text: &str, row: usize, out: &mut Vec<u16>| {
+        if text.to_ascii_lowercase().contains(&q) {
+            out.push(row.min(u16::MAX as usize) as u16);
         }
+    };
+
+    // Display line 0: info; display line 1: blank separator.
+    push_if_match(info, row, &mut out);
+    row += wrapped_height(info);
+    row += wrapped_height("");
+
+    // Display lines 2..: one per raw line, each starting at `row`.
+    for line in raw_text.lines() {
+        push_if_match(line, row, &mut out);
+        row += wrapped_height(line);
     }
     out
 }
@@ -478,6 +507,38 @@ mod tests {
     fn highlight_search_case_insensitive() {
         let line = highlight_search_in_line("INVITE sip:foo", "invite", Style::default());
         assert!(line.spans.len() >= 2);
+    }
+
+    /// The raw view scrolls by wrapped rows, so a match's scroll offset
+    /// must count the wrapped height of every preceding display line — not
+    /// its unwrapped line index. With a line before the match wrapping to
+    /// several rows, the two disagree, and n/N lands short if the unwrapped
+    /// index is used.
+    #[test]
+    fn search_match_lines_maps_to_wrapped_row_offset() {
+        // At width 10: info(1 row) + blank(1 row) + a 20-col line(2 rows)
+        // put the matching 23-col line at wrapped row 4 — while its
+        // unwrapped display index would be only 3.
+        let info = "info";
+        let raw_text = "AAAAAAAAAAAAAAAAAAAA\nBBBBBBBBBB MATCHME BBBB";
+        let rows = search_match_lines(info, raw_text, "matchme", 10);
+        assert_eq!(
+            rows,
+            vec![4],
+            "match offset must be the wrapped-row start of the line, not its \
+             unwrapped index (3)"
+        );
+    }
+
+    /// With no wrapping (width wider than every line) the wrapped-row
+    /// offsets collapse back to the plain display-line indices: info at 0,
+    /// the second raw line at 3 (info, blank, line0, line1).
+    #[test]
+    fn search_match_lines_unwrapped_matches_display_indices() {
+        let info = "INVITE probe";
+        let raw_text = "Via: udp\nCSeq: 1 INVITE";
+        let rows = search_match_lines(info, raw_text, "cseq", 200);
+        assert_eq!(rows, vec![3]);
     }
 
     /// A minimal INVITE produces the expected line layout: info, blank,

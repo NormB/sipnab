@@ -1,11 +1,12 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 769
 expression: output
 ---
  Current Mode: Online (any)    Dialogs: 0 (0 displayed)  [A]
  Match Expression:     BPF Filter:
  Display Fil┌ Filter ──────────────────────────────────────────────┐
-# ▲   Metho │                                                      │DD    Durati
+# ▲   Metho │                                                      │D    Duratio
             │  SIP From:    [                                   ]  │
   No SIP dia│  SIP To:      [                                   ]  │
             │  Source:      [                                   ]  │

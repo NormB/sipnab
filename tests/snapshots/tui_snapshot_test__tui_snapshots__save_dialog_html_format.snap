@@ -1,14 +1,15 @@
 ---
 source: tests/tui_snapshot_test.rs
+assertion_line: 1243
 expression: output
 ---
  Cur┌ Save Capture ────────────────────────────────────────────────────────┐
  Mat│                                                                      │
  Dis│  Save to: /tmp/sipnab_20240615_120000.html                           │
-  # │                                                                      │rati
-> [ │  Packet Capture                                                      │2s
-  [ │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │0s
-  [ │      PCAP-NG Modern format with metadata and annotations             │0s
+  # │                                                                      │atio
+> [ │  Packet Capture                                                      │s
+  [ │      PCAP    Universal baseline (Wireshark, tcpdump, Homer)          │s
+  [ │      PCAP-NG Modern format with metadata and annotations             │s
     │                                                                      │
     │  SIP-Specific                                                        │
     │      TXT     Plain text SIP messages (sngrep-compatible)             │

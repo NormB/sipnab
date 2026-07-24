@@ -269,9 +269,17 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
 
     // Fixed overhead: 4 lines above + MOS/jitter/loss trend + legend + borders.
     let visible = (area.height as usize).saturating_sub(13).max(1);
-    let first = app
-        .dashboard_selected
-        .saturating_sub(visible.saturating_sub(1));
+    // Keep the selection in view with context above and below rather than
+    // pinning it to the bottom row: center it in the window, clamped so the
+    // window stays within the row range.
+    let total = snap.rows.len();
+    let first = if total <= visible {
+        0
+    } else {
+        app.dashboard_selected
+            .saturating_sub(visible / 2)
+            .min(total - visible)
+    };
     for (i, row) in snap.rows.iter().enumerate().skip(first).take(visible) {
         let selected = i == app.dashboard_selected;
         let marker = if selected { "▶ " } else { "  " };
@@ -736,5 +744,63 @@ mod tests {
         let s = stream_with_intervals(1, &[(1.0, 50.0)]);
         let snap = DashboardSnapshot::from_streams(&store_with(vec![s]));
         let _ = render_snapshot(snap, 0, 8, 4);
+    }
+
+    /// Build a snapshot with `n` synthetic rows labelled `row-{i}` so the
+    /// rendered worst-streams table can be searched by row identity.
+    fn snapshot_with_rows(n: usize) -> DashboardSnapshot {
+        let rows = (0..n)
+            .map(|i| StreamHealth {
+                key: StreamKey {
+                    ssrc: i as u32,
+                    src: addr(10000),
+                    dst: addr(20000),
+                },
+                call_id: Some(format!("row-{i}")),
+                codec: Some("PCMU".to_string()),
+                mos: 4.0,
+                jitter_ms: 1.0,
+                loss_pct: 0.0,
+                packets: 100,
+                active: true,
+                trend: Vec::new(),
+            })
+            .collect();
+        DashboardSnapshot {
+            total_streams: n,
+            active_streams: n,
+            avg_mos: Some(4.0),
+            worst_mos: Some(4.0),
+            rows,
+            ..Default::default()
+        }
+    }
+
+    /// Edge case: the scroll window must keep the selection in view with
+    /// context, not pin it to the bottom row. With a mid-list selection there
+    /// must be rendered rows BELOW it — impossible under the old bottom-anchor.
+    #[test]
+    fn scroll_window_keeps_selection_in_view_with_context() {
+        // height 25 → visible window = 25 - 13 = 12 rows out of 30.
+        let out = render_snapshot(snapshot_with_rows(30), 15, 130, 25);
+
+        // The selected row is rendered with its marker (▶).
+        let selected_line = out
+            .lines()
+            .find(|l| l.contains("row-15") && l.contains('\u{25b6}'))
+            .unwrap_or_else(|| panic!("selected row-15 not rendered with marker:\n{out}"));
+        assert!(selected_line.contains('\u{25b6}'));
+
+        // Context below the selection is visible (row-16) — the old
+        // bottom-anchored window rendered nothing past the selection.
+        assert!(
+            out.contains("row-16"),
+            "no context below the selection — window still bottom-anchored:\n{out}"
+        );
+        // Context above the selection is visible too (row-12).
+        assert!(
+            out.contains("row-12"),
+            "no context above the selection:\n{out}"
+        );
     }
 }

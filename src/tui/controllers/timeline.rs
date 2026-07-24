@@ -2,9 +2,12 @@
 
 //! Key handling for the call-timeline view.
 //!
-//! Scaffold only — the mapping and executor cover the close/back path so
-//! the view can be opened and dismissed; navigation actions land here as
-//! the timeline layout is filled in.
+//! The timeline is a single-screen view of one dialog: the proportional
+//! phase bar always fills the available width and the per-phase labels,
+//! metric summary and legend fit in a fixed handful of lines, so there is
+//! nothing to scroll and no list to select. `Close` is therefore the only
+//! action by design — the view is intentionally non-navigable, not a
+//! placeholder awaiting navigation.
 
 use crate::tui::*;
 
@@ -108,5 +111,34 @@ mod tests {
             Some(TimelineAction::Close)
         );
         assert_eq!(timeline_action(&km, key(KeyCode::Char('q'))), None);
+    }
+
+    /// The timeline is a single-screen, single-call view: it has no
+    /// scrollable or selectable content, so every navigation key (arrows,
+    /// vi keys, paging, jumps, Enter) is intentionally unbound. This pins
+    /// the static contract so the absence of navigation reads as deliberate
+    /// rather than forgotten.
+    #[test]
+    fn timeline_action_leaves_navigation_keys_unbound() {
+        let km = Keymap::default();
+        for code in [
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::Enter,
+        ] {
+            assert_eq!(
+                timeline_action(&km, key(code)),
+                None,
+                "{code:?} must stay unbound: the timeline is a static view"
+            );
+        }
     }
 }

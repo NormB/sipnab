@@ -153,7 +153,8 @@ pub enum CallFlowAction {
     ResetCompare,
     /// The configured filter key — open the filter dialog popup.
     OpenFilterDialog,
-    /// F9 — drop the active filter and its display text.
+    /// F9 — drop the active filter, its display text, and the persisted
+    /// search query (every narrowing input, matching the call list's F9).
     ClearFilter,
 }
 
@@ -482,6 +483,11 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
             app.active_filter = None;
             app.active_filter_text.clear();
             app.filter_dialog.clear();
+            // `search_query` is a shared global narrowing input; clearing it
+            // here matches the call list's "drop every narrowing input" F9
+            // semantics, so returning to the list never leaves it silently
+            // narrowed by a stale search.
+            app.search_query.clear();
             app.status_error = None;
         }
     }
@@ -492,7 +498,16 @@ fn execute_call_flow_action(app: &mut App, action: CallFlowAction) {
 /// count before the first render. Extended flow sums correlated legs; a
 /// transaction filter restricts to the anchored transaction's messages.
 fn flow_visible_msg_count(app: &App) -> usize {
-    let raw_count = if let View::CallFlow(ref call_id) = app.current_view {
+    // Navigation moves over VISIBLE rows: use the rendered (post-fold) count
+    // once a render has produced it. Only when that cache is empty (before
+    // the first render) do we fall back to the raw message count — computed
+    // lazily below so the cache-hit path never takes a store read lock.
+    // Taking max() with the raw count would let the selection walk past the
+    // last visible row whenever folds hide messages.
+    if app.flow.cached_msg_count > 0 {
+        return app.flow.cached_msg_count;
+    }
+    if let View::CallFlow(ref call_id) = app.current_view {
         if !app.flow.merged_calls.is_empty() {
             // Merged multi-selection: sum every checked dialog's messages.
             app.dialog_store
@@ -542,15 +557,6 @@ fn flow_visible_msg_count(app: &App) -> usize {
         }
     } else {
         0
-    };
-    // Navigation moves over VISIBLE rows: use the rendered (post-fold) count
-    // once a render has produced it; fall back to the raw message count only
-    // before the first render. Taking max() with the raw count would let the
-    // selection walk past the last visible row whenever folds hide messages.
-    if app.flow.cached_msg_count > 0 {
-        app.flow.cached_msg_count
-    } else {
-        raw_count
     }
 }
 
@@ -859,7 +865,14 @@ fn jump_raw_search_match(app: &mut App, forward: bool) {
             return;
         };
         let (info, raw_text) = crate::tui::msg_raw::raw_display_text(msg, app.header_form);
-        crate::tui::msg_raw::search_match_lines(&info, &raw_text, &app.search_query)
+        // The raw view fills the full-width main pane and wraps its lines, so
+        // match offsets must be in wrapped rows (the scroll unit). Content
+        // width is the terminal width minus the block borders.
+        let wrap_width = crossterm::terminal::size()
+            .map(|(cols, _)| cols)
+            .unwrap_or(80)
+            .saturating_sub(2);
+        crate::tui::msg_raw::search_match_lines(&info, &raw_text, &app.search_query, wrap_width)
     };
     if matches.is_empty() {
         app.status_error = Some(format!("No matches for '{}'", app.search_query));
@@ -1901,6 +1914,27 @@ mod tests {
         app.active_filter_text = "x".to_string();
         handle_call_flow_key(&mut app, key(KeyCode::F(9)));
         assert!(app.active_filter.is_none());
+    }
+
+    /// F9 in the call flow clears BOTH the active filter and the persisted
+    /// search query. `search_query` is a shared global narrowing input, so
+    /// leaving it set on a flow-view F9 would return the user to a list
+    /// that is still mysteriously narrowed — the call list's documented
+    /// "clear active filter **and** persisted search" semantics apply in
+    /// every view that binds F9.
+    #[test]
+    fn call_flow_f9_also_clears_persisted_search() {
+        let mut app = app_with_dialogs();
+        open_call_flow(&mut app);
+        app.active_filter_text = "x".to_string();
+        app.search_query = "5595".to_string();
+        handle_call_flow_key(&mut app, key(KeyCode::F(9)));
+        assert!(app.active_filter.is_none());
+        assert!(app.active_filter_text.is_empty());
+        assert!(
+            app.search_query.is_empty(),
+            "F9 must clear the shared search query in the flow too"
+        );
     }
 
     /// An unbound key leaves the flow view unchanged.

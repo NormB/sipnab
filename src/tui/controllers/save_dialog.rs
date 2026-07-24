@@ -59,6 +59,13 @@ pub(in crate::tui) fn handle_save_popup_key(app: &mut App, key: KeyEvent) {
             app.active_popup = None;
         }
         KeyCode::Enter => {
+            // Reject a blank path at the dialog: an empty (or whitespace-
+            // only) path can only fail once the deferred write runs, so
+            // catch it here and keep the popup open for the user to fix.
+            if app.save.path.trim().is_empty() {
+                app.status_error = Some("Save path is empty".to_string());
+                return;
+            }
             // Defer the write one event-loop tick (App::run_pending_save):
             // large exports can block for a while, and running them on the
             // keypress froze the UI with no feedback. This way the
@@ -185,5 +192,40 @@ mod tests {
             "got: {:?}",
             app.status_error
         );
+    }
+
+    /// Enter on an empty or whitespace-only path must be rejected at the
+    /// dialog — with a status message and the popup left open to fix it —
+    /// rather than queuing a `PendingSave` whose write is guaranteed to
+    /// fail on the next tick.
+    #[test]
+    fn enter_with_blank_path_is_rejected_without_queuing() {
+        for blank in ["", "   ", "\t "] {
+            let mut app = crate::tui::controllers::test_support::app_with_dialogs();
+            app.save.format = SaveFormat::Txt;
+            app.save.path = blank.to_string();
+            app.active_popup = Some(Popup::SaveDialog);
+
+            handle_save_popup_key(&mut app, key(KeyCode::Enter));
+
+            assert!(
+                app.pending_save.is_none(),
+                "blank path {blank:?} must not queue a save"
+            );
+            assert_eq!(
+                app.active_popup,
+                Some(Popup::SaveDialog),
+                "dialog stays open so the blank path {blank:?} can be corrected"
+            );
+            assert!(
+                app.status_error
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .contains("path"),
+                "expected a path-rejection status for {blank:?}, got: {:?}",
+                app.status_error
+            );
+        }
     }
 }
