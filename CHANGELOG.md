@@ -2,6 +2,30 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.35] - 2026-07-24
+
+### Added
+- Cross-packet SCTP DATA fragment reassembly (RFC 4960): a SIP message
+  split across B/middle/E DATA chunks in separate packets is now
+  reassembled via a bounded, fail-closed per-stream buffer.
+
+### Changed
+- P2 wave completing the tier across RTP, output, app, core, and CLI
+  (32 items). RTP: O(1) quality-history eviction, retained-log-bounded
+  burst gaps, CN-spacing silence durations, unified retroactive guards,
+  SRTP session-key caching + clone elimination, amortized endpoint
+  eviction, case-insensitive Opus export, correct NAT-mismatch media,
+  loss-guarded ptime, negotiated DTMF clock, AudioPlayer !Send+!Sync
+  pin. Output: filtered pagination totals, reg-flood CRLF sanitization,
+  UTF-8-aware wireshark boundaries, RFC 7235 Authorization parsing,
+  signed sub-second deltas, byte-safe truncation. App/core: PlanError
+  instead of process::exit, negotiated DTMF PT, real tshark input,
+  pause/count fix, allocation-free MCP search, removed unescaped auth
+  JSON fallback, amortized rate-limiter cleanup, counted dead-worker
+  drops, RFC 5761 muxed-RTCP recognition. CLI: corrected --help
+  headings, parse-time value validation, atomic symlink-safe config
+  writes, TOCTOU-hardened crash report dir.
+
 ## [0.5.34] - 2026-07-24
 
 ### Added

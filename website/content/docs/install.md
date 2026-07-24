@@ -40,7 +40,7 @@ Every [GitHub release](https://github.com/NormB/sipnab/releases) ships versioned
 - `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` — same, for arm64
 - `sipnab-<version>-x86_64-apple-darwin.tar.gz` / `sipnab-<version>-aarch64-apple-darwin.tar.gz` — macOS
 
-Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.34):
+Manual download with checksum verification (replace `<version>` with the latest, e.g. 0.5.35):
 
 ```bash
 V=<version> T=x86_64-unknown-linux-gnu
@@ -89,7 +89,7 @@ For build prerequisites, the full feature-flag matrix, release profile, and cros
 Download the `.deb` for your architecture from the [latest release](https://github.com/NormB/sipnab/releases/latest) and install it with `apt`, which resolves the `libpcap0.8` runtime dependency automatically:
 
 ```bash
-# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.34
+# amd64 (x86_64) -- replace <version> with the latest, e.g. 0.5.35
 curl -LO https://github.com/NormB/sipnab/releases/latest/download/sipnab_<version>_amd64.deb
 sudo apt install ./sipnab_<version>_amd64.deb
 
@@ -121,7 +121,7 @@ standard and a `-noaudio` variant (no audio plugin, no `alsa-lib` weak
 dependency — for headless servers, mirroring the `.deb` variants):
 
 ```bash
-sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.34
+sudo rpm -i sipnab-<version>-1.x86_64.rpm  # replace <version> with the latest, e.g. 0.5.35
 # headless / no-ALSA variant:
 sudo rpm -i sipnab-<version>-1.x86_64-noaudio.rpm
 # arm64 hosts:
@@ -179,7 +179,7 @@ sipnab -D
 <span class="terminal-title">Verify Installation</span>
 </div>
 <pre class="terminal-body"><span class="t-muted">$</span> sipnab --version
-sipnab 0.5.34 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
+sipnab 0.5.35 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http
 
 <span class="t-muted">$</span> sipnab -N -I demo.pcap | head -3
 <span class="t-accent">INVITE</span> alice -> bob  192.0.2.1:5060 -> 192.0.2.2:5060 <span class="t-good">InCall</span> PDD=847ms
