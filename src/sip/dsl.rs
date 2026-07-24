@@ -63,6 +63,11 @@ const REGEX_SIZE_LIMIT: usize = 1_000_000;
 pub struct FilterExpr {
     /// Root node of the parsed expression tree.
     root: Expr,
+    /// Whether the expression references any diagnosis-derived field.
+    /// Cached at parse time (via [`expr_references_diagnosis`]) so
+    /// [`FilterExpr::matches_dialog`] can skip the media/asymmetry
+    /// diagnosis entirely when no such field appears.
+    needs_diagnosis: bool,
 }
 
 impl std::fmt::Debug for FilterExpr {
@@ -160,6 +165,26 @@ enum Field {
     LateMedia,
 }
 
+impl Field {
+    /// Whether this field's value is read from the media/asymmetry
+    /// [`MediaDiagnosis`] (rather than the dialog or streams directly).
+    /// Drives the parse-time `needs_diagnosis` flag; keep in sync with the
+    /// diagnosis arms of `eval_compare`.
+    fn is_diagnosis(self) -> bool {
+        matches!(
+            self,
+            Field::OneWay
+                | Field::NatMismatch
+                | Field::NoMedia
+                | Field::CodecAsymmetry
+                | Field::PtimeAsymmetry
+                | Field::PayloadAsymmetry
+                | Field::DurationAsymmetry
+                | Field::LateMedia
+        )
+    }
+}
+
 /// Comparison operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operator {
@@ -190,6 +215,9 @@ enum Value {
     Bool(bool),
     /// Compiled regex from the string literal of an `=~` comparison.
     Re(regex::Regex),
+    /// Byte-oriented compiled regex for a `payload =~` comparison, matched
+    /// against the raw message bytes without a lossy UTF-8 copy.
+    ReBytes(regex::bytes::Regex),
 }
 
 // ── Diagnostic filter aliases ───────────────────────────────────────
@@ -232,6 +260,18 @@ pub fn expand_alias(alias: &str) -> Option<&'static str> {
     }
 }
 
+/// Whether any leaf comparison in the tree references a diagnosis-derived
+/// field. Walked once at parse time to cache `FilterExpr::needs_diagnosis`.
+fn expr_references_diagnosis(expr: &Expr) -> bool {
+    match expr {
+        Expr::And(lhs, rhs) | Expr::Or(lhs, rhs) => {
+            expr_references_diagnosis(lhs) || expr_references_diagnosis(rhs)
+        }
+        Expr::Not(inner) => expr_references_diagnosis(inner),
+        Expr::Compare(field, _, _) => field.is_diagnosis(),
+    }
+}
+
 // ── FilterExpr public API ───────────────────────────────────────────
 
 impl FilterExpr {
@@ -245,19 +285,22 @@ impl FilterExpr {
     /// `true` and `false` is unsatisfiable for every dialog.
     #[must_use]
     pub fn never() -> Self {
+        let root = Expr::And(
+            Box::new(Expr::Compare(
+                Field::OneWay,
+                Operator::Eq,
+                Value::Bool(true),
+            )),
+            Box::new(Expr::Compare(
+                Field::OneWay,
+                Operator::Eq,
+                Value::Bool(false),
+            )),
+        );
+        let needs_diagnosis = expr_references_diagnosis(&root);
         FilterExpr {
-            root: Expr::And(
-                Box::new(Expr::Compare(
-                    Field::OneWay,
-                    Operator::Eq,
-                    Value::Bool(true),
-                )),
-                Box::new(Expr::Compare(
-                    Field::OneWay,
-                    Operator::Eq,
-                    Value::Bool(false),
-                )),
-            ),
+            root,
+            needs_diagnosis,
         }
     }
 
@@ -308,7 +351,11 @@ impl FilterExpr {
             );
         }
 
-        Ok(FilterExpr { root: expr })
+        let needs_diagnosis = expr_references_diagnosis(&expr);
+        Ok(FilterExpr {
+            root: expr,
+            needs_diagnosis,
+        })
     }
 
     /// Evaluate this filter against a SIP dialog and its associated RTP streams.
@@ -320,8 +367,10 @@ impl FilterExpr {
     /// Boolean diagnosis fields (`one_way`, `nat_mismatch`, `no_media`) are
     /// computed from the associated streams via the diagnosis engine.
     ///
-    /// The media/asymmetry diagnosis runs on every call, even when the
-    /// expression references no diagnosis field.
+    /// The media/asymmetry diagnosis is skipped entirely when the expression
+    /// references no diagnosis field (detected at parse time and cached as
+    /// `needs_diagnosis`); the result is unchanged because no diagnosis value
+    /// is then read.
     ///
     /// # Arguments
     ///
@@ -333,13 +382,21 @@ impl FilterExpr {
     ///
     /// `true` when the dialog and its streams satisfy the expression.
     pub fn matches_dialog(&self, dialog: &SipDialog, streams: &[&RtpStream]) -> bool {
-        let mut diag = diagnosis::diagnose_media(streams, None);
-        diagnosis::diagnose_asymmetry(
-            &mut diag,
-            Some(dialog),
-            streams,
-            &diagnosis::AsymmetryThresholds::default(),
-        );
+        // Only run the media/asymmetry diagnosis when the expression actually
+        // reads a diagnosis field; otherwise a default (all-clear) diagnosis
+        // suffices and is never consulted.
+        let diag = if self.needs_diagnosis {
+            let mut diag = diagnosis::diagnose_media(streams, None);
+            diagnosis::diagnose_asymmetry(
+                &mut diag,
+                Some(dialog),
+                streams,
+                &diagnosis::AsymmetryThresholds::default(),
+            );
+            diag
+        } else {
+            MediaDiagnosis::default()
+        };
         eval_expr(&self.root, dialog, streams, &diag)
     }
 }
@@ -509,7 +566,7 @@ fn parse_comparison(input: &str) -> IResult<&str, Expr, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
     let (input, op) = parse_operator(input)?;
     let (input, _) = multispace0(input)?;
-    let (input, value) = parse_value(input, op)?;
+    let (input, value) = parse_value(input, field, op)?;
 
     Ok((input, Expr::Compare(field, op, value)))
 }
@@ -783,14 +840,70 @@ fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
     .parse(input)
 }
 
+/// Scan a quoted string body (everything after the opening `quote`),
+/// processing backslash escapes and returning the unescaped contents plus
+/// the remainder after the closing quote.
+///
+/// A backslash always escapes (consumes) the following character, so an
+/// escaped delimiter never terminates the string — this is what makes the
+/// delimiter char expressible. The delimiter escapes `\'` and `\"` collapse
+/// to the bare quote. Every other `\x` sequence — including `\\` — is kept
+/// verbatim (backslash and following char both emitted) so that regex
+/// metacharacters survive (`\d`, `\.`, `\x27`) and a literal backslash
+/// reaches the regex engine as `\\` (one literal backslash) — matching how
+/// callers pre-escape text with `regex::escape` before embedding it in a DSL
+/// string literal.
+///
+/// Because a backslash always consumes the next char, `\\` is an inseparable
+/// pair and cannot accidentally escape a trailing delimiter.
+///
+/// # Returns
+///
+/// `Some((unescaped, rest))` when a closing `quote` is found, else `None`
+/// for an unterminated string (including a trailing lone backslash).
+fn scan_quoted_string(body: &str, quote: char) -> Option<(String, &str)> {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.char_indices();
+    while let Some((i, c)) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                // Escaped delimiter → the bare quote character.
+                Some((_, q @ ('\'' | '"'))) => out.push(q),
+                // Any other escape (incl. `\\`, `\d`, `\.`) is preserved
+                // verbatim so regex syntax and literal backslashes survive.
+                Some((_, other)) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                // Trailing backslash with no following char → unterminated.
+                None => return None,
+            }
+        } else if c == quote {
+            return Some((out, &body[i + c.len_utf8()..]));
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
 /// Parse a value literal (string, number, or boolean).
 ///
 /// For the `=~` (regex) operator, the string value is compiled into a regex
-/// with a size limit of [`REGEX_SIZE_LIMIT`] bytes.
+/// with a size limit of [`REGEX_SIZE_LIMIT`] bytes. A regex against the
+/// `payload` field is compiled with the byte-oriented [`regex::bytes`]
+/// engine so it can match the raw message without a lossy UTF-8 copy.
+///
+/// Inside a quoted string, a backslash introduces an escape: `\'`, `\"`, and
+/// `\\` yield the literal quote/backslash so the delimiter char is
+/// expressible; any other `\x` sequence is kept verbatim (backslash and all)
+/// so regex metacharacters such as `\d` survive.
 ///
 /// # Arguments
 ///
 /// * `input` — Remaining expression text at the value position.
+/// * `field` — The field already parsed; selects the byte-regex path for
+///   `payload` regex comparisons.
 /// * `op` — The operator already parsed; decides whether a quoted string
 ///   is kept verbatim or compiled as a regex.
 ///
@@ -800,7 +913,7 @@ fn parse_operator(input: &str) -> IResult<&str, Operator, NomErr<'_>> {
 /// matched case-insensitively and only when not a prefix of a longer
 /// identifier; an unterminated string or an invalid/oversized regex
 /// yields a nom `Failure`; any other token must parse as an `f64`.
-fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
+fn parse_value(input: &str, field: Field, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
     let (input, _) = multispace0(input)?;
 
     // Try boolean literals first
@@ -829,14 +942,26 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
     if input.starts_with('\'') || input.starts_with('"') {
         let quote = input.as_bytes()[0] as char;
         let after_quote = &input[1..];
-        let end = after_quote.find(quote).ok_or_else(|| {
+        let (string_val, rest) = scan_quoted_string(after_quote, quote).ok_or_else(|| {
             nom::Err::Failure(nom::error::Error::new(input, nom::error::ErrorKind::Char))
         })?;
-        let string_val = &after_quote[..end];
-        let rest = &after_quote[end + 1..];
 
         if op == Operator::Regex {
-            let re = regex::RegexBuilder::new(string_val)
+            // `payload` greps the raw message bytes, so its regex is compiled
+            // with the byte engine to match without a lossy UTF-8 copy.
+            if field == Field::Payload {
+                let re = regex::bytes::RegexBuilder::new(&string_val)
+                    .size_limit(REGEX_SIZE_LIMIT)
+                    .build()
+                    .map_err(|_| {
+                        nom::Err::Failure(nom::error::Error::new(
+                            input,
+                            nom::error::ErrorKind::Verify,
+                        ))
+                    })?;
+                return Ok((rest, Value::ReBytes(re)));
+            }
+            let re = regex::RegexBuilder::new(&string_val)
                 .size_limit(REGEX_SIZE_LIMIT)
                 .build()
                 .map_err(|_| {
@@ -845,7 +970,7 @@ fn parse_value(input: &str, op: Operator) -> IResult<&str, Value, NomErr<'_>> {
             return Ok((rest, Value::Re(re)));
         }
 
-        return Ok((rest, Value::Str(string_val.to_string())));
+        return Ok((rest, Value::Str(string_val)));
     }
 
     // Try number
@@ -935,11 +1060,12 @@ fn eval_compare(
         }
         Field::CallId => compare_str(&dialog.call_id, op, value),
         // Any message in the dialog whose raw content matches (sngrep-style
-        // payload filter: greps the whole SIP message text).
+        // payload filter: greps the whole SIP message text). Matched on the
+        // raw bytes directly — no per-message lossy UTF-8 allocation.
         Field::Payload => dialog
             .messages
             .iter()
-            .any(|m| compare_str(&String::from_utf8_lossy(&m.raw), op, value)),
+            .any(|m| compare_bytes(&m.raw, op, value)),
         Field::SrcIp => compare_str(&dialog.src_addr.to_string(), op, value),
         Field::DstIp => compare_str(&dialog.dst_addr.to_string(), op, value),
         Field::State => {
@@ -947,20 +1073,18 @@ fn eval_compare(
             compare_str(state_str, op, value)
         }
         Field::RtpCodec => {
-            // Use the first stream's codec
-            let codec = streams
+            // Match if ANY linked stream's codec satisfies the comparison,
+            // consistent with the worst-across-streams quality fields.
+            streams
                 .iter()
-                .find_map(|s| s.codec.as_deref())
-                .unwrap_or("");
-            compare_str(codec, op, value)
+                .any(|s| compare_str(s.codec.as_deref().unwrap_or(""), op, value))
         }
         Field::RtpSsrc => {
-            // Format as hex for comparison
-            let ssrc = streams
-                .first()
-                .map(|s| format!("{:#010x}", s.key.ssrc))
-                .unwrap_or_default();
-            compare_str(&ssrc, op, value)
+            // Match if ANY linked stream's SSRC (0x-prefixed 10-char hex)
+            // satisfies the comparison.
+            streams
+                .iter()
+                .any(|s| compare_str(&format!("{:#010x}", s.key.ssrc), op, value))
         }
 
         // ── Numeric fields ─────────────────────────────────────────
@@ -1051,6 +1175,25 @@ fn compare_str(field_val: &str, op: &Operator, value: &Value) -> bool {
         (Operator::Le, Value::Str(s)) => field_val <= s.as_str(),
         (Operator::Ge, Value::Str(s)) => field_val >= s.as_str(),
         (Operator::Regex, Value::Re(re)) => re.is_match(field_val),
+        _ => false,
+    }
+}
+
+/// Compare a raw byte field value `field_val` (e.g. a whole SIP message)
+/// against the filter value without decoding it to a `String`.
+///
+/// Ordering/equality operators compare bytes lexicographically against the
+/// literal's UTF-8 bytes; `=~` requires the byte-regex value compiled for
+/// the `payload` field. Type mismatches return `false`.
+fn compare_bytes(field_val: &[u8], op: &Operator, value: &Value) -> bool {
+    match (op, value) {
+        (Operator::Eq, Value::Str(s)) => field_val == s.as_bytes(),
+        (Operator::Ne, Value::Str(s)) => field_val != s.as_bytes(),
+        (Operator::Lt, Value::Str(s)) => field_val < s.as_bytes(),
+        (Operator::Gt, Value::Str(s)) => field_val > s.as_bytes(),
+        (Operator::Le, Value::Str(s)) => field_val <= s.as_bytes(),
+        (Operator::Ge, Value::Str(s)) => field_val >= s.as_bytes(),
+        (Operator::Regex, Value::ReBytes(re)) => re.is_match(field_val),
         _ => false,
     }
 }
@@ -1271,6 +1414,99 @@ mod tests {
         // panic (raw bytes are lossily decoded).
         let f = FilterExpr::parse("payload == 'x'").expect("should parse");
         assert!(!f.matches_dialog(&dialog, &[]));
+    }
+
+    /// Build a dialog whose sole INVITE carries `body` verbatim (so
+    /// `payload` sees those exact bytes, valid UTF-8 or not).
+    fn make_dialog_with_body(body: &[u8]) -> SipDialog {
+        let raw = build_sip(
+            "INVITE sip:2002@example.com SIP/2.0",
+            &[
+                "From: <sip:1001@example.com>;tag=t1",
+                "To: <sip:2002@example.com>",
+                "Call-ID: test-call-id@example.com",
+                "CSeq: 1 INVITE",
+                "User-Agent: TestUA/1.0",
+                &format!("Content-Length: {}", body.len()),
+            ],
+            body,
+        );
+        let msg = parse_sip(
+            &raw,
+            base_ts(),
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .expect("should parse");
+        SipDialog::new(&msg).expect("should create dialog")
+    }
+
+    /// Item 1: quoted strings support backslash escapes so the delimiter
+    /// char becomes expressible (`\'`, `\"`). Other backslash sequences —
+    /// including `\\` and regex classes like `\d` — are preserved verbatim so
+    /// regex syntax and pre-escaped literals still reach the engine. The old
+    /// tokenizer had no escape mechanism, so a quoted delimiter was
+    /// impossible to write.
+    #[test]
+    fn escaped_quotes_and_backslash_in_strings() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+
+        // `\'` lets a single-quoted literal contain its own delimiter — the
+        // whole point of item 1. The old tokenizer stopped at the first `'`.
+        let f = FilterExpr::parse(r"from.user == 'a\'b'").expect("should parse");
+        match &f.root {
+            Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, "a'b"),
+            other => panic!("expected string compare, got {other:?}"),
+        }
+
+        // `\"` likewise inside a double-quoted literal.
+        let f = FilterExpr::parse(r#"to.user == "x\"y""#).expect("should parse");
+        match &f.root {
+            Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, "x\"y"),
+            other => panic!("expected string compare, got {other:?}"),
+        }
+
+        // Regex classes survive: `\d` is kept verbatim, so a 4-digit user
+        // matches. The escaped `\'` here proves the delimiter is expressible
+        // inside a regex too (matches nothing, but must parse).
+        let f = FilterExpr::parse(r"from.user =~ '^\d\d\d\d$'").expect("should parse");
+        assert!(f.matches_dialog(&dialog, &[])); // from.user == "1001"
+
+        // `\\` is preserved as two characters, so the regex engine sees one
+        // literal backslash. This keeps `regex::escape`-produced text (e.g.
+        // the TUI filter builder, which emits `\\` for a literal backslash)
+        // matching literally rather than turning into an invalid trailing
+        // backslash.
+        let f = FilterExpr::parse(r"from.user == 'a\\b'").expect("should parse");
+        match &f.root {
+            Expr::Compare(_, _, Value::Str(s)) => assert_eq!(s, r"a\\b"),
+            other => panic!("expected string compare, got {other:?}"),
+        }
+    }
+
+    /// Item 4: `payload =~` matches against the raw message bytes, not a
+    /// lossy UTF-8 rendering. A message carrying a raw `0xFF` byte must NOT
+    /// satisfy a search for the Unicode replacement character U+FFFD — the
+    /// byte is not that character. The old `String::from_utf8_lossy` path
+    /// fabricated a match by rewriting `0xFF` to U+FFFD.
+    #[test]
+    fn payload_matches_raw_bytes_not_lossy_replacement() {
+        let dialog = make_dialog_with_body(&[0xFF]);
+
+        // U+FFFD is absent from the true bytes → no match.
+        let f = FilterExpr::parse(r"payload =~ '\x{FFFD}'").expect("should parse");
+        assert!(!f.matches_dialog(&dialog, &[]));
+
+        // ASCII content around the invalid byte still greps fine and never
+        // panics on the non-UTF-8 message.
+        let dialog2 = make_dialog_with_body(b"MARK\xffER");
+        let f = FilterExpr::parse("payload =~ 'MARK'").expect("should parse");
+        assert!(f.matches_dialog(&dialog2, &[]));
+        let f = FilterExpr::parse("payload == 'nope'").expect("should parse");
+        assert!(!f.matches_dialog(&dialog2, &[]));
     }
 
     /// `from.user ==` rejects a dialog with a different From user.
@@ -2194,7 +2430,7 @@ mod tests {
         assert!(loss_filter.matches_dialog(&dialog, &streams));
     }
 
-    /// rtp.codec matches the first stream codec; rtp.ssrc matches the
+    /// rtp.codec matches a stream's codec; rtp.ssrc matches the
     /// 0x-prefixed lowercase hex rendering.
     #[test]
     fn rtp_codec_and_ssrc_string_fields() {
@@ -2209,6 +2445,85 @@ mod tests {
         // SSRC is rendered as 0x-prefixed 10-char hex of 0xDEADBEEF.
         let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0xdeadbeef'").expect("parse");
         assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+    }
+
+    /// Item 3: the parse-time `needs_diagnosis` flag is set iff the
+    /// expression references a diagnosis-derived field, so `matches_dialog`
+    /// can skip the media/asymmetry diagnosis when none appears.
+    #[test]
+    fn needs_diagnosis_flag_reflects_field_use() {
+        // No diagnosis field → flag clear.
+        assert!(
+            !FilterExpr::parse("from.user == '1001'")
+                .unwrap()
+                .needs_diagnosis
+        );
+        assert!(
+            !FilterExpr::parse("rtp.mos < 3.0 AND rtp.orphaned == true")
+                .unwrap()
+                .needs_diagnosis
+        );
+
+        // Each diagnosis field trips the flag.
+        for field in [
+            "one_way",
+            "nat_mismatch",
+            "no_media",
+            "codec_asymmetry",
+            "ptime_asymmetry",
+            "payload_asymmetry",
+            "duration_asymmetry",
+            "late_media",
+        ] {
+            let expr = format!("{field} == true");
+            assert!(
+                FilterExpr::parse(&expr).unwrap().needs_diagnosis,
+                "{field} must set needs_diagnosis"
+            );
+        }
+
+        // Nested under boolean combinators still trips it.
+        assert!(
+            FilterExpr::parse("method == 'INVITE' AND (state == 'InCall' OR late_media == true)")
+                .unwrap()
+                .needs_diagnosis
+        );
+
+        // A filter without diagnosis fields evaluates the same whether or not
+        // streams are present (the skipped diagnosis changes nothing).
+        let dialog = make_dialog("1001", "2002", "INVITE");
+        let f = FilterExpr::parse("from.user == '1001'").unwrap();
+        assert!(f.matches_dialog(&dialog, &[]));
+    }
+
+    /// Item 2: `rtp.codec` / `rtp.ssrc` match if ANY linked stream matches,
+    /// consistent with the worst-across-streams quality fields. A codec or
+    /// SSRC carried only by the *second* stream must still match. The old
+    /// code inspected only the first stream and missed these.
+    #[test]
+    fn rtp_codec_and_ssrc_match_any_stream() {
+        let dialog = make_dialog("1001", "2002", "INVITE");
+
+        // Two streams: first PCMU (SSRC 0xDEADBEEF), second G722 with a
+        // distinct SSRC.
+        let mut first = make_rtp_stream(false);
+        first.codec = Some("PCMU".to_string());
+        let mut second = make_rtp_stream(false);
+        second.codec = Some("G722".to_string());
+        second.key.ssrc = 0x0000_0001;
+        let streams: Vec<&RtpStream> = vec![&first, &second];
+
+        // Codec carried only by the second stream matches.
+        let codec_filter = FilterExpr::parse("rtp.codec == 'G722'").expect("parse");
+        assert!(codec_filter.matches_dialog(&dialog, &streams));
+
+        // SSRC carried only by the second stream matches.
+        let ssrc_filter = FilterExpr::parse("rtp.ssrc == '0x00000001'").expect("parse");
+        assert!(ssrc_filter.matches_dialog(&dialog, &streams));
+
+        // A codec present on no stream still does not match.
+        let miss = FilterExpr::parse("rtp.codec == 'opus'").expect("parse");
+        assert!(!miss.matches_dialog(&dialog, &streams));
     }
 }
 

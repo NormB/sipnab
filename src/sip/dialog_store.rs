@@ -110,6 +110,11 @@ pub struct DialogStore {
     /// (DialogStore::compact_idle) — observability for long-run memory
     /// behaviour.
     idle_messages_evicted: u64,
+    /// Lifetime count of NEW dialogs dropped because the store was at
+    /// capacity with `rotate` disabled — the observability sibling of
+    /// `idle_messages_evicted`. In rotate mode nothing is dropped (the
+    /// oldest is evicted instead), so this stays zero there.
+    capacity_dialogs_dropped: u64,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
     /// Header names used for B2BUA leg correlation (sngrep `sip.xcid`). A
@@ -165,6 +170,7 @@ impl DialogStore {
             max_dialogs,
             rotate,
             idle_messages_evicted: 0,
+            capacity_dialogs_dropped: 0,
             generation: 0,
             xcid_headers: vec!["X-Call-ID".to_string()],
         }
@@ -244,6 +250,17 @@ impl DialogStore {
         self.idle_messages_evicted
     }
 
+    /// Lifetime count of new dialogs dropped at capacity in no-rotate mode.
+    ///
+    /// The counterpart to [`DialogStore::total_idle_messages_evicted`] for
+    /// the other way the store sheds data: when `rotate` is disabled and a
+    /// message for an unknown Call-ID arrives at capacity, the dialog is
+    /// dropped rather than created. Zero in rotate mode (the oldest is
+    /// evicted instead).
+    pub fn total_capacity_dialogs_dropped(&self) -> u64 {
+        self.capacity_dialogs_dropped
+    }
+
     /// Process an incoming SIP message.
     ///
     /// This is the main entry point. It:
@@ -270,8 +287,8 @@ impl DialogStore {
     /// metadata, message list, `updated_at`) or inserts a new dialog —
     /// possibly evicting the oldest batch first when at capacity with
     /// `rotate` enabled. At capacity without `rotate`, messages for
-    /// unknown Call-IDs are dropped; updates to existing dialogs still
-    /// land.
+    /// unknown Call-IDs are dropped (bumping the capacity-drop counter);
+    /// updates to existing dialogs still land.
     pub fn process_message(&mut self, mut msg: SipMessage) {
         self.generation += 1;
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -359,6 +376,9 @@ impl DialogStore {
                 if self.rotate {
                     self.evict_oldest();
                 } else {
+                    // Full and not rotating: this new Call-ID is dropped.
+                    // Count it — the observability sibling of idle eviction.
+                    self.capacity_dialogs_dropped += 1;
                     return;
                 }
             }
@@ -415,23 +435,43 @@ impl DialogStore {
     ///
     /// * `other` — The worker store to fold in (consumed).
     ///
+    /// On a same-Call-ID collision the reconstruction with more messages
+    /// becomes the message base, but the losing copy's non-message state is
+    /// *unioned* in rather than discarded (see `union_dialog_state`): the
+    /// two workers saw disjoint host-pair legs of the same call, so each
+    /// holds retransmit counts, seen-CSeq identities, and timing milestones
+    /// the other lacks.
+    ///
     /// # Side effects
     ///
-    /// Inserts `other`'s dialogs into `self` (replacing a same-Call-ID
-    /// dialog only when `other`'s copy has strictly more messages),
-    /// accumulates `other`'s lifetime idle-eviction counter, and bumps the
-    /// generation counter.
+    /// Inserts `other`'s distinct-Call-ID dialogs into `self`; on a
+    /// collision keeps the more complete reconstruction's messages and folds
+    /// the loser's seen-CSeq set, retransmit counts, and timing milestones
+    /// into it; accumulates `other`'s lifetime idle-eviction and
+    /// capacity-drop counters; and bumps the generation counter.
     pub fn merge(&mut self, other: DialogStore) {
         self.generation += 1;
         for (cid, dialog) in other.dialogs {
-            match self.dialogs.get(&cid) {
-                Some(existing) if existing.messages.len() >= dialog.messages.len() => {}
-                _ => {
+            match self.dialogs.get_index_of(&cid) {
+                Some(idx) => {
+                    // Collision: union state, keeping the reconstruction with
+                    // more messages as the base.
+                    let existing = &mut self.dialogs[idx];
+                    if existing.messages.len() >= dialog.messages.len() {
+                        union_dialog_state(existing, &dialog);
+                    } else {
+                        let mut winner = dialog;
+                        union_dialog_state(&mut winner, existing);
+                        *existing = winner;
+                    }
+                }
+                None => {
                     self.dialogs.insert(cid, dialog);
                 }
             }
         }
         self.idle_messages_evicted += other.idle_messages_evicted;
+        self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
     }
 
     /// Return the total number of tracked dialogs.
@@ -517,8 +557,9 @@ impl DialogStore {
         };
 
         // Strategy 1 data: correlation-header values from the source dialog,
-        // across every configured xcid header name.
-        let x_call_ids: Vec<&str> = dialog
+        // across every configured xcid header name. A set gives O(1)
+        // membership per candidate instead of a linear scan.
+        let x_call_ids: std::collections::HashSet<&str> = dialog
             .messages
             .iter()
             .flat_map(|m| self.xcid_headers.iter().filter_map(move |h| m.header(h)))
@@ -545,7 +586,7 @@ impl DialogStore {
             }
 
             // Strategy 1: correlation-header match (score=100)
-            let xcid_match = x_call_ids.iter().any(|&xid| xid == candidate.call_id)
+            let xcid_match = x_call_ids.contains(candidate.call_id.as_str())
                 || candidate.messages.iter().any(|m| {
                     self.xcid_headers
                         .iter()
@@ -561,17 +602,17 @@ impl DialogStore {
                 continue;
             }
 
-            // Strategy 2: Via branch overlap (score=80)
+            // Strategy 2: Via branch overlap (score=80). Scan the candidate's
+            // INVITE branches directly, short-circuiting on the first hit —
+            // no per-candidate Vec allocation.
             if !src_branches.is_empty() {
-                let candidate_branches: Vec<&str> = candidate
+                let branch_overlap = candidate
                     .messages
                     .iter()
                     .filter(|m| m.is_request && m.method.as_ref() == Some(&SipMethod::Invite))
                     .flat_map(|m| m.via_headers())
                     .filter_map(|v| extract_via_branch(v))
-                    .collect();
-
-                let branch_overlap = candidate_branches.iter().any(|b| src_branches.contains(b));
+                    .any(|b| src_branches.contains(b));
 
                 if branch_overlap {
                     results.push(CorrelationResult {
@@ -641,6 +682,76 @@ impl DialogStore {
         let batch = (self.max_dialogs / 100).max(1).min(self.dialogs.len());
         self.dialogs.drain(0..batch);
     }
+}
+
+/// Fold the losing reconstruction's non-message state into the `winner`
+/// on a same-Call-ID merge collision.
+///
+/// The two copies are disjoint host-pair observations of the same call, so
+/// their state is combined, never one dropped:
+///
+/// * **seen-CSeq set** — set union (deduped by the `HashSet`), bounded by
+///   [`MAX_SEEN_CSEQ_PER_DIALOG`](crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG)
+///   so the union cannot exceed the per-dialog cap.
+/// * **retransmit counts** — summed per `"CSeq METHOD"` key: each worker
+///   counted retransmissions on its own leg, so the totals add.
+/// * **timing milestones** (`invite_sent`, `trying_at`, `ringing_at`,
+///   `answered_at`, `bye_sent`, `bye_answered`, `refer_sent_at`,
+///   `transfer_completed_at`) — earliest non-`None` wins: each records the
+///   *first* time that event was seen, so the true first is the earlier of
+///   the two observations.
+/// * **`invite_cseq`** — keep the winner's if set, otherwise adopt the
+///   loser's (it pins responses to the initial INVITE; either copy's value
+///   identifies the same transaction).
+/// * **`created_at`** — earliest (dialog began at the earlier sighting);
+///   **`updated_at`** — latest (most recent activity across both legs).
+fn union_dialog_state(winner: &mut SipDialog, loser: &SipDialog) {
+    // seen-CSeq set union, respecting the per-dialog cap.
+    for key in &loser.seen_cseq {
+        if winner.seen_cseq.contains(key) {
+            continue;
+        }
+        if winner.seen_cseq.len() >= crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG {
+            break;
+        }
+        winner.seen_cseq.insert(key.clone());
+    }
+
+    // Retransmit counts: sum per transaction key.
+    for (key, count) in &loser.timing.retransmit_counts {
+        *winner
+            .timing
+            .retransmit_counts
+            .entry(key.clone())
+            .or_insert(0) += count;
+    }
+
+    // Timing milestones: the earliest observation of each event survives.
+    fn take_earliest(
+        dst: &mut Option<chrono::DateTime<chrono::Utc>>,
+        src: Option<chrono::DateTime<chrono::Utc>>,
+    ) {
+        *dst = match (*dst, src) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+    }
+    take_earliest(&mut winner.timing.invite_sent, loser.timing.invite_sent);
+    take_earliest(&mut winner.timing.trying_at, loser.timing.trying_at);
+    take_earliest(&mut winner.timing.ringing_at, loser.timing.ringing_at);
+    take_earliest(&mut winner.timing.answered_at, loser.timing.answered_at);
+    take_earliest(&mut winner.timing.bye_sent, loser.timing.bye_sent);
+    take_earliest(&mut winner.timing.bye_answered, loser.timing.bye_answered);
+    take_earliest(&mut winner.timing.refer_sent_at, loser.timing.refer_sent_at);
+    take_earliest(
+        &mut winner.timing.transfer_completed_at,
+        loser.timing.transfer_completed_at,
+    );
+    winner.timing.invite_cseq = winner.timing.invite_cseq.or(loser.timing.invite_cseq);
+
+    // Dialog lifetime bounds: earliest start, latest activity.
+    winner.created_at = winner.created_at.min(loser.created_at);
+    winner.updated_at = winner.updated_at.max(loser.updated_at);
 }
 
 /// Extract the `branch=` parameter value from a Via header value
@@ -726,6 +837,74 @@ mod tests {
         );
     }
 
+    /// A same-Call-ID merge collision unions the losing reconstruction's
+    /// state into the winner instead of discarding it: seen-CSeq set union,
+    /// retransmit counts summed, timing milestones taken as the earliest
+    /// observation, `created_at` earliest / `updated_at` latest.
+    #[test]
+    fn merge_unions_collision_state_not_just_messages() {
+        let t0 = base_ts();
+        let t1 = t0 + TimeDelta::seconds(1);
+        let t5 = t0 + TimeDelta::seconds(5);
+        let t6 = t0 + TimeDelta::seconds(6);
+
+        // Winner: more messages (INVITE + 3 retransmissions), no answer/BYE.
+        let mut a = DialogStore::new(1000, true);
+        a.process_message(make_invite_msg("call-x@h", t0));
+        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
+        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
+        a.process_message(make_invite_msg("call-x@h", t0)); // retransmit
+        assert_eq!(a.get("call-x@h").unwrap().timing.total_retransmits(), 3);
+
+        // Loser: fewer messages but distinct state — later INVITE start, one
+        // retransmit, an answer and a BYE the winner never saw.
+        let mut b = DialogStore::new(1000, true);
+        b.process_message(make_invite_msg("call-x@h", t1));
+        b.process_message(make_invite_msg("call-x@h", t1)); // retransmit
+        b.process_message(make_200_ok("call-x@h", t5));
+        b.process_message(make_bye_msg("call-x@h", t6));
+        assert_eq!(b.get("call-x@h").unwrap().timing.total_retransmits(), 1);
+
+        a.merge(b);
+        assert_eq!(a.len(), 1, "same Call-ID stays a single dialog");
+        let d = a.get("call-x@h").unwrap();
+
+        // Retransmit counts are summed across both reconstructions.
+        assert_eq!(
+            d.timing.total_retransmits(),
+            4,
+            "retransmit counts unioned (summed), not dropped"
+        );
+        // Timing milestones: earliest non-None wins.
+        assert_eq!(
+            d.timing.invite_sent,
+            Some(t0),
+            "earliest INVITE timestamp survives"
+        );
+        assert_eq!(
+            d.timing.answered_at,
+            Some(t5),
+            "answer milestone adopted from the losing reconstruction"
+        );
+        assert_eq!(
+            d.timing.bye_sent,
+            Some(t6),
+            "BYE milestone adopted from the losing reconstruction"
+        );
+        // created_at earliest, updated_at latest.
+        assert_eq!(d.created_at, t0, "created_at is the earliest of the two");
+        assert_eq!(d.updated_at, t6, "updated_at is the latest of the two");
+        // seen-CSeq set union: the loser's 200-OK and BYE identities are folded in.
+        assert!(
+            d.seen_cseq.iter().any(|k| k.contains("2 BYE")),
+            "loser's BYE seen-CSeq identity unioned in"
+        );
+        assert!(
+            d.seen_cseq.iter().any(|k| k.starts_with("r200")),
+            "loser's 200-OK seen-CSeq identity unioned in"
+        );
+    }
+
     /// Build and parse a minimal INVITE (CSeq 1) for `call_id` at `ts`.
     fn make_invite_msg(call_id: &str, ts: DateTime<Utc>) -> SipMessage {
         let raw = build_sip(
@@ -768,6 +947,45 @@ mod tests {
             d.messages.len(),
             2,
             "200 OK for an existing dialog must be stored even at capacity"
+        );
+    }
+
+    /// In no-rotate mode, new Call-IDs arriving at capacity are dropped;
+    /// each drop is counted (the observability sibling of idle eviction).
+    /// Updates to existing dialogs are not drops, and the counter is
+    /// accumulated across a merge.
+    #[test]
+    fn capacity_drops_counted_in_no_rotate_mode() {
+        let mut store = DialogStore::new(2, false);
+        store.process_message(make_invite_msg("cap-1", base_ts()));
+        store.process_message(make_invite_msg("cap-2", base_ts()));
+        assert_eq!(store.len(), 2);
+        assert_eq!(store.total_capacity_dialogs_dropped(), 0);
+
+        // New Call-IDs at capacity are dropped and counted.
+        store.process_message(make_invite_msg("cap-3", base_ts()));
+        store.process_message(make_invite_msg("cap-4", base_ts()));
+        assert_eq!(store.len(), 2, "no-rotate store stays at cap");
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            2,
+            "each dropped new Call-ID is counted"
+        );
+
+        // Updates to existing dialogs are not capacity drops.
+        store.process_message(make_200_ok("cap-1", base_ts()));
+        assert_eq!(store.total_capacity_dialogs_dropped(), 2);
+
+        // Merge accumulates the counter, mirroring idle-eviction plumbing.
+        let mut other = DialogStore::new(1, false);
+        other.process_message(make_invite_msg("m-1", base_ts()));
+        other.process_message(make_invite_msg("m-2", base_ts())); // dropped
+        assert_eq!(other.total_capacity_dialogs_dropped(), 1);
+        store.merge(other);
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            3,
+            "merge folds in the other store's capacity-drop count"
         );
     }
 

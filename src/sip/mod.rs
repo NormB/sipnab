@@ -76,10 +76,11 @@ pub fn is_sip_message(data: &[u8]) -> bool {
     // Request: starts with a known method followed by SP
     for method in SIP_METHODS {
         if data.len() > method.len() && data.starts_with(method) && data[method.len()] == b' ' {
-            // Verify "SIP/2.0" appears in the first line
+            // Verify the SP-anchored " SIP/2.0" version token ends the first
+            // line — anchoring on the leading SP rejects a glued `...ASIP/2.0`.
             if let Some(line_end) = find_crlf(data) {
                 let first_line = &data[..line_end];
-                if first_line.ends_with(b"SIP/2.0") {
+                if first_line.ends_with(b" SIP/2.0") {
                     return true;
                 }
             }
@@ -146,5 +147,12 @@ mod tests {
         assert!(!is_sip_message(&[
             0xFF, 0xFE, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05
         ]));
+    }
+
+    /// The version token must be SP-anchored: `ASIP/2.0` glued onto the URI
+    /// (matched only by an unanchored `ends_with`) must not be sniffed as SIP.
+    #[test]
+    fn reject_unanchored_version_token() {
+        assert!(!is_sip_message(b"INVITE sip:alice ASIP/2.0\r\n\r\n"));
     }
 }

@@ -182,24 +182,30 @@ impl SipDialog {
     /// the call was *only* ever challenged (never authenticated), in which case
     /// the challenge is the outcome.
     pub fn final_status_code(&self) -> Option<u16> {
-        let invite_finals: Vec<u16> = self
-            .messages
-            .iter()
-            .filter(|m| !m.is_request)
-            .filter(|m| {
-                m.cseq()
-                    .map(|(_, method)| method == "INVITE")
-                    .unwrap_or(false)
-            })
-            .filter_map(|m| m.status_code)
-            .filter(|&code| code >= 200)
-            .collect();
-        invite_finals
-            .iter()
-            .copied()
-            .filter(|&code| code != 401 && code != 407)
-            .max()
-            .or_else(|| invite_finals.iter().copied().max())
+        // Single scan, no intermediate Vec: track the max final INVITE code
+        // both excluding and including the 401/407 auth challenges. The
+        // non-auth max is the answer when any non-challenge final exists;
+        // otherwise (challenged but never authenticated) the challenge itself
+        // is the outcome.
+        let mut max_non_auth: Option<u16> = None;
+        let mut max_any: Option<u16> = None;
+        for m in &self.messages {
+            if m.is_request {
+                continue;
+            }
+            if m.cseq().map(|(_, method)| method) != Some("INVITE") {
+                continue;
+            }
+            let Some(code) = m.status_code else { continue };
+            if code < 200 {
+                continue;
+            }
+            max_any = max_any.max(Some(code));
+            if code != 401 && code != 407 {
+                max_non_auth = max_non_auth.max(Some(code));
+            }
+        }
+        max_non_auth.or(max_any)
     }
 
     /// Create a new dialog from the first message in a conversation.

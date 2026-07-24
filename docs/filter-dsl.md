@@ -32,8 +32,8 @@ All 31 addressable fields, organized by type.
 | `src.ip` | Source IP address (first message) | `"192.0.2.1"` |
 | `dst.ip` | Destination IP address (first message) | `"192.0.2.2"` |
 | `state` | Dialog state machine value | `"Trying"`, `"InCall"`, `"Failed"` |
-| `rtp.codec` | RTP codec name (first stream) | `"PCMU"`, `"opus"` |
-| `rtp.ssrc` | RTP SSRC in hex format (first stream) | `"0x12345678"` |
+| `rtp.codec` | RTP codec name (matches if ANY linked stream matches) | `"PCMU"`, `"opus"` |
+| `rtp.ssrc` | RTP SSRC in hex format (matches if ANY linked stream matches) | `"0x12345678"` |
 
 **Valid `state` values:** `Trying`, `Ringing`, `InCall`, `Completed`, `Cancelled`, `Failed`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`
 
@@ -99,6 +99,13 @@ Notes:
 | Number | Numeric (f64) | `3.0`, `100`, `0.5` |
 | `true` / `false` | Boolean (case-insensitive) | `true`, `FALSE` |
 | `'...'` with `=~` | Regex | `'friendly.*scanner'`, `'^1001'` |
+
+Inside a quoted string a backslash escapes the next character, so the
+delimiter itself is expressible: `\'` and `\"` yield a literal quote
+(`'it\'s'`, `"say \"hi\""`). Every other `\x` sequence — including `\\` — is
+kept verbatim (the backslash is preserved), so regex metacharacters and
+classes still reach the engine unchanged (`from.user =~ '\d\d\d\d'`,
+`payload =~ 'example\.com'`, and `'\\'` for a literal backslash in a regex).
 
 ## Boolean Combinators
 
