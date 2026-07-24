@@ -394,7 +394,10 @@ impl RateLimiter {
 /// Per-destination IP rate limiter to prevent amplification attacks.
 ///
 /// Limits the number of responses to any single destination IP to
-/// `MAX_PER_DST_PER_MINUTE` within a sliding one-minute window.
+/// `MAX_PER_DST_PER_MINUTE` within a fixed (tumbling) one-minute window: the
+/// per-IP counter and window start are reset the first time `allow` is called
+/// 60s or more after the window began, not continuously as a sliding window
+/// would.
 struct PerDstRateLimiter {
     /// Map of destination IP to (window start, count).
     buckets: HashMap<IpAddr, (Instant, u32)>,

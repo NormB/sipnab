@@ -232,43 +232,16 @@ pub fn build_router(state: ApiState) -> Router {
 /// reason string) when the input is neither a bare port, a `:port`
 /// shorthand, nor a valid `addr:port` pair.
 pub fn parse_bind_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
-    parse_bind_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
-        input: addr.to_string(),
-        reason,
-    })
-}
-
-/// Inner parser for `parse_bind_addr`: tries bare-port, `:port` shorthand,
-/// then full `addr:port`, returning a plain reason string on failure so the
-/// public wrapper can attach the original input.
-fn parse_bind_addr_inner(addr: &str) -> Result<SocketAddr, String> {
-    // Just a port number
-    if let Ok(port) = addr.parse::<u16>() {
-        return Ok(SocketAddr::new(
-            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            port,
-        ));
-    }
-
-    // ":port" shorthand
-    if let Some(stripped) = addr.strip_prefix(':')
-        && let Ok(port) = stripped.parse::<u16>()
-    {
-        return Ok(SocketAddr::new(
-            IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            port,
-        ));
-    }
-
-    // Full addr:port
-    addr.parse::<SocketAddr>()
-        .map_err(|e| format!("invalid bind address '{addr}': {e}"))
+    output::parse_listen_addr(addr, "bind address")
 }
 
 /// Configuration for the API server.
 #[derive(Debug, Clone, Default)]
 pub struct ApiServerConfig {
-    /// Maximum concurrent connections (0 = unlimited).
+    /// Maximum concurrently in-flight requests (0 = unlimited). Named for the
+    /// `--api-max-conn` CLI flag, but `serve_on` holds the permit for the
+    /// lifetime of a request, so it caps in-flight requests, not open TCP
+    /// connections.
     pub max_conn: u32,
     /// TLS certificate file path.
     pub tls_cert: Option<String>,
@@ -370,8 +343,11 @@ pub fn prepare_listener(
 ///
 /// * `listener` — Bound, non-blocking listener to serve on.
 /// * `state` — Shared stores, verifier, and rate limiter.
-/// * `server_config` — `max_conn > 0` adds a semaphore middleware that
-///   answers 503 once that many requests are in flight.
+/// * `server_config` — `max_conn > 0` adds a semaphore middleware that caps
+///   concurrently in-flight requests, answering 503 once that many are being
+///   handled at once. Despite the `max_conn` name, the permit is held for the
+///   duration of a request (not a TCP connection), so it bounds in-flight
+///   requests, not open connections.
 ///
 /// # Errors
 ///
@@ -387,16 +363,18 @@ pub async fn serve_on(
     state: ApiState,
     server_config: ApiServerConfig,
 ) -> Result<(), crate::Error> {
-    let max_conn = server_config.max_conn;
+    let max_inflight = server_config.max_conn;
     let router = build_router(state);
 
-    // Wrap with connection limiter if max_conn > 0
-    let router = if max_conn > 0 {
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(max_conn as usize));
-        tracing::info!("API server max concurrent connections: {}", max_conn);
+    // Wrap with an in-flight-request limiter if the cap is enabled. The
+    // semaphore permit is held for the whole request, so it bounds requests
+    // in flight, not open TCP connections.
+    let router = if max_inflight > 0 {
+        let inflight_limiter = Arc::new(tokio::sync::Semaphore::new(max_inflight as usize));
+        tracing::info!("API server max in-flight requests: {}", max_inflight);
         router.layer(axum::middleware::from_fn(
             move |req: axum::extract::Request, next: axum::middleware::Next| {
-                let sem = Arc::clone(&semaphore);
+                let sem = Arc::clone(&inflight_limiter);
                 async move {
                     let _permit = match sem.try_acquire() {
                         Ok(p) => p,

@@ -734,7 +734,7 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
     }
     #[cfg(any(feature = "api", feature = "mcp"))]
     {
-        match mint_token_and_exit(cli) {
+        match mint_token(cli) {
             Ok(token) => {
                 println!("{token}");
                 Some(0)
@@ -1032,11 +1032,10 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
 
 // ── Auth / token helpers ───────────────────────────────────────────
 
-#[cfg(any(feature = "api", feature = "mcp"))]
 /// Mint a signed token from the CLI configuration and return it. Picks the
 /// surface (API vs MCP) based on which signing keys are configured
-/// (API keys preferred). Despite the name it does not exit — the caller
-/// (`run_mint_token`) turns the result into an exit code.
+/// (API keys preferred). The caller (`run_mint_token`) prints the token and
+/// turns the result into an exit code.
 ///
 /// # Errors
 ///
@@ -1049,7 +1048,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
 /// (and exit the process when one is unreadable — see
 /// `crate::app::servers::read_signing_key_file`).
 #[cfg(any(feature = "api", feature = "mcp"))]
-fn mint_token_and_exit(cli: &Cli) -> Result<String, String> {
+fn mint_token(cli: &Cli) -> Result<String, String> {
     // Gather the first signing key + TTL, preferring API config, then MCP.
     #[allow(unused_mut)]
     let mut first_key: Option<Vec<u8>> = None;

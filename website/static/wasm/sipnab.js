@@ -268,6 +268,12 @@ export class SipnabSession {
     /**
      * Create an empty analysis session (the `new SipnabSession()` the
      * analyze page calls before loading a capture).
+     *
+     * No `Default` impl is provided on purpose: this is the wasm-bindgen JS
+     * constructor, exported only to the browser, and nothing on the Rust side
+     * constructs a session — a `Default` would be unreachable dead code on the
+     * wasm target. It also installs the panic hook as a side effect, which
+     * does not belong behind the `Default::default()` contract.
      */
     constructor() {
         const ret = wasm.sipnabsession_new();

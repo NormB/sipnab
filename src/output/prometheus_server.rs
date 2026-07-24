@@ -12,7 +12,7 @@
 //! Basic auth protects non-loopback binds.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -406,31 +406,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Returns `crate::Error::InvalidBindAddr` (carrying the input and a
 /// reason string) when no form parses.
 pub fn parse_metrics_addr(addr: &str) -> Result<SocketAddr, crate::Error> {
-    parse_metrics_addr_inner(addr).map_err(|reason| crate::Error::InvalidBindAddr {
-        input: addr.to_string(),
-        reason,
-    })
-}
-
-/// Inner parser for `parse_metrics_addr`: tries bare-port, `:port`
-/// shorthand, then full `addr:port`, returning a plain reason string on
-/// failure so the public wrapper can attach the original input.
-fn parse_metrics_addr_inner(addr: &str) -> Result<SocketAddr, String> {
-    // Just a port number
-    if let Ok(port) = addr.parse::<u16>() {
-        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
-    }
-
-    // ":port" shorthand
-    if let Some(stripped) = addr.strip_prefix(':')
-        && let Ok(port) = stripped.parse::<u16>()
-    {
-        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
-    }
-
-    // Full addr:port
-    addr.parse::<SocketAddr>()
-        .map_err(|e| format!("invalid metrics bind address '{addr}': {e}"))
+    crate::output::parse_listen_addr(addr, "metrics bind address")
 }
 
 /// Collect current metrics from the dialog and stream stores.
@@ -489,6 +465,8 @@ fn collect_metrics(
 /// bind policy, and end-to-end HTTP behavior on ephemeral ports.
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr};
+
     use super::*;
 
     /// A bare port string binds to `127.0.0.1:<port>`.
