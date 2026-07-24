@@ -63,7 +63,7 @@ Tiers:
 - [x] src/output/api.rs:827 — [correctness] `get_stream` matches SSRC alone; collisions return arbitrary stream. **Done:** on an SSRC collision the endpoint now returns the most-active matching stream (`max_by_key(packet_count)`) deterministically, so a colliding orphan can't shadow the real media stream.
 - [ ] api.rs:949 vs prometheus_server.rs:433 — [correctness] `sipnab_messages_total` divergent semantics between the two servers.
 - [ ] src/output/mod.rs:36 — [config] prometheus_server gated behind `api` feature though built to avoid it; `--metrics` without api can't work.
-- [ ] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree.
+- [x] src/output/synthetic.rs — [correctness] >64KiB payloads: length fields saturate but payload appended; header/size disagree. **Done:** the SIP payload is truncated to `u16::MAX - 28` so the IP/UDP length fields equal the bytes actually written (a single IPv4 datagram can't carry more), instead of a saturated length with a longer body.
 - [x] src/output/event_exec.rs:231 — [resource-leak] `try_wait` error drops Child from tracking without kill/wait. **Done:** a `try_wait` error now kills and waits the child before dropping it (via the extracted, testable `reap_action`), so it is reaped instead of leaked as a zombie.
 - [ ] src/tui/save.rs:783 — [edge-case] SIPp export string-replaces destination port digits; can corrupt unrelated URI parts.
 - [ ] src/tui/call_flow/export.rs:86 — [correctness] RTP-bar rows export as Mermaid self-arrows; want `is_rtp_bar` skip like `is_spacer`.
