@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! WASM entry point for browser-based pcap analysis.
 //! Exposes sipnab's analysis engine via wasm-bindgen JSON API.
 
