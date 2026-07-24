@@ -51,8 +51,6 @@ fn main() {
         tracing::error!("{}", msg);
         std::process::exit(2);
     }
-    cli.warn_unimplemented_flags();
-
     // 4. --mint-token: mint a signed bearer token and exit.
     if let Some(code) = bootstrap::run_mint_token(&cli) {
         std::process::exit(code);

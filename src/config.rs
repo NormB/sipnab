@@ -12,13 +12,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// Known valid keys per config section.
 ///
-/// Returns a map from section name (`""` for the root level, listing the
-/// section names themselves) to that section's accepted key names. Built
-/// fresh on every call; used only by unknown-key detection.
-fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
+/// Maps a section name (`""` for the root level, listing the section names
+/// themselves) to that section's accepted key names. Built once on first
+/// use and cached for the process lifetime; used only by unknown-key
+/// detection.
+static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = LazyLock::new(|| {
     let mut m = HashMap::new();
     m.insert(
         "",
@@ -139,6 +141,12 @@ fn known_keys() -> HashMap<&'static str, &'static [&'static str]> {
         .as_slice(),
     );
     m
+});
+
+/// Accessor for the process-wide [`KNOWN_KEYS`] table; used only by
+/// unknown-key detection.
+fn known_keys() -> &'static HashMap<&'static str, &'static [&'static str]> {
+    &KNOWN_KEYS
 }
 
 /// Walk a parsed TOML value and collect every key not in the known set
@@ -496,6 +504,9 @@ pub struct ThemeConfig {
     pub muted: Option<String>,
     /// Widget borders, panel frames.
     pub border: Option<String>,
+    /// Status bar background band (kept distinct from the terminal
+    /// background so the status line stays visible).
+    pub status_bg: Option<String>,
 }
 
 /// TUI keybinding overrides.
@@ -747,9 +758,10 @@ impl Config {
 
         warn_unknown_keys(&value);
 
-        // Deserialize leniently into Config
-        toml::from_str::<Config>(content).map_err(|e| crate::Error::ConfigParse {
-            path: display.clone(),
+        // Deserialize leniently into Config from the already-parsed value
+        // rather than re-parsing the string a second time.
+        value.try_into().map_err(|e| crate::Error::ConfigParse {
+            path: display,
             source: e,
         })
     }

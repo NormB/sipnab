@@ -284,11 +284,15 @@ impl NameResolver {
     }
 
     /// Remove a manual mapping. Returns the previous name, if any.
-    /// Bumps the generation counter (even when nothing was removed).
+    /// Bumps the generation counter only when an entry was actually
+    /// removed, so a no-op remove leaves cached labels valid.
     pub fn remove_manual(&self, ip: &IpAddr) -> Option<String> {
         let mut inner = self.inner.write();
-        inner.generation += 1;
-        inner.manual.remove(ip)
+        let removed = inner.manual.remove(ip);
+        if removed.is_some() {
+            inner.generation += 1;
+        }
+        removed
     }
 
     /// Monotonic mutation counter: bumped by every change that can alter a
@@ -660,6 +664,31 @@ mod tests {
         let _ = r.label(ip("10.0.0.4"), 5060, NameMode::Names);
         let _ = r.label(ip("10.0.0.99"), 5060, NameMode::Names);
         assert_eq!(r.generation(), g4, "lookups must not bump the generation");
+    }
+
+    /// A `remove_manual` that removes nothing must not bump the generation —
+    /// otherwise it would needlessly invalidate the TUI's cached layout.
+    #[test]
+    fn remove_manual_noop_does_not_bump_generation() {
+        let r = NameResolver::new();
+        r.set_manual(ip("10.0.0.2"), "sbc".into());
+        let g0 = r.generation();
+
+        // Removing an IP with no manual mapping returns None and must be a
+        // no-op for the generation counter.
+        assert_eq!(r.remove_manual(&ip("10.0.0.99")), None);
+        assert_eq!(
+            r.generation(),
+            g0,
+            "a no-op remove_manual must not bump the generation"
+        );
+
+        // A real removal still bumps it.
+        assert_eq!(r.remove_manual(&ip("10.0.0.2")).as_deref(), Some("sbc"));
+        assert!(
+            r.generation() > g0,
+            "removing an existing mapping must bump the generation"
+        );
     }
 
     /// Hosts-file entries resolve when no manual mapping exists;
