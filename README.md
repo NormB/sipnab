@@ -131,7 +131,7 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 
 | Flag       | Description                                                          | Default |
 |------------|----------------------------------------------------------------------|---------|
-| `native`   | Live capture, file capture, output writers, signal handling, CLI     | yes     |
+| `native`   | Live capture, file capture, output writers, signal handling, CLI. Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, and `mcp-http`; NOT required by `tls`, `audio`, or `wasm` | yes     |
 | `tui`      | Interactive terminal UI (ratatui + crossterm)                        | yes     |
 | `audio`    | RTP audio playback in TUI via the lazily-loaded `sipnab-audio` plugin + WAV export | yes     |
 | `tls`      | TLS/DTLS decryption + SRTP key extraction (ring, zeroize, rustls)    | no      |
@@ -139,8 +139,9 @@ All sngrep keybindings are supported. Press `F1` for the full shortcut reference
 | `api`      | REST API + Prometheus metrics endpoint (axum, tokio)                 | no      |
 | `mcp`      | Model Context Protocol server, stdio transport (rmcp)                | no      |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Implies `mcp` + `api`.       | no      |
+| `metrics`  | Standalone Prometheus metrics server (raw TCP, no tokio)             | yes     |
 | `wasm`     | WebAssembly target for in-browser pcap analysis                      | no      |
-| `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` | no      |
+| `full`     | `native` + `tui` + `audio` + `tls` + `hep` + `api` + `mcp` + `mcp-http` + `metrics` | no      |
 
 Build with specific features:
 

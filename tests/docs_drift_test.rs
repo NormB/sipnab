@@ -534,3 +534,47 @@ fn benchmark_tables_match_between_docs_and_website() {
          files in the same commit, or the wiki publishes stale numbers"
     );
 }
+
+/// Every `[features]` key in Cargo.toml must appear in the README feature
+/// table. `metrics` is a DEFAULT feature that was absent for several
+/// releases, so a reader could not discover it existed.
+#[test]
+fn readme_feature_table_covers_every_cargo_feature() {
+    let manifest = include_str!("../Cargo.toml");
+    let readme = include_str!("../README.md");
+
+    let features_block = manifest
+        .split("[features]")
+        .nth(1)
+        .expect("Cargo.toml has a [features] section")
+        .split("\n[")
+        .next()
+        .expect("features section terminates");
+
+    let mut missing = Vec::new();
+    let mut seen = 0;
+    for line in features_block.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, _)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name == "default" {
+            continue;
+        }
+        seen += 1;
+        if !readme.contains(&format!("`{name}`")) {
+            missing.push(name.to_string());
+        }
+    }
+
+    assert!(seen >= 10, "feature extraction found only {seen} features");
+    assert!(
+        missing.is_empty(),
+        "README feature table is missing: {}",
+        missing.join(", ")
+    );
+}
