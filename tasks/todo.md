@@ -345,6 +345,22 @@ Tiers:
 - [ ] Distributed capture cluster management.
 - [ ] Interactive pcap annotation and sharing.
 - [ ] YANG/NETCONF machine-readable diagnosis export.
+- [ ] **Metrics-only token scope for the REST API** — the one scope split with
+  real least-privilege value, deferred from the 2026-07-25 audience-binding
+  work. Today a bearer credential is all-or-nothing: any valid token can read
+  `/v1/dialogs`, `/v1/streams` and their full message bodies, which for a
+  TLS-decrypting capture tool means the call content itself. A monitoring
+  system that only needs `GET /metrics` must therefore be trusted with
+  everything. Adding a `scope` claim alongside `aud` (see `src/auth.rs`, the
+  `s2` payload) with values `full` and `metrics`, defaulting to `full` for
+  compatibility, would let an operator mint a scrape-only token.
+  **Not urgent:** the standalone `--metrics <ADDR>` server already solves this
+  case with its own HTTP Basic auth and its own bind, so the gap only bites
+  someone who deliberately wants Prometheus pointed at the REST API port
+  instead. Broader read/write scoping was considered and rejected — all eight
+  REST routes are `GET`, so there is no mutating operation for a scope to
+  protect.
+
 - [ ] **SIP problem diagnosis** — automated detection and explanation of SIP
   signaling problems (the signaling-side complement to the existing RTP/NAT
   `rtp/diagnosis.rs`). Candidate detections: failed/abandoned calls and their
