@@ -174,6 +174,9 @@ fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "mcp-http") {
         out.push("mcp-http");
     }
+    if cfg!(feature = "metrics") {
+        out.push("metrics");
+    }
     if cfg!(feature = "wasm") {
         out.push("wasm");
     }

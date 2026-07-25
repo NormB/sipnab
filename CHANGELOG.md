@@ -2,6 +2,73 @@
 
 All notable changes to sipnab will be documented in this file.
 
+## [0.5.38] - 2026-07-25
+
+Documentation, plus one `--version` reporting fix. No packet-path or API
+behavior changes.
+
+### Added
+- **Developer documentation** (`docs/internals/`, P5): a developer index with
+  a reading order, a live-vs-archaeological map of the root-level design
+  corpus, and a glossary (D1–D21/D22, WS0–WS8, P0–P5, SN-01/02/03); a
+  subsystem guide tracing one packet from wire to screen across all four
+  packet paths; ten invariants, each naming what enforces it; the test tiers
+  and gate roster; six contributor walkthroughs; build/CI/release (the eleven
+  features and their real implications, the eight workflows, what `ci-success`
+  actually requires, the 1.97.1 toolchain pins, the release matrix); and a
+  SIP/RTP domain primer. Seventeen sequence diagrams across the set.
+- `tests/dev_docs_drift_test.rs`: nine assertions holding those pages to the
+  code — cited paths must exist, `()`-suffixed symbols must resolve to a
+  definition, links must be relative, every page must be registered for wiki
+  publication, and the diagram conventions are enforced.
+- `.githooks/pre-commit` gate 8: an advisory notice when a commit stages a file
+  the developer docs cite without touching `docs/internals/`. It prints
+  `REVIEW` and returns zero — it can never block a commit, which
+  `scripts/test-pre-commit.sh` now pins.
+- `scripts/build-wiki.py` rewrites relative code links to blob URLs, so a
+  `../../src/pipeline.rs` link no longer reaches the flat wiki dead.
+
+### Changed
+- Rewrote the `/docs/` overview page: what sipnab is, who it is for, a
+  capability tour, a quick start, and an explicit table of what each build
+  variant actually includes. Every flag and capability claim was verified
+  against the built binary, and the page is now in the flag-drift corpus so it
+  stays that way.
+- `ARCHITECTURE.md` and `CONTRIBUTING.md` delegate into the developer docs
+  rather than duplicating them. `CONTRIBUTING.md`'s Git Hooks section was
+  wrong — it described the pre-push clippy gate as a "soft warning" when it is
+  a hard gate, omitted the rustdoc and fuzz gates, implied `SKIP_FMT_HOOK`
+  skipped only formatting, and never mentioned the pre-commit hook at all.
+
+### Fixed
+- **`--version` never reported the `metrics` feature.** `compiled_features()`
+  omitted it, so a `--features full` binary printed
+  `features: native,tui,audio,tls,hep,api,mcp,mcp-http` while the Prometheus
+  listener was compiled in. `--version` is what the install docs call "the
+  fastest way to confirm a build was produced with the feature set you
+  expected", so it was answering that question wrongly. Found while
+  fact-checking the `/docs/` overview page; the sample outputs in the install
+  and MCP-walkthrough pages are updated to match.
+- Three walkthrough checklists named gates that do not fire for the change they
+  were attached to. Verified by executing each: a malformed schema added to
+  `tests/schemas/` leaves `json_schema_test` green (it iterates four hardcoded
+  names), a new `src/security/` module with an uncapped attacker-keyed map
+  leaves `resource_bounds_test` and `security_test` green, and an unregistered
+  `fuzz/fuzz_targets/*.rs` containing a compile error leaves
+  `cd fuzz && cargo check` at exit 0. Those steps are now marked
+  **(unenforced)**, and the gap is filed as a P4 item.
+- `docs/benchmarks.md` claimed "current release 0.5.19" while the crate was at
+  0.5.37: the version-marker gate's corpus covered the website copy but not the
+  in-repo one. Both benchmark pages and both MCP walkthroughs are now in that
+  corpus.
+- `ARCHITECTURE.md` documented a `--jobs` flag that does not exist; the flag is
+  `--cores`. `ARCHITECTURE.md` is now in the flag-drift corpus.
+- The installation docs stated a glibc floor of 2.39; the floor enforced by
+  `release.yml` is 2.36.
+- The README feature table omitted `metrics` and misstated `full` and `native`.
+- `tests/link_integrity_test.rs` was left unformatted by an earlier commit on
+  this branch, which would have failed the pre-push `cargo fmt` gate.
+
 ## [0.5.37] - 2026-07-24
 
 ### Added
