@@ -27,7 +27,7 @@ security analysis.
 - **TLS/SRTP decryption** -- SSLKEYLOGFILE (TLS 1.2/1.3), RSA private key (`--tls-key`, TLS 1.2 RSA-kx only — not ECDHE/PFS), SRTP media (`--srtp-keys` + SDES `a=crypto`, AES-CM), and DTLS-SRTP key extraction (`--dtls-keylog`, RFC 5764)
 - **Privilege separation** -- drop to unprivileged user after capture device open
 - **pcap I/O** -- read/write pcap and pcapng, file rotation and splitting
-- **MCP server mode** -- expose read-only analysis (dialogs, streams, RTP, security findings) as Model Context Protocol tools an AI agent can call. Stdio + HTTP transports. See [`docs/mcp-overview.md`](./docs/mcp-overview.md).
+- **MCP server mode** -- expose read-only analysis (dialogs, streams, RTP, security findings) as Model Context Protocol tools an AI agent can call. Stdio + HTTP transports. See [`docs/mcp.md`](./docs/mcp.md).
 
 ## Prerequisites
 
@@ -163,7 +163,7 @@ Note: `audio` is in the default feature set, but it does **not** add a load-time
 - [Keybindings](docs/keybindings.md) -- TUI keyboard shortcuts
 - [Config Reference](docs/config-reference.md) -- TOML config file format
   (starter file: [contrib/sipnabrc.example](contrib/sipnabrc.example))
-- [MCP Setup](docs/mcp-setup.md) -- token bootstrap, systemd unit, troubleshooting
+- [MCP Server](docs/mcp.md) -- tools, transports, token bootstrap, systemd unit, troubleshooting
 - [Architecture](ARCHITECTURE.md) -- module map, data flow, threading model
 - [Implementation Plan](implementation-plan-v6.md) -- historical design decisions and roadmap
 
